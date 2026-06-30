@@ -54,6 +54,14 @@ type Instrument struct {
 	MinNotional    decimal.Decimal // minimum order notional
 	PricePrecision int             // convenience mirror derived from PriceTick
 
+	// ContractMultiplier scales an order's size into base-asset units when
+	// computing notional value: notional = price * quantity * multiplier. For
+	// linear USDT-margined perps (Binance USD-M, OKX linear) one contract is one
+	// base unit, so the multiplier is 1; a zero value is treated as 1. It exists
+	// for venues whose contract represents a fixed quantity of the base asset
+	// (e.g. an OKX contract face value) — those adapters set it explicitly.
+	ContractMultiplier decimal.Decimal
+
 	PositionMode PositionModeCap
 }
 

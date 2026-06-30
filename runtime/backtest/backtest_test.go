@@ -72,7 +72,7 @@ func TestBacktestParity(t *testing.T) {
 		{InstrumentID: inst, Price: d("108"), Quantity: d("1"), Timestamp: start.Add(3 * time.Second)},
 		{InstrumentID: inst, Price: d("110"), Quantity: d("1"), Timestamp: start.Add(4 * time.Second)}, // fills sell@110
 	}
-	backtest.NewRunner(venue).Run(context.Background(), node, ticks)
+	backtest.NewRunner(venue).RunTrades(context.Background(), node, ticks)
 	node.Stop()
 
 	if strat.fills != 2 {

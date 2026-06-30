@@ -30,7 +30,8 @@ runtime/             hosts all stateful machinery; imports ONLY core/*
    ├─ risk/          pre-trade checks + kill switch
    ├─ reconcile/     correct cache from venue REST snapshots
    ├─ observ/        observability hooks + metrics snapshot
-   ├─ backtest/      matching-engine venue + deterministic single-threaded driver
+   ├─ backtest/      perp-realistic matching venue (fees, funding, margin,
+   │                 liquidation) + deterministic single-threaded driver
    └─ node.go        TradingNode wires it all together
    │
 core/                venue-neutral domain (decimal everywhere; no float64)
@@ -59,10 +60,23 @@ sdk/<venue>/         faithful official-API clients (13 venues, pre-existing)
 
 ## Quickstart — backtest
 
+The backtest venue models a **linear, cross-margin perpetual account**: maker/taker
+fees, average-cost positions, leverage and initial-margin gating (orders past free
+margin are rejected), funding settlements, and maintenance-margin liquidation. All
+of it lives inside the simulated venue — the runtime only ever sees the same
+balance/position/fill events a live adapter pushes, so parity holds. Capital
+effects engage only when `StartBalance` funds the account.
+
 ```go
 clk := clock.NewSimulatedClock(start)
 venue := backtest.NewVenue(clk, backtest.Config{
-    StartBalance: model.AccountBalance{Currency: "USDT", Total: dec("10000")},
+    MakerFeeRate:    dec("0.0002"),                 // 2 bps maker
+    TakerFeeRate:    dec("0.0004"),                 // 4 bps taker
+    Slippage:        backtest.BpsSlippage(dec("1")), // 1 bp taker slippage
+    DefaultLeverage: dec("10"),
+    MaintMarginRate: dec("0.005"),                  // enables liquidation at 0.5%
+    StartBalance:    model.AccountBalance{Currency: "USDT", Total: dec("10000"), Available: dec("10000")},
+    OnLiquidation:   func(l backtest.Liquidation) { log.Println("liquidated:", l.WalletAfter) },
 })
 
 node := runtime.NewNode(
@@ -72,9 +86,19 @@ node := runtime.NewNode(
 )
 
 node.Start(ctx)
-backtest.NewRunner(venue).Run(ctx, node, historicalTicks) // deterministic, single-threaded
-node.Stop()
 
+// Trade-only replay:
+backtest.NewRunner(venue).RunTrades(ctx, node, historicalTicks) // deterministic, single-threaded
+
+// Or replay a mixed, time-sorted stream of trades + funding + mark prices:
+//   events := []backtest.SimEvent{
+//       backtest.Trade(tick),
+//       backtest.Funding(inst, dec("0.0001"), fundingTime),
+//       backtest.Mark(inst, dec("100"), markTime),
+//   }
+//   backtest.NewRunner(venue).Run(ctx, node, events)
+
+node.Stop()
 fmt.Println("PnL:", node.Portfolio.RealizedPnLNetFees())
 ```
 
@@ -126,6 +150,12 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 Adapters: **Binance USD-M perp**, **OKX perp**. Both pass the shared
 `core/contract/contracttest` suite. Adding a venue means writing one adapter; no
 runtime or strategy change.
+
+Backtest: **perp-realistic** for linear USDT-margined contracts — maker/taker
+fees, slippage, average-cost PnL, leverage/cross-margin with order rejection,
+funding settlements, and maintenance-margin liquidation. Scope not yet covered:
+inverse/coin-margined contracts, isolated margin, order-book-level matching, and
+partial-fill/queue/latency models.
 
 ## Testing
 

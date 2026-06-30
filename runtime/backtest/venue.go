@@ -1,13 +1,23 @@
 // Package backtest provides an in-process matching-engine venue that implements
 // the venue-neutral core/contract interfaces. Driven by a clock.SimulatedClock
-// and a replayed stream of trade ticks, it lets the IDENTICAL strategy and
-// TradingNode code that runs live also run a deterministic backtest — the
-// payoff of the backtest/live parity constraint held since P1.
+// and a replayed stream of SimEvents (trades, funding settlements, mark prices),
+// it lets the IDENTICAL strategy and TradingNode code that runs live also run a
+// deterministic backtest — the payoff of the backtest/live parity constraint
+// held since P1.
 //
 // Matching is bar/trade level: market orders fill immediately at the last seen
-// price; resting limit orders fill when a replayed trade's price crosses the
-// limit. This is simple and deterministic — sufficient to validate parity and
-// strategy logic, not an exchange-grade simulator.
+// price (adjusted by an optional slippage model); resting limit orders fill when
+// a replayed trade's price crosses the limit. It is not an order-book-level
+// simulator.
+//
+// On top of matching the venue models a linear, cross-margin perpetual account:
+// maker/taker fees, average-cost positions with realized/unrealized PnL, leverage
+// and initial-margin gating (orders that exceed free margin are rejected),
+// funding settlements, and maintenance-margin liquidation. All of this lives in
+// the simulated venue — the runtime sees only the same balance/position/fill
+// events a live adapter would push, preserving parity. Capital effects engage
+// only when StartBalance funds the account; an unfunded backtest is purely a
+// matching/PnL harness.
 //
 // Because the three contract interfaces each declare Events() with a different
 // element type, the venue exposes three thin clients (Execution/Market/Account)
@@ -27,11 +37,40 @@ import (
 
 // Config configures the backtest venue.
 type Config struct {
-	// FeeRate is applied to every fill's notional (e.g. 0.0005 = 5 bps). Zero
-	// means no fees.
+	// FeeRate is the legacy single fee rate applied to a fill's notional
+	// (e.g. 0.0005 = 5 bps). Deprecated: prefer MakerFeeRate/TakerFeeRate. When
+	// the side-specific rate is zero, FeeRate is used as the fallback.
 	FeeRate decimal.Decimal
+	// MakerFeeRate and TakerFeeRate are the fee rates applied to a fill's
+	// notional by liquidity side. Resting limit orders that are filled passively
+	// pay the maker rate; market orders and any order that removes liquidity pay
+	// the taker rate.
+	MakerFeeRate decimal.Decimal
+	TakerFeeRate decimal.Decimal
+	// Slippage models adverse price movement on marketable (taker) fills. Nil
+	// means no slippage; passive limit fills are never slipped.
+	Slippage SlippageModel
+	// DefaultLeverage is the leverage applied to instruments for which
+	// SetLeverage was never called. Zero is treated as 1x.
+	DefaultLeverage decimal.Decimal
+	// MaintMarginRate is the maintenance-margin rate (e.g. 0.005 = 0.5%) applied
+	// to position notional. A positive value ENABLES liquidation: when account
+	// equity falls to or below the summed maintenance margin, all positions are
+	// force-closed. Zero disables liquidation.
+	MaintMarginRate decimal.Decimal
+	// MaintMarginRates optionally overrides MaintMarginRate per instrument,
+	// keyed by InstrumentID.String().
+	MaintMarginRates map[string]decimal.Decimal
+	// OnLiquidation, if set, is invoked (off the venue lock) when a liquidation
+	// occurs. It is the venue's observable liquidation signal; the forced-close
+	// fills also flow through the normal execution/account event streams.
+	OnLiquidation func(Liquidation)
 	// StartBalance seeds the account balance reported by Balances.
 	StartBalance model.AccountBalance
+	// Instruments registers the venue's tradable markets so the matching engine
+	// can resolve each contract's multiplier (and, in later steps, its margin
+	// parameters). Unregistered instruments default to a multiplier of 1.
+	Instruments []*model.Instrument
 }
 
 // restingOrder is a limit order waiting to be matched.
@@ -47,10 +86,16 @@ type Venue struct {
 	clk clock.Clock
 	cfg Config
 
-	mu        sync.Mutex
-	lastPrice map[string]decimal.Decimal // by InstrumentID, last replayed trade price
-	resting   []*restingOrder
-	seq       int64
+	mu          sync.Mutex
+	lastPrice   map[string]decimal.Decimal   // by InstrumentID, last replayed trade price (the mark)
+	instruments map[string]*model.Instrument // by InstrumentID.String() (immutable after New)
+	instrList   []*model.Instrument          // registration order, for deterministic All()
+	resting     []*restingOrder
+	wallet      map[string]decimal.Decimal // settlement balance by currency
+	positions   map[string]*simPosition    // open positions by instrument|side
+	leverages   map[string]decimal.Decimal // per-instrument leverage by InstrumentID.String()
+	marginOn    bool                       // gate cross-margin checks on a funded account
+	seq         int64
 
 	exec    *execClient
 	market  *marketClient
@@ -60,13 +105,29 @@ type Venue struct {
 // NewVenue builds a backtest venue on the given clock.
 func NewVenue(clk clock.Clock, cfg Config) *Venue {
 	v := &Venue{
-		clk:       clk,
-		cfg:       cfg,
-		lastPrice: make(map[string]decimal.Decimal),
+		clk:         clk,
+		cfg:         cfg,
+		lastPrice:   make(map[string]decimal.Decimal),
+		instruments: make(map[string]*model.Instrument, len(cfg.Instruments)),
+		wallet:      make(map[string]decimal.Decimal),
+		positions:   make(map[string]*simPosition),
+		leverages:   make(map[string]decimal.Decimal),
 	}
+	for _, inst := range cfg.Instruments {
+		if inst != nil {
+			v.instruments[inst.ID.String()] = inst
+			v.instrList = append(v.instrList, inst)
+		}
+	}
+	if cfg.StartBalance.Currency != "" {
+		v.wallet[cfg.StartBalance.Currency] = cfg.StartBalance.Total
+	}
+	// Cross-margin gating applies only to a funded account: a backtest that
+	// models no capital (no start balance) is not margin-constrained.
+	v.marginOn = cfg.StartBalance.Currency != "" && cfg.StartBalance.Total.IsPositive()
 	v.exec = &execClient{v: v, events: make(chan contract.ExecEvent, 4096)}
 	v.market = &marketClient{v: v, events: make(chan contract.MarketEvent, 4096)}
-	v.account = &acctClient{v: v, events: make(chan contract.AccountEvent, 256)}
+	v.account = &acctClient{v: v, events: make(chan contract.AccountEvent, 4096)}
 	return v
 }
 
@@ -88,26 +149,46 @@ func (v *Venue) nextVenueID() string {
 // TradeEvent, records the last price, and matches resting limit orders against
 // it. Called by the Runner; safe to call directly in tests.
 func (v *Venue) Feed(tick model.TradeTick) {
-	if sc, ok := v.clk.(*clock.SimulatedClock); ok && !tick.Timestamp.IsZero() {
-		sc.AdvanceTo(tick.Timestamp)
-	}
+	v.advanceTo(tick.Timestamp)
 
 	v.market.events <- contract.TradeEvent{Trade: tick}
 
 	v.mu.Lock()
 	v.lastPrice[tick.InstrumentID.String()] = tick.Price
-	matched := v.matchLocked(tick)
+	execEvs, acctEvs := v.matchLocked(tick)
+	// Mark the instrument's open positions to the new price (mark-to-market),
+	// after any fills this tick produced.
+	acctEvs = append(acctEvs, v.markPositionLocked(tick.InstrumentID)...)
+	// Then check whether the new mark leaves the account underwater.
+	liqExec, liqAcct, liq := v.liquidateIfNeededLocked()
+	execEvs = append(execEvs, liqExec...)
+	acctEvs = append(acctEvs, liqAcct...)
 	v.mu.Unlock()
 
-	for _, m := range matched {
-		v.exec.events <- m
+	for _, e := range execEvs {
+		v.exec.events <- e
+	}
+	for _, a := range acctEvs {
+		v.account.events <- a
+	}
+	if liq != nil && v.cfg.OnLiquidation != nil {
+		v.cfg.OnLiquidation(*liq)
 	}
 }
 
 // matchLocked fills resting orders the tick price crosses. Caller holds v.mu.
-// Returns the exec events (OrderEvent + FillEvent pairs) to emit after unlock.
-func (v *Venue) matchLocked(tick model.TradeTick) []contract.ExecEvent {
-	var events []contract.ExecEvent
+// Returns the exec events (OrderEvent + FillEvent pairs) and the account events
+// (balance changes) to emit after unlock.
+func (v *Venue) matchLocked(tick model.TradeTick) ([]contract.ExecEvent, []contract.AccountEvent) {
+	var execEvs []contract.ExecEvent
+	var acctEvs []contract.AccountEvent
+	type matchedOrder struct {
+		req       model.OrderRequest
+		venueID   string
+		remaining decimal.Decimal
+		fillPx    decimal.Decimal
+	}
+	var matched []matchedOrder
 	kept := v.resting[:0]
 	for _, ro := range v.resting {
 		if ro.req.InstrumentID != tick.InstrumentID {
@@ -123,31 +204,38 @@ func (v *Venue) matchLocked(tick model.TradeTick) []contract.ExecEvent {
 			continue
 		}
 		// Fill fully at the limit price (deterministic; price improvement is
-		// out of scope for bar/trade-level matching).
+		// out of scope for bar/trade-level matching). A resting limit order that
+		// the market crosses is filled passively, so it pays the maker fee.
 		fillPx := ro.req.Price
-		filled := model.Order{
-			Request:      ro.req,
-			VenueOrderID: ro.venueID,
-			Status:       enums.StatusFilled,
-			FilledQty:    ro.remaining,
-			AvgFillPrice: fillPx,
-			UpdatedAt:    v.clk.Now(),
-		}
-		events = append(events, contract.OrderEvent{Order: filled})
-		events = append(events, v.fillEvent(ro.req, ro.venueID, fillPx, ro.remaining))
+		matched = append(matched, matchedOrder{
+			req:       ro.req,
+			venueID:   ro.venueID,
+			remaining: ro.remaining,
+			fillPx:    fillPx,
+		})
 	}
 	v.resting = kept
-	return events
+	for _, m := range matched {
+		filled := model.Order{
+			Request:      m.req,
+			VenueOrderID: m.venueID,
+			Status:       enums.StatusFilled,
+			FilledQty:    m.remaining,
+			AvgFillPrice: m.fillPx,
+			UpdatedAt:    v.clk.Now(),
+		}
+		fill := v.fillEvent(m.req, m.venueID, m.fillPx, m.remaining, enums.LiqMaker)
+		execEvs = append(execEvs, contract.OrderEvent{Order: filled}, fill)
+		acctEvs = append(acctEvs, v.applyFillLocked(fill.Fill, m.req.PositionSide)...)
+	}
+	return execEvs, acctEvs
 }
 
-func (v *Venue) fillEvent(req model.OrderRequest, venueID string, px, qty decimal.Decimal) contract.FillEvent {
+func (v *Venue) fillEvent(req model.OrderRequest, venueID string, px, qty decimal.Decimal, liq enums.LiquiditySide) contract.FillEvent {
+	rate := v.feeRate(liq)
 	fee := decimal.Zero
-	if !v.cfg.FeeRate.IsZero() {
-		fee = px.Mul(qty).Mul(v.cfg.FeeRate)
-	}
-	liq := enums.LiqTaker
-	if req.Type == enums.TypeLimit {
-		liq = enums.LiqMaker
+	if !rate.IsZero() {
+		fee = v.notional(req.InstrumentID, px, qty).Mul(rate)
 	}
 	return contract.FillEvent{Fill: model.Fill{
 		InstrumentID: req.InstrumentID,
@@ -158,7 +246,7 @@ func (v *Venue) fillEvent(req model.OrderRequest, venueID string, px, qty decima
 		Price:        px,
 		Quantity:     qty,
 		Fee:          fee,
-		FeeCurrency:  v.cfg.StartBalance.Currency,
+		FeeCurrency:  v.settleCcy(req.InstrumentID),
 		Timestamp:    v.clk.Now(),
 	}}
 }
@@ -193,16 +281,40 @@ func (c *execClient) Submit(ctx context.Context, req model.OrderRequest) (*model
 			c.events <- contract.OrderEvent{Order: order}
 			return &order, nil
 		}
+		// A market order removes liquidity at the last price, adjusted by the
+		// configured slippage model, and pays the taker fee.
+		px = v.applySlippage(req.Side, px)
+		if reason, rejected := v.marginRejectLocked(req, px); rejected {
+			order.Status = enums.StatusRejected
+			order.RejectReason = reason
+			v.mu.Unlock()
+			c.events <- contract.OrderEvent{Order: order}
+			c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+			return &order, nil
+		}
 		order.Status = enums.StatusFilled
 		order.FilledQty = req.Quantity
 		order.AvgFillPrice = px
-		fill := v.fillEvent(req, venueID, px, req.Quantity)
+		fill := v.fillEvent(req, venueID, px, req.Quantity, enums.LiqTaker)
+		acctEvs := v.applyFillLocked(fill.Fill, req.PositionSide)
+		acctEvs = append(acctEvs, v.markPositionLocked(req.InstrumentID)...)
 		v.mu.Unlock()
 		c.events <- contract.OrderEvent{Order: order}
 		c.events <- fill
+		for _, a := range acctEvs {
+			v.account.events <- a
+		}
 		return &order, nil
 	}
 
+	if reason, rejected := v.marginRejectLocked(req, req.Price); rejected {
+		order.Status = enums.StatusRejected
+		order.RejectReason = reason
+		v.mu.Unlock()
+		c.events <- contract.OrderEvent{Order: order}
+		c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+		return &order, nil
+	}
 	order.Status = enums.StatusNew
 	v.resting = append(v.resting, &restingOrder{req: req, venueID: venueID, remaining: req.Quantity})
 	v.mu.Unlock()
@@ -251,15 +363,39 @@ func (c *execClient) CancelAll(ctx context.Context, id model.InstrumentID) error
 func (c *execClient) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
 	v := c.v
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	for _, ro := range v.resting {
+	for i, ro := range v.resting {
 		if ro.venueID == venueOrderID {
-			ro.req.Price = newPrice
-			ro.req.Quantity = newQty
+			newReq := ro.req
+			newReq.Price = newPrice
+			newReq.Quantity = newQty
+
+			resting := v.resting
+			v.resting = append(append([]*restingOrder{}, resting[:i]...), resting[i+1:]...)
+			reason, rejected := v.marginRejectLocked(newReq, newPrice)
+			v.resting = resting
+
+			if rejected {
+				order := model.Order{
+					Request:      newReq,
+					VenueOrderID: venueOrderID,
+					Status:       enums.StatusRejected,
+					UpdatedAt:    v.clk.Now(),
+					RejectReason: reason,
+				}
+				v.mu.Unlock()
+				c.events <- contract.OrderEvent{Order: order}
+				c.events <- contract.RejectEvent{ClientID: newReq.ClientID, Reason: reason}
+				return &order, nil
+			}
+
+			ro.req = newReq
 			ro.remaining = newQty
-			return &model.Order{Request: ro.req, VenueOrderID: venueOrderID, Status: enums.StatusNew, UpdatedAt: v.clk.Now()}, nil
+			order := model.Order{Request: ro.req, VenueOrderID: venueOrderID, Status: enums.StatusNew, UpdatedAt: v.clk.Now()}
+			v.mu.Unlock()
+			return &order, nil
 		}
 	}
+	v.mu.Unlock()
 	return nil, nil
 }
 
@@ -298,7 +434,7 @@ type marketClient struct {
 	events chan contract.MarketEvent
 }
 
-func (c *marketClient) InstrumentProvider() model.InstrumentProvider { return emptyProvider{} }
+func (c *marketClient) InstrumentProvider() model.InstrumentProvider { return venueProvider{c.v} }
 func (c *marketClient) OrderBook(ctx context.Context, id model.InstrumentID, depth int) (*model.OrderBook, error) {
 	return nil, nil
 }
@@ -319,13 +455,16 @@ type acctClient struct {
 }
 
 func (c *acctClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
-	if c.v.cfg.StartBalance.Currency == "" {
-		return nil, nil
-	}
-	return []model.AccountBalance{c.v.cfg.StartBalance}, nil
+	return c.v.snapshotBalances(), nil
 }
-func (c *acctClient) Positions(ctx context.Context) ([]model.Position, error) { return nil, nil }
+func (c *acctClient) Positions(ctx context.Context) ([]model.Position, error) {
+	return c.v.snapshotPositions(), nil
+}
 func (c *acctClient) SetLeverage(ctx context.Context, id model.InstrumentID, lev decimal.Decimal) error {
+	v := c.v
+	v.mu.Lock()
+	v.leverages[id.String()] = lev
+	v.mu.Unlock()
 	return nil
 }
 func (c *acctClient) SetMarginMode(ctx context.Context, id model.InstrumentID, mode string) error {
@@ -334,12 +473,20 @@ func (c *acctClient) SetMarginMode(ctx context.Context, id model.InstrumentID, m
 func (c *acctClient) Events() <-chan contract.AccountEvent { return c.events }
 func (c *acctClient) Close() error                         { return nil }
 
-// emptyProvider is a no-op InstrumentProvider; backtest strategies supply
-// instrument ids directly.
-type emptyProvider struct{}
+// venueProvider resolves instruments from the venue's registry (Config.Instruments).
+// The registry is immutable after NewVenue, so reads need no lock.
+type venueProvider struct{ v *Venue }
 
-func (emptyProvider) Instrument(model.InstrumentID) (*model.Instrument, bool) { return nil, false }
-func (emptyProvider) All() []*model.Instrument                                { return nil }
+func (p venueProvider) Instrument(id model.InstrumentID) (*model.Instrument, bool) {
+	inst, ok := p.v.instruments[id.String()]
+	return inst, ok
+}
+
+func (p venueProvider) All() []*model.Instrument {
+	out := make([]*model.Instrument, len(p.v.instrList))
+	copy(out, p.v.instrList)
+	return out
+}
 
 // compile-time interface checks
 var (
