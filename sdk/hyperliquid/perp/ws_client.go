@@ -1,7 +1,7 @@
 package perp
 
 import (
-	"github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 
 	"github.com/ethereum/go-ethereum/crypto"
 )

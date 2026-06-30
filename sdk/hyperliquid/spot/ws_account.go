@@ -3,7 +3,7 @@ package spot
 import (
 	"encoding/json"
 
-	"github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 // SubscribeOrderUpdates

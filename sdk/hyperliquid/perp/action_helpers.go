@@ -3,7 +3,7 @@ package perp
 import (
 	"fmt"
 
-	"github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 // Shared helper functions for building actions (used by both HTTP and WS clients)

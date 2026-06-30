@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 const (

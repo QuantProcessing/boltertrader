@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 // UserOpenOrders

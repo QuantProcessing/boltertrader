@@ -1,0 +1,59 @@
+package perp_test
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/adapter/okx/perp"
+	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
+)
+
+// TestLiveOKXAdapterSmoke is env-gated and read-only. It runs only with
+// OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE present.
+//
+//	OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... \
+//	go test -run TestLiveOKXAdapterSmoke ./adapter/okx/perp/
+func TestLiveOKXAdapterSmoke(t *testing.T) {
+	testenv.RequireLiveCredentials(t, "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	a, err := perp.New(ctx, perp.Config{
+		APIKey:     os.Getenv("OKX_API_KEY"),
+		APISecret:  os.Getenv("OKX_API_SECRET"),
+		Passphrase: os.Getenv("OKX_API_PASSPHRASE"),
+	})
+	if err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "okx.New")
+		t.Fatalf("adapter: %v", err)
+	}
+	defer a.Close()
+
+	if len(a.Market.InstrumentProvider().All()) == 0 {
+		t.Fatal("no SWAP instruments loaded")
+	}
+
+	inst := model.InstrumentID{Venue: "OKX", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	got, ok := a.Market.InstrumentProvider().Instrument(inst)
+	if !ok {
+		t.Skip("BTC-USDT SWAP not present")
+	}
+	// The OKX divergence: InstIdCode should be populated.
+	if got.VenueIntCode == nil {
+		t.Error("expected OKX VenueIntCode to be populated")
+	}
+
+	book, err := a.Market.OrderBook(ctx, inst, 5)
+	if err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OrderBook")
+		t.Fatalf("orderbook: %v", err)
+	}
+	if len(book.Bids) == 0 || len(book.Asks) == 0 {
+		t.Fatalf("empty book: bids=%d asks=%d", len(book.Bids), len(book.Asks))
+	}
+}

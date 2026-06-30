@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	hyperliquid "github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 func TestWSClientCompanion_NewWebsocketClient(t *testing.T) {

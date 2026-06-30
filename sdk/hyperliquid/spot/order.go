@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	hyperliquid "github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 func (c *Client) UserOpenOrders(ctx context.Context, user string) ([]Order, error) {

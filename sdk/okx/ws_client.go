@@ -148,6 +148,15 @@ func (c *WSClient) Connect() error {
 	return nil
 }
 
+// IsConnected reports whether the underlying socket is currently established.
+// It is best-effort: the transport auto-reconnects in the background, so a drop
+// may briefly still read as connected until the read loop detects the failure.
+func (c *WSClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn != nil
+}
+
 func (c *WSClient) pingLoop() {
 	ticker := time.NewTicker(15 * time.Second)
 	for {

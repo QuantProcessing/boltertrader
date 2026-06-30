@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestClient_GetWalletBalance(t *testing.T) {

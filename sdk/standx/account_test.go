@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
-	"github.com/QuantProcessing/exchanges/sdk/standx"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/sdk/standx"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

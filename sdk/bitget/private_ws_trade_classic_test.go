@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestPrivateWSTradeClassicCompanion_FirstClassicAck(t *testing.T) {

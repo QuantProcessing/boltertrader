@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
-	hyperliquid "github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 const (

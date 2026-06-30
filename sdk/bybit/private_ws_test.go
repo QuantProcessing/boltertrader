@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestPrivateWSClient_Subscribe(t *testing.T) {

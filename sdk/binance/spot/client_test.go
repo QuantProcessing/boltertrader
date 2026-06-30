@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 const binanceSpotLiveWriteFlag = "BINANCE_ENABLE_LIVE_WRITE_TESTS"

@@ -12,7 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/QuantProcessing/exchanges/internal/mbx"
+	"github.com/QuantProcessing/boltertrader/internal/mbx"
 )
 
 const (

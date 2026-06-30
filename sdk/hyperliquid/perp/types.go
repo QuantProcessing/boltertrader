@@ -1,7 +1,7 @@
 package perp
 
 import (
-	hyperliquid "github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 // --- Action Wire Types moved to hyperliquid/action_types.go ---

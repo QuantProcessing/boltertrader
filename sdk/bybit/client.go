@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	sdkcore "github.com/QuantProcessing/exchanges/sdk"
+	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
 const defaultBaseURL = "https://api.bybit.com"

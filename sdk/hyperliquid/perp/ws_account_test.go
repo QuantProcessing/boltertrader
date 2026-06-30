@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
-	"github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 func requireLiveWSCredentials(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/QuantProcessing/exchanges/internal/mbx"
-	sdkcore "github.com/QuantProcessing/exchanges/sdk"
+	"github.com/QuantProcessing/boltertrader/internal/mbx"
+	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
 const (

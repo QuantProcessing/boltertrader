@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/exchanges/internal/testenv"
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func requireRealtimeWS(t *testing.T) {

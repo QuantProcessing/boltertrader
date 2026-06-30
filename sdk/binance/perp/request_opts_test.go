@@ -3,7 +3,7 @@ package perp
 import (
 	"testing"
 
-	sdkcore "github.com/QuantProcessing/exchanges/sdk"
+	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
 )
 
 func TestApplySDKRequestOpts(t *testing.T) {

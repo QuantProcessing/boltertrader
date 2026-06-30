@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	hyperliquid "github.com/QuantProcessing/exchanges/sdk/hyperliquid"
+	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	"github.com/stretchr/testify/require"
 )
 

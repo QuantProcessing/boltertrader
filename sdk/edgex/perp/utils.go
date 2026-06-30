@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantProcessing/exchanges/sdk/edgex/starkcurve"
+	"github.com/QuantProcessing/boltertrader/sdk/edgex/starkcurve"
 
 	"golang.org/x/crypto/sha3"
 )
