@@ -12,6 +12,11 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	BinanceDemoAPIKeyEnv    = "BINANCE_DEMO_API_KEY"
+	BinanceDemoAPISecretEnv = "BINANCE_DEMO_API_SECRET"
+)
+
 // LoadRepoEnv loads the repo-root .env into the current process without
 // overriding shell-exported environment variables.
 func LoadRepoEnv() error {
@@ -69,6 +74,21 @@ func RequireLiveCredentials(t testing.TB, vars ...string) {
 	RequireEnv(t, vars...)
 }
 
+func RequireLiveRead(t testing.TB, vars ...string) {
+	t.Helper()
+
+	if testing.Short() {
+		t.Skip("skipping: live read test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
+		t.Skip("skipping live read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real exchange read execution")
+	}
+	RequireEnv(t, vars...)
+}
+
 func RequireLiveWrite(t testing.TB, enableVar string, vars ...string) {
 	t.Helper()
 
@@ -82,6 +102,14 @@ func RequireLiveWrite(t testing.TB, enableVar string, vars ...string) {
 		t.Skipf("skipping live write test: set %s=1 to enable real exchange write execution", enableVar)
 	}
 	RequireEnv(t, vars...)
+}
+
+func RequireBinanceDemoWrite(t testing.TB) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Binance Demo write test excluded by -short")
+	}
+	RequireEnv(t, BinanceDemoAPIKeyEnv, BinanceDemoAPISecretEnv)
 }
 
 func SkipIfTransientLiveNetworkError(t testing.TB, err error, context string) {

@@ -8,7 +8,7 @@ import (
 )
 
 func TestClient_Depth(t *testing.T) {
-	got, err := newLiveClient().Depth(context.Background(), binancePerpTestSymbol, 5)
+	got, err := newLiveClient(t).Depth(context.Background(), binancePerpTestSymbol, 5)
 	if err != nil {
 		t.Fatalf("Depth: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestClient_Depth(t *testing.T) {
 }
 
 func TestClient_Klines(t *testing.T) {
-	got, err := newLiveClient().Klines(context.Background(), binancePerpTestSymbol, "1m", 1, 0, 0)
+	got, err := newLiveClient(t).Klines(context.Background(), binancePerpTestSymbol, "1m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("Klines: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestClient_Klines(t *testing.T) {
 }
 
 func TestClient_ContinousKlines(t *testing.T) {
-	got, err := newLiveClient().ContinousKlines(context.Background(), binancePerpTestSymbol, "PERPETUAL", "1m", 1, 0, 0)
+	got, err := newLiveClient(t).ContinousKlines(context.Background(), binancePerpTestSymbol, "PERPETUAL", "1m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("ContinousKlines: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestClient_ContinousKlines(t *testing.T) {
 }
 
 func TestClient_Ticker(t *testing.T) {
-	got, err := newLiveClient().Ticker(context.Background(), binancePerpTestSymbol)
+	got, err := newLiveClient(t).Ticker(context.Background(), binancePerpTestSymbol)
 	if err != nil {
 		t.Fatalf("Ticker: %v", err)
 	}
@@ -48,13 +48,13 @@ func TestClient_Ticker(t *testing.T) {
 }
 
 func TestClient_TickerRequiresSymbol(t *testing.T) {
-	if _, err := newLiveClient().Ticker(context.Background(), ""); err == nil {
+	if _, err := newLiveClient(t).Ticker(context.Background(), ""); err == nil {
 		t.Fatal("expected missing symbol error")
 	}
 }
 
 func TestClient_MarkPrice(t *testing.T) {
-	got, err := newLiveClient().MarkPrice(context.Background(), binancePerpTestSymbol)
+	got, err := newLiveClient(t).MarkPrice(context.Background(), binancePerpTestSymbol)
 	if err != nil {
 		t.Fatalf("MarkPrice: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestClient_MarkPrice(t *testing.T) {
 }
 
 func TestClient_ExchangeInfo(t *testing.T) {
-	got, err := newLiveClient().ExchangeInfo(context.Background())
+	got, err := newLiveClient(t).ExchangeInfo(context.Background())
 	if err != nil {
 		t.Fatalf("ExchangeInfo: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestClient_ExchangeInfo(t *testing.T) {
 }
 
 func TestClient_GetAggTrades(t *testing.T) {
-	got, err := newLiveClient().GetAggTrades(context.Background(), binancePerpTestSymbol, 1)
+	got, err := newLiveClient(t).GetAggTrades(context.Background(), binancePerpTestSymbol, 1)
 	if err != nil {
 		t.Fatalf("GetAggTrades: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestClient_GetAggTrades(t *testing.T) {
 }
 
 func TestClient_GetAggTradesPaged(t *testing.T) {
-	got, err := newLiveClient().GetAggTradesPaged(context.Background(), AggTradesQuery{Symbol: binancePerpTestSymbol, Limit: 1})
+	got, err := newLiveClient(t).GetAggTradesPaged(context.Background(), AggTradesQuery{Symbol: binancePerpTestSymbol, Limit: 1})
 	if err != nil {
 		t.Fatalf("GetAggTradesPaged: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestClient_GetAggTradesPaged(t *testing.T) {
 }
 
 func TestClient_GetFundingInfo(t *testing.T) {
-	got, err := newLiveClient().GetFundingInfo(context.Background())
+	got, err := newLiveClient(t).GetFundingInfo(context.Background())
 	if err != nil {
 		t.Fatalf("GetFundingInfo: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestClient_GetFundingInfo(t *testing.T) {
 }
 
 func TestClient_GetFundingRate(t *testing.T) {
-	got, err := newLiveClient().GetFundingRate(context.Background(), binancePerpTestSymbol)
+	got, err := newLiveClient(t).GetFundingRate(context.Background(), binancePerpTestSymbol)
 	if err != nil {
 		t.Fatalf("GetFundingRate: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestClient_GetAllFundingRatesUsesOnlyPremiumIndex(t *testing.T) {
 }
 
 func TestClient_GetAllFundingRates(t *testing.T) {
-	got, err := newLiveClient().GetAllFundingRates(context.Background())
+	got, err := newLiveClient(t).GetAllFundingRates(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllFundingRates: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestClient_GetAllFundingRates(t *testing.T) {
 }
 
 func TestClient_GetOpenInterest(t *testing.T) {
-	got, err := newLiveClient().GetOpenInterest(context.Background(), binancePerpTestSymbol)
+	got, err := newLiveClient(t).GetOpenInterest(context.Background(), binancePerpTestSymbol)
 	if err != nil {
 		t.Fatalf("GetOpenInterest: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestClient_GetOpenInterest(t *testing.T) {
 }
 
 func TestClient_GetFundingRateHistory(t *testing.T) {
-	got, err := newLiveClient().GetFundingRateHistory(context.Background(), binancePerpTestSymbol, 0, 0, 1)
+	got, err := newLiveClient(t).GetFundingRateHistory(context.Background(), binancePerpTestSymbol, 0, 0, 1)
 	if err != nil {
 		t.Fatalf("GetFundingRateHistory: %v", err)
 	}

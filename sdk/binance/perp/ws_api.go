@@ -31,8 +31,20 @@ type WsAPIClient struct {
 }
 
 func NewWsAPIClient(ctx context.Context) *WsAPIClient {
+	return NewWsAPIClientWithEndpointProfile(ctx, USDMMProductionEndpoints)
+}
+
+func NewDemoWsAPIClient(ctx context.Context) *WsAPIClient {
+	return NewWsAPIClientWithEndpointProfile(ctx, USDMMDemoEndpoints)
+}
+
+func NewWsAPIClientWithEndpointProfile(ctx context.Context, profile EndpointProfile) *WsAPIClient {
+	return newWsAPIClient(ctx, endpointOrDefault(profile.WSAPIBaseURL, WSAPIBaseURL))
+}
+
+func newWsAPIClient(ctx context.Context, url string) *WsAPIClient {
 	return &WsAPIClient{
-		URL:             WSAPIBaseURL,
+		URL:             url,
 		PendingRequests: make(map[string]chan []byte),
 		Done:            make(chan struct{}),
 		ReconnectWait:   1 * time.Second,

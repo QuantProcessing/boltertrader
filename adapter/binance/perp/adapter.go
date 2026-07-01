@@ -2,6 +2,7 @@ package perp
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -12,6 +13,14 @@ import (
 type Config struct {
 	APIKey    string
 	APISecret string
+	// Demo switches REST, public/market WS, account WS, and SDK API clients
+	// to Binance USD-M Futures Demo endpoints.
+	Demo          bool
+	DemoAPIKey    string
+	DemoAPISecret string
+	// HTTPClient overrides the SDK REST HTTP client; tests use it to keep
+	// ExchangeInfo loading offline.
+	HTTPClient *http.Client
 	// Clock is the time source; defaults to a RealClock when nil.
 	Clock clock.Clock
 }
@@ -34,6 +43,7 @@ type Adapter struct {
 	wsAccount *sdkperp.WsAccountClient
 	apiKey    string
 	apiSecret string
+	profile   sdkperp.EndpointProfile
 }
 
 // New constructs a live Binance perp adapter: it builds the REST and WebSocket
@@ -46,14 +56,24 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		clk = clock.NewRealClock()
 	}
 
-	rest := sdkperp.NewClient().WithCredentials(cfg.APIKey, cfg.APISecret)
+	profile := sdkperp.USDMMProductionEndpoints
+	apiKey, apiSecret := cfg.APIKey, cfg.APISecret
+	if cfg.Demo {
+		profile = sdkperp.USDMMDemoEndpoints
+		apiKey, apiSecret = cfg.DemoAPIKey, cfg.DemoAPISecret
+	}
+	rest := sdkperp.NewClient().WithEndpointProfile(profile)
+	rest.WithCredentials(apiKey, apiSecret)
+	if cfg.HTTPClient != nil {
+		rest.WithHTTPClient(cfg.HTTPClient)
+	}
 
 	provider := newInstrumentProvider()
 	if err := provider.Load(ctx, rest); err != nil {
 		return nil, err
 	}
 
-	wsMarket := sdkperp.NewWsMarketClient(ctx)
+	wsMarket := sdkperp.NewWsMarketClientWithEndpointProfile(ctx, profile)
 
 	exec := newExecutionClient(rest, provider, clk)
 	acct := newAccountClient(rest, provider, clk)
@@ -68,8 +88,9 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		exec:      exec,
 		acct:      acct,
 		clk:       clk,
-		apiKey:    cfg.APIKey,
-		apiSecret: cfg.APISecret,
+		apiKey:    apiKey,
+		apiSecret: apiSecret,
+		profile:   profile,
 	}, nil
 }
 
@@ -77,7 +98,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 // pushes into the execution and account event streams. It is safe to call once;
 // the underlying client manages listenKey keepalive and reconnect internally.
 func (a *Adapter) Start(ctx context.Context) error {
-	ws := sdkperp.NewWsAccountClient(ctx, a.apiKey, a.apiSecret)
+	ws := a.newWsAccountClient(ctx)
 	resolve := a.provider.resolveVenueSymbol
 
 	ws.SubscribeOrderUpdate(func(ev *sdkperp.OrderUpdateEvent) {
@@ -96,6 +117,10 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 	a.wsAccount = ws
 	return nil
+}
+
+func (a *Adapter) newWsAccountClient(ctx context.Context) *sdkperp.WsAccountClient {
+	return sdkperp.NewWsAccountClientWithEndpointProfile(ctx, a.apiKey, a.apiSecret, a.profile)
 }
 
 // Close shuts down the adapter's streams.

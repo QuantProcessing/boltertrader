@@ -16,20 +16,22 @@ const (
 	binancePerpTestSymbol    = "BTCUSDT"
 )
 
-func newLiveClient() *Client {
+func newLiveClient(t *testing.T) *Client {
+	t.Helper()
+	testenv.RequireLiveRead(t)
 	return NewClient()
 }
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
+	testenv.RequireLiveRead(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
 	return NewClient().WithCredentials(os.Getenv("BINANCE_API_KEY"), os.Getenv("BINANCE_SECRET_KEY"))
 }
 
 func requireBinancePerpLiveWrite(t *testing.T) *Client {
 	t.Helper()
 	testenv.RequireLiveWrite(t, binancePerpLiveWriteFlag, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
-	return newLivePrivateClient(t)
+	return NewClient().WithCredentials(os.Getenv("BINANCE_API_KEY"), os.Getenv("BINANCE_SECRET_KEY"))
 }
 
 func envOrDefault(key, fallback string) string {
@@ -52,6 +54,20 @@ func TestClient_WithBaseURL(t *testing.T) {
 
 	if client.BaseURL != "https://example.test" {
 		t.Fatalf("unexpected base url: %+v", client)
+	}
+}
+
+func TestClient_WithUSDMMDemoUsesDemoFAPI(t *testing.T) {
+	client := NewClient().WithUSDMMDemo()
+
+	if client.BaseURL != DemoBaseURL {
+		t.Fatalf("expected Demo REST base URL %s, got %s", DemoBaseURL, client.BaseURL)
+	}
+	if client.EndpointPrefix != "/fapi" {
+		t.Fatalf("expected USD-M endpoint prefix /fapi, got %s", client.EndpointPrefix)
+	}
+	if client.AccountVersion != "v2" {
+		t.Fatalf("expected USD-M account version v2, got %s", client.AccountVersion)
 	}
 }
 
@@ -125,7 +141,7 @@ func TestClient_Get(t *testing.T) {
 	var out struct {
 		ServerTime int64 `json:"serverTime"`
 	}
-	if err := newLiveClient().Get(context.Background(), "/fapi/v1/time", nil, false, &out); err != nil {
+	if err := newLiveClient(t).Get(context.Background(), "/fapi/v1/time", nil, false, &out); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if out.ServerTime == 0 {

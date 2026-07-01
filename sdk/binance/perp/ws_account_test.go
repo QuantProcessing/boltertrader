@@ -12,6 +12,44 @@ func TestWSAccountCompanion_NewWsAccountClient(t *testing.T) {
 	}
 }
 
+func TestWSAccountCompanion_NewDemoWsAccountClientUsesDemoRESTAndWS(t *testing.T) {
+	client := NewDemoWsAccountClient(context.Background(), "demo-key", "demo-secret")
+	if client.Client == nil || client.WsClient == nil {
+		t.Fatalf("unexpected nil client: %+v", client)
+	}
+	if client.Client.BaseURL != DemoBaseURL {
+		t.Fatalf("expected Demo REST base URL %s, got %s", DemoBaseURL, client.Client.BaseURL)
+	}
+	if client.Client.APIKey != "demo-key" || client.Client.SecretKey != "demo-secret" {
+		t.Fatalf("unexpected Demo credentials: key=%q secret=%q", client.Client.APIKey, client.Client.SecretKey)
+	}
+	if client.BaseURL != DemoWSPrivateBaseURL || client.WsClient.URL != DemoWSPrivateBaseURL {
+		t.Fatalf("expected Demo private stream URL %s, got base=%s ws=%s", DemoWSPrivateBaseURL, client.BaseURL, client.WsClient.URL)
+	}
+}
+
+func TestWSAccountCompanion_WithEndpointProfileUsesRESTAndPrivateWS(t *testing.T) {
+	profile := EndpointProfile{
+		RESTBaseURL:      "https://profile.test/rest",
+		EndpointPrefix:   "/fapi",
+		AccountVersion:   "v2",
+		WSPrivateBaseURL: "wss://profile.test/private",
+	}
+	client := NewWsAccountClientWithEndpointProfile(context.Background(), "profile-key", "profile-secret", profile)
+	if client.Client == nil || client.WsClient == nil {
+		t.Fatalf("unexpected nil client: %+v", client)
+	}
+	if client.Client.BaseURL != profile.RESTBaseURL {
+		t.Fatalf("expected profile REST base URL %s, got %s", profile.RESTBaseURL, client.Client.BaseURL)
+	}
+	if client.Client.APIKey != "profile-key" || client.Client.SecretKey != "profile-secret" {
+		t.Fatalf("unexpected profile credentials: key=%q secret=%q", client.Client.APIKey, client.Client.SecretKey)
+	}
+	if client.BaseURL != profile.WSPrivateBaseURL || client.WsClient.URL != profile.WSPrivateBaseURL {
+		t.Fatalf("expected profile private stream URL %s, got base=%s ws=%s", profile.WSPrivateBaseURL, client.BaseURL, client.WsClient.URL)
+	}
+}
+
 func TestWSAccountCompanion_NewCoinMWsAccountClientUsesDstreamAndDAPI(t *testing.T) {
 	client := NewCoinMWsAccountClient(context.Background(), "api-key", "secret")
 	if client.Client == nil || client.WsClient == nil {

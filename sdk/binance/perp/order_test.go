@@ -13,7 +13,7 @@ import (
 
 func TestClient_PlaceOrder(t *testing.T) {
 	client := requireBinancePerpLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_PERP_TEST_ORDER_QTY", "BINANCE_PERP_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "BINANCE_PERP_TEST_ORDER_QTY", "BINANCE_PERP_TEST_ORDER_PRICE")
 	got, err := client.PlaceOrder(context.Background(), PlaceOrderParams{
 		Symbol:           envOrDefault("BINANCE_PERP_TEST_SYMBOL", binancePerpTestSymbol),
 		Side:             envOrDefault("BINANCE_PERP_TEST_ORDER_SIDE", "BUY"),
@@ -33,7 +33,7 @@ func TestClient_PlaceOrder(t *testing.T) {
 
 func TestClient_CancelOrder(t *testing.T) {
 	client := requireBinancePerpLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_PERP_TEST_CANCEL_ORDER_ID")
+	testenv.RequireEnv(t, "BINANCE_PERP_TEST_CANCEL_ORDER_ID")
 	got, err := client.CancelOrder(context.Background(), CancelOrderParams{
 		Symbol:  envOrDefault("BINANCE_PERP_TEST_SYMBOL", binancePerpTestSymbol),
 		OrderID: os.Getenv("BINANCE_PERP_TEST_CANCEL_ORDER_ID"),
@@ -48,7 +48,7 @@ func TestClient_CancelOrder(t *testing.T) {
 
 func TestClient_ModifyOrder(t *testing.T) {
 	client := requireBinancePerpLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_PERP_TEST_MODIFY_ORDER_ID", "BINANCE_PERP_TEST_ORDER_QTY", "BINANCE_PERP_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "BINANCE_PERP_TEST_MODIFY_ORDER_ID", "BINANCE_PERP_TEST_ORDER_QTY", "BINANCE_PERP_TEST_ORDER_PRICE")
 	orderID, err := strconv.ParseInt(os.Getenv("BINANCE_PERP_TEST_MODIFY_ORDER_ID"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse BINANCE_PERP_TEST_MODIFY_ORDER_ID: %v", err)
@@ -259,7 +259,7 @@ func TestClient_AlgoOrderLookupRequiresIdentifier(t *testing.T) {
 
 func TestClient_GetOrder(t *testing.T) {
 	client := newLivePrivateClient(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_PERP_TEST_ORDER_ID")
+	testenv.RequireEnv(t, "BINANCE_PERP_TEST_ORDER_ID")
 	orderID, err := strconv.ParseInt(os.Getenv("BINANCE_PERP_TEST_ORDER_ID"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse BINANCE_PERP_TEST_ORDER_ID: %v", err)

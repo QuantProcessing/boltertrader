@@ -59,6 +59,47 @@ func TestRequireLiveCredentialsSkipsWhenRequiredEnvMissing(t *testing.T) {
 	}
 }
 
+func TestRequireLiveReadSkipsWithoutEnableFlag(t *testing.T) {
+	t.Setenv("BOLTER_ENABLE_LIVE_READ_TESTS", "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		RequireLiveRead(t)
+		t.Fatalf("expected RequireLiveRead to skip without BOLTER_ENABLE_LIVE_READ_TESTS=1")
+	})
+
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestRequireLiveReadSkipsWhenRequiredEnvMissing(t *testing.T) {
+	t.Setenv("BOLTER_ENABLE_LIVE_READ_TESTS", "1")
+	t.Setenv("TESTENV_REQUIRED_VAR", "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		RequireLiveRead(t, "TESTENV_REQUIRED_VAR")
+		t.Fatalf("expected RequireLiveRead to skip when required env is missing")
+	})
+
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestRequireLiveReadAllowsEnabledReadWithoutCredentials(t *testing.T) {
+	t.Setenv("BOLTER_ENABLE_LIVE_READ_TESTS", "1")
+
+	RequireLiveRead(t)
+}
+
 func TestRequireLiveWriteSkipsWithoutEnableFlag(t *testing.T) {
 	t.Setenv("TESTENV_ENABLE_LIVE_WRITE", "")
 
@@ -74,6 +115,99 @@ func TestRequireLiveWriteSkipsWithoutEnableFlag(t *testing.T) {
 	if !skipped {
 		t.Fatalf("expected subtest to skip")
 	}
+}
+
+func TestBinanceDemoEnvContractConstants(t *testing.T) {
+	if BinanceDemoAPIKeyEnv != "BINANCE_DEMO_API_KEY" {
+		t.Fatalf("BinanceDemoAPIKeyEnv=%q", BinanceDemoAPIKeyEnv)
+	}
+	if BinanceDemoAPISecretEnv != "BINANCE_DEMO_API_SECRET" {
+		t.Fatalf("BinanceDemoAPISecretEnv=%q", BinanceDemoAPISecretEnv)
+	}
+}
+
+func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv("BINANCE_DEMO_API_KEY", "demo-key")
+	t.Setenv("BINANCE_DEMO_API_SECRET", "demo-secret")
+
+	completed := false
+	t.Run("allow", func(t *testing.T) {
+		RequireBinanceDemoWrite(t)
+		completed = true
+	})
+	if !completed {
+		t.Fatalf("expected RequireBinanceDemoWrite to allow Demo credentials without BINANCE_ENABLE_DEMO_WRITE_TESTS")
+	}
+}
+
+func TestRequireBinanceDemoWriteSkipsWithoutDemoCredentials(t *testing.T) {
+	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv("BINANCE_DEMO_API_KEY", "")
+	t.Setenv("BINANCE_DEMO_API_SECRET", "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		RequireBinanceDemoWrite(t)
+		t.Fatalf("expected RequireBinanceDemoWrite to skip without demo credentials")
+	})
+
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestRequireBinanceDemoWriteIgnoresProductionCredentials(t *testing.T) {
+	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv("BINANCE_API_KEY", "prod-key")
+	t.Setenv("BINANCE_API_SECRET", "prod-secret")
+	t.Setenv("BINANCE_DEMO_API_KEY", "")
+	t.Setenv("BINANCE_DEMO_API_SECRET", "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		RequireBinanceDemoWrite(t)
+		t.Fatalf("expected RequireBinanceDemoWrite to ignore production credentials")
+	})
+
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestRequireBinanceDemoWriteDoesNotAcceptLegacyPerpTestnetCredentials(t *testing.T) {
+	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv("BINANCE_PERP_TESTNET_API_KEY", "legacy-key")
+	t.Setenv("BINANCE_PERP_TESTNET_API_SECRET", "legacy-secret")
+	t.Setenv("BINANCE_DEMO_API_KEY", "")
+	t.Setenv("BINANCE_DEMO_API_SECRET", "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		RequireBinanceDemoWrite(t)
+		t.Fatalf("expected RequireBinanceDemoWrite to reject legacy perp testnet credentials")
+	})
+
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentials(t *testing.T) {
+	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv("BINANCE_DEMO_API_KEY", "demo-key")
+	t.Setenv("BINANCE_DEMO_API_SECRET", "demo-secret")
+
+	RequireBinanceDemoWrite(t)
 }
 
 func TestRequireSoakSkipsWithoutRunSoak(t *testing.T) {

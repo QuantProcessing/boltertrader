@@ -29,11 +29,24 @@ type WsMarketClient struct {
 }
 
 func NewWsMarketClient(ctx context.Context) *WsMarketClient {
-	return newWsMarketClient(ctx, WSPublicBaseURL, WSMarketBaseURL, WSMarketFallbackBaseURL)
+	return NewWsMarketClientWithEndpointProfile(ctx, USDMMProductionEndpoints)
+}
+
+func NewDemoWsMarketClient(ctx context.Context) *WsMarketClient {
+	return NewWsMarketClientWithEndpointProfile(ctx, USDMMDemoEndpoints)
 }
 
 func NewCoinMWsMarketClient(ctx context.Context) *WsMarketClient {
 	return newWsMarketClient(ctx, CoinMWSPublicBaseURL, CoinMWSMarketBaseURL, CoinMWSMarketFallbackBaseURL)
+}
+
+func NewWsMarketClientWithEndpointProfile(ctx context.Context, profile EndpointProfile) *WsMarketClient {
+	marketBaseURL := endpointOrDefault(profile.WSMarketBaseURL, WSMarketBaseURL)
+	return newWsMarketClient(ctx,
+		endpointOrDefault(profile.WSPublicBaseURL, WSPublicBaseURL),
+		marketBaseURL,
+		endpointOrDefault(profile.WSMarketFallbackBaseURL, marketBaseURL),
+	)
 }
 
 func newWsMarketClient(ctx context.Context, publicBaseURL string, marketBaseURL string, fallbackBaseURL string) *WsMarketClient {

@@ -68,6 +68,10 @@ func NewCoinMClient() *Client {
 	return NewClient().WithCoinM()
 }
 
+func NewDemoClient() *Client {
+	return NewClient().WithUSDMMDemo()
+}
+
 func (c *Client) WithCredentials(apiKey, secretKey string) *Client {
 	c.APIKey = apiKey
 	c.SecretKey = secretKey
@@ -77,6 +81,23 @@ func (c *Client) WithCredentials(apiKey, secretKey string) *Client {
 func (c *Client) WithBaseURL(url string) *Client {
 	c.BaseURL = url
 	return c
+}
+
+func (c *Client) WithEndpointProfile(profile EndpointProfile) *Client {
+	if profile.RESTBaseURL != "" {
+		c.BaseURL = profile.RESTBaseURL
+	}
+	if profile.EndpointPrefix != "" {
+		c.EndpointPrefix = profile.EndpointPrefix
+	}
+	if profile.AccountVersion != "" {
+		c.AccountVersion = profile.AccountVersion
+	}
+	return c
+}
+
+func (c *Client) WithUSDMMDemo() *Client {
+	return c.WithEndpointProfile(USDMMDemoEndpoints)
 }
 
 func (c *Client) WithCoinM() *Client {

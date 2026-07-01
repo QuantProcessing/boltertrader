@@ -6,10 +6,13 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func requireRealtimeWS(t *testing.T) {
 	t.Helper()
+	testenv.RequireLiveRead(t)
 }
 
 // TestSubscribeMarkPrice tests real subscription to Mark Price
@@ -95,6 +98,7 @@ func TestSubscribeAggTradeRealtime(t *testing.T) {
 	if os.Getenv("BINANCE_REALTIME_WS") != "1" {
 		t.Skip("set BINANCE_REALTIME_WS=1 to run real Binance aggTrade smoke test")
 	}
+	requireRealtimeWS(t)
 	client := NewWsMarketClient(context.Background())
 	client.WsClient.Debug = true
 
@@ -128,6 +132,7 @@ func TestSubscribeKlineRealtime(t *testing.T) {
 	if os.Getenv("BINANCE_REALTIME_WS") != "1" {
 		t.Skip("set BINANCE_REALTIME_WS=1 to run real Binance kline smoke test")
 	}
+	requireRealtimeWS(t)
 	client := NewWsMarketClient(context.Background())
 	client.WsClient.Debug = true
 
@@ -298,6 +303,7 @@ func TestReconnectAndResubscribe(t *testing.T) {
 }
 
 func TestKline(t *testing.T) {
+	requireRealtimeWS(t)
 	client := NewWsMarketClient(context.Background())
 	client.WsClient.Debug = true
 

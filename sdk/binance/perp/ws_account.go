@@ -28,11 +28,20 @@ type WsAccountClient struct {
 }
 
 func NewWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
-	return newWsAccountClient(ctx, NewClient().WithCredentials(apiKey, apiSecret), WSPrivateBaseURL)
+	return NewWsAccountClientWithEndpointProfile(ctx, apiKey, apiSecret, USDMMProductionEndpoints)
+}
+
+func NewDemoWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
+	return NewWsAccountClientWithEndpointProfile(ctx, apiKey, apiSecret, USDMMDemoEndpoints)
 }
 
 func NewCoinMWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
 	return newWsAccountClient(ctx, NewCoinMClient().WithCredentials(apiKey, apiSecret), CoinMWSPrivateBaseURL)
+}
+
+func NewWsAccountClientWithEndpointProfile(ctx context.Context, apiKey, apiSecret string, profile EndpointProfile) *WsAccountClient {
+	restClient := NewClient().WithEndpointProfile(profile).WithCredentials(apiKey, apiSecret)
+	return newWsAccountClient(ctx, restClient, endpointOrDefault(profile.WSPrivateBaseURL, WSPrivateBaseURL))
 }
 
 func newWsAccountClient(ctx context.Context, restClient *Client, baseURL string) *WsAccountClient {

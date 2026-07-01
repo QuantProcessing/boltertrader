@@ -127,6 +127,41 @@ func TestWsMarketClientUsesRoutedEndpoints(t *testing.T) {
 	}
 }
 
+func TestWsMarketClientUsesUSDMMDemoEndpoints(t *testing.T) {
+	client := NewDemoWsMarketClient(context.Background())
+	t.Cleanup(client.Close)
+
+	if client.WsClient.URL != DemoWSPublicBaseURL {
+		t.Fatalf("unexpected Demo public websocket URL: %s", client.WsClient.URL)
+	}
+	if client.routeClient(binancePerpWSRouteMarket).URL != DemoWSMarketBaseURL {
+		t.Fatalf("unexpected Demo market websocket URL: %s", client.routeClient(binancePerpWSRouteMarket).URL)
+	}
+
+	candidates := client.routeManager(binancePerpWSRouteMarket).combinedURLCandidates("btcusdt@markPrice@1s")
+	want := "wss://demo-fstream.binance.com/stream?streams=btcusdt@markPrice@1s"
+	if len(candidates) != 1 || candidates[0] != want {
+		t.Fatalf("Demo market stream must not fall back to production endpoints: %#v", candidates)
+	}
+}
+
+func TestWsMarketClientWithEndpointProfileUsesProfileRoutes(t *testing.T) {
+	profile := EndpointProfile{
+		WSPublicBaseURL:         "wss://profile.test/public",
+		WSMarketBaseURL:         "wss://profile.test/market",
+		WSMarketFallbackBaseURL: "wss://profile.test/fallback",
+	}
+	client := NewWsMarketClientWithEndpointProfile(context.Background(), profile)
+	t.Cleanup(client.Close)
+
+	if client.WsClient.URL != profile.WSPublicBaseURL {
+		t.Fatalf("unexpected public websocket URL: %s", client.WsClient.URL)
+	}
+	if client.routeClient(binancePerpWSRouteMarket).URL != profile.WSMarketBaseURL {
+		t.Fatalf("unexpected market websocket URL: %s", client.routeClient(binancePerpWSRouteMarket).URL)
+	}
+}
+
 func TestCoinMWsMarketClientUsesDstreamEndpoints(t *testing.T) {
 	client := NewCoinMWsMarketClient(context.Background())
 	t.Cleanup(client.Close)
