@@ -13,13 +13,13 @@ import (
 )
 
 // TestLiveAdapterSmoke is an env-gated integration test. It runs ONLY when
-// BINANCE_API_KEY / BINANCE_API_SECRET are present; otherwise it skips. It is
-// read-only: it loads instruments, fetches a depth snapshot, and reconciles
-// account state — it places no orders.
+// BOLTER_ENABLE_LIVE_READ_TESTS=1 and BINANCE_API_KEY / BINANCE_API_SECRET are
+// present; otherwise it skips. It is read-only: it loads instruments, fetches a
+// depth snapshot, and reconciles account state — it places no orders.
 //
-//	BINANCE_API_KEY=... BINANCE_API_SECRET=... go test -run TestLiveAdapterSmoke ./adapter/binance/perp/
+//	BOLTER_ENABLE_LIVE_READ_TESTS=1 BINANCE_API_KEY=... BINANCE_API_SECRET=... go test -run TestLiveAdapterSmoke ./adapter/binance/perp/
 func TestLiveAdapterSmoke(t *testing.T) {
-	testenv.RequireLiveCredentials(t, "BINANCE_API_KEY", "BINANCE_API_SECRET")
+	testenv.RequireLiveRead(t, "BINANCE_API_KEY", "BINANCE_API_SECRET")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

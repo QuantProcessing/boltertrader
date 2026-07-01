@@ -7,6 +7,7 @@ package runtimetest
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -46,7 +47,7 @@ func (f *FakeExec) Cancel(ctx context.Context, id model.InstrumentID, venueOrder
 }
 func (f *FakeExec) CancelAll(ctx context.Context, id model.InstrumentID) error { return nil }
 func (f *FakeExec) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
-	return nil, nil
+	return nil, fmt.Errorf("fake execution amend is not modeled: %w", contract.ErrNotSupported)
 }
 func (f *FakeExec) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
 	out := make([]model.Order, 0, len(f.reports))
@@ -68,7 +69,7 @@ func (f *FakeExec) OrderReports(ctx context.Context) ([]model.Order, error) {
 func (f *FakeExec) SetOrderReports(orders ...model.Order) { f.reports = orders }
 
 func (f *FakeExec) Events() <-chan contract.ExecEvent { return f.events }
-func (f *FakeExec) Close() error                       { close(f.events); return nil }
+func (f *FakeExec) Close() error                      { close(f.events); return nil }
 
 // EmitOrder pushes an order lifecycle event.
 func (f *FakeExec) EmitOrder(o model.Order) { f.events <- contract.OrderEvent{Order: o} }
@@ -78,7 +79,9 @@ func (f *FakeExec) EmitFill(fill model.Fill) { f.events <- contract.FillEvent{Fi
 
 // FakeAccount is an in-memory AccountClient driven by Emit* helpers.
 type FakeAccount struct {
-	events chan contract.AccountEvent
+	events    chan contract.AccountEvent
+	balances  []model.AccountBalance
+	positions []model.Position
 }
 
 // NewFakeAccount returns a FakeAccount with a buffered event channel.
@@ -86,8 +89,12 @@ func NewFakeAccount() *FakeAccount {
 	return &FakeAccount{events: make(chan contract.AccountEvent, 256)}
 }
 
-func (f *FakeAccount) Balances(ctx context.Context) ([]model.AccountBalance, error)  { return nil, nil }
-func (f *FakeAccount) Positions(ctx context.Context) ([]model.Position, error)       { return nil, nil }
+func (f *FakeAccount) Balances(ctx context.Context) ([]model.AccountBalance, error) {
+	return append([]model.AccountBalance(nil), f.balances...), nil
+}
+func (f *FakeAccount) Positions(ctx context.Context) ([]model.Position, error) {
+	return append([]model.Position(nil), f.positions...), nil
+}
 func (f *FakeAccount) SetLeverage(ctx context.Context, id model.InstrumentID, lev decimal.Decimal) error {
 	return nil
 }
@@ -96,6 +103,13 @@ func (f *FakeAccount) SetMarginMode(ctx context.Context, id model.InstrumentID, 
 }
 func (f *FakeAccount) Events() <-chan contract.AccountEvent { return f.events }
 func (f *FakeAccount) Close() error                         { close(f.events); return nil }
+
+// SetSnapshots installs the account snapshots returned by Balances/Positions,
+// simulating the venue's authoritative REST state for reconciliation.
+func (f *FakeAccount) SetSnapshots(balances []model.AccountBalance, positions []model.Position) {
+	f.balances = append([]model.AccountBalance(nil), balances...)
+	f.positions = append([]model.Position(nil), positions...)
+}
 
 // EmitBalance pushes a balance event.
 func (f *FakeAccount) EmitBalance(b model.AccountBalance) {
@@ -126,10 +140,10 @@ func NewFakeMarket() *FakeMarket {
 
 func (f *FakeMarket) InstrumentProvider() model.InstrumentProvider { return f.provider }
 func (f *FakeMarket) OrderBook(ctx context.Context, id model.InstrumentID, depth int) (*model.OrderBook, error) {
-	return nil, nil
+	return nil, fmt.Errorf("fake market order book snapshots are not modeled: %w", contract.ErrNotSupported)
 }
 func (f *FakeMarket) Bars(ctx context.Context, id model.InstrumentID, interval string, limit int) ([]model.Bar, error) {
-	return nil, nil
+	return nil, fmt.Errorf("fake market historical bars are not modeled: %w", contract.ErrNotSupported)
 }
 func (f *FakeMarket) SubscribeBook(ctx context.Context, id model.InstrumentID) error   { return nil }
 func (f *FakeMarket) SubscribeQuotes(ctx context.Context, id model.InstrumentID) error { return nil }

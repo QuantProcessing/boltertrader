@@ -90,7 +90,7 @@ func (c *Cache) OpenOrders() []model.Order {
 
 func isTerminal(s enums.OrderStatus) bool {
 	switch s {
-	case enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
+	case enums.StatusUnknown, enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
 		return true
 	default:
 		return false

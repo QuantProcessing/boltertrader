@@ -24,7 +24,7 @@ func GetEnv() (string, string, string) {
 func TestGetFundingAccountSummary(t *testing.T) {
 	requireFullEnv(t)
 	apiKey, subAccountID, privateKey := GetEnv()
-	client := newLiveClient().WithCredentials(apiKey, subAccountID, privateKey)
+	client := newLiveClient(t).WithCredentials(apiKey, subAccountID, privateKey)
 	var fundingAccountSummary *GetFundingAccountSummaryResponse
 	retryGRVTLive(t, "GetFundingAccountSummary", func() error {
 		var err error

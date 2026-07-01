@@ -10,13 +10,15 @@ import (
 
 const binanceSpotLiveWriteFlag = "BINANCE_ENABLE_LIVE_WRITE_TESTS"
 
-func newLiveClient() *Client {
+func newLiveClient(t *testing.T) *Client {
+	t.Helper()
+	testenv.RequireLiveRead(t)
 	return NewClient()
 }
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
+	testenv.RequireLiveRead(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
 	return NewClient().WithCredentials(
 		os.Getenv("BINANCE_API_KEY"),
 		os.Getenv("BINANCE_SECRET_KEY"),
@@ -26,7 +28,10 @@ func newLivePrivateClient(t *testing.T) *Client {
 func requireBinanceSpotLiveWrite(t *testing.T) *Client {
 	t.Helper()
 	testenv.RequireLiveWrite(t, binanceSpotLiveWriteFlag, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
-	return newLivePrivateClient(t)
+	return NewClient().WithCredentials(
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_SECRET_KEY"),
+	)
 }
 
 func TestClient_WithCredentials(t *testing.T) {
@@ -49,7 +54,7 @@ func TestClient_Get(t *testing.T) {
 	var out struct {
 		ServerTime int64 `json:"serverTime"`
 	}
-	if err := newLiveClient().Get(context.Background(), "/api/v3/time", nil, false, &out); err != nil {
+	if err := newLiveClient(t).Get(context.Background(), "/api/v3/time", nil, false, &out); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if out.ServerTime == 0 {

@@ -10,7 +10,7 @@ import (
 )
 
 func TestNonceManager_Fetch(t *testing.T) {
-	testenv.RequireLiveCredentials(t, "LIGHTER_ACCOUNT_INDEX", "LIGHTER_KEY_INDEX")
+	testenv.RequireLiveRead(t, "LIGHTER_ACCOUNT_INDEX", "LIGHTER_KEY_INDEX")
 	accountIndex, err := strconv.ParseInt(os.Getenv("LIGHTER_ACCOUNT_INDEX"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse LIGHTER_ACCOUNT_INDEX: %v", err)

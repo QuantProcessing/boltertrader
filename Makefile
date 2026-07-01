@@ -1,4 +1,4 @@
-.PHONY: test test-race test-core test-adapter test-sdk test-live-read test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-acceptance
+.PHONY: test test-race test-core test-adapter test-sdk test-live-read test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance
 
 test:
 	go test ./...
@@ -26,4 +26,10 @@ test-binance-demo-perp:
 test-binance-demo-runtime-perp:
 	go test -run TestBinanceDemoRuntimeE2E ./adapter/binance/perp/ -count=1 -timeout=3m
 
-test-binance-demo-acceptance: test-binance-demo-perp test-binance-demo-runtime-perp
+test-binance-demo-spot-data:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go test -run TestBinanceSpotDemoDataE2E ./adapter/binance/spot/ -count=1 -timeout=2m
+
+test-binance-demo-spot:
+	go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
+
+test-binance-demo-acceptance: test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot

@@ -80,7 +80,7 @@ func TestClient_GetTickersBuildsAllTickersRequest(t *testing.T) {
 }
 
 func TestClient_GetInstruments(t *testing.T) {
-	got, err := newLiveClient().GetInstruments(context.Background(), bitgetSpotCategory, "")
+	got, err := newLiveClient(t).GetInstruments(context.Background(), bitgetSpotCategory, "")
 	if err != nil {
 		t.Fatalf("GetInstruments: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestClient_GetInstruments(t *testing.T) {
 }
 
 func TestClient_GetTicker(t *testing.T) {
-	got, err := newLiveClient().GetTicker(context.Background(), bitgetPerpCategory, bitgetPerpSymbol)
+	got, err := newLiveClient(t).GetTicker(context.Background(), bitgetPerpCategory, bitgetPerpSymbol)
 	if err != nil {
 		t.Fatalf("GetTicker: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestClient_GetTicker(t *testing.T) {
 }
 
 func TestClient_GetOrderBook(t *testing.T) {
-	got, err := newLiveClient().GetOrderBook(context.Background(), bitgetSpotCategory, bitgetSpotSymbol, 5)
+	got, err := newLiveClient(t).GetOrderBook(context.Background(), bitgetSpotCategory, bitgetSpotSymbol, 5)
 	if err != nil {
 		t.Fatalf("GetOrderBook: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestClient_GetOrderBook(t *testing.T) {
 }
 
 func TestClient_GetRecentFills(t *testing.T) {
-	got, err := newLiveClient().GetRecentFills(context.Background(), bitgetSpotCategory, bitgetSpotSymbol, 10)
+	got, err := newLiveClient(t).GetRecentFills(context.Background(), bitgetSpotCategory, bitgetSpotSymbol, 10)
 	if err != nil {
 		t.Fatalf("GetRecentFills: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestClient_GetRecentFills(t *testing.T) {
 }
 
 func TestClient_GetOpenInterest(t *testing.T) {
-	got, err := newLiveClient().GetOpenInterest(context.Background(), bitgetPerpSymbol, bitgetPerpCategory)
+	got, err := newLiveClient(t).GetOpenInterest(context.Background(), bitgetPerpSymbol, bitgetPerpCategory)
 	if err != nil {
 		t.Fatalf("GetOpenInterest: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestClient_GetOpenInterest(t *testing.T) {
 }
 
 func TestClient_GetHistoryFundRate(t *testing.T) {
-	got, err := newLiveClient().GetHistoryFundRate(context.Background(), bitgetPerpSymbol, bitgetPerpCategory, 2, 1)
+	got, err := newLiveClient(t).GetHistoryFundRate(context.Background(), bitgetPerpSymbol, bitgetPerpCategory, 2, 1)
 	if err != nil {
 		t.Fatalf("GetHistoryFundRate: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestClient_GetHistoryFundRate(t *testing.T) {
 }
 
 func TestClient_GetCandles(t *testing.T) {
-	got, err := newLiveClient().GetCandles(context.Background(), bitgetPerpCategory, bitgetPerpSymbol, "1m", "market", 0, 0, 2)
+	got, err := newLiveClient(t).GetCandles(context.Background(), bitgetPerpCategory, bitgetPerpSymbol, "1m", "market", 0, 0, 2)
 	if err != nil {
 		t.Fatalf("GetCandles: %v", err)
 	}

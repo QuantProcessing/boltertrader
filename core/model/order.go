@@ -29,7 +29,7 @@ type OrderRequest struct {
 
 // VenueOrderOpts carries venue-specific order options with no portable meaning.
 // Exactly one sub-struct is expected to be set, matching the target venue; a
-// foreign sub-struct must be rejected by the adapter with errs.ErrNotSupported.
+// foreign sub-struct must be rejected by the adapter with contract.ErrNotSupported.
 //
 // The sub-structs are intentionally left to the adapter packages to define and
 // attach; this neutral type holds opaque references so core/model stays free of

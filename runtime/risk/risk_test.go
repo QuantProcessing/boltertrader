@@ -13,6 +13,7 @@ import (
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 var inst = model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+var spotInst = model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindSpot}
 
 func buy(qty, price string) model.OrderRequest {
 	return model.OrderRequest{InstrumentID: inst, Side: enums.SideBuy, Quantity: d(qty), Price: d(price)}
@@ -105,5 +106,81 @@ func TestNonPositiveQty(t *testing.T) {
 	e := New(Limits{}, cache.New())
 	if err := e.Check(buy("0", "100"), nil); !errors.Is(err, ErrRiskRejected) {
 		t.Fatal("zero qty should be rejected")
+	}
+}
+
+func TestSpotBuyRejectsInsufficientQuoteBalance(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("100"), Available: d("100")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("2"), Price: d("100")}
+	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	if err := e.Check(req, inst); !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot buy should reject when quote balance is insufficient, got %v", err)
+	}
+}
+
+func TestSpotMarketBuyRejectsWithoutReferencePrice(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Type: enums.TypeMarket, Quantity: d("1")}
+	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := e.Check(req, inst)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot market buy without reference price should fail closed, got %v", err)
+	}
+}
+
+func TestSpotBuyRejectsWithoutInstrumentMetadata(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+
+	err := e.Check(req, nil)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot buy without instrument metadata should fail closed, got %v", err)
+	}
+}
+
+func TestSpotBuyRejectsMissingQuoteMetadata(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	inst := &model.Instrument{ID: spotInst, Base: "BTC"}
+
+	err := e.Check(req, inst)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot buy without quote metadata should fail closed, got %v", err)
+	}
+}
+
+func TestSpotSellRejectsMissingBaseMetadata(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("1000000"), Available: d("1000000")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideSell, Quantity: d("1"), Price: d("100")}
+	inst := &model.Instrument{ID: spotInst, Quote: "USDT"}
+
+	err := e.Check(req, inst)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot sell without base metadata should fail closed, got %v", err)
+	}
+}
+
+func TestSpotSellRejectsInsufficientBaseBalanceEvenWithSyntheticPosition(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("0"), Available: d("0")})
+	c.UpsertPosition(model.Position{InstrumentID: spotInst, Side: enums.PosNet, Quantity: d("10")})
+	e := New(Limits{}, c)
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideSell, Quantity: d("1"), Price: d("100")}
+	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	if err := e.Check(req, inst); !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("spot sell should reject from base balance, not synthetic position, got %v", err)
 	}
 }

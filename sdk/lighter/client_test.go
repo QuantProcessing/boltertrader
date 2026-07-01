@@ -40,7 +40,7 @@ func TestClient_CreateAuthToken(t *testing.T) {
 }
 
 func TestClient_GetBlockHeight(t *testing.T) {
-	height, err := newLiveClient().GetBlockHeight(context.Background())
+	height, err := newLiveClient(t).GetBlockHeight(context.Background())
 	require.NoError(t, err)
 	require.Positive(t, height)
 }

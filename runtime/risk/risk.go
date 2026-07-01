@@ -110,8 +110,17 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 		}
 	}
 
+	if req.InstrumentID.Kind == enums.KindSpot {
+		if inst == nil {
+			return fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
+		}
+		if err := e.checkSpotBalance(req, inst); err != nil {
+			return err
+		}
+	}
+
 	// Resulting-position cap: current signed qty + this order's signed delta.
-	if lim := e.limits.MaxPositionQty; !lim.IsZero() {
+	if lim := e.limits.MaxPositionQty; req.InstrumentID.Kind != enums.KindSpot && !lim.IsZero() {
 		cur := decimal.Zero
 		if p, ok := e.cache.Position(req.InstrumentID, req.PositionSide); ok {
 			cur = p.Quantity
@@ -129,6 +138,43 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 	// Record the client id only after all checks pass.
 	if req.ClientID != "" {
 		e.seen[req.ClientID] = struct{}{}
+	}
+	return nil
+}
+
+func (e *Engine) checkSpotBalance(req model.OrderRequest, inst *model.Instrument) error {
+	mult := inst.ContractMultiplier
+	if !mult.IsPositive() {
+		mult = decimal.NewFromInt(1)
+	}
+	switch req.Side {
+	case enums.SideBuy:
+		if inst.Quote == "" {
+			return fmt.Errorf("%w: spot buy requires quote currency metadata for cash risk check", ErrRiskRejected)
+		}
+		if req.Price.IsZero() {
+			return fmt.Errorf("%w: spot buy requires a reference price for cash risk check", ErrRiskRejected)
+		}
+		required := req.Price.Mul(req.Quantity).Mul(mult)
+		available := decimal.Zero
+		if bal, ok := e.cache.Balance(inst.Quote); ok {
+			available = bal.Available
+		}
+		if required.GreaterThan(available) {
+			return fmt.Errorf("%w: insufficient %s cash: need %s, available %s", ErrRiskRejected, inst.Quote, required, available)
+		}
+	case enums.SideSell:
+		if inst.Base == "" {
+			return fmt.Errorf("%w: spot sell requires base currency metadata for cash risk check", ErrRiskRejected)
+		}
+		required := req.Quantity.Mul(mult)
+		available := decimal.Zero
+		if bal, ok := e.cache.Balance(inst.Base); ok {
+			available = bal.Available
+		}
+		if required.GreaterThan(available) {
+			return fmt.Errorf("%w: insufficient %s inventory: need %s, available %s", ErrRiskRejected, inst.Base, required, available)
+		}
 	}
 	return nil
 }

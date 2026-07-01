@@ -43,8 +43,11 @@ and exchange state are available.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
 - `make test-binance-demo-runtime-perp`: runtime-level Binance USD-M Demo
   execution through `runtime.TradingNode`.
-- `make test-binance-demo-acceptance`: complete Binance USD-M Demo acceptance
-  gate.
+- `make test-binance-demo-spot-data`: read-only Binance Spot Demo data
+  acceptance.
+- `make test-binance-demo-spot`: adapter-level Binance Spot Demo execution.
+- `make test-binance-demo-acceptance`: complete Binance Demo acceptance gate for
+  implemented products.
 
 See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_testing.md)
 for the execution acceptance spec and pass criteria.
@@ -57,8 +60,8 @@ Live read tests require an explicit command:
 make test-live-read
 ```
 
-Live write tests require venue-specific flags in addition to credentials.
-Examples:
+Production live write tests require venue-specific flags in addition to
+credentials. Examples:
 
 ```sh
 OKX_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/okx
@@ -66,19 +69,20 @@ BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/binance/perp
 ```
 
 Live write tests may create, modify, cancel, or close real exchange state. They
-must remain explicitly gated and must never run from `make test`.
+must never run from `make test`. Binance Demo acceptance is separate from
+production live writes: it uses Demo credentials and product-qualified make
+targets.
 
-## Binance USD-M Demo Writes
+## Binance Demo Writes
 
-Binance USD-M perp Demo mode uses the shared Binance Demo credential contract
-and Demo endpoint selection. Create the key pair from Binance Futures Demo
-Trading API Management at `https://testnet.binancefuture.com`; do not use a
-production key pair. Some upstream Binance endpoint names still use the word
-testnet, but this project exposes the validation environment as Demo. The
-implemented write/E2E Demo flow currently covers USD-M perps only; future spot,
-dated futures, or options Demo flows should add product-qualified targets while
-reusing `BINANCE_DEMO_*` credentials when Binance supports them. The command
-shape is:
+Binance Demo mode uses the shared Binance Demo credential contract and Demo
+endpoint selection. Create the key pair from Binance Demo/Testnet API
+Management; do not use a production key pair. Some upstream Binance endpoint
+names still use the word testnet, but this project exposes the validation
+environment as Demo. The implemented write/E2E Demo flow covers USD-M perps and
+the first Spot vertical slice. Future dated futures or options Demo flows should
+add product-qualified targets while reusing `BINANCE_DEMO_*` credentials when
+Binance supports them. The command shape is:
 
 ```sh
 BINANCE_DEMO_API_KEY=... \
@@ -86,14 +90,24 @@ BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
 BINANCE_DEMO_ORDER_QTY=0.001 \
 go test -run TestBinanceDemoExecE2E ./adapter/binance/perp/ -count=1 -timeout=3m
+
+BINANCE_DEMO_API_KEY=... \
+BINANCE_DEMO_API_SECRET=... \
+BINANCE_DEMO_SYMBOL=ETH-USDT \
+BINANCE_DEMO_ORDER_QTY=0.001 \
+go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
 ```
 
 `BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
 
 `make test-binance-demo-perp` runs the same USD-M perp adapter-level target.
 `make test-binance-demo-runtime-perp` runs the runtime-level Demo target through
-`runtime.TradingNode`. `make test-binance-demo-acceptance` runs both, matching
-the NT-style split between adapter contract acceptance and runtime acceptance.
+`runtime.TradingNode`. `make test-binance-demo-spot-data` runs read-only Spot
+Demo data acceptance behind `BOLTER_ENABLE_LIVE_READ_TESTS=1`.
+`make test-binance-demo-spot` runs Spot Demo place/cancel/fill/cleanup
+acceptance. `make test-binance-demo-acceptance` runs all implemented Binance
+Demo targets, matching the NT-style split between adapter contract acceptance
+and runtime acceptance.
 `make test-binance-demo` is a current alias for the complete Demo acceptance
 gate:
 
@@ -105,8 +119,10 @@ make test-binance-demo-acceptance
 
 `BINANCE_API_KEY`, `BINANCE_SECRET_KEY`, and old `BINANCE_PERP_TESTNET_*`
 variables must not be used as fallbacks in Demo mode. Demo write flows must clean
-up orders/positions in `defer` and print venue order IDs plus remaining exposure
-if cleanup fails.
+up orders/positions or Spot base-balance deltas in `defer` and print venue order
+IDs plus remaining exposure/balance concerns if cleanup fails. If direct access
+to Demo endpoints is blocked, pass a command-local `PROXY=...`; inherited proxy
+state is not part of the framework contract.
 
 ## Fixture Rules
 

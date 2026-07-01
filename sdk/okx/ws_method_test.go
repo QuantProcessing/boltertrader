@@ -73,6 +73,7 @@ func TestWSClient_Unsubscribe(t *testing.T) {
 
 func newLivePublicOKXWSClient(t *testing.T) *WSClient {
 	t.Helper()
+	testenv.RequireLiveRead(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	client := NewWSClient(ctx)
 	require.NoError(t, client.Connect())
@@ -87,7 +88,7 @@ func newLivePublicOKXWSClient(t *testing.T) *WSClient {
 
 func newLivePrivateOKXWSClient(t *testing.T) *WSClient {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
+	testenv.RequireLiveRead(t, "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
 	ctx, cancel := context.WithCancel(context.Background())
 	client := NewWSClient(ctx).WithCredentials(os.Getenv("OKX_API_KEY"), os.Getenv("OKX_API_SECRET"), os.Getenv("OKX_API_PASSPHRASE"))
 	require.NoError(t, client.Connect())

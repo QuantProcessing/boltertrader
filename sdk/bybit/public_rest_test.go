@@ -9,7 +9,7 @@ import (
 )
 
 func TestClient_GetInstruments(t *testing.T) {
-	got, err := newLiveClient().GetInstruments(context.Background(), "linear")
+	got, err := newLiveClient(t).GetInstruments(context.Background(), "linear")
 	if err != nil {
 		t.Fatalf("GetInstruments: %v", err)
 	}
@@ -19,7 +19,7 @@ func TestClient_GetInstruments(t *testing.T) {
 }
 
 func TestClient_GetInstrumentsForBase(t *testing.T) {
-	got, err := newLiveClient().GetInstrumentsForBase(context.Background(), "linear", "BTC")
+	got, err := newLiveClient(t).GetInstrumentsForBase(context.Background(), "linear", "BTC")
 	if err != nil {
 		t.Fatalf("GetInstrumentsForBase: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestClient_GetInstrumentsForBase(t *testing.T) {
 }
 
 func TestClient_GetTicker(t *testing.T) {
-	got, err := newLiveClient().GetTicker(context.Background(), "spot", bybitSpotSymbol)
+	got, err := newLiveClient(t).GetTicker(context.Background(), "spot", bybitSpotSymbol)
 	if err != nil {
 		t.Fatalf("GetTicker: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestClient_GetTickersBuildsAllTickersRequest(t *testing.T) {
 }
 
 func TestClient_GetOrderBook(t *testing.T) {
-	got, err := newLiveClient().GetOrderBook(context.Background(), "linear", bybitLinearSymbol, 5)
+	got, err := newLiveClient(t).GetOrderBook(context.Background(), "linear", bybitLinearSymbol, 5)
 	if err != nil {
 		t.Fatalf("GetOrderBook: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestClient_GetOrderBook(t *testing.T) {
 }
 
 func TestClient_GetRecentTrades(t *testing.T) {
-	got, err := newLiveClient().GetRecentTrades(context.Background(), "spot", bybitSpotSymbol, 10)
+	got, err := newLiveClient(t).GetRecentTrades(context.Background(), "spot", bybitSpotSymbol, 10)
 	if err != nil {
 		t.Fatalf("GetRecentTrades: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestClient_GetRecentTrades(t *testing.T) {
 }
 
 func TestClient_GetKlines(t *testing.T) {
-	got, err := newLiveClient().GetKlines(context.Background(), "linear", bybitLinearSymbol, "60", 0, 0, 10)
+	got, err := newLiveClient(t).GetKlines(context.Background(), "linear", bybitLinearSymbol, "60", 0, 0, 10)
 	if err != nil {
 		t.Fatalf("GetKlines: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestClient_GetKlines(t *testing.T) {
 }
 
 func TestClient_GetOpenInterest(t *testing.T) {
-	got, err := newLiveClient().GetOpenInterest(context.Background(), "linear", bybitLinearSymbol, "5min", 0, 0, 50, "")
+	got, err := newLiveClient(t).GetOpenInterest(context.Background(), "linear", bybitLinearSymbol, "5min", 0, 0, 50, "")
 	if err != nil {
 		t.Fatalf("GetOpenInterest: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestClient_GetOpenInterest(t *testing.T) {
 }
 
 func TestClient_GetFundingHistory(t *testing.T) {
-	got, err := newLiveClient().GetFundingHistory(context.Background(), "linear", bybitLinearSymbol, 0, 0, 2)
+	got, err := newLiveClient(t).GetFundingHistory(context.Background(), "linear", bybitLinearSymbol, 0, 0, 2)
 	if err != nil {
 		t.Fatalf("GetFundingHistory: %v", err)
 	}

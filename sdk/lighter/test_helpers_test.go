@@ -13,13 +13,15 @@ const (
 	lighterTestMarketID  = 0
 )
 
-func newLiveClient() *Client {
+func newLiveClient(t *testing.T) *Client {
+	t.Helper()
+	testenv.RequireLiveRead(t)
 	return NewClient()
 }
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "LIGHTER_PRIVATE_KEY", "LIGHTER_ACCOUNT_INDEX", "LIGHTER_KEY_INDEX")
+	testenv.RequireLiveRead(t, "LIGHTER_PRIVATE_KEY", "LIGHTER_ACCOUNT_INDEX", "LIGHTER_KEY_INDEX")
 	accountIndex, err := strconv.ParseInt(os.Getenv("LIGHTER_ACCOUNT_INDEX"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse LIGHTER_ACCOUNT_INDEX: %v", err)
@@ -35,7 +37,15 @@ func requireLighterLiveWrite(t *testing.T, vars ...string) *Client {
 	t.Helper()
 	required := append([]string{"LIGHTER_PRIVATE_KEY", "LIGHTER_ACCOUNT_INDEX", "LIGHTER_KEY_INDEX"}, vars...)
 	testenv.RequireLiveWrite(t, lighterLiveWriteFlag, required...)
-	return newLivePrivateClient(t)
+	accountIndex, err := strconv.ParseInt(os.Getenv("LIGHTER_ACCOUNT_INDEX"), 10, 64)
+	if err != nil {
+		t.Fatalf("parse LIGHTER_ACCOUNT_INDEX: %v", err)
+	}
+	keyIndex64, err := strconv.ParseUint(os.Getenv("LIGHTER_KEY_INDEX"), 10, 8)
+	if err != nil {
+		t.Fatalf("parse LIGHTER_KEY_INDEX: %v", err)
+	}
+	return NewClient().WithCredentials(os.Getenv("LIGHTER_PRIVATE_KEY"), accountIndex, uint8(keyIndex64))
 }
 
 func lighterEnvOrDefault(key, fallback string) string {

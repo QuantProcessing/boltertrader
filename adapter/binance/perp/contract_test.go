@@ -224,6 +224,40 @@ func TestNonPerpetualSkipped(t *testing.T) {
 	}
 }
 
+func TestPerpCapabilitySuite(t *testing.T) {
+	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
+	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
+		Venue: "BINANCE",
+		Market: contracttest.MarketCapabilities{
+			OrderBook:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Bars:            contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeBook:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeQuotes: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeTrades: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Reconnect:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			RESTOnlyStreams: contracttest.CapabilityProbe{Support: contracttest.Unsupported("REST-only Binance client has no market websocket"), Probe: func(ctx context.Context) error { return restOnly.SubscribeTrades(ctx, model.InstrumentID{}) }},
+			RESTOnlyReconnect: contracttest.CapabilityProbe{Support: contracttest.Unsupported("REST-only Binance client has no market websocket"), Probe: func(ctx context.Context) error {
+				return restOnly.Reconnect(ctx)
+			}},
+		},
+		Execution: contracttest.ExecutionCapabilities{
+			Submit:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Cancel:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			CancelAll:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Modify:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			OpenOrders:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			OrderReports: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+		},
+		Account: contracttest.AccountCapabilities{
+			Balances:          contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Positions:         contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SetLeverage:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SetCrossMargin:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SetIsolatedMargin: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+		},
+	})
+}
+
 // --- 4. Submit synchrony (fake transport) -----------------------------------
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

@@ -4,9 +4,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
-func newLiveClient() *Client {
+func newLiveClient(t *testing.T) *Client {
+	t.Helper()
+	testenv.RequireLiveRead(t)
 	client := NewClient()
 	client.HttpClient.Timeout = 20 * time.Second
 	return client

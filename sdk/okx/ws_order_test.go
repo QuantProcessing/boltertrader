@@ -98,7 +98,7 @@ func okxLiveWSInstIDCode(t *testing.T, instID string) int64 {
 	if strings.Contains(instID, "-SWAP") {
 		instType = "SWAP"
 	}
-	insts, err := newLiveClient().GetInstruments(context.Background(), instType)
+	insts, err := NewClient().GetInstruments(context.Background(), instType)
 	require.NoError(t, err)
 	for _, inst := range insts {
 		if inst.InstId == instID && inst.InstIdCode != nil {

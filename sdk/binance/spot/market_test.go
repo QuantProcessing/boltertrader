@@ -10,7 +10,7 @@ import (
 const binanceSpotTestSymbol = "BTCUSDT"
 
 func TestClient_Depth(t *testing.T) {
-	got, err := newLiveClient().Depth(context.Background(), binanceSpotTestSymbol, 5)
+	got, err := newLiveClient(t).Depth(context.Background(), binanceSpotTestSymbol, 5)
 	if err != nil {
 		t.Fatalf("Depth: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestClient_Depth(t *testing.T) {
 }
 
 func TestClient_Klines(t *testing.T) {
-	got, err := newLiveClient().Klines(context.Background(), binanceSpotTestSymbol, "1m", 1, 0, 0)
+	got, err := newLiveClient(t).Klines(context.Background(), binanceSpotTestSymbol, "1m", 1, 0, 0)
 	if err != nil {
 		t.Fatalf("Klines: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestClient_GetAggTradesPagedUsesPublicAggTradesEndpoint(t *testing.T) {
 }
 
 func TestClient_Ticker(t *testing.T) {
-	got, err := newLiveClient().Ticker(context.Background(), binanceSpotTestSymbol)
+	got, err := newLiveClient(t).Ticker(context.Background(), binanceSpotTestSymbol)
 	if err != nil {
 		t.Fatalf("Ticker: %v", err)
 	}
@@ -97,13 +97,13 @@ func TestClient_Ticker(t *testing.T) {
 }
 
 func TestClient_TickerRequiresSymbol(t *testing.T) {
-	if _, err := newLiveClient().Ticker(context.Background(), ""); err == nil {
+	if _, err := newLiveClient(t).Ticker(context.Background(), ""); err == nil {
 		t.Fatal("expected missing symbol error")
 	}
 }
 
 func TestClient_BookTicker(t *testing.T) {
-	got, err := newLiveClient().BookTicker(context.Background(), binanceSpotTestSymbol)
+	got, err := newLiveClient(t).BookTicker(context.Background(), binanceSpotTestSymbol)
 	if err != nil {
 		t.Fatalf("BookTicker: %v", err)
 	}
@@ -113,13 +113,13 @@ func TestClient_BookTicker(t *testing.T) {
 }
 
 func TestClient_BookTickerRequiresSymbol(t *testing.T) {
-	if _, err := newLiveClient().BookTicker(context.Background(), ""); err == nil {
+	if _, err := newLiveClient(t).BookTicker(context.Background(), ""); err == nil {
 		t.Fatal("expected missing symbol error")
 	}
 }
 
 func TestClient_ExchangeInfo(t *testing.T) {
-	got, err := newLiveClient().ExchangeInfo(context.Background())
+	got, err := newLiveClient(t).ExchangeInfo(context.Background())
 	if err != nil {
 		t.Fatalf("ExchangeInfo: %v", err)
 	}

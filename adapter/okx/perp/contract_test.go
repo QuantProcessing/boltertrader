@@ -1,9 +1,11 @@
 package perp
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/contract/contracttest"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -180,4 +182,43 @@ func TestNonSwapSkipped(t *testing.T) {
 	if instrumentFromOKX(&okx.Instrument{InstId: "BTC-USDT", InstType: "SPOT"}) != nil {
 		t.Error("non-SWAP instrument should be skipped")
 	}
+}
+
+func TestPerpCapabilitySuite(t *testing.T) {
+	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
+	account := newAccountClient(nil, nil, clock.NewRealClock())
+	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
+		Venue: "OKX",
+		Market: contracttest.MarketCapabilities{
+			OrderBook:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Bars:            contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeBook:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeQuotes: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SubscribeTrades: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Reconnect:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			RESTOnlyStreams: contracttest.CapabilityProbe{Support: contracttest.Unsupported("REST-only OKX client has no market websocket"), Probe: func(ctx context.Context) error { return restOnly.SubscribeTrades(ctx, model.InstrumentID{}) }},
+			RESTOnlyReconnect: contracttest.CapabilityProbe{Support: contracttest.Unsupported("REST-only OKX client has no market websocket"), Probe: func(ctx context.Context) error {
+				return restOnly.Reconnect(ctx)
+			}},
+		},
+		Execution: contracttest.ExecutionCapabilities{
+			Submit:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Cancel:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			CancelAll:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Modify:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			OpenOrders:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			OrderReports: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+		},
+		Account: contracttest.AccountCapabilities{
+			Balances:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Positions:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SetLeverage: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			SetCrossMargin: contracttest.CapabilityProbe{Support: contracttest.Unsupported("OKX margin mode is per-order TdMode"), Probe: func(ctx context.Context) error {
+				return account.SetMarginMode(ctx, model.InstrumentID{}, "cross")
+			}},
+			SetIsolatedMargin: contracttest.CapabilityProbe{Support: contracttest.Unsupported("OKX margin mode is per-order TdMode"), Probe: func(ctx context.Context) error {
+				return account.SetMarginMode(ctx, model.InstrumentID{}, "isolated")
+			}},
+		},
+	})
 }

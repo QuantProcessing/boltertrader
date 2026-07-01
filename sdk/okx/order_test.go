@@ -13,7 +13,7 @@ import (
 
 func TestClient_PlaceOrder(t *testing.T) {
 	client := requireOKXLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "OKX_TEST_ORDER_SIZE", "OKX_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "OKX_TEST_ORDER_SIZE", "OKX_TEST_ORDER_PRICE")
 	price := os.Getenv("OKX_TEST_ORDER_PRICE")
 	clOrdID := okxEnvOrDefault("OKX_TEST_CLIENT_ORDER_ID", "sdk-live-write-test")
 	got, err := client.PlaceOrder(context.Background(), &OrderRequest{
@@ -76,7 +76,7 @@ func TestClient_PlaceAlgoOrderBuildsPrivateRequest(t *testing.T) {
 
 func TestClient_ModifyOrder(t *testing.T) {
 	client := requireOKXLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "OKX_TEST_ORDER_ID", "OKX_TEST_ORDER_SIZE", "OKX_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "OKX_TEST_ORDER_ID", "OKX_TEST_ORDER_SIZE", "OKX_TEST_ORDER_PRICE")
 	orderID := os.Getenv("OKX_TEST_ORDER_ID")
 	size := os.Getenv("OKX_TEST_ORDER_SIZE")
 	price := os.Getenv("OKX_TEST_ORDER_PRICE")
@@ -130,7 +130,7 @@ func TestClient_AmendAlgoOrderBuildsPrivateRequest(t *testing.T) {
 
 func TestClient_CancelOrder(t *testing.T) {
 	client := requireOKXLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "OKX_TEST_ORDER_ID")
+	testenv.RequireEnv(t, "OKX_TEST_ORDER_ID")
 	got, err := client.CancelOrder(context.Background(), okxEnvOrDefault("OKX_TEST_ORDER_INST_ID", okxSpotInstID), os.Getenv("OKX_TEST_ORDER_ID"), "")
 	if err != nil {
 		t.Fatalf("CancelOrder: %v", err)
@@ -275,7 +275,7 @@ func TestClient_SpreadRESTMethodsBuildRequests(t *testing.T) {
 
 func TestClient_CancelOrders(t *testing.T) {
 	client := requireOKXLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "OKX_TEST_ORDER_ID")
+	testenv.RequireEnv(t, "OKX_TEST_ORDER_ID")
 	orderID := os.Getenv("OKX_TEST_ORDER_ID")
 	got, err := client.CancelOrders(context.Background(), []CancelOrderRequest{{
 		InstId: okxEnvOrDefault("OKX_TEST_ORDER_INST_ID", okxSpotInstID),

@@ -8,10 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	"github.com/stretchr/testify/require"
 )
 
 func TestGetKlines(t *testing.T) {
+	testenv.RequireLiveRead(t)
+
 	client := NewClient()
 	res, err := client.ContinousKlines(context.Background(), "BTCUSDT", "PERPETUAL", "1m", 10, 0, 0)
 	if err != nil {
@@ -33,9 +36,7 @@ func TestClient_WithHTTPClient(t *testing.T) {
 
 // TestGetFundingRate tests retrieving funding rate for a specific symbol
 func TestGetFundingRate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+	testenv.RequireLiveRead(t)
 
 	client := NewClient()
 	ctx := context.Background()
@@ -105,9 +106,7 @@ func TestMarkPricePreservesPremiumIndexResponse(t *testing.T) {
 
 // TestGetAllFundingRates tests retrieving all funding rates
 func TestGetAllFundingRates(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+	testenv.RequireLiveRead(t)
 
 	client := NewClient()
 	ctx := context.Background()

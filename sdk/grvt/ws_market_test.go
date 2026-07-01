@@ -28,7 +28,7 @@ func connectWithRetry(t *testing.T, wsClient websocketConnector) {
 func TestSubscribeOrderbookDelta(t *testing.T) {
 	requireFullEnv(t)
 	apiKey, subaccount, privateKey := GetEnv()
-	client := newLiveClient().WithCredentials(apiKey, subaccount, privateKey)
+	client := newLiveClient(t).WithCredentials(apiKey, subaccount, privateKey)
 	wsClient := NewMarketWebsocketClient(context.Background(), client)
 	connectWithRetry(t, wsClient)
 	defer wsClient.Close()

@@ -91,7 +91,7 @@ func TestLimitOrderLifecycle(t *testing.T) {
 	requireFullEnv(t)
 	apiKey, subaccount, privateKey := GetEnv()
 
-	client := newLiveClient().WithCredentials(apiKey, subaccount, privateKey)
+	client := newLiveClient(t).WithCredentials(apiKey, subaccount, privateKey)
 	wsClient := NewAccountRpcWebsocketClient(context.Background(), client)
 	connectWithRetry(t, wsClient)
 	defer wsClient.Close()
@@ -149,7 +149,7 @@ func TestMarketOrderLifecycle(t *testing.T) {
 	requireFullEnv(t)
 	apiKey, subaccount, privateKey := GetEnv()
 
-	client := newLiveClient().WithCredentials(apiKey, subaccount, privateKey)
+	client := newLiveClient(t).WithCredentials(apiKey, subaccount, privateKey)
 	wsClient := NewAccountRpcWebsocketClient(context.Background(), client)
 	connectWithRetry(t, wsClient)
 	defer wsClient.Close()

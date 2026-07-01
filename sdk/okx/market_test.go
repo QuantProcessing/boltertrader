@@ -8,7 +8,7 @@ import (
 )
 
 func TestClient_GetTickers(t *testing.T) {
-	got, err := newLiveClient().GetTickers(context.Background(), "SPOT", nil)
+	got, err := newLiveClient(t).GetTickers(context.Background(), "SPOT", nil)
 	if err != nil {
 		t.Fatalf("GetTickers: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestClient_GetTickers(t *testing.T) {
 }
 
 func TestClient_GetTicker(t *testing.T) {
-	got, err := newLiveClient().GetTicker(context.Background(), okxSpotInstID)
+	got, err := newLiveClient(t).GetTicker(context.Background(), okxSpotInstID)
 	if err != nil {
 		t.Fatalf("GetTicker: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestClient_GetTicker(t *testing.T) {
 
 func TestClient_GetOrderBook(t *testing.T) {
 	size := 5
-	got, err := newLiveClient().GetOrderBook(context.Background(), okxSpotInstID, &size)
+	got, err := newLiveClient(t).GetOrderBook(context.Background(), okxSpotInstID, &size)
 	if err != nil {
 		t.Fatalf("GetOrderBook: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestClient_GetOrderBook(t *testing.T) {
 }
 
 func TestClient_GetInstruments(t *testing.T) {
-	got, err := newLiveClient().GetInstruments(context.Background(), "SPOT")
+	got, err := newLiveClient(t).GetInstruments(context.Background(), "SPOT")
 	if err != nil {
 		t.Fatalf("GetInstruments: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestClient_GetInstruments(t *testing.T) {
 }
 
 func TestClient_GetInstrumentsByFamily(t *testing.T) {
-	got, err := newLiveClient().GetInstrumentsByFamily(context.Background(), "SWAP", "BTC-USDT")
+	got, err := newLiveClient(t).GetInstrumentsByFamily(context.Background(), "SWAP", "BTC-USDT")
 	if err != nil {
 		t.Fatalf("GetInstrumentsByFamily: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestClient_GetSpreadsBuildsPublicQuery(t *testing.T) {
 func TestClient_GetCandles(t *testing.T) {
 	bar := "1m"
 	limit := 1
-	got, err := newLiveClient().GetCandles(context.Background(), okxSpotInstID, &bar, nil, nil, &limit)
+	got, err := newLiveClient(t).GetCandles(context.Background(), okxSpotInstID, &bar, nil, nil, &limit)
 	if err != nil {
 		t.Fatalf("GetCandles: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestClient_GetCandles(t *testing.T) {
 
 func TestClient_GetTrades(t *testing.T) {
 	limit := 1
-	got, err := newLiveClient().GetTrades(context.Background(), okxSpotInstID, &limit)
+	got, err := newLiveClient(t).GetTrades(context.Background(), okxSpotInstID, &limit)
 	if err != nil {
 		t.Fatalf("GetTrades: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestClient_GetTrades(t *testing.T) {
 }
 
 func TestClient_GetFundingRate(t *testing.T) {
-	got, err := newLiveClient().GetFundingRate(context.Background(), okxSwapInstID)
+	got, err := newLiveClient(t).GetFundingRate(context.Background(), okxSwapInstID)
 	if err != nil {
 		t.Fatalf("GetFundingRate: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestClient_GetEstimatedPriceBuildsPublicQuery(t *testing.T) {
 }
 
 func TestClient_GetAllFundingRates(t *testing.T) {
-	got, err := newLiveClient().GetAllFundingRates(context.Background())
+	got, err := newLiveClient(t).GetAllFundingRates(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllFundingRates: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestClient_GetAllFundingRates(t *testing.T) {
 }
 
 func TestClient_GetOpenInterest(t *testing.T) {
-	got, err := newLiveClient().GetOpenInterest(context.Background(), okxSwapInstID)
+	got, err := newLiveClient(t).GetOpenInterest(context.Background(), okxSwapInstID)
 	if err != nil {
 		t.Fatalf("GetOpenInterest: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestClient_GetOpenInterest(t *testing.T) {
 }
 
 func TestClient_GetFundingRateHistory(t *testing.T) {
-	got, err := newLiveClient().GetFundingRateHistory(context.Background(), okxSwapInstID, 0, 0, 1)
+	got, err := newLiveClient(t).GetFundingRateHistory(context.Background(), okxSwapInstID, 0, 0, 1)
 	if err != nil {
 		t.Fatalf("GetFundingRateHistory: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestClient_GetFundingRateHistory(t *testing.T) {
 }
 
 func TestClient_GetHistoryTrades(t *testing.T) {
-	got, err := newLiveClient().GetHistoryTrades(context.Background(), okxSpotInstID, 1, "", "", 1)
+	got, err := newLiveClient(t).GetHistoryTrades(context.Background(), okxSpotInstID, 1, "", "", 1)
 	if err != nil {
 		t.Fatalf("GetHistoryTrades: %v", err)
 	}

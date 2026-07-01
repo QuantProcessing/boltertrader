@@ -9,7 +9,7 @@ import (
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
+	testenv.RequireLiveRead(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
 	return NewClient().WithCredentials(
 		os.Getenv("BINANCE_API_KEY"),
 		os.Getenv("BINANCE_SECRET_KEY"),

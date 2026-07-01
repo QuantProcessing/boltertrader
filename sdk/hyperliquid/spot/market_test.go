@@ -13,7 +13,7 @@ import (
 )
 
 func TestClient_GetSpotMeta(t *testing.T) {
-	meta, err := newLiveClient().GetSpotMeta(context.Background())
+	meta, err := newLiveClient(t).GetSpotMeta(context.Background())
 	if err != nil {
 		t.Fatalf("GetSpotMeta: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestClient_GetOutcomeMetaBuildsRequest(t *testing.T) {
 
 func TestClient_L2Book(t *testing.T) {
 	coin := hyperliquidEnvOrDefault("HYPERLIQUID_SPOT_TEST_COIN", hyperliquidSpotCoin)
-	book, err := newLiveClient().L2Book(context.Background(), coin)
+	book, err := newLiveClient(t).L2Book(context.Background(), coin)
 	if err != nil {
 		t.Fatalf("L2Book: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestClient_L2Book(t *testing.T) {
 }
 
 func TestClient_AllMids(t *testing.T) {
-	mids, err := newLiveClient().AllMids(context.Background())
+	mids, err := newLiveClient(t).AllMids(context.Background())
 	if err != nil {
 		t.Fatalf("AllMids: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestClient_CandleSnapshot(t *testing.T) {
 	end := time.Now().UnixMilli()
 	start := end - int64(time.Hour/time.Millisecond)
 
-	candles, err := newLiveClient().CandleSnapshot(context.Background(), coin, "1m", start, end)
+	candles, err := newLiveClient(t).CandleSnapshot(context.Background(), coin, "1m", start, end)
 	if err != nil {
 		t.Fatalf("CandleSnapshot: %v", err)
 	}

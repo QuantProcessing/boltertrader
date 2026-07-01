@@ -12,9 +12,7 @@ import (
 
 func requireRealtimeWS(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("skipping realtime websocket test under -short")
-	}
+	testenv.RequireLiveRead(t)
 }
 
 // TestSubscribeMarkPrice tests real subscription to Mark Price

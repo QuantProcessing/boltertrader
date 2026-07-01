@@ -28,5 +28,13 @@ type AccountBalance struct {
 	Currency  string
 	Total     decimal.Decimal
 	Available decimal.Decimal
+	Locked    decimal.Decimal
 	UpdatedAt time.Time
+}
+
+// CashInvariantOK reports whether a cash-account balance satisfies
+// total == available + locked. Margin accounts may intentionally not use this
+// invariant because Available can represent free margin instead of free cash.
+func (b AccountBalance) CashInvariantOK() bool {
+	return b.Total.Equal(b.Available.Add(b.Locked))
 }

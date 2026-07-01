@@ -63,7 +63,7 @@ func lighterMarketID(t *testing.T) int {
 }
 
 func TestClient_GetAssetDetails(t *testing.T) {
-	got, err := newLiveClient().GetAssetDetails(context.Background(), nil)
+	got, err := newLiveClient(t).GetAssetDetails(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("GetAssetDetails: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestClient_GetAssetDetails(t *testing.T) {
 
 func TestClient_GetOrderBookDetails(t *testing.T) {
 	marketID := lighterMarketID(t)
-	got, err := newLiveClient().GetOrderBookDetails(context.Background(), &marketID, nil)
+	got, err := newLiveClient(t).GetOrderBookDetails(context.Background(), &marketID, nil)
 	if err != nil {
 		t.Fatalf("GetOrderBookDetails: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestClient_GetOrderBookDetails(t *testing.T) {
 
 func TestClient_GetOrderBooks(t *testing.T) {
 	marketID := lighterMarketID(t)
-	got, err := newLiveClient().GetOrderBooks(context.Background(), &marketID)
+	got, err := newLiveClient(t).GetOrderBooks(context.Background(), &marketID)
 	if err != nil {
 		t.Fatalf("GetOrderBooks: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestClient_GetOrderBooks(t *testing.T) {
 }
 
 func TestClient_GetRecentTrades(t *testing.T) {
-	got, err := newLiveClient().GetRecentTrades(context.Background(), lighterMarketID(t), 10)
+	got, err := newLiveClient(t).GetRecentTrades(context.Background(), lighterMarketID(t), 10)
 	if err != nil {
 		t.Fatalf("GetRecentTrades: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestClient_GetRecentTrades(t *testing.T) {
 }
 
 func TestClient_GetOrderBookOrders(t *testing.T) {
-	got, err := newLiveClient().GetOrderBookOrders(context.Background(), lighterMarketID(t), 10)
+	got, err := newLiveClient(t).GetOrderBookOrders(context.Background(), lighterMarketID(t), 10)
 	if err != nil {
 		t.Fatalf("GetOrderBookOrders: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestClient_GetOrderBookOrders(t *testing.T) {
 }
 
 func TestClient_GetFundingRates(t *testing.T) {
-	got, err := newLiveClient().GetFundingRates(context.Background())
+	got, err := newLiveClient(t).GetFundingRates(context.Background())
 	if err != nil {
 		t.Fatalf("GetFundingRates: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestClient_GetFundingRates(t *testing.T) {
 }
 
 func TestClient_GetFundingRate(t *testing.T) {
-	got, err := newLiveClient().GetFundingRate(context.Background(), lighterMarketID(t))
+	got, err := newLiveClient(t).GetFundingRate(context.Background(), lighterMarketID(t))
 	if err != nil {
 		t.Fatalf("GetFundingRate: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestClient_GetFundingRate(t *testing.T) {
 }
 
 func TestClient_GetAllFundingRates(t *testing.T) {
-	got, err := newLiveClient().GetAllFundingRates(context.Background())
+	got, err := newLiveClient(t).GetAllFundingRates(context.Background())
 	if err != nil {
 		t.Fatalf("GetAllFundingRates: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestClient_GetAllFundingRates(t *testing.T) {
 }
 
 func TestClient_GetExchangeStats(t *testing.T) {
-	got, err := newLiveClient().GetExchangeStats(context.Background())
+	got, err := newLiveClient(t).GetExchangeStats(context.Background())
 	if err != nil {
 		t.Fatalf("GetExchangeStats: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestClient_GetExchangeStats(t *testing.T) {
 func TestClient_GetCandlesticks(t *testing.T) {
 	end := time.Now().UnixMilli()
 	start := end - int64(time.Hour/time.Millisecond)
-	got, err := newLiveClient().GetCandlesticks(context.Background(), lighterMarketID(t), "1m", start, end, 10)
+	got, err := newLiveClient(t).GetCandlesticks(context.Background(), lighterMarketID(t), "1m", start, end, 10)
 	if err != nil {
 		t.Fatalf("GetCandlesticks: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestClient_GetFundingHistory(t *testing.T) {
 	marketID := lighterMarketID(t)
 	end := time.Now().UnixMilli()
 	start := end - int64(24*time.Hour/time.Millisecond)
-	got, err := newLiveClient().GetFundingHistory(context.Background(), marketID, "1h", start, end, 10)
+	got, err := newLiveClient(t).GetFundingHistory(context.Background(), marketID, "1h", start, end, 10)
 	if err != nil {
 		t.Fatalf("GetFundingHistory: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestClient_GetTransferFeeInfo(t *testing.T) {
 }
 
 func TestClient_GetWithdrawalDelay(t *testing.T) {
-	got, err := newLiveClient().GetWithdrawalDelay(context.Background())
+	got, err := newLiveClient(t).GetWithdrawalDelay(context.Background())
 	if err != nil {
 		t.Fatalf("GetWithdrawalDelay: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestClient_GetWithdrawalDelay(t *testing.T) {
 }
 
 func TestClient_GetAnnouncements(t *testing.T) {
-	got, err := newLiveClient().GetAnnouncements(context.Background())
+	got, err := newLiveClient(t).GetAnnouncements(context.Background())
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestClient_GetL1Metadata(t *testing.T) {
 }
 
 func TestClient_GetPublicPoolsMetadata(t *testing.T) {
-	got, err := newLiveClient().GetPublicPoolsMetadata(context.Background(), "all", 0, 10, nil)
+	got, err := newLiveClient(t).GetPublicPoolsMetadata(context.Background(), "all", 0, 10, nil)
 	if err != nil {
 		t.Fatalf("GetPublicPoolsMetadata: %v", err)
 	}

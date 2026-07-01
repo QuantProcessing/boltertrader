@@ -26,6 +26,8 @@ package backtest
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -92,6 +94,8 @@ type Venue struct {
 	instrList   []*model.Instrument          // registration order, for deterministic All()
 	resting     []*restingOrder
 	wallet      map[string]decimal.Decimal // settlement balance by currency
+	cashLocks   map[string]decimal.Decimal // spot cash locks by currency
+	cashCcy     map[string]bool            // currencies whose availability is cash-style
 	positions   map[string]*simPosition    // open positions by instrument|side
 	leverages   map[string]decimal.Decimal // per-instrument leverage by InstrumentID.String()
 	marginOn    bool                       // gate cross-margin checks on a funded account
@@ -110,6 +114,8 @@ func NewVenue(clk clock.Clock, cfg Config) *Venue {
 		lastPrice:   make(map[string]decimal.Decimal),
 		instruments: make(map[string]*model.Instrument, len(cfg.Instruments)),
 		wallet:      make(map[string]decimal.Decimal),
+		cashLocks:   make(map[string]decimal.Decimal),
+		cashCcy:     make(map[string]bool),
 		positions:   make(map[string]*simPosition),
 		leverages:   make(map[string]decimal.Decimal),
 	}
@@ -203,6 +209,9 @@ func (v *Venue) matchLocked(tick model.TradeTick) ([]contract.ExecEvent, []contr
 			kept = append(kept, ro)
 			continue
 		}
+		if ro.req.InstrumentID.Kind == enums.KindSpot {
+			acctEvs = append(acctEvs, v.releaseSpotOrderLocked(ro.req)...)
+		}
 		// Fill fully at the limit price (deterministic; price improvement is
 		// out of scope for bar/trade-level matching). A resting limit order that
 		// the market crosses is filled passively, so it pays the maker fee.
@@ -226,6 +235,10 @@ func (v *Venue) matchLocked(tick model.TradeTick) ([]contract.ExecEvent, []contr
 		}
 		fill := v.fillEvent(m.req, m.venueID, m.fillPx, m.remaining, enums.LiqMaker)
 		execEvs = append(execEvs, contract.OrderEvent{Order: filled}, fill)
+		if m.req.InstrumentID.Kind == enums.KindSpot {
+			acctEvs = append(acctEvs, v.applySpotFillLocked(fill.Fill)...)
+			continue
+		}
 		acctEvs = append(acctEvs, v.applyFillLocked(fill.Fill, m.req.PositionSide)...)
 	}
 	return execEvs, acctEvs
@@ -284,20 +297,37 @@ func (c *execClient) Submit(ctx context.Context, req model.OrderRequest) (*model
 		// A market order removes liquidity at the last price, adjusted by the
 		// configured slippage model, and pays the taker fee.
 		px = v.applySlippage(req.Side, px)
-		if reason, rejected := v.marginRejectLocked(req, px); rejected {
-			order.Status = enums.StatusRejected
-			order.RejectReason = reason
-			v.mu.Unlock()
-			c.events <- contract.OrderEvent{Order: order}
-			c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
-			return &order, nil
+		if req.InstrumentID.Kind != enums.KindSpot {
+			if reason, rejected := v.marginRejectLocked(req, px); rejected {
+				order.Status = enums.StatusRejected
+				order.RejectReason = reason
+				v.mu.Unlock()
+				c.events <- contract.OrderEvent{Order: order}
+				c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+				return &order, nil
+			}
+		}
+		if req.InstrumentID.Kind == enums.KindSpot {
+			if reason, rejected := v.cashRejectLocked(req, px); rejected {
+				order.Status = enums.StatusRejected
+				order.RejectReason = reason
+				v.mu.Unlock()
+				c.events <- contract.OrderEvent{Order: order}
+				c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+				return &order, nil
+			}
 		}
 		order.Status = enums.StatusFilled
 		order.FilledQty = req.Quantity
 		order.AvgFillPrice = px
 		fill := v.fillEvent(req, venueID, px, req.Quantity, enums.LiqTaker)
-		acctEvs := v.applyFillLocked(fill.Fill, req.PositionSide)
-		acctEvs = append(acctEvs, v.markPositionLocked(req.InstrumentID)...)
+		var acctEvs []contract.AccountEvent
+		if req.InstrumentID.Kind == enums.KindSpot {
+			acctEvs = v.applySpotFillLocked(fill.Fill)
+		} else {
+			acctEvs = v.applyFillLocked(fill.Fill, req.PositionSide)
+			acctEvs = append(acctEvs, v.markPositionLocked(req.InstrumentID)...)
+		}
 		v.mu.Unlock()
 		c.events <- contract.OrderEvent{Order: order}
 		c.events <- fill
@@ -307,18 +337,37 @@ func (c *execClient) Submit(ctx context.Context, req model.OrderRequest) (*model
 		return &order, nil
 	}
 
-	if reason, rejected := v.marginRejectLocked(req, req.Price); rejected {
-		order.Status = enums.StatusRejected
-		order.RejectReason = reason
-		v.mu.Unlock()
-		c.events <- contract.OrderEvent{Order: order}
-		c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
-		return &order, nil
+	if req.InstrumentID.Kind != enums.KindSpot {
+		if reason, rejected := v.marginRejectLocked(req, req.Price); rejected {
+			order.Status = enums.StatusRejected
+			order.RejectReason = reason
+			v.mu.Unlock()
+			c.events <- contract.OrderEvent{Order: order}
+			c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+			return &order, nil
+		}
+	}
+	if req.InstrumentID.Kind == enums.KindSpot {
+		if reason, rejected := v.cashRejectLocked(req, req.Price); rejected {
+			order.Status = enums.StatusRejected
+			order.RejectReason = reason
+			v.mu.Unlock()
+			c.events <- contract.OrderEvent{Order: order}
+			c.events <- contract.RejectEvent{ClientID: req.ClientID, Reason: reason}
+			return &order, nil
+		}
 	}
 	order.Status = enums.StatusNew
 	v.resting = append(v.resting, &restingOrder{req: req, venueID: venueID, remaining: req.Quantity})
+	var acctEvs []contract.AccountEvent
+	if req.InstrumentID.Kind == enums.KindSpot {
+		acctEvs = v.reserveSpotOrderLocked(req)
+	}
 	v.mu.Unlock()
 	c.events <- contract.OrderEvent{Order: order}
+	for _, a := range acctEvs {
+		v.account.events <- a
+	}
 	return &order, nil
 }
 
@@ -326,9 +375,13 @@ func (c *execClient) Cancel(ctx context.Context, id model.InstrumentID, venueOrd
 	v := c.v
 	v.mu.Lock()
 	var ev *contract.OrderEvent
+	var acctEvs []contract.AccountEvent
 	for i, ro := range v.resting {
 		if ro.venueID == venueOrderID {
 			v.resting = append(v.resting[:i], v.resting[i+1:]...)
+			if ro.req.InstrumentID.Kind == enums.KindSpot {
+				acctEvs = append(acctEvs, v.releaseSpotOrderLocked(ro.req)...)
+			}
 			ev = &contract.OrderEvent{Order: model.Order{Request: ro.req, VenueOrderID: venueOrderID, Status: enums.StatusCanceled, UpdatedAt: v.clk.Now()}}
 			break
 		}
@@ -337,6 +390,9 @@ func (c *execClient) Cancel(ctx context.Context, id model.InstrumentID, venueOrd
 	if ev != nil {
 		c.events <- *ev
 	}
+	for _, a := range acctEvs {
+		v.account.events <- a
+	}
 	return nil
 }
 
@@ -344,9 +400,13 @@ func (c *execClient) CancelAll(ctx context.Context, id model.InstrumentID) error
 	v := c.v
 	v.mu.Lock()
 	var evs []contract.ExecEvent
+	var acctEvs []contract.AccountEvent
 	kept := v.resting[:0]
 	for _, ro := range v.resting {
 		if ro.req.InstrumentID == id {
+			if ro.req.InstrumentID.Kind == enums.KindSpot {
+				acctEvs = append(acctEvs, v.releaseSpotOrderLocked(ro.req)...)
+			}
 			evs = append(evs, contract.OrderEvent{Order: model.Order{Request: ro.req, VenueOrderID: ro.venueID, Status: enums.StatusCanceled, UpdatedAt: v.clk.Now()}})
 			continue
 		}
@@ -357,6 +417,9 @@ func (c *execClient) CancelAll(ctx context.Context, id model.InstrumentID) error
 	for _, e := range evs {
 		c.events <- e
 	}
+	for _, a := range acctEvs {
+		v.account.events <- a
+	}
 	return nil
 }
 
@@ -366,12 +429,43 @@ func (c *execClient) Modify(ctx context.Context, id model.InstrumentID, venueOrd
 	for i, ro := range v.resting {
 		if ro.venueID == venueOrderID {
 			newReq := ro.req
-			newReq.Price = newPrice
-			newReq.Quantity = newQty
+			if !newPrice.IsZero() {
+				newReq.Price = newPrice
+			}
+			if !newQty.IsZero() {
+				newReq.Quantity = newQty
+			}
+			if newReq.InstrumentID.Kind == enums.KindSpot {
+				releaseEvs := v.releaseSpotOrderLocked(ro.req)
+				reason, rejected := v.cashRejectLocked(newReq, newReq.Price)
+				if rejected {
+					v.reserveSpotOrderLocked(ro.req)
+					order := model.Order{
+						Request:      newReq,
+						VenueOrderID: venueOrderID,
+						Status:       enums.StatusRejected,
+						UpdatedAt:    v.clk.Now(),
+						RejectReason: reason,
+					}
+					v.mu.Unlock()
+					c.events <- contract.OrderEvent{Order: order}
+					c.events <- contract.RejectEvent{ClientID: newReq.ClientID, Reason: reason}
+					return &order, nil
+				}
+				acctEvs := append(releaseEvs, v.reserveSpotOrderLocked(newReq)...)
+				ro.req = newReq
+				ro.remaining = newReq.Quantity
+				order := model.Order{Request: ro.req, VenueOrderID: venueOrderID, Status: enums.StatusNew, UpdatedAt: v.clk.Now()}
+				v.mu.Unlock()
+				for _, ev := range acctEvs {
+					v.account.events <- ev
+				}
+				return &order, nil
+			}
 
 			resting := v.resting
 			v.resting = append(append([]*restingOrder{}, resting[:i]...), resting[i+1:]...)
-			reason, rejected := v.marginRejectLocked(newReq, newPrice)
+			reason, rejected := v.marginRejectLocked(newReq, newReq.Price)
 			v.resting = resting
 
 			if rejected {
@@ -389,7 +483,7 @@ func (c *execClient) Modify(ctx context.Context, id model.InstrumentID, venueOrd
 			}
 
 			ro.req = newReq
-			ro.remaining = newQty
+			ro.remaining = newReq.Quantity
 			order := model.Order{Request: ro.req, VenueOrderID: venueOrderID, Status: enums.StatusNew, UpdatedAt: v.clk.Now()}
 			v.mu.Unlock()
 			return &order, nil
@@ -436,13 +530,17 @@ type marketClient struct {
 
 func (c *marketClient) InstrumentProvider() model.InstrumentProvider { return venueProvider{c.v} }
 func (c *marketClient) OrderBook(ctx context.Context, id model.InstrumentID, depth int) (*model.OrderBook, error) {
-	return nil, nil
+	return nil, fmt.Errorf("backtest: order book snapshots are not modeled: %w", contract.ErrNotSupported)
 }
 func (c *marketClient) Bars(ctx context.Context, id model.InstrumentID, interval string, limit int) ([]model.Bar, error) {
-	return nil, nil
+	return nil, fmt.Errorf("backtest: historical bar queries are not modeled: %w", contract.ErrNotSupported)
 }
-func (c *marketClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error   { return nil }
-func (c *marketClient) SubscribeQuotes(ctx context.Context, id model.InstrumentID) error { return nil }
+func (c *marketClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
+	return fmt.Errorf("backtest: book streams are not modeled: %w", contract.ErrNotSupported)
+}
+func (c *marketClient) SubscribeQuotes(ctx context.Context, id model.InstrumentID) error {
+	return fmt.Errorf("backtest: quote streams are not modeled: %w", contract.ErrNotSupported)
+}
 func (c *marketClient) SubscribeTrades(ctx context.Context, id model.InstrumentID) error { return nil }
 func (c *marketClient) Events() <-chan contract.MarketEvent                              { return c.events }
 func (c *marketClient) Close() error                                                     { return nil }
@@ -461,6 +559,9 @@ func (c *acctClient) Positions(ctx context.Context) ([]model.Position, error) {
 	return c.v.snapshotPositions(), nil
 }
 func (c *acctClient) SetLeverage(ctx context.Context, id model.InstrumentID, lev decimal.Decimal) error {
+	if id.Kind == enums.KindSpot {
+		return fmt.Errorf("backtest: spot cash accounts do not support leverage: %w", contract.ErrNotSupported)
+	}
 	v := c.v
 	v.mu.Lock()
 	v.leverages[id.String()] = lev
@@ -468,7 +569,17 @@ func (c *acctClient) SetLeverage(ctx context.Context, id model.InstrumentID, lev
 	return nil
 }
 func (c *acctClient) SetMarginMode(ctx context.Context, id model.InstrumentID, mode string) error {
-	return nil
+	if id.Kind == enums.KindSpot {
+		return fmt.Errorf("backtest: spot cash accounts do not support margin mode: %w", contract.ErrNotSupported)
+	}
+	switch strings.ToLower(mode) {
+	case "", "cross":
+		return nil
+	case "isolated":
+		return fmt.Errorf("backtest: isolated margin is not modeled: %w", contract.ErrNotSupported)
+	default:
+		return fmt.Errorf("backtest: invalid margin mode %q: %w", mode, contract.ErrNotSupported)
+	}
 }
 func (c *acctClient) Events() <-chan contract.AccountEvent { return c.events }
 func (c *acctClient) Close() error                         { return nil }

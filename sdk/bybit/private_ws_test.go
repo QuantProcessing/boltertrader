@@ -42,7 +42,7 @@ func TestPrivateWSClient_Unsubscribe(t *testing.T) {
 
 func newLivePrivateWSClient(t *testing.T) *PrivateWSClient {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BYBIT_API_KEY", "BYBIT_SECRET_KEY")
+	testenv.RequireLiveRead(t, "BYBIT_API_KEY", "BYBIT_SECRET_KEY")
 	client := NewPrivateWSClient().WithCredentials(os.Getenv("BYBIT_API_KEY"), os.Getenv("BYBIT_SECRET_KEY"))
 	t.Cleanup(func() {
 		_ = client.Close()

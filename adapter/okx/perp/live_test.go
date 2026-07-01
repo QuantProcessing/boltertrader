@@ -13,12 +13,13 @@ import (
 )
 
 // TestLiveOKXAdapterSmoke is env-gated and read-only. It runs only with
-// OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE present.
+// BOLTER_ENABLE_LIVE_READ_TESTS=1 and OKX_API_KEY / OKX_API_SECRET /
+// OKX_API_PASSPHRASE present.
 //
-//	OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... \
+//	BOLTER_ENABLE_LIVE_READ_TESTS=1 OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... \
 //	go test -run TestLiveOKXAdapterSmoke ./adapter/okx/perp/
 func TestLiveOKXAdapterSmoke(t *testing.T) {
-	testenv.RequireLiveCredentials(t, "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
+	testenv.RequireLiveRead(t, "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

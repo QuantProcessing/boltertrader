@@ -45,7 +45,7 @@ func TestPrivateWSClient_Unsubscribe(t *testing.T) {
 
 func newLivePrivateWSClient(t *testing.T) *PrivateWSClient {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE")
+	testenv.RequireLiveRead(t, "BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE")
 	client := NewPrivateWSClient().WithCredentials(os.Getenv("BITGET_API_KEY"), os.Getenv("BITGET_SECRET_KEY"), os.Getenv("BITGET_PASSPHRASE"))
 	t.Cleanup(func() {
 		_ = client.Close()

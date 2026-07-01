@@ -88,7 +88,7 @@ func (t OrderType) String() string {
 //   - Hyperliquid: Limit.Tif "Gtc" / "Ioc" / "Fok"; GTX -> "Alo".
 //
 // An unsupported (Type, TIF) combination on a given venue must surface as
-// errs.ErrNotSupported in the adapter, never be silently coerced.
+// contract.ErrNotSupported in the adapter, never be silently coerced.
 type TimeInForce uint8
 
 const (
@@ -163,7 +163,7 @@ func (s OrderStatus) String() string {
 // PositionSide distinguishes hedge-mode long/short legs from one-way net
 // positions. This is the one deliberate venue concept promoted into the domain
 // model, because hedge mode is first-class and portable on Binance and OKX.
-// Net-only venues (Hyperliquid) validate PosNet and return errs.ErrNotSupported
+// Net-only venues (Hyperliquid) validate PosNet and return contract.ErrNotSupported
 // for an explicit long/short side.
 //
 // Venue mapping (performed in adapters):

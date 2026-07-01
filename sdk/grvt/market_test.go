@@ -42,7 +42,7 @@ func TestGetTickerFundingFields(t *testing.T) {
 		t.Skip("Skipping integration test")
 	}
 
-	client := newLiveClient()
+	client := newLiveClient(t)
 	ctx := context.Background()
 
 	var ticker *GetTickerResponse

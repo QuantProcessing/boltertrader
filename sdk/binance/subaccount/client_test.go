@@ -11,7 +11,7 @@ const binanceSubAccountLiveWriteFlag = "BINANCE_ENABLE_LIVE_WRITE_TESTS"
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
+	testenv.RequireLiveRead(t, "BINANCE_API_KEY", "BINANCE_SECRET_KEY")
 	return NewClient().WithCredentials(
 		os.Getenv("BINANCE_API_KEY"),
 		os.Getenv("BINANCE_SECRET_KEY"),
@@ -22,7 +22,10 @@ func requireBinanceSubAccountLiveWrite(t *testing.T, vars ...string) *Client {
 	t.Helper()
 	required := append([]string{"BINANCE_API_KEY", "BINANCE_SECRET_KEY"}, vars...)
 	testenv.RequireLiveWrite(t, binanceSubAccountLiveWriteFlag, required...)
-	return newLivePrivateClient(t)
+	return NewClient().WithCredentials(
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_SECRET_KEY"),
+	)
 }
 
 func subAccountEnvOrDefault(key, fallback string) string {

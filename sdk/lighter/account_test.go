@@ -211,7 +211,7 @@ func TestClient_GetAccountsByL1Address(t *testing.T) {
 	if address == "" {
 		t.Skip("LIGHTER_TEST_L1_ADDRESS is required for GetAccountsByL1Address live test")
 	}
-	got, err := newLiveClient().GetAccountsByL1Address(context.Background(), address)
+	got, err := newLiveClient(t).GetAccountsByL1Address(context.Background(), address)
 	if err != nil {
 		t.Fatalf("GetAccountsByL1Address: %v", err)
 	}

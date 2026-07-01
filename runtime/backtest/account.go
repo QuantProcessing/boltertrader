@@ -36,6 +36,8 @@ func sameSign(a, b decimal.Decimal) bool {
 func (v *Venue) settleCcy(id model.InstrumentID) string {
 	if inst, ok := v.instruments[id.String()]; ok && inst.Settle != "" {
 		return inst.Settle
+	} else if ok && id.Kind == enums.KindSpot && inst.Quote != "" {
+		return inst.Quote
 	}
 	return v.cfg.StartBalance.Currency
 }
@@ -119,6 +121,123 @@ func (v *Venue) applyFillLocked(f model.Fill, side enums.PositionSide) []contrac
 	return []contract.AccountEvent{v.balanceEventLocked(ccy)}
 }
 
+// applySpotFillLocked folds a spot cash fill into per-asset balances. Spot
+// inventory is balance-sourced; it does not create derivative positions.
+func (v *Venue) applySpotFillLocked(f model.Fill) []contract.AccountEvent {
+	inst, ok := v.instruments[f.InstrumentID.String()]
+	if !ok || inst.Base == "" || inst.Quote == "" {
+		return nil
+	}
+
+	baseQty := f.Quantity.Mul(v.multiplier(f.InstrumentID))
+	notional := f.Price.Mul(f.Quantity).Mul(v.multiplier(f.InstrumentID))
+	touched := map[string]struct{}{}
+	touch := func(ccy string) {
+		if ccy == "" {
+			return
+		}
+		v.cashCcy[ccy] = true
+		touched[ccy] = struct{}{}
+	}
+
+	switch f.Side {
+	case enums.SideBuy:
+		v.wallet[inst.Quote] = v.wallet[inst.Quote].Sub(notional)
+		v.wallet[inst.Base] = v.wallet[inst.Base].Add(baseQty)
+		touch(inst.Quote)
+		touch(inst.Base)
+	case enums.SideSell:
+		v.wallet[inst.Base] = v.wallet[inst.Base].Sub(baseQty)
+		v.wallet[inst.Quote] = v.wallet[inst.Quote].Add(notional)
+		touch(inst.Base)
+		touch(inst.Quote)
+	}
+
+	feeCcy := f.FeeCurrency
+	if feeCcy == "" {
+		feeCcy = inst.Quote
+	}
+	if !f.Fee.IsZero() {
+		v.wallet[feeCcy] = v.wallet[feeCcy].Sub(f.Fee)
+		touch(feeCcy)
+	}
+
+	ccys := make([]string, 0, len(touched))
+	for ccy := range touched {
+		ccys = append(ccys, ccy)
+	}
+	sort.Strings(ccys)
+	out := make([]contract.AccountEvent, 0, len(ccys))
+	for _, ccy := range ccys {
+		out = append(out, v.balanceEventLocked(ccy))
+	}
+	return out
+}
+
+func (v *Venue) cashRejectLocked(req model.OrderRequest, ref decimal.Decimal) (string, bool) {
+	inst, ok := v.instruments[req.InstrumentID.String()]
+	if !ok || inst.Base == "" || inst.Quote == "" {
+		return "unknown spot instrument " + req.InstrumentID.String(), true
+	}
+	notional := ref.Mul(req.Quantity).Mul(v.multiplier(req.InstrumentID))
+	switch req.Side {
+	case enums.SideBuy:
+		required := notional
+		if ccy := v.settleCcy(req.InstrumentID); ccy == inst.Quote {
+			required = required.Add(notional.Mul(v.feeRate(enums.LiqTaker)))
+		}
+		available := v.wallet[inst.Quote].Sub(v.cashLocks[inst.Quote])
+		if required.GreaterThan(available) {
+			return "insufficient cash: need " + required.String() + " " + inst.Quote + ", available " + available.String(), true
+		}
+	case enums.SideSell:
+		required := req.Quantity.Mul(v.multiplier(req.InstrumentID))
+		available := v.wallet[inst.Base].Sub(v.cashLocks[inst.Base])
+		if required.GreaterThan(available) {
+			return "insufficient inventory: need " + required.String() + " " + inst.Base + ", available " + available.String(), true
+		}
+	}
+	return "", false
+}
+
+func (v *Venue) spotReservationLocked(req model.OrderRequest) (string, decimal.Decimal, bool) {
+	inst, ok := v.instruments[req.InstrumentID.String()]
+	if !ok || inst.Base == "" || inst.Quote == "" {
+		return "", decimal.Zero, false
+	}
+	switch req.Side {
+	case enums.SideBuy:
+		return inst.Quote, req.Price.Mul(req.Quantity).Mul(v.multiplier(req.InstrumentID)), true
+	case enums.SideSell:
+		return inst.Base, req.Quantity.Mul(v.multiplier(req.InstrumentID)), true
+	default:
+		return "", decimal.Zero, false
+	}
+}
+
+func (v *Venue) reserveSpotOrderLocked(req model.OrderRequest) []contract.AccountEvent {
+	ccy, amount, ok := v.spotReservationLocked(req)
+	if !ok || amount.IsZero() {
+		return nil
+	}
+	v.cashCcy[ccy] = true
+	v.cashLocks[ccy] = v.cashLocks[ccy].Add(amount)
+	return []contract.AccountEvent{v.balanceEventLocked(ccy)}
+}
+
+func (v *Venue) releaseSpotOrderLocked(req model.OrderRequest) []contract.AccountEvent {
+	ccy, amount, ok := v.spotReservationLocked(req)
+	if !ok || amount.IsZero() {
+		return nil
+	}
+	v.cashCcy[ccy] = true
+	v.cashLocks[ccy] = v.cashLocks[ccy].Sub(amount)
+	if v.cashLocks[ccy].IsNegative() {
+		v.cashLocks[ccy] = decimal.Zero
+	}
+	return []contract.AccountEvent{v.balanceEventLocked(ccy)}
+}
+
 // markPositionLocked recomputes the open positions on an instrument against the
 // current mark (last trade price) and returns their position events. A flattened
 // leg is emitted with zero quantity so the cache evicts it, then dropped from the
@@ -157,19 +276,20 @@ func (v *Venue) markPositionLocked(id model.InstrumentID) []contract.AccountEven
 // balanceEventLocked builds a balance event for a currency at the current
 // available margin. Caller holds v.mu.
 func (v *Venue) balanceEventLocked(ccy string) contract.AccountEvent {
-	total := v.wallet[ccy]
-	return contract.BalanceEvent{Balance: model.AccountBalance{
-		Currency:  ccy,
-		Total:     total,
-		Available: v.availableLocked(ccy),
-		UpdatedAt: v.clk.Now(),
-	}}
+	return contract.BalanceEvent{Balance: v.balanceSnapshotLocked(ccy)}
 }
 
 // availableLocked returns the free balance for a currency. On a funded account
 // it is cross-margin free margin (equity minus used initial margin, floored at
 // zero); otherwise the raw wallet balance. Caller holds v.mu.
 func (v *Venue) availableLocked(ccy string) decimal.Decimal {
+	if v.cashCcy[ccy] {
+		avail := v.wallet[ccy].Sub(v.cashLocks[ccy])
+		if avail.IsNegative() {
+			return decimal.Zero
+		}
+		return avail
+	}
 	if !v.marginOn {
 		return v.wallet[ccy]
 	}
@@ -178,6 +298,21 @@ func (v *Venue) availableLocked(ccy string) decimal.Decimal {
 		return decimal.Zero
 	}
 	return avail
+}
+
+func (v *Venue) balanceSnapshotLocked(ccy string) model.AccountBalance {
+	total := v.wallet[ccy]
+	locked := decimal.Zero
+	if v.cashCcy[ccy] {
+		locked = v.cashLocks[ccy]
+	}
+	return model.AccountBalance{
+		Currency:  ccy,
+		Total:     total,
+		Available: v.availableLocked(ccy),
+		Locked:    locked,
+		UpdatedAt: v.clk.Now(),
+	}
 }
 
 // snapshotBalances returns every wallet currency, sorted, for the Balances RPC.
@@ -191,12 +326,7 @@ func (v *Venue) snapshotBalances() []model.AccountBalance {
 	sort.Strings(ccys)
 	out := make([]model.AccountBalance, 0, len(ccys))
 	for _, c := range ccys {
-		out = append(out, model.AccountBalance{
-			Currency:  c,
-			Total:     v.wallet[c],
-			Available: v.availableLocked(c),
-			UpdatedAt: v.clk.Now(),
-		})
+		out = append(out, v.balanceSnapshotLocked(c))
 	}
 	return out
 }

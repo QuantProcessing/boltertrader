@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestPublicWSClient_Subscribe(t *testing.T) {
+	testenv.RequireLiveRead(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -36,6 +40,8 @@ func TestPublicWSClient_Subscribe(t *testing.T) {
 }
 
 func TestPublicWSClient_Unsubscribe(t *testing.T) {
+	testenv.RequireLiveRead(t)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 

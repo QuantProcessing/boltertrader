@@ -160,13 +160,70 @@ partial-fill/queue/latency models.
 ## Testing
 
 ```sh
-go test ./...            # offline: deterministic, no network
-go test -race ./runtime/...
+make test              # go test ./...
+make test-race         # runtime race checks
+make test-core         # core/runtime/strategy packages
+make test-adapter      # adapter packages
+make test-sdk          # SDK packages without live endpoints
 ```
 
-Live integration tests are env-gated and skip without credentials:
+Live read tests are opt-in:
 
 ```sh
-BINANCE_API_KEY=... BINANCE_API_SECRET=... go test -run TestLiveAdapterSmoke ./adapter/binance/perp/
-OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... go test -run TestLiveOKXAdapterSmoke ./adapter/okx/perp/
+make test-live-read
 ```
+
+Live write tests are venue-specific and may create, modify, cancel, or close
+real exchange state:
+
+```sh
+OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... OKX_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/okx/
+BINANCE_API_KEY=... BINANCE_SECRET_KEY=... BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/binance/perp/
+```
+
+Binance Demo write/E2E tests use the shared Binance Demo credential contract.
+Create the keys from Binance Demo/Testnet API Management, not from a production
+API key. The implemented Demo acceptance covers USD-M perps and the first Spot
+vertical slice; future dated futures or options Demo flows should add their own
+product-qualified targets while reusing the same `BINANCE_DEMO_*` credential
+contract when Binance supports it:
+
+```sh
+BINANCE_DEMO_API_KEY=... \
+BINANCE_DEMO_API_SECRET=... \
+BINANCE_DEMO_SYMBOL=ETH-USDT \
+go test -run TestBinanceDemoExecE2E ./adapter/binance/perp/ -count=1 -timeout=3m
+
+BINANCE_DEMO_API_KEY=... \
+BINANCE_DEMO_API_SECRET=... \
+BINANCE_DEMO_SYMBOL=ETH-USDT \
+go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
+```
+
+`BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
+
+Spot Demo data acceptance is read-only and uses the live-read gate:
+
+```sh
+BOLTER_ENABLE_LIVE_READ_TESTS=1 make test-binance-demo-spot-data
+```
+
+`make test-binance-demo-perp`, `make test-binance-demo-runtime-perp`,
+`make test-binance-demo-spot-data`, and `make test-binance-demo-spot` run the
+product-qualified Demo targets. `make test-binance-demo` is an alias for the
+complete Demo acceptance gate:
+
+```sh
+BINANCE_DEMO_API_KEY=... \
+BINANCE_DEMO_API_SECRET=... \
+make test-binance-demo-acceptance
+```
+
+The write tests skip unless the Demo key pair is present. If direct access to
+Binance Demo endpoints is unavailable, pass a command-local `PROXY=...`; proxy
+configuration is not part of the strategy/runtime API. The old
+`BINANCE_PERP_TESTNET_*` variables are not accepted as the public Demo
+validation contract.
+
+See [`docs/testing-strategy.md`](docs/testing-strategy.md) and
+[`docs/review-checklist.md`](docs/review-checklist.md) for the standard gates.

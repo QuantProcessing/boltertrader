@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestWebsocketClient_PlaceOrder(t *testing.T) {
@@ -76,6 +78,8 @@ func TestWebsocketClient_CancelAllOrders(t *testing.T) {
 
 func newLiveWSClient(t *testing.T) *WebsocketClient {
 	t.Helper()
+	testenv.RequireLiveRead(t)
+
 	wsClient := NewWebsocketClient(context.Background())
 	if err := wsClient.Connect(); err != nil {
 		t.Fatalf("Connect websocket: %v", err)

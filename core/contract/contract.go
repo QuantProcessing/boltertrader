@@ -62,7 +62,7 @@ type AccountClient interface {
 	// SetLeverage sets leverage for an instrument (best-effort per venue).
 	SetLeverage(ctx context.Context, id model.InstrumentID, leverage decimal.Decimal) error
 	// SetMarginMode sets cross/isolated where supported; returns
-	// errs.ErrNotSupported where inapplicable. mode is "cross" or "isolated".
+	// contract.ErrNotSupported where inapplicable. mode is "cross" or "isolated".
 	SetMarginMode(ctx context.Context, id model.InstrumentID, mode string) error
 
 	Events() <-chan AccountEvent

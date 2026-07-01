@@ -6,7 +6,7 @@ import (
 )
 
 func TestClient_GetAnnouncements(t *testing.T) {
-	announcements, err := newLiveClient().GetAnnouncements(context.Background(), "new_crypto")
+	announcements, err := newLiveClient(t).GetAnnouncements(context.Background(), "new_crypto")
 	if err != nil {
 		t.Fatalf("GetAnnouncements: %v", err)
 	}

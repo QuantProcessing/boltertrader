@@ -12,7 +12,7 @@ import (
 
 func requireLiveWSCredentials(t *testing.T) {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "HYPERLIQUID_PRIVATE_KEY", "HYPERLIQUID_ACCOUNT_ADDR")
+	testenv.RequireLiveRead(t, "HYPERLIQUID_PRIVATE_KEY", "HYPERLIQUID_ACCOUNT_ADDR")
 }
 
 func hyperliquidWSEnv() (string, string, string) {

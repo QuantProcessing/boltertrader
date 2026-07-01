@@ -12,7 +12,7 @@ import (
 
 func TestClient_PlaceOrder(t *testing.T) {
 	client := requireBinanceSpotLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_SPOT_TEST_ORDER_QTY", "BINANCE_SPOT_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "BINANCE_SPOT_TEST_ORDER_QTY", "BINANCE_SPOT_TEST_ORDER_PRICE")
 
 	got, err := client.PlaceOrder(context.Background(), PlaceOrderParams{
 		Symbol:           envOrDefault("BINANCE_SPOT_TEST_SYMBOL", binanceSpotTestSymbol),
@@ -33,7 +33,7 @@ func TestClient_PlaceOrder(t *testing.T) {
 
 func TestClient_CancelOrder(t *testing.T) {
 	client := requireBinanceSpotLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_SPOT_TEST_CANCEL_ORDER_ID")
+	testenv.RequireEnv(t, "BINANCE_SPOT_TEST_CANCEL_ORDER_ID")
 	orderID, err := strconv.ParseInt(os.Getenv("BINANCE_SPOT_TEST_CANCEL_ORDER_ID"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse BINANCE_SPOT_TEST_CANCEL_ORDER_ID: %v", err)
@@ -50,7 +50,7 @@ func TestClient_CancelOrder(t *testing.T) {
 
 func TestClient_ModifyOrder(t *testing.T) {
 	client := requireBinanceSpotLiveWrite(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_SPOT_TEST_CANCEL_ORDER_ID", "BINANCE_SPOT_TEST_ORDER_QTY", "BINANCE_SPOT_TEST_ORDER_PRICE")
+	testenv.RequireEnv(t, "BINANCE_SPOT_TEST_CANCEL_ORDER_ID", "BINANCE_SPOT_TEST_ORDER_QTY", "BINANCE_SPOT_TEST_ORDER_PRICE")
 	orderID, err := strconv.ParseInt(os.Getenv("BINANCE_SPOT_TEST_CANCEL_ORDER_ID"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse BINANCE_SPOT_TEST_CANCEL_ORDER_ID: %v", err)
@@ -76,7 +76,7 @@ func TestClient_ModifyOrder(t *testing.T) {
 
 func TestClient_GetOrder(t *testing.T) {
 	client := newLivePrivateClient(t)
-	testenv.RequireLiveCredentials(t, "BINANCE_SPOT_TEST_ORDER_ID")
+	testenv.RequireEnv(t, "BINANCE_SPOT_TEST_ORDER_ID")
 	orderID, err := strconv.ParseInt(os.Getenv("BINANCE_SPOT_TEST_ORDER_ID"), 10, 64)
 	if err != nil {
 		t.Fatalf("parse BINANCE_SPOT_TEST_ORDER_ID: %v", err)

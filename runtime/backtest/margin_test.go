@@ -177,6 +177,54 @@ func TestModifyRejectsOversizedRestingOrder(t *testing.T) {
 	}
 }
 
+func TestModifyQuantityOnlyUsesExistingPriceForMargin(t *testing.T) {
+	venue, _ := fundedVenue(t, "1")
+	order, _ := venue.Execution().Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst, Side: enums.SideBuy, Type: enums.TypeLimit, Quantity: d("1"), Price: d("100"),
+	})
+	if order.Status != enums.StatusNew {
+		t.Fatalf("initial status=%v, want New", order.Status)
+	}
+
+	modified, _ := venue.Execution().Modify(context.Background(), inst, order.VenueOrderID, d("0"), d("20"))
+
+	if modified == nil || modified.Status != enums.StatusRejected {
+		t.Fatalf("quantity-only modify status=%v, want Rejected from existing price margin check", statusOf(modified))
+	}
+	open, _ := venue.Execution().OpenOrders(context.Background(), inst)
+	if len(open) != 1 || !open[0].Request.Quantity.Equal(d("1")) {
+		t.Fatalf("open orders=%+v, want original qty 1 unchanged after rejected quantity-only modify", open)
+	}
+}
+
+func TestModifyPriceOnlyKeepsExistingQuantityForFill(t *testing.T) {
+	venue, clk := fundedVenue(t, "1")
+	order, _ := venue.Execution().Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst, Side: enums.SideBuy, Type: enums.TypeLimit, Quantity: d("2"), Price: d("90"),
+	})
+	if order.Status != enums.StatusNew {
+		t.Fatalf("initial status=%v, want New", order.Status)
+	}
+
+	modified, _ := venue.Execution().Modify(context.Background(), inst, order.VenueOrderID, d("105"), d("0"))
+	if modified == nil || modified.Status != enums.StatusNew {
+		t.Fatalf("price-only modify status=%v, want New", statusOf(modified))
+	}
+	drainExec(venue.Execution().Events())
+
+	venue.Feed(model.TradeTick{InstrumentID: inst, Price: d("100"), Quantity: d("1"), Timestamp: clk.Now().Add(time.Second)})
+
+	fillQty := d("0")
+	for _, ev := range drainExec(venue.Execution().Events()) {
+		if fe, ok := ev.(contract.FillEvent); ok && fe.Fill.VenueOrderID == order.VenueOrderID {
+			fillQty = fe.Fill.Quantity
+		}
+	}
+	if !fillQty.Equal(d("2")) {
+		t.Fatalf("fill qty after price-only modify=%s, want existing qty 2", fillQty)
+	}
+}
+
 func TestPassiveLimitFillBalanceEventReleasesRestingMargin(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clock.NewSimulatedClock(start)

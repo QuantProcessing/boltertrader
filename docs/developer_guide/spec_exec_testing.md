@@ -57,17 +57,23 @@ make test-core
 make test-adapter
 make test-binance-demo-perp
 make test-binance-demo-runtime-perp
+make test-binance-demo-spot-data
+make test-binance-demo-spot
 make test-binance-demo-acceptance
 ```
 
-`make test-binance-demo-acceptance` is the complete Binance Demo write gate. It
-must not be called by `make test`.
+`make test-binance-demo-spot-data` is read-only and enables
+`BOLTER_ENABLE_LIVE_READ_TESTS=1` for the Spot Demo data smoke. Spot and perp
+write tests use `BINANCE_DEMO_API_KEY` and `BINANCE_DEMO_API_SECRET`; they are
+not called by `make test`.
 
 ## Risk And Reconciliation
 
 Runtime Demo acceptance should keep venue notional small and start from a flat
-account. It may bypass strategy alpha/risk logic when the acceptance goal is
-venue/runtime plumbing, but the node must keep reconciliation enabled through
+derivatives account. Spot Demo acceptance keeps notional small, preflights quote
+cash, and cleans up by selling the test base-asset delta below one size step. It
+may bypass strategy alpha/risk logic when the acceptance goal is venue/runtime
+plumbing, but runtime-node acceptance must keep reconciliation enabled through
 `node.Resync` before and after the live write flow.
 
 Risk engine behavior remains covered by deterministic runtime tests. Add a

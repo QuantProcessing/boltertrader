@@ -18,13 +18,15 @@ const (
 	bitgetPerpSymbol    = "BTCUSDT"
 )
 
-func newLiveClient() *Client {
+func newLiveClient(t *testing.T) *Client {
+	t.Helper()
+	testenv.RequireLiveRead(t)
 	return NewClient()
 }
 
 func newLivePrivateClient(t *testing.T) *Client {
 	t.Helper()
-	testenv.RequireLiveCredentials(t, "BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE")
+	testenv.RequireLiveRead(t, "BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE")
 	return NewClient().WithCredentials(os.Getenv("BITGET_API_KEY"), os.Getenv("BITGET_SECRET_KEY"), os.Getenv("BITGET_PASSPHRASE"))
 }
 
@@ -32,7 +34,7 @@ func requireBitgetLiveWrite(t *testing.T, vars ...string) *Client {
 	t.Helper()
 	required := append([]string{"BITGET_API_KEY", "BITGET_SECRET_KEY", "BITGET_PASSPHRASE"}, vars...)
 	testenv.RequireLiveWrite(t, bitgetLiveWriteFlag, required...)
-	return newLivePrivateClient(t)
+	return NewClient().WithCredentials(os.Getenv("BITGET_API_KEY"), os.Getenv("BITGET_SECRET_KEY"), os.Getenv("BITGET_PASSPHRASE"))
 }
 
 func bitgetEnvOrDefault(key, fallback string) string {

@@ -20,9 +20,10 @@ type Report struct {
 	PositionsUpdated int
 	PositionsCleared int // positions in cache not present in the snapshot
 
-	OrdersUpdated  int // open orders in both cache and venue, refreshed to venue truth
-	OrdersExternal int // open orders the venue reports that the cache had never seen
-	OrdersCleared  int // cache-open orders the venue no longer lists (marked Canceled)
+	OrdersUpdated       int // open orders in both cache and venue, refreshed to venue truth
+	OrdersExternal      int // open orders the venue reports that the cache had never seen
+	OrdersClosedUnknown int // cache-open orders absent from venue open snapshot; close reason unproven
+	OrdersCleared       int // deprecated: retained for older callers; ambiguous closes are not marked Canceled
 }
 
 // Reconciler pulls authoritative snapshots and corrects the cache. The account
@@ -43,8 +44,9 @@ func New(account contract.AccountClient, orders contract.ExecutionClient, c *cac
 // Run performs one reconciliation pass, overwriting the cache with venue truth:
 // balances and positions (clearing cached positions the venue considers flat),
 // then open orders (adopting orders the venue reports but the cache never saw,
-// refreshing known ones, and clearing cache-open orders the venue no longer
-// lists). Intended to be called at startup and after every reconnect.
+// refreshing known ones, and marking cache-open orders missing from the venue
+// open snapshot as closed with unknown reason). Intended to be called at startup
+// and after every reconnect.
 func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 	var rep Report
 
@@ -103,10 +105,10 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 // reconcileOrders rebuilds open-order state from the venue's authoritative
 // venue-wide snapshot (NautilusTrader's ExecutionMassStatus model): the venue's
 // open set is adopted wholesale (catching orders placed out-of-band), and any
-// order the cache still treats as open but the venue no longer lists is marked
-// Canceled — it is no longer resting. Note: this resolves a missing order as
-// Canceled without distinguishing a fill that arrived during the gap; recovering
-// such fills is the job of trade reconciliation (a future pass).
+// order the cache still treats as open but the venue no longer lists is closed
+// locally with unknown reason. A missing order is no longer resting, but this
+// bounded pass must not claim a cancel or a fill until trade reconciliation can
+// prove that terminal reason.
 func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	reports, err := r.orders.OrderReports(ctx)
 	if err != nil {
@@ -129,9 +131,9 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 		if _, ok := venueKeys[orderKeyOf(co)]; ok {
 			continue
 		}
-		co.Status = enums.StatusCanceled
+		co.Status = enums.StatusUnknown
 		r.cache.UpsertOrder(co)
-		rep.OrdersCleared++
+		rep.OrdersClosedUnknown++
 	}
 	return nil
 }
