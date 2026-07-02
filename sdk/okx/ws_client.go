@@ -29,17 +29,22 @@ const (
 )
 
 type WSClient struct {
-	Conn        *websocket.Conn
-	mu          sync.Mutex
-	WriteMu     sync.Mutex
-	IsPrivate   bool
-	URL         string
-	ApiKey      string
-	SecretKey   string
-	Passphrase  string
-	Subs        map[WsSubscribeArgs]func([]byte)
-	PendingReqs map[int64]*PendingRequest
-	Dialer      *websocket.Dialer
+	Conn            *websocket.Conn
+	mu              sync.Mutex
+	WriteMu         sync.Mutex
+	IsPrivate       bool
+	URL             string
+	Environment     Environment
+	DemoHostProfile DemoHostProfile
+	ApiKey          string
+	SecretKey       string
+	Passphrase      string
+	Subs            map[WsSubscribeArgs]func([]byte)
+	PendingReqs     map[int64]*PendingRequest
+	Dialer          *websocket.Dialer
+	urlRole         wsURLRole
+	explicitURL     bool
+	endpointErr     error
 
 	ctx context.Context
 
@@ -49,9 +54,15 @@ type WSClient struct {
 
 type WsClient = WSClient
 
-func NewWSClient(ctx context.Context) *WSClient {
-	baseUrl := WSBaseURL
+type wsURLRole int
 
+const (
+	wsURLRolePublic wsURLRole = iota
+	wsURLRolePrivate
+	wsURLRoleBusiness
+)
+
+func NewWSClient(ctx context.Context) *WSClient {
 	// Proxy check
 	dialer := &websocket.Dialer{
 		ReadBufferSize:    65535,
@@ -70,15 +81,19 @@ func NewWSClient(ctx context.Context) *WSClient {
 	}
 
 	// Use provided context for lifecycle management
-	return &WSClient{
-		URL:         baseUrl,
-		Subs:        make(map[WsSubscribeArgs]func([]byte)),
-		PendingReqs: make(map[int64]*PendingRequest),
-		ctx:         ctx,
-		Dialer:      dialer,
-		Logger:      zap.NewNop().Sugar().Named("okx"),
-		Connected:   make(chan bool, 1),
+	client := &WSClient{
+		Subs:            make(map[WsSubscribeArgs]func([]byte)),
+		PendingReqs:     make(map[int64]*PendingRequest),
+		ctx:             ctx,
+		Dialer:          dialer,
+		Logger:          zap.NewNop().Sugar().Named("okx"),
+		Connected:       make(chan bool, 1),
+		Environment:     Production,
+		DemoHostProfile: DemoHostProfileGlobal,
+		urlRole:         wsURLRolePublic,
 	}
+	client.applyEndpointURL()
+	return client
 }
 
 func NewWsClient(ctx context.Context) *WSClient {
@@ -87,7 +102,8 @@ func NewWsClient(ctx context.Context) *WSClient {
 
 func (c *WSClient) WithCredentials(apiKey, secretKey, passphrase string) *WSClient {
 	c.IsPrivate = true
-	c.URL = WSPrivateBaseURL
+	c.urlRole = wsURLRolePrivate
+	c.applyEndpointURL()
 	// keys
 	c.ApiKey = apiKey
 	c.SecretKey = secretKey
@@ -96,8 +112,50 @@ func (c *WSClient) WithCredentials(apiKey, secretKey, passphrase string) *WSClie
 }
 
 func (c *WSClient) WithBusinessURL() *WSClient {
-	c.URL = WSBusinessBaseURL
+	c.urlRole = wsURLRoleBusiness
+	c.applyEndpointURL()
 	return c
+}
+
+func (c *WSClient) WithEnvironment(env Environment) *WSClient {
+	c.Environment = defaultEnvironment(env)
+	c.applyEndpointURL()
+	return c
+}
+
+func (c *WSClient) WithDemoHostProfile(profile DemoHostProfile) *WSClient {
+	c.DemoHostProfile = defaultDemoHostProfile(profile)
+	c.applyEndpointURL()
+	return c
+}
+
+func (c *WSClient) WithURL(rawURL string) *WSClient {
+	c.URL = rawURL
+	c.explicitURL = true
+	c.endpointErr = nil
+	return c
+}
+
+func (c *WSClient) applyEndpointURL() {
+	if c.explicitURL {
+		c.endpointErr = nil
+		return
+	}
+	endpoints, err := DefaultEndpointURLs(c.Environment, c.DemoHostProfile)
+	if err != nil {
+		c.URL = ""
+		c.endpointErr = err
+		return
+	}
+	c.endpointErr = nil
+	switch c.urlRole {
+	case wsURLRolePrivate:
+		c.URL = endpoints.WSPrivate
+	case wsURLRoleBusiness:
+		c.URL = endpoints.WSBusiness
+	default:
+		c.URL = endpoints.WSPublic
+	}
 }
 
 func (c *WSClient) Connect() error {
@@ -106,6 +164,12 @@ func (c *WSClient) Connect() error {
 
 	if c.Conn != nil {
 		return nil
+	}
+	if c.endpointErr != nil {
+		return c.endpointErr
+	}
+	if c.URL == "" {
+		return fmt.Errorf("okx: websocket URL is empty")
 	}
 
 	// Use lifecycle context with 10 second timeout for connection

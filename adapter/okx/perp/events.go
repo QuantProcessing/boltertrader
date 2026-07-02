@@ -48,6 +48,9 @@ func orderFromOKX(o *okx.Order, r instResolver) model.Order {
 // events: an OrderEvent always, plus a FillEvent when the push reports a new
 // fill (execType + fillSz present).
 func execEventsFromOrder(o *okx.Order, r instResolver) []contract.ExecEvent {
+	if o == nil || !isSupportedUSDTLinearSwapInstID(o.InstId) {
+		return nil
+	}
 	id := r.resolveInstID(o.InstId)
 	order := orderFromOKX(o, r)
 	events := []contract.ExecEvent{contract.OrderEvent{Order: order}}
@@ -81,6 +84,9 @@ func execEventsFromOrder(o *okx.Order, r instResolver) []contract.ExecEvent {
 // accountEventsFromPosition translates an OKX position push into a domain
 // PositionEvent with a SIGNED quantity (negative for short).
 func accountEventsFromPosition(p *okx.Position, r instResolver) []contract.AccountEvent {
+	if p == nil || !isSupportedUSDTLinearSwapInstID(p.InstId) {
+		return nil
+	}
 	qty := dec(p.Pos)
 	if positionSideFromOKX(string(p.PosSide)) == enums.PosShort && qty.IsPositive() {
 		qty = qty.Neg()

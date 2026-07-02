@@ -1,4 +1,4 @@
-package perp
+package spot
 
 import (
 	"context"
@@ -14,35 +14,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// executionClient implements contract.ExecutionClient over the OKX REST + ws.
-// OKX REST PlaceOrder blocks until the venue responds, so Submit is naturally
-// synchronous.
 type executionClient struct {
 	rest     *okx.Client
 	provider *instrumentProvider
 	clk      clock.Clock
-	tdMode   string
 	stream   *wsstream.Stream[contract.ExecEvent]
 }
 
-func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string) *executionClient {
-	normalized, err := normalizeDerivativeTdMode(tdMode)
-	if err != nil {
-		normalized = defaultDerivativeTdMode
-	}
+func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
 	return &executionClient{
 		rest:     rest,
 		provider: provider,
 		clk:      clk,
-		tdMode:   normalized,
 		stream:   wsstream.New[contract.ExecEvent](256),
 	}
 }
 
-// checkSCode inspects OKX's per-order result codes. OKX returns HTTP 200 with a
-// per-order sCode that is non-"0" when the operation was rejected, so transport
-// success is NOT operation success. Returns a wrapped ExchangeError on the first
-// failed entry.
 func checkSCode(ids []okx.OrderId) error {
 	for _, id := range ids {
 		if id.SCode != "" && id.SCode != "0" {
@@ -55,12 +42,25 @@ func checkSCode(ids []okx.OrderId) error {
 func (c *executionClient) instID(id model.InstrumentID) (string, error) {
 	inst, ok := c.provider.Instrument(id)
 	if !ok {
-		return "", fmt.Errorf("okx: unknown instrument %s: %w", id, errs.ErrSymbolNotFound)
+		return "", fmt.Errorf("okx spot: unknown instrument %s: %w", id, errs.ErrSymbolNotFound)
 	}
 	return inst.VenueSymbol, nil
 }
 
+func rejectDerivativeOrderFields(req model.OrderRequest) error {
+	if req.ReduceOnly {
+		return fmt.Errorf("okx spot: reduce-only orders are not supported: %w", errs.ErrNotSupported)
+	}
+	if req.PositionSide != enums.PosNet {
+		return fmt.Errorf("okx spot: position side is not supported: %w", errs.ErrNotSupported)
+	}
+	return nil
+}
+
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if err := rejectDerivativeOrderFields(req); err != nil {
+		return nil, err
+	}
 	instID, err := c.instID(req.InstrumentID)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 
 	r := &okx.OrderRequest{
 		InstId:  instID,
-		TdMode:  c.tdMode, // per-order margin mode is an OKX divergence
+		TdMode:  spotTdMode,
 		Side:    side,
 		OrdType: ordType,
 		Sz:      req.Quantity.String(),
@@ -88,32 +88,24 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 		px := req.Price.String()
 		r.Px = &px
 	}
-	if req.PositionSide != enums.PosNet {
-		ps := positionSideToOKX(req.PositionSide)
-		r.PosSide = &ps
-	}
-	if req.ReduceOnly {
-		ro := true
-		r.ReduceOnly = &ro
-	}
 
 	ids, err := c.rest.PlaceOrder(ctx, r)
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
-		return nil, fmt.Errorf("okx: empty order response")
+		return nil, fmt.Errorf("okx spot: empty order response")
+	}
+	if err := checkSCode(ids); err != nil {
+		return nil, err
 	}
 	oid := ids[0]
-	// OKX returns a per-order sCode; non-"0" means the order was rejected.
-	if oid.SCode != "" && oid.SCode != "0" {
-		return nil, errs.NewExchangeError(venueName, oid.SCode, oid.SMsg, nil)
-	}
-
 	now := c.clk.Now()
 	if req.ClientID == "" {
 		req.ClientID = oid.ClOrdId
 	}
+	req.PositionSide = enums.PosNet
+	req.ReduceOnly = false
 	return &model.Order{
 		Request:      req,
 		VenueOrderID: oid.OrdId,
@@ -136,13 +128,11 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
-	// OKX has no single "cancel all by instrument" REST endpoint in this SDK;
-	// fetch open orders and cancel them in a batch.
 	instID, err := c.instID(id)
 	if err != nil {
 		return err
 	}
-	instType := instTypeSwap
+	instType := instTypeSpot
 	orders, err := c.rest.GetOrders(ctx, &instType, &instID)
 	if err != nil {
 		return err
@@ -167,9 +157,18 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	newSz := newQty.String()
-	newPx := newPrice.String()
-	r := &okx.ModifyOrderRequest{InstId: instID, OrdId: &venueOrderID, NewSz: &newSz, NewPx: &newPx}
+	r := &okx.ModifyOrderRequest{InstId: instID, OrdId: &venueOrderID}
+	if !newQty.IsZero() {
+		newSz := newQty.String()
+		r.NewSz = &newSz
+	}
+	if !newPrice.IsZero() {
+		newPx := newPrice.String()
+		r.NewPx = &newPx
+	}
+	if r.NewSz == nil && r.NewPx == nil {
+		return nil, fmt.Errorf("okx spot: modify requires price or quantity: %w", errs.ErrNotSupported)
+	}
 	ids, err := c.rest.ModifyOrder(ctx, r)
 	if err != nil {
 		return nil, err
@@ -182,7 +181,7 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 		vid = ids[0].OrdId
 	}
 	return &model.Order{
-		Request:      model.OrderRequest{InstrumentID: id},
+		Request:      model.OrderRequest{InstrumentID: id, PositionSide: enums.PosNet},
 		VenueOrderID: vid,
 		UpdatedAt:    c.clk.Now(),
 	}, nil
@@ -193,7 +192,7 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	if err != nil {
 		return nil, err
 	}
-	instType := instTypeSwap
+	instType := instTypeSpot
 	orders, err := c.rest.GetOrders(ctx, &instType, &instID)
 	if err != nil {
 		return nil, err
@@ -205,11 +204,8 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	return out, nil
 }
 
-// OrderReports returns every pending SWAP order across all instruments in one
-// call. OKX's orders-pending endpoint returns the full set when instId is
-// omitted (nil), which is the venue-wide reconciliation feed.
 func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, error) {
-	instType := instTypeSwap
+	instType := instTypeSpot
 	orders, err := c.rest.GetOrders(ctx, &instType, nil)
 	if err != nil {
 		return nil, err
@@ -223,8 +219,6 @@ func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, erro
 
 func (c *executionClient) Events() <-chan contract.ExecEvent { return c.stream.C() }
 
-// emit blocks under backpressure (never dropping order/fill updates), no-op
-// after Close.
 func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(ev) }
 
 func (c *executionClient) Close() error {

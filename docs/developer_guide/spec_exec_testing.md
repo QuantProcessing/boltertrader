@@ -47,6 +47,17 @@ For Binance Demo:
 - optional `BINANCE_DEMO_MAX_NOTIONAL_USDT`, default `100`
 - optional `BINANCE_DEMO_ORDER_QTY`, default automatic safe quantity
 
+For OKX Demo:
+
+- `OKX_DEMO_API_KEY`
+- `OKX_DEMO_API_SECRET`
+- `OKX_DEMO_API_PASSPHRASE`
+- optional `OKX_DEMO_MAX_NOTIONAL_USDT`, default `100`
+- optional `OKX_DEMO_SPOT_SYMBOL`, default `ETH-USDT`
+- optional `OKX_DEMO_PERP_SYMBOL`, default `ETH-USDT-SWAP`
+- optional `OKX_DEMO_HOST_PROFILE`, default `global`; use `eea` for OKX's EEA
+  Demo hosts, or `custom` with explicit REST/WS overrides
+
 Proxy configuration is command-local. The SDK reads `PROXY`; inherited shell
 variables such as `ALL_PROXY` are not part of the test contract.
 
@@ -60,12 +71,22 @@ make test-binance-demo-runtime-perp
 make test-binance-demo-spot-data
 make test-binance-demo-spot
 make test-binance-demo-acceptance
+make test-okx-demo-spot
+make test-okx-demo-runtime-spot
+make test-okx-demo-perp
+make test-okx-demo-runtime-perp
+make test-okx-demo-acceptance
 ```
 
 `make test-binance-demo-spot-data` is read-only and enables
 `BOLTER_ENABLE_LIVE_READ_TESTS=1` for the Spot Demo data smoke. Spot and perp
 write tests use `BINANCE_DEMO_API_KEY` and `BINANCE_DEMO_API_SECRET`; they are
 not called by `make test`.
+
+`make test-okx-demo-spot` and `make test-okx-demo-perp` are adapter-level OKX
+Demo write gates. `make test-okx-demo-runtime-spot` and
+`make test-okx-demo-runtime-perp` run the same product flows through
+`runtime.TradingNode`. They are not called by `make test`.
 
 ## Risk And Reconciliation
 

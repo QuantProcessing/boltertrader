@@ -1,4 +1,4 @@
-.PHONY: test test-race test-core test-adapter test-sdk test-live-read test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance
+.PHONY: test test-race test-core test-adapter test-sdk test-live-read test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance
 
 test:
 	go test ./...
@@ -33,3 +33,19 @@ test-binance-demo-spot:
 	go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
 
 test-binance-demo-acceptance: test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot
+
+test-okx-demo: test-okx-demo-acceptance
+
+test-okx-demo-spot:
+	go test -run TestOKXSpotDemoExecE2E ./adapter/okx/spot/ -count=1 -timeout=3m
+
+test-okx-demo-runtime-spot:
+	go test -run TestOKXSpotDemoRuntimeE2E ./adapter/okx/spot/ -count=1 -timeout=3m
+
+test-okx-demo-perp:
+	go test -run TestOKXPerpDemoExecE2E ./adapter/okx/perp/ -count=1 -timeout=3m
+
+test-okx-demo-runtime-perp:
+	go test -run TestOKXPerpDemoRuntimeE2E ./adapter/okx/perp/ -count=1 -timeout=3m
+
+test-okx-demo-acceptance: test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp

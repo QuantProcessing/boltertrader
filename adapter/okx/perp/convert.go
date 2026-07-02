@@ -2,8 +2,9 @@
 // venue-neutral core/contract interfaces over sdk/okx, absorbing OKX's
 // divergences from a typical REST venue:
 //
-//   - symbol identity: neutral "BTC-USDT" <-> OKX InstId "BTC-USDT-SWAP", plus
-//     an integer InstIdCode carried on the instrument;
+//   - product boundary: first-phase runtime support is USDT-linear SWAP only;
+//   - symbol identity: neutral "BTC-USDT" <-> OKX InstId "BTC-USDT-SWAP",
+//     plus an integer InstIdCode carried on the instrument;
 //   - TimeInForce is FOLDED into ordType ("limit"/"market"/"post_only"/"fok"/
 //     "ioc") rather than a separate field — the single hardest mapping;
 //   - margin mode (TdMode) is a per-order field (defaults to cross here);
@@ -26,6 +27,10 @@ const venueName = "OKX"
 const (
 	instTypeSwap = "SWAP"
 	swapSuffix   = "-SWAP"
+
+	defaultDerivativeTdMode = "cross"
+	tdModeIsolated          = "isolated"
+	usdtSettlement          = "USDT"
 )
 
 // neutralToInstID converts a neutral symbol ("BTC-USDT") to an OKX SWAP InstId
@@ -35,6 +40,62 @@ func neutralToInstID(neutral string) string { return neutral + swapSuffix }
 // instIDToNeutral strips the "-SWAP" suffix to recover the neutral symbol.
 func instIDToNeutral(instID string) string {
 	return strings.TrimSuffix(instID, swapSuffix)
+}
+
+func isSupportedUSDTLinearSwapInstID(instID string) bool {
+	return strings.HasSuffix(strings.ToUpper(instID), "-"+usdtSettlement+swapSuffix)
+}
+
+func isSupportedUSDTLinearSwap(in *okxInstrumentShape) bool {
+	if in == nil || in.instType() != instTypeSwap || !isSupportedUSDTLinearSwapInstID(in.instID()) {
+		return false
+	}
+	if quote := in.quoteCcy(); quote != "" && quote != usdtSettlement {
+		return false
+	}
+	if settle := in.settleCcy(); settle != "" && settle != usdtSettlement {
+		return false
+	}
+	return true
+}
+
+type okxInstrumentShape struct {
+	InstId    string
+	InstType  string
+	QuoteCcy  string
+	SettCcy   string
+	SettleCcy string
+}
+
+func (s *okxInstrumentShape) instID() string {
+	return strings.ToUpper(strings.TrimSpace(s.InstId))
+}
+
+func (s *okxInstrumentShape) instType() string {
+	return strings.ToUpper(strings.TrimSpace(s.InstType))
+}
+
+func (s *okxInstrumentShape) quoteCcy() string {
+	return strings.ToUpper(strings.TrimSpace(s.QuoteCcy))
+}
+
+func (s *okxInstrumentShape) settleCcy() string {
+	settle := strings.TrimSpace(s.SettleCcy)
+	if settle == "" {
+		settle = strings.TrimSpace(s.SettCcy)
+	}
+	return strings.ToUpper(settle)
+}
+
+func normalizeDerivativeTdMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", defaultDerivativeTdMode:
+		return defaultDerivativeTdMode, nil
+	case tdModeIsolated:
+		return tdModeIsolated, nil
+	default:
+		return "", fmt.Errorf("okx: unsupported derivative tdMode %q: %w", mode, errs.ErrNotSupported)
+	}
 }
 
 // --- Side -------------------------------------------------------------------

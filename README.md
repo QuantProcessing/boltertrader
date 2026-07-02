@@ -202,6 +202,43 @@ go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeou
 
 `BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
 
+OKX Demo write/E2E tests use OKX simulated trading credentials, not production
+`OKX_API_*` credentials. Create the API key, secret, and passphrase from OKX's
+Demo Trading environment. The implemented OKX Demo acceptance covers pure-cash
+Spot and USDT-linear SWAP perps only; Spot margin, inverse swaps, dated futures,
+options, spreads, and production live writes are separate targets.
+
+```sh
+OKX_DEMO_API_KEY=... \
+OKX_DEMO_API_SECRET=... \
+OKX_DEMO_API_PASSPHRASE=... \
+OKX_DEMO_SPOT_SYMBOL=ETH-USDT \
+OKX_DEMO_PERP_SYMBOL=ETH-USDT-SWAP \
+make test-okx-demo-acceptance
+```
+
+`OKX_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
+`OKX_DEMO_HOST_PROFILE` defaults to `global`; set it to `eea` for OKX's EEA
+Demo hosts, or `custom` with `OKX_DEMO_REST_BASE_URL` and
+`OKX_DEMO_WS_BASE_URL` for explicit endpoint overrides. The Demo tests skip
+unless all three `OKX_DEMO_*` credentials are present.
+
+Product-qualified OKX targets are:
+
+```sh
+make test-okx-demo-spot
+make test-okx-demo-runtime-spot
+make test-okx-demo-perp
+make test-okx-demo-runtime-perp
+```
+
+The adapter-level tests place/cancel a resting order, fill a bounded IOC order,
+and clean up created Spot base deltas or Perp exposure. Runtime-level tests run
+through `runtime.TradingNode`, call `node.Resync` before and after writes, and
+assert runtime cache/portfolio observations. If direct access to OKX Demo hosts
+is unavailable, pass a command-local `PROXY=...`; inherited shell proxy
+variables are not part of the test contract.
+
 Spot Demo data acceptance is read-only and uses the live-read gate:
 
 ```sh

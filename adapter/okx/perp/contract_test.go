@@ -3,6 +3,8 @@ package perp
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -123,6 +125,33 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	}
 }
 
+func TestPrivateEventTranslationSkipsUnsupportedInverseSwap(t *testing.T) {
+	order := &okx.Order{
+		InstId:    "BTC-USD-SWAP",
+		InstType:  "SWAP",
+		OrdId:     "inverse-order",
+		Side:      "buy",
+		OrdType:   "limit",
+		State:     "filled",
+		Sz:        "1",
+		AccFillSz: "1",
+		FillSz:    "1",
+	}
+	if got := execEventsFromOrder(order, stubResolver{}); len(got) != 0 {
+		t.Fatalf("inverse SWAP order produced %d events, want 0", len(got))
+	}
+
+	position := &okx.Position{
+		InstId:   "BTC-USD-SWAP",
+		InstType: "SWAP",
+		PosSide:  "net",
+		Pos:      "1",
+	}
+	if got := accountEventsFromPosition(position, stubResolver{}); len(got) != 0 {
+		t.Fatalf("inverse SWAP position produced %d events, want 0", len(got))
+	}
+}
+
 // --- 3. Signed short position -----------------------------------------------
 
 const goldenShortPosition = `{
@@ -184,9 +213,115 @@ func TestNonSwapSkipped(t *testing.T) {
 	}
 }
 
+func TestInstrumentParsing_SkipsInverseCoinMarginedSwap(t *testing.T) {
+	in := &okx.Instrument{
+		InstId: "BTC-USD-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USD",
+		SettleCcy: "BTC", TickSz: "0.1", LotSz: "1", MinSz: "1",
+	}
+	if instrumentFromOKX(in) != nil {
+		t.Fatal("coin-margined inverse SWAP should be excluded from OKX perp first-phase support")
+	}
+}
+
+func TestInstrumentParsing_SkipsNonUSDTSettlement(t *testing.T) {
+	in := &okx.Instrument{
+		InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
+		SettleCcy: "BTC", TickSz: "0.1", LotSz: "1", MinSz: "1",
+	}
+	if instrumentFromOKX(in) != nil {
+		t.Fatal("SWAP with non-USDT settlement should be excluded")
+	}
+}
+
+func TestDerivativeTdModeDefaultsAndValidation(t *testing.T) {
+	got, err := normalizeDerivativeTdMode("")
+	if err != nil {
+		t.Fatalf("default tdMode: %v", err)
+	}
+	if got != "cross" {
+		t.Fatalf("default tdMode=%q, want cross", got)
+	}
+	got, err = normalizeDerivativeTdMode("isolated")
+	if err != nil {
+		t.Fatalf("isolated tdMode: %v", err)
+	}
+	if got != "isolated" {
+		t.Fatalf("tdMode=%q, want isolated", got)
+	}
+	if _, err := normalizeDerivativeTdMode("cash"); err == nil {
+		t.Fatal("cash tdMode must not be accepted by perp adapter")
+	}
+}
+
+func TestSubmitUsesConfiguredTdMode(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v5/trade/order" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var req okx.OrderRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.TdMode != "isolated" {
+			t.Fatalf("tdMode=%q, want isolated", req.TdMode)
+		}
+		if req.InstId != inst.VenueSymbol {
+			t.Fatalf("instId=%q, want %q", req.InstId, inst.VenueSymbol)
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"ordId":"venue-order-1","clOrdId":"client-1","sCode":"0"}]}`))
+	}))
+	defer server.Close()
+
+	rest := okx.NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL(server.URL)
+	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewRealClock(), "isolated")
+	got, err := exec.Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst.ID,
+		ClientID:     "client-1",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     dd("1"),
+		Price:        dd("100"),
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if got.VenueOrderID != "venue-order-1" {
+		t.Fatalf("venue order id=%q", got.VenueOrderID)
+	}
+}
+
+func TestSetLeverageUsesConfiguredTdMode(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v5/account/set-leverage" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		var req okx.SetLeverage
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.MgnMode != "isolated" {
+			t.Fatalf("mgnMode=%q, want isolated", req.MgnMode)
+		}
+		if req.InstId != inst.VenueSymbol {
+			t.Fatalf("instId=%q, want %q", req.InstId, inst.VenueSymbol)
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","lever":5,"mgnMode":"isolated"}]}`))
+	}))
+	defer server.Close()
+
+	rest := okx.NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL(server.URL)
+	account := newAccountClient(rest, testOKXProvider(inst), clock.NewRealClock(), "isolated")
+	if err := account.SetLeverage(context.Background(), inst.ID, dd("5")); err != nil {
+		t.Fatalf("SetLeverage: %v", err)
+	}
+}
+
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
-	account := newAccountClient(nil, nil, clock.NewRealClock())
+	account := newAccountClient(nil, nil, clock.NewRealClock(), "")
 	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
 		Venue: "OKX",
 		Market: contracttest.MarketCapabilities{
@@ -221,4 +356,25 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			}},
 		},
 	})
+}
+
+func testOKXLinearInstrument(t *testing.T) *model.Instrument {
+	t.Helper()
+	code := int64(123456)
+	inst := instrumentFromOKX(&okx.Instrument{
+		InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
+		SettleCcy: "USDT", TickSz: "0.1", LotSz: "1", MinSz: "1", InstIdCode: &code,
+	})
+	if inst == nil {
+		t.Fatal("test instrument was filtered")
+	}
+	return inst
+}
+
+func testOKXProvider(inst *model.Instrument) *instrumentProvider {
+	provider := newInstrumentProvider()
+	provider.byID[inst.ID.String()] = inst
+	provider.byInstID[inst.VenueSymbol] = inst.ID
+	provider.all = []*model.Instrument{inst}
+	return provider
 }

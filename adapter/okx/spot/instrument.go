@@ -1,7 +1,8 @@
-package perp
+package spot
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -10,12 +11,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// instrumentProvider is the OKX implementation of model.InstrumentProvider,
-// built by parsing GetInstruments("SWAP") once and caching the result.
 type instrumentProvider struct {
 	mu       sync.RWMutex
-	byID     map[string]*model.Instrument  // key: InstrumentID.String()
-	byInstID map[string]model.InstrumentID // key: OKX InstId e.g. "BTC-USDT-SWAP"
+	byID     map[string]*model.Instrument
+	byInstID map[string]model.InstrumentID
 	all      []*model.Instrument
 }
 
@@ -26,9 +25,8 @@ func newInstrumentProvider() *instrumentProvider {
 	}
 }
 
-// Load fetches SWAP instruments and populates the registry.
 func (p *instrumentProvider) Load(ctx context.Context, client *okx.Client) error {
-	insts, err := client.GetInstruments(ctx, instTypeSwap)
+	insts, err := client.GetInstruments(ctx, instTypeSpot)
 	if err != nil {
 		return err
 	}
@@ -65,8 +63,6 @@ func (p *instrumentProvider) All() []*model.Instrument {
 	return out
 }
 
-// resolveInstID maps an OKX InstId to its neutral InstrumentID, falling back to
-// a best-effort neutral id so events are never dropped.
 func (p *instrumentProvider) resolveInstID(instID string) model.InstrumentID {
 	p.mu.RLock()
 	id, ok := p.byInstID[instID]
@@ -74,52 +70,28 @@ func (p *instrumentProvider) resolveInstID(instID string) model.InstrumentID {
 	if ok {
 		return id
 	}
-	return model.InstrumentID{Venue: venueName, Symbol: instIDToNeutral(instID), Kind: enums.KindPerp}
+	return model.InstrumentID{Venue: venueName, Symbol: instID, Kind: enums.KindSpot}
 }
 
-// instrumentFromOKX translates one supported OKX USDT-linear SWAP Instrument into a neutral
-// Instrument. The OKX InstIdCode populates VenueIntCode — the divergence the
-// contract test verifies. Returns nil for non-SWAP, inverse, or coin-margined
-// entries outside this adapter's first-phase runtime boundary.
 func instrumentFromOKX(in *okx.Instrument) *model.Instrument {
-	if !isSupportedUSDTLinearSwap(okxInstrumentShapeFromInstrument(in)) {
+	if in == nil || in.InstType != instTypeSpot || in.InstId == "" || in.BaseCcy == "" || in.QuoteCcy == "" {
 		return nil
 	}
-	neutral := instIDToNeutral(in.InstId)
-	id := model.InstrumentID{Venue: venueName, Symbol: neutral, Kind: enums.KindPerp}
-
-	settle := in.SettleCcy
-	if settle == "" {
-		settle = in.SettCcy
+	if in.State != "" && !strings.EqualFold(in.State, "live") {
+		return nil
 	}
-
 	tick := dec(in.TickSz)
 	return &model.Instrument{
-		ID:             id,
+		ID:             model.InstrumentID{Venue: venueName, Symbol: in.InstId, Kind: enums.KindSpot},
 		Base:           in.BaseCcy,
 		Quote:          in.QuoteCcy,
-		Settle:         settle,
-		VenueSymbol:    in.InstId,     // "BTC-USDT-SWAP"
-		VenueIntCode:   in.InstIdCode, // OKX integer code (nil-safe)
-		AssetIndex:     nil,           // OKX is not asset-index keyed
+		Settle:         in.QuoteCcy,
+		VenueSymbol:    in.InstId,
 		PriceTick:      tick,
 		SizeStep:       dec(in.LotSz),
 		MinQty:         dec(in.MinSz),
-		MinNotional:    decimal.Zero, // OKX has no explicit min-notional filter
+		MinNotional:    decimal.Zero,
 		PricePrecision: int(tick.Exponent() * -1),
-		PositionMode:   model.HedgeCapable, // OKX supports net or long/short mode
-	}
-}
-
-func okxInstrumentShapeFromInstrument(in *okx.Instrument) *okxInstrumentShape {
-	if in == nil {
-		return nil
-	}
-	return &okxInstrumentShape{
-		InstId:    in.InstId,
-		InstType:  in.InstType,
-		QuoteCcy:  in.QuoteCcy,
-		SettCcy:   in.SettCcy,
-		SettleCcy: in.SettleCcy,
+		PositionMode:   model.NetOnly,
 	}
 }

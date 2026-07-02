@@ -16,6 +16,7 @@ func TestWSClient_WithCredentials(t *testing.T) {
 	require.Same(t, client, got)
 	require.True(t, client.IsPrivate)
 	require.Equal(t, WSPrivateBaseURL, client.URL)
+	require.Equal(t, Production, client.Environment)
 	require.Equal(t, "api-key", client.ApiKey)
 	require.Equal(t, "secret-key", client.SecretKey)
 	require.Equal(t, "passphrase", client.Passphrase)

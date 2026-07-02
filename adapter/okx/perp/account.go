@@ -19,14 +19,20 @@ type accountClient struct {
 	rest     *okx.Client
 	provider *instrumentProvider
 	clk      clock.Clock
+	tdMode   string
 	stream   *wsstream.Stream[contract.AccountEvent]
 }
 
-func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock) *accountClient {
+func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string) *accountClient {
+	normalized, err := normalizeDerivativeTdMode(tdMode)
+	if err != nil {
+		normalized = defaultDerivativeTdMode
+	}
 	return &accountClient{
 		rest:     rest,
 		provider: provider,
 		clk:      clk,
+		tdMode:   normalized,
 		stream:   wsstream.New[contract.AccountEvent](256),
 	}
 }
@@ -83,7 +89,7 @@ func (c *accountClient) SetLeverage(ctx context.Context, id model.InstrumentID, 
 	_, err := c.rest.SetLeverage(ctx, okx.SetLeverage{
 		InstId:  inst.VenueSymbol,
 		Lever:   int(leverage.IntPart()),
-		MgnMode: "cross",
+		MgnMode: c.tdMode,
 	})
 	return err
 }
