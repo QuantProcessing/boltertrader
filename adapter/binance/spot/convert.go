@@ -50,9 +50,9 @@ func orderTypeToBinance(t enums.OrderType, tif enums.TimeInForce) (string, error
 		return "STOP_LOSS", nil
 	case enums.TypeStopLimit:
 		return "STOP_LOSS_LIMIT", nil
-	case enums.TypeTakeProfitMarket:
+	case enums.TypeMarketIfTouched:
 		return "TAKE_PROFIT", nil
-	case enums.TypeTakeProfitLimit:
+	case enums.TypeLimitIfTouched:
 		return "TAKE_PROFIT_LIMIT", nil
 	default:
 		return "", fmt.Errorf("binance spot: unsupported order type %v: %w", t, errs.ErrNotSupported)
@@ -70,9 +70,9 @@ func orderTypeFromBinance(s string) enums.OrderType {
 	case "STOP_LOSS_LIMIT":
 		return enums.TypeStopLimit
 	case "TAKE_PROFIT":
-		return enums.TypeTakeProfitMarket
+		return enums.TypeMarketIfTouched
 	case "TAKE_PROFIT_LIMIT":
-		return enums.TypeTakeProfitLimit
+		return enums.TypeLimitIfTouched
 	default:
 		return enums.TypeUnknown
 	}
@@ -141,7 +141,7 @@ func typeNeedsTIF(t enums.OrderType, nativeType string) bool {
 		return false
 	}
 	switch t {
-	case enums.TypeLimit, enums.TypeStopLimit, enums.TypeTakeProfitLimit:
+	case enums.TypeLimit, enums.TypeStopLimit, enums.TypeLimitIfTouched:
 		return true
 	default:
 		return false

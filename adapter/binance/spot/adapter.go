@@ -10,15 +10,18 @@ import (
 )
 
 const (
-	demoRESTBaseURL  = "https://demo-api.binance.com"
-	demoWSBaseURL    = "wss://demo-stream.binance.com:9443/ws"
-	demoWSAPIBaseURL = "wss://demo-ws-api.binance.com/ws-api/v3"
+	demoRESTBaseURL  = sdkspot.DemoBaseURL
+	demoWSBaseURL    = sdkspot.DemoWSBaseURL
+	demoWSAPIBaseURL = sdkspot.DemoWSAPIBaseURL
 )
 
 type Config struct {
 	APIKey    string
 	APISecret string
-	Demo      bool
+	// Environment selects Binance production or Demo endpoints. Zero value is
+	// LIVE; Demo is retained below as a compatibility shortcut.
+	Environment sdkspot.Environment
+	Demo        bool
 
 	DemoAPIKey    string
 	DemoAPISecret string
@@ -51,16 +54,24 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		clk = clock.NewRealClock()
 	}
 
+	env := cfg.Environment
+	if env == "" && cfg.Demo {
+		env = sdkspot.EnvironmentDemo
+	}
+	profile, err := sdkspot.EndpointProfileForEnvironment(env)
+	if err != nil {
+		return nil, err
+	}
 	apiKey, apiSecret := cfg.APIKey, cfg.APISecret
 	rest := sdkspot.NewClient()
 	wsMarket := sdkspot.NewWsMarketClient(ctx)
 	wsAPI := sdkspot.NewWsAPIClient(ctx)
-	if cfg.Demo {
+	if sdkspot.DefaultEnvironment(env) == sdkspot.EnvironmentDemo {
 		apiKey, apiSecret = cfg.DemoAPIKey, cfg.DemoAPISecret
-		rest.WithBaseURL(demoRESTBaseURL)
-		wsMarket.WsClient.URL = demoWSBaseURL
-		wsAPI.WithURL(demoWSAPIBaseURL)
 	}
+	rest.WithBaseURL(profile.RESTBaseURL)
+	wsMarket.WsClient.URL = profile.WSBaseURL
+	wsAPI.WithURL(profile.WSAPIBaseURL)
 	rest.WithCredentials(apiKey, apiSecret)
 	if cfg.HTTPClient != nil {
 		rest.HTTPClient = cfg.HTTPClient
@@ -88,7 +99,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		wsAPI:     wsAPI,
 		apiKey:    apiKey,
 		apiSecret: apiSecret,
-		demo:      cfg.Demo,
+		demo:      sdkspot.DefaultEnvironment(env) == sdkspot.EnvironmentDemo,
 	}, nil
 }
 

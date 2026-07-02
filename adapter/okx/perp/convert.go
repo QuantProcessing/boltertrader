@@ -129,7 +129,16 @@ func sideFromOKX(s string) enums.OrderSide {
 func ordTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
 	switch t {
 	case enums.TypeMarket:
-		return "market", nil
+		switch tif {
+		case enums.TifUnknown, enums.TifGTC:
+			return "market", nil
+		case enums.TifIOC:
+			return "optimal_limit_ioc", nil
+		case enums.TifFOK:
+			return "", fmt.Errorf("okx: market+FOK is unsupported: %w", errs.ErrNotSupported)
+		default:
+			return "", fmt.Errorf("okx: unsupported TIF %v: %w", tif, errs.ErrNotSupported)
+		}
 	case enums.TypeLimit:
 		switch tif {
 		case enums.TifGTC, enums.TifUnknown:
@@ -144,10 +153,15 @@ func ordTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
 			return "", fmt.Errorf("okx: unsupported TIF %v: %w", tif, errs.ErrNotSupported)
 		}
 	default:
-		// OKX trigger families are separate algo endpoints, out of the portable
-		// contract for v1.
 		return "", fmt.Errorf("okx: unsupported order type %v: %w", t, errs.ErrNotSupported)
 	}
+}
+
+func regularOrdTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
+	if isConditionalOrderType(t) {
+		return "", fmt.Errorf("okx: conditional order type %v must use algo endpoint: %w", t, errs.ErrNotSupported)
+	}
+	return ordTypeToOKX(t, tif)
 }
 
 // ordTypeFromOKX recovers (OrderType, TimeInForce) from OKX's ordType.
@@ -155,6 +169,8 @@ func ordTypeFromOKX(s string) (enums.OrderType, enums.TimeInForce) {
 	switch strings.ToLower(s) {
 	case "market":
 		return enums.TypeMarket, enums.TifUnknown
+	case "optimal_limit_ioc":
+		return enums.TypeMarket, enums.TifIOC
 	case "limit":
 		return enums.TypeLimit, enums.TifGTC
 	case "ioc":
@@ -166,6 +182,48 @@ func ordTypeFromOKX(s string) (enums.OrderType, enums.TimeInForce) {
 	default:
 		return enums.TypeUnknown, enums.TifUnknown
 	}
+}
+
+func isConditionalOrderType(t enums.OrderType) bool {
+	switch t {
+	case enums.TypeStopMarket, enums.TypeStopLimit, enums.TypeMarketIfTouched,
+		enums.TypeLimitIfTouched, enums.TypeTrailingStopMarket:
+		return true
+	default:
+		return false
+	}
+}
+
+func algoOrdTypeToOKX(t enums.OrderType) (string, error) {
+	switch t {
+	case enums.TypeStopMarket, enums.TypeStopLimit, enums.TypeMarketIfTouched, enums.TypeLimitIfTouched:
+		return "trigger", nil
+	case enums.TypeTrailingStopMarket:
+		return "move_order_stop", nil
+	default:
+		return "", fmt.Errorf("okx: order type %v is not an algo order: %w", t, errs.ErrNotSupported)
+	}
+}
+
+func algoOrderPx(t enums.OrderType, price decimal.Decimal) (string, bool) {
+	switch t {
+	case enums.TypeStopLimit, enums.TypeLimitIfTouched:
+		if price.IsZero() {
+			return "", false
+		}
+		return price.String(), true
+	case enums.TypeStopMarket, enums.TypeMarketIfTouched:
+		return "-1", true
+	default:
+		return "", false
+	}
+}
+
+func callbackRatioFromBps(bps decimal.Decimal) (string, bool) {
+	if bps.IsZero() {
+		return "", false
+	}
+	return bps.Div(decimal.NewFromInt(10000)).String(), true
 }
 
 // --- OrderStatus ------------------------------------------------------------

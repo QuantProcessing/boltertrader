@@ -63,3 +63,41 @@ func TestNewDemoUsesSeparateCredentialsAndNoProductionFallback(t *testing.T) {
 		t.Fatalf("unexpected Demo account websocket URL: %s", accountWS.BaseURL)
 	}
 }
+
+func TestNewEnvironmentDemoUsesSeparateCredentialsAndNoProductionFallback(t *testing.T) {
+	const exchangeInfo = `{"timezone":"UTC","serverTime":1,"symbols":[{"symbol":"BTCUSDT","contractType":"PERPETUAL","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"},{"filterType":"MIN_NOTIONAL","notional":"5"}]}]}`
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme+"://"+r.URL.Host != sdkperp.DemoBaseURL {
+			t.Fatalf("adapter Demo REST must not use production host: %s", r.URL.String())
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(exchangeInfo)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	a, err := New(context.Background(), Config{
+		APIKey:        "prod-key",
+		APISecret:     "prod-secret",
+		Environment:   sdkperp.EnvironmentDemo,
+		DemoAPIKey:    "demo-key",
+		DemoAPISecret: "demo-secret",
+		HTTPClient:    httpClient,
+	})
+	if err != nil {
+		t.Fatalf("New Demo adapter: %v", err)
+	}
+	defer a.Close()
+
+	if a.rest.BaseURL != sdkperp.DemoBaseURL {
+		t.Fatalf("expected Demo REST base URL %s, got %s", sdkperp.DemoBaseURL, a.rest.BaseURL)
+	}
+	if a.apiKey != "demo-key" || a.apiSecret != "demo-secret" {
+		t.Fatalf("Demo adapter must use Demo credentials, got key=%q secret=%q", a.apiKey, a.apiSecret)
+	}
+	if a.profile.RESTBaseURL != sdkperp.DemoBaseURL {
+		t.Fatalf("profile=%+v, want Demo profile", a.profile)
+	}
+}

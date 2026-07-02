@@ -17,14 +17,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestBinanceDemoExecE2E(t *testing.T) {
+func TestBinanceDemoExecAcceptance(t *testing.T) {
 	testenv.RequireBinanceDemoWrite(t)
-	runBinanceDemoExecE2E(t)
+	runBinanceDemoExecAcceptance(t)
 }
 
 const demoDefaultMaxNotionalUSDT = "100"
 
-func runBinanceDemoExecE2E(t *testing.T) {
+func runBinanceDemoExecAcceptance(t *testing.T) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -60,7 +60,7 @@ func runBinanceDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
-	spec, err := demoE2ESymbolSpecFromExchangeInfo(info, symbolInput)
+	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
 	if err != nil {
 		t.Fatalf("resolve Demo symbol: %v", err)
 	}
@@ -76,7 +76,7 @@ func runBinanceDemoExecE2E(t *testing.T) {
 	if restingPrice.LessThanOrEqual(decimal.Zero) {
 		t.Fatalf("computed non-positive resting price %s from reference %s", restingPrice, refPrice)
 	}
-	qty, err := selectDemoE2EOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
 	if err != nil {
 		t.Fatalf("select safe Demo order quantity: %v", err)
 	}
@@ -85,16 +85,16 @@ func runBinanceDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping Binance Demo E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping Binance Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo position preflight")
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
-		t.Skipf("skipping Binance Demo E2E: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Skipf("skipping Binance Demo acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
 	}
 
-	cleanup := newDemoE2ECleanupState(spec.VenueSymbol, qty)
+	cleanup := newDemoAcceptanceCleanupState(spec.VenueSymbol, qty)
 	defer func() {
 		if !cleanup.Needed() {
 			return
@@ -102,7 +102,7 @@ func runBinanceDemoExecE2E(t *testing.T) {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelCleanup()
 		meta := cleanup.Metadata()
-		if err := cleanupBinanceDemoE2E(cleanupCtx, adapter, instID, &meta); err != nil {
+		if err := cleanupBinanceDemoAcceptance(cleanupCtx, adapter, instID, &meta); err != nil {
 			t.Fatalf("%v\n%s", err, meta.Remediation())
 		}
 	}()
@@ -392,7 +392,7 @@ func demoCurrentExposure(ctx context.Context, adapter *Adapter, id model.Instrum
 	return exposure, nil
 }
 
-func cleanupBinanceDemoE2E(ctx context.Context, adapter *Adapter, id model.InstrumentID, meta *demoE2ECleanupMetadata) error {
+func cleanupBinanceDemoAcceptance(ctx context.Context, adapter *Adapter, id model.InstrumentID, meta *demoAcceptanceCleanupMetadata) error {
 	cancelErr := adapter.Execution.CancelAll(ctx, id)
 	exposure, err := demoCurrentExposure(ctx, adapter, id)
 	if err != nil {

@@ -32,21 +32,24 @@ func (s OrderSide) String() string {
 }
 
 // OrderType is the normalized order kind. Trigger-based types (stop / take
-// profit) carry their trigger price in model.OrderRequest.TriggerPrice.
+// touched) carry their trigger price in model.OrderRequest.TriggerPrice.
+// Trailing stops carry their optional activation price and callback offset in
+// model.OrderRequest.ActivationPrice and TrailingOffsetBps.
 //
 // Venue mapping (performed in adapters):
 //   - Binance: flat string "LIMIT" / "MARKET" / "STOP_MARKET" / "STOP" /
-//     "TAKE_PROFIT_MARKET" / "TAKE_PROFIT".
+//     "TAKE_PROFIT_MARKET" / "TAKE_PROFIT" / "TRAILING_STOP_MARKET".
 //   - OKX: ordType "limit" / "market" (post_only/fok/ioc are folded TIF — see
-//     TimeInForce). Trigger families are separate algo endpoints.
+//     TimeInForce). Trigger families are separate algo endpoints:
+//     "trigger" / "move_order_stop".
 //   - Hyperliquid: a STRUCT OrderType{Limit{Tif} | Trigger{IsMarket,TriggerPx,Tpsl}}:
 //     TypeLimit            -> Limit{Tif}
 //     TypeMarket           -> Limit{Tif:Ioc} with an aggressive price (HL has
 //     no native market type)
 //     TypeStopMarket       -> Trigger{IsMarket:true,  Tpsl:"sl"}
 //     TypeStopLimit        -> Trigger{IsMarket:false, Tpsl:"sl"}
-//     TypeTakeProfitMarket -> Trigger{IsMarket:true,  Tpsl:"tp"}
-//     TypeTakeProfitLimit  -> Trigger{IsMarket:false, Tpsl:"tp"}
+//     TypeMarketIfTouched  -> Trigger{IsMarket:true,  Tpsl:"tp"}
+//     TypeLimitIfTouched   -> Trigger{IsMarket:false, Tpsl:"tp"}
 type OrderType uint8
 
 const (
@@ -55,8 +58,15 @@ const (
 	TypeLimit
 	TypeStopMarket
 	TypeStopLimit
-	TypeTakeProfitMarket
-	TypeTakeProfitLimit
+	TypeMarketIfTouched
+	TypeLimitIfTouched
+	TypeTrailingStopMarket
+
+	// Deprecated aliases retained for older adapter/runtime callers. NT names
+	// these "market-if-touched" and "limit-if-touched"; venue adapters still
+	// translate them to Binance TAKE_PROFIT* strings where applicable.
+	TypeTakeProfitMarket = TypeMarketIfTouched
+	TypeTakeProfitLimit  = TypeLimitIfTouched
 )
 
 func (t OrderType) String() string {
@@ -69,10 +79,12 @@ func (t OrderType) String() string {
 		return "STOP_MARKET"
 	case TypeStopLimit:
 		return "STOP_LIMIT"
-	case TypeTakeProfitMarket:
-		return "TAKE_PROFIT_MARKET"
-	case TypeTakeProfitLimit:
-		return "TAKE_PROFIT_LIMIT"
+	case TypeMarketIfTouched:
+		return "MARKET_IF_TOUCHED"
+	case TypeLimitIfTouched:
+		return "LIMIT_IF_TOUCHED"
+	case TypeTrailingStopMarket:
+		return "TRAILING_STOP_MARKET"
 	default:
 		return "UNKNOWN"
 	}

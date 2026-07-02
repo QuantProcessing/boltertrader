@@ -18,6 +18,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/QuantProcessing/boltertrader/internal/wsdispatch"
 )
 
 const (
@@ -45,6 +47,7 @@ type WSClient struct {
 	urlRole         wsURLRole
 	explicitURL     bool
 	endpointErr     error
+	dispatcher      *wsdispatch.Dispatcher
 
 	ctx context.Context
 
@@ -91,6 +94,7 @@ func NewWSClient(ctx context.Context) *WSClient {
 		Environment:     Production,
 		DemoHostProfile: DemoHostProfileGlobal,
 		urlRole:         wsURLRolePublic,
+		dispatcher:      wsdispatch.NewDispatcher(),
 	}
 	client.applyEndpointURL()
 	return client
@@ -466,10 +470,38 @@ func (c *WSClient) handleMessage(msg []byte) {
 		c.mu.Unlock()
 
 		if exists {
-			go handler(msg)
+			c.dispatchMessage(handler, msg)
 		} else {
 			c.Logger.Debugw("WS unhandled arg", "arg", *base.Arg)
 		}
+	}
+}
+
+func (c *WSClient) dispatchMessage(handler func([]byte), msg []byte) {
+	if handler == nil {
+		return
+	}
+	copied := append([]byte(nil), msg...)
+	c.dispatcher.Dispatch(func() {
+		handler(copied)
+	})
+}
+
+func (c *WSClient) PauseDispatch() {
+	c.dispatcher.Pause()
+}
+
+func (c *WSClient) ResumeDispatch(beforeDrain func()) {
+	c.dispatcher.Resume(beforeDrain)
+}
+
+func (c *WSClient) Close() {
+	c.mu.Lock()
+	conn := c.Conn
+	c.Conn = nil
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
 }
 

@@ -43,6 +43,7 @@ type WSClient struct {
 	subs map[string]Subscription
 
 	postReconnect func()
+	dispatcher    *wsdispatch.Dispatcher
 
 	// Message handler to be implemented/assigned by the embedding client
 	Handler func([]byte)
@@ -65,6 +66,7 @@ func NewWSClient(ctx context.Context, url string) *WSClient {
 		maxReconnectAttempts: 10,
 		pongInterval:         1 * time.Minute,
 		subs:                 make(map[string]Subscription),
+		dispatcher:           wsdispatch.NewDispatcher(),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -223,10 +225,26 @@ func (c *WSClient) readLoop() {
 			continue
 		}
 
-		if c.Handler != nil {
-			c.Handler(message)
-		}
+		c.dispatchMessage(message)
 	}
+}
+
+func (c *WSClient) dispatchMessage(message []byte) {
+	if c.Handler == nil {
+		return
+	}
+	msg := append([]byte(nil), message...)
+	c.dispatcher.Dispatch(func() {
+		c.Handler(msg)
+	})
+}
+
+func (c *WSClient) PauseDispatch() {
+	c.dispatcher.Pause()
+}
+
+func (c *WSClient) ResumeDispatch(beforeDrain func()) {
+	c.dispatcher.Resume(beforeDrain)
 }
 
 func (c *WSClient) reconnect() {

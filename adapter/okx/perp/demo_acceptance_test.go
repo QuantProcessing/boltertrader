@@ -12,7 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestOKXPerpDemoExecE2E(t *testing.T) {
+func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	cfg := testenv.RequireOKXDemoWrite(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -88,13 +88,13 @@ func TestOKXPerpDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping OKX Perp Demo E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping OKX Perp Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo position preflight")
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
-		t.Skipf("skipping OKX Perp Demo E2E: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Skipf("skipping OKX Perp Demo acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
 	}
 
 	cleanup := newDemoPerpCleanupState(spec, qty)

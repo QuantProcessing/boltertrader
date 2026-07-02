@@ -15,7 +15,7 @@ import (
 
 func demoD(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
-func TestSpotDemoE2ENormalizeSymbol(t *testing.T) {
+func TestSpotDemoAcceptanceNormalizeSymbol(t *testing.T) {
 	cases := map[string]string{
 		"BTC-USDT": "BTCUSDT",
 		"eth_usdt": "ETHUSDT",
@@ -23,13 +23,13 @@ func TestSpotDemoE2ENormalizeSymbol(t *testing.T) {
 		"bnbusdt":  "BNBUSDT",
 	}
 	for input, want := range cases {
-		if got := normalizeDemoE2ESymbol(input); got != want {
-			t.Fatalf("normalizeDemoE2ESymbol(%q)=%q, want %q", input, got, want)
+		if got := normalizeDemoAcceptanceSymbol(input); got != want {
+			t.Fatalf("normalizeDemoAcceptanceSymbol(%q)=%q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestSpotDemoE2ESymbolSpecFromExchangeInfo(t *testing.T) {
+func TestSpotDemoAcceptanceSymbolSpecFromExchangeInfo(t *testing.T) {
 	info := &sdkspot.ExchangeInfoResponse{Symbols: []sdkspot.SymbolInfo{{
 		Symbol:     "ETHUSDT",
 		Status:     "TRADING",
@@ -42,9 +42,9 @@ func TestSpotDemoE2ESymbolSpecFromExchangeInfo(t *testing.T) {
 		},
 	}}}
 
-	spec, err := demoE2ESymbolSpecFromExchangeInfo(info, "eth-usdt")
+	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, "eth-usdt")
 	if err != nil {
-		t.Fatalf("demoE2ESymbolSpecFromExchangeInfo: %v", err)
+		t.Fatalf("demoAcceptanceSymbolSpecFromExchangeInfo: %v", err)
 	}
 	if spec.VenueSymbol != "ETHUSDT" || spec.BaseCurrency != "ETH" || spec.QuoteCurrency != "USDT" {
 		t.Fatalf("unexpected symbol spec identity: %+v", spec)
@@ -55,37 +55,37 @@ func TestSpotDemoE2ESymbolSpecFromExchangeInfo(t *testing.T) {
 	}
 }
 
-func TestSpotDemoE2ESelectOrderQuantityChoosesMinTradableStep(t *testing.T) {
-	spec := demoE2ESymbolSpec{
+func TestSpotDemoAcceptanceSelectOrderQuantityChoosesMinTradableStep(t *testing.T) {
+	spec := demoAcceptanceSymbolSpec{
 		VenueSymbol: "ETHUSDT",
 		SizeStep:    demoD("0.0001"),
 		MinQty:      demoD("0.0001"),
 		MinNotional: demoD("5"),
 	}
 
-	qty, err := selectDemoE2EOrderQuantity(spec, decimal.Zero, demoD("100"), demoD("3000"))
+	qty, err := selectDemoAcceptanceOrderQuantity(spec, decimal.Zero, demoD("100"), demoD("3000"))
 	if err != nil {
-		t.Fatalf("selectDemoE2EOrderQuantity: %v", err)
+		t.Fatalf("selectDemoAcceptanceOrderQuantity: %v", err)
 	}
 	if !qty.Equal(demoD("0.0017")) {
 		t.Fatalf("qty=%s, want 0.0017", qty)
 	}
 }
 
-func TestSpotDemoE2ESelectOrderQuantityRejectsOverMaxNotional(t *testing.T) {
-	spec := demoE2ESymbolSpec{
+func TestSpotDemoAcceptanceSelectOrderQuantityRejectsOverMaxNotional(t *testing.T) {
+	spec := demoAcceptanceSymbolSpec{
 		VenueSymbol: "BTCUSDT",
 		SizeStep:    demoD("0.00001"),
 		MinQty:      demoD("0.00001"),
 		MinNotional: demoD("5"),
 	}
 
-	if _, err := selectDemoE2EOrderQuantity(spec, demoD("0.01"), demoD("100"), demoD("65000")); err == nil {
+	if _, err := selectDemoAcceptanceOrderQuantity(spec, demoD("0.01"), demoD("100"), demoD("65000")); err == nil {
 		t.Fatalf("expected over-max notional rejection")
 	}
 }
 
-func TestSpotDemoE2EDefaultMaxNotionalIs100USDT(t *testing.T) {
+func TestSpotDemoAcceptanceDefaultMaxNotionalIs100USDT(t *testing.T) {
 	t.Setenv("BINANCE_DEMO_MAX_NOTIONAL_USDT", "")
 
 	got := demoDecimalEnvOrDefault(t, "BINANCE_DEMO_MAX_NOTIONAL_USDT", demoDefaultMaxNotionalUSDT)
@@ -94,8 +94,8 @@ func TestSpotDemoE2EDefaultMaxNotionalIs100USDT(t *testing.T) {
 	}
 }
 
-func TestSpotDemoE2ECleanupMetadataRemediation(t *testing.T) {
-	meta := demoE2ECleanupMetadata{
+func TestSpotDemoAcceptanceCleanupMetadataRemediation(t *testing.T) {
+	meta := demoAcceptanceCleanupMetadata{
 		Symbol:         "ETHUSDT",
 		Side:           "BUY",
 		Quantity:       demoD("0.002"),

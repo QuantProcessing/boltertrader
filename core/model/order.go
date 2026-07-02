@@ -19,8 +19,13 @@ type OrderRequest struct {
 	Quantity     decimal.Decimal
 	Price        decimal.Decimal // zero for market orders
 	TriggerPrice decimal.Decimal // stop/take-profit trigger; zero otherwise
-	PositionSide enums.PositionSide
-	ReduceOnly   bool
+	// ActivationPrice is the optional activation price for trailing stop orders.
+	ActivationPrice decimal.Decimal
+	// TrailingOffsetBps is the trailing callback offset in basis points
+	// (25 == 0.25%). Adapters convert this to each venue's native unit.
+	TrailingOffsetBps decimal.Decimal
+	PositionSide      enums.PositionSide
+	ReduceOnly        bool
 
 	// Venue is the per-venue escape hatch for non-portable options. Setting it
 	// forfeits backtest/live parity for those fields. Nil for portable orders.

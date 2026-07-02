@@ -43,7 +43,8 @@ func TestEnumRoundTrip(t *testing.T) {
 
 	types := []enums.OrderType{
 		enums.TypeMarket, enums.TypeLimit, enums.TypeStopMarket,
-		enums.TypeStopLimit, enums.TypeTakeProfitMarket, enums.TypeTakeProfitLimit,
+		enums.TypeStopLimit, enums.TypeMarketIfTouched, enums.TypeLimitIfTouched,
+		enums.TypeTrailingStopMarket,
 	}
 	for _, ot := range types {
 		v, err := orderTypeToBinance(ot)
@@ -298,6 +299,106 @@ func TestSubmitSynchrony(t *testing.T) {
 		Price:        d("60000"),
 	}
 	contracttest.RunSubmitSynchrony(t, exec, req)
+}
+
+func TestSubmitConditionalOrdersUseAlgoEndpoint(t *testing.T) {
+	inst := instrumentFromSymbolInfo(&sdkperp.SymbolInfo{
+		Symbol: "BTCUSDT", ContractType: "PERPETUAL", BaseAsset: "BTC", QuoteAsset: "USDT", MarginAsset: "USDT",
+		Filters: []map[string]any{{"filterType": "PRICE_FILTER", "tickSize": "0.10"}},
+	})
+	provider := newInstrumentProvider()
+	provider.byID[inst.ID.String()] = inst
+	provider.bySymbol[inst.VenueSymbol] = inst.ID
+
+	cases := []struct {
+		name         string
+		req          model.OrderRequest
+		wantType     string
+		wantPrice    string
+		wantTrigger  string
+		wantActivate string
+		wantCallback string
+		wantVenueID  string
+		wantClientID string
+		wantTIF      string
+	}{
+		{
+			name: "stop market",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-stop-market", Side: enums.SideSell,
+				Type: enums.TypeStopMarket, TIF: enums.TifGTC, Quantity: d("0.010"),
+				TriggerPrice: d("59000"), ReduceOnly: true,
+			},
+			wantType: "STOP_MARKET", wantTrigger: "59000", wantVenueID: "901", wantClientID: "c-stop-market", wantTIF: "GTC",
+		},
+		{
+			name: "limit if touched",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-lit", Side: enums.SideBuy,
+				Type: enums.TypeLimitIfTouched, TIF: enums.TifGTC, Quantity: d("0.020"),
+				Price: d("60100"), TriggerPrice: d("60000"),
+			},
+			wantType: "TAKE_PROFIT", wantPrice: "60100", wantTrigger: "60000", wantVenueID: "902", wantClientID: "c-lit", wantTIF: "GTC",
+		},
+		{
+			name: "trailing stop market",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-trailing", Side: enums.SideSell,
+				Type: enums.TypeTrailingStopMarket, TIF: enums.TifGTC, Quantity: d("0.030"),
+				ActivationPrice: d("60500"), TrailingOffsetBps: d("25"),
+			},
+			wantType: "TRAILING_STOP_MARKET", wantActivate: "60500", wantCallback: "0.25", wantVenueID: "903", wantClientID: "c-trailing", wantTIF: "GTC",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rest := sdkperp.NewClient().WithCredentials("k", "s").WithHTTPClient(&http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if r.Method != http.MethodPost || r.URL.Path != "/fapi/v1/algoOrder" {
+						t.Fatalf("request=%s %s, want POST /fapi/v1/algoOrder", r.Method, r.URL.Path)
+					}
+					q := r.URL.Query()
+					if q.Get("symbol") != "BTCUSDT" || q.Get("algoType") != "CONDITIONAL" || q.Get("type") != tc.wantType {
+						t.Fatalf("query=%s", q.Encode())
+					}
+					if q.Get("clientAlgoId") != tc.wantClientID {
+						t.Fatalf("clientAlgoId=%q, want %q", q.Get("clientAlgoId"), tc.wantClientID)
+					}
+					if q.Get("timeInForce") != tc.wantTIF {
+						t.Fatalf("timeInForce=%q, want %q", q.Get("timeInForce"), tc.wantTIF)
+					}
+					if q.Get("price") != tc.wantPrice {
+						t.Fatalf("price=%q, want %q", q.Get("price"), tc.wantPrice)
+					}
+					if q.Get("triggerPrice") != tc.wantTrigger {
+						t.Fatalf("triggerPrice=%q, want %q", q.Get("triggerPrice"), tc.wantTrigger)
+					}
+					if q.Get("activatePrice") != tc.wantActivate {
+						t.Fatalf("activatePrice=%q, want %q", q.Get("activatePrice"), tc.wantActivate)
+					}
+					if q.Get("callbackRate") != tc.wantCallback {
+						t.Fatalf("callbackRate=%q, want %q", q.Get("callbackRate"), tc.wantCallback)
+					}
+					body := `{"algoId":` + tc.wantVenueID + `,"clientAlgoId":"` + tc.wantClientID + `","symbol":"BTCUSDT","algoStatus":"NEW","side":"` + q.Get("side") + `","orderType":"` + tc.wantType + `","quantity":"` + q.Get("quantity") + `"}`
+					return &http.Response{
+						StatusCode: 200,
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Header:     make(http.Header),
+					}, nil
+				}),
+			})
+			exec := newExecutionClient(rest, provider, clock.NewRealClock())
+
+			order, err := exec.Submit(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+			if order.VenueOrderID != tc.wantVenueID || order.Request.ClientID != tc.wantClientID {
+				t.Fatalf("order=%+v", order)
+			}
+		})
+	}
 }
 
 // --- 5. Modify: recover side via GetOrder, then amend -----------------------

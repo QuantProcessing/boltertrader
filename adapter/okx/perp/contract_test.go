@@ -25,6 +25,13 @@ var (
 
 func dd(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
+func ptrString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
 // stubResolver implements instResolver for translation tests.
 type stubResolver struct{}
 
@@ -41,6 +48,7 @@ func TestOrdTypeTifFolding(t *testing.T) {
 		okx string
 	}{
 		{enums.TypeMarket, enums.TifUnknown, "market"},
+		{enums.TypeMarket, enums.TifIOC, "optimal_limit_ioc"},
 		{enums.TypeLimit, enums.TifGTC, "limit"},
 		{enums.TypeLimit, enums.TifIOC, "ioc"},
 		{enums.TypeLimit, enums.TifFOK, "fok"},
@@ -54,14 +62,20 @@ func TestOrdTypeTifFolding(t *testing.T) {
 		if got != c.okx {
 			t.Errorf("ordTypeToOKX(%v,%v)=%q, want %q", c.ot, c.tif, got, c.okx)
 		}
-		// Round-trip back. Market loses its (irrelevant) TIF.
+		// Round-trip back. Market loses its (irrelevant) TIF except IOC.
 		rt, rtif := ordTypeFromOKX(got)
 		if rt != c.ot {
 			t.Errorf("round-trip type %q -> %v, want %v", got, rt, c.ot)
 		}
-		if c.ot == enums.TypeLimit && rtif != c.tif {
+		if (c.ot == enums.TypeLimit || c.okx == "optimal_limit_ioc") && rtif != c.tif {
 			t.Errorf("round-trip TIF %q -> %v, want %v", got, rtif, c.tif)
 		}
+	}
+}
+
+func TestOrdTypeRejectsMarketFOK(t *testing.T) {
+	if _, err := ordTypeToOKX(enums.TypeMarket, enums.TifFOK); err == nil {
+		t.Fatal("Market+FOK should be rejected like NautilusTrader")
 	}
 }
 
@@ -81,8 +95,8 @@ func TestUnsupportedEnums(t *testing.T) {
 	if _, err := sideToOKX(enums.SideUnknown); err == nil {
 		t.Error("unknown side should error")
 	}
-	if _, err := ordTypeToOKX(enums.TypeStopMarket, enums.TifGTC); err == nil {
-		t.Error("stop-market (algo) should be ErrNotSupported in v1")
+	if _, err := regularOrdTypeToOKX(enums.TypeStopMarket, enums.TifGTC); err == nil {
+		t.Error("stop-market must not be routed to regular order endpoint")
 	}
 }
 
@@ -289,6 +303,85 @@ func TestSubmitUsesConfiguredTdMode(t *testing.T) {
 	}
 	if got.VenueOrderID != "venue-order-1" {
 		t.Fatalf("venue order id=%q", got.VenueOrderID)
+	}
+}
+
+func TestSubmitConditionalOrdersUseAlgoEndpoint(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	cases := []struct {
+		name         string
+		req          model.OrderRequest
+		wantOrdType  string
+		wantTrigger  string
+		wantOrderPx  string
+		wantCallback string
+		wantAlgoID   string
+	}{
+		{
+			name: "stop market",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-stop-market", Side: enums.SideSell,
+				Type: enums.TypeStopMarket, Quantity: dd("1"), TriggerPrice: dd("59000"), ReduceOnly: true,
+			},
+			wantOrdType: "trigger", wantTrigger: "59000", wantOrderPx: "-1", wantAlgoID: "algo-1",
+		},
+		{
+			name: "limit if touched",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-lit", Side: enums.SideBuy,
+				Type: enums.TypeLimitIfTouched, Quantity: dd("2"), Price: dd("60100"), TriggerPrice: dd("60000"),
+			},
+			wantOrdType: "trigger", wantTrigger: "60000", wantOrderPx: "60100", wantAlgoID: "algo-2",
+		},
+		{
+			name: "trailing stop market",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID, ClientID: "c-trailing", Side: enums.SideSell,
+				Type: enums.TypeTrailingStopMarket, Quantity: dd("3"), ActivationPrice: dd("60500"), TrailingOffsetBps: dd("25"),
+			},
+			wantOrdType: "move_order_stop", wantCallback: "0.0025", wantAlgoID: "algo-3",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v5/trade/order-algo" {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				var req okx.AlgoOrderRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				if req.InstId != inst.VenueSymbol || req.TdMode != "cross" || req.OrdType != tc.wantOrdType {
+					t.Fatalf("unexpected algo request: %+v", req)
+				}
+				if req.AlgoClOrdId == nil || *req.AlgoClOrdId != tc.req.ClientID {
+					t.Fatalf("algoClOrdId=%v, want %q", req.AlgoClOrdId, tc.req.ClientID)
+				}
+				if got := ptrString(req.TriggerPx); got != tc.wantTrigger {
+					t.Fatalf("triggerPx=%q, want %q", got, tc.wantTrigger)
+				}
+				if got := ptrString(req.OrderPx); got != tc.wantOrderPx {
+					t.Fatalf("orderPx=%q, want %q", got, tc.wantOrderPx)
+				}
+				if got := ptrString(req.CallbackRatio); got != tc.wantCallback {
+					t.Fatalf("callbackRatio=%q, want %q", got, tc.wantCallback)
+				}
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"algoId":"` + tc.wantAlgoID + `","algoClOrdId":"` + tc.req.ClientID + `","sCode":"0"}]}`))
+			}))
+			defer server.Close()
+
+			rest := okx.NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL(server.URL)
+			exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewRealClock(), "cross")
+			got, err := exec.Submit(context.Background(), tc.req)
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+			if got.VenueOrderID != tc.wantAlgoID || got.Request.ClientID != tc.req.ClientID {
+				t.Fatalf("order=%+v", got)
+			}
+		})
 	}
 }
 

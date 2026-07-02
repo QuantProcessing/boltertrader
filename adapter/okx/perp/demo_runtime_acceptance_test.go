@@ -1,4 +1,4 @@
-package spot
+package perp
 
 import (
 	"context"
@@ -15,27 +15,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
+func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	cfg := testenv.RequireOKXDemoWrite(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	adapter, spec, instID, qty, restingPrice, fillPrice := newOKXSpotDemoRuntimeFixture(t, ctx, cfg)
+	adapter, spec, instID, qty, restingPrice, fillPrice := newOKXPerpDemoRuntimeFixture(t, ctx, cfg)
 	defer adapter.Close()
-	cleanup := newDemoSpotCleanupState(spec, qty)
-	startBalances, err := demoSpotBalances(ctx, adapter)
-	if err != nil {
-		t.Fatalf("runtime balance preflight: %v", err)
-	}
-	startBaseAvailable := startBalances[spec.BaseCurrency].Available
+	cleanup := newDemoPerpCleanupState(spec, qty)
 	defer func() {
 		if !cleanup.needed {
 			return
 		}
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancelCleanup()
-		if err := cleanupOKXSpotDemo(cleanupCtx, adapter, instID, spec, startBaseAvailable, &cleanup); err != nil {
+		if err := cleanupOKXPerpDemo(cleanupCtx, adapter, instID, spec, &cleanup); err != nil {
 			t.Fatalf("%v\n%s", err, cleanup.Remediation())
 		}
 	}()
@@ -43,18 +38,15 @@ func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
 		clock.NewRealClock(),
-		"okx-spot-demo",
+		"okx-perp-demo",
 	)
 	if _, err := node.Resync(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime initial reconcile")
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
-	if got := len(node.Cache.Positions()); got != 0 {
-		t.Fatalf("spot runtime cache positions=%d, want 0 before writes", got)
-	}
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime private stream")
-		t.Fatalf("start OKX Spot Demo adapter stream: %v", err)
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime private stream")
+		t.Fatalf("start OKX Perp Demo adapter stream: %v", err)
 	}
 
 	runCtx, stopNode := context.WithCancel(ctx)
@@ -85,11 +77,11 @@ func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("runtime submit OKX Spot Demo resting order: %v", err)
+		t.Fatalf("runtime submit OKX Perp Demo resting order: %v", err)
 	}
 	cleanup.RecordVenueOrderID(resting.VenueOrderID)
 	if err := node.Exec.Cancel(ctx, restingClientID); err != nil {
-		t.Fatalf("runtime cancel OKX Spot Demo resting order: %v", err)
+		t.Fatalf("runtime cancel OKX Perp Demo resting order: %v", err)
 	}
 	if _, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "canceled"); err != nil {
 		t.Fatalf("runtime resting order did not cancel: %v", err)
@@ -108,7 +100,7 @@ func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("runtime submit OKX Spot Demo fill order: %v", err)
+		t.Fatalf("runtime submit OKX Perp Demo fill order: %v", err)
 	}
 	cleanup.RecordVenueOrderID(filled.VenueOrderID)
 	filledResp, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, "filled")
@@ -120,23 +112,32 @@ func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
 		t.Fatalf("runtime fill order reported zero executed quantity: %+v", filledResp)
 	}
 	if err := waitForRuntimeOrderFilled(ctx, node, fillClientID); err != nil {
-		t.Fatalf("runtime cache did not observe OKX Spot Demo fill: %v", err)
+		t.Fatalf("runtime cache did not observe OKX Perp Demo fill: %v", err)
+	}
+	if err := waitForRuntimePosition(ctx, node, instID, filledQty); err != nil {
+		t.Fatalf("runtime cache did not observe OKX Perp Demo position: %v", err)
 	}
 	if err := waitForRuntimePortfolioNetQty(ctx, node, instID, filledQty); err != nil {
-		t.Fatalf("runtime portfolio did not observe OKX Spot Demo spot exposure: %v", err)
+		t.Fatalf("runtime portfolio did not observe OKX Perp Demo fill: %v", err)
 	}
 	if got := node.Metrics(); got.OrdersSeen == 0 || got.FillsSeen == 0 {
-		t.Fatalf("runtime metrics did not observe spot order/fill events: %+v", got)
+		t.Fatalf("runtime metrics did not observe perp order/fill events: %+v", got)
 	}
+
+	exposure, err := waitForDemoExposure(ctx, adapter, instID, filledQty)
+	if err != nil {
+		t.Fatalf("wait for OKX Perp Demo runtime account exposure: %v", err)
+	}
+	cleanup.SetExposure(exposure)
 
 	closeClientID := demoClientOrderID("runtime-close")
 	cleanup.Arm(closeClientID)
 	closeBook, err := adapter.Market.OrderBook(ctx, instID, 5)
 	if err != nil {
-		t.Fatalf("load OKX Spot Demo runtime close book: %v", err)
+		t.Fatalf("load OKX Perp Demo runtime close book: %v", err)
 	}
 	if len(closeBook.Bids) == 0 {
-		t.Fatalf("empty OKX Spot Demo runtime bid book before close for %s", spec.VenueSymbol)
+		t.Fatalf("empty OKX Perp Demo runtime bid book before close for %s", spec.VenueSymbol)
 	}
 	closePrice := floorDecimalToStep(closeBook.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), spec.PriceTick)
 	closed, err := node.Exec.Submit(ctx, model.OrderRequest{
@@ -145,36 +146,37 @@ func TestOKXSpotDemoRuntimeE2E(t *testing.T) {
 		Side:         enums.SideSell,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifIOC,
-		Quantity:     floorDecimalToStep(filledQty, spec.SizeStep),
+		Quantity:     exposure.Abs(),
 		Price:        closePrice,
 		PositionSide: enums.PosNet,
+		ReduceOnly:   true,
 	})
 	if err != nil {
-		t.Fatalf("runtime close OKX Spot Demo base delta: %v", err)
+		t.Fatalf("runtime close OKX Perp Demo exposure: %v", err)
 	}
 	cleanup.RecordVenueOrderID(closed.VenueOrderID)
 	if _, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, closeClientID, "filled"); err != nil {
 		t.Fatalf("wait for runtime close fill: %v", err)
 	}
+	if err := waitForDemoFlat(ctx, adapter, instID); err != nil {
+		t.Fatalf("wait for OKX Perp Demo runtime flat: %v\n%s", err, cleanup.Remediation())
+	}
 	if err := waitForRuntimePortfolioFlat(ctx, node, instID); err != nil {
-		t.Fatalf("runtime portfolio did not return flat after Spot close: %v", err)
-	}
-	if _, err := node.Resync(ctx); err != nil {
-		t.Fatalf("final OKX Spot Demo runtime reconcile: %v", err)
-	}
-	if got := len(node.Cache.Positions()); got != 0 {
-		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
+		t.Fatalf("runtime portfolio did not return flat after Perp close: %v\n%s", err, cleanup.Remediation())
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
-		t.Fatalf("wait for no OKX Spot Demo runtime open orders: %v", err)
+		t.Fatalf("wait for no OKX Perp Demo runtime open orders: %v\n%s", err, cleanup.Remediation())
 	}
-	if err := waitForDemoSpotBaseDeltaBelowStep(ctx, adapter, spec, startBaseAvailable, &cleanup); err != nil {
-		t.Fatalf("wait for OKX Spot Demo runtime base delta cleanup: %v\n%s", err, cleanup.Remediation())
+	if _, err := node.Resync(ctx); err != nil {
+		t.Fatalf("final OKX Perp Demo runtime reconcile: %v", err)
+	}
+	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
+		t.Fatalf("runtime cache still has OKX Perp Demo position after final reconcile")
 	}
 	cleanup.MarkClean()
 }
 
-func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoSpotSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
+func newOKXPerpDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoPerpSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
 	t.Helper()
 	httpClient, err := testenv.OKXDemoHTTPClient(45 * time.Second)
 	if err != nil {
@@ -185,6 +187,7 @@ func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 		APIKey:          cfg.APIKey,
 		APISecret:       cfg.APISecret,
 		Passphrase:      cfg.Passphrase,
+		TdMode:          "cross",
 		Environment:     okx.Simulated,
 		DemoHostProfile: okx.DemoHostProfile(cfg.HostProfile),
 		RESTBaseURL:     endpoints.REST,
@@ -193,44 +196,64 @@ func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 		HTTPClient:      httpClient,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime adapter initialization")
-		t.Fatalf("new OKX Spot Demo runtime adapter: %v", err)
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime adapter initialization")
+		t.Fatalf("new OKX Perp Demo runtime adapter: %v", err)
 	}
-	instID := model.InstrumentID{Venue: venueName, Symbol: cfg.SpotSymbol, Kind: enums.KindSpot}
-	inst, ok := adapter.provider.Instrument(instID)
-	if !ok {
+	instID := model.InstrumentID{Venue: venueName, Symbol: instIDToNeutral(cfg.PerpSymbol), Kind: enums.KindPerp}
+	if _, ok := adapter.provider.Instrument(instID); !ok {
 		_ = adapter.Close()
-		t.Fatalf("OKX Spot Demo runtime symbol %s not loaded", cfg.SpotSymbol)
+		t.Fatalf("OKX Perp Demo runtime symbol %s not loaded", cfg.PerpSymbol)
 	}
-	spec, err := demoSpotSpecFromInstrument(inst)
+	insts, err := adapter.rest.GetInstruments(ctx, instTypeSwap)
 	if err != nil {
 		_ = adapter.Close()
-		t.Fatalf("resolve OKX Spot Demo runtime symbol: %v", err)
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime instruments")
+		t.Fatalf("instrument metadata: %v", err)
+	}
+	var native *okx.Instrument
+	for i := range insts {
+		if insts[i].InstId == cfg.PerpSymbol {
+			native = &insts[i]
+			break
+		}
+	}
+	spec, err := demoPerpSpecFromOKX(native)
+	if err != nil {
+		_ = adapter.Close()
+		t.Fatalf("resolve OKX Perp Demo runtime symbol: %v", err)
 	}
 	book, err := adapter.Market.OrderBook(ctx, instID, 5)
 	if err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime order book")
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime order book")
 		t.Fatalf("order book: %v", err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		_ = adapter.Close()
-		t.Fatalf("empty OKX Spot Demo runtime book for %s", spec.VenueSymbol)
+		t.Fatalf("empty OKX Perp Demo runtime book for %s", spec.VenueSymbol)
 	}
-	qty, err := selectDemoSpotQuantity(spec, cfg.MaxNotionalUSDT, book.Asks[0].Price)
+	qty, err := selectDemoPerpQuantity(spec, cfg.MaxNotionalUSDT, book.Asks[0].Price)
 	if err != nil {
 		_ = adapter.Close()
-		t.Fatalf("select safe OKX Spot Demo runtime order quantity: %v", err)
+		t.Fatalf("select safe OKX Perp Demo runtime order quantity: %v", err)
 	}
 	restingPrice := floorDecimalToStep(book.Bids[0].Price.Mul(decimal.RequireFromString("0.80")), spec.PriceTick)
 	fillPrice := ceilDecimalToStep(book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
 	if open, err := adapter.Execution.OpenOrders(ctx, instID); err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime open order preflight")
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
 		_ = adapter.Close()
-		t.Skipf("skipping OKX Spot Demo runtime E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping OKX Perp Demo runtime acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+	}
+	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
+		_ = adapter.Close()
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime position preflight")
+		t.Fatalf("position preflight: %v", err)
+	} else if !exposure.IsZero() {
+		_ = adapter.Close()
+		t.Skipf("skipping OKX Perp Demo runtime acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
 	}
 	return adapter, spec, instID, qty, restingPrice, fillPrice
 }
@@ -249,6 +272,25 @@ func waitForRuntimeOrderFilled(ctx context.Context, node *btruntime.TradingNode,
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timed out waiting for runtime order %s filled; last=%v: %w", clientID, last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForRuntimePosition(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {
+	var last decimal.Decimal
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if position, ok := node.Cache.Position(id, enums.PosNet); ok {
+			last = position.Quantity
+			if position.Quantity.Abs().GreaterThanOrEqual(minAbs.Abs()) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for runtime position >= %s; last=%s: %w", minAbs.Abs(), last, ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -161,6 +161,68 @@ func TestBinanceSpotSubmitOrderRequestTranslation(t *testing.T) {
 	}
 }
 
+func TestBinanceSpotSubmitTouchedOrdersUseTakeProfitTypes(t *testing.T) {
+	inst := testSpotInstrument()
+	cases := []struct {
+		name        string
+		req         model.OrderRequest
+		wantType    string
+		wantTIF     string
+		wantPrice   string
+		wantTrigger string
+	}{
+		{
+			name: "market if touched",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID,
+				ClientID:     "c-mit",
+				Side:         enums.SideSell,
+				Type:         enums.TypeMarketIfTouched,
+				Quantity:     d("0.0100"),
+				TriggerPrice: d("3100.00"),
+			},
+			wantType: "TAKE_PROFIT", wantTrigger: "3100",
+		},
+		{
+			name: "limit if touched",
+			req: model.OrderRequest{
+				InstrumentID: inst.ID,
+				ClientID:     "c-lit",
+				Side:         enums.SideSell,
+				Type:         enums.TypeLimitIfTouched,
+				TIF:          enums.TifGTC,
+				Quantity:     d("0.0100"),
+				Price:        d("3099.50"),
+				TriggerPrice: d("3100.00"),
+			},
+			wantType: "TAKE_PROFIT_LIMIT", wantTIF: "GTC", wantPrice: "3099.5", wantTrigger: "3100",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var submit url.Values
+			rest := testREST(func(r *http.Request) (string, int) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/v3/order" {
+					t.Fatalf("request=%s %s, want POST /api/v3/order", r.Method, r.URL.Path)
+				}
+				submit = r.URL.Query()
+				return `{"orderId":555,"clientOrderId":"` + tc.req.ClientID + `","symbol":"ETHUSDT","status":"NEW","side":"SELL","type":"` + tc.wantType + `","timeInForce":"` + tc.wantTIF + `","origQty":"0.0100","price":"` + tc.wantPrice + `","executedQty":"0","cummulativeQuoteQty":"0"}`, 200
+			})
+			exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+
+			if _, err := exec.Submit(context.Background(), tc.req); err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+			if submit.Get("type") != tc.wantType || submit.Get("stopPrice") != tc.wantTrigger {
+				t.Fatalf("submit query=%s", submit.Encode())
+			}
+			if submit.Get("timeInForce") != tc.wantTIF {
+				t.Fatalf("timeInForce=%q, want %q", submit.Get("timeInForce"), tc.wantTIF)
+			}
+		})
+	}
+}
+
 func TestBinanceSpotRejectsDerivativeOrderFields(t *testing.T) {
 	inst := testSpotInstrument()
 	exec := newExecutionClient(testREST(func(r *http.Request) (string, int) {

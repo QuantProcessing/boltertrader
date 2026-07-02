@@ -15,9 +15,9 @@
 - Modify `Makefile`: expose separate fast, adapter-live, runtime-live, and full Demo acceptance targets.
 - Modify `docs/testing-strategy.md`: document the NT-style testing ladder and the exact commands/gates.
 - Create `docs/developer_guide/spec_exec_testing.md`: repo-local execution acceptance spec modeled on NT's ExecTester spec, with safety envelope and pass/fail criteria.
-- Create `adapter/binance/perp/demo_runtime_e2e_test.go`: Binance USD-M Demo runtime acceptance test that uses `runtime.NewNode`.
+- Create `adapter/binance/perp/demo_runtime_acceptance_test.go`: Binance USD-M Demo runtime acceptance test that uses `runtime.NewNode`.
 - Create `adapter/binance/perp/demo_runtime_tester_test.go`: test-only ExecTester-style strategy and observer helpers.
-- Modify `adapter/binance/perp/demo_e2e_helpers_test.go`: add unit coverage for strategy ID sizing and runtime acceptance helpers.
+- Modify `adapter/binance/perp/demo_acceptance_helpers_test.go`: add unit coverage for strategy ID sizing and runtime acceptance helpers.
 
 ## Task 1: Document the NT-Style Testing Contract
 
@@ -82,20 +82,20 @@ Add:
 .PHONY: test-binance-demo-runtime-perp test-binance-demo-acceptance
 
 test-binance-demo-runtime-perp:
-	go test -run TestBinanceDemoRuntimeE2E ./adapter/binance/perp/ -count=1 -timeout=3m
+	go test -run TestBinanceDemoRuntimeAcceptance ./adapter/binance/perp/ -count=1 -timeout=3m
 
 test-binance-demo-acceptance: test-binance-demo-perp test-binance-demo-runtime-perp
 ```
 
-## Task 2: Add Runtime Demo E2E RED Test
+## Task 2: Add Runtime Demo acceptance RED Test
 
 **Files:**
-- Create: `adapter/binance/perp/demo_runtime_e2e_test.go`
+- Create: `adapter/binance/perp/demo_runtime_acceptance_test.go`
 - Create: `adapter/binance/perp/demo_runtime_tester_test.go`
 
-- [x] **Step 1: Write the failing runtime E2E test**
+- [x] **Step 1: Write the failing runtime acceptance test**
 
-Add `TestBinanceDemoRuntimeE2E` that imports `github.com/QuantProcessing/boltertrader/runtime`, constructs a Binance Demo adapter, creates a `runtime.TradingNode`, calls `node.Resync(ctx)`, starts the adapter, runs `node.Run(ctx)` in a goroutine, and uses a test strategy that submits through `strategy.Context`.
+Add `TestBinanceDemoRuntimeAcceptance` that imports `github.com/QuantProcessing/boltertrader/runtime`, constructs a Binance Demo adapter, creates a `runtime.TradingNode`, calls `node.Resync(ctx)`, starts the adapter, runs `node.Run(ctx)` in a goroutine, and uses a test strategy that submits through `strategy.Context`.
 
 Expected RED: compile fails because `newDemoRuntimeExecTester` and related helpers are not yet defined.
 
@@ -104,7 +104,7 @@ Expected RED: compile fails because `newDemoRuntimeExecTester` and related helpe
 Run:
 
 ```bash
-go test ./adapter/binance/perp -run TestBinanceDemoRuntimeE2E -count=1
+go test ./adapter/binance/perp -run TestBinanceDemoRuntimeAcceptance -count=1
 ```
 
 Expected: FAIL with undefined helper names.
@@ -113,7 +113,7 @@ Expected: FAIL with undefined helper names.
 
 **Files:**
 - Create: `adapter/binance/perp/demo_runtime_tester_test.go`
-- Modify: `adapter/binance/perp/demo_runtime_e2e_test.go`
+- Modify: `adapter/binance/perp/demo_runtime_acceptance_test.go`
 
 - [x] **Step 1: Implement test strategy**
 
@@ -139,7 +139,7 @@ Add polling helpers that assert:
 Run:
 
 ```bash
-PROXY=http://127.0.0.1:10900 go test -run TestBinanceDemoRuntimeE2E ./adapter/binance/perp/ -count=1 -timeout=3m -v
+PROXY=http://127.0.0.1:10900 go test -run TestBinanceDemoRuntimeAcceptance ./adapter/binance/perp/ -count=1 -timeout=3m -v
 ```
 
 Expected: PASS and account ends flat.

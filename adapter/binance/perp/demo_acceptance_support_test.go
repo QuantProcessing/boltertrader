@@ -9,7 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type demoE2ESymbolSpec struct {
+type demoAcceptanceSymbolSpec struct {
 	VenueSymbol string
 	PriceTick   decimal.Decimal
 	SizeStep    decimal.Decimal
@@ -17,22 +17,22 @@ type demoE2ESymbolSpec struct {
 	MinNotional decimal.Decimal
 }
 
-func normalizeDemoE2ESymbol(symbol string) string {
+func normalizeDemoAcceptanceSymbol(symbol string) string {
 	replacer := strings.NewReplacer("-", "", "_", "", "/", "", " ", "")
 	return strings.ToUpper(replacer.Replace(symbol))
 }
 
-func demoE2ESymbolSpecFromExchangeInfo(info *sdkperp.ExchangeInfoResponse, symbol string) (demoE2ESymbolSpec, error) {
+func demoAcceptanceSymbolSpecFromExchangeInfo(info *sdkperp.ExchangeInfoResponse, symbol string) (demoAcceptanceSymbolSpec, error) {
 	if info == nil {
-		return demoE2ESymbolSpec{}, fmt.Errorf("missing exchange info")
+		return demoAcceptanceSymbolSpec{}, fmt.Errorf("missing exchange info")
 	}
-	want := normalizeDemoE2ESymbol(symbol)
+	want := normalizeDemoAcceptanceSymbol(symbol)
 	for _, candidate := range info.Symbols {
-		if normalizeDemoE2ESymbol(candidate.Symbol) != want {
+		if normalizeDemoAcceptanceSymbol(candidate.Symbol) != want {
 			continue
 		}
 		tick, step, minQty, minNotional := extractFilters(candidate.Filters)
-		spec := demoE2ESymbolSpec{
+		spec := demoAcceptanceSymbolSpec{
 			VenueSymbol: candidate.Symbol,
 			PriceTick:   tick,
 			SizeStep:    step,
@@ -40,18 +40,18 @@ func demoE2ESymbolSpecFromExchangeInfo(info *sdkperp.ExchangeInfoResponse, symbo
 			MinNotional: minNotional,
 		}
 		if spec.PriceTick.IsZero() || spec.SizeStep.IsZero() || spec.MinQty.IsZero() || spec.MinNotional.IsZero() {
-			return demoE2ESymbolSpec{}, fmt.Errorf("symbol %s has incomplete exchange filters: %+v", candidate.Symbol, spec)
+			return demoAcceptanceSymbolSpec{}, fmt.Errorf("symbol %s has incomplete exchange filters: %+v", candidate.Symbol, spec)
 		}
 		return spec, nil
 	}
-	return demoE2ESymbolSpec{}, fmt.Errorf("symbol %s not found in exchange info", want)
+	return demoAcceptanceSymbolSpec{}, fmt.Errorf("symbol %s not found in exchange info", want)
 }
 
-func selectDemoE2EOrderQuantity(spec demoE2ESymbolSpec, configuredQty, maxNotional, refPrice decimal.Decimal) (decimal.Decimal, error) {
-	return selectDemoE2EOrderQuantityForPriceBand(spec, configuredQty, maxNotional, refPrice, refPrice)
+func selectDemoAcceptanceOrderQuantity(spec demoAcceptanceSymbolSpec, configuredQty, maxNotional, refPrice decimal.Decimal) (decimal.Decimal, error) {
+	return selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, refPrice, refPrice)
 }
 
-func selectDemoE2EOrderQuantityForPriceBand(spec demoE2ESymbolSpec, configuredQty, maxNotional, minNotionalPrice, maxNotionalPrice decimal.Decimal) (decimal.Decimal, error) {
+func selectDemoAcceptanceOrderQuantityForPriceBand(spec demoAcceptanceSymbolSpec, configuredQty, maxNotional, minNotionalPrice, maxNotionalPrice decimal.Decimal) (decimal.Decimal, error) {
 	if spec.SizeStep.LessThanOrEqual(decimal.Zero) {
 		return decimal.Zero, fmt.Errorf("symbol %s has invalid size step %s", spec.VenueSymbol, spec.SizeStep)
 	}
@@ -110,7 +110,7 @@ func maxDecimal(a, b decimal.Decimal) decimal.Decimal {
 	return b
 }
 
-type demoE2ECleanupMetadata struct {
+type demoAcceptanceCleanupMetadata struct {
 	Symbol         string
 	Side           string
 	Quantity       decimal.Decimal
@@ -119,7 +119,7 @@ type demoE2ECleanupMetadata struct {
 	Exposure       decimal.Decimal
 }
 
-func (m demoE2ECleanupMetadata) Remediation() string {
+func (m demoAcceptanceCleanupMetadata) Remediation() string {
 	return fmt.Sprintf(
 		"Binance Demo cleanup failed: symbol=%s side=%s quantity=%s exposure=%s venueOrderIDs=%s clientOrderIDs=%s. Manually cancel open orders and flatten remaining exposure in Binance Futures Demo Trading.",
 		m.Symbol,
@@ -131,21 +131,21 @@ func (m demoE2ECleanupMetadata) Remediation() string {
 	)
 }
 
-type demoE2ECleanupState struct {
+type demoAcceptanceCleanupState struct {
 	needed bool
-	meta   demoE2ECleanupMetadata
+	meta   demoAcceptanceCleanupMetadata
 }
 
-func newDemoE2ECleanupState(symbol string, qty decimal.Decimal) demoE2ECleanupState {
-	return demoE2ECleanupState{
-		meta: demoE2ECleanupMetadata{
+func newDemoAcceptanceCleanupState(symbol string, qty decimal.Decimal) demoAcceptanceCleanupState {
+	return demoAcceptanceCleanupState{
+		meta: demoAcceptanceCleanupMetadata{
 			Symbol:   symbol,
 			Quantity: qty,
 		},
 	}
 }
 
-func (s *demoE2ECleanupState) Arm(side enums.OrderSide, clientID string) {
+func (s *demoAcceptanceCleanupState) Arm(side enums.OrderSide, clientID string) {
 	s.needed = true
 	s.meta.Side = side.String()
 	if clientID != "" {
@@ -153,25 +153,25 @@ func (s *demoE2ECleanupState) Arm(side enums.OrderSide, clientID string) {
 	}
 }
 
-func (s *demoE2ECleanupState) RecordVenueOrderID(venueOrderID string) {
+func (s *demoAcceptanceCleanupState) RecordVenueOrderID(venueOrderID string) {
 	if venueOrderID != "" {
 		s.meta.VenueOrderIDs = append(s.meta.VenueOrderIDs, venueOrderID)
 	}
 }
 
-func (s *demoE2ECleanupState) SetExposure(exposure decimal.Decimal) {
+func (s *demoAcceptanceCleanupState) SetExposure(exposure decimal.Decimal) {
 	s.meta.Exposure = exposure
 }
 
-func (s *demoE2ECleanupState) MarkClean() {
+func (s *demoAcceptanceCleanupState) MarkClean() {
 	s.needed = false
 	s.meta.Exposure = decimal.Zero
 }
 
-func (s demoE2ECleanupState) Needed() bool {
+func (s demoAcceptanceCleanupState) Needed() bool {
 	return s.needed
 }
 
-func (s demoE2ECleanupState) Metadata() demoE2ECleanupMetadata {
+func (s demoAcceptanceCleanupState) Metadata() demoAcceptanceCleanupMetadata {
 	return s.meta
 }

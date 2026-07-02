@@ -12,7 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestOKXSpotDemoExecE2E(t *testing.T) {
+func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 	cfg := testenv.RequireOKXDemoWrite(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -79,7 +79,7 @@ func TestOKXSpotDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping OKX Spot Demo E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping OKX Spot Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 
 	startBalances, err := demoSpotBalances(ctx, adapter)
@@ -92,7 +92,7 @@ func TestOKXSpotDemoExecE2E(t *testing.T) {
 	quoteAvailable := startBalances[spec.QuoteCurrency].Available
 	requiredQuote := qty.Mul(fillPrice).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
-		t.Skipf("skipping OKX Spot Demo E2E: %s available %s below required %s for %s quantity %s at fill price %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, fillPrice)
+		t.Skipf("skipping OKX Spot Demo acceptance: %s available %s below required %s for %s quantity %s at fill price %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, fillPrice)
 	}
 
 	cleanup := newDemoSpotCleanupState(spec, qty)

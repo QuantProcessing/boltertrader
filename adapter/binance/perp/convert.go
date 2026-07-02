@@ -55,10 +55,12 @@ func orderTypeToBinance(t enums.OrderType) (string, error) {
 		return "STOP_MARKET", nil
 	case enums.TypeStopLimit:
 		return "STOP", nil
-	case enums.TypeTakeProfitMarket:
+	case enums.TypeMarketIfTouched:
 		return "TAKE_PROFIT_MARKET", nil
-	case enums.TypeTakeProfitLimit:
+	case enums.TypeLimitIfTouched:
 		return "TAKE_PROFIT", nil
+	case enums.TypeTrailingStopMarket:
+		return "TRAILING_STOP_MARKET", nil
 	default:
 		return "", fmt.Errorf("binance: unsupported order type %v: %w", t, errs.ErrNotSupported)
 	}
@@ -75,9 +77,11 @@ func orderTypeFromBinance(s string) enums.OrderType {
 	case "STOP":
 		return enums.TypeStopLimit
 	case "TAKE_PROFIT_MARKET":
-		return enums.TypeTakeProfitMarket
+		return enums.TypeMarketIfTouched
 	case "TAKE_PROFIT":
-		return enums.TypeTakeProfitLimit
+		return enums.TypeLimitIfTouched
+	case "TRAILING_STOP_MARKET":
+		return enums.TypeTrailingStopMarket
 	default:
 		return enums.TypeUnknown
 	}
@@ -182,7 +186,17 @@ func itoa(v int64) string { return strconv.FormatInt(v, 10) }
 // accepts timeInForce only on limit-family orders.
 func typeNeedsTIF(t enums.OrderType) bool {
 	switch t {
-	case enums.TypeLimit, enums.TypeStopLimit, enums.TypeTakeProfitLimit:
+	case enums.TypeLimit, enums.TypeStopLimit, enums.TypeLimitIfTouched:
+		return true
+	default:
+		return false
+	}
+}
+
+func typeUsesAlgoEndpoint(t enums.OrderType) bool {
+	switch t {
+	case enums.TypeStopMarket, enums.TypeStopLimit, enums.TypeMarketIfTouched,
+		enums.TypeLimitIfTouched, enums.TypeTrailingStopMarket:
 		return true
 	default:
 		return false

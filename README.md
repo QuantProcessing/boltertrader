@@ -181,7 +181,7 @@ OKX_API_KEY=... OKX_API_SECRET=... OKX_API_PASSPHRASE=... OKX_ENABLE_LIVE_WRITE_
 BINANCE_API_KEY=... BINANCE_SECRET_KEY=... BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/binance/perp/
 ```
 
-Binance Demo write/E2E tests use the shared Binance Demo credential contract.
+Binance Demo write acceptance tests use the shared Binance Demo credential contract.
 Create the keys from Binance Demo/Testnet API Management, not from a production
 API key. The implemented Demo acceptance covers USD-M perps and the first Spot
 vertical slice; future dated futures or options Demo flows should add their own
@@ -192,17 +192,17 @@ contract when Binance supports it:
 BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
-go test -run TestBinanceDemoExecE2E ./adapter/binance/perp/ -count=1 -timeout=3m
+go test -run TestBinanceDemoExecAcceptance ./adapter/binance/perp/ -count=1 -timeout=3m
 
 BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
-go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
+go test -run TestBinanceSpotDemoExecAcceptance ./adapter/binance/spot/ -count=1 -timeout=3m
 ```
 
 `BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
 
-OKX Demo write/E2E tests use OKX simulated trading credentials, not production
+OKX Demo write acceptance tests use OKX simulated trading credentials, not production
 `OKX_API_*` credentials. Create the API key, secret, and passphrase from OKX's
 Demo Trading environment. The implemented OKX Demo acceptance covers pure-cash
 Spot and USDT-linear SWAP perps only; Spot margin, inverse swaps, dated futures,

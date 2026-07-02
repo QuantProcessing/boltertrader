@@ -12,12 +12,12 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestBinanceSpotDemoExecE2E(t *testing.T) {
+func TestBinanceSpotDemoExecAcceptance(t *testing.T) {
 	testenv.RequireBinanceDemoWrite(t)
-	runBinanceSpotDemoExecE2E(t)
+	runBinanceSpotDemoExecAcceptance(t)
 }
 
-func runBinanceSpotDemoExecE2E(t *testing.T) {
+func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -57,7 +57,7 @@ func runBinanceSpotDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
-	spec, err := demoE2ESymbolSpecFromExchangeInfo(info, symbolInput)
+	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
 	if err != nil {
 		t.Fatalf("resolve Spot Demo symbol: %v", err)
 	}
@@ -77,7 +77,7 @@ func runBinanceSpotDemoExecE2E(t *testing.T) {
 	if restingPrice.LessThanOrEqual(decimal.Zero) {
 		t.Fatalf("computed non-positive resting price %s from bid %s", restingPrice, bid)
 	}
-	qty, err := selectDemoE2EOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, ask)
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, ask)
 	if err != nil {
 		t.Fatalf("select safe Spot Demo order quantity: %v", err)
 	}
@@ -86,7 +86,7 @@ func runBinanceSpotDemoExecE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping Binance Spot Demo E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping Binance Spot Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 
 	startBalances, err := demoSpotBalances(ctx, adapter)
@@ -99,10 +99,10 @@ func runBinanceSpotDemoExecE2E(t *testing.T) {
 	quoteAvailable := startBalances[spec.QuoteCurrency].Available
 	requiredQuote := qty.Mul(ask).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
-		t.Skipf("skipping Binance Spot Demo E2E: %s available %s below required %s for %s quantity %s at ask %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, ask)
+		t.Skipf("skipping Binance Spot Demo acceptance: %s available %s below required %s for %s quantity %s at ask %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, ask)
 	}
 
-	cleanup := newDemoE2ECleanupState(spec, qty)
+	cleanup := newDemoAcceptanceCleanupState(spec, qty)
 	defer func() {
 		if !cleanup.Needed() {
 			return
@@ -110,7 +110,7 @@ func runBinanceSpotDemoExecE2E(t *testing.T) {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancelCleanup()
 		meta := cleanup.Metadata()
-		if err := cleanupBinanceSpotDemoE2E(cleanupCtx, adapter, instID, spec, startBaseAvailable, &meta); err != nil {
+		if err := cleanupBinanceSpotDemoAcceptance(cleanupCtx, adapter, instID, spec, startBaseAvailable, &meta); err != nil {
 			t.Fatalf("%v\n%s", err, meta.Remediation())
 		}
 	}()

@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func newBinanceDemoRuntimeE2EFixture(t *testing.T, ctx context.Context) (*Adapter, demoE2ESymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal) {
+func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (*Adapter, demoAcceptanceSymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal) {
 	t.Helper()
 
 	adapter, err := New(ctx, Config{
@@ -37,7 +37,7 @@ func newBinanceDemoRuntimeE2EFixture(t *testing.T, ctx context.Context) (*Adapte
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
-	spec, err := demoE2ESymbolSpecFromExchangeInfo(info, symbolInput)
+	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
 	if err != nil {
 		_ = adapter.Close()
 		t.Fatalf("resolve Demo runtime symbol: %v", err)
@@ -56,7 +56,7 @@ func newBinanceDemoRuntimeE2EFixture(t *testing.T, ctx context.Context) (*Adapte
 		_ = adapter.Close()
 		t.Fatalf("computed non-positive resting price %s from reference %s", restingPrice, refPrice)
 	}
-	qty, err := selectDemoE2EOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
 	if err != nil {
 		_ = adapter.Close()
 		t.Fatalf("select safe Demo runtime order quantity: %v", err)
@@ -68,7 +68,7 @@ func newBinanceDemoRuntimeE2EFixture(t *testing.T, ctx context.Context) (*Adapte
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
 		_ = adapter.Close()
-		t.Skipf("skipping Binance Demo runtime E2E: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Skipf("skipping Binance Demo runtime acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
 		_ = adapter.Close()
@@ -76,7 +76,7 @@ func newBinanceDemoRuntimeE2EFixture(t *testing.T, ctx context.Context) (*Adapte
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
 		_ = adapter.Close()
-		t.Skipf("skipping Binance Demo runtime E2E: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Skipf("skipping Binance Demo runtime acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
 	}
 
 	return adapter, spec, instID, qty, restingPrice

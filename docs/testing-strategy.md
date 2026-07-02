@@ -87,7 +87,7 @@ Binance Demo mode uses the shared Binance Demo credential contract and Demo
 endpoint selection. Create the key pair from Binance Demo/Testnet API
 Management; do not use a production key pair. Some upstream Binance endpoint
 names still use the word testnet, but this project exposes the validation
-environment as Demo. The implemented write/E2E Demo flow covers USD-M perps and
+environment as Demo. The implemented write acceptance Demo flow covers USD-M perps and
 the first Spot vertical slice. Future dated futures or options Demo flows should
 add product-qualified targets while reusing `BINANCE_DEMO_*` credentials when
 Binance supports them. The command shape is:
@@ -97,13 +97,13 @@ BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
 BINANCE_DEMO_ORDER_QTY=0.001 \
-go test -run TestBinanceDemoExecE2E ./adapter/binance/perp/ -count=1 -timeout=3m
+go test -run TestBinanceDemoExecAcceptance ./adapter/binance/perp/ -count=1 -timeout=3m
 
 BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
 BINANCE_DEMO_ORDER_QTY=0.001 \
-go test -run TestBinanceSpotDemoExecE2E ./adapter/binance/spot/ -count=1 -timeout=3m
+go test -run TestBinanceSpotDemoExecAcceptance ./adapter/binance/spot/ -count=1 -timeout=3m
 ```
 
 `BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.

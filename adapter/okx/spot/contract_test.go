@@ -30,6 +30,13 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
+func ptrString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
 func testREST(handler func(*http.Request) (string, int)) *okx.Client {
 	return okx.NewClient().
 		WithCredentials("api-key", "secret", "passphrase").
@@ -158,6 +165,75 @@ func TestOKXSpotSubmitOrderRequestTranslation(t *testing.T) {
 		t.Fatalf("Submit: %v", err)
 	}
 	if order.VenueOrderID != "555" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
+		t.Fatalf("order=%+v", order)
+	}
+}
+
+func TestOKXSpotOrdTypeFoldingMatchesNT(t *testing.T) {
+	cases := []struct {
+		ot  enums.OrderType
+		tif enums.TimeInForce
+		okx string
+	}{
+		{enums.TypeMarket, enums.TifUnknown, "market"},
+		{enums.TypeMarket, enums.TifIOC, "market"},
+		{enums.TypeLimit, enums.TifGTC, "limit"},
+		{enums.TypeLimit, enums.TifIOC, "ioc"},
+		{enums.TypeLimit, enums.TifFOK, "fok"},
+		{enums.TypeLimit, enums.TifGTX, "post_only"},
+	}
+	for _, tc := range cases {
+		got, err := ordTypeToOKX(tc.ot, tc.tif)
+		if err != nil {
+			t.Fatalf("ordTypeToOKX(%v,%v): %v", tc.ot, tc.tif, err)
+		}
+		if got != tc.okx {
+			t.Fatalf("ordTypeToOKX(%v,%v)=%q, want %q", tc.ot, tc.tif, got, tc.okx)
+		}
+	}
+	if _, err := ordTypeToOKX(enums.TypeMarket, enums.TifFOK); err == nil {
+		t.Fatal("Market+FOK should be rejected like NautilusTrader")
+	}
+}
+
+func TestOKXSpotSubmitConditionalOrderUsesAlgoEndpoint(t *testing.T) {
+	inst := testSpotInstrument()
+	rest := testREST(func(r *http.Request) (string, int) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v5/trade/order-algo" {
+			t.Fatalf("request=%s %s, want POST /api/v5/trade/order-algo", r.Method, r.URL.Path)
+		}
+		var req okx.AlgoOrderRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.InstId != "ETH-USDT" || req.TdMode != spotTdMode || req.OrdType != "trigger" || req.Sz != "0.01" {
+			t.Fatalf("unexpected algo request: %+v", req)
+		}
+		if req.AlgoClOrdId == nil || *req.AlgoClOrdId != "c-mit" {
+			t.Fatalf("algoClOrdId=%v, want c-mit", req.AlgoClOrdId)
+		}
+		if got := ptrString(req.TriggerPx); got != "3100" {
+			t.Fatalf("triggerPx=%q, want 3100", got)
+		}
+		if got := ptrString(req.OrderPx); got != "-1" {
+			t.Fatalf("orderPx=%q, want -1", got)
+		}
+		return `{"code":"0","msg":"","data":[{"algoId":"spot-algo-1","algoClOrdId":"c-mit","sCode":"0"}]}`, 200
+	})
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+
+	order, err := exec.Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst.ID,
+		ClientID:     "c-mit",
+		Side:         enums.SideSell,
+		Type:         enums.TypeMarketIfTouched,
+		Quantity:     d("0.0100"),
+		TriggerPrice: d("3100.00"),
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if order.VenueOrderID != "spot-algo-1" || order.Request.ClientID != "c-mit" {
 		t.Fatalf("order=%+v", order)
 	}
 }

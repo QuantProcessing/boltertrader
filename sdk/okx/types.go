@@ -700,6 +700,20 @@ const (
 	OrderTypeFok             OrderType = "fok"
 	OrderTypeIoc             OrderType = "ioc"
 	OrderTypeOptimalLimitIoc OrderType = "optimal_limit_ioc"
+	OrderTypeOpFok           OrderType = "op_fok"
+	OrderTypeMmp             OrderType = "mmp"
+	OrderTypeMmpAndPostOnly  OrderType = "mmp_and_post_only"
+)
+
+type AlgoOrderType string
+
+const (
+	AlgoOrderTypeConditional   AlgoOrderType = "conditional"
+	AlgoOrderTypeOCO           AlgoOrderType = "oco"
+	AlgoOrderTypeTrigger       AlgoOrderType = "trigger"
+	AlgoOrderTypeMoveOrderStop AlgoOrderType = "move_order_stop"
+	AlgoOrderTypeIceberg       AlgoOrderType = "iceberg"
+	AlgoOrderTypeTWAP          AlgoOrderType = "twap"
 )
 
 type Side string

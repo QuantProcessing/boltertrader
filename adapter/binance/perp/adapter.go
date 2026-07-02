@@ -13,6 +13,9 @@ import (
 type Config struct {
 	APIKey    string
 	APISecret string
+	// Environment selects Binance production or Demo endpoints. Zero value is
+	// LIVE; Demo is retained below as a compatibility shortcut.
+	Environment sdkperp.Environment
 	// Demo switches REST, public/market WS, account WS, and SDK API clients
 	// to Binance USD-M Futures Demo endpoints.
 	Demo          bool
@@ -56,10 +59,16 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		clk = clock.NewRealClock()
 	}
 
-	profile := sdkperp.USDMMProductionEndpoints
+	env := cfg.Environment
+	if env == "" && cfg.Demo {
+		env = sdkperp.EnvironmentDemo
+	}
+	profile, err := sdkperp.EndpointProfileForEnvironment(env)
+	if err != nil {
+		return nil, err
+	}
 	apiKey, apiSecret := cfg.APIKey, cfg.APISecret
-	if cfg.Demo {
-		profile = sdkperp.USDMMDemoEndpoints
+	if sdkperp.DefaultEnvironment(env) == sdkperp.EnvironmentDemo {
 		apiKey, apiSecret = cfg.DemoAPIKey, cfg.DemoAPISecret
 	}
 	rest := sdkperp.NewClient().WithEndpointProfile(profile)

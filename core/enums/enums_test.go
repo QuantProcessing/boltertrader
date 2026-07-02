@@ -14,8 +14,9 @@ func TestStringValues(t *testing.T) {
 		{TypeLimit.String(), "LIMIT"},
 		{TypeStopMarket.String(), "STOP_MARKET"},
 		{TypeStopLimit.String(), "STOP_LIMIT"},
-		{TypeTakeProfitMarket.String(), "TAKE_PROFIT_MARKET"},
-		{TypeTakeProfitLimit.String(), "TAKE_PROFIT_LIMIT"},
+		{TypeMarketIfTouched.String(), "MARKET_IF_TOUCHED"},
+		{TypeLimitIfTouched.String(), "LIMIT_IF_TOUCHED"},
+		{TypeTrailingStopMarket.String(), "TRAILING_STOP_MARKET"},
 		{TifGTC.String(), "GTC"},
 		{TifIOC.String(), "IOC"},
 		{TifFOK.String(), "FOK"},
@@ -61,11 +62,21 @@ func TestNoStringCollision(t *testing.T) {
 	}
 	check("OrderType", []string{
 		TypeMarket.String(), TypeLimit.String(), TypeStopMarket.String(),
-		TypeStopLimit.String(), TypeTakeProfitMarket.String(), TypeTakeProfitLimit.String(),
+		TypeStopLimit.String(), TypeMarketIfTouched.String(), TypeLimitIfTouched.String(),
+		TypeTrailingStopMarket.String(),
 	})
 	check("OrderStatus", []string{
 		StatusPendingNew.String(), StatusNew.String(), StatusPartiallyFilled.String(),
 		StatusFilled.String(), StatusCanceled.String(), StatusRejected.String(),
 		StatusExpired.String(), StatusTriggered.String(),
 	})
+}
+
+func TestDeprecatedTakeProfitAliasesUseTouchedSemantics(t *testing.T) {
+	if TypeTakeProfitMarket != TypeMarketIfTouched {
+		t.Fatalf("TypeTakeProfitMarket=%v, want alias of TypeMarketIfTouched", TypeTakeProfitMarket)
+	}
+	if TypeTakeProfitLimit != TypeLimitIfTouched {
+		t.Fatalf("TypeTakeProfitLimit=%v, want alias of TypeLimitIfTouched", TypeTakeProfitLimit)
+	}
 }

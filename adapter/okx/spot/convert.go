@@ -44,7 +44,14 @@ func sideFromOKX(s string) enums.OrderSide {
 func ordTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
 	switch t {
 	case enums.TypeMarket:
-		return "market", nil
+		switch tif {
+		case enums.TifUnknown, enums.TifGTC, enums.TifIOC:
+			return "market", nil
+		case enums.TifFOK:
+			return "", fmt.Errorf("okx spot: market+FOK is unsupported: %w", errs.ErrNotSupported)
+		default:
+			return "", fmt.Errorf("okx spot: unsupported TIF %v: %w", tif, errs.ErrNotSupported)
+		}
 	case enums.TypeLimit:
 		switch tif {
 		case enums.TifGTC, enums.TifUnknown:
@@ -63,6 +70,13 @@ func ordTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
 	}
 }
 
+func regularOrdTypeToOKX(t enums.OrderType, tif enums.TimeInForce) (string, error) {
+	if isConditionalOrderType(t) {
+		return "", fmt.Errorf("okx spot: conditional order type %v must use algo endpoint: %w", t, errs.ErrNotSupported)
+	}
+	return ordTypeToOKX(t, tif)
+}
+
 func ordTypeFromOKX(s string) (enums.OrderType, enums.TimeInForce) {
 	switch strings.ToLower(s) {
 	case "market":
@@ -78,6 +92,48 @@ func ordTypeFromOKX(s string) (enums.OrderType, enums.TimeInForce) {
 	default:
 		return enums.TypeUnknown, enums.TifUnknown
 	}
+}
+
+func isConditionalOrderType(t enums.OrderType) bool {
+	switch t {
+	case enums.TypeStopMarket, enums.TypeStopLimit, enums.TypeMarketIfTouched,
+		enums.TypeLimitIfTouched, enums.TypeTrailingStopMarket:
+		return true
+	default:
+		return false
+	}
+}
+
+func algoOrdTypeToOKX(t enums.OrderType) (string, error) {
+	switch t {
+	case enums.TypeStopMarket, enums.TypeStopLimit, enums.TypeMarketIfTouched, enums.TypeLimitIfTouched:
+		return "trigger", nil
+	case enums.TypeTrailingStopMarket:
+		return "move_order_stop", nil
+	default:
+		return "", fmt.Errorf("okx spot: order type %v is not an algo order: %w", t, errs.ErrNotSupported)
+	}
+}
+
+func algoOrderPx(t enums.OrderType, price decimal.Decimal) (string, bool) {
+	switch t {
+	case enums.TypeStopLimit, enums.TypeLimitIfTouched:
+		if price.IsZero() {
+			return "", false
+		}
+		return price.String(), true
+	case enums.TypeStopMarket, enums.TypeMarketIfTouched:
+		return "-1", true
+	default:
+		return "", false
+	}
+}
+
+func callbackRatioFromBps(bps decimal.Decimal) (string, bool) {
+	if bps.IsZero() {
+		return "", false
+	}
+	return bps.Div(decimal.NewFromInt(10000)).String(), true
 }
 
 func statusFromOKX(s string) enums.OrderStatus {

@@ -9,7 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestBinanceSpotDemoDataE2E(t *testing.T) {
+func TestBinanceSpotDemoDataAcceptance(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -32,7 +32,7 @@ func TestBinanceSpotDemoDataE2E(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
-	spec, err := demoE2ESymbolSpecFromExchangeInfo(info, symbolInput)
+	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
 	if err != nil {
 		t.Fatalf("resolve Spot Demo symbol: %v", err)
 	}

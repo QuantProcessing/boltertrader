@@ -2,8 +2,10 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -24,6 +26,8 @@ type executionClient struct {
 	provider *instrumentProvider
 	clk      clock.Clock
 	stream   *wsstream.Stream[contract.ExecEvent]
+	algoMu   sync.Mutex
+	algoIDs  map[string]struct{}
 }
 
 func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
@@ -32,6 +36,7 @@ func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk 
 		provider: provider,
 		clk:      clk,
 		stream:   wsstream.New[contract.ExecEvent](256),
+		algoIDs:  make(map[string]struct{}),
 	}
 }
 
@@ -55,6 +60,9 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	otype, err := orderTypeToBinance(req.Type)
 	if err != nil {
 		return nil, err
+	}
+	if typeUsesAlgoEndpoint(req.Type) {
+		return c.submitAlgo(ctx, req, symbol, side, otype)
 	}
 
 	p := sdkperp.PlaceOrderParams{
@@ -93,9 +101,70 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	return &order, nil
 }
 
+func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, symbol, side, otype string) (*model.Order, error) {
+	tif := "GTC"
+	if req.TIF != enums.TifUnknown {
+		var err error
+		tif, err = tifToBinance(req.TIF)
+		if err != nil {
+			return nil, err
+		}
+	}
+	p := sdkperp.NewAlgoOrderParams{
+		Symbol:       symbol,
+		Side:         side,
+		Type:         otype,
+		AlgoType:     "CONDITIONAL",
+		TimeInForce:  tif,
+		Quantity:     req.Quantity.String(),
+		ClientAlgoID: req.ClientID,
+		ReduceOnly:   req.ReduceOnly,
+	}
+	if req.PositionSide != enums.PosNet {
+		p.PositionSide = positionSideToBinance(req.PositionSide)
+	}
+	if !req.Price.IsZero() {
+		p.Price = req.Price.String()
+	}
+	if !req.TriggerPrice.IsZero() {
+		p.TriggerPrice = req.TriggerPrice.String()
+	}
+	if req.Type == enums.TypeTrailingStopMarket {
+		if req.TrailingOffsetBps.IsZero() {
+			return nil, fmt.Errorf("binance: trailing stop requires TrailingOffsetBps: %w", errs.ErrNotSupported)
+		}
+		if !req.ActivationPrice.IsZero() {
+			p.ActivatePrice = req.ActivationPrice.String()
+		}
+		p.CallbackRate = formatCallbackRate(req.TrailingOffsetBps)
+	}
+
+	resp, err := c.rest.NewAlgoOrder(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	order := orderFromAlgoResponse(resp, req)
+	now := c.clk.Now()
+	order.CreatedAt = now
+	order.UpdatedAt = now
+	c.rememberAlgo(order.VenueOrderID)
+	return &order, nil
+}
+
 func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error {
 	symbol, err := c.venueSymbol(id)
 	if err != nil {
+		return err
+	}
+	if c.isKnownAlgo(venueOrderID) {
+		algoID, err := strconv.ParseInt(venueOrderID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("binance: invalid algo order id %q: %w", venueOrderID, err)
+		}
+		_, err = c.rest.CancelAlgoOrder(ctx, sdkperp.AlgoOrderLookupParams{AlgoID: algoID})
+		if err == nil {
+			c.forgetAlgo(venueOrderID)
+		}
 		return err
 	}
 	_, err = c.rest.CancelOrder(ctx, sdkperp.CancelOrderParams{Symbol: symbol, OrderID: venueOrderID})
@@ -107,7 +176,9 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 	if err != nil {
 		return err
 	}
-	return c.rest.CancelAllOpenOrders(ctx, sdkperp.CancelAllOrdersParams{Symbol: symbol})
+	regularErr := c.rest.CancelAllOpenOrders(ctx, sdkperp.CancelAllOrdersParams{Symbol: symbol})
+	_, algoErr := c.rest.CancelAllOpenAlgoOrders(ctx, sdkperp.CancelAllOpenAlgoOrdersParams{Symbol: symbol})
+	return errors.Join(regularErr, algoErr)
 }
 
 // Modify amends a resting order's price and/or quantity. Binance's amend
@@ -168,6 +239,13 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	for i := range resps {
 		out = append(out, orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id}))
 	}
+	algos, err := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{Symbol: symbol, AlgoType: "CONDITIONAL"})
+	if err != nil {
+		return nil, err
+	}
+	for i := range algos {
+		out = append(out, orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id}))
+	}
 	return out, nil
 }
 
@@ -184,6 +262,14 @@ func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, erro
 	for i := range resps {
 		id := c.provider.resolveVenueSymbol(resps[i].Symbol)
 		out = append(out, orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id}))
+	}
+	algos, err := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{AlgoType: "CONDITIONAL"})
+	if err != nil {
+		return nil, err
+	}
+	for i := range algos {
+		id := c.provider.resolveVenueSymbol(algos[i].Symbol)
+		out = append(out, orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id}))
 	}
 	return out, nil
 }
@@ -216,4 +302,83 @@ func orderFromResponse(r *sdkperp.OrderResponse, req model.OrderRequest) model.O
 		FilledQty:    dec(r.ExecutedQty),
 		AvgFillPrice: dec(r.AvgPrice),
 	}
+}
+
+func orderFromAlgoResponse(r *sdkperp.AlgoOrderResponse, req model.OrderRequest) model.Order {
+	if req.ClientID == "" {
+		req.ClientID = r.ClientAlgoID
+	}
+	if req.Side == enums.SideUnknown {
+		req.Side = sideFromBinance(r.Side)
+	}
+	if req.Type == enums.TypeUnknown {
+		req.Type = orderTypeFromBinance(r.OrderType)
+	}
+	if req.TIF == enums.TifUnknown {
+		req.TIF = tifFromBinance(r.TimeInForce)
+	}
+	if req.Quantity.IsZero() {
+		req.Quantity = dec(r.Quantity)
+	}
+	if req.Price.IsZero() {
+		req.Price = dec(r.Price)
+	}
+	if req.TriggerPrice.IsZero() {
+		req.TriggerPrice = dec(r.TriggerPrice)
+	}
+	if req.ActivationPrice.IsZero() {
+		req.ActivationPrice = dec(r.ActivatePrice)
+	}
+	return model.Order{
+		Request:      req,
+		VenueOrderID: strconv.FormatInt(r.AlgoID, 10),
+		Status:       algoStatusFromBinance(r.AlgoStatus),
+		FilledQty:    dec(r.Quantity),
+		AvgFillPrice: dec(r.Price),
+	}
+}
+
+func algoStatusFromBinance(s string) enums.OrderStatus {
+	switch s {
+	case "NEW", "TRIGGERING":
+		return enums.StatusNew
+	case "TRIGGERED":
+		return enums.StatusTriggered
+	case "FINISHED":
+		return enums.StatusFilled
+	case "CANCELED":
+		return enums.StatusCanceled
+	case "EXPIRED":
+		return enums.StatusExpired
+	case "REJECTED":
+		return enums.StatusRejected
+	default:
+		return enums.StatusUnknown
+	}
+}
+
+func formatCallbackRate(bps decimal.Decimal) string {
+	return bps.Div(decimal.NewFromInt(100)).String()
+}
+
+func (c *executionClient) rememberAlgo(id string) {
+	if id == "" {
+		return
+	}
+	c.algoMu.Lock()
+	c.algoIDs[id] = struct{}{}
+	c.algoMu.Unlock()
+}
+
+func (c *executionClient) forgetAlgo(id string) {
+	c.algoMu.Lock()
+	delete(c.algoIDs, id)
+	c.algoMu.Unlock()
+}
+
+func (c *executionClient) isKnownAlgo(id string) bool {
+	c.algoMu.Lock()
+	defer c.algoMu.Unlock()
+	_, ok := c.algoIDs[id]
+	return ok
 }

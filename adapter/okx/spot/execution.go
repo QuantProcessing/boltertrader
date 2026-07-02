@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -19,6 +20,8 @@ type executionClient struct {
 	provider *instrumentProvider
 	clk      clock.Clock
 	stream   *wsstream.Stream[contract.ExecEvent]
+	algoMu   sync.Mutex
+	algoIDs  map[string]struct{}
 }
 
 func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
@@ -27,10 +30,20 @@ func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk cloc
 		provider: provider,
 		clk:      clk,
 		stream:   wsstream.New[contract.ExecEvent](256),
+		algoIDs:  make(map[string]struct{}),
 	}
 }
 
 func checkSCode(ids []okx.OrderId) error {
+	for _, id := range ids {
+		if id.SCode != "" && id.SCode != "0" {
+			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, nil)
+		}
+	}
+	return nil
+}
+
+func checkAlgoSCode(ids []okx.AlgoOrderID) error {
 	for _, id := range ids {
 		if id.SCode != "" && id.SCode != "0" {
 			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, nil)
@@ -69,7 +82,10 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	ordType, err := ordTypeToOKX(req.Type, req.TIF)
+	if isConditionalOrderType(req.Type) {
+		return c.submitAlgo(ctx, req, instID, side)
+	}
+	ordType, err := regularOrdTypeToOKX(req.Type, req.TIF)
 	if err != nil {
 		return nil, err
 	}
@@ -115,10 +131,82 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}, nil
 }
 
+func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, instID, side string) (*model.Order, error) {
+	ordType, err := algoOrdTypeToOKX(req.Type)
+	if err != nil {
+		return nil, err
+	}
+	r := &okx.AlgoOrderRequest{
+		InstId:  instID,
+		TdMode:  spotTdMode,
+		Side:    side,
+		OrdType: ordType,
+		Sz:      req.Quantity.String(),
+	}
+	if req.ClientID != "" {
+		r.AlgoClOrdId = &req.ClientID
+	}
+	if !req.TriggerPrice.IsZero() {
+		trigger := req.TriggerPrice.String()
+		r.TriggerPx = &trigger
+	}
+	if orderPx, ok := algoOrderPx(req.Type, req.Price); ok {
+		r.OrderPx = &orderPx
+	}
+	if req.Type == enums.TypeTrailingStopMarket {
+		callback, ok := callbackRatioFromBps(req.TrailingOffsetBps)
+		if !ok {
+			return nil, fmt.Errorf("okx spot: trailing stop requires TrailingOffsetBps: %w", errs.ErrNotSupported)
+		}
+		r.CallbackRatio = &callback
+		if !req.ActivationPrice.IsZero() {
+			active := req.ActivationPrice.String()
+			r.ActivePx = &active
+		}
+	}
+
+	ids, err := c.rest.PlaceAlgoOrder(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("okx spot: empty algo order response")
+	}
+	if err := checkAlgoSCode(ids); err != nil {
+		return nil, err
+	}
+	oid := ids[0]
+	now := c.clk.Now()
+	if req.ClientID == "" {
+		req.ClientID = oid.AlgoClOrdId
+	}
+	req.PositionSide = enums.PosNet
+	req.ReduceOnly = false
+	order := &model.Order{
+		Request:      req,
+		VenueOrderID: oid.AlgoId,
+		Status:       enums.StatusNew,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	c.rememberAlgo(order.VenueOrderID)
+	return order, nil
+}
+
 func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error {
 	instID, err := c.instID(id)
 	if err != nil {
 		return err
+	}
+	if c.isKnownAlgo(venueOrderID) {
+		ids, err := c.rest.CancelAlgoOrders(ctx, []okx.AlgoCancelRequest{{InstId: instID, AlgoId: venueOrderID}})
+		if err == nil {
+			c.forgetAlgo(venueOrderID)
+		}
+		if err != nil {
+			return err
+		}
+		return checkAlgoSCode(ids)
 	}
 	ids, err := c.rest.CancelOrder(ctx, instID, venueOrderID, "")
 	if err != nil {
@@ -224,4 +312,26 @@ func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(ev) }
 func (c *executionClient) Close() error {
 	c.stream.Close()
 	return nil
+}
+
+func (c *executionClient) rememberAlgo(id string) {
+	if id == "" {
+		return
+	}
+	c.algoMu.Lock()
+	c.algoIDs[id] = struct{}{}
+	c.algoMu.Unlock()
+}
+
+func (c *executionClient) forgetAlgo(id string) {
+	c.algoMu.Lock()
+	delete(c.algoIDs, id)
+	c.algoMu.Unlock()
+}
+
+func (c *executionClient) isKnownAlgo(id string) bool {
+	c.algoMu.Lock()
+	defer c.algoMu.Unlock()
+	_, ok := c.algoIDs[id]
+	return ok
 }

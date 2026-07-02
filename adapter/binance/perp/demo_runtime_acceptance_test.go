@@ -12,19 +12,19 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 )
 
-func TestBinanceDemoRuntimeE2E(t *testing.T) {
+func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	testenv.RequireBinanceDemoWrite(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	adapter, spec, instID, qty, restingPrice := newBinanceDemoRuntimeE2EFixture(t, ctx)
+	adapter, spec, instID, qty, restingPrice := newBinanceDemoRuntimeAcceptanceFixture(t, ctx)
 	defer adapter.Close()
 	defer func() {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelCleanup()
-		meta := demoE2ECleanupMetadata{Symbol: spec.VenueSymbol, Side: "BUY", Quantity: qty}
-		if err := cleanupBinanceDemoE2E(cleanupCtx, adapter, instID, &meta); err != nil {
+		meta := demoAcceptanceCleanupMetadata{Symbol: spec.VenueSymbol, Side: "BUY", Quantity: qty}
+		if err := cleanupBinanceDemoAcceptance(cleanupCtx, adapter, instID, &meta); err != nil {
 			t.Fatalf("%v\n%s", err, meta.Remediation())
 		}
 	}()
@@ -91,7 +91,7 @@ func TestBinanceDemoRuntimeE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait for Demo runtime account exposure: %v", err)
 	}
-	meta := demoE2ECleanupMetadata{Symbol: spec.VenueSymbol, Side: "BUY", Quantity: qty, Exposure: exposure}
+	meta := demoAcceptanceCleanupMetadata{Symbol: spec.VenueSymbol, Side: "BUY", Quantity: qty, Exposure: exposure}
 	if err := closeBinanceDemoExposure(ctx, adapter, instID, exposure); err != nil {
 		t.Fatalf("close Demo runtime exposure: %v\n%s", err, meta.Remediation())
 	}
