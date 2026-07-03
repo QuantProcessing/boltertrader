@@ -1,7 +1,6 @@
 // Package strategies holds example, ready-to-run strategies built on the
 // runtime/strategy callback interface. They are venue-neutral: each acts only
-// through the strategy Context, so the identical strategy runs in backtest and
-// live.
+// through the strategy Context, so the same strategy can run across adapters.
 package strategies
 
 import (
@@ -49,7 +48,7 @@ func (s *PrintTrades) OnBar(c *strategy.Context, bar model.Bar) {
 }
 
 func (s *PrintTrades) OnFill(c *strategy.Context, f model.Fill) {
-	s.log("FILL %s %s @ %s fee %s | realizedPnL=%s", f.Side, f.Quantity, f.Price, f.Fee, c.Portfolio.RealizedPnLNetFees())
+	s.log("FILL %s %s @ %s fee %s %s | realizedPnL=%s", f.Side, f.Quantity, f.Price, f.Fee, f.FeeCurrency, c.Portfolio.RealizedPnLNetFees())
 }
 
 func (s *PrintTrades) OnStop(c *strategy.Context) {

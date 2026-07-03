@@ -13,6 +13,7 @@ type Config struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string
+	TdMode     string // cash (default) or cross for OKX account modes which reject cash
 
 	Environment     okx.Environment
 	DemoHostProfile okx.DemoHostProfile
@@ -50,6 +51,10 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
+	tdMode, err := normalizeSpotTdMode(cfg.TdMode)
+	if err != nil {
+		return nil, err
+	}
 
 	rest := okx.NewClient().
 		WithCredentials(cfg.APIKey, cfg.APISecret, cfg.Passphrase).
@@ -75,7 +80,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		wsPublic.WithURL(cfg.WSPublicURL)
 	}
 
-	exec := newExecutionClient(rest, provider, clk)
+	exec := newExecutionClient(rest, provider, clk, tdMode)
 	acct := newAccountClient(rest, provider, clk)
 	market := newMarketDataClient(rest, wsPublic, provider, clk)
 

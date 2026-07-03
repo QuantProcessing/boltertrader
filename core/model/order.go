@@ -28,7 +28,7 @@ type OrderRequest struct {
 	ReduceOnly        bool
 
 	// Venue is the per-venue escape hatch for non-portable options. Setting it
-	// forfeits backtest/live parity for those fields. Nil for portable orders.
+	// forfeits cross-venue portability for those fields. Nil for portable orders.
 	Venue *VenueOrderOpts
 }
 

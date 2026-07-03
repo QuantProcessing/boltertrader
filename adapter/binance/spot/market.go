@@ -21,7 +21,7 @@ type marketDataClient struct {
 	ws       *sdkspot.WsMarketClient
 	provider *instrumentProvider
 	clk      clock.Clock
-	stream   *wsstream.Stream[contract.MarketEvent]
+	stream   *wsstream.Stream[contract.MarketEnvelope]
 
 	connOnce sync.Once
 	connErr  error
@@ -33,7 +33,7 @@ func newMarketDataClient(rest *sdkspot.Client, ws *sdkspot.WsMarketClient, provi
 		ws:       ws,
 		provider: provider,
 		clk:      clk,
-		stream:   wsstream.New[contract.MarketEvent](1024),
+		stream:   wsstream.New[contract.MarketEnvelope](1024),
 	}
 }
 
@@ -211,9 +211,11 @@ func (c *marketDataClient) Reconnect(ctx context.Context) error {
 	return waitConnected(ctx, c.ws.IsConnected)
 }
 
-func (c *marketDataClient) emit(ev contract.MarketEvent) { c.stream.Emit(ev) }
+func (c *marketDataClient) emit(ev contract.MarketEvent) {
+	c.stream.Emit(contract.NewMarketEnvelope(ev))
+}
 
-func (c *marketDataClient) Events() <-chan contract.MarketEvent { return c.stream.C() }
+func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 
 func (c *marketDataClient) Close() error {
 	if c.ws != nil {

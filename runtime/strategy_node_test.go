@@ -22,6 +22,7 @@ type recordingStrategy struct {
 	bars    int
 	trades  int
 	fills   int
+	metaIDs []string
 }
 
 func (s *recordingStrategy) OnStart(c *strategy.Context) {
@@ -33,6 +34,9 @@ func (s *recordingStrategy) OnStart(c *strategy.Context) {
 func (s *recordingStrategy) OnTrade(c *strategy.Context, t model.TradeTick) {
 	s.mu.Lock()
 	s.trades++
+	if meta := c.CurrentEventMeta(); meta.EventID != "" {
+		s.metaIDs = append(s.metaIDs, string(meta.EventID))
+	}
 	s.mu.Unlock()
 }
 
@@ -40,6 +44,9 @@ func (s *recordingStrategy) OnBar(c *strategy.Context, bar model.Bar) {
 	s.mu.Lock()
 	first := s.bars == 0
 	s.bars++
+	if meta := c.CurrentEventMeta(); meta.EventID != "" {
+		s.metaIDs = append(s.metaIDs, string(meta.EventID))
+	}
 	s.mu.Unlock()
 	if first {
 		// Strategy acts through the context, not an adapter.
@@ -100,6 +107,9 @@ func TestStrategyCallbacksAndBars(t *testing.T) {
 	strat.mu.Lock()
 	if strat.trades != 3 {
 		t.Errorf("trades=%d, want 3", strat.trades)
+	}
+	if len(strat.metaIDs) == 0 {
+		t.Error("strategy callbacks did not receive event metadata")
 	}
 	strat.mu.Unlock()
 

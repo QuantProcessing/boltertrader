@@ -25,7 +25,7 @@ type executionClient struct {
 	rest     *sdkperp.Client
 	provider *instrumentProvider
 	clk      clock.Clock
-	stream   *wsstream.Stream[contract.ExecEvent]
+	stream   *wsstream.Stream[contract.ExecEnvelope]
 	algoMu   sync.Mutex
 	algoIDs  map[string]struct{}
 }
@@ -35,7 +35,7 @@ func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk 
 		rest:     rest,
 		provider: provider,
 		clk:      clk,
-		stream:   wsstream.New[contract.ExecEvent](256),
+		stream:   wsstream.New[contract.ExecEnvelope](256),
 		algoIDs:  make(map[string]struct{}),
 	}
 }
@@ -99,6 +99,27 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	order.CreatedAt = c.clk.Now()
 	order.UpdatedAt = order.CreatedAt
 	return &order, nil
+}
+
+func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
+	if _, err := c.venueSymbol(req.InstrumentID); err != nil {
+		return err
+	}
+	if _, err := sideToBinance(req.Side); err != nil {
+		return err
+	}
+	if _, err := orderTypeToBinance(req.Type); err != nil {
+		return err
+	}
+	if typeNeedsTIF(req.Type) {
+		if _, err := tifToBinance(req.TIF); err != nil {
+			return err
+		}
+	}
+	if req.Type == enums.TypeTrailingStopMarket && req.TrailingOffsetBps.IsZero() {
+		return fmt.Errorf("binance: trailing stop requires TrailingOffsetBps: %w", errs.ErrNotSupported)
+	}
+	return nil
 }
 
 func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, symbol, side, otype string) (*model.Order, error) {
@@ -249,19 +270,24 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	return out, nil
 }
 
-// OrderReports returns every open order across all instruments in one call.
-// Binance's openOrders endpoint returns the full account-wide set when the
-// symbol is omitted; each row's symbol is resolved back to an InstrumentID so
-// reconciliation can rebuild orders the cache has never seen.
-func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, error) {
+// GenerateOrderStatusReports returns every open order across all instruments in
+// one call. Binance's openOrders endpoint returns the full account-wide set
+// when the symbol is omitted; each row's symbol is resolved back to an
+// InstrumentID so reconciliation can rebuild orders the cache has never seen.
+func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
 	resps, err := c.rest.GetOpenOrders(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	out := make([]model.Order, 0, len(resps))
+	now := c.clk.Now()
+	out := make([]model.OrderStatusReport, 0, len(resps))
 	for i := range resps {
 		id := c.provider.resolveVenueSymbol(resps[i].Symbol)
-		out = append(out, orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id}))
+		o := orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id})
+		if !model.OrderMatchesStatusQuery(o, query) {
+			continue
+		}
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
 	}
 	algos, err := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{AlgoType: "CONDITIONAL"})
 	if err != nil {
@@ -269,17 +295,60 @@ func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, erro
 	}
 	for i := range algos {
 		id := c.provider.resolveVenueSymbol(algos[i].Symbol)
-		out = append(out, orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id}))
+		o := orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id})
+		if !model.OrderMatchesStatusQuery(o, query) {
+			continue
+		}
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
 	}
 	return out, nil
 }
 
-func (c *executionClient) Events() <-chan contract.ExecEvent { return c.stream.C() }
+func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
+		InstrumentID: query.InstrumentID,
+		AccountID:    query.AccountID,
+		ClientID:     query.ClientID,
+		VenueOrderID: query.VenueOrderID,
+	})
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	return &reports[0], nil
+}
+
+func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	return nil, fmt.Errorf("binance: fill report history is not implemented: %w", errs.ErrNotSupported)
+}
+
+func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	return nil, fmt.Errorf("binance: position reports are not served by execution client: %w", errs.ErrNotSupported)
+}
+
+func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: query.AccountID, ClientID: query.ClientID, OpenOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	mass := model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now())
+	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
+	mass.Partial = true
+	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
+	for _, report := range reports {
+		if err := mass.AddOrderReport(report); err != nil {
+			return nil, err
+		}
+	}
+	return mass, nil
+}
+
+func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
 
 // emit pushes a translated execution event to the stream. It blocks under
 // backpressure (never silently dropping fills/order updates) and is a no-op
 // after Close.
-func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(ev) }
+func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(contract.NewExecEnvelope(ev)) }
 
 func (c *executionClient) Close() error {
 	c.stream.Close()

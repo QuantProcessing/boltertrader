@@ -2,6 +2,7 @@ package cache
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -25,6 +26,26 @@ func TestOrderUpsertAndOpenFilter(t *testing.T) {
 	c.UpsertOrder(model.Order{Request: model.OrderRequest{ClientID: "a"}, Status: enums.StatusCanceled})
 	if open := c.OpenOrders(); len(open) != 0 {
 		t.Fatalf("open orders=%+v, want none", open)
+	}
+}
+
+func TestOrderUpsertRejectsStaleTerminalRegression(t *testing.T) {
+	c := New()
+	newer := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	older := newer.Add(-time.Minute)
+	c.UpsertOrder(model.Order{
+		Request:   model.OrderRequest{ClientID: "terminal"},
+		Status:    enums.StatusCanceled,
+		UpdatedAt: newer,
+	})
+	c.UpsertOrder(model.Order{
+		Request:   model.OrderRequest{ClientID: "terminal"},
+		Status:    enums.StatusRejected,
+		UpdatedAt: older,
+	})
+	got, _ := c.Order("terminal")
+	if got.Status != enums.StatusCanceled {
+		t.Fatalf("status=%s, want CANCELED", got.Status)
 	}
 }
 

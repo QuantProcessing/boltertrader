@@ -40,6 +40,10 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 		t.Fatalf("new OKX Perp Demo adapter: %v", err)
 	}
 	defer adapter.Close()
+	if err := validateDemoPerpAccountMode(ctx, adapter.rest); err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo account mode preflight")
+		t.Fatalf("OKX Perp Demo account mode preflight: %v", err)
+	}
 
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo private stream")

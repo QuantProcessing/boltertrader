@@ -1,14 +1,14 @@
 // Package strategy defines the callback-style interface a trading strategy
 // implements. The runtime invokes these methods on the bus goroutine, so a
-// strategy sees a single-threaded, deterministic event order — identical in
-// backtest and live. Strategies act through the Context, never by holding an
-// adapter or SDK reference, which is what preserves backtest/live parity.
+// strategy sees a single-threaded event order. Strategies act through the
+// Context, never by holding an adapter or SDK reference.
 package strategy
 
 import (
 	"context"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
@@ -25,13 +25,21 @@ type Submitter interface {
 
 // Context is handed to a strategy on every callback. It exposes read-only state
 // (cache, portfolio, clock) and the order-submission surface. It carries no
-// venue or adapter reference, so a strategy is identical in backtest and live.
+// venue or adapter reference, keeping strategy code portable across adapters.
 type Context struct {
 	Ctx       context.Context
 	Clock     clock.Clock
 	Cache     *cache.Cache
 	Portfolio *portfolio.Portfolio
 	Orders    Submitter
+
+	currentEventMeta contract.EventMeta
+}
+
+func (c *Context) CurrentEventMeta() contract.EventMeta { return c.currentEventMeta }
+
+func (c *Context) SetCurrentEventMeta(meta contract.EventMeta) {
+	c.currentEventMeta = meta
 }
 
 // Buy submits a market or limit buy. A zero price means market.
@@ -83,9 +91,9 @@ type Strategy interface {
 // the callbacks they care about.
 type Base struct{}
 
-func (Base) OnStart(*Context)              {}
-func (Base) OnBar(*Context, model.Bar)     {}
+func (Base) OnStart(*Context)                  {}
+func (Base) OnBar(*Context, model.Bar)         {}
 func (Base) OnQuote(*Context, model.QuoteTick) {}
 func (Base) OnTrade(*Context, model.TradeTick) {}
-func (Base) OnFill(*Context, model.Fill)   {}
-func (Base) OnStop(*Context)               {}
+func (Base) OnFill(*Context, model.Fill)       {}
+func (Base) OnStop(*Context)                   {}

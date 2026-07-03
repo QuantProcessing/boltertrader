@@ -1,7 +1,7 @@
 // Package contracttest provides a reusable, venue-agnostic test harness that
 // every adapter must pass. It exercises the core/contract interfaces — not an
 // adapter's internals — so the same checks apply uniformly to Binance, OKX,
-// Hyperliquid, and the simulated backtest venue.
+// Hyperliquid, and runtime fake venues.
 //
 // Venue-specific concerns (enum round-trip over a venue's native strings,
 // golden payload translation) live in each adapter's own package test, where
@@ -137,12 +137,12 @@ type MarketCapabilities struct {
 }
 
 type ExecutionCapabilities struct {
-	Submit       CapabilityProbe
-	Cancel       CapabilityProbe
-	CancelAll    CapabilityProbe
-	Modify       CapabilityProbe
-	OpenOrders   CapabilityProbe
-	OrderReports CapabilityProbe
+	Submit     CapabilityProbe
+	Cancel     CapabilityProbe
+	CancelAll  CapabilityProbe
+	Modify     CapabilityProbe
+	OpenOrders CapabilityProbe
+	MassStatus CapabilityProbe
 }
 
 type AccountCapabilities struct {
@@ -185,7 +185,7 @@ func RunPerpCapabilitySuite(t *testing.T, suite PerpCapabilitySuite) {
 		{"cancel_all", suite.Execution.CancelAll},
 		{"modify", suite.Execution.Modify},
 		{"open_orders", suite.Execution.OpenOrders},
-		{"order_reports", suite.Execution.OrderReports},
+		{"mass_status", suite.Execution.MassStatus},
 	})
 	runGroup(t, suite.Venue+"/account", []namedCapability{
 		{"balances", suite.Account.Balances},
@@ -226,7 +226,7 @@ func RunSpotCapabilitySuite(t *testing.T, suite SpotCapabilitySuite) {
 		{"cancel_all", suite.Execution.CancelAll},
 		{"modify", suite.Execution.Modify},
 		{"open_orders", suite.Execution.OpenOrders},
-		{"order_reports", suite.Execution.OrderReports},
+		{"mass_status", suite.Execution.MassStatus},
 	})
 	runGroup(t, suite.Venue+"/account", []namedCapability{
 		{"balances", suite.Account.Balances},

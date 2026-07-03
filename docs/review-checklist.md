@@ -9,8 +9,9 @@ changes.
   venue-specific fields.
 - The client contract layer exposes venue-neutral behavior without leaking
   runtime state ownership.
-- Runtime state transitions are deterministic, replayable, and testable.
-- Strategy-facing APIs preserve backtest/live parity.
+- Runtime state transitions are serialized through the bus and testable with
+  fake live clients.
+- Strategy-facing APIs stay portable across supported venues.
 - Product assumptions are explicit: spot, perp, future, and option semantics are
   not collapsed into one product model.
 

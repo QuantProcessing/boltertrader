@@ -726,7 +726,7 @@ Use this checklist for every phase and for substantial pull requests.
 - Product-specific behavior is explicit in the model or isolated behind a policy
   boundary.
 - Venue-specific behavior is contained in `adapter/<venue>` or `sdk/<venue>`.
-- The change preserves backtest/live parity for strategy-facing APIs.
+- The change preserves portable strategy-facing APIs across supported venues.
 
 ## Contract and Test Review
 
@@ -738,8 +738,7 @@ Use this checklist for every phase and for substantial pull requests.
 
 ## Implementation Review
 
-- State mutation remains serialized through the runtime event path or the
-  deterministic backtest stepping path.
+- State mutation remains serialized through the runtime event path.
 - Decimal math is used for prices, quantities, balances, and PnL.
 - Errors preserve sentinel or typed classification where available.
 - Public API changes are minimal and documented.

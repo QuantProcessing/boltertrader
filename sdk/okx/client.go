@@ -174,9 +174,16 @@ func Request[T any](c *Client, ctx context.Context, method Method, path string, 
 		if baseResp.Code == "50011" || baseResp.Code == "50061" {
 			return nil, sdkcore.NewExchangeError("OKX", baseResp.Code, baseResp.Message, sdkcore.ErrRateLimited)
 		}
+		var details string
+		if len(baseResp.Data) > 0 {
+			if data, err := json.Marshal(baseResp.Data); err == nil {
+				details = string(data)
+			}
+		}
 		return nil, &APIError{
 			Code:    baseResp.Code,
 			Message: baseResp.Message,
+			Details: details,
 		}
 	}
 

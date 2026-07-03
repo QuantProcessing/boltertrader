@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
@@ -71,6 +72,39 @@ func TestClient_PlaceAlgoOrderBuildsPrivateRequest(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].AlgoId != "algo-1" || got[0].AlgoClOrdId != "client-algo" {
 		t.Fatalf("unexpected algo place response: %+v", got)
+	}
+}
+
+func TestClient_PlaceOrderTopLevelFailureIncludesOrderDetails(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v5/trade/order" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"code":"1","msg":"All operations failed","data":[{"ordId":"","clOrdId":"client-reject","sCode":"51008","sMsg":"insufficient balance"}]}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient().WithCredentials("key", "secret", "pass")
+	client.BaseURL = srv.URL
+	clientID := "client-reject"
+	price := "10"
+	_, err := client.PlaceOrder(context.Background(), &OrderRequest{
+		InstId:  okxSpotInstID,
+		TdMode:  "cash",
+		ClOrdId: &clientID,
+		Side:    "buy",
+		OrdType: "limit",
+		Sz:      "1",
+		Px:      &price,
+	})
+	if err == nil {
+		t.Fatal("expected API error")
+	}
+	want := `details=[{"ordId":"","clOrdId":"client-reject","sCode":"51008","sMsg":"insufficient balance"`
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error %q does not include %q", err.Error(), want)
 	}
 }
 

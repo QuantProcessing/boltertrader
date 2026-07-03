@@ -19,17 +19,23 @@ type executionClient struct {
 	rest     *okx.Client
 	provider *instrumentProvider
 	clk      clock.Clock
-	stream   *wsstream.Stream[contract.ExecEvent]
+	tdMode   string
+	stream   *wsstream.Stream[contract.ExecEnvelope]
 	algoMu   sync.Mutex
 	algoIDs  map[string]struct{}
 }
 
-func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
+func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string) *executionClient {
+	normalized, err := normalizeSpotTdMode(tdMode)
+	if err != nil {
+		normalized = defaultSpotTdMode
+	}
 	return &executionClient{
 		rest:     rest,
 		provider: provider,
 		clk:      clk,
-		stream:   wsstream.New[contract.ExecEvent](256),
+		tdMode:   normalized,
+		stream:   wsstream.New[contract.ExecEnvelope](256),
 		algoIDs:  make(map[string]struct{}),
 	}
 }
@@ -37,7 +43,7 @@ func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk cloc
 func checkSCode(ids []okx.OrderId) error {
 	for _, id := range ids {
 		if id.SCode != "" && id.SCode != "0" {
-			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, nil)
+			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, contract.ErrVenueRejected)
 		}
 	}
 	return nil
@@ -46,7 +52,7 @@ func checkSCode(ids []okx.OrderId) error {
 func checkAlgoSCode(ids []okx.AlgoOrderID) error {
 	for _, id := range ids {
 		if id.SCode != "" && id.SCode != "0" {
-			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, nil)
+			return errs.NewExchangeError(venueName, id.SCode, id.SMsg, contract.ErrVenueRejected)
 		}
 	}
 	return nil
@@ -92,7 +98,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 
 	r := &okx.OrderRequest{
 		InstId:  instID,
-		TdMode:  spotTdMode,
+		TdMode:  c.tdMode,
 		Side:    side,
 		OrdType: ordType,
 		Sz:      req.Quantity.String(),
@@ -131,6 +137,31 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}, nil
 }
 
+func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
+	if err := rejectDerivativeOrderFields(req); err != nil {
+		return err
+	}
+	if _, err := c.instID(req.InstrumentID); err != nil {
+		return err
+	}
+	if _, err := sideToOKX(req.Side); err != nil {
+		return err
+	}
+	if isConditionalOrderType(req.Type) {
+		if _, err := algoOrdTypeToOKX(req.Type); err != nil {
+			return err
+		}
+		if req.Type == enums.TypeTrailingStopMarket {
+			if _, ok := callbackRatioFromBps(req.TrailingOffsetBps); !ok {
+				return fmt.Errorf("okx spot: trailing stop requires TrailingOffsetBps: %w", errs.ErrNotSupported)
+			}
+		}
+		return nil
+	}
+	_, err := regularOrdTypeToOKX(req.Type, req.TIF)
+	return err
+}
+
 func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, instID, side string) (*model.Order, error) {
 	ordType, err := algoOrdTypeToOKX(req.Type)
 	if err != nil {
@@ -138,7 +169,7 @@ func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest
 	}
 	r := &okx.AlgoOrderRequest{
 		InstId:  instID,
-		TdMode:  spotTdMode,
+		TdMode:  c.tdMode,
 		Side:    side,
 		OrdType: ordType,
 		Sz:      req.Quantity.String(),
@@ -292,22 +323,66 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	return out, nil
 }
 
-func (c *executionClient) OrderReports(ctx context.Context) ([]model.Order, error) {
+func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
 	instType := instTypeSpot
 	orders, err := c.rest.GetOrders(ctx, &instType, nil)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]model.Order, 0, len(orders))
+	now := c.clk.Now()
+	out := make([]model.OrderStatusReport, 0, len(orders))
 	for i := range orders {
-		out = append(out, orderFromOKX(&orders[i], c.provider))
+		o := orderFromOKX(&orders[i], c.provider)
+		if !model.OrderMatchesStatusQuery(o, query) {
+			continue
+		}
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
 	}
 	return out, nil
 }
 
-func (c *executionClient) Events() <-chan contract.ExecEvent { return c.stream.C() }
+func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
+		InstrumentID: query.InstrumentID,
+		AccountID:    query.AccountID,
+		ClientID:     query.ClientID,
+		VenueOrderID: query.VenueOrderID,
+	})
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	return &reports[0], nil
+}
 
-func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(ev) }
+func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	return nil, fmt.Errorf("okx spot: fill report history is not implemented: %w", errs.ErrNotSupported)
+}
+
+func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	return nil, fmt.Errorf("okx spot: cash positions are balance-sourced: %w", errs.ErrNotSupported)
+}
+
+func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: query.AccountID, ClientID: query.ClientID, OpenOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	mass := model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now())
+	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
+	mass.Partial = true
+	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
+	for _, report := range reports {
+		if err := mass.AddOrderReport(report); err != nil {
+			return nil, err
+		}
+	}
+	return mass, nil
+}
+
+func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
+
+func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(contract.NewExecEnvelope(ev)) }
 
 func (c *executionClient) Close() error {
 	c.stream.Close()

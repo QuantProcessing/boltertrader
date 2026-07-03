@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/QuantProcessing/boltertrader/runtime/orderstate"
 )
 
 // orderKey identifies an order. ClientID is preferred (assigned by us, stable
@@ -53,6 +54,19 @@ func keyForOrder(o model.Order) orderKey {
 func (c *Cache) UpsertOrder(o model.Order) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	k := keyForOrder(o)
+	if existing, ok := c.orders[k]; ok {
+		o = orderstate.Merge(existing, o)
+	}
+	if o.VenueOrderID != "" {
+		for key, existing := range c.orders {
+			if key == k || existing.VenueOrderID != o.VenueOrderID {
+				continue
+			}
+			o = orderstate.Merge(existing, o)
+			delete(c.orders, key)
+		}
+	}
 	c.orders[keyForOrder(o)] = o
 }
 
@@ -89,12 +103,7 @@ func (c *Cache) OpenOrders() []model.Order {
 }
 
 func isTerminal(s enums.OrderStatus) bool {
-	switch s {
-	case enums.StatusUnknown, enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
-		return true
-	default:
-		return false
-	}
+	return orderstate.IsTerminal(s)
 }
 
 // UpsertPosition inserts or replaces a position. A flat (zero-quantity) position

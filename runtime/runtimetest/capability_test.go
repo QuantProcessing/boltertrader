@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/contract/contracttest"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -62,8 +63,8 @@ func TestFakePerpCapabilitySuite(t *testing.T) {
 				_, err := exec.OpenOrders(ctx, id)
 				return err
 			}},
-			OrderReports: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
-				_, err := exec.OrderReports(ctx)
+			MassStatus: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
+				_, err := exec.GenerateExecutionMassStatus(ctx, model.MassStatusQuery{})
 				return err
 			}},
 		},
@@ -84,4 +85,37 @@ func TestFakePerpCapabilitySuite(t *testing.T) {
 			}},
 		},
 	})
+}
+
+func TestFakeExecCapabilitiesMatchImplementedReports(t *testing.T) {
+	caps := NewFakeExec().Capabilities().Reports
+	if caps.FillHistory || caps.PositionReports || caps.AccountBalanceSnapshots || caps.OrderHistory {
+		t.Fatalf("fake exec reports=%+v, want only implemented execution reports advertised", caps)
+	}
+	if !caps.SingleOrderStatus || !caps.OpenOrders {
+		t.Fatalf("fake exec reports=%+v, want single-order and open-order status support", caps)
+	}
+}
+
+func TestFakeVenueEmitsTestSourcedEnvelopes(t *testing.T) {
+	exec := NewFakeExec()
+	exec.EmitReject("client-1", "rejected")
+	execEnv := <-exec.Events()
+	if execEnv.Source != contract.SourceTest || !execEnv.Flags.Has(contract.EventFlagSynthetic) {
+		t.Fatalf("exec meta source=%s flags=%b, want test synthetic", execEnv.Source, execEnv.Flags)
+	}
+
+	account := NewFakeAccount()
+	account.EmitBalance(model.AccountBalance{Currency: "USDT"})
+	accountEnv := <-account.Events()
+	if accountEnv.Source != contract.SourceTest || !accountEnv.Flags.Has(contract.EventFlagSynthetic) {
+		t.Fatalf("account meta source=%s flags=%b, want test synthetic", accountEnv.Source, accountEnv.Flags)
+	}
+
+	market := NewFakeMarket()
+	market.EmitTrade(model.TradeTick{InstrumentID: model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindPerp}})
+	marketEnv := <-market.Events()
+	if marketEnv.Source != contract.SourceTest || !marketEnv.Flags.Has(contract.EventFlagSynthetic) {
+		t.Fatalf("market meta source=%s flags=%b, want test synthetic", marketEnv.Source, marketEnv.Flags)
+	}
 }

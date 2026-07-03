@@ -291,7 +291,9 @@ func IsTransientLiveNetworkError(err error) bool {
 		strings.Contains(lower, "x509: certificate is valid for") ||
 		strings.Contains(lower, "connection reset by peer") ||
 		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "host is down") ||
 		strings.Contains(lower, "network is unreachable") ||
+		strings.Contains(lower, "no route to host") ||
 		strings.Contains(lower, "no such host") ||
 		strings.TrimSpace(lower) == "eof"
 }

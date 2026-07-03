@@ -9,14 +9,14 @@ stable, testable trading API.
 Inspired by [NautilusTrader](https://nautilustrader.io/), built from scratch in
 idiomatic Go.
 
-## Design axiom: backtest/live parity
+## Design axiom: live-only runtime boundary
 
-The single hard constraint, held from the first commit: **the runtime depends
-only on `core/{enums,model,contract,clock}` — never on an SDK or adapter.** A
-live adapter (wrapping an exchange SDK) and an in-process backtest matching
-engine both implement the same three `contract` interfaces, so the *identical*
-strategy and runtime code runs live and in backtest. Time flows through a
-`Clock` interface: a `RealClock` live, a `SimulatedClock` in backtest.
+The single hard constraint: **the runtime depends only on
+`core/{enums,model,contract,clock}` — never on an SDK or adapter.** Live adapters
+wrap exchange SDKs behind the same three `contract` interfaces, while
+`runtime/runtimetest` provides fake clients for offline verification. Time flows
+through a `Clock` interface: a `RealClock` in production and a `SimulatedClock`
+in deterministic tests.
 
 ```
 strategy/            strategy authors implement callback interface, act via Context
@@ -30,8 +30,7 @@ runtime/             hosts all stateful machinery; imports ONLY core/*
    ├─ risk/          pre-trade checks + kill switch
    ├─ reconcile/     correct cache from venue REST snapshots
    ├─ observ/        observability hooks + metrics snapshot
-   ├─ backtest/      perp-realistic matching venue (fees, funding, margin,
-   │                 liquidation) + deterministic single-threaded driver
+   ├─ runtimetest/   fake live clients for offline runtime verification
    └─ node.go        TradingNode wires it all together
    │
 core/                venue-neutral domain (decimal everywhere; no float64)
@@ -50,56 +49,40 @@ sdk/<venue>/         faithful official-API clients (13 venues, pre-existing)
 - **Decimal everywhere in `core/`.** Prices and sizes are
   `shopspring/decimal`; `float64` appears only at adapter JSON boundaries.
 - **One serialization point.** All state mutation happens on the bus goroutine
-  (live) or the backtest driver goroutine — no scattered locking on the event
-  path.
+  — no scattered locking on the event path.
 - **Venue divergence is absorbed in adapters.** Symbol-string vs asset-index,
   string vs struct order types, blocking vs async submit, hedge vs net — all
   handled below the contract. The one deliberate model-level concept is
   `PositionSide` (hedge mode is portable on Binance & OKX).
 - **Non-portable knobs use an escape hatch**: `OrderRequest.Venue`.
 
-## Quickstart — backtest
+## Quickstart — offline runtime test
 
-The backtest venue models a **linear, cross-margin perpetual account**: maker/taker
-fees, average-cost positions, leverage and initial-margin gating (orders past free
-margin are rejected), funding settlements, and maintenance-margin liquidation. All
-of it lives inside the simulated venue — the runtime only ever sees the same
-balance/position/fill events a live adapter pushes, so parity holds. Capital
-effects engage only when `StartBalance` funds the account.
+Use `runtime/runtimetest` when you want a fast, deterministic runtime check with
+no network. The fake clients do not match orders or model exchange accounting;
+tests explicitly push the same order, fill, balance, position, quote, and trade
+events that live adapters push.
 
 ```go
 clk := clock.NewSimulatedClock(start)
-venue := backtest.NewVenue(clk, backtest.Config{
-    MakerFeeRate:    dec("0.0002"),                 // 2 bps maker
-    TakerFeeRate:    dec("0.0004"),                 // 4 bps taker
-    Slippage:        backtest.BpsSlippage(dec("1")), // 1 bp taker slippage
-    DefaultLeverage: dec("10"),
-    MaintMarginRate: dec("0.005"),                  // enables liquidation at 0.5%
-    StartBalance:    model.AccountBalance{Currency: "USDT", Total: dec("10000"), Available: dec("10000")},
-    OnLiquidation:   func(l backtest.Liquidation) { log.Println("liquidated:", l.WalletAfter) },
-})
+market := runtimetest.NewFakeMarket()
+exec := runtimetest.NewFakeExec()
+account := runtimetest.NewFakeAccount()
 
 node := runtime.NewNode(
-    runtime.Clients{Market: venue.Market(), Execution: venue.Execution(), Account: venue.Account()},
-    clk, "bt",
+    runtime.Clients{Market: market, Execution: exec, Account: account},
+    clk, "offline",
     runtime.WithStrategy(myStrategy),
 )
 
-node.Start(ctx)
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+go node.Run(ctx)
 
-// Trade-only replay:
-backtest.NewRunner(venue).RunTrades(ctx, node, historicalTicks) // deterministic, single-threaded
-
-// Or replay a mixed, time-sorted stream of trades + funding + mark prices:
-//   events := []backtest.SimEvent{
-//       backtest.Trade(tick),
-//       backtest.Funding(inst, dec("0.0001"), fundingTime),
-//       backtest.Mark(inst, dec("100"), markTime),
-//   }
-//   backtest.NewRunner(venue).Run(ctx, node, events)
-
-node.Stop()
-fmt.Println("PnL:", node.Portfolio.RealizedPnLNetFees())
+market.EmitTrade(model.TradeTick{InstrumentID: inst, Price: dec("100"), Quantity: dec("1"), Timestamp: clk.Now()})
+order, _ := node.Exec.Submit(ctx, model.OrderRequest{InstrumentID: inst, Side: enums.SideBuy, Type: enums.TypeLimit, Quantity: dec("1"), Price: dec("100")})
+exec.EmitOrder(model.Order{Request: order.Request, VenueOrderID: order.VenueOrderID, Status: enums.StatusFilled})
+exec.EmitFill(model.Fill{InstrumentID: inst, ClientID: order.Request.ClientID, VenueOrderID: order.VenueOrderID, Side: enums.SideBuy, Price: dec("100"), Quantity: dec("1")})
 ```
 
 ## Quickstart — live (Binance USD-M perp)
@@ -107,6 +90,8 @@ fmt.Println("PnL:", node.Portfolio.RealizedPnLNetFees())
 ```go
 adapter, _ := perp.New(ctx, perp.Config{APIKey: key, APISecret: secret})
 defer adapter.Close()
+journalStore, _ := journal.OpenFile(".boltertrader/live.journal", journal.FileOptions{})
+defer journalStore.Close()
 
 node := runtime.NewNode(
     runtime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
@@ -114,6 +99,8 @@ node := runtime.NewNode(
     runtime.WithStrategy(myStrategy),
     runtime.WithBars(inst, time.Minute, "1m"),
     runtime.WithRisk(riskEngine, adapter.Market.InstrumentProvider()),
+    runtime.WithJournal(journalStore),
+    runtime.WithAccountID("binance-main"),
 )
 
 node.Resync(ctx)          // reconcile cache from REST
@@ -122,15 +109,18 @@ adapter.Market.SubscribeTrades(ctx, inst)
 node.Run(ctx)             // blocks
 ```
 
-The *same* `myStrategy` runs in both. See [`cmd/livedemo`](cmd/livedemo/main.go)
-for a full env-gated live wiring and
+See [`cmd/livedemo`](cmd/livedemo/main.go) for a full env-gated live wiring and
 [`strategy/strategies`](strategy/strategies/) for example strategies.
+
+For live trading, keep `WithJournal` on a file-backed journal and set a stable
+`WithAccountID` scope. The demo accepts `BT_ACCOUNT_ID` and optional
+`BT_JOURNAL_PATH`; omitting the account id fails fast instead of silently
+running with venue-only recovery scope.
 
 ## Writing a strategy
 
 Embed `strategy.Base` and override the callbacks you need; act through the
-`Context` (never an adapter), which keeps the strategy identical live and in
-backtest:
+`Context` (never an adapter), which keeps the strategy portable across venues:
 
 ```go
 type MyStrat struct{ strategy.Base }
@@ -147,15 +137,10 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 
 ## Status
 
-Adapters: **Binance USD-M perp**, **OKX perp**. Both pass the shared
-`core/contract/contracttest` suite. Adding a venue means writing one adapter; no
-runtime or strategy change.
-
-Backtest: **perp-realistic** for linear USDT-margined contracts — maker/taker
-fees, slippage, average-cost PnL, leverage/cross-margin with order rejection,
-funding settlements, and maintenance-margin liquidation. Scope not yet covered:
-inverse/coin-margined contracts, isolated margin, order-book-level matching, and
-partial-fill/queue/latency models.
+Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
+and **OKX Spot cash** for the supported live-only subset. The explicit support
+matrix is in [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md).
+Adding a venue means writing one adapter; no runtime or strategy change.
 
 ## Testing
 
@@ -165,6 +150,8 @@ make test-race         # runtime race checks
 make test-core         # core/runtime/strategy packages
 make test-adapter      # adapter packages
 make test-sdk          # SDK packages without live endpoints
+make test-capabilities # adapter capability matrix docs check
+make test-p6-offline   # P6 offline gate: core + adapter + sdk + matrix
 ```
 
 Live read tests are opt-in:

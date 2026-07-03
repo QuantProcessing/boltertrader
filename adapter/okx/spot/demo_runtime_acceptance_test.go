@@ -11,6 +11,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 	"github.com/shopspring/decimal"
 )
@@ -72,6 +73,10 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 		}
 	}()
 
+	if err := waitForRuntimeActive(ctx, node); err != nil {
+		t.Fatalf("runtime node did not become active before OKX Spot Demo writes: %v", err)
+	}
+
 	restingClientID := demoClientOrderID("runtime-rest")
 	cleanup.Arm(restingClientID)
 	resting, err := node.Exec.Submit(ctx, model.OrderRequest{
@@ -122,11 +127,22 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if err := waitForRuntimeOrderFilled(ctx, node, fillClientID); err != nil {
 		t.Fatalf("runtime cache did not observe OKX Spot Demo fill: %v", err)
 	}
-	if err := waitForRuntimePortfolioNetQty(ctx, node, instID, filledQty); err != nil {
-		t.Fatalf("runtime portfolio did not observe OKX Spot Demo spot exposure: %v", err)
-	}
 	if got := node.Metrics(); got.OrdersSeen == 0 || got.FillsSeen == 0 {
 		t.Fatalf("runtime metrics did not observe spot order/fill events: %+v", got)
+	}
+	baseDelta, err := waitForDemoSpotBaseDelta(ctx, adapter, spec.BaseCurrency, startBaseAvailable, spec.SizeStep)
+	if err != nil {
+		t.Fatalf("wait for opened OKX Spot Demo runtime base balance: %v", err)
+	}
+	cleanup.SetBaseDelta(baseDelta)
+	closeQty := floorDecimalToStep(baseDelta, spec.SizeStep)
+	if closeQty.LessThan(spec.MinQty) {
+		t.Fatalf("OKX Spot Demo runtime close quantity %s below min %s for base delta %s", closeQty, spec.MinQty, baseDelta)
+	}
+	portfolioCtx, cancelPortfolio := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelPortfolio()
+	if err := waitForRuntimePortfolioNetQty(portfolioCtx, node, instID, spec.MinQty); err != nil {
+		t.Fatalf("runtime portfolio did not observe OKX Spot Demo spot exposure: %v", err)
 	}
 
 	closeClientID := demoClientOrderID("runtime-close")
@@ -145,7 +161,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 		Side:         enums.SideSell,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifIOC,
-		Quantity:     floorDecimalToStep(filledQty, spec.SizeStep),
+		Quantity:     closeQty,
 		Price:        closePrice,
 		PositionSide: enums.PosNet,
 	})
@@ -156,7 +172,9 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if _, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, closeClientID, "filled"); err != nil {
 		t.Fatalf("wait for runtime close fill: %v", err)
 	}
-	if err := waitForRuntimePortfolioFlat(ctx, node, instID); err != nil {
+	flatCtx, cancelFlat := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelFlat()
+	if err := waitForRuntimePortfolioFlat(flatCtx, node, instID, spec.SizeStep); err != nil {
 		t.Fatalf("runtime portfolio did not return flat after Spot close: %v", err)
 	}
 	if _, err := node.Resync(ctx); err != nil {
@@ -168,10 +186,29 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
 		t.Fatalf("wait for no OKX Spot Demo runtime open orders: %v", err)
 	}
-	if err := waitForDemoSpotBaseDeltaBelowStep(ctx, adapter, spec, startBaseAvailable, &cleanup); err != nil {
+	deltaCtx, cancelDelta := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDelta()
+	if err := waitForDemoSpotBaseDeltaBelowStep(deltaCtx, adapter, spec, startBaseAvailable, &cleanup); err != nil {
 		t.Fatalf("wait for OKX Spot Demo runtime base delta cleanup: %v\n%s", err, cleanup.Remediation())
 	}
 	cleanup.MarkClean()
+}
+
+func waitForRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {
+	var last lifecycle.Snapshot
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		last = node.State()
+		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for runtime active; last=%+v: %w", last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoSpotSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
@@ -181,10 +218,16 @@ func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 		t.Fatalf("OKX Demo HTTP client: %v", err)
 	}
 	endpoints := okxDemoEndpoints(t, cfg)
+	tdMode, err := demoSpotTdMode(ctx, cfg, endpoints, httpClient)
+	if err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime account mode preflight")
+		t.Fatalf("OKX Spot Demo runtime account mode preflight: %v", err)
+	}
 	adapter, err := New(ctx, Config{
 		APIKey:          cfg.APIKey,
 		APISecret:       cfg.APISecret,
 		Passphrase:      cfg.Passphrase,
+		TdMode:          tdMode,
 		Environment:     okx.Simulated,
 		DemoHostProfile: okx.DemoHostProfile(cfg.HostProfile),
 		RESTBaseURL:     endpoints.REST,
@@ -271,18 +314,18 @@ func waitForRuntimePortfolioNetQty(ctx context.Context, node *btruntime.TradingN
 	}
 }
 
-func waitForRuntimePortfolioFlat(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID) error {
+func waitForRuntimePortfolioFlat(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, tolerance decimal.Decimal) error {
 	var last decimal.Decimal
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		last = node.Portfolio.NetQty(id, enums.PosNet)
-		if last.IsZero() {
+		if last.Abs().LessThan(tolerance.Abs()) {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime portfolio flat; last=%s: %w", last, ctx.Err())
+			return fmt.Errorf("timed out waiting for runtime portfolio flat within %s; last=%s: %w", tolerance.Abs(), last, ctx.Err())
 		case <-ticker.C:
 		}
 	}

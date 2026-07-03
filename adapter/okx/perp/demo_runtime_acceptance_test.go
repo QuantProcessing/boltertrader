@@ -11,6 +11,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 	"github.com/shopspring/decimal"
 )
@@ -63,6 +64,10 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 			t.Fatalf("runtime node did not stop")
 		}
 	}()
+
+	if err := waitForRuntimeActive(ctx, node); err != nil {
+		t.Fatalf("runtime node did not become active before OKX Perp Demo writes: %v", err)
+	}
 
 	restingClientID := demoClientOrderID("runtime-rest")
 	cleanup.Arm(restingClientID)
@@ -176,6 +181,23 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	cleanup.MarkClean()
 }
 
+func waitForRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {
+	var last lifecycle.Snapshot
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		last = node.State()
+		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for runtime active; last=%+v: %w", last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func newOKXPerpDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoPerpSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
 	t.Helper()
 	httpClient, err := testenv.OKXDemoHTTPClient(45 * time.Second)
@@ -198,6 +220,11 @@ func newOKXPerpDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime adapter initialization")
 		t.Fatalf("new OKX Perp Demo runtime adapter: %v", err)
+	}
+	if err := validateDemoPerpAccountMode(ctx, adapter.rest); err != nil {
+		_ = adapter.Close()
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime account mode preflight")
+		t.Fatalf("OKX Perp Demo runtime account mode preflight: %v", err)
 	}
 	instID := model.InstrumentID{Venue: venueName, Symbol: instIDToNeutral(cfg.PerpSymbol), Kind: enums.KindPerp}
 	if _, ok := adapter.provider.Instrument(instID); !ok {

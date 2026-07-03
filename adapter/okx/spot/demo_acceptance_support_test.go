@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -74,6 +75,30 @@ func okxDemoCustomEndpoints(cfg testenv.OKXDemoConfig) okx.EndpointURLs {
 	return endpoints
 }
 
+func demoSpotTdMode(ctx context.Context, cfg testenv.OKXDemoConfig, endpoints okx.EndpointURLs, httpClient *http.Client) (string, error) {
+	rest := okx.NewClient().
+		WithCredentials(cfg.APIKey, cfg.APISecret, cfg.Passphrase).
+		WithEnvironment(okx.Simulated).
+		WithDemoHostProfile(okx.DemoHostProfile(cfg.HostProfile))
+	if endpoints.REST != "" {
+		rest.WithBaseURL(endpoints.REST)
+	}
+	if httpClient != nil {
+		rest.WithHTTPClient(httpClient)
+	}
+	configs, err := rest.GetAccountConfig(ctx)
+	if err != nil {
+		return "", fmt.Errorf("load OKX Demo Spot account config: %w", err)
+	}
+	if len(configs) == 0 {
+		return "", fmt.Errorf("load OKX Demo Spot account config: empty response")
+	}
+	if configs[0].AccountLevel() == okx.AccountLevelSimple {
+		return defaultSpotTdMode, nil
+	}
+	return spotTdModeCross, nil
+}
+
 type testHelper interface {
 	Helper()
 	Fatalf(format string, args ...any)
@@ -130,15 +155,34 @@ func maxDecimal(a, b decimal.Decimal) decimal.Decimal {
 }
 
 func demoClientOrderID(kind string) string {
-	return fmt.Sprintf("btd-okx-spot-%s-%s", kind, strconv.FormatInt(time.Now().UnixNano(), 36))
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	prefix := "btdos"
+	kind = demoClientOrderIDKind(kind, 32-len(prefix)-len(suffix))
+	return prefix + kind + suffix
 }
 
-func collectDemoExecEvents(events <-chan contract.ExecEvent) chan contract.ExecEvent {
+func demoClientOrderIDKind(kind string, maxLen int) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(kind) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+		if maxLen > 0 && b.Len() >= maxLen {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "x"
+	}
+	return b.String()
+}
+
+func collectDemoExecEvents(events <-chan contract.ExecEnvelope) chan contract.ExecEvent {
 	out := make(chan contract.ExecEvent, 64)
 	go func() {
-		for event := range events {
+		for envelope := range events {
 			select {
-			case out <- event:
+			case out <- envelope.Payload:
 			default:
 			}
 		}
@@ -203,7 +247,9 @@ func waitForDemoExecObservation(ctx context.Context, events <-chan contract.Exec
 }
 
 func demoSpotBalances(ctx context.Context, adapter *Adapter) (map[string]model.AccountBalance, error) {
-	balances, err := adapter.Account.Balances(ctx)
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	balances, err := adapter.Account.Balances(callCtx)
 	if err != nil {
 		return nil, err
 	}

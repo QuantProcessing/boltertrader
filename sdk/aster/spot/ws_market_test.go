@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func Test_SubscribeIncrementOrderBook(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping realtime websocket test under -short")
-	}
+	testenv.RequireLiveRead(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

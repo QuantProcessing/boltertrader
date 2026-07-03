@@ -1,4 +1,4 @@
-.PHONY: test test-race test-core test-adapter test-sdk test-live-read test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance
+.PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance
 
 test:
 	go test ./...
@@ -15,8 +15,15 @@ test-adapter:
 test-sdk:
 	go test ./sdk/...
 
+test-capabilities:
+	go test ./adapter -count=1
+
+test-p6-offline: test-core test-adapter test-sdk test-capabilities
+
 test-live-read:
 	BOLTER_ENABLE_LIVE_READ_TESTS=1 go test ./sdk/... ./adapter/...
+
+test-demo-acceptance: test-binance-demo-acceptance test-okx-demo-acceptance
 
 test-binance-demo: test-binance-demo-acceptance
 

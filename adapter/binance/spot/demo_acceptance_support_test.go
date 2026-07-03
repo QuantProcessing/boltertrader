@@ -163,12 +163,12 @@ func demoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return &http.Client{Timeout: timeout, Transport: transport}, nil
 }
 
-func collectDemoExecEvents(events <-chan contract.ExecEvent) chan contract.ExecEvent {
+func collectDemoExecEvents(events <-chan contract.ExecEnvelope) chan contract.ExecEvent {
 	out := make(chan contract.ExecEvent, 64)
 	go func() {
-		for event := range events {
+		for envelope := range events {
 			select {
-			case out <- event:
+			case out <- envelope.Payload:
 			default:
 			}
 		}
@@ -177,12 +177,12 @@ func collectDemoExecEvents(events <-chan contract.ExecEvent) chan contract.ExecE
 	return out
 }
 
-func collectDemoAccountEvents(events <-chan contract.AccountEvent) chan contract.AccountEvent {
+func collectDemoAccountEvents(events <-chan contract.AccountEnvelope) chan contract.AccountEvent {
 	out := make(chan contract.AccountEvent, 64)
 	go func() {
-		for event := range events {
+		for envelope := range events {
 			select {
-			case out <- event:
+			case out <- envelope.Payload:
 			default:
 			}
 		}

@@ -3,6 +3,7 @@ package perp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -306,6 +307,13 @@ func TestSubmitUsesConfiguredTdMode(t *testing.T) {
 	}
 }
 
+func TestSCodeRejectWrapsVenueRejected(t *testing.T) {
+	err := checkSCode([]okx.OrderId{{SCode: "51008", SMsg: "insufficient balance"}})
+	if !errors.Is(err, contract.ErrVenueRejected) {
+		t.Fatalf("sCode error=%v, want contract.ErrVenueRejected", err)
+	}
+}
+
 func TestSubmitConditionalOrdersUseAlgoEndpoint(t *testing.T) {
 	inst := testOKXLinearInstrument(t)
 	cases := []struct {
@@ -430,12 +438,12 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			}},
 		},
 		Execution: contracttest.ExecutionCapabilities{
-			Submit:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
-			Cancel:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
-			CancelAll:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
-			Modify:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
-			OpenOrders:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
-			OrderReports: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Submit:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Cancel:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			CancelAll:  contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			Modify:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			OpenOrders: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
+			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 		},
 		Account: contracttest.AccountCapabilities{
 			Balances:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},

@@ -12,6 +12,8 @@ make test-race
 make test-core
 make test-adapter
 make test-sdk
+make test-capabilities
+make test-p6-offline
 ```
 
 ## Test Levels
@@ -59,6 +61,8 @@ and exchange state are available.
 
 See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_testing.md)
 for the execution acceptance spec and pass criteria.
+See [`docs/adapter-capabilities.md`](adapter-capabilities.md) for the supported
+adapter/product/report matrix.
 
 ## Live Tests
 
@@ -179,10 +183,12 @@ The adapter-level tests load Demo data, place/cancel a resting post-only order,
 fill a bounded IOC order, and clean up residual Spot base deltas or Perp
 exposure. Runtime-level tests construct `runtime.TradingNode`, call
 `node.Resync` before and after writes, submit through `node.Exec`, and assert
-cache/portfolio/metrics observations. Tests skip cleanly when Demo credentials
-are absent and classify funding, existing open orders/exposure, network/proxy,
-venue rejection, implementation, and cleanup failures separately in their
-failure messages.
+cache/portfolio/metrics observations. Runtime Demo checks also assert
+`node.Health()` reaches `running`, command/reconciliation latency metrics are
+present, no open orders remain, and final reconciliation is flat. Tests skip
+cleanly when Demo credentials are absent and classify funding, existing open
+orders/exposure, network/proxy, venue rejection, implementation, and cleanup
+failures separately in their failure messages.
 
 ## Fixture Rules
 

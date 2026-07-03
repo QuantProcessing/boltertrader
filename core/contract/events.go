@@ -1,13 +1,259 @@
 // Package contract defines the venue-neutral interfaces the trading runtime
 // depends on. The runtime imports ONLY core/{enums,model,clock,contract} and
-// never an SDK or adapter — so a live adapter (wrapping sdk/*) and a simulated
-// backtest venue both implement these interfaces and are freely swapped.
+// never an SDK or adapter, so live adapters and runtime fakes share the same
+// event contract.
 //
 // Push updates are delivered as typed event sums (no interface{}) so the
 // runtime can switch over them exhaustively.
 package contract
 
-import "github.com/QuantProcessing/boltertrader/core/model"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/core/model"
+)
+
+type EventSource string
+
+const (
+	SourceUnknown        EventSource = ""
+	SourceAdapterStream  EventSource = "adapter_stream"
+	SourceAdapterREST    EventSource = "adapter_rest"
+	SourceRuntime        EventSource = "runtime"
+	SourceReconciliation EventSource = "reconciliation"
+	SourceTest           EventSource = "test"
+)
+
+type EventFlags uint64
+
+const (
+	EventFlagFromSnapshot EventFlags = 1 << iota
+	EventFlagFromStream
+	EventFlagFromReconciliation
+	EventFlagSynthetic
+	EventFlagAmbiguous
+	EventFlagExternal
+	EventFlagDroppedBySink
+	EventFlagReplay
+)
+
+func (f EventFlags) Has(flag EventFlags) bool { return f&flag != 0 }
+
+type EventMeta struct {
+	EventID       model.EventID
+	Source        EventSource
+	Venue         string
+	AccountID     string
+	InstrumentID  model.InstrumentID
+	CorrelationID string
+	ClientID      string
+	VenueOrderID  string
+	TradeID       string
+	Sequence      uint64
+	TsVenue       time.Time
+	TsAdapterRecv time.Time
+	TsAdapterEmit time.Time
+	TsBusRecv     time.Time
+	TsApplied     time.Time
+	Flags         EventFlags
+}
+
+type EventEnvelope[T any] struct {
+	EventMeta
+	Payload T
+}
+
+func (e EventEnvelope[T]) Meta() EventMeta { return e.EventMeta }
+
+func (e EventEnvelope[T]) Validate() error {
+	if e.EventID == "" {
+		return fmt.Errorf("event envelope: event id required")
+	}
+	if !monotonicTimes(e.TsVenue, e.TsAdapterRecv, e.TsAdapterEmit, e.TsBusRecv, e.TsApplied) {
+		return fmt.Errorf("event envelope: timestamps are not monotonic")
+	}
+	return nil
+}
+
+func monotonicTimes(times ...time.Time) bool {
+	var prev time.Time
+	for _, ts := range times {
+		if ts.IsZero() {
+			continue
+		}
+		if !prev.IsZero() && ts.Before(prev) {
+			return false
+		}
+		prev = ts
+	}
+	return true
+}
+
+type MarketEnvelope = EventEnvelope[MarketEvent]
+type ExecEnvelope = EventEnvelope[ExecEvent]
+type AccountEnvelope = EventEnvelope[AccountEvent]
+
+func NewMarketEnvelope(payload MarketEvent) MarketEnvelope {
+	return NewMarketEnvelopeWithMeta(payload, EventMeta{Source: SourceAdapterStream, Flags: EventFlagFromStream})
+}
+
+func NewExecEnvelope(payload ExecEvent) ExecEnvelope {
+	return NewExecEnvelopeWithMeta(payload, EventMeta{Source: SourceAdapterStream, Flags: EventFlagFromStream})
+}
+
+func NewAccountEnvelope(payload AccountEvent) AccountEnvelope {
+	return NewAccountEnvelopeWithMeta(payload, EventMeta{Source: SourceAdapterStream, Flags: EventFlagFromStream})
+}
+
+func NewMarketEnvelopeWithMeta(payload MarketEvent, meta EventMeta) MarketEnvelope {
+	return MarketEnvelope{EventMeta: mergeEventMeta(inferMarketMeta(payload), meta), Payload: payload}
+}
+
+func NewExecEnvelopeWithMeta(payload ExecEvent, meta EventMeta) ExecEnvelope {
+	return ExecEnvelope{EventMeta: mergeEventMeta(inferExecMeta(payload), meta), Payload: payload}
+}
+
+func NewAccountEnvelopeWithMeta(payload AccountEvent, meta EventMeta) AccountEnvelope {
+	return AccountEnvelope{EventMeta: mergeEventMeta(inferAccountMeta(payload), meta), Payload: payload}
+}
+
+func mergeEventMeta(inferred, override EventMeta) EventMeta {
+	meta := inferred
+	if override.EventID != "" {
+		meta.EventID = override.EventID
+	}
+	if override.Source != "" {
+		meta.Source = override.Source
+	}
+	if override.Venue != "" {
+		meta.Venue = override.Venue
+	}
+	if override.AccountID != "" {
+		meta.AccountID = override.AccountID
+	}
+	if override.InstrumentID != (model.InstrumentID{}) {
+		meta.InstrumentID = override.InstrumentID
+	}
+	if override.CorrelationID != "" {
+		meta.CorrelationID = override.CorrelationID
+	}
+	if override.ClientID != "" {
+		meta.ClientID = override.ClientID
+	}
+	if override.VenueOrderID != "" {
+		meta.VenueOrderID = override.VenueOrderID
+	}
+	if override.TradeID != "" {
+		meta.TradeID = override.TradeID
+	}
+	if override.Sequence != 0 {
+		meta.Sequence = override.Sequence
+	}
+	if !override.TsVenue.IsZero() {
+		meta.TsVenue = override.TsVenue
+	}
+	if !override.TsAdapterRecv.IsZero() {
+		meta.TsAdapterRecv = override.TsAdapterRecv
+	}
+	if !override.TsAdapterEmit.IsZero() {
+		meta.TsAdapterEmit = override.TsAdapterEmit
+	}
+	if !override.TsBusRecv.IsZero() {
+		meta.TsBusRecv = override.TsBusRecv
+	}
+	if !override.TsApplied.IsZero() {
+		meta.TsApplied = override.TsApplied
+	}
+	if override.Flags != 0 {
+		meta.Flags = override.Flags
+	}
+	return meta
+}
+
+func inferMarketMeta(payload MarketEvent) EventMeta {
+	meta := EventMeta{}
+	switch p := payload.(type) {
+	case BookEvent:
+		meta.InstrumentID = p.Book.InstrumentID
+		meta.Venue = p.Book.InstrumentID.Venue
+		if p.Book.Sequence > 0 {
+			meta.Sequence = uint64(p.Book.Sequence)
+		}
+		meta.TsVenue = p.Book.Timestamp
+		meta.EventID = model.EventID(joinEventID("market", "book", p.Book.InstrumentID.String(), fmt.Sprint(p.Book.Sequence), p.Book.Timestamp.Format(time.RFC3339Nano)))
+	case QuoteEvent:
+		meta.InstrumentID = p.Quote.InstrumentID
+		meta.Venue = p.Quote.InstrumentID.Venue
+		meta.TsVenue = p.Quote.Timestamp
+		meta.EventID = model.EventID(joinEventID("market", "quote", p.Quote.InstrumentID.String(), p.Quote.Timestamp.Format(time.RFC3339Nano)))
+	case TradeEvent:
+		meta.InstrumentID = p.Trade.InstrumentID
+		meta.Venue = p.Trade.InstrumentID.Venue
+		meta.TsVenue = p.Trade.Timestamp
+		meta.EventID = model.EventID(joinEventID("market", "trade", p.Trade.InstrumentID.String(), p.Trade.Timestamp.Format(time.RFC3339Nano)))
+	}
+	if meta.EventID == "" {
+		meta.EventID = model.EventID(joinEventID("market", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+	}
+	return meta
+}
+
+func inferExecMeta(payload ExecEvent) EventMeta {
+	meta := EventMeta{}
+	switch p := payload.(type) {
+	case OrderEvent:
+		meta.InstrumentID = p.Order.Request.InstrumentID
+		meta.Venue = p.Order.Request.InstrumentID.Venue
+		meta.ClientID = p.Order.Request.ClientID
+		meta.VenueOrderID = p.Order.VenueOrderID
+		meta.EventID = model.EventID(joinEventID("exec", "order", meta.Venue, meta.ClientID, meta.VenueOrderID, p.Order.Status.String()))
+	case FillEvent:
+		meta.InstrumentID = p.Fill.InstrumentID
+		meta.Venue = p.Fill.InstrumentID.Venue
+		meta.ClientID = p.Fill.ClientID
+		meta.VenueOrderID = p.Fill.VenueOrderID
+		meta.TradeID = p.Fill.TradeID
+		meta.TsVenue = p.Fill.Timestamp
+		meta.EventID = model.EventID(joinEventID("exec", "fill", meta.Venue, meta.ClientID, meta.VenueOrderID, meta.TradeID, p.Fill.Timestamp.Format(time.RFC3339Nano)))
+	case RejectEvent:
+		meta.ClientID = p.ClientID
+		meta.EventID = model.EventID(joinEventID("exec", "reject", p.ClientID, p.Reason))
+	}
+	if meta.EventID == "" {
+		meta.EventID = model.EventID(joinEventID("exec", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+	}
+	return meta
+}
+
+func inferAccountMeta(payload AccountEvent) EventMeta {
+	meta := EventMeta{}
+	switch p := payload.(type) {
+	case BalanceEvent:
+		meta.EventID = model.EventID(joinEventID("account", "balance", p.Balance.Currency, p.Balance.UpdatedAt.Format(time.RFC3339Nano)))
+		meta.TsVenue = p.Balance.UpdatedAt
+	case PositionEvent:
+		meta.InstrumentID = p.Position.InstrumentID
+		meta.Venue = p.Position.InstrumentID.Venue
+		meta.EventID = model.EventID(joinEventID("account", "position", p.Position.InstrumentID.String(), p.Position.Side.String(), p.Position.UpdatedAt.Format(time.RFC3339Nano)))
+		meta.TsVenue = p.Position.UpdatedAt
+	}
+	if meta.EventID == "" {
+		meta.EventID = model.EventID(joinEventID("account", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+	}
+	return meta
+}
+
+func joinEventID(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			out = append(out, strings.ReplaceAll(part, "|", "/"))
+		}
+	}
+	return strings.Join(out, "|")
+}
 
 // ExecEvent is the sum of execution-stream push events (order lifecycle).
 type ExecEvent interface{ isExecEvent() }

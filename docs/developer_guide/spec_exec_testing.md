@@ -30,6 +30,9 @@ Pass criteria:
 - No open orders remain.
 - No position remains.
 - Runtime metrics show at least one order and one fill.
+- `node.Health()` is `running` before writes and exposes clients, streams,
+  in-flight count, latency drops, observer drops, and last reconciliation error.
+- Runtime metrics include command and reconciliation latency samples.
 - Cleanup errors include venue order IDs, client order IDs, symbol, side, size,
   and remaining exposure.
 
@@ -66,6 +69,8 @@ variables such as `ALL_PROXY` are not part of the test contract.
 ```sh
 make test-core
 make test-adapter
+make test-capabilities
+make test-p6-offline
 make test-binance-demo-perp
 make test-binance-demo-runtime-perp
 make test-binance-demo-spot-data

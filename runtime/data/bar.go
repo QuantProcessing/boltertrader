@@ -1,7 +1,7 @@
 // Package data provides market-data processing helpers for the runtime's
 // DataEngine, notably bar aggregation from trade prints. It is venue-neutral
 // and clock-agnostic: callers pass the bucket boundary, so the same code builds
-// bars from a live trade feed or a replayed backtest feed identically.
+// bars from any live-style trade stream.
 package data
 
 import (
@@ -18,8 +18,8 @@ type BarAggregator struct {
 	interval time.Duration
 	intLabel string
 
-	cur      *model.Bar
-	bucket   time.Time // start of the current bar's time bucket
+	cur    *model.Bar
+	bucket time.Time // start of the current bar's time bucket
 }
 
 // NewBarAggregator builds an aggregator for an instrument and interval. label is

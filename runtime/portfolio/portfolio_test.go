@@ -20,6 +20,17 @@ func fill(side enums.OrderSide, price, qty, fee string) model.Fill {
 	}
 }
 
+func instrumentFill(id model.InstrumentID, side enums.OrderSide, price, qty, fee, feeCurrency string) model.Fill {
+	return model.Fill{
+		InstrumentID: id,
+		Side:         side,
+		Price:        d(price),
+		Quantity:     d(qty),
+		Fee:          d(fee),
+		FeeCurrency:  feeCurrency,
+	}
+}
+
 // TestRealizedPnL_LongRoundTrip: buy 1 @100, sell 1 @110 => +10 realized.
 func TestRealizedPnL_LongRoundTrip(t *testing.T) {
 	pf := New()
@@ -102,6 +113,86 @@ func TestFees(t *testing.T) {
 	}
 	if got := pf.RealizedPnLNetFees(); !got.Equal(d("9")) { // 10 - 1
 		t.Fatalf("net=%s, want 9", got)
+	}
+}
+
+func TestSpotBaseFeeReducesNetQty(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100", "1", "0.01", "ETH"), enums.PosNet)
+
+	if got := pf.NetQty(id, enums.PosNet); !got.Equal(d("0.99")) {
+		t.Fatalf("netQty=%s, want 0.99 after base-asset fee", got)
+	}
+	if got := pf.AvgPrice(id, enums.PosNet); !got.GreaterThan(d("100")) {
+		t.Fatalf("avg=%s, want above fill price after base-asset fee", got)
+	}
+	if got := pf.Fees(); !got.IsZero() {
+		t.Fatalf("quote fees=%s, want 0 for base-asset fee", got)
+	}
+	if got := pf.FeesByCurrency()["ETH"]; !got.Equal(d("0.01")) {
+		t.Fatalf("ETH fees=%s, want 0.01", got)
+	}
+}
+
+func TestSpotBaseFeeRoundTripCanReturnFlat(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100", "1", "0.01", "ETH"), enums.PosNet)
+	pf.OnFill(instrumentFill(id, enums.SideSell, "110", "0.99", "0.2", "USDT"), enums.PosNet)
+
+	if got := pf.NetQty(id, enums.PosNet); !got.IsZero() {
+		t.Fatalf("netQty=%s, want flat after selling net base quantity", got)
+	}
+}
+
+func TestSpotBaseFeesAreTrackedByCurrencyAndNotSubtractedFromQuotePnL(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100", "1", "0.01", "ETH"), enums.PosNet)
+	pf.OnFill(instrumentFill(id, enums.SideSell, "110", "0.99", "0.2", "USDT"), enums.PosNet)
+
+	if got := pf.RealizedPnL(); !got.Round(8).Equal(d("8.9")) {
+		t.Fatalf("realized=%s, want 8.9", got)
+	}
+	if got := pf.Fees(); !got.Equal(d("0.2")) {
+		t.Fatalf("quote fees=%s, want 0.2", got)
+	}
+	if got := pf.RealizedPnLNetFees(); !got.Round(8).Equal(d("8.7")) {
+		t.Fatalf("net=%s, want 8.7", got)
+	}
+	feesByCurrency := pf.FeesByCurrency()
+	if got := feesByCurrency["ETH"]; !got.Equal(d("0.01")) {
+		t.Fatalf("ETH fees=%s, want 0.01", got)
+	}
+	if got := feesByCurrency["USDT"]; !got.Equal(d("0.2")) {
+		t.Fatalf("USDT fees=%s, want 0.2", got)
+	}
+}
+
+func TestSpotSellBaseFeeDoesNotDoubleCountQuantity(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100", "1", "0", "USDT"), enums.PosNet)
+	pf.OnFill(instrumentFill(id, enums.SideSell, "110", "1", "0.01", "ETH"), enums.PosNet)
+
+	if got := pf.NetQty(id, enums.PosNet); !got.IsZero() {
+		t.Fatalf("netQty=%s, want flat; sell fill quantity already represents removed base", got)
+	}
+}
+
+func TestSpotQuoteFeeDoesNotChangeNetQty(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100", "1", "0.5", "USDT"), enums.PosNet)
+
+	if got := pf.NetQty(id, enums.PosNet); !got.Equal(d("1")) {
+		t.Fatalf("netQty=%s, want 1 when fee is not in base asset", got)
 	}
 }
 

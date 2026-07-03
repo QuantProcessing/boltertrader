@@ -9,6 +9,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 	"github.com/shopspring/decimal"
 )
@@ -36,6 +37,7 @@ func TestVerticalSlice(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go node.Run(ctx)
+	waitNodeRunning(t, node)
 
 	// 1. Submit a buy order through the exec engine.
 	order, err := node.Exec.Submit(ctx, model.OrderRequest{
@@ -126,7 +128,7 @@ func TestReconnectForcesReconnectAndReconciles(t *testing.T) {
 	facct := runtimetest.NewFakeAccount()
 
 	// The venue reports one resting order the cache has never seen.
-	fexec.SetOrderReports(model.Order{
+	fexec.SetOrderStatusReports(model.Order{
 		Request:      model.OrderRequest{ClientID: "ext-1", InstrumentID: inst},
 		VenueOrderID: "v-ext-1",
 		Status:       enums.StatusNew,
@@ -161,4 +163,28 @@ func waitFill(t *testing.T, ch <-chan model.Fill) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for fill to be applied")
 	}
+}
+
+func waitUntil(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal(msg)
+		case <-tick.C:
+		}
+	}
+}
+
+func waitNodeRunning(t *testing.T, node *runtime.TradingNode) {
+	t.Helper()
+	waitUntil(t, func() bool {
+		return node.State().Node == lifecycle.NodeRunning
+	}, "timed out waiting for node running")
 }

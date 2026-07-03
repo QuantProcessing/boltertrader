@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-// SimulatedClock is a virtual Clock for backtesting. Time does not pass on its
-// own: the backtest engine moves it forward with Advance / AdvanceTo as it
-// replays historical data, and any timers due in that interval fire in deadline
-// order, each stamped with its exact deadline (not the post-advance now). This
-// gives deterministic, reproducible event ordering.
+// SimulatedClock is a virtual Clock for deterministic runtime tests. Time does
+// not pass on its own: tests move it forward with Advance / AdvanceTo, and any
+// timers due in that interval fire in deadline order, each stamped with its
+// exact deadline (not the post-advance now). This gives deterministic,
+// reproducible event ordering.
 //
 // SimulatedClock is safe for concurrent use, but note that timers fire
 // synchronously inside Advance/AdvanceTo on the calling goroutine.

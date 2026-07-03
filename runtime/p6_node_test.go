@@ -10,6 +10,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	runtimeexec "github.com/QuantProcessing/boltertrader/runtime/exec"
 	"github.com/QuantProcessing/boltertrader/runtime/risk"
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 	"github.com/shopspring/decimal"
@@ -28,6 +29,7 @@ func TestRiskGateBlocksSubmit(t *testing.T) {
 
 	ctx := context.Background()
 	go node.Run(ctx)
+	waitNodeRunning(t, node)
 
 	_, err := node.Exec.Submit(ctx, model.OrderRequest{
 		InstrumentID: inst, Side: enums.SideBuy, Type: enums.TypeLimit,
@@ -90,5 +92,39 @@ func TestReconnectTriggersResync(t *testing.T) {
 	}
 	if p, ok := node.Cache.Position(inst, enums.PosNet); !ok || !p.Quantity.Equal(decimal.RequireFromString("1.5")) {
 		t.Fatalf("position not synced from reconnect: ok=%v", ok)
+	}
+}
+
+func TestHealthExposesOperatingSurface(t *testing.T) {
+	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fexec := runtimetest.NewFakeExec()
+	fexec.SetSubmitResult(nil, runtimeexec.ErrAmbiguousResult)
+	node := runtime.NewNode(runtime.Clients{Execution: fexec, Account: runtimetest.NewFakeAccount()}, clk, "health")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go node.Run(ctx)
+	waitNodeRunning(t, node)
+
+	_, _ = node.Exec.Submit(ctx, model.OrderRequest{
+		InstrumentID: inst,
+		ClientID:     "health-ambiguous",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     decimal.RequireFromString("1"),
+		Price:        decimal.RequireFromString("100"),
+	})
+	health := node.Health()
+	if health.Lifecycle.Node == "" || health.Lifecycle.Trading == "" {
+		t.Fatalf("health missing lifecycle: %+v", health)
+	}
+	if len(health.Clients) != 2 || len(health.Streams) != 2 {
+		t.Fatalf("health clients/streams=%+v/%+v, want execution+account", health.Clients, health.Streams)
+	}
+	if health.InFlight != 1 {
+		t.Fatalf("health in-flight=%d, want 1", health.InFlight)
+	}
+	if health.LatencyDrops != node.Metrics().Latency.DroppedTotal {
+		t.Fatalf("health latency drops=%d metrics=%d", health.LatencyDrops, node.Metrics().Latency.DroppedTotal)
 	}
 }

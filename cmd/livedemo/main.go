@@ -6,7 +6,8 @@
 // and exits 0, so it is safe to build and run in CI without network or secrets.
 //
 //	BINANCE_API_KEY=... BINANCE_API_SECRET=... \
-//	BT_SYMBOL=BTC-USDT BT_QTY=0.001 go run ./cmd/livedemo
+//	BT_ACCOUNT_ID=binance-main BT_SYMBOL=BTC-USDT BT_QTY=0.001 \
+//	BT_JOURNAL_PATH=.boltertrader/livedemo.journal go run ./cmd/livedemo
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/journal"
 	"github.com/QuantProcessing/boltertrader/runtime/risk"
 	"github.com/QuantProcessing/boltertrader/strategy/strategies"
 	"github.com/shopspring/decimal"
@@ -35,8 +38,13 @@ func main() {
 		log.Println("This is a live demo; without credentials it exits without connecting.")
 		return
 	}
+	accountID := os.Getenv("BT_ACCOUNT_ID")
+	if accountID == "" {
+		log.Fatal("livedemo: set BT_ACCOUNT_ID to a stable logical account scope (for example binance-main).")
+	}
 
 	symbol := getenv("BT_SYMBOL", "BTC-USDT")
+	journalPath := getenv("BT_JOURNAL_PATH", filepath.Join(".boltertrader", "livedemo.journal"))
 	qty := decimal.Zero
 	if v := os.Getenv("BT_QTY"); v != "" {
 		qty = decimal.RequireFromString(v)
@@ -53,6 +61,14 @@ func main() {
 		log.Fatalf("adapter: %v", err)
 	}
 	defer adapter.Close()
+	if err := os.MkdirAll(filepath.Dir(journalPath), 0o755); err != nil {
+		log.Fatalf("create journal dir: %v", err)
+	}
+	journalStore, err := journal.OpenFile(journalPath, journal.FileOptions{})
+	if err != nil {
+		log.Fatalf("open journal: %v", err)
+	}
+	defer journalStore.Close()
 
 	inst := model.InstrumentID{Venue: "BINANCE", Symbol: symbol, Kind: enums.KindPerp}
 
@@ -71,6 +87,8 @@ func main() {
 		clk, "livedemo",
 		runtime.WithStrategy(strat),
 		runtime.WithBars(inst, time.Minute, "1m"),
+		runtime.WithJournal(journalStore),
+		runtime.WithAccountID(accountID),
 	)
 
 	// Pre-trade risk: cap a single order and the resulting position.

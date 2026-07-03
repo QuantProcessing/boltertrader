@@ -142,7 +142,7 @@ func TestOKXSpotSubmitOrderRequestTranslation(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.InstId != "ETH-USDT" || req.TdMode != spotTdMode || req.Side != "buy" || req.OrdType != "limit" {
+		if req.InstId != "ETH-USDT" || req.TdMode != defaultSpotTdMode || req.Side != "buy" || req.OrdType != "limit" {
 			t.Fatalf("unexpected request: %+v", req)
 		}
 		if req.PosSide != nil || req.ReduceOnly != nil {
@@ -150,7 +150,7 @@ func TestOKXSpotSubmitOrderRequestTranslation(t *testing.T) {
 		}
 		return `{"code":"0","msg":"","data":[{"ordId":"555","clOrdId":"c-spot-1","sCode":"0"}]}`, 200
 	})
-	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: inst.ID,
@@ -166,6 +166,40 @@ func TestOKXSpotSubmitOrderRequestTranslation(t *testing.T) {
 	}
 	if order.VenueOrderID != "555" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
 		t.Fatalf("order=%+v", order)
+	}
+}
+
+func TestOKXSpotSubmitUsesConfiguredTdMode(t *testing.T) {
+	inst := testSpotInstrument()
+	rest := testREST(func(r *http.Request) (string, int) {
+		var req okx.OrderRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.TdMode != spotTdModeCross {
+			t.Fatalf("tdMode=%q, want cross", req.TdMode)
+		}
+		return `{"code":"0","msg":"","data":[{"ordId":"555","clOrdId":"c-spot-cross","sCode":"0"}]}`, 200
+	})
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), spotTdModeCross)
+
+	if _, err := exec.Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst.ID,
+		ClientID:     "c-spot-cross",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("0.0100"),
+		Price:        d("3000.01"),
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+}
+
+func TestOKXSpotSCodeRejectWrapsVenueRejected(t *testing.T) {
+	err := checkSCode([]okx.OrderId{{SCode: "51008", SMsg: "insufficient balance"}})
+	if !errors.Is(err, contract.ErrVenueRejected) {
+		t.Fatalf("sCode error=%v, want contract.ErrVenueRejected", err)
 	}
 }
 
@@ -206,7 +240,7 @@ func TestOKXSpotSubmitConditionalOrderUsesAlgoEndpoint(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.InstId != "ETH-USDT" || req.TdMode != spotTdMode || req.OrdType != "trigger" || req.Sz != "0.01" {
+		if req.InstId != "ETH-USDT" || req.TdMode != defaultSpotTdMode || req.OrdType != "trigger" || req.Sz != "0.01" {
 			t.Fatalf("unexpected algo request: %+v", req)
 		}
 		if req.AlgoClOrdId == nil || *req.AlgoClOrdId != "c-mit" {
@@ -220,7 +254,7 @@ func TestOKXSpotSubmitConditionalOrderUsesAlgoEndpoint(t *testing.T) {
 		}
 		return `{"code":"0","msg":"","data":[{"algoId":"spot-algo-1","algoClOrdId":"c-mit","sCode":"0"}]}`, 200
 	})
-	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: inst.ID,
@@ -243,7 +277,7 @@ func TestOKXSpotRejectsDerivativeOrderFields(t *testing.T) {
 	exec := newExecutionClient(testREST(func(r *http.Request) (string, int) {
 		t.Fatalf("spot derivative-field rejection must happen before REST request: %s", r.URL.String())
 		return `{}`, 500
-	}), testProvider(inst), clock.NewRealClock())
+	}), testProvider(inst), clock.NewRealClock(), "")
 
 	for name, req := range map[string]model.OrderRequest{
 		"reduce_only": {
@@ -287,7 +321,7 @@ func TestOKXSpotCancelOrderTranslation(t *testing.T) {
 		}
 		return `{"code":"0","msg":"","data":[{"ordId":"555","sCode":"0"}]}`, 200
 	})
-	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
 
 	if err := exec.Cancel(context.Background(), inst.ID, "555"); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -306,17 +340,18 @@ func TestOKXSpotOpenOrdersTranslation(t *testing.T) {
 		}
 		return `{"code":"0","msg":"","data":[{"instId":"ETH-USDT","instType":"SPOT","ordId":"777","clOrdId":"c-open","state":"live","side":"sell","ordType":"limit","sz":"0.0200","px":"3200.00","accFillSz":"0","avgPx":"","uTime":"1700000000000"}]}`, 200
 	})
-	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
 
-	orders, err := exec.OrderReports(context.Background())
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
 	if err != nil {
-		t.Fatalf("OrderReports: %v", err)
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if len(orders) != 1 {
-		t.Fatalf("orders len=%d", len(orders))
+	if len(mass.OrderReports) != 1 {
+		t.Fatalf("orders len=%d", len(mass.OrderReports))
 	}
-	if orders[0].Request.InstrumentID != inst.ID || orders[0].VenueOrderID != "777" || orders[0].Request.Side != enums.SideSell {
-		t.Fatalf("order=%+v", orders[0])
+	order := mass.OrderReports["777"].Order
+	if order.Request.InstrumentID != inst.ID || order.VenueOrderID != "777" || order.Request.Side != enums.SideSell {
+		t.Fatalf("order=%+v", order)
 	}
 }
 
@@ -409,12 +444,12 @@ func TestOKXSpotContractCapabilities(t *testing.T) {
 			}},
 		},
 		Execution: contracttest.ExecutionCapabilities{
-			Submit:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Cancel:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			CancelAll:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Modify:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			OpenOrders:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			OrderReports: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Submit:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Cancel:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			CancelAll:  contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Modify:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			OpenOrders: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 		},
 		Account: contracttest.AccountCapabilities{
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},

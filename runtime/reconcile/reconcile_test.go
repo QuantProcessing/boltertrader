@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -26,6 +27,9 @@ type snapshotAccount struct {
 	positions []model.Position
 }
 
+func (s *snapshotAccount) Capabilities() contract.Capabilities {
+	return contract.Capabilities{Venue: "T"}
+}
 func (s *snapshotAccount) Balances(context.Context) ([]model.AccountBalance, error) {
 	return s.balances, nil
 }
@@ -38,15 +42,18 @@ func (s *snapshotAccount) SetLeverage(context.Context, model.InstrumentID, decim
 func (s *snapshotAccount) SetMarginMode(context.Context, model.InstrumentID, string) error {
 	return nil
 }
-func (s *snapshotAccount) Events() <-chan contract.AccountEvent { return nil }
-func (s *snapshotAccount) Close() error                         { return nil }
+func (s *snapshotAccount) Events() <-chan contract.AccountEnvelope { return nil }
+func (s *snapshotAccount) Close() error                            { return nil }
 
 // snapshotExec is a minimal ExecutionClient returning a canned venue-wide
 // open-order snapshot for reconciliation.
 type snapshotExec struct {
 	reports []model.Order
+	mass    *model.ExecutionMassStatus
+	queries []model.MassStatusQuery
 }
 
+func (s *snapshotExec) Capabilities() contract.Capabilities { return contract.Capabilities{Venue: "T"} }
 func (s *snapshotExec) Submit(context.Context, model.OrderRequest) (*model.Order, error) {
 	return nil, nil
 }
@@ -58,9 +65,46 @@ func (s *snapshotExec) Modify(context.Context, model.InstrumentID, string, decim
 func (s *snapshotExec) OpenOrders(context.Context, model.InstrumentID) ([]model.Order, error) {
 	return s.reports, nil
 }
-func (s *snapshotExec) OrderReports(context.Context) ([]model.Order, error) { return s.reports, nil }
-func (s *snapshotExec) Events() <-chan contract.ExecEvent                   { return nil }
-func (s *snapshotExec) Close() error                                        { return nil }
+func (s *snapshotExec) GenerateOrderStatusReports(context.Context, model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	out := make([]model.OrderStatusReport, 0, len(s.reports))
+	for _, o := range s.reports {
+		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, Order: o})
+	}
+	return out, nil
+}
+func (s *snapshotExec) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	reports, err := s.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
+		InstrumentID: query.InstrumentID,
+		ClientID:     query.ClientID,
+		VenueOrderID: query.VenueOrderID,
+	})
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	return &reports[0], nil
+}
+func (s *snapshotExec) GenerateFillReports(context.Context, model.FillReportQuery) ([]model.FillReport, error) {
+	return nil, contract.ErrNotSupported
+}
+func (s *snapshotExec) GeneratePositionReports(context.Context, model.PositionReportQuery) ([]model.PositionReport, error) {
+	return nil, contract.ErrNotSupported
+}
+func (s *snapshotExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	s.queries = append(s.queries, query)
+	if s.mass != nil {
+		mass := s.mass.Clone()
+		return &mass, nil
+	}
+	mass := model.NewExecutionMassStatus("T", query.AccountID, time.Time{})
+	for _, o := range s.reports {
+		if err := mass.AddOrderReport(model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: query.AccountID, Order: o}); err != nil {
+			return nil, err
+		}
+	}
+	return mass, nil
+}
+func (s *snapshotExec) Events() <-chan contract.ExecEnvelope { return nil }
+func (s *snapshotExec) Close() error                         { return nil }
 
 // order builds a minimal open order with a client id and instrument.
 func order(clientID string, id model.InstrumentID, qty string, status enums.OrderStatus) model.Order {

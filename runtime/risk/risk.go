@@ -1,6 +1,6 @@
 // Package risk provides pre-trade risk checks — the safety net that sits in
 // front of order submission. The engine is venue-neutral and reads only the
-// Cache + Instrument metadata, so it behaves identically in backtest and live.
+// Cache + Instrument metadata, so it behaves consistently across adapters.
 package risk
 
 import (

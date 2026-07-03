@@ -1,13 +1,14 @@
 // Package runtimetest provides an in-memory fake venue that implements the
 // core/contract interfaces. It lets the runtime be exercised end-to-end with no
-// network, driven by a clock.Clock — the same shape a backtest matching engine
-// will take in P9. It is intentionally simple: Submit immediately acks and the
-// test pushes fills explicitly via EmitFill.
+// network. It is intentionally simple: Submit immediately acks, while tests push
+// the live-style order, fill, reject, balance, position, quote, and trade events
+// explicitly through the same channels real adapters use.
 package runtimetest
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -19,20 +20,58 @@ import (
 // acknowledged order (status New) and the test injects fills/order events via
 // the Emit* helpers, which land on Events() exactly like a real venue push.
 type FakeExec struct {
-	events chan contract.ExecEvent
+	events chan contract.ExecEnvelope
 	seq    int64
 
-	// reports is the canned venue-wide open-order snapshot returned by
-	// OrderReports; set it to drive reconciliation tests.
-	reports []model.Order
+	// reports is the canned venue-wide open-order snapshot returned by mass
+	// status generation; set it to drive reconciliation tests.
+	reports   []model.Order
+	reportErr error
+
+	submitErr       error
+	cancelErr       error
+	modifyErr       error
+	submitOrder     *model.Order
+	modifyOrder     *model.Order
+	onSubmit        func(model.OrderRequest)
+	onCancel        func(model.InstrumentID, string)
+	onModify        func(model.InstrumentID, string, decimal.Decimal, decimal.Decimal)
+	modifySupported bool
 }
 
 // NewFakeExec returns a FakeExec with a buffered event channel.
 func NewFakeExec() *FakeExec {
-	return &FakeExec{events: make(chan contract.ExecEvent, 256)}
+	return &FakeExec{events: make(chan contract.ExecEnvelope, 256)}
+}
+
+func (f *FakeExec) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue: "FAKE",
+		Reports: contract.ReportCapabilities{
+			SingleOrderStatus:         true,
+			OpenOrders:                true,
+			OpenOnlyNotFoundAmbiguous: false,
+		},
+		Streaming: contract.StreamCapabilities{Execution: true},
+		Trading:   contract.TradingCapabilities{Submit: true, Cancel: true, CancelAll: true, Modify: f.modifySupported},
+		Latency:   contract.LatencyCapabilities{},
+	}
 }
 
 func (f *FakeExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if f.onSubmit != nil {
+		f.onSubmit(req)
+	}
+	if f.submitErr != nil {
+		return f.submitOrder, f.submitErr
+	}
+	if f.submitOrder != nil {
+		order := *f.submitOrder
+		if order.Request.ClientID == "" {
+			order.Request = req
+		}
+		return &order, nil
+	}
 	f.seq++
 	venueID := "v" + decimal.NewFromInt(f.seq).String()
 	return &model.Order{
@@ -42,12 +81,38 @@ func (f *FakeExec) Submit(ctx context.Context, req model.OrderRequest) (*model.O
 	}, nil
 }
 
+func (f *FakeExec) ValidateSubmit(req model.OrderRequest) error { return nil }
+
 func (f *FakeExec) Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error {
-	return nil
+	if f.onCancel != nil {
+		f.onCancel(id, venueOrderID)
+	}
+	return f.cancelErr
 }
 func (f *FakeExec) CancelAll(ctx context.Context, id model.InstrumentID) error { return nil }
 func (f *FakeExec) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
-	return nil, fmt.Errorf("fake execution amend is not modeled: %w", contract.ErrNotSupported)
+	if f.onModify != nil {
+		f.onModify(id, venueOrderID, newPrice, newQty)
+	}
+	if !f.modifySupported {
+		return nil, fmt.Errorf("fake execution amend is not modeled: %w", contract.ErrNotSupported)
+	}
+	if f.modifyErr != nil {
+		return f.modifyOrder, f.modifyErr
+	}
+	if f.modifyOrder != nil {
+		order := *f.modifyOrder
+		return &order, nil
+	}
+	return &model.Order{
+		Request: model.OrderRequest{
+			InstrumentID: id,
+			Price:        newPrice,
+			Quantity:     newQty,
+		},
+		VenueOrderID: venueOrderID,
+		Status:       enums.StatusNew,
+	}, nil
 }
 func (f *FakeExec) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
 	out := make([]model.Order, 0, len(f.reports))
@@ -59,34 +124,128 @@ func (f *FakeExec) OpenOrders(ctx context.Context, id model.InstrumentID) ([]mod
 	return out, nil
 }
 
-// OrderReports returns the canned venue-wide open-order snapshot.
-func (f *FakeExec) OrderReports(ctx context.Context) ([]model.Order, error) {
-	return append([]model.Order(nil), f.reports...), nil
+func (f *FakeExec) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	if f.reportErr != nil {
+		return nil, f.reportErr
+	}
+	out := make([]model.OrderStatusReport, 0, len(f.reports))
+	for _, o := range f.reports {
+		if query.InstrumentID.Symbol != "" && o.Request.InstrumentID != query.InstrumentID {
+			continue
+		}
+		if query.ClientID != "" && o.Request.ClientID != query.ClientID {
+			continue
+		}
+		if query.VenueOrderID != "" && o.VenueOrderID != query.VenueOrderID {
+			continue
+		}
+		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, Order: o, ReportedAt: time.Now()})
+	}
+	return out, nil
 }
 
-// SetOrderReports installs the venue-wide open-order snapshot returned by
-// OrderReports/OpenOrders, simulating the venue's authoritative resting set.
-func (f *FakeExec) SetOrderReports(orders ...model.Order) { f.reports = orders }
+func (f *FakeExec) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	reports, err := f.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
+		InstrumentID: query.InstrumentID,
+		AccountID:    query.AccountID,
+		ClientID:     query.ClientID,
+		VenueOrderID: query.VenueOrderID,
+	})
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	return &reports[0], nil
+}
 
-func (f *FakeExec) Events() <-chan contract.ExecEvent { return f.events }
-func (f *FakeExec) Close() error                      { close(f.events); return nil }
+func (f *FakeExec) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	return nil, fmt.Errorf("fake execution fill history is not modeled: %w", contract.ErrNotSupported)
+}
+
+func (f *FakeExec) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	return nil, fmt.Errorf("fake execution position reports are served by FakeAccount snapshots: %w", contract.ErrNotSupported)
+}
+
+func (f *FakeExec) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	if f.reportErr != nil {
+		return nil, f.reportErr
+	}
+	now := time.Now()
+	mass := model.NewExecutionMassStatus("FAKE", query.AccountID, now)
+	mass.ClientID = query.ClientID
+	for _, o := range f.reports {
+		report := model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: query.AccountID, Order: o, ReportedAt: now}
+		if err := mass.AddOrderReport(report); err != nil {
+			return nil, err
+		}
+	}
+	return mass, nil
+}
+
+// SetOrderStatusReports installs the venue-wide open-order snapshot returned by
+// GenerateExecutionMassStatus/OpenOrders, simulating the venue's authoritative
+// resting set.
+func (f *FakeExec) SetOrderStatusReports(orders ...model.Order) { f.reports = orders }
+
+func (f *FakeExec) SetReportError(err error) { f.reportErr = err }
+
+func (f *FakeExec) SetSubmitResult(order *model.Order, err error) {
+	f.submitOrder = order
+	f.submitErr = err
+}
+
+func (f *FakeExec) SetCancelError(err error) { f.cancelErr = err }
+
+func (f *FakeExec) SetModifyResult(order *model.Order, err error) {
+	f.modifyOrder = order
+	f.modifyErr = err
+}
+
+func (f *FakeExec) SetModifySupported(ok bool) { f.modifySupported = ok }
+
+func (f *FakeExec) OnSubmit(fn func(model.OrderRequest)) { f.onSubmit = fn }
+
+func (f *FakeExec) OnCancel(fn func(model.InstrumentID, string)) { f.onCancel = fn }
+
+func (f *FakeExec) OnModify(fn func(model.InstrumentID, string, decimal.Decimal, decimal.Decimal)) {
+	f.onModify = fn
+}
+
+func (f *FakeExec) Events() <-chan contract.ExecEnvelope { return f.events }
+func (f *FakeExec) Close() error                         { close(f.events); return nil }
 
 // EmitOrder pushes an order lifecycle event.
-func (f *FakeExec) EmitOrder(o model.Order) { f.events <- contract.OrderEvent{Order: o} }
+func (f *FakeExec) EmitOrder(o model.Order) {
+	f.events <- contract.NewExecEnvelopeWithMeta(contract.OrderEvent{Order: o}, testEventMeta())
+}
 
 // EmitFill pushes a fill event.
-func (f *FakeExec) EmitFill(fill model.Fill) { f.events <- contract.FillEvent{Fill: fill} }
+func (f *FakeExec) EmitFill(fill model.Fill) {
+	f.events <- contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, testEventMeta())
+}
+
+// EmitReject pushes a venue-side definitive rejection.
+func (f *FakeExec) EmitReject(clientID, reason string) {
+	f.events <- contract.NewExecEnvelopeWithMeta(contract.RejectEvent{ClientID: clientID, Reason: reason}, testEventMeta())
+}
 
 // FakeAccount is an in-memory AccountClient driven by Emit* helpers.
 type FakeAccount struct {
-	events    chan contract.AccountEvent
+	events    chan contract.AccountEnvelope
 	balances  []model.AccountBalance
 	positions []model.Position
 }
 
 // NewFakeAccount returns a FakeAccount with a buffered event channel.
 func NewFakeAccount() *FakeAccount {
-	return &FakeAccount{events: make(chan contract.AccountEvent, 256)}
+	return &FakeAccount{events: make(chan contract.AccountEnvelope, 256)}
+}
+
+func (f *FakeAccount) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue:     "FAKE",
+		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
+		Streaming: contract.StreamCapabilities{Account: true},
+	}
 }
 
 func (f *FakeAccount) Balances(ctx context.Context) ([]model.AccountBalance, error) {
@@ -101,8 +260,8 @@ func (f *FakeAccount) SetLeverage(ctx context.Context, id model.InstrumentID, le
 func (f *FakeAccount) SetMarginMode(ctx context.Context, id model.InstrumentID, mode string) error {
 	return nil
 }
-func (f *FakeAccount) Events() <-chan contract.AccountEvent { return f.events }
-func (f *FakeAccount) Close() error                         { close(f.events); return nil }
+func (f *FakeAccount) Events() <-chan contract.AccountEnvelope { return f.events }
+func (f *FakeAccount) Close() error                            { close(f.events); return nil }
 
 // SetSnapshots installs the account snapshots returned by Balances/Positions,
 // simulating the venue's authoritative REST state for reconciliation.
@@ -113,12 +272,12 @@ func (f *FakeAccount) SetSnapshots(balances []model.AccountBalance, positions []
 
 // EmitBalance pushes a balance event.
 func (f *FakeAccount) EmitBalance(b model.AccountBalance) {
-	f.events <- contract.BalanceEvent{Balance: b}
+	f.events <- contract.NewAccountEnvelopeWithMeta(contract.BalanceEvent{Balance: b}, testEventMeta())
 }
 
 // EmitPosition pushes a position event.
 func (f *FakeAccount) EmitPosition(p model.Position) {
-	f.events <- contract.PositionEvent{Position: p}
+	f.events <- contract.NewAccountEnvelopeWithMeta(contract.PositionEvent{Position: p}, testEventMeta())
 }
 
 // FakeMarket is an in-memory MarketDataClient driven by Emit* helpers. The
@@ -126,7 +285,7 @@ func (f *FakeAccount) EmitPosition(p model.Position) {
 // implements contract.Reconnectable so node.Reconnect can be exercised: each
 // call increments Reconnects and connected flips to true.
 type FakeMarket struct {
-	events   chan contract.MarketEvent
+	events   chan contract.MarketEnvelope
 	provider model.InstrumentProvider
 
 	Reconnects int  // number of Reconnect calls
@@ -135,7 +294,16 @@ type FakeMarket struct {
 
 // NewFakeMarket returns a FakeMarket with a buffered event channel.
 func NewFakeMarket() *FakeMarket {
-	return &FakeMarket{events: make(chan contract.MarketEvent, 1024)}
+	return &FakeMarket{events: make(chan contract.MarketEnvelope, 1024)}
+}
+
+func (f *FakeMarket) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue:     "FAKE",
+		Reports:   contract.ReportCapabilities{},
+		Streaming: contract.StreamCapabilities{Market: true},
+		Latency:   contract.LatencyCapabilities{},
+	}
 }
 
 func (f *FakeMarket) InstrumentProvider() model.InstrumentProvider { return f.provider }
@@ -148,7 +316,7 @@ func (f *FakeMarket) Bars(ctx context.Context, id model.InstrumentID, interval s
 func (f *FakeMarket) SubscribeBook(ctx context.Context, id model.InstrumentID) error   { return nil }
 func (f *FakeMarket) SubscribeQuotes(ctx context.Context, id model.InstrumentID) error { return nil }
 func (f *FakeMarket) SubscribeTrades(ctx context.Context, id model.InstrumentID) error { return nil }
-func (f *FakeMarket) Events() <-chan contract.MarketEvent                              { return f.events }
+func (f *FakeMarket) Events() <-chan contract.MarketEnvelope                           { return f.events }
 func (f *FakeMarket) Close() error                                                     { close(f.events); return nil }
 
 // Connected reports the simulated link state.
@@ -163,7 +331,15 @@ func (f *FakeMarket) Reconnect(ctx context.Context) error {
 }
 
 // EmitQuote pushes a top-of-book update.
-func (f *FakeMarket) EmitQuote(q model.QuoteTick) { f.events <- contract.QuoteEvent{Quote: q} }
+func (f *FakeMarket) EmitQuote(q model.QuoteTick) {
+	f.events <- contract.NewMarketEnvelopeWithMeta(contract.QuoteEvent{Quote: q}, testEventMeta())
+}
 
 // EmitTrade pushes a public trade print.
-func (f *FakeMarket) EmitTrade(t model.TradeTick) { f.events <- contract.TradeEvent{Trade: t} }
+func (f *FakeMarket) EmitTrade(t model.TradeTick) {
+	f.events <- contract.NewMarketEnvelopeWithMeta(contract.TradeEvent{Trade: t}, testEventMeta())
+}
+
+func testEventMeta() contract.EventMeta {
+	return contract.EventMeta{Source: contract.SourceTest, Flags: contract.EventFlagSynthetic}
+}

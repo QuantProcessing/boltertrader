@@ -20,7 +20,7 @@ type accountClient struct {
 	provider *instrumentProvider
 	clk      clock.Clock
 	tdMode   string
-	stream   *wsstream.Stream[contract.AccountEvent]
+	stream   *wsstream.Stream[contract.AccountEnvelope]
 }
 
 func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string) *accountClient {
@@ -33,7 +33,7 @@ func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.
 		provider: provider,
 		clk:      clk,
 		tdMode:   normalized,
-		stream:   wsstream.New[contract.AccountEvent](256),
+		stream:   wsstream.New[contract.AccountEnvelope](256),
 	}
 }
 
@@ -105,11 +105,13 @@ func (c *accountClient) SetMarginMode(ctx context.Context, id model.InstrumentID
 	}
 }
 
-func (c *accountClient) Events() <-chan contract.AccountEvent { return c.stream.C() }
+func (c *accountClient) Events() <-chan contract.AccountEnvelope { return c.stream.C() }
 
 // emit blocks under backpressure (never dropping balance/position updates),
 // no-op after Close.
-func (c *accountClient) emit(ev contract.AccountEvent) { c.stream.Emit(ev) }
+func (c *accountClient) emit(ev contract.AccountEvent) {
+	c.stream.Emit(contract.NewAccountEnvelope(ev))
+}
 
 func (c *accountClient) Close() error {
 	c.stream.Close()

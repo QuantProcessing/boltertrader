@@ -8,9 +8,12 @@ import (
 )
 
 // MarketDataClient is the public market-data surface. Request/response methods
-// return synchronously; streaming subscriptions deliver typed MarketEvents on
+// return synchronously; streaming subscriptions deliver typed event envelopes on
 // Events().
 type MarketDataClient interface {
+	// Capabilities declares the venue/product/report/streaming surface.
+	Capabilities() Capabilities
+
 	// InstrumentProvider exposes the venue's resolved instrument registry.
 	InstrumentProvider() model.InstrumentProvider
 
@@ -24,8 +27,8 @@ type MarketDataClient interface {
 	SubscribeQuotes(ctx context.Context, id model.InstrumentID) error
 	SubscribeTrades(ctx context.Context, id model.InstrumentID) error
 
-	// Events is the demultiplexed stream of market push events.
-	Events() <-chan MarketEvent
+	// Events is the demultiplexed stream of market push event envelopes.
+	Events() <-chan MarketEnvelope
 	// Close releases connections and closes Events().
 	Close() error
 }
@@ -36,20 +39,22 @@ type MarketDataClient interface {
 // the injected Clock) and returns the acknowledged order. Subsequent fills and
 // state transitions arrive on Events().
 type ExecutionClient interface {
+	// Capabilities declares the venue/product/report/streaming surface.
+	Capabilities() Capabilities
+
 	Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error)
 	Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error
 	CancelAll(ctx context.Context, id model.InstrumentID) error
 	Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error)
 	// OpenOrders returns the open orders for a single instrument.
 	OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error)
-	// OrderReports returns OPEN-order snapshots across ALL instruments in one
-	// venue-wide query (no instrument filter). It is the reconciliation feed —
-	// the equivalent of NautilusTrader's ExecutionMassStatus order reports — used
-	// to rebuild local order state after a websocket gap or process restart,
-	// including orders placed out-of-band that the cache has never seen.
-	OrderReports(ctx context.Context) ([]model.Order, error)
+	GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error)
+	GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error)
+	GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error)
+	GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error)
+	GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error)
 
-	Events() <-chan ExecEvent
+	Events() <-chan ExecEnvelope
 	Close() error
 }
 
@@ -57,6 +62,9 @@ type ExecutionClient interface {
 // return balance and positions in a single call (Hyperliquid's
 // clearinghouseState) fan that one call into both getters inside the adapter.
 type AccountClient interface {
+	// Capabilities declares the venue/product/report/streaming surface.
+	Capabilities() Capabilities
+
 	Balances(ctx context.Context) ([]model.AccountBalance, error)
 	Positions(ctx context.Context) ([]model.Position, error)
 	// SetLeverage sets leverage for an instrument (best-effort per venue).
@@ -65,6 +73,6 @@ type AccountClient interface {
 	// contract.ErrNotSupported where inapplicable. mode is "cross" or "isolated".
 	SetMarginMode(ctx context.Context, id model.InstrumentID, mode string) error
 
-	Events() <-chan AccountEvent
+	Events() <-chan AccountEnvelope
 	Close() error
 }

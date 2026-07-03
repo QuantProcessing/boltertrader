@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,16 +16,16 @@ import (
 
 type mirrorStrategy struct {
 	strategy.Base
-	starts int
-	fills  int
-	stops  int
+	starts atomic.Int64
+	fills  atomic.Int64
+	stops  atomic.Int64
 }
 
-func (s *mirrorStrategy) OnStart(*strategy.Context) { s.starts++ }
+func (s *mirrorStrategy) OnStart(*strategy.Context) { s.starts.Add(1) }
 func (s *mirrorStrategy) OnFill(*strategy.Context, model.Fill) {
-	s.fills++
+	s.fills.Add(1)
 }
-func (s *mirrorStrategy) OnStop(*strategy.Context) { s.stops++ }
+func (s *mirrorStrategy) OnStop(*strategy.Context) { s.stops.Add(1) }
 
 func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -42,8 +43,15 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 		runtime.WithObserver(obs),
 	)
 
-	ctx := context.Background()
-	node.Start(ctx)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		node.Run(ctx)
+		close(done)
+	}()
+	waitUntil(t, func() bool {
+		return strat.starts.Load() == 1 && obs.starts.Load() == 1
+	}, "timed out waiting for node start")
 
 	order, err := node.Exec.Submit(ctx, model.OrderRequest{
 		InstrumentID: inst,
@@ -81,7 +89,10 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	})
 	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("9999.9"), Available: d("9000"), UpdatedAt: start.Add(time.Second)})
 	facct.EmitPosition(model.Position{InstrumentID: inst, Side: enums.PosNet, Quantity: d("2"), EntryPrice: d("100"), UpdatedAt: start.Add(time.Second)})
-	node.ProcessAvailable()
+	waitUntil(t, func() bool {
+		m := node.Metrics()
+		return m.OrdersSeen == 1 && m.FillsSeen == 1 && m.Positions == 1
+	}, "timed out waiting for fake venue events")
 
 	if o, ok := node.Cache.Order(order.Request.ClientID); !ok || o.Status != enums.StatusFilled {
 		t.Fatalf("order not filled in cache: ok=%v status=%v", ok, o.Status)
@@ -101,11 +112,11 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	if p, ok := node.Cache.Position(inst, enums.PosNet); !ok || !p.Quantity.Equal(d("2")) || !p.EntryPrice.Equal(d("100")) {
 		t.Fatalf("position not mirrored: ok=%v position=%+v", ok, p)
 	}
-	if strat.starts != 1 || strat.fills != 1 {
-		t.Fatalf("strategy callbacks starts=%d fills=%d, want 1/1", strat.starts, strat.fills)
+	if strat.starts.Load() != 1 || strat.fills.Load() != 1 {
+		t.Fatalf("strategy callbacks starts=%d fills=%d, want 1/1", strat.starts.Load(), strat.fills.Load())
 	}
-	if obs.starts != 1 || obs.orders != 1 || obs.fills != 1 {
-		t.Fatalf("observer callbacks starts=%d orders=%d fills=%d, want 1/1/1", obs.starts, obs.orders, obs.fills)
+	if obs.starts.Load() != 1 || obs.orders.Load() != 1 || obs.fills.Load() != 1 {
+		t.Fatalf("observer callbacks starts=%d orders=%d fills=%d, want 1/1/1", obs.starts.Load(), obs.orders.Load(), obs.fills.Load())
 	}
 	before := node.Metrics()
 	if before.OpenOrders != 0 || before.Positions != 1 || before.OrdersSeen != 1 || before.FillsSeen != 1 {
@@ -130,7 +141,7 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 		[]model.AccountBalance{{Currency: "USDT", Total: d("9999.9"), Available: d("9000"), UpdatedAt: start.Add(2 * time.Second)}},
 		[]model.Position{{InstrumentID: inst, Side: enums.PosNet, Quantity: d("2"), EntryPrice: d("100"), UpdatedAt: start.Add(2 * time.Second)}},
 	)
-	fexec.SetOrderReports()
+	fexec.SetOrderStatusReports()
 
 	rep, err := node.Resync(ctx)
 	if err != nil {
@@ -152,8 +163,13 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 		t.Fatalf("reconcile invented execution impact: before=%+v after=%+v", before, after)
 	}
 
-	node.Stop()
-	if strat.stops != 1 || obs.stops != 1 {
-		t.Fatalf("stop callbacks strategy=%d observer=%d, want 1/1", strat.stops, obs.stops)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("node did not stop")
+	}
+	if strat.stops.Load() != 1 || obs.stops.Load() != 1 {
+		t.Fatalf("stop callbacks strategy=%d observer=%d, want 1/1", strat.stops.Load(), obs.stops.Load())
 	}
 }

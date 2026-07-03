@@ -5,6 +5,7 @@
 package portfolio
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -14,24 +15,28 @@ import (
 
 // lot is the running average-cost state for one instrument/side.
 type lot struct {
-	qty       decimal.Decimal // signed: + long, - short
-	avgPrice  decimal.Decimal
-	realized  decimal.Decimal // cumulative realized PnL for this lot
-	feesPaid  decimal.Decimal
+	qty                decimal.Decimal // signed: + long, - short
+	avgPrice           decimal.Decimal
+	realized           decimal.Decimal // cumulative realized PnL for this lot
+	feesPaidByCurrency map[string]decimal.Decimal
 }
 
 // Portfolio accrues realized PnL and fees from fills. It is written from the bus
 // goroutine and read (snapshots) under an RWMutex.
 type Portfolio struct {
-	mu       sync.RWMutex
-	lots     map[string]*lot // key: instrument|side
-	realized decimal.Decimal // total realized PnL across all instruments
-	fees     decimal.Decimal // total fees paid
+	mu             sync.RWMutex
+	lots           map[string]*lot // key: instrument|side
+	realized       decimal.Decimal // total realized PnL across all instruments
+	fees           decimal.Decimal // fees in the PnL currency only
+	feesByCurrency map[string]decimal.Decimal
 }
 
 // New returns an empty Portfolio.
 func New() *Portfolio {
-	return &Portfolio{lots: make(map[string]*lot)}
+	return &Portfolio{
+		lots:           make(map[string]*lot),
+		feesByCurrency: make(map[string]decimal.Decimal),
+	}
 }
 
 func lotKey(id model.InstrumentID, side enums.PositionSide) string {
@@ -52,7 +57,7 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 	k := lotKey(f.InstrumentID, posSide)
 	l := pf.lots[k]
 	if l == nil {
-		l = &lot{}
+		l = &lot{feesPaidByCurrency: make(map[string]decimal.Decimal)}
 		pf.lots[k] = l
 	}
 
@@ -60,17 +65,25 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 	if f.Side == enums.SideSell {
 		signed = signed.Neg()
 	}
+	fillPrice := f.Price
+	if spotBuyFeeInBase(f) {
+		// Spot buy fills report gross filled base; a base-asset fee reduces the
+		// net base received. Sell fills are already the base quantity removed, so
+		// do not subtract a reported base fee a second time.
+		signed = signed.Sub(f.Fee)
+		if !signed.IsZero() {
+			fillPrice = f.Price.Mul(f.Quantity).Div(signed.Abs())
+		}
+	}
 
-	// Fees always reduce PnL.
-	l.feesPaid = l.feesPaid.Add(f.Fee)
-	pf.fees = pf.fees.Add(f.Fee)
+	pf.applyFee(l, f)
 
 	switch {
 	case l.qty.IsZero() || sameSign(l.qty, signed):
 		// Opening or increasing: weighted-average the entry price.
 		newQty := l.qty.Add(signed)
 		if !newQty.IsZero() {
-			notional := l.avgPrice.Mul(l.qty.Abs()).Add(f.Price.Mul(signed.Abs()))
+			notional := l.avgPrice.Mul(l.qty.Abs()).Add(fillPrice.Mul(signed.Abs()))
 			l.avgPrice = notional.Div(newQty.Abs())
 		}
 		l.qty = newQty
@@ -82,9 +95,9 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 		// (avgPrice - fillPrice). The sign of l.qty captures this.
 		var pnl decimal.Decimal
 		if l.qty.IsPositive() {
-			pnl = f.Price.Sub(l.avgPrice).Mul(closing)
+			pnl = fillPrice.Sub(l.avgPrice).Mul(closing)
 		} else {
-			pnl = l.avgPrice.Sub(f.Price).Mul(closing)
+			pnl = l.avgPrice.Sub(fillPrice).Mul(closing)
 		}
 		l.realized = l.realized.Add(pnl)
 		pf.realized = pf.realized.Add(pnl)
@@ -97,10 +110,54 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 			// Partial reduce: avg price unchanged.
 		default:
 			// Flipped past flat: remaining opens at the fill price.
-			l.avgPrice = f.Price
+			l.avgPrice = fillPrice
 		}
 		l.qty = newQty
 	}
+}
+
+func spotBuyFeeInBase(f model.Fill) bool {
+	if f.InstrumentID.Kind != enums.KindSpot || f.Side != enums.SideBuy || f.Fee.IsZero() || f.FeeCurrency == "" {
+		return false
+	}
+	base, _, ok := strings.Cut(f.InstrumentID.Symbol, "-")
+	return ok && strings.EqualFold(f.FeeCurrency, base)
+}
+
+func (pf *Portfolio) applyFee(l *lot, f model.Fill) {
+	if f.Fee.IsZero() {
+		return
+	}
+	ccy := feeCurrency(f)
+	if ccy == "" {
+		return
+	}
+	if l.feesPaidByCurrency == nil {
+		l.feesPaidByCurrency = make(map[string]decimal.Decimal)
+	}
+	l.feesPaidByCurrency[ccy] = l.feesPaidByCurrency[ccy].Add(f.Fee)
+	if pf.feesByCurrency == nil {
+		pf.feesByCurrency = make(map[string]decimal.Decimal)
+	}
+	pf.feesByCurrency[ccy] = pf.feesByCurrency[ccy].Add(f.Fee)
+	if ccy == pnlCurrency(f.InstrumentID) {
+		pf.fees = pf.fees.Add(f.Fee)
+	}
+}
+
+func feeCurrency(f model.Fill) string {
+	if f.FeeCurrency != "" {
+		return strings.ToUpper(f.FeeCurrency)
+	}
+	return pnlCurrency(f.InstrumentID)
+}
+
+func pnlCurrency(id model.InstrumentID) string {
+	_, quote, ok := strings.Cut(id.Symbol, "-")
+	if !ok {
+		return ""
+	}
+	return strings.ToUpper(quote)
 }
 
 func sameSign(a, b decimal.Decimal) bool {
@@ -115,14 +172,26 @@ func (pf *Portfolio) RealizedPnL() decimal.Decimal {
 	return pf.realized
 }
 
-// Fees returns total fees paid.
+// Fees returns fees in the same currency as realized PnL. Use FeesByCurrency for
+// the full multi-currency fee ledger.
 func (pf *Portfolio) Fees() decimal.Decimal {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
 	return pf.fees
 }
 
-// RealizedPnLNetFees returns realized PnL minus fees.
+// FeesByCurrency returns a copy of all observed fees keyed by fee currency.
+func (pf *Portfolio) FeesByCurrency() map[string]decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	out := make(map[string]decimal.Decimal, len(pf.feesByCurrency))
+	for ccy, fee := range pf.feesByCurrency {
+		out[ccy] = fee
+	}
+	return out
+}
+
+// RealizedPnLNetFees returns realized PnL minus same-currency fees.
 func (pf *Portfolio) RealizedPnLNetFees() decimal.Decimal {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()

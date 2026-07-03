@@ -1,0 +1,40 @@
+package perp
+
+import (
+	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
+)
+
+func (c *marketDataClient) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue:     venueName,
+		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Market: true, Trading: true, Account: true}},
+		Reports:   contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
+		Streaming: contract.StreamCapabilities{Market: c.ws != nil},
+		Latency:   contract.LatencyCapabilities{},
+	}
+}
+
+func (c *executionClient) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue:    venueName,
+		Products: []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true}},
+		Reports: contract.ReportCapabilities{
+			OpenOrders:                true,
+			OpenOnlyNotFoundAmbiguous: true,
+		},
+		Streaming: contract.StreamCapabilities{Execution: true},
+		Trading:   contract.TradingCapabilities{Submit: true, Cancel: true, CancelAll: true, Modify: true},
+		Latency:   contract.LatencyCapabilities{},
+	}
+}
+
+func (c *accountClient) Capabilities() contract.Capabilities {
+	return contract.Capabilities{
+		Venue:     venueName,
+		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
+		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
+		Streaming: contract.StreamCapabilities{Account: true},
+		Latency:   contract.LatencyCapabilities{},
+	}
+}

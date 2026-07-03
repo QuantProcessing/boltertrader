@@ -23,10 +23,16 @@ func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 		t.Fatalf("OKX Demo HTTP client: %v", err)
 	}
 	endpoints := okxDemoEndpoints(t, cfg)
+	tdMode, err := demoSpotTdMode(ctx, cfg, endpoints, httpClient)
+	if err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo account mode preflight")
+		t.Fatalf("OKX Spot Demo account mode preflight: %v", err)
+	}
 	adapter, err := New(ctx, Config{
 		APIKey:          cfg.APIKey,
 		APISecret:       cfg.APISecret,
 		Passphrase:      cfg.Passphrase,
+		TdMode:          tdMode,
 		Environment:     okx.Simulated,
 		DemoHostProfile: okx.DemoHostProfile(cfg.HostProfile),
 		RESTBaseURL:     endpoints.REST,
@@ -88,7 +94,6 @@ func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 		t.Fatalf("balance preflight: %v", err)
 	}
 	startBaseAvailable := startBalances[spec.BaseCurrency].Available
-	startBaseTotal := startBalances[spec.BaseCurrency].Total
 	quoteAvailable := startBalances[spec.QuoteCurrency].Available
 	requiredQuote := qty.Mul(fillPrice).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
@@ -157,7 +162,7 @@ func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 	if err := waitForDemoExecObservation(ctx, execEvents, fillClientID, filled.VenueOrderID); err != nil {
 		t.Fatalf("adapter execution stream did not observe OKX Spot Demo fill: %v", err)
 	}
-	baseDelta, err := waitForDemoSpotBaseDelta(ctx, adapter, spec.BaseCurrency, startBaseTotal, spec.SizeStep)
+	baseDelta, err := waitForDemoSpotBaseDelta(ctx, adapter, spec.BaseCurrency, startBaseAvailable, spec.SizeStep)
 	if err != nil {
 		t.Fatalf("wait for opened OKX Spot Demo base balance: %v", err)
 	}
@@ -169,7 +174,9 @@ func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
 		t.Fatalf("wait for no OKX Spot Demo open orders: %v\n%s", err, cleanup.Remediation())
 	}
-	if err := waitForDemoSpotBaseDeltaBelowStep(ctx, adapter, spec, startBaseAvailable, &cleanup); err != nil {
+	deltaCtx, cancelDelta := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelDelta()
+	if err := waitForDemoSpotBaseDeltaBelowStep(deltaCtx, adapter, spec, startBaseAvailable, &cleanup); err != nil {
 		t.Fatalf("wait for OKX Spot Demo base delta cleanup: %v\n%s", err, cleanup.Remediation())
 	}
 	cleanup.MarkClean()

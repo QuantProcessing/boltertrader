@@ -1,14 +1,13 @@
-// Package clock provides the time seam that makes backtest and live execution
-// identical. Every adapter and runtime component takes time ONLY through a
-// Clock — never time.Now() directly — so a backtest can drive a SimulatedClock
-// while live code uses a RealClock, with no other change to the call sites.
+// Package clock provides the runtime's injectable time source. Every adapter
+// and runtime component takes time only through a Clock, never time.Now()
+// directly, so live code and deterministic tests share the same call sites.
 package clock
 
 import "time"
 
 // Timer is the subset of *time.Timer the runtime relies on. A SimulatedClock
-// returns a virtual timer that fires when the simulated clock is advanced past
-// its deadline.
+// returns a virtual timer that fires when the test clock is advanced past its
+// deadline.
 type Timer interface {
 	// C is the channel on which the time is delivered when the timer fires.
 	C() <-chan time.Time

@@ -287,18 +287,20 @@ func TestBinanceSpotOpenOrdersTranslation(t *testing.T) {
 	})
 	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
 
-	orders, err := exec.OrderReports(context.Background())
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
 	if err != nil {
-		t.Fatalf("OrderReports: %v", err)
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if len(orders) != 1 {
-		t.Fatalf("orders len=%d", len(orders))
+	if len(mass.OrderReports) != 1 {
+		t.Fatalf("orders len=%d", len(mass.OrderReports))
 	}
-	if orders[0].Request.InstrumentID != inst.ID || orders[0].VenueOrderID != "777" || orders[0].Request.Side != enums.SideSell {
-		t.Fatalf("order=%+v", orders[0])
+	report := mass.OrderReports["777"]
+	order := report.Order
+	if order.Request.InstrumentID != inst.ID || order.VenueOrderID != "777" || order.Request.Side != enums.SideSell {
+		t.Fatalf("order=%+v", order)
 	}
-	if !orders[0].Request.Quantity.Equal(d("0.0200")) || !orders[0].Request.Price.Equal(d("3200.00")) {
-		t.Fatalf("order qty/price=%s/%s, want 0.0200/3200.00", orders[0].Request.Quantity, orders[0].Request.Price)
+	if !order.Request.Quantity.Equal(d("0.0200")) || !order.Request.Price.Equal(d("3200.00")) {
+		t.Fatalf("order qty/price=%s/%s, want 0.0200/3200.00", order.Request.Quantity, order.Request.Price)
 	}
 }
 
@@ -427,12 +429,12 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 			}},
 		},
 		Execution: contracttest.ExecutionCapabilities{
-			Submit:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Cancel:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			CancelAll:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Modify:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			OpenOrders:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			OrderReports: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Submit:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Cancel:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			CancelAll:  contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Modify:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			OpenOrders: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 		},
 		Account: contracttest.AccountCapabilities{
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},

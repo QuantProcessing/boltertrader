@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
 )
@@ -15,21 +16,21 @@ import (
 // Handlers are the callbacks invoked on the bus goroutine for each event class.
 // Any handler may be nil.
 type Handlers struct {
-	OnMarket  func(contract.MarketEvent)
-	OnExec    func(contract.ExecEvent)
-	OnAccount func(contract.AccountEvent)
+	OnMarket  func(contract.MarketEnvelope)
+	OnExec    func(contract.ExecEnvelope)
+	OnAccount func(contract.AccountEnvelope)
 }
 
 // Bus fans in the three contract event channels. A nil channel is simply never
 // selected, so a market-data-only or execution-only node is valid.
 type Bus struct {
-	market  <-chan contract.MarketEvent
-	exec    <-chan contract.ExecEvent
-	account <-chan contract.AccountEvent
+	market  <-chan contract.MarketEnvelope
+	exec    <-chan contract.ExecEnvelope
+	account <-chan contract.AccountEnvelope
 }
 
 // New builds a Bus over the given channels. Any channel may be nil.
-func New(market <-chan contract.MarketEvent, exec <-chan contract.ExecEvent, account <-chan contract.AccountEvent) *Bus {
+func New(market <-chan contract.MarketEnvelope, exec <-chan contract.ExecEnvelope, account <-chan contract.AccountEnvelope) *Bus {
 	return &Bus{market: market, exec: exec, account: account}
 }
 
@@ -50,6 +51,9 @@ func (b *Bus) Run(ctx context.Context, h Handlers) {
 				market = nil
 				continue
 			}
+			if ev.TsBusRecv.IsZero() {
+				ev.TsBusRecv = time.Now()
+			}
 			if h.OnMarket != nil {
 				h.OnMarket(ev)
 			}
@@ -58,6 +62,9 @@ func (b *Bus) Run(ctx context.Context, h Handlers) {
 				exec = nil
 				continue
 			}
+			if ev.TsBusRecv.IsZero() {
+				ev.TsBusRecv = time.Now()
+			}
 			if h.OnExec != nil {
 				h.OnExec(ev)
 			}
@@ -65,6 +72,9 @@ func (b *Bus) Run(ctx context.Context, h Handlers) {
 			if !ok {
 				account = nil
 				continue
+			}
+			if ev.TsBusRecv.IsZero() {
+				ev.TsBusRecv = time.Now()
 			}
 			if h.OnAccount != nil {
 				h.OnAccount(ev)

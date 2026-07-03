@@ -104,6 +104,13 @@ func TestRequireLiveReadAllowsEnabledReadWithoutCredentials(t *testing.T) {
 	RequireLiveRead(t)
 }
 
+func TestTransientLiveNetworkErrorIncludesHostDown(t *testing.T) {
+	err := fmt.Errorf(`failed to execute request: Get "https://openapi.okx.com/api/v5/public/instruments?instType=SWAP": dial tcp 169.254.0.2:443: connect: host is down`)
+	if !IsTransientLiveNetworkError(err) {
+		t.Fatalf("host down error should be treated as transient live network failure")
+	}
+}
+
 func TestRequireLiveWriteSkipsWithoutEnableFlag(t *testing.T) {
 	t.Setenv("TESTENV_ENABLE_LIVE_WRITE", "")
 

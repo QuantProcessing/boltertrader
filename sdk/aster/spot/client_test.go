@@ -3,9 +3,12 @@ package spot
 import (
 	"context"
 	"testing"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestPublicEndpoints(t *testing.T) {
+	testenv.RequireLiveRead(t)
 	client := NewClient("", "")
 
 	t.Run("ServerTime", func(t *testing.T) {

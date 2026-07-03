@@ -14,10 +14,22 @@ import (
 )
 
 const (
-	venueName    = "OKX"
-	instTypeSpot = "SPOT"
-	spotTdMode   = "cash"
+	venueName         = "OKX"
+	instTypeSpot      = "SPOT"
+	defaultSpotTdMode = "cash"
+	spotTdModeCross   = "cross"
 )
+
+func normalizeSpotTdMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", defaultSpotTdMode:
+		return defaultSpotTdMode, nil
+	case spotTdModeCross:
+		return spotTdModeCross, nil
+	default:
+		return "", fmt.Errorf("okx spot: unsupported tdMode %q: %w", mode, errs.ErrNotSupported)
+	}
+}
 
 func sideToOKX(s enums.OrderSide) (string, error) {
 	switch s {
