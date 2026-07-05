@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 type WebsocketClient struct {
 	URL     string
+	Env     Environment
 	Conn    *websocket.Conn
 	Mu      sync.RWMutex
 	WriteMu sync.Mutex
@@ -44,20 +44,15 @@ type WebsocketClient struct {
 }
 
 func NewWebsocketClient(ctx context.Context) *WebsocketClient {
-	baseURL := MainnetAPIURL
-	parsedURL, err := url.Parse(baseURL)
-	if err != nil {
-		panic(fmt.Sprintf("invalid URL: %v", err))
-	}
-	parsedURL.Scheme = "wss"
-	parsedURL.Path = "/ws"
-	wsURL := parsedURL.String()
+	env := EnvironmentMainnet
+	wsURL := wsURLForEnvironment(env)
 
 	// Create cancellable context from parent
 	ctx, cancel := context.WithCancel(ctx)
 
 	c := &WebsocketClient{
 		URL:                  wsURL,
+		Env:                  env,
 		subscriptions:        make(map[string]map[string]func(WsMessage)),
 		subscriptionPayloads: make(map[string]map[string]any),
 		ReconnectWait:        1 * time.Second,
@@ -74,9 +69,32 @@ func NewWebsocketClient(ctx context.Context) *WebsocketClient {
 	return c
 }
 
+func (c *WebsocketClient) WithEnvironment(env Environment) *WebsocketClient {
+	c.Env = normalizeEnvironment(env)
+	c.URL = wsURLForEnvironment(c.Env)
+	return c
+}
+
+func (c *WebsocketClient) IsMainnet() bool {
+	return normalizeEnvironment(c.Env) == EnvironmentMainnet
+}
+
+func (c *WebsocketClient) SignL1Action(action any, nonce int64) (SignatureResult, error) {
+	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil, c.IsMainnet())
+}
+
 func (c *WebsocketClient) WithCredentials(privateKey string, vault *string) *WebsocketClient {
-	pk, _ := crypto.HexToECDSA(privateKey)
-	c.PrivateKey = pk
+	if privateKey != "" {
+		pk, err := parsePrivateKey(privateKey)
+		if err == nil {
+			c.PrivateKey = pk
+			if c.AccountAddr == "" {
+				c.AccountAddr = crypto.PubkeyToAddress(c.PrivateKey.PublicKey).Hex()
+			}
+		} else if c.Logger != nil {
+			c.Logger.Errorw("Invalid private key", "error", err)
+		}
+	}
 	if vault != nil {
 		c.Vault = *vault
 	}

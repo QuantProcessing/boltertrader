@@ -74,7 +74,7 @@ func (c *Client) UpdateLeverage(ctx context.Context, req UpdateLeverageRequest) 
 	}
 
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func (c *Client) UpdateIsolatedMargin(ctx context.Context, req UpdateIsolatedMar
 	}
 
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return err
 	}

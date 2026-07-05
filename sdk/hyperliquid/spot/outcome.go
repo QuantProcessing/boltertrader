@@ -73,7 +73,7 @@ func (c *Client) submitOutcomeAction(ctx context.Context, action hyperliquid.Use
 		return "", hyperliquid.ErrCredentialsRequired
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return "", err
 	}

@@ -164,6 +164,18 @@ func (c *Client) GetPrepMetaForDex(ctx context.Context, dex string) (*PrepMeta, 
 	return &res, nil
 }
 
+func (c *Client) GetAllPerpMetas(ctx context.Context) ([]PrepMeta, error) {
+	data, err := c.Post(ctx, "/info", map[string]string{"type": "allPerpMetas"})
+	if err != nil {
+		return nil, err
+	}
+	var res []PrepMeta
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 func (c *Client) GetPerpDexs(ctx context.Context) ([]PerpDex, error) {
 	data, err := c.Post(ctx, "/info", map[string]string{"type": "perpDexs"})
 	if err != nil {

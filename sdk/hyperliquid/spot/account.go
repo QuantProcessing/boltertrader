@@ -3,31 +3,14 @@ package spot
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
-type Balance struct {
-	Balances []struct {
-		Coin     string `json:"coin"`
-		Token    int64  `json:"token"`
-		Hold     string `json:"hold"`
-		Total    string `json:"total"`
-		EntryNtl string `json:"entryNtl"`
-	}
-}
+type Balance = hyperliquid.SpotClearinghouseState
 
 func (c *Client) GetBalance() (*Balance, error) {
-	data, err := c.Post(context.Background(), "/info", map[string]string{
-		"type": "spotClearinghouseState",
-		"user": c.AccountAddr,
-	})
-	if err != nil {
-		return nil, err
-	}
-	var res Balance
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return c.GetSpotClearinghouseState(context.Background(), c.AccountAddr)
 }
 
 func (c *Client) UserFills(ctx context.Context, user string) ([]UserFill, error) {

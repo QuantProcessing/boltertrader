@@ -58,6 +58,24 @@ and exchange state are available.
   execution through `runtime.TradingNode`.
 - `make test-okx-demo-acceptance`: complete OKX Demo acceptance gate for the
   implemented OKX Spot/Perp subset.
+- `make test-hyperliquid-testnet-spot-read`: read-only Hyperliquid Testnet Spot
+  market/account discovery.
+- `make test-hyperliquid-testnet-spot`: adapter-level Hyperliquid Testnet Spot
+  execution.
+- `make test-hyperliquid-testnet-runtime-spot`: runtime-level Hyperliquid
+  Testnet Spot execution through `runtime.TradingNode`.
+- `make test-hyperliquid-testnet-perp-read`: read-only Hyperliquid Testnet Perp
+  market/account discovery.
+- `make test-hyperliquid-testnet-perp`: adapter-level Hyperliquid Testnet Perp
+  execution.
+- `make test-hyperliquid-testnet-runtime-perp`: runtime-level Hyperliquid
+  Testnet Perp execution through `runtime.TradingNode`.
+- `make test-hyperliquid-testnet-hip3`: read-only Hyperliquid HIP-3 Testnet
+  discovery for a configured `dex:coin`.
+- `make test-hyperliquid-testnet-runtime-hip3`: runtime-level Hyperliquid HIP-3
+  Testnet execution through `runtime.TradingNode`.
+- `make test-hyperliquid-testnet-acceptance`: complete Hyperliquid Testnet
+  acceptance gate for Spot, standard Perp, and configured HIP-3.
 
 See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_testing.md)
 for the execution acceptance spec and pass criteria.
@@ -189,6 +207,50 @@ present, no open orders remain, and final reconciliation is flat. Tests skip
 cleanly when Demo credentials are absent and classify funding, existing open
 orders/exposure, network/proxy, venue rejection, implementation, and cleanup
 failures separately in their failure messages.
+
+## Hyperliquid Testnet Writes
+
+Hyperliquid acceptance uses Hyperliquid Testnet credentials and never falls back
+to mainnet. Expose credentials and optional selectors under:
+
+- `HYPERLIQUID_TESTNET_PK`
+- optional `HYPERLIQUID_ACCOUNT_ADDRESS`, when trading from an address different
+  from the private-key address
+- optional `HYPERLIQUID_TESTNET_VAULT`
+- optional `HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC`, default `100`
+- optional `HYPERLIQUID_TESTNET_SPOT_SYMBOL`
+- optional `HYPERLIQUID_TESTNET_PERP_SYMBOL`
+- optional `HYPERLIQUID_TESTNET_HIP3_SYMBOL` in explicit dex-qualified
+  `dex:coin` or `dex:coin-USDC` form
+
+Read-only testnet discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1` and
+does not require `HYPERLIQUID_TESTNET_PK`. Write and runtime tests require the
+private key plus `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1`; the Makefile
+write/runtime targets set that enable flag command-locally. HIP-3 runtime write
+acceptance also requires `HYPERLIQUID_TESTNET_HIP3_SYMBOL`. UI display symbols
+such as `TSLA-USDC` can map to multiple HIP-3 dexes and are intentionally not
+accepted without a dex qualifier.
+
+Run the full Hyperliquid Testnet gate with:
+
+```sh
+HYPERLIQUID_TESTNET_PK=... \
+HYPERLIQUID_TESTNET_HIP3_SYMBOL=stocks:TSLA-USDC \
+make test-hyperliquid-testnet-acceptance
+```
+
+Unlike a raw `go test`, the Hyperliquid Make acceptance targets fail when a
+selected acceptance test skips. A skipped write/runtime test means the venue
+account, symbol, or funding preflight did not satisfy the spec and the NT-style
+acceptance evidence is incomplete.
+
+The adapter-level tests place and cancel a conservative resting order. Runtime
+tests construct `runtime.TradingNode`, call `node.Resync` before and after the
+write flow, attach the risk engine, submit through `node.Exec`, observe cancel
+state through the runtime cache, assert no REST open orders remain, and require a
+flat final cache/portfolio. Perp and HIP-3 runtime tests skip when the testnet
+account is not flat before the run; the Make acceptance gate reports that skip
+as a failed acceptance run.
 
 ## Fixture Rules
 

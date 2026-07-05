@@ -399,6 +399,163 @@ func TestOKXDemoHTTPClientIgnoresInheritedProxyEnv(t *testing.T) {
 	}
 }
 
+func TestHyperliquidTestnetEnvContractConstants(t *testing.T) {
+	if HyperliquidTestnetPrivateKeyEnv != "HYPERLIQUID_TESTNET_PK" {
+		t.Fatalf("HyperliquidTestnetPrivateKeyEnv=%q", HyperliquidTestnetPrivateKeyEnv)
+	}
+	if HyperliquidTestnetEnableWriteEnv != "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES" {
+		t.Fatalf("HyperliquidTestnetEnableWriteEnv=%q", HyperliquidTestnetEnableWriteEnv)
+	}
+	if HyperliquidTestnetMaxNotionalUSDCEnv != "HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC" {
+		t.Fatalf("HyperliquidTestnetMaxNotionalUSDCEnv=%q", HyperliquidTestnetMaxNotionalUSDCEnv)
+	}
+}
+
+func TestRequireHyperliquidTestnetWriteSkipsWithoutEnableFlag(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
+	t.Setenv(HyperliquidTestnetEnableWriteEnv, "")
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		_ = RequireHyperliquidTestnetWrite(t)
+		t.Fatalf("expected RequireHyperliquidTestnetWrite to require %s", HyperliquidTestnetEnableWriteEnv)
+	})
+	if !skipped {
+		t.Fatal("expected subtest to skip")
+	}
+}
+
+func TestRequireHyperliquidTestnetWriteAllowsCanonicalPrivateKeyWithEnableFlag(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
+	t.Setenv(HyperliquidTestnetEnableWriteEnv, "1")
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	completed := false
+	t.Run("allow", func(t *testing.T) {
+		_ = RequireHyperliquidTestnetWrite(t)
+		completed = true
+	})
+	if !completed {
+		t.Fatal("expected Hyperliquid testnet private key plus write gate to enable write tests")
+	}
+}
+
+func TestRequireHyperliquidTestnetWriteRejectsLegacyLiveCredentials(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, "")
+	t.Setenv("HYPERLIQUID_PRIVATE_KEY", strings.Repeat("01", 32))
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDR", "0xabc")
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		_ = RequireHyperliquidTestnetWrite(t)
+		t.Fatalf("expected RequireHyperliquidTestnetWrite to reject legacy live credentials")
+	})
+	if !skipped {
+		t.Fatal("expected subtest to skip")
+	}
+}
+
+func TestHyperliquidTestnetConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	cfg, err := HyperliquidTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("HyperliquidTestnetConfigFromEnv: %v", err)
+	}
+	if got := cfg.MaxNotionalUSDC.String(); got != "100" {
+		t.Fatalf("default max notional=%s, want 100", got)
+	}
+	if cfg.AccountAddress != "" || cfg.VaultAddress != "" {
+		t.Fatalf("optional account/vault should default empty, got account=%q vault=%q", cfg.AccountAddress, cfg.VaultAddress)
+	}
+}
+
+func TestHyperliquidTestnetReadConfigFromEnvDoesNotRequirePrivateKey(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, "")
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	cfg, err := HyperliquidTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("HyperliquidTestnetReadConfigFromEnv: %v", err)
+	}
+	if cfg.PrivateKey != "" {
+		t.Fatal("read config should not require or synthesize a private key")
+	}
+	if got := cfg.MaxNotionalUSDC.String(); got != "100" {
+		t.Fatalf("default max notional=%s, want 100", got)
+	}
+}
+
+func TestHyperliquidTestnetConfigFromEnvAcceptsOverrides(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
+	clearHyperliquidTestnetOptionalEnv(t)
+	t.Setenv(HyperliquidTestnetAccountAddressEnv, "0xabc")
+	t.Setenv(HyperliquidTestnetVaultEnv, "0xdef")
+	t.Setenv(HyperliquidTestnetMaxNotionalUSDCEnv, "12.5")
+	t.Setenv(HyperliquidTestnetSpotSymbolEnv, "PURR/USDC")
+	t.Setenv(HyperliquidTestnetPerpSymbolEnv, "BTC")
+	t.Setenv(HyperliquidTestnetHIP3SymbolEnv, "dex:COIN")
+
+	cfg, err := HyperliquidTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("HyperliquidTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.AccountAddress != "0xabc" || cfg.VaultAddress != "0xdef" {
+		t.Fatalf("account/vault not applied: account=%q vault=%q", cfg.AccountAddress, cfg.VaultAddress)
+	}
+	if got := cfg.MaxNotionalUSDC.String(); got != "12.5" {
+		t.Fatalf("max notional=%s, want 12.5", got)
+	}
+	if cfg.SpotSymbol != "PURR/USDC" || cfg.PerpSymbol != "BTC" || cfg.HIP3Symbol != "dex:COIN" {
+		t.Fatalf("symbols not applied: spot=%q perp=%q hip3=%q", cfg.SpotSymbol, cfg.PerpSymbol, cfg.HIP3Symbol)
+	}
+}
+
+func TestHyperliquidTestnetConfigRejectsInvalidMaxNotional(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
+	clearHyperliquidTestnetOptionalEnv(t)
+	t.Setenv(HyperliquidTestnetMaxNotionalUSDCEnv, "0")
+
+	if _, err := HyperliquidTestnetConfigFromEnv(); err == nil {
+		t.Fatal("expected zero max notional to fail")
+	}
+}
+
+func TestHyperliquidTestnetHTTPClientIgnoresInheritedProxyEnv(t *testing.T) {
+	t.Setenv("PROXY", "")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:65535")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:65535")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:65535")
+
+	client, err := HyperliquidTestnetHTTPClient(time.Second)
+	if err != nil {
+		t.Fatalf("HyperliquidTestnetHTTPClient: %v", err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type=%T, want *http.Transport", client.Transport)
+	}
+	if transport.Proxy != nil {
+		req, _ := http.NewRequest(http.MethodGet, "https://example.test", nil)
+		proxy, err := transport.Proxy(req)
+		if err != nil {
+			t.Fatalf("proxy func: %v", err)
+		}
+		if proxy != nil {
+			t.Fatal("Hyperliquid testnet HTTP client must ignore inherited proxy env unless PROXY is set")
+		}
+	}
+}
+
 func TestRequireSoakSkipsWithoutRunSoak(t *testing.T) {
 	t.Setenv("RUN_SOAK", "")
 
@@ -542,5 +699,16 @@ func clearOKXDemoOptionalEnv(t *testing.T) {
 	t.Setenv(OKXDemoHostProfileEnv, "")
 	t.Setenv(OKXDemoRESTBaseURLEnv, "")
 	t.Setenv(OKXDemoWSBaseURLEnv, "")
+	t.Setenv("PROXY", "")
+}
+
+func clearHyperliquidTestnetOptionalEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(HyperliquidTestnetAccountAddressEnv, "")
+	t.Setenv(HyperliquidTestnetVaultEnv, "")
+	t.Setenv(HyperliquidTestnetMaxNotionalUSDCEnv, "")
+	t.Setenv(HyperliquidTestnetSpotSymbolEnv, "")
+	t.Setenv(HyperliquidTestnetPerpSymbolEnv, "")
+	t.Setenv(HyperliquidTestnetHIP3SymbolEnv, "")
 	t.Setenv("PROXY", "")
 }

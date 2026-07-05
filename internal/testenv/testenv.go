@@ -39,6 +39,17 @@ const (
 	OKXDemoHostProfileGlobal = "global"
 	OKXDemoHostProfileEEA    = "eea"
 	OKXDemoHostProfileCustom = "custom"
+
+	HyperliquidTestnetPrivateKeyEnv      = "HYPERLIQUID_TESTNET_PK"
+	HyperliquidTestnetEnableWriteEnv     = "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES"
+	HyperliquidTestnetAccountAddressEnv  = "HYPERLIQUID_ACCOUNT_ADDRESS"
+	HyperliquidTestnetVaultEnv           = "HYPERLIQUID_TESTNET_VAULT"
+	HyperliquidTestnetMaxNotionalUSDCEnv = "HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC"
+	HyperliquidTestnetSpotSymbolEnv      = "HYPERLIQUID_TESTNET_SPOT_SYMBOL"
+	HyperliquidTestnetPerpSymbolEnv      = "HYPERLIQUID_TESTNET_PERP_SYMBOL"
+	HyperliquidTestnetHIP3SymbolEnv      = "HYPERLIQUID_TESTNET_HIP3_SYMBOL"
+
+	HyperliquidTestnetDefaultMaxNotionalUSDC = "100"
 )
 
 type OKXDemoConfig struct {
@@ -52,6 +63,35 @@ type OKXDemoConfig struct {
 	RESTBaseURL     string
 	WSBaseURL       string
 	ProxyURL        string
+}
+
+type HyperliquidTestnetConfig struct {
+	PrivateKey      string
+	AccountAddress  string
+	VaultAddress    string
+	MaxNotionalUSDC decimal.Decimal
+	SpotSymbol      string
+	PerpSymbol      string
+	HIP3Symbol      string
+	ProxyURL        string
+}
+
+func (c HyperliquidTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"HyperliquidTestnetConfig{PrivateKey:%s AccountAddress:%q VaultAddress:%q MaxNotionalUSDC:%s SpotSymbol:%q PerpSymbol:%q HIP3Symbol:%q ProxyURL:%q}",
+		redactSecret(c.PrivateKey),
+		c.AccountAddress,
+		redactSecret(c.VaultAddress),
+		c.MaxNotionalUSDC.String(),
+		c.SpotSymbol,
+		c.PerpSymbol,
+		c.HIP3Symbol,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c HyperliquidTestnetConfig) GoString() string {
+	return c.String()
 }
 
 func (c OKXDemoConfig) String() string {
@@ -185,6 +225,108 @@ func RequireOKXDemoWrite(t testing.TB) OKXDemoConfig {
 		t.Fatalf("OKX Demo env: %v", err)
 	}
 	return cfg
+}
+
+func RequireHyperliquidTestnetWrite(t testing.TB) HyperliquidTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Hyperliquid Testnet write test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv(HyperliquidTestnetEnableWriteEnv) != "1" {
+		t.Skipf("skipping Hyperliquid Testnet write test: set %s=1 to enable real testnet writes", HyperliquidTestnetEnableWriteEnv)
+	}
+	if missing := missingEnv(HyperliquidTestnetPrivateKeyEnv); len(missing) > 0 {
+		t.Skipf("skipping Hyperliquid Testnet write test: missing required env %s", strings.Join(missing, ", "))
+	}
+	cfg, err := HyperliquidTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Hyperliquid Testnet env: %v", err)
+	}
+	return cfg
+}
+
+func RequireHyperliquidTestnetRead(t testing.TB) HyperliquidTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Hyperliquid Testnet read test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
+		t.Skip("skipping Hyperliquid Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	cfg, err := HyperliquidTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Hyperliquid Testnet read env: %v", err)
+	}
+	return cfg
+}
+
+func HyperliquidTestnetConfigFromEnv() (HyperliquidTestnetConfig, error) {
+	return hyperliquidTestnetConfigFromEnv(true)
+}
+
+func HyperliquidTestnetReadConfigFromEnv() (HyperliquidTestnetConfig, error) {
+	return hyperliquidTestnetConfigFromEnv(false)
+}
+
+func hyperliquidTestnetConfigFromEnv(requirePrivateKey bool) (HyperliquidTestnetConfig, error) {
+	if requirePrivateKey {
+		missing := missingEnv(HyperliquidTestnetPrivateKeyEnv)
+		if len(missing) > 0 {
+			return HyperliquidTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+		}
+	}
+	maxNotional, err := decimal.NewFromString(envOrDefault(HyperliquidTestnetMaxNotionalUSDCEnv, HyperliquidTestnetDefaultMaxNotionalUSDC))
+	if err != nil {
+		return HyperliquidTestnetConfig{}, fmt.Errorf("%s must be a decimal: %w", HyperliquidTestnetMaxNotionalUSDCEnv, err)
+	}
+	if !maxNotional.IsPositive() {
+		return HyperliquidTestnetConfig{}, fmt.Errorf("%s must be positive", HyperliquidTestnetMaxNotionalUSDCEnv)
+	}
+
+	proxyURL := strings.TrimSpace(os.Getenv("PROXY"))
+	if proxyURL != "" {
+		if err := validateURL(proxyURL, "PROXY", "http", "https", "socks5"); err != nil {
+			return HyperliquidTestnetConfig{}, err
+		}
+	}
+
+	return HyperliquidTestnetConfig{
+		PrivateKey:      os.Getenv(HyperliquidTestnetPrivateKeyEnv),
+		AccountAddress:  strings.TrimSpace(os.Getenv(HyperliquidTestnetAccountAddressEnv)),
+		VaultAddress:    strings.TrimSpace(os.Getenv(HyperliquidTestnetVaultEnv)),
+		MaxNotionalUSDC: maxNotional,
+		SpotSymbol:      strings.TrimSpace(os.Getenv(HyperliquidTestnetSpotSymbolEnv)),
+		PerpSymbol:      strings.TrimSpace(os.Getenv(HyperliquidTestnetPerpSymbolEnv)),
+		HIP3Symbol:      strings.TrimSpace(os.Getenv(HyperliquidTestnetHIP3SymbolEnv)),
+		ProxyURL:        proxyURL,
+	}, nil
+}
+
+func HyperliquidTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+
+	if proxy := strings.TrimSpace(os.Getenv("PROXY")); proxy != "" {
+		proxyURL, err := url.Parse(proxy)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PROXY: %w", err)
+		}
+		if err := validateURL(proxy, "PROXY", "http", "https", "socks5"); err != nil {
+			return nil, err
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}, nil
 }
 
 func OKXDemoConfigFromEnv() (OKXDemoConfig, error) {

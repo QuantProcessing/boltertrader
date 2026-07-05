@@ -11,6 +11,9 @@ reconciliation.
 | BINANCE | Spot | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | unsupported | yes | venue + runtime timestamps | make test-binance-demo-spot |
 | OKX | USDT-linear SWAP | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | unsupported | yes | venue + runtime timestamps | make test-okx-demo-runtime-perp |
 | OKX | Spot cash | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | unsupported | yes | venue + runtime timestamps | make test-okx-demo-runtime-spot |
+| HYPERLIQUID | Spot cash | no | no | no | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-spot |
+| HYPERLIQUID | Perp | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-perp |
+| HYPERLIQUID | HIP-3 Perp | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-hip3 |
 
 ## Demo Scope
 
@@ -19,7 +22,11 @@ Default CI remains credential-free. Demo acceptance is explicit:
 ```sh
 make test-binance-demo-acceptance
 make test-okx-demo-acceptance
+make test-hyperliquid-testnet-acceptance
 ```
 
-The tests skip when the required `*_DEMO_*` credentials are absent. Production
-credentials are not accepted as fallback inputs for Demo acceptance.
+Raw live `go test` runs skip when required Demo/Testnet credentials are absent.
+The Hyperliquid Testnet Make acceptance targets additionally fail on any
+selected skipped test, so missing funding, missing HIP-3 config, or dirty account
+state is reported as incomplete acceptance. Production credentials are not
+accepted as fallback inputs for Demo/Testnet acceptance.

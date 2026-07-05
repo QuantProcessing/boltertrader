@@ -1,0 +1,28 @@
+{
+  "tokens": [
+    {
+      "name": "USDC",
+      "szDecimals": 6,
+      "weiDecimals": 6,
+      "index": 0,
+      "tokenId": "0x0",
+      "isCanonical": true
+    },
+    {
+      "name": "PURR",
+      "szDecimals": 0,
+      "weiDecimals": 0,
+      "index": 1,
+      "tokenId": "0x1",
+      "isCanonical": true
+    }
+  ],
+  "universe": [
+    {
+      "name": "PURR/USDC",
+      "index": 7,
+      "tokens": [1, 0],
+      "isCanonical": true
+    }
+  ]
+}

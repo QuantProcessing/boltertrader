@@ -2,8 +2,6 @@ package perp
 
 import (
 	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
-
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 type WebsocketClient struct {
@@ -15,9 +13,9 @@ func NewWebsocketClient(base *hyperliquid.WebsocketClient) *WebsocketClient {
 }
 
 func (c *WebsocketClient) WithCredentials(privateKey, accountAddr string) *WebsocketClient {
-	pk, _ := crypto.HexToECDSA(privateKey)
-	c.PrivateKey = pk
-	c.AccountAddr = accountAddr
-
+	c.WebsocketClient.WithCredentials(privateKey, nil)
+	if accountAddr != "" {
+		c.AccountAddr = accountAddr
+	}
 	return c
 }

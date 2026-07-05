@@ -35,6 +35,19 @@ func TestWebsocketClient_WithCredentials(t *testing.T) {
 	}
 }
 
+func TestWebsocketClient_WithCredentialsDerivesAccountAddressWhenOmitted(t *testing.T) {
+	privateKey := strings.Repeat("01", 32)
+	base := hyperliquid.NewWebsocketClient(context.Background()).WithCredentials(privateKey, nil)
+	client := newDisconnectedWSClient().WithCredentials(privateKey, "")
+
+	if client.AccountAddr == "" {
+		t.Fatal("expected account address to be derived")
+	}
+	if client.AccountAddr != base.AccountAddr {
+		t.Fatalf("account address=%q, want base-derived %q", client.AccountAddr, base.AccountAddr)
+	}
+}
+
 func TestWebsocketClient_SubscribeL2Book(t *testing.T) {
 	err := newDisconnectedWSClient().SubscribeL2Book("BTC", func(hyperliquid.WsL2Book) {})
 	requireDisconnectedWSError(t, err)

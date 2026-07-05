@@ -84,6 +84,26 @@ func TestClient_PlaceOrdersBuildsBatchAction(t *testing.T) {
 	require.Contains(t, seenBody, `"c":"client-2"`)
 }
 
+func TestClient_PlaceOrdersReturnsVenueErrorResponseString(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"err","response":"Order must have minimum value of $10."}`))
+	}))
+	defer srv.Close()
+	base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+	base.BaseURL = srv.URL
+	client := NewClient(base)
+
+	_, err := client.PlaceOrders(context.Background(), []PlaceOrderRequest{{
+		AssetID:   1,
+		IsBuy:     true,
+		Price:     1,
+		Size:      0.1,
+		OrderType: OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifGtc}},
+	}})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "minimum value")
+}
+
 func TestClient_ModifyOrder(t *testing.T) {
 	client := requireHyperliquidLiveWrite(t, "HYPERLIQUID_PERP_TEST_ASSET_ID", "HYPERLIQUID_TEST_ORDER_ID", "HYPERLIQUID_TEST_ORDER_PRICE", "HYPERLIQUID_TEST_ORDER_SIZE")
 	oid := hyperliquidInt64Env(t, "HYPERLIQUID_TEST_ORDER_ID")

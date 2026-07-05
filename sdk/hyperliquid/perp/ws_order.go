@@ -14,7 +14,7 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest)
 	}
 
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +30,7 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, req CancelOrderReques
 	}
 
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func (c *WebsocketClient) ModifyOrder(ctx context.Context, req ModifyOrderReques
 	}
 
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}

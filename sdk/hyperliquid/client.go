@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	MainnetAPIURL       = "https://api.hyperliquid.xyz"
 	httpErrorStatusCode = 400
 )
 
@@ -27,6 +26,7 @@ type Client struct {
 	Logger  *zap.SugaredLogger
 	Debug   bool
 	BaseURL string
+	Env     Environment
 	Http    *http.Client
 
 	PrivateKey  *ecdsa.PrivateKey
@@ -38,16 +38,36 @@ type Client struct {
 }
 
 func NewClient() *Client {
+	env := EnvironmentMainnet
 	return &Client{
-		BaseURL: MainnetAPIURL,
+		BaseURL: restURLForEnvironment(env),
+		Env:     env,
 		Http:    http.DefaultClient,
 		Logger:  zap.NewNop().Sugar().Named("hyperliquid-rest"),
 	}
 }
 
+func (c *Client) WithEnvironment(env Environment) *Client {
+	c.Env = normalizeEnvironment(env)
+	c.BaseURL = restURLForEnvironment(c.Env)
+	return c
+}
+
+func (c *Client) IsMainnet() bool {
+	return normalizeEnvironment(c.Env) == EnvironmentMainnet
+}
+
+func (c *Client) SignL1Action(action any, nonce int64) (SignatureResult, error) {
+	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, c.IsMainnet())
+}
+
+func parsePrivateKey(privateKey string) (*ecdsa.PrivateKey, error) {
+	return crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKey), "0x"))
+}
+
 func (c *Client) WithCredentials(privateKey string, vault *string) *Client {
 	if privateKey != "" {
-		pk, err := crypto.HexToECDSA(privateKey)
+		pk, err := parsePrivateKey(privateKey)
 		if err == nil {
 			c.PrivateKey = pk
 			// If account address is not set, derive it from private key

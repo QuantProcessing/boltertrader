@@ -79,6 +79,27 @@ func TestClient_GetPerpDexsBuildsRequest(t *testing.T) {
 	require.Equal(t, []PerpDex{{Index: 1, Name: "xyz", FullName: "trade xyz"}}, dexs)
 }
 
+func TestClient_GetAllPerpMetasBuildsRequest(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/info", r.URL.Path)
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "allPerpMetas", body["type"])
+		_, _ = w.Write([]byte(`[{"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":50}]},{"universe":[{"name":"xyz:TSLA","szDecimals":3,"maxLeverage":10}],"collateralToken":0}]`))
+	}))
+	defer srv.Close()
+
+	base := hyperliquid.NewClient()
+	base.BaseURL = srv.URL
+	client := NewClient(base)
+	metas, err := client.GetAllPerpMetas(context.Background())
+	require.NoError(t, err)
+	require.Len(t, metas, 2)
+	require.Equal(t, "BTC", metas[0].Universe[0].Name)
+	require.Equal(t, "xyz:TSLA", metas[1].Universe[0].Name)
+}
+
 func TestClient_GetPrepMetaForDexBuildsDexRequest(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,4 +1,4 @@
-.PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance
+.PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance test-hyperliquid-testnet test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-runtime-hip3 test-hyperliquid-testnet-acceptance
 
 test:
 	go test ./...
@@ -56,3 +56,31 @@ test-okx-demo-runtime-perp:
 	go test -run TestOKXPerpDemoRuntimeAcceptance ./adapter/okx/perp/ -count=1 -timeout=3m
 
 test-okx-demo-acceptance: test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp
+
+test-hyperliquid-testnet: test-hyperliquid-testnet-acceptance
+
+test-hyperliquid-testnet-spot-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidSpotTestnetReadAcceptance ./adapter/hyperliquid/spot/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-spot:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidSpotTestnetWriteAcceptance ./adapter/hyperliquid/spot/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-runtime-spot:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidSpotTestnetRuntimeAcceptance ./adapter/hyperliquid/spot/ -count=1 -timeout=4m
+
+test-hyperliquid-testnet-perp-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidPerpTestnetReadAcceptance ./adapter/hyperliquid/perp/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-perp:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidPerpTestnetWriteAcceptance ./adapter/hyperliquid/perp/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-runtime-perp:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidPerpTestnetRuntimeAcceptance ./adapter/hyperliquid/perp/ -count=1 -timeout=4m
+
+test-hyperliquid-testnet-hip3:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidPerpTestnetHIP3ReadAcceptance ./adapter/hyperliquid/perp/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-runtime-hip3:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestHyperliquidPerpTestnetHIP3RuntimeAcceptance ./adapter/hyperliquid/perp/ -count=1 -timeout=4m
+
+test-hyperliquid-testnet-acceptance: test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-runtime-hip3

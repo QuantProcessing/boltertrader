@@ -138,8 +138,9 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 ## Status
 
 Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
-and **OKX Spot cash** for the supported live-only subset. The explicit support
-matrix is in [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md).
+**OKX Spot cash**, **Hyperliquid Spot cash**, **Hyperliquid Perp**, and
+**Hyperliquid HIP-3 Perp** for the supported live/Testnet subset. The explicit
+support matrix is in [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md).
 Adding a venue means writing one adapter; no runtime or strategy change.
 
 ## Testing
@@ -225,6 +226,38 @@ through `runtime.TradingNode`, call `node.Resync` before and after writes, and
 assert runtime cache/portfolio observations. If direct access to OKX Demo hosts
 is unavailable, pass a command-local `PROXY=...`; inherited shell proxy
 variables are not part of the test contract.
+
+Hyperliquid Testnet acceptance covers Spot, standard Perp, and configured HIP-3
+Perp. Read-only discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1`; write
+and runtime targets require `HYPERLIQUID_TESTNET_PK` and are explicitly enabled
+by the Makefile with `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1`. HIP-3 also
+requires `HYPERLIQUID_TESTNET_HIP3_SYMBOL` in explicit dex-qualified form,
+such as raw venue `dex:coin` or runtime-neutral `dex:coin-USDC`. UI display
+symbols such as `TSLA-USDC` can map to multiple HIP-3 dexes and are ambiguous.
+
+```sh
+HYPERLIQUID_TESTNET_PK=... \
+HYPERLIQUID_TESTNET_HIP3_SYMBOL=stocks:TSLA-USDC \
+make test-hyperliquid-testnet-acceptance
+```
+
+The Hyperliquid Make targets wrap `go test -json` and fail if any selected
+acceptance test skips. This keeps the full gate honest: missing funding, dirty
+open orders, dirty positions, or missing HIP-3 symbol config are incomplete
+acceptance runs, not green runs.
+
+Product-qualified Hyperliquid targets are:
+
+```sh
+make test-hyperliquid-testnet-spot-read
+make test-hyperliquid-testnet-spot
+make test-hyperliquid-testnet-runtime-spot
+make test-hyperliquid-testnet-perp-read
+make test-hyperliquid-testnet-perp
+make test-hyperliquid-testnet-runtime-perp
+make test-hyperliquid-testnet-hip3
+make test-hyperliquid-testnet-runtime-hip3
+```
 
 Spot Demo data acceptance is read-only and uses the live-read gate:
 

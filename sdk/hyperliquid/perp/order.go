@@ -54,7 +54,7 @@ func (c *Client) placeOrder(ctx context.Context, req PlaceOrderRequest) (data []
 		return nil, err
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func (c *Client) placeOrders(ctx context.Context, reqs []PlaceOrderRequest) (dat
 		return nil, err
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,10 @@ func (c *Client) PlaceOrders(ctx context.Context, reqs []PlaceOrderRequest) ([]O
 		return nil, err
 	}
 	if res.Status != "ok" {
-		return nil, fmt.Errorf("place orders failed: %s", res.Status)
+		return nil, fmt.Errorf("place orders failed: %s", res.FailureMessage())
+	}
+	if res.Response == nil {
+		return nil, fmt.Errorf("place orders failed: missing response")
 	}
 	for _, status := range res.Response.Data.Statuses {
 		if status.Error != nil {
@@ -136,7 +139,7 @@ func (c *Client) modifyOrders(ctx context.Context, req []ModifyOrderRequest) (da
 		return nil, err
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +158,10 @@ func (c *Client) ModifyOrder(ctx context.Context, req ModifyOrderRequest) (*Orde
 		return nil, err
 	}
 	if res.Status != "ok" {
-		return nil, fmt.Errorf("modify order failed: %s", res.Status)
+		return nil, fmt.Errorf("modify order failed: %s", res.FailureMessage())
+	}
+	if res.Response == nil {
+		return nil, fmt.Errorf("modify order failed: missing response")
 	}
 	status := res.Response.Data.Statuses[0]
 	if status.Error != nil {
@@ -175,7 +181,7 @@ func (c *Client) cancelOrder(ctx context.Context, req CancelOrderRequest) (data 
 		return nil, err
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +206,7 @@ func (c *Client) cancelOrders(ctx context.Context, reqs []CancelOrderRequest) (d
 		return nil, err
 	}
 	nonce := c.GetNextNonce()
-	sig, err := hyperliquid.SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, true)
+	sig, err := c.SignL1Action(action, nonce)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +225,10 @@ func (c *Client) CancelOrders(ctx context.Context, reqs []CancelOrderRequest) ([
 		return nil, err
 	}
 	if res.Status != "ok" {
-		return nil, fmt.Errorf("cancel orders failed: %s", res.Status)
+		return nil, fmt.Errorf("cancel orders failed: %s", res.FailureMessage())
+	}
+	if res.Response == nil {
+		return nil, fmt.Errorf("cancel orders failed: missing response")
 	}
 	if err := res.Response.Data.Statuses.FirstError(); err != nil {
 		return nil, err

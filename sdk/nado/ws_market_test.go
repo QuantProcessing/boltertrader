@@ -2,15 +2,15 @@ package nado
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/testenv"
 )
 
 func TestSubscribeBookDepth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping realtime websocket test under -short")
-	}
+	testenv.RequireLiveRead(t)
+
 	// Create a lifecycle context for the client
 	ctx := context.Background()
 	subscriptionClient := NewWsMarketClient(ctx)
@@ -23,7 +23,7 @@ func TestSubscribeBookDepth(t *testing.T) {
 
 	productID := int64(2)
 	err = subscriptionClient.SubscribeOrderBook(productID, func(order *OrderBook) {
-		fmt.Println(order)
+		t.Logf("order book: %+v", order)
 	})
 	if err != nil {
 		t.Fatal(err)
