@@ -238,6 +238,11 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 		meta.Venue = p.Position.InstrumentID.Venue
 		meta.EventID = model.EventID(joinEventID("account", "position", p.Position.InstrumentID.String(), p.Position.Side.String(), p.Position.UpdatedAt.Format(time.RFC3339Nano)))
 		meta.TsVenue = p.Position.UpdatedAt
+	case AccountStateEvent:
+		meta.Venue = p.State.Venue
+		meta.AccountID = p.State.AccountID
+		meta.TsVenue = p.State.TsEvent
+		meta.EventID = model.EventID(joinEventID("account", "state", p.State.Venue, p.State.AccountID, p.State.TsEvent.Format(time.RFC3339Nano)))
 	}
 	if meta.EventID == "" {
 		meta.EventID = model.EventID(joinEventID("account", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
@@ -284,8 +289,12 @@ type BalanceEvent struct{ Balance model.AccountBalance }
 // PositionEvent reports a position change for one instrument/side.
 type PositionEvent struct{ Position model.Position }
 
-func (BalanceEvent) isAccountEvent()  {}
-func (PositionEvent) isAccountEvent() {}
+// AccountStateEvent reports an authoritative account-state snapshot or update.
+type AccountStateEvent struct{ State model.AccountState }
+
+func (BalanceEvent) isAccountEvent()      {}
+func (PositionEvent) isAccountEvent()     {}
+func (AccountStateEvent) isAccountEvent() {}
 
 // MarketEvent is the sum of public market-data push events.
 type MarketEvent interface{ isMarketEvent() }

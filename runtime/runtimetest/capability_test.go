@@ -3,6 +3,7 @@ package runtimetest
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/contract/contracttest"
@@ -94,6 +95,40 @@ func TestFakeExecCapabilitiesMatchImplementedReports(t *testing.T) {
 	}
 	if !caps.SingleOrderStatus || !caps.OpenOrders {
 		t.Fatalf("fake exec reports=%+v, want single-order and open-order status support", caps)
+	}
+}
+
+func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
+	account := NewFakeAccount()
+	caps := account.Capabilities()
+	if caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("unconfigured fake account should not declare account state support: %+v", caps)
+	}
+
+	ts := time.Unix(1, 0)
+	account.SetAccountStateSnapshot(model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    decimal.NewFromInt(1),
+			Free:     decimal.NewFromInt(1),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "BINANCE",
+			AccountID:    model.AccountIDBinanceSpot,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   ts,
+			Source:       "test",
+		},
+		TsEvent: ts,
+	})
+	caps = account.Capabilities()
+	if !caps.Reports.AccountStateSnapshots || !caps.Streaming.AccountState {
+		t.Fatalf("configured fake account should declare account state support: %+v", caps)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/QuantProcessing/boltertrader/runtime/accounting"
 	"github.com/QuantProcessing/boltertrader/runtime/bus"
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
 	"github.com/QuantProcessing/boltertrader/runtime/data"
@@ -135,6 +136,17 @@ func WithAccountID(accountID string) Option {
 	}
 }
 
+func WithAccountStaleAfter(staleAfter time.Duration) Option {
+	return func(n *TradingNode) {
+		if staleAfter <= 0 {
+			return
+		}
+		if n.Cache != nil {
+			n.Cache.SetAccountStaleAfter(staleAfter)
+		}
+	}
+}
+
 // NewNode builds a TradingNode over the given clients and clock.
 func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) *TradingNode {
 	if clk == nil {
@@ -145,7 +157,7 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 		accountID = "bt"
 	}
 	c := cache.New()
-	pf := portfolio.New()
+	pf := portfolio.New().WithAccountSource(c)
 
 	var marketCh <-chan contract.MarketEnvelope
 	var execCh <-chan contract.ExecEnvelope
@@ -232,6 +244,8 @@ func (n *TradingNode) Health() observ.Health {
 		EventQueueDepth:         m.EventQueueDepth,
 		InFlight:                m.InFlight,
 		PendingFills:            m.PendingFills,
+		Accounts:                m.Accounts,
+		AccountStateAgeNs:       m.AccountStateAgeNs,
 	}
 }
 
@@ -286,22 +300,25 @@ func (n *TradingNode) Metrics() observ.Metrics {
 		observerDrops = dropping.Drops()
 		queueDepth = dropping.QueueDepth()
 	}
+	accounts := n.Cache.Accounts()
 	return observ.Metrics{
-		OpenOrders:      len(n.Cache.OpenOrders()),
-		Positions:       len(n.Cache.Positions()),
-		RealizedPnL:     n.Portfolio.RealizedPnL(),
-		RealizedPnLNet:  n.Portfolio.RealizedPnLNetFees(),
-		Fees:            n.Portfolio.Fees(),
-		FeesByCurrency:  n.Portfolio.FeesByCurrency(),
-		OrdersSeen:      atomic.LoadInt64(&n.counters.Orders),
-		FillsSeen:       atomic.LoadInt64(&n.counters.Fills),
-		RejectsSeen:     atomic.LoadInt64(&n.counters.Rejects),
-		Latency:         latencySnapshot,
-		ObserverDrops:   observerDrops,
-		EventQueueDepth: queueDepth,
-		Lifecycle:       n.life.Snapshot(),
-		InFlight:        inFlightCount(n.Exec),
-		PendingFills:    n.fills.Count(),
+		OpenOrders:        len(n.Cache.OpenOrders()),
+		Positions:         len(n.Cache.Positions()),
+		RealizedPnL:       n.Portfolio.RealizedPnL(),
+		RealizedPnLNet:    n.Portfolio.RealizedPnLNetFees(),
+		Fees:              n.Portfolio.Fees(),
+		FeesByCurrency:    n.Portfolio.FeesByCurrency(),
+		OrdersSeen:        atomic.LoadInt64(&n.counters.Orders),
+		FillsSeen:         atomic.LoadInt64(&n.counters.Fills),
+		RejectsSeen:       atomic.LoadInt64(&n.counters.Rejects),
+		Latency:           latencySnapshot,
+		ObserverDrops:     observerDrops,
+		EventQueueDepth:   queueDepth,
+		Lifecycle:         n.life.Snapshot(),
+		InFlight:          inFlightCount(n.Exec),
+		PendingFills:      n.fills.Count(),
+		Accounts:          len(accounts),
+		AccountStateAgeNs: maxAccountStateAge(accounts, n.clk.Now()),
 	}
 }
 
@@ -310,6 +327,17 @@ func inFlightCount(e *exec.Engine) int {
 		return 0
 	}
 	return e.InFlightCount()
+}
+
+func maxAccountStateAge(accounts []accounting.Account, now time.Time) int64 {
+	var max time.Duration
+	for _, acct := range accounts {
+		age := acct.Freshness().Age(now)
+		if age > max {
+			max = age
+		}
+	}
+	return max.Nanoseconds()
 }
 
 // Resync reconciles the cache against venue REST snapshots. Call it at startup
@@ -628,6 +656,11 @@ func (n *TradingNode) onAccount(env contract.AccountEnvelope) {
 		n.Cache.UpsertBalance(e.Balance)
 	case contract.PositionEvent:
 		n.Cache.UpsertPosition(e.Position)
+	case contract.AccountStateEvent:
+		if err := n.Cache.ApplyAccountStateAt(e.State, applied); err != nil {
+			n.life.ForceFailed(err.Error())
+			n.emitHealth("failed", err.Error())
+		}
 	}
 	n.recordEventLatency(latency.ChainAccount, env.Meta(), applied, time.Now())
 }

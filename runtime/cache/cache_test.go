@@ -78,3 +78,107 @@ func TestBalanceUpsert(t *testing.T) {
 		t.Fatalf("balance: ok=%v total=%s", ok, b.Total)
 	}
 }
+
+func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
+	c := New()
+	ts := time.Unix(10, 0)
+	state := model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    decimal.RequireFromString("100"),
+			Free:     decimal.RequireFromString("90"),
+			Locked:   decimal.RequireFromString("10"),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "BINANCE",
+			AccountID:    model.AccountIDBinanceSpot,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   ts,
+			Source:       "test",
+		},
+		Reported: true,
+		TsEvent:  ts,
+	}
+	if err := c.ApplyAccountStateAt(state, ts); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	acct, ok := c.Account(model.AccountIDBinanceSpot)
+	if !ok || acct.ID() != model.AccountIDBinanceSpot {
+		t.Fatalf("account lookup failed: ok=%v acct=%v", ok, acct)
+	}
+	if acct, ok := c.AccountForVenue("BINANCE"); !ok || acct.ID() != model.AccountIDBinanceSpot {
+		t.Fatalf("account for venue failed: ok=%v acct=%v", ok, acct)
+	}
+	if b, ok := c.Balance("USDT"); !ok || !b.Free.Equal(decimal.RequireFromString("90")) {
+		t.Fatalf("compat balance=%+v ok=%v, want free 90", b, ok)
+	}
+}
+
+func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
+	c := New()
+	ts := time.Unix(10, 0)
+	err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    decimal.RequireFromString("100"),
+			Free:     decimal.RequireFromString("90"),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:      "BINANCE",
+			AccountID:  model.AccountIDBinanceSpot,
+			Verified:   true,
+			VerifiedAt: ts,
+			Source:     "test",
+		},
+		Reported: true,
+		TsEvent:  ts,
+	}, ts)
+	if err == nil {
+		t.Fatal("account state without product scope should not enter runtime")
+	}
+}
+
+func TestApplyAccountStateRejectsMultipleAccountsForSameVenue(t *testing.T) {
+	c := New()
+	ts := time.Unix(10, 0)
+	state := model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    decimal.RequireFromString("1"),
+			Free:     decimal.RequireFromString("1"),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "BINANCE",
+			AccountID:    model.AccountIDBinanceSpot,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   ts,
+			Source:       "test",
+		},
+		Reported: true,
+		TsEvent:  ts,
+	}
+	if err := c.ApplyAccountStateAt(state, ts); err != nil {
+		t.Fatalf("apply spot: %v", err)
+	}
+	state.AccountID = model.AccountIDBinanceUSDM
+	state.Type = model.AccountMargin
+	state.ModeInfo.AccountID = model.AccountIDBinanceUSDM
+	state.ModeInfo.AccountMode = "USD-M"
+	state.ModeInfo.ProductScope = []enums.InstrumentKind{enums.KindPerp}
+	if err := c.ApplyAccountStateAt(state, ts); err == nil {
+		t.Fatal("second account for same venue should be rejected")
+	}
+}

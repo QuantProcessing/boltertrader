@@ -29,6 +29,7 @@ type ReportCapabilities struct {
 	FillHistory               bool
 	PositionReports           bool
 	AccountBalanceSnapshots   bool
+	AccountStateSnapshots     bool
 	MaxLookback               time.Duration
 	ClosedOrderRetention      string
 	DefinitiveNotFound        bool
@@ -36,10 +37,11 @@ type ReportCapabilities struct {
 }
 
 type StreamCapabilities struct {
-	Market    bool
-	Execution bool
-	Account   bool
-	Health    bool
+	Market       bool
+	Execution    bool
+	Account      bool
+	AccountState bool
+	Health       bool
 }
 
 type TradingCapabilities struct {

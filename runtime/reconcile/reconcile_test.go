@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -23,17 +24,34 @@ var spotBTC = model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.Kin
 
 // snapshotAccount is a minimal AccountClient returning canned snapshots.
 type snapshotAccount struct {
-	balances  []model.AccountBalance
-	positions []model.Position
+	balances          []model.AccountBalance
+	positions         []model.Position
+	positionErr       error
+	accountState      model.AccountState
+	hasAccountState   bool
+	balanceCalls      int
+	accountStateCalls int
 }
 
 func (s *snapshotAccount) Capabilities() contract.Capabilities {
-	return contract.Capabilities{Venue: "T"}
+	caps := contract.Capabilities{Venue: "T"}
+	if s.hasAccountState {
+		caps.Reports.AccountStateSnapshots = true
+	}
+	return caps
 }
 func (s *snapshotAccount) Balances(context.Context) ([]model.AccountBalance, error) {
+	s.balanceCalls++
 	return s.balances, nil
 }
+func (s *snapshotAccount) AccountState(context.Context) (model.AccountState, error) {
+	s.accountStateCalls++
+	return s.accountState, nil
+}
 func (s *snapshotAccount) Positions(context.Context) ([]model.Position, error) {
+	if s.positionErr != nil {
+		return nil, s.positionErr
+	}
 	return s.positions, nil
 }
 func (s *snapshotAccount) SetLeverage(context.Context, model.InstrumentID, decimal.Decimal) error {
@@ -214,6 +232,101 @@ func TestReconcileCorrectsCache(t *testing.T) {
 	// Balance applied.
 	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(d("1000")) {
 		t.Fatalf("balance not applied: ok=%v", ok)
+	}
+}
+
+func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
+	c := cache.New()
+	ts := time.Unix(20, 0)
+	acct := &snapshotAccount{
+		hasAccountState: true,
+		accountState: model.AccountState{
+			AccountID: model.AccountIDBinanceUSDM,
+			Venue:     "BINANCE",
+			Type:      model.AccountMargin,
+			Balances: []model.AccountBalance{{
+				Currency: "USDT",
+				Total:    d("1000"),
+				Free:     d("950"),
+			}},
+			ModeInfo: model.AccountModeInfo{
+				Venue:        "BINANCE",
+				AccountID:    model.AccountIDBinanceUSDM,
+				AccountMode:  "USD-M",
+				ProductScope: []enums.InstrumentKind{enums.KindPerp},
+				Verified:     true,
+				VerifiedAt:   ts,
+				Source:       "test",
+			},
+			Reported: true,
+			TsEvent:  ts,
+		},
+		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1"), Available: d("1")}},
+	}
+
+	r := New(acct, nil, c)
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.AccountStatesApplied != 1 || rep.BalancesUpdated != 1 {
+		t.Fatalf("report=%+v, want one account state and one balance update", rep)
+	}
+	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
+		t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
+	}
+	cached, ok := c.Account(model.AccountIDBinanceUSDM)
+	if !ok {
+		t.Fatal("account state not applied to cache")
+	}
+	if cached.Freshness().LastReconciledAt.IsZero() {
+		t.Fatal("account state reconciliation should mark LastReconciledAt")
+	}
+	if bal, ok := c.Balance("USDT"); !ok || !bal.Free.Equal(d("950")) {
+		t.Fatalf("compat balance=%+v ok=%v, want free 950", bal, ok)
+	}
+}
+
+func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
+	c := cache.New()
+	ts := time.Unix(20, 0)
+	positionErr := errors.New("positions unavailable")
+	acct := &snapshotAccount{
+		hasAccountState: true,
+		positionErr:     positionErr,
+		accountState: model.AccountState{
+			AccountID: model.AccountIDBinanceUSDM,
+			Venue:     "BINANCE",
+			Type:      model.AccountMargin,
+			Balances: []model.AccountBalance{{
+				Currency: "USDT",
+				Total:    d("1000"),
+				Free:     d("950"),
+			}},
+			ModeInfo: model.AccountModeInfo{
+				Venue:        "BINANCE",
+				AccountID:    model.AccountIDBinanceUSDM,
+				ProductScope: []enums.InstrumentKind{enums.KindPerp},
+				Verified:     true,
+				VerifiedAt:   ts,
+				Source:       "test",
+			},
+			Reported: true,
+			TsEvent:  ts,
+		},
+	}
+
+	r := New(acct, nil, c)
+	_, err := r.Run(context.Background())
+	if !errors.Is(err, positionErr) {
+		t.Fatalf("run err=%v, want positions error", err)
+	}
+	cached, ok := c.Account(model.AccountIDBinanceUSDM)
+	if !ok {
+		t.Fatal("account state should be applied before positions fail")
+	}
+	if !cached.Freshness().LastReconciledAt.IsZero() {
+		t.Fatalf("account should not be marked reconciled after positions fail: %+v", cached.Freshness())
 	}
 }
 

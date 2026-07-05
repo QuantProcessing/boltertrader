@@ -19,10 +19,11 @@ import (
 
 // Report summarizes what a reconciliation pass changed.
 type Report struct {
-	BalancesUpdated    int
-	PositionsUpdated   int
-	PositionsCleared   int // positions in cache not present in the snapshot
-	PositionOverwrites int
+	AccountStatesApplied int
+	BalancesUpdated      int
+	PositionsUpdated     int
+	PositionsCleared     int // positions in cache not present in the snapshot
+	PositionOverwrites   int
 
 	OrdersUpdated       int // open orders in both cache and venue, refreshed to venue truth
 	OrdersExternal      int // open orders the venue reports that the cache had never seen
@@ -120,13 +121,35 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 }
 
 func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
-	balances, err := r.account.Balances(ctx)
-	if err != nil {
-		return err
-	}
-	for _, b := range balances {
-		r.cache.UpsertBalance(b)
-		rep.BalancesUpdated++
+	caps := r.account.Capabilities()
+	var accountStateID string
+	var accountStateAppliedAt time.Time
+	if caps.Reports.AccountStateSnapshots {
+		reporter, ok := r.account.(contract.AccountStateReporter)
+		if !ok {
+			return contract.ErrNotSupported
+		}
+		state, err := reporter.AccountState(ctx)
+		if err != nil {
+			return err
+		}
+		appliedAt := time.Now()
+		if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {
+			return err
+		}
+		accountStateID = state.AccountID
+		accountStateAppliedAt = appliedAt
+		rep.AccountStatesApplied++
+		rep.BalancesUpdated += len(state.Balances)
+	} else {
+		balances, err := r.account.Balances(ctx)
+		if err != nil {
+			return err
+		}
+		for _, b := range balances {
+			r.cache.UpsertBalance(b)
+			rep.BalancesUpdated++
+		}
 	}
 
 	positions, err := r.account.Positions(ctx)
@@ -157,6 +180,9 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 			})
 			rep.PositionsCleared++
 		}
+	}
+	if accountStateID != "" {
+		r.cache.MarkAccountReconciled(accountStateID, accountStateAppliedAt)
 	}
 	return nil
 }

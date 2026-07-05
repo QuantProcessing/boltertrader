@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/risk"
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 	"github.com/QuantProcessing/boltertrader/runtime/strategy"
 )
@@ -171,5 +173,138 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	}
 	if strat.stops.Load() != 1 || obs.stops.Load() != 1 {
 		t.Fatalf("stop callbacks strategy=%d observer=%d, want 1/1", strat.stops.Load(), obs.stops.Load())
+	}
+}
+
+func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewSimulatedClock(start)
+	fexec := runtimetest.NewFakeExec()
+	facct := runtimetest.NewFakeAccount()
+	accountID := "FAKE:perp"
+	instMeta := &model.Instrument{
+		ID:                 inst,
+		Base:               "BTC",
+		Quote:              "USDT",
+		Settle:             "USDT",
+		ContractMultiplier: d("1"),
+	}
+	marginInst := inst
+	state := model.AccountState{
+		AccountID:    accountID,
+		Venue:        "FAKE",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    d("1000"),
+			Free:     d("900"),
+		}},
+		Margins: []model.MarginBalance{{
+			Currency:     "USDT",
+			InstrumentID: &marginInst,
+			Initial:      d("50"),
+			Maintenance:  d("25"),
+			UpdatedAt:    start,
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "FAKE",
+			AccountID:    accountID,
+			AccountMode:  "unified-demo",
+			MarginMode:   "cross",
+			PositionMode: "one-way",
+			ProductScope: []enums.InstrumentKind{enums.KindPerp},
+			Verified:     true,
+			VerifiedAt:   start,
+			Source:       "runtimetest",
+		},
+		Reported: true,
+		TsEvent:  start,
+		TsInit:   start,
+	}
+	facct.SetAccountStateSnapshot(state)
+	facct.SetSnapshots(nil, []model.Position{{
+		InstrumentID:  inst,
+		Side:          enums.PosNet,
+		Quantity:      d("1"),
+		EntryPrice:    d("100"),
+		MarkPrice:     d("110"),
+		UnrealizedPnL: d("10"),
+		UpdatedAt:     start,
+	}})
+	fexec.SetOrderStatusReports()
+
+	node := runtime.NewNode(
+		runtime.Clients{Execution: fexec, Account: facct},
+		clk,
+		"account-state",
+		runtime.WithAccountStaleAfter(10*time.Second),
+	)
+
+	rep, err := node.Resync(context.Background())
+	if err != nil {
+		t.Fatalf("resync account state: %v", err)
+	}
+	if rep.AccountStatesApplied != 1 || rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 {
+		t.Fatalf("reconcile report=%+v, want account=1 balances=1 positions=1", rep)
+	}
+
+	acct, ok := node.Cache.Account(accountID)
+	if !ok {
+		t.Fatalf("cache account %s missing", accountID)
+	}
+	if acct.Type() != model.AccountMargin || !acct.IsFresh(start.Add(2*time.Second)) {
+		t.Fatalf("account not trading-ready enough for offline gate: type=%s freshness=%+v", acct.Type(), acct.Freshness())
+	}
+	if acct.Freshness().LastReconciledAt.IsZero() {
+		t.Fatalf("account freshness missing reconciliation timestamp: %+v", acct.Freshness())
+	}
+	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Total.Equal(d("1000")) || !b.Free.Equal(d("900")) {
+		t.Fatalf("legacy balance mirror=%+v ok=%v, want total=1000 free=900", b, ok)
+	}
+	if p, ok := node.Cache.Position(inst, enums.PosNet); !ok || !p.Quantity.Equal(d("1")) || !p.UnrealizedPnL.Equal(d("10")) {
+		t.Fatalf("position mirror=%+v ok=%v, want qty=1 upnl=10", p, ok)
+	}
+
+	if got, ok := node.Portfolio.Equity(accountID); !ok || !got["USDT"].Equal(d("1010")) {
+		t.Fatalf("portfolio equity=%v ok=%v, want USDT=1010", got, ok)
+	}
+	if got, ok := node.Portfolio.MarginInitial(accountID); !ok || !got["USDT"].Equal(d("50")) {
+		t.Fatalf("portfolio initial margin=%v ok=%v, want USDT=50", got, ok)
+	}
+	if got, ok := node.Portfolio.MarginMaintenance(accountID); !ok || !got["USDT"].Equal(d("25")) {
+		t.Fatalf("portfolio maintenance margin=%v ok=%v, want USDT=25", got, ok)
+	}
+	if got, ok := node.Portfolio.NetExposure(accountID); !ok || !got[inst].Equal(d("110")) {
+		t.Fatalf("portfolio net exposure=%v ok=%v, want %s=110", got, ok, inst)
+	}
+
+	engine := risk.New(risk.Limits{}, node.Cache).
+		WithClock(func() time.Time { return start.Add(2 * time.Second) }).
+		RequireAccountState()
+	if err := engine.Check(model.OrderRequest{
+		ClientID:     "risk-pass",
+		InstrumentID: inst,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("1"),
+		Price:        d("100"),
+		PositionSide: enums.PosNet,
+	}, instMeta); err != nil {
+		t.Fatalf("fresh account risk check rejected valid order: %v", err)
+	}
+	err = engine.Check(model.OrderRequest{
+		ClientID:     "risk-reject",
+		InstrumentID: inst,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("10"),
+		Price:        d("100"),
+		PositionSide: enums.PosNet,
+	}, instMeta)
+	if !errors.Is(err, risk.ErrRiskRejected) {
+		t.Fatalf("oversized account risk check err=%v, want risk rejection", err)
 	}
 }

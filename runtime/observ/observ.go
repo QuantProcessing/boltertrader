@@ -62,6 +62,8 @@ type Health struct {
 	EventQueueDepth         int
 	InFlight                int
 	PendingFills            int
+	Accounts                int
+	AccountStateAgeNs       int64
 }
 
 type Reconciliation struct {
@@ -72,21 +74,23 @@ type Reconciliation struct {
 
 // Metrics is a point-in-time snapshot of runtime trading state.
 type Metrics struct {
-	OpenOrders      int
-	Positions       int
-	RealizedPnL     decimal.Decimal
-	RealizedPnLNet  decimal.Decimal
-	Fees            decimal.Decimal
-	FeesByCurrency  map[string]decimal.Decimal
-	OrdersSeen      int64
-	FillsSeen       int64
-	RejectsSeen     int64
-	Latency         latency.Snapshot
-	ObserverDrops   uint64
-	EventQueueDepth int
-	Lifecycle       lifecycle.Snapshot
-	InFlight        int
-	PendingFills    int
+	OpenOrders        int
+	Positions         int
+	RealizedPnL       decimal.Decimal
+	RealizedPnLNet    decimal.Decimal
+	Fees              decimal.Decimal
+	FeesByCurrency    map[string]decimal.Decimal
+	OrdersSeen        int64
+	FillsSeen         int64
+	RejectsSeen       int64
+	Latency           latency.Snapshot
+	ObserverDrops     uint64
+	EventQueueDepth   int
+	Lifecycle         lifecycle.Snapshot
+	InFlight          int
+	PendingFills      int
+	Accounts          int
+	AccountStateAgeNs int64
 }
 
 // Counters accumulates event counts. Fields are accessed via sync/atomic by the

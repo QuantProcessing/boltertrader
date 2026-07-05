@@ -2,9 +2,11 @@ package portfolio
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/QuantProcessing/boltertrader/runtime/cache"
 	"github.com/shopspring/decimal"
 )
 
@@ -203,5 +205,142 @@ func TestUnrealized(t *testing.T) {
 	pf.OnFill(fill(enums.SideBuy, "100", "2", "0"), enums.PosNet)
 	if got := pf.UnrealizedPnL(id, enums.PosNet, d("105")); !got.Equal(d("10")) {
 		t.Fatalf("unrealized=%s, want 10", got)
+	}
+}
+
+func TestAccountViewsAggregateEquityMarginAndExposure(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	state := model.AccountState{
+		AccountID:    "T:perp",
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1000"), Free: d("900")},
+		},
+		Margins: []model.MarginBalance{
+			{Currency: "USDT", Initial: d("100"), Maintenance: d("50")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    "T:perp",
+			AccountMode:  "perp",
+			ProductScope: []enums.InstrumentKind{enums.KindPerp},
+			Verified:     true,
+			VerifiedAt:   now,
+			Source:       "test",
+		},
+		TsEvent: now,
+	}
+	if err := c.ApplyAccountStateAt(state, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	c.UpsertPosition(model.Position{
+		InstrumentID:  id,
+		Side:          enums.PosNet,
+		Quantity:      d("2"),
+		EntryPrice:    d("100"),
+		MarkPrice:     d("110"),
+		UnrealizedPnL: d("20"),
+	})
+	pf := New().WithAccountSource(c)
+
+	equity, ok := pf.Equity("T:perp")
+	if !ok {
+		t.Fatal("equity account lookup failed")
+	}
+	if got := equity["USDT"]; !got.Equal(d("1020")) {
+		t.Fatalf("equity USDT=%s, want 1020", got)
+	}
+	initial, ok := pf.MarginInitial("T:perp")
+	if !ok {
+		t.Fatal("initial margin account lookup failed")
+	}
+	if got := initial["USDT"]; !got.Equal(d("100")) {
+		t.Fatalf("initial margin=%s, want 100", got)
+	}
+	maintenance, ok := pf.MarginMaintenance("T:perp")
+	if !ok {
+		t.Fatal("maintenance margin account lookup failed")
+	}
+	if got := maintenance["USDT"]; !got.Equal(d("50")) {
+		t.Fatalf("maintenance margin=%s, want 50", got)
+	}
+	exposure, ok := pf.NetExposure("T:perp")
+	if !ok {
+		t.Fatal("net exposure account lookup failed")
+	}
+	if got := exposure[id]; !got.Equal(d("220")) {
+		t.Fatalf("net exposure=%s, want 220", got)
+	}
+}
+
+func TestAccountViewsRejectEmptyProductScopeAtAdmission(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    "T:perp",
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1000"), Free: d("900")},
+		},
+		TsEvent: now,
+	}, now); err == nil {
+		t.Fatal("account state with empty product scope should not enter portfolio account source")
+	}
+}
+
+func TestAccountViewsRespectProductScope(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	perpID := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	spotState := model.AccountState{
+		AccountID:    "T:spot",
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("100"), Free: d("80"), Locked: d("20")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    "T:spot",
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   now,
+			Source:       "test",
+		},
+		TsEvent: now,
+	}
+	if err := c.ApplyAccountStateAt(spotState, now); err != nil {
+		t.Fatalf("apply spot account state: %v", err)
+	}
+	c.UpsertPosition(model.Position{
+		InstrumentID:  perpID,
+		Side:          enums.PosNet,
+		Quantity:      d("1"),
+		MarkPrice:     d("110"),
+		UnrealizedPnL: d("10"),
+	})
+	pf := New().WithAccountSource(c)
+
+	equity, ok := pf.Equity("T:spot")
+	if !ok {
+		t.Fatal("equity account lookup failed")
+	}
+	if got := equity["USDT"]; !got.Equal(d("100")) {
+		t.Fatalf("spot equity should exclude perp PnL, got %s", got)
+	}
+	exposure, ok := pf.NetExposure("T:spot")
+	if !ok {
+		t.Fatal("net exposure account lookup failed")
+	}
+	if len(exposure) != 0 {
+		t.Fatalf("spot exposure should exclude perp positions, got %#v", exposure)
 	}
 }

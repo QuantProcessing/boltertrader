@@ -27,11 +27,15 @@ make test-p6-offline
 4. Scenario tests cover product-level flows such as spot inventory, perp
    funding, futures expiry, options exercise, liquidation, reconnect, and
    reconciliation.
-5. Deterministic replay tests feed fixed event streams and assert exact final
+5. Account-state acceptance tests cover the NT-style safety envelope: account
+   mode discovery, canonical account IDs, balance/free/locked totals, margin
+   requirements, cache freshness, portfolio reads, risk fail-closed behavior,
+   and reconciliation application from one authoritative snapshot.
+6. Deterministic replay tests feed fixed event streams and assert exact final
    orders, fills, positions, balances, and PnL.
-6. Race and lifecycle tests cover runtime goroutine boundaries, cancellation,
+7. Race and lifecycle tests cover runtime goroutine boundaries, cancellation,
    reconnect loops, and shutdown.
-7. Live smoke tests are opt-in and excluded from default verification.
+8. Live smoke tests are opt-in and excluded from default verification.
 
 ## NT-Style Acceptance Ladder
 
@@ -42,12 +46,18 @@ and exchange state are available.
 - `make test-core`: local core/runtime/strategy behavior.
 - `make test-adapter`: venue-neutral adapter contracts.
 - `make test-sdk`: SDK request/response/stream behavior without live writes.
+- `make test-capabilities`: adapter capability matrix plus package-level
+  capability probes, including the account-state snapshot contract.
+- `make test-p6-offline`: the full credential-free acceptance gate for core,
+  runtime, SDK, adapter, and capability behavior.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
 - `make test-binance-demo-runtime-perp`: runtime-level Binance USD-M Demo
   execution through `runtime.TradingNode`.
 - `make test-binance-demo-spot-data`: read-only Binance Spot Demo data
   acceptance.
 - `make test-binance-demo-spot`: adapter-level Binance Spot Demo execution.
+- `make test-binance-demo-runtime-spot`: runtime-level Binance Spot Demo cash
+  execution through `runtime.TradingNode`.
 - `make test-binance-demo-acceptance`: complete Binance Demo acceptance gate for
   implemented products.
 - `make test-okx-demo-spot`: adapter-level OKX Demo Spot cash execution.
@@ -81,6 +91,37 @@ See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_test
 for the execution acceptance spec and pass criteria.
 See [`docs/adapter-capabilities.md`](adapter-capabilities.md) for the supported
 adapter/product/report matrix.
+
+## Account-State Runtime Acceptance
+
+The account model is tested as a runtime safety envelope, not only as adapter
+translation code. Default tests must prove:
+
+- adapters that claim account-state snapshots also implement
+  `contract.AccountStateReporter`;
+- reconciliation applies the snapshot before balances and positions;
+- the runtime cache exposes canonical account state and mirrors balances for
+  older consumers during migration;
+- portfolio account views can read equity, margin, and exposure from the cache;
+- risk checks can require fresh account state and fail closed when free balance
+  or account mode is insufficient.
+
+`runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
+fake-venue end-to-end gate for this behavior. Demo runtime acceptance for
+Binance and OKX must run the same shape against exchange snapshots before and
+after order flows.
+
+Current runtime ownership is intentionally one account/product per venue per
+`TradingNode`. The cache rejects a second account state for the same venue
+inside one node; running Binance Spot and USD-M, or OKX Spot and SWAP, should use
+separate product adapters/nodes until balances and positions become account-ID
+owned throughout cache, portfolio, risk, and reconciliation.
+
+Risk gates are strict by default for spot orders once this account-state runtime
+path is in use: a missing account state rejects instead of silently falling back
+to raw cache balances. Legacy balance fallback exists only for adapters/tests
+that have not implemented `AccountStateReporter` yet, and those callers must opt
+in explicitly with `risk.Engine.AllowLegacyBalanceFallback()`.
 
 ## Live Tests
 
@@ -135,9 +176,10 @@ go test -run TestBinanceSpotDemoExecAcceptance ./adapter/binance/spot/ -count=1 
 `runtime.TradingNode`. `make test-binance-demo-spot-data` runs read-only Spot
 Demo data acceptance behind `BOLTER_ENABLE_LIVE_READ_TESTS=1`.
 `make test-binance-demo-spot` runs Spot Demo place/cancel/fill/cleanup
-acceptance. `make test-binance-demo-acceptance` runs all implemented Binance
-Demo targets, matching the NT-style split between adapter contract acceptance
-and runtime acceptance.
+acceptance. `make test-binance-demo-runtime-spot` runs the Spot cash path
+through `runtime.TradingNode`. `make test-binance-demo-acceptance` runs all
+implemented Binance Demo targets, matching the NT-style split between adapter
+contract acceptance and runtime acceptance.
 `make test-binance-demo` is a current alias for the complete Demo acceptance
 gate:
 

@@ -3,9 +3,11 @@ package spot
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -34,7 +36,28 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 	if err != nil {
 		return nil, err
 	}
+	return spotBalancesFromAccount(acct, c.clk.Now()), nil
+}
+
+func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
+	acct, err := c.rest.GetAccount(ctx)
+	if err != nil {
+		return model.AccountState{}, err
+	}
 	now := c.clk.Now()
+	return model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     venueName,
+		Type:      model.AccountCash,
+		Balances:  spotBalancesFromAccount(acct, now),
+		ModeInfo:  binanceSpotModeInfo(acct, now),
+		Reported:  true,
+		TsEvent:   eventTimeFromMillis(acct.UpdateTime, now),
+		TsInit:    now,
+	}, nil
+}
+
+func spotBalancesFromAccount(acct *sdkspot.AccountResponse, now time.Time) []model.AccountBalance {
 	out := make([]model.AccountBalance, 0, len(acct.Balances))
 	for _, b := range acct.Balances {
 		free := dec(b.Free)
@@ -42,12 +65,41 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 		out = append(out, model.AccountBalance{
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
+			Free:      free,
 			Available: free,
 			Locked:    locked,
 			UpdatedAt: now,
 		})
 	}
-	return out, nil
+	return out
+}
+
+func binanceSpotModeInfo(acct *sdkspot.AccountResponse, now time.Time) model.AccountModeInfo {
+	accountMode := acct.AccountType
+	if accountMode == "" {
+		accountMode = "SPOT"
+	}
+	return model.AccountModeInfo{
+		Venue:        venueName,
+		AccountID:    model.AccountIDBinanceSpot,
+		AccountMode:  accountMode,
+		MarginMode:   "cash",
+		PositionMode: "net",
+		ProductScope: []enums.InstrumentKind{enums.KindSpot},
+		Verified:     true,
+		VerifiedAt:   now,
+		Source:       "GET /api/v3/account",
+		Details: map[string]string{
+			"canTrade": fmt.Sprintf("%t", acct.CanTrade),
+		},
+	}
+}
+
+func eventTimeFromMillis(ms int64, fallback time.Time) time.Time {
+	if ms > 0 {
+		return time.UnixMilli(ms)
+	}
+	return fallback
 }
 
 func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error) {

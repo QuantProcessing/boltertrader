@@ -4,7 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/shopspring/decimal"
 )
 
 func TestEventEnvelopeRequiresEventID(t *testing.T) {
@@ -57,5 +59,42 @@ func TestExecEnvelopeWithMetaOverridesSourceAndFlags(t *testing.T) {
 	}
 	if env.EventID == "" || env.ClientID != "c1" {
 		t.Fatalf("inferred meta not retained: %+v", env.EventMeta)
+	}
+}
+
+func TestAccountStateEnvelopeInfersMeta(t *testing.T) {
+	ts := time.Unix(10, 0)
+	env := NewAccountEnvelope(AccountStateEvent{State: model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    decimal.RequireFromString("100"),
+			Free:     decimal.RequireFromString("100"),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "BINANCE",
+			AccountID:    model.AccountIDBinanceSpot,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   ts,
+			Source:       "test",
+		},
+		Reported: true,
+		TsEvent:  ts,
+	}})
+	if env.Venue != "BINANCE" || env.AccountID != model.AccountIDBinanceSpot {
+		t.Fatalf("account state meta not inferred: %+v", env.EventMeta)
+	}
+	if !env.TsVenue.Equal(ts) {
+		t.Fatalf("TsVenue=%s, want %s", env.TsVenue, ts)
+	}
+	if env.EventID == "" {
+		t.Fatal("account state event id should be inferred")
+	}
+	if !env.Flags.Has(EventFlagFromStream) {
+		t.Fatalf("account state envelope should retain stream flag: %b", env.Flags)
 	}
 }

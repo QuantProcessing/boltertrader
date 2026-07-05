@@ -19,9 +19,10 @@ import (
 
 // interface conformance
 var (
-	_ contract.ExecutionClient  = (*executionClient)(nil)
-	_ contract.AccountClient    = (*accountClient)(nil)
-	_ contract.MarketDataClient = (*marketDataClient)(nil)
+	_ contract.ExecutionClient      = (*executionClient)(nil)
+	_ contract.AccountClient        = (*accountClient)(nil)
+	_ contract.AccountStateReporter = (*accountClient)(nil)
+	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
 func dd(s string) decimal.Decimal { return decimal.RequireFromString(s) }
@@ -422,7 +423,10 @@ func TestSetLeverageUsesConfiguredTdMode(t *testing.T) {
 
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
-	account := newAccountClient(nil, nil, clock.NewRealClock(), "")
+	account := testOKXAccountClient(t, "isolated")
+	if caps := account.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	}
 	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
 		Venue: "OKX",
 		Market: contracttest.MarketCapabilities{
@@ -446,6 +450,16 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 		},
 		Account: contracttest.AccountCapabilities{
+			AccountState: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
+				state, err := account.AccountState(ctx)
+				if err != nil {
+					return err
+				}
+				if err := state.Validate(); err != nil {
+					return err
+				}
+				return state.ModeInfo.ValidateVerified()
+			}},
 			Balances:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			Positions:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			SetLeverage: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
@@ -457,6 +471,48 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			}},
 		},
 	})
+}
+
+func TestOKXPerpAccountStateTranslation(t *testing.T) {
+	account := testOKXAccountClient(t, "isolated")
+
+	state, err := account.AccountState(context.Background())
+	if err != nil {
+		t.Fatalf("AccountState: %v", err)
+	}
+	if state.AccountID != model.AccountIDOKXSwap || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
+		t.Fatalf("account state identity=%+v", state)
+	}
+	if state.ModeInfo.AccountMode != string(okx.AccountLevelSingleCurrencyMargin) || state.ModeInfo.MarginMode != "isolated" || state.ModeInfo.PositionMode != "long_short_mode" {
+		t.Fatalf("mode info=%+v", state.ModeInfo)
+	}
+	if !state.ModeInfo.Verified || len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindPerp {
+		t.Fatalf("mode verification/scope=%+v", state.ModeInfo)
+	}
+	if state.TsEvent.UnixMilli() != 1700000000002 {
+		t.Fatalf("TsEvent=%s, want latest position uTime", state.TsEvent)
+	}
+	if len(state.Balances) != 1 || state.Balances[0].Currency != "USDT" || !state.Balances[0].Free.Equal(dd("900")) || !state.Balances[0].Total.Equal(dd("1000")) {
+		t.Fatalf("balances=%+v", state.Balances)
+	}
+	if len(state.Margins) != 2 {
+		t.Fatalf("margins len=%d, want asset+position margins: %+v", len(state.Margins), state.Margins)
+	}
+	if state.Margins[0].InstrumentID != nil || !state.Margins[0].Initial.Equal(dd("50")) || !state.Margins[0].Maintenance.Equal(dd("10")) {
+		t.Fatalf("asset margin=%+v", state.Margins[0])
+	}
+	if state.Margins[1].InstrumentID == nil || *state.Margins[1].InstrumentID != (model.InstrumentID{Venue: venueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}) {
+		t.Fatalf("position margin instrument=%+v", state.Margins[1].InstrumentID)
+	}
+	if !state.Margins[1].Initial.Equal(dd("25")) || !state.Margins[1].Maintenance.Equal(dd("5")) {
+		t.Fatalf("position margin=%+v", state.Margins[1])
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("account state validate: %v", err)
+	}
+	if err := state.ModeInfo.ValidateVerified(); err != nil {
+		t.Fatalf("mode validate: %v", err)
+	}
 }
 
 func testOKXLinearInstrument(t *testing.T) *model.Instrument {
@@ -478,4 +534,32 @@ func testOKXProvider(inst *model.Instrument) *instrumentProvider {
 	provider.byInstID[inst.VenueSymbol] = inst.ID
 	provider.all = []*model.Instrument{inst}
 	return provider
+}
+
+func testOKXAccountClient(t *testing.T, tdMode string) *accountClient {
+	t.Helper()
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s, want GET", r.Method)
+		}
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"uTime":"1700000000000","details":[{"ccy":"USDT","eq":"1000","availBal":"900","imr":"50","mmr":"10","uTime":"1700000000001"}]}]}`))
+		case "/api/v5/account/positions":
+			if got := r.URL.Query().Get("instType"); got != instTypeSwap {
+				t.Fatalf("positions instType=%q, want %s", got, instTypeSwap)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","ccy":"USDT","pos":"1","posSide":"net","avgPx":"60000","markPx":"60100","upl":"100","lever":"5","imr":"25","mmr":"5","mgnMode":"isolated","uTime":"1700000000002"}]}`))
+		case "/api/v5/account/config":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"acctLv":"2","posMode":"long_short_mode","ctIsoMode":"automatic","mgnIsoMode":"automatic","settleCcy":"USDT"}]}`))
+		default:
+			t.Fatalf("unexpected account state request: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	rest := okx.NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithBaseURL(server.URL)
+	return newAccountClient(rest, testOKXProvider(inst), clock.NewRealClock(), tdMode)
 }

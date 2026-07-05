@@ -76,3 +76,11 @@ type AccountClient interface {
 	Events() <-chan AccountEnvelope
 	Close() error
 }
+
+// AccountStateReporter is the migration guard for the NT-style account loop.
+// AccountClient keeps legacy Balances/Positions methods while adapters migrate;
+// runtime reconciliation can type-assert this optional interface and prefer the
+// authoritative account state when available.
+type AccountStateReporter interface {
+	AccountState(ctx context.Context) (model.AccountState, error)
+}

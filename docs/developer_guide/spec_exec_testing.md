@@ -89,6 +89,7 @@ make test-binance-demo-perp
 make test-binance-demo-runtime-perp
 make test-binance-demo-spot-data
 make test-binance-demo-spot
+make test-binance-demo-runtime-spot
 make test-binance-demo-acceptance
 make test-okx-demo-spot
 make test-okx-demo-runtime-spot
@@ -109,7 +110,8 @@ make test-hyperliquid-testnet-acceptance
 `make test-binance-demo-spot-data` is read-only and enables
 `BOLTER_ENABLE_LIVE_READ_TESTS=1` for the Spot Demo data smoke. Spot and perp
 write tests use `BINANCE_DEMO_API_KEY` and `BINANCE_DEMO_API_SECRET`; they are
-not called by `make test`.
+not called by `make test`. `make test-binance-demo-runtime-spot` runs the Spot
+cash write/cleanup path through `runtime.TradingNode`.
 
 `make test-okx-demo-spot` and `make test-okx-demo-perp` are adapter-level OKX
 Demo write gates. `make test-okx-demo-runtime-spot` and

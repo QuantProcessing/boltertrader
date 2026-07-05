@@ -99,7 +99,8 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 		clock.NewRealClock(),
 		"hyperliquid-"+strings.ToLower(strings.ReplaceAll(label, "-", ""))+"-testnet",
 	)
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache)
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache).
+		AllowLegacyBalanceFallback()
 	btruntime.WithRisk(riskEngine, adapter.Market.InstrumentProvider())(node)
 
 	if _, err := node.Resync(ctx); err != nil {

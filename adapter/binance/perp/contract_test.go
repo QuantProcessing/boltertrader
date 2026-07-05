@@ -20,9 +20,10 @@ import (
 
 // interface conformance
 var (
-	_ contract.ExecutionClient  = (*executionClient)(nil)
-	_ contract.AccountClient    = (*accountClient)(nil)
-	_ contract.MarketDataClient = (*marketDataClient)(nil)
+	_ contract.ExecutionClient      = (*executionClient)(nil)
+	_ contract.AccountClient        = (*accountClient)(nil)
+	_ contract.AccountStateReporter = (*accountClient)(nil)
+	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
@@ -164,7 +165,7 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	if !ok {
 		t.Fatalf("events[0] is %T, want BalanceEvent", events[0])
 	}
-	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("1000.5")) {
+	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("1000.5")) || !be.Balance.Free.Equal(d("950.0")) || !be.Balance.Available.Equal(d("950.0")) {
 		t.Errorf("balance=%+v", be.Balance)
 	}
 	pe, ok := events[1].(contract.PositionEvent)
@@ -227,6 +228,10 @@ func TestNonPerpetualSkipped(t *testing.T) {
 
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
+	acct := testPerpAccountClient()
+	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	}
 	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
 		Venue: "BINANCE",
 		Market: contracttest.MarketCapabilities{
@@ -250,6 +255,16 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 		},
 		Account: contracttest.AccountCapabilities{
+			AccountState: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
+				state, err := acct.AccountState(ctx)
+				if err != nil {
+					return err
+				}
+				if err := state.Validate(); err != nil {
+					return err
+				}
+				return state.ModeInfo.ValidateVerified()
+			}},
 			Balances:          contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			Positions:         contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			SetLeverage:       contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
@@ -257,6 +272,86 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			SetIsolatedMargin: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 		},
 	})
+}
+
+func TestBinancePerpAccountStateTranslation(t *testing.T) {
+	acct := testPerpAccountClient()
+
+	state, err := acct.AccountState(context.Background())
+	if err != nil {
+		t.Fatalf("AccountState: %v", err)
+	}
+	if state.AccountID != model.AccountIDBinanceUSDM || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
+		t.Fatalf("account state identity=%+v", state)
+	}
+	if state.ModeInfo.AccountMode != "USD-M" || state.ModeInfo.PositionMode != "hedge" || state.ModeInfo.MarginMode != "multi_assets" {
+		t.Fatalf("mode info=%+v", state.ModeInfo)
+	}
+	if !state.ModeInfo.Verified || len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindPerp {
+		t.Fatalf("mode verification/scope=%+v", state.ModeInfo)
+	}
+	if state.TsEvent.UnixMilli() != 1700000000000 {
+		t.Fatalf("TsEvent=%s, want REST updateTime", state.TsEvent)
+	}
+	if len(state.Balances) != 1 || state.Balances[0].Currency != "USDT" || !state.Balances[0].Free.Equal(d("900")) || !state.Balances[0].Total.Equal(d("1000")) {
+		t.Fatalf("balances=%+v", state.Balances)
+	}
+	if len(state.Margins) != 2 {
+		t.Fatalf("margins len=%d, want asset+position margins: %+v", len(state.Margins), state.Margins)
+	}
+	if state.Margins[0].InstrumentID != nil || !state.Margins[0].Initial.Equal(d("50")) || !state.Margins[0].Maintenance.Equal(d("10")) {
+		t.Fatalf("asset margin=%+v", state.Margins[0])
+	}
+	if state.Margins[1].InstrumentID == nil || *state.Margins[1].InstrumentID != (model.InstrumentID{Venue: venueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}) {
+		t.Fatalf("position margin instrument=%+v", state.Margins[1].InstrumentID)
+	}
+	if !state.Margins[1].Initial.Equal(d("25")) || !state.Margins[1].Maintenance.Equal(d("5")) {
+		t.Fatalf("position margin=%+v", state.Margins[1])
+	}
+	if err := state.Validate(); err != nil {
+		t.Fatalf("account state validate: %v", err)
+	}
+	if err := state.ModeInfo.ValidateVerified(); err != nil {
+		t.Fatalf("mode validate: %v", err)
+	}
+}
+
+func testPerpAccountClient() *accountClient {
+	inst := instrumentFromSymbolInfo(&sdkperp.SymbolInfo{
+		Symbol: "BTCUSDT", ContractType: "PERPETUAL", BaseAsset: "BTC", QuoteAsset: "USDT", MarginAsset: "USDT",
+		Filters: []map[string]any{{"filterType": "PRICE_FILTER", "tickSize": "0.10"}},
+	})
+	provider := newInstrumentProvider()
+	provider.byID[inst.ID.String()] = inst
+	provider.bySymbol[inst.VenueSymbol] = inst.ID
+	rest := sdkperp.NewClient().WithCredentials("k", "s").WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var body string
+			switch r.URL.Path {
+			case "/fapi/v2/account":
+				body = `{
+					"updateTime":1700000000000,
+					"totalWalletBalance":"1000",
+					"assets":[
+						{"asset":"USDT","walletBalance":"1000","availableBalance":"900","initialMargin":"50","maintMargin":"10","updateTime":1700000000000},
+						{"asset":"","walletBalance":"0","availableBalance":"0","initialMargin":"0","maintMargin":"0","updateTime":0}
+					],
+					"positions":[
+						{"symbol":"BTCUSDT","initialMargin":"25","maintMargin":"5","unrealizedProfit":"2","leverage":"20","entryPrice":"60000","positionSide":"BOTH","positionAmt":"0.1","updateTime":1700000000001},
+						{"symbol":"","initialMargin":"0","maintMargin":"0","unrealizedProfit":"0","leverage":"0","entryPrice":"0","positionSide":"BOTH","positionAmt":"0","updateTime":0}
+					]
+				}`
+			case "/fapi/v1/positionSide/dual":
+				body = `{"dualSidePosition":true}`
+			case "/fapi/v1/multiAssetsMargin":
+				body = `{"multiAssetsMargin":true}`
+			default:
+				return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{"code":-1,"msg":"unexpected path"}`)), Header: make(http.Header)}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}),
+	})
+	return newAccountClient(rest, provider, clock.NewRealClock())
 }
 
 // --- 4. Submit synchrony (fake transport) -----------------------------------

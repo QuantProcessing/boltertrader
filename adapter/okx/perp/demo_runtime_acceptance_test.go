@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
-	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 	"github.com/shopspring/decimal"
 )
@@ -41,10 +41,17 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 		clock.NewRealClock(),
 		"okx-perp-demo",
 	)
-	if _, err := node.Resync(ctx); err != nil {
+	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
+	initialReconcile, err := node.Resync(ctx)
+	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
+	if initialReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSwap, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime private stream")
 		t.Fatalf("start OKX Perp Demo adapter stream: %v", err)
@@ -65,7 +72,7 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 		}
 	}()
 
-	if err := waitForRuntimeActive(ctx, node); err != nil {
+	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime node did not become active before OKX Perp Demo writes: %v", err)
 	}
 
@@ -116,13 +123,13 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	if filledQty.IsZero() {
 		t.Fatalf("runtime fill order reported zero executed quantity: %+v", filledResp)
 	}
-	if err := waitForRuntimeOrderFilled(ctx, node, fillClientID); err != nil {
+	if err := runtimeaccept.WaitForOrderFilled(ctx, node, fillClientID); err != nil {
 		t.Fatalf("runtime cache did not observe OKX Perp Demo fill: %v", err)
 	}
 	if err := waitForRuntimePosition(ctx, node, instID, filledQty); err != nil {
 		t.Fatalf("runtime cache did not observe OKX Perp Demo position: %v", err)
 	}
-	if err := waitForRuntimePortfolioNetQty(ctx, node, instID, filledQty); err != nil {
+	if err := runtimeaccept.WaitForPortfolioNetQty(ctx, node, instID, filledQty); err != nil {
 		t.Fatalf("runtime portfolio did not observe OKX Perp Demo fill: %v", err)
 	}
 	if got := node.Metrics(); got.OrdersSeen == 0 || got.FillsSeen == 0 {
@@ -166,36 +173,24 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	if err := waitForDemoFlat(ctx, adapter, instID); err != nil {
 		t.Fatalf("wait for OKX Perp Demo runtime flat: %v\n%s", err, cleanup.Remediation())
 	}
-	if err := waitForRuntimePortfolioFlat(ctx, node, instID); err != nil {
+	if err := runtimeaccept.WaitForPortfolioFlat(ctx, node, instID, decimal.Zero); err != nil {
 		t.Fatalf("runtime portfolio did not return flat after Perp close: %v\n%s", err, cleanup.Remediation())
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
 		t.Fatalf("wait for no OKX Perp Demo runtime open orders: %v\n%s", err, cleanup.Remediation())
 	}
-	if _, err := node.Resync(ctx); err != nil {
+	finalReconcile, err := node.Resync(ctx)
+	if err != nil {
 		t.Fatalf("final OKX Perp Demo runtime reconcile: %v", err)
 	}
+	if finalReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("final OKX Perp Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSwap, model.AccountMargin, enums.KindPerp)
 	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
 		t.Fatalf("runtime cache still has OKX Perp Demo position after final reconcile")
 	}
 	cleanup.MarkClean()
-}
-
-func waitForRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {
-	var last lifecycle.Snapshot
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.State()
-		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime active; last=%+v: %w", last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
 }
 
 func newOKXPerpDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoPerpSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
@@ -285,25 +280,6 @@ func newOKXPerpDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 	return adapter, spec, instID, qty, restingPrice, fillPrice
 }
 
-func waitForRuntimeOrderFilled(ctx context.Context, node *btruntime.TradingNode, clientID string) error {
-	var last enums.OrderStatus
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if order, ok := node.Cache.Order(clientID); ok {
-			last = order.Status
-			if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
-				return nil
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime order %s filled; last=%v: %w", clientID, last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
 func waitForRuntimePosition(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {
 	var last decimal.Decimal
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -318,40 +294,6 @@ func waitForRuntimePosition(ctx context.Context, node *btruntime.TradingNode, id
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timed out waiting for runtime position >= %s; last=%s: %w", minAbs.Abs(), last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRuntimePortfolioNetQty(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {
-	var last decimal.Decimal
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.Portfolio.NetQty(id, enums.PosNet)
-		if last.Abs().GreaterThanOrEqual(minAbs.Abs()) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime portfolio net qty >= %s; last=%s: %w", minAbs.Abs(), last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRuntimePortfolioFlat(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID) error {
-	var last decimal.Decimal
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.Portfolio.NetQty(id, enums.PosNet)
-		if last.IsZero() {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime portfolio flat; last=%s: %w", last, ctx.Err())
 		case <-ticker.C:
 		}
 	}

@@ -146,6 +146,7 @@ type ExecutionCapabilities struct {
 }
 
 type AccountCapabilities struct {
+	AccountState      CapabilityProbe
 	Balances          CapabilityProbe
 	Positions         CapabilityProbe
 	SetLeverage       CapabilityProbe
@@ -188,6 +189,7 @@ func RunPerpCapabilitySuite(t *testing.T, suite PerpCapabilitySuite) {
 		{"mass_status", suite.Execution.MassStatus},
 	})
 	runGroup(t, suite.Venue+"/account", []namedCapability{
+		{"account_state", suite.Account.AccountState},
 		{"balances", suite.Account.Balances},
 		{"positions", suite.Account.Positions},
 		{"set_leverage", suite.Account.SetLeverage},
@@ -229,6 +231,7 @@ func RunSpotCapabilitySuite(t *testing.T, suite SpotCapabilitySuite) {
 		{"mass_status", suite.Execution.MassStatus},
 	})
 	runGroup(t, suite.Venue+"/account", []namedCapability{
+		{"account_state", suite.Account.AccountState},
 		{"balances", suite.Account.Balances},
 		{"positions", suite.Account.Positions},
 		{"set_leverage", suite.Account.SetLeverage},

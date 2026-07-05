@@ -77,10 +77,12 @@ func accountEventsFromUpdate(ev *sdkperp.AccountUpdateEvent, resolve symbolResol
 	var out []contract.AccountEvent
 
 	for _, b := range ev.UpdateData.Balances {
+		free := dec(b.CrossWalletBalance)
 		out = append(out, contract.BalanceEvent{Balance: model.AccountBalance{
 			Currency:  b.Asset,
 			Total:     dec(b.WalletBalance),
-			Available: dec(b.CrossWalletBalance),
+			Free:      free,
+			Available: free,
 			UpdatedAt: ts,
 		}})
 	}

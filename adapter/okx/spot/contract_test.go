@@ -19,9 +19,10 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient  = (*executionClient)(nil)
-	_ contract.AccountClient    = (*accountClient)(nil)
-	_ contract.MarketDataClient = (*marketDataClient)(nil)
+	_ contract.ExecutionClient      = (*executionClient)(nil)
+	_ contract.AccountClient        = (*accountClient)(nil)
+	_ contract.AccountStateReporter = (*accountClient)(nil)
+	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -358,10 +359,18 @@ func TestOKXSpotOpenOrdersTranslation(t *testing.T) {
 func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	inst := testSpotInstrument()
 	rest := testREST(func(r *http.Request) (string, int) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v5/account/balance" {
-			t.Fatalf("request=%s %s, want GET /api/v5/account/balance", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s, want GET", r.Method)
 		}
-		return `{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","eq":"102.75","availBal":"100.5","frozenBal":"2.25"},{"ccy":"ETH","cashBal":"0.4","availBal":"0.3","frozenBal":"0.1"}]}]}`, 200
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			return `{"code":"0","msg":"","data":[{"uTime":"1700000000000","details":[{"ccy":"USDT","eq":"102.75","availBal":"100.5","frozenBal":"2.25","uTime":"1700000000001"},{"ccy":"ETH","cashBal":"0.4","availBal":"0.3","frozenBal":"0.1","uTime":"1700000000001"}]}]}`, 200
+		case "/api/v5/account/config":
+			return `{"code":"0","msg":"","data":[{"acctLv":"1","posMode":"net_mode","mgnIsoMode":"automatic","spotOffsetType":"","enableSpotBorrow":false}]}`, 200
+		default:
+			t.Fatalf("request=%s %s, want account balance/config", r.Method, r.URL.Path)
+			return "", 0
+		}
 	})
 	acct := newAccountClient(rest, testProvider(inst), clock.NewRealClock())
 
@@ -375,8 +384,30 @@ func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	if bals[0].Currency != "USDT" || !bals[0].Available.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
 		t.Fatalf("balance[0]=%+v", bals[0])
 	}
+	if !bals[0].Free.Equal(d("100.5")) {
+		t.Fatalf("balance[0].Free=%s, want 100.5", bals[0].Free)
+	}
 	if !bals[0].CashInvariantOK() || !bals[1].CashInvariantOK() {
 		t.Fatalf("spot balances must satisfy cash invariant: %+v", bals)
+	}
+	state, err := acct.AccountState(context.Background())
+	if err != nil {
+		t.Fatalf("AccountState: %v", err)
+	}
+	if state.AccountID != model.AccountIDOKXSpot || state.Type != model.AccountCash || state.ModeInfo.AccountMode != string(okx.AccountLevelSimple) {
+		t.Fatalf("account state identity/mode=%+v", state)
+	}
+	if !state.ModeInfo.Verified || state.ModeInfo.Source != "GET /api/v5/account/balance + GET /api/v5/account/config" {
+		t.Fatalf("account mode not verified: %+v", state.ModeInfo)
+	}
+	if len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindSpot {
+		t.Fatalf("product scope=%v, want spot", state.ModeInfo.ProductScope)
+	}
+	if state.TsEvent.UnixMilli() != 1700000000001 {
+		t.Fatalf("TsEvent=%s, want latest balance detail uTime", state.TsEvent)
+	}
+	if got := state.Balances[0].Free; !got.Equal(d("100.5")) {
+		t.Fatalf("state balance free=%s, want 100.5", got)
 	}
 	pos, err := acct.Positions(context.Background())
 	if err != nil {
@@ -424,8 +455,19 @@ func TestOKXSpotContractCapabilities(t *testing.T) {
 	provider := testProvider(inst)
 	restOnly := newMarketDataClient(nil, nil, provider, clock.NewRealClock())
 	acct := newAccountClient(testREST(func(r *http.Request) (string, int) {
-		return `{"code":"0","msg":"","data":[{"details":[]}]}`, 200
+		switch r.URL.Path {
+		case "/api/v5/account/balance":
+			return `{"code":"0","msg":"","data":[{"details":[]}]}`, 200
+		case "/api/v5/account/config":
+			return `{"code":"0","msg":"","data":[{"acctLv":"1","posMode":"net_mode"}]}`, 200
+		default:
+			t.Fatalf("unexpected account capability request: %s", r.URL.Path)
+			return "", 0
+		}
 	}), provider, clock.NewRealClock())
+	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	}
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{
 		Venue: "OKX",
@@ -452,6 +494,16 @@ func TestOKXSpotContractCapabilities(t *testing.T) {
 			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 		},
 		Account: contracttest.AccountCapabilities{
+			AccountState: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
+				state, err := acct.AccountState(ctx)
+				if err != nil {
+					return err
+				}
+				if err := state.Validate(); err != nil {
+					return err
+				}
+				return state.ModeInfo.ValidateVerified()
+			}},
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},
 			Positions: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
 				positions, err := acct.Positions(ctx)

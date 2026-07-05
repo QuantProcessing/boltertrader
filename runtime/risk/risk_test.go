@@ -2,7 +2,9 @@ package risk
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -112,7 +114,7 @@ func TestNonPositiveQty(t *testing.T) {
 func TestSpotBuyRejectsInsufficientQuoteBalance(t *testing.T) {
 	c := cache.New()
 	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("100"), Available: d("100")})
-	e := New(Limits{}, c)
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
 	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("2"), Price: d("100")}
 	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
 
@@ -121,10 +123,25 @@ func TestSpotBuyRejectsInsufficientQuoteBalance(t *testing.T) {
 	}
 }
 
+func TestSpotRiskRejectsNoAccountStateUnlessLegacyFallback(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := New(Limits{}, c).Check(req, inst)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "no account state") {
+		t.Fatalf("spot risk without account state should fail closed, got %v", err)
+	}
+	if err := New(Limits{}, c).AllowLegacyBalanceFallback().Check(req, inst); err != nil {
+		t.Fatalf("explicit legacy fallback should allow cached balance path: %v", err)
+	}
+}
+
 func TestSpotMarketBuyRejectsWithoutReferencePrice(t *testing.T) {
 	c := cache.New()
 	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
-	e := New(Limits{}, c)
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
 	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Type: enums.TypeMarket, Quantity: d("1")}
 	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
 
@@ -149,7 +166,7 @@ func TestSpotBuyRejectsWithoutInstrumentMetadata(t *testing.T) {
 func TestSpotBuyRejectsMissingQuoteMetadata(t *testing.T) {
 	c := cache.New()
 	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000000"), Available: d("1000000")})
-	e := New(Limits{}, c)
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
 	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
 	inst := &model.Instrument{ID: spotInst, Base: "BTC"}
 
@@ -162,7 +179,7 @@ func TestSpotBuyRejectsMissingQuoteMetadata(t *testing.T) {
 func TestSpotSellRejectsMissingBaseMetadata(t *testing.T) {
 	c := cache.New()
 	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("1000000"), Available: d("1000000")})
-	e := New(Limits{}, c)
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
 	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideSell, Quantity: d("1"), Price: d("100")}
 	inst := &model.Instrument{ID: spotInst, Quote: "USDT"}
 
@@ -176,11 +193,178 @@ func TestSpotSellRejectsInsufficientBaseBalanceEvenWithSyntheticPosition(t *test
 	c := cache.New()
 	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("0"), Available: d("0")})
 	c.UpsertPosition(model.Position{InstrumentID: spotInst, Side: enums.PosNet, Quantity: d("10")})
-	e := New(Limits{}, c)
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
 	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideSell, Quantity: d("1"), Price: d("100")}
 	inst := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
 
 	if err := e.Check(req, inst); !errors.Is(err, ErrRiskRejected) {
 		t.Fatalf("spot sell should reject from base balance, not synthetic position, got %v", err)
+	}
+}
+
+func TestSpotRiskUsesAccountFreeBalanceWhenPresent(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000"), Free: d("1000")})
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    "T:spot",
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("50"), Free: d("50")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    "T:spot",
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   now,
+			Source:       "test",
+		},
+		TsEvent: now,
+	}, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	e := New(Limits{}, c).WithClock(func() time.Time { return now })
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := e.Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "free 50") {
+		t.Fatalf("spot buy should use account free balance, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsNoAccount(t *testing.T) {
+	e := New(Limits{}, cache.New()).RequireAccountState()
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "no account state") {
+		t.Fatalf("want no-account rejection, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsStaleAccount(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now.Add(-time.Minute), "USDT")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "stale account state") {
+		t.Fatalf("want stale-account rejection, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsMissingPrice(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "USDT")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+	req := model.OrderRequest{InstrumentID: inst, Side: enums.SideBuy, Quantity: d("1")}
+
+	err := e.Check(req, nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "reference price") {
+		t.Fatalf("want missing-price rejection, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsMissingFreeBalance(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "BTC")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "missing free balance for USDT") {
+		t.Fatalf("want missing-free rejection, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsUnsupportedAccountMode(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    "T:spot",
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1000"), Free: d("1000")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    "T:spot",
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   now,
+			Source:       "test",
+		},
+		TsEvent: now,
+	}, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "unsupported account mode") {
+		t.Fatalf("want unsupported-mode rejection, got %v", err)
+	}
+}
+
+func TestAccountRequiredRejectsEmptyProductScope(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    "T:perp",
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1000"), Free: d("1000")},
+		},
+		TsEvent: now,
+	}, now); err == nil {
+		t.Fatal("account admission should reject empty product scope before risk sees it")
+	}
+}
+
+func TestAccountRequiredAllowsFreshMarginAccountWithFreeBalance(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "USDT")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+
+	if err := e.Check(buy("1", "100"), nil); err != nil {
+		t.Fatalf("fresh account should pass risk check: %v", err)
+	}
+}
+
+func applyMarginAccount(t *testing.T, c *cache.Cache, accountID string, eventTime time.Time, balanceCurrency string) {
+	t.Helper()
+	state := model.AccountState{
+		AccountID:    accountID,
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: balanceCurrency, Total: d("1000"), Free: d("1000")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    accountID,
+			AccountMode:  "perp",
+			ProductScope: []enums.InstrumentKind{enums.KindPerp},
+			Verified:     true,
+			VerifiedAt:   eventTime,
+			Source:       "test",
+		},
+		TsEvent: eventTime,
+	}
+	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
+		t.Fatalf("apply margin account: %v", err)
 	}
 }

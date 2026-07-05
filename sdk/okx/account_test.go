@@ -40,6 +40,53 @@ func TestClient_GetAccountConfig(t *testing.T) {
 	}
 }
 
+func TestClient_AccountEndpointPaths(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v5/account/balance", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedOKXGet(t, r)
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"details":[{"ccy":"USDT","eq":"1"}]}]}`))
+	})
+	mux.HandleFunc("/api/v5/account/positions", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedOKXGet(t, r)
+		if got := r.URL.Query().Get("instType"); got != "SWAP" {
+			t.Fatalf("instType=%q, want SWAP", got)
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+	})
+	mux.HandleFunc("/api/v5/account/config", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedOKXGet(t, r)
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"acctLv":"1","posMode":"net_mode"}]}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithBaseURL(server.URL)
+	if _, err := client.GetAccountBalance(context.Background(), nil); err != nil {
+		t.Fatalf("GetAccountBalance: %v", err)
+	}
+	instType := "SWAP"
+	if _, err := client.GetPositions(context.Background(), &instType, nil); err != nil {
+		t.Fatalf("GetPositions: %v", err)
+	}
+	if _, err := client.GetAccountConfig(context.Background()); err != nil {
+		t.Fatalf("GetAccountConfig: %v", err)
+	}
+}
+
+func assertSignedOKXGet(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodGet {
+		t.Fatalf("method=%s, want GET", r.Method)
+	}
+	for _, header := range []string{"OK-ACCESS-KEY", "OK-ACCESS-SIGN", "OK-ACCESS-TIMESTAMP", "OK-ACCESS-PASSPHRASE"} {
+		if r.Header.Get(header) == "" {
+			t.Fatalf("missing %s header", header)
+		}
+	}
+}
+
 func TestClient_SetPositionMode(t *testing.T) {
 	got, err := requireOKXLiveWrite(t).SetPositionMode(context.Background(), okxEnvOrDefault("OKX_TEST_POSITION_MODE", "net_mode"))
 	if err != nil {

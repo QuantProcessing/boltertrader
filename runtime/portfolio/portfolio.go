@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/QuantProcessing/boltertrader/runtime/accounting"
 	"github.com/shopspring/decimal"
 )
 
@@ -29,6 +30,16 @@ type Portfolio struct {
 	realized       decimal.Decimal // total realized PnL across all instruments
 	fees           decimal.Decimal // fees in the PnL currency only
 	feesByCurrency map[string]decimal.Decimal
+	accounts       AccountSource
+}
+
+// AccountSource is the account/position read model Portfolio uses for
+// account-level views. runtime/cache implements this interface.
+type AccountSource interface {
+	Account(accountID string) (accounting.Account, bool)
+	AccountForVenue(venue string) (accounting.Account, bool)
+	Accounts() []accounting.Account
+	Positions() []model.Position
 }
 
 // New returns an empty Portfolio.
@@ -37,6 +48,14 @@ func New() *Portfolio {
 		lots:           make(map[string]*lot),
 		feesByCurrency: make(map[string]decimal.Decimal),
 	}
+}
+
+// WithAccountSource binds an account/position source for account-level reads.
+func (pf *Portfolio) WithAccountSource(source AccountSource) *Portfolio {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	pf.accounts = source
+	return pf
 }
 
 func lotKey(id model.InstrumentID, side enums.PositionSide) string {
@@ -231,4 +250,139 @@ func (pf *Portfolio) UnrealizedPnL(id model.InstrumentID, side enums.PositionSid
 		return markPrice.Sub(l.avgPrice).Mul(l.qty.Abs())
 	}
 	return l.avgPrice.Sub(markPrice).Mul(l.qty.Abs())
+}
+
+// Account returns an account snapshot from the bound account source.
+func (pf *Portfolio) Account(accountID string) (accounting.Account, bool) {
+	source := pf.accountSource()
+	if source == nil {
+		return nil, false
+	}
+	return source.Account(accountID)
+}
+
+// AccountForVenue returns the unambiguous account for a venue.
+func (pf *Portfolio) AccountForVenue(venue string) (accounting.Account, bool) {
+	source := pf.accountSource()
+	if source == nil {
+		return nil, false
+	}
+	return source.AccountForVenue(venue)
+}
+
+// Accounts returns account snapshots from the bound account source.
+func (pf *Portfolio) Accounts() []accounting.Account {
+	source := pf.accountSource()
+	if source == nil {
+		return nil
+	}
+	return source.Accounts()
+}
+
+// Equity returns per-currency account equity. It starts from reported total
+// balances and adds venue-matching unrealized PnL where the account scope owns
+// that instrument kind.
+func (pf *Portfolio) Equity(accountID string) (map[string]decimal.Decimal, bool) {
+	source := pf.accountSource()
+	if source == nil {
+		return nil, false
+	}
+	acct, ok := source.Account(accountID)
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]decimal.Decimal)
+	for _, bal := range acct.Balances() {
+		out[bal.Currency] = out[bal.Currency].Add(bal.Total)
+	}
+	for _, pos := range source.Positions() {
+		if !accountOwnsPosition(acct, pos) || pos.UnrealizedPnL.IsZero() {
+			continue
+		}
+		if ccy := pnlCurrency(pos.InstrumentID); ccy != "" {
+			out[ccy] = out[ccy].Add(pos.UnrealizedPnL)
+		}
+	}
+	return out, true
+}
+
+// MarginInitial aggregates initial margin by currency for an account.
+func (pf *Portfolio) MarginInitial(accountID string) (map[string]decimal.Decimal, bool) {
+	return pf.marginByCurrency(accountID, true)
+}
+
+// MarginMaintenance aggregates maintenance margin by currency for an account.
+func (pf *Portfolio) MarginMaintenance(accountID string) (map[string]decimal.Decimal, bool) {
+	return pf.marginByCurrency(accountID, false)
+}
+
+// NetExposure returns signed mark exposure by instrument for positions owned by
+// the account. MarkPrice is preferred, EntryPrice is the deterministic fallback.
+func (pf *Portfolio) NetExposure(accountID string) (map[model.InstrumentID]decimal.Decimal, bool) {
+	source := pf.accountSource()
+	if source == nil {
+		return nil, false
+	}
+	acct, ok := source.Account(accountID)
+	if !ok {
+		return nil, false
+	}
+	out := make(map[model.InstrumentID]decimal.Decimal)
+	for _, pos := range source.Positions() {
+		if !accountOwnsPosition(acct, pos) {
+			continue
+		}
+		price := pos.MarkPrice
+		if price.IsZero() {
+			price = pos.EntryPrice
+		}
+		exposure := pos.Quantity
+		if !price.IsZero() {
+			exposure = exposure.Mul(price)
+		}
+		out[pos.InstrumentID] = out[pos.InstrumentID].Add(exposure)
+	}
+	return out, true
+}
+
+func (pf *Portfolio) marginByCurrency(accountID string, initial bool) (map[string]decimal.Decimal, bool) {
+	source := pf.accountSource()
+	if source == nil {
+		return nil, false
+	}
+	acct, ok := source.Account(accountID)
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]decimal.Decimal)
+	for _, margin := range acct.Margins() {
+		value := margin.Maintenance
+		if initial {
+			value = margin.Initial
+		}
+		out[margin.Currency] = out[margin.Currency].Add(value)
+	}
+	return out, true
+}
+
+func (pf *Portfolio) accountSource() AccountSource {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	return pf.accounts
+}
+
+func accountOwnsPosition(acct accounting.Account, pos model.Position) bool {
+	if acct == nil || acct.Venue() != pos.InstrumentID.Venue {
+		return false
+	}
+	scope := acct.LastEvent().ModeInfo.ProductScope
+	if len(scope) == 0 {
+		return false
+	}
+	for _, kind := range scope {
+		if kind == pos.InstrumentID.Kind {
+			return true
+		}
+	}
+	return false
 }

@@ -64,7 +64,8 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 		clock.NewRealClock(),
 		"hyperliquid-spot-testnet",
 	)
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache)
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache).
+		AllowLegacyBalanceFallback()
 	btruntime.WithRisk(riskEngine, adapter.Market.InstrumentProvider())(node)
 
 	if _, err := node.Resync(ctx); err != nil {

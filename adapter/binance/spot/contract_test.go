@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient  = (*executionClient)(nil)
-	_ contract.AccountClient    = (*accountClient)(nil)
-	_ contract.MarketDataClient = (*marketDataClient)(nil)
+	_ contract.ExecutionClient      = (*executionClient)(nil)
+	_ contract.AccountClient        = (*accountClient)(nil)
+	_ contract.AccountStateReporter = (*accountClient)(nil)
+	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -324,8 +325,30 @@ func TestBinanceSpotAccountBalancesTranslation(t *testing.T) {
 	if bals[0].Currency != "USDT" || !bals[0].Available.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
 		t.Fatalf("balance[0]=%+v", bals[0])
 	}
+	if !bals[0].Free.Equal(d("100.5")) {
+		t.Fatalf("balance[0].Free=%s, want 100.5", bals[0].Free)
+	}
 	if !bals[0].CashInvariantOK() || !bals[1].CashInvariantOK() {
 		t.Fatalf("spot balances must satisfy cash invariant: %+v", bals)
+	}
+	state, err := acct.AccountState(context.Background())
+	if err != nil {
+		t.Fatalf("AccountState: %v", err)
+	}
+	if state.AccountID != model.AccountIDBinanceSpot || state.Type != model.AccountCash || state.ModeInfo.AccountMode != "SPOT" {
+		t.Fatalf("account state identity/mode=%+v", state)
+	}
+	if !state.ModeInfo.Verified || state.ModeInfo.Source != "GET /api/v3/account" {
+		t.Fatalf("account mode not verified: %+v", state.ModeInfo)
+	}
+	if len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindSpot {
+		t.Fatalf("product scope=%v, want spot", state.ModeInfo.ProductScope)
+	}
+	if state.TsEvent.UnixMilli() != 1700000000000 {
+		t.Fatalf("TsEvent=%s, want REST updateTime", state.TsEvent)
+	}
+	if got := state.Balances[0].Free; !got.Equal(d("100.5")) {
+		t.Fatalf("state balance free=%s, want 100.5", got)
 	}
 	pos, err := acct.Positions(context.Background())
 	if err != nil {
@@ -399,7 +422,7 @@ func TestBinanceSpotUserDataBalanceUpdateTranslation(t *testing.T) {
 	if !ok {
 		t.Fatalf("events[0]=%T, want BalanceEvent", events[0])
 	}
-	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("100")) || !be.Balance.Available.Equal(d("99")) || !be.Balance.Locked.Equal(d("1")) {
+	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("100")) || !be.Balance.Free.Equal(d("99")) || !be.Balance.Available.Equal(d("99")) || !be.Balance.Locked.Equal(d("1")) {
 		t.Fatalf("balance event=%+v", be.Balance)
 	}
 }
@@ -411,6 +434,9 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 	acct := newAccountClient(testREST(func(r *http.Request) (string, int) {
 		return `{"balances":[]}`, 200
 	}), provider, clock.NewRealClock())
+	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	}
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{
 		Venue: "BINANCE",
@@ -437,6 +463,16 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 		},
 		Account: contracttest.AccountCapabilities{
+			AccountState: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
+				state, err := acct.AccountState(ctx)
+				if err != nil {
+					return err
+				}
+				if err := state.Validate(); err != nil {
+					return err
+				}
+				return state.ModeInfo.ValidateVerified()
+			}},
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},
 			Positions: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {
 				positions, err := acct.Positions(ctx)

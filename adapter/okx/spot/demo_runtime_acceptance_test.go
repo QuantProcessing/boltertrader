@@ -2,16 +2,15 @@ package spot
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
-	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 	"github.com/shopspring/decimal"
 )
@@ -46,10 +45,17 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 		clock.NewRealClock(),
 		"okx-spot-demo",
 	)
-	if _, err := node.Resync(ctx); err != nil {
+	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
+	initialReconcile, err := node.Resync(ctx)
+	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Spot Demo runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
+	if initialReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 before writes", got)
 	}
@@ -73,7 +79,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 		}
 	}()
 
-	if err := waitForRuntimeActive(ctx, node); err != nil {
+	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime node did not become active before OKX Spot Demo writes: %v", err)
 	}
 
@@ -124,7 +130,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if filledQty.IsZero() {
 		t.Fatalf("runtime fill order reported zero executed quantity: %+v", filledResp)
 	}
-	if err := waitForRuntimeOrderFilled(ctx, node, fillClientID); err != nil {
+	if err := runtimeaccept.WaitForOrderFilled(ctx, node, fillClientID); err != nil {
 		t.Fatalf("runtime cache did not observe OKX Spot Demo fill: %v", err)
 	}
 	if got := node.Metrics(); got.OrdersSeen == 0 || got.FillsSeen == 0 {
@@ -141,9 +147,17 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	}
 	portfolioCtx, cancelPortfolio := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelPortfolio()
-	if err := waitForRuntimePortfolioNetQty(portfolioCtx, node, instID, spec.MinQty); err != nil {
+	if err := runtimeaccept.WaitForPortfolioNetQty(portfolioCtx, node, instID, spec.MinQty); err != nil {
 		t.Fatalf("runtime portfolio did not observe OKX Spot Demo spot exposure: %v", err)
 	}
+	postBuyReconcile, err := node.Resync(ctx)
+	if err != nil {
+		t.Fatalf("post-buy OKX Spot Demo runtime reconcile: %v", err)
+	}
+	if postBuyReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("post-buy OKX Spot Demo runtime reconcile account states=%d, want 1: %+v", postBuyReconcile.AccountStatesApplied, postBuyReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
 
 	closeClientID := demoClientOrderID("runtime-close")
 	cleanup.Arm(closeClientID)
@@ -174,12 +188,17 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	}
 	flatCtx, cancelFlat := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelFlat()
-	if err := waitForRuntimePortfolioFlat(flatCtx, node, instID, spec.SizeStep); err != nil {
+	if err := runtimeaccept.WaitForPortfolioFlat(flatCtx, node, instID, spec.SizeStep); err != nil {
 		t.Fatalf("runtime portfolio did not return flat after Spot close: %v", err)
 	}
-	if _, err := node.Resync(ctx); err != nil {
+	finalReconcile, err := node.Resync(ctx)
+	if err != nil {
 		t.Fatalf("final OKX Spot Demo runtime reconcile: %v", err)
 	}
+	if finalReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("final OKX Spot Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
 	}
@@ -192,23 +211,6 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 		t.Fatalf("wait for OKX Spot Demo runtime base delta cleanup: %v\n%s", err, cleanup.Remediation())
 	}
 	cleanup.MarkClean()
-}
-
-func waitForRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {
-	var last lifecycle.Snapshot
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.State()
-		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime active; last=%+v: %w", last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
 }
 
 func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv.OKXDemoConfig) (*Adapter, demoSpotSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
@@ -276,57 +278,4 @@ func newOKXSpotDemoRuntimeFixture(t *testing.T, ctx context.Context, cfg testenv
 		t.Skipf("skipping OKX Spot Demo runtime acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	return adapter, spec, instID, qty, restingPrice, fillPrice
-}
-
-func waitForRuntimeOrderFilled(ctx context.Context, node *btruntime.TradingNode, clientID string) error {
-	var last enums.OrderStatus
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if order, ok := node.Cache.Order(clientID); ok {
-			last = order.Status
-			if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
-				return nil
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime order %s filled; last=%v: %w", clientID, last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRuntimePortfolioNetQty(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {
-	var last decimal.Decimal
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.Portfolio.NetQty(id, enums.PosNet)
-		if last.Abs().GreaterThanOrEqual(minAbs.Abs()) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime portfolio net qty >= %s; last=%s: %w", minAbs.Abs(), last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRuntimePortfolioFlat(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, tolerance decimal.Decimal) error {
-	var last decimal.Decimal
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last = node.Portfolio.NetQty(id, enums.PosNet)
-		if last.Abs().LessThan(tolerance.Abs()) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("timed out waiting for runtime portfolio flat within %s; last=%s: %w", tolerance.Abs(), last, ctx.Err())
-		case <-ticker.C:
-		}
-	}
 }

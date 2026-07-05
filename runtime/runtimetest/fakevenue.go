@@ -230,9 +230,11 @@ func (f *FakeExec) EmitReject(clientID, reason string) {
 
 // FakeAccount is an in-memory AccountClient driven by Emit* helpers.
 type FakeAccount struct {
-	events    chan contract.AccountEnvelope
-	balances  []model.AccountBalance
-	positions []model.Position
+	events       chan contract.AccountEnvelope
+	balances     []model.AccountBalance
+	positions    []model.Position
+	accountState model.AccountState
+	hasState     bool
 }
 
 // NewFakeAccount returns a FakeAccount with a buffered event channel.
@@ -241,11 +243,24 @@ func NewFakeAccount() *FakeAccount {
 }
 
 func (f *FakeAccount) Capabilities() contract.Capabilities {
+	reports := contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true}
+	streaming := contract.StreamCapabilities{Account: true}
+	if f.hasState {
+		reports.AccountStateSnapshots = true
+		streaming.AccountState = true
+	}
 	return contract.Capabilities{
 		Venue:     "FAKE",
-		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
-		Streaming: contract.StreamCapabilities{Account: true},
+		Reports:   reports,
+		Streaming: streaming,
 	}
+}
+
+func (f *FakeAccount) AccountState(ctx context.Context) (model.AccountState, error) {
+	if !f.hasState {
+		return model.AccountState{}, fmt.Errorf("fake account state snapshot is not configured: %w", contract.ErrNotSupported)
+	}
+	return cloneAccountState(f.accountState), nil
 }
 
 func (f *FakeAccount) Balances(ctx context.Context) ([]model.AccountBalance, error) {
@@ -270,6 +285,11 @@ func (f *FakeAccount) SetSnapshots(balances []model.AccountBalance, positions []
 	f.positions = append([]model.Position(nil), positions...)
 }
 
+func (f *FakeAccount) SetAccountStateSnapshot(state model.AccountState) {
+	f.accountState = cloneAccountState(state)
+	f.hasState = true
+}
+
 // EmitBalance pushes a balance event.
 func (f *FakeAccount) EmitBalance(b model.AccountBalance) {
 	f.events <- contract.NewAccountEnvelopeWithMeta(contract.BalanceEvent{Balance: b}, testEventMeta())
@@ -278,6 +298,14 @@ func (f *FakeAccount) EmitBalance(b model.AccountBalance) {
 // EmitPosition pushes a position event.
 func (f *FakeAccount) EmitPosition(p model.Position) {
 	f.events <- contract.NewAccountEnvelopeWithMeta(contract.PositionEvent{Position: p}, testEventMeta())
+}
+
+func (f *FakeAccount) EmitAccountState(state model.AccountState) {
+	f.events <- contract.NewAccountEnvelopeWithMeta(contract.AccountStateEvent{State: cloneAccountState(state)}, testEventMeta())
+}
+
+func cloneAccountState(state model.AccountState) model.AccountState {
+	return model.CloneAccountState(state)
 }
 
 // FakeMarket is an in-memory MarketDataClient driven by Emit* helpers. The

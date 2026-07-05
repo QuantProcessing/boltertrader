@@ -70,6 +70,7 @@ func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent) []contra
 		out = append(out, contract.BalanceEvent{Balance: model.AccountBalance{
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
+			Free:      free,
 			Available: free,
 			Locked:    locked,
 			UpdatedAt: ts,

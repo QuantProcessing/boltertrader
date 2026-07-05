@@ -5,8 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
@@ -20,7 +22,11 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 
 	adapter, spec, instID, qty, restingPrice := newBinanceDemoRuntimeAcceptanceFixture(t, ctx)
 	defer adapter.Close()
+	cleanupArmed := false
 	defer func() {
+		if !cleanupArmed {
+			return
+		}
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelCleanup()
 		meta := demoAcceptanceCleanupMetadata{Symbol: spec.VenueSymbol, Side: "BUY", Quantity: qty}
@@ -42,15 +48,23 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 		"btdr",
 		btruntime.WithStrategy(tester),
 	)
+	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
 
-	if _, err := node.Resync(ctx); err != nil {
+	initialReconcile, err := node.Resync(ctx)
+	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
+	if initialReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceUSDM, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime user-data stream")
 		t.Fatalf("start Binance Demo adapter stream: %v", err)
 	}
+	cleanupArmed = true
 
 	runCtx, stopNode := context.WithCancel(ctx)
 	nodeDone := make(chan struct{})
@@ -104,9 +118,14 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if err := waitForDemoRuntimePortfolioFlat(ctx, node, instID); err != nil {
 		t.Fatalf("runtime portfolio did not observe Demo close fill: %v\n%s", err, meta.Remediation())
 	}
-	if _, err := node.Resync(ctx); err != nil {
+	finalReconcile, err := node.Resync(ctx)
+	if err != nil {
 		t.Fatalf("final runtime reconcile: %v", err)
 	}
+	if finalReconcile.AccountStatesApplied != 1 {
+		t.Fatalf("final runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
+	}
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceUSDM, model.AccountMargin, enums.KindPerp)
 	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
 		t.Fatalf("runtime cache still has Demo position after final reconcile")
 	}

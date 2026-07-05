@@ -2,6 +2,8 @@ package perp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 )
@@ -13,6 +15,55 @@ func TestClient_GetAccount(t *testing.T) {
 	}
 	if got.TotalWalletBalance == "" {
 		t.Fatalf("unexpected account response: %+v", got)
+	}
+}
+
+func TestClient_AccountAndModeEndpointPaths(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fapi/v2/account", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedGet(t, r)
+		_, _ = w.Write([]byte(`{"totalWalletBalance":"1","assets":[],"positions":[]}`))
+	})
+	mux.HandleFunc("/fapi/v2/balance", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedGet(t, r)
+		_, _ = w.Write([]byte(`[{"asset":"USDT","balance":"1","availableBalance":"1"}]`))
+	})
+	mux.HandleFunc("/fapi/v1/positionSide/dual", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedGet(t, r)
+		_, _ = w.Write([]byte(`{"dualSidePosition":false}`))
+	})
+	mux.HandleFunc("/fapi/v1/multiAssetsMargin", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedGet(t, r)
+		_, _ = w.Write([]byte(`{"multiAssetsMargin":false}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient().
+		WithBaseURL(server.URL).
+		WithCredentials("key", "secret").
+		WithRateLimiter(nil)
+	if _, err := client.GetAccount(context.Background()); err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if _, err := client.GetBalance(context.Background()); err != nil {
+		t.Fatalf("GetBalance: %v", err)
+	}
+	if _, err := client.GetPositionMode(context.Background()); err != nil {
+		t.Fatalf("GetPositionMode: %v", err)
+	}
+	if _, err := client.GetMultiAssetsMode(context.Background()); err != nil {
+		t.Fatalf("GetMultiAssetsMode: %v", err)
+	}
+}
+
+func assertSignedGet(t *testing.T, r *http.Request) {
+	t.Helper()
+	if r.Method != http.MethodGet {
+		t.Fatalf("method=%s, want GET", r.Method)
+	}
+	if r.URL.Query().Get("timestamp") == "" || r.URL.Query().Get("signature") == "" {
+		t.Fatalf("signed request missing timestamp/signature: %s", r.URL.RawQuery)
 	}
 }
 

@@ -117,6 +117,62 @@ func TestVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestAccountStateEventAppliesToCache(t *testing.T) {
+	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fexec := runtimetest.NewFakeExec()
+	facct := runtimetest.NewFakeAccount()
+	filled := make(chan model.Fill, 1)
+	node := runtime.NewNode(
+		runtime.Clients{Execution: fexec, Account: facct},
+		clk, "test",
+		runtime.WithOnFill(func(f model.Fill) { filled <- f }),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go node.Run(ctx)
+	waitNodeRunning(t, node)
+
+	ts := clk.Now()
+	state := model.AccountState{
+		AccountID: model.AccountIDBinanceSpot,
+		Venue:     "BINANCE",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    d("100"),
+			Free:     d("100"),
+		}},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "BINANCE",
+			AccountID:    model.AccountIDBinanceSpot,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   ts,
+			Source:       "test",
+		},
+		Reported: true,
+		TsEvent:  ts,
+	}
+	facct.EmitAccountState(state)
+	waitUntil(t, func() bool {
+		_, ok := node.Cache.Account(model.AccountIDBinanceSpot)
+		return ok
+	}, "timed out waiting for account state")
+
+	acct, ok := node.Cache.Account(model.AccountIDBinanceSpot)
+	if !ok || acct.ID() != model.AccountIDBinanceSpot {
+		t.Fatalf("cache account missing: ok=%v acct=%v", ok, acct)
+	}
+	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Free.Equal(d("100")) {
+		t.Fatalf("compat balance=%+v ok=%v, want free 100", b, ok)
+	}
+	if m := node.Metrics(); m.Accounts != 1 || m.AccountStateAgeNs < 0 {
+		t.Fatalf("metrics did not expose account state: %+v", m)
+	}
+}
+
 // TestReconnectForcesReconnectAndReconciles proves node.Reconnect drives a
 // Reconnectable client's Reconnect and THEN reconciles state: an open order the
 // venue reports but the cache never saw is adopted (the post-reconnect repair
