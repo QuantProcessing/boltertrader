@@ -37,6 +37,8 @@ func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 		"HYPERLIQUID|Spot cash":  false,
 		"HYPERLIQUID|Perp":       false,
 		"HYPERLIQUID|HIP-3 Perp": false,
+		"LIGHTER|Spot cash":      true,
+		"LIGHTER|Perp":           true,
 	}
 	for _, row := range CapabilityMatrix() {
 		key := row.Venue + "|" + row.Product

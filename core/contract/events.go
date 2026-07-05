@@ -206,12 +206,14 @@ func inferExecMeta(payload ExecEvent) EventMeta {
 	case OrderEvent:
 		meta.InstrumentID = p.Order.Request.InstrumentID
 		meta.Venue = p.Order.Request.InstrumentID.Venue
+		meta.AccountID = p.Order.Request.AccountID
 		meta.ClientID = p.Order.Request.ClientID
 		meta.VenueOrderID = p.Order.VenueOrderID
 		meta.EventID = model.EventID(joinEventID("exec", "order", meta.Venue, meta.ClientID, meta.VenueOrderID, p.Order.Status.String()))
 	case FillEvent:
 		meta.InstrumentID = p.Fill.InstrumentID
 		meta.Venue = p.Fill.InstrumentID.Venue
+		meta.AccountID = p.Fill.AccountID
 		meta.ClientID = p.Fill.ClientID
 		meta.VenueOrderID = p.Fill.VenueOrderID
 		meta.TradeID = p.Fill.TradeID
@@ -231,11 +233,13 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 	meta := EventMeta{}
 	switch p := payload.(type) {
 	case BalanceEvent:
+		meta.AccountID = p.Balance.AccountID
 		meta.EventID = model.EventID(joinEventID("account", "balance", p.Balance.Currency, p.Balance.UpdatedAt.Format(time.RFC3339Nano)))
 		meta.TsVenue = p.Balance.UpdatedAt
 	case PositionEvent:
 		meta.InstrumentID = p.Position.InstrumentID
 		meta.Venue = p.Position.InstrumentID.Venue
+		meta.AccountID = p.Position.AccountID
 		meta.EventID = model.EventID(joinEventID("account", "position", p.Position.InstrumentID.String(), p.Position.Side.String(), p.Position.UpdatedAt.Format(time.RFC3339Nano)))
 		meta.TsVenue = p.Position.UpdatedAt
 	case AccountStateEvent:

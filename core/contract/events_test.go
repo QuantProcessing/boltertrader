@@ -98,3 +98,36 @@ func TestAccountStateEnvelopeInfersMeta(t *testing.T) {
 		t.Fatalf("account state envelope should retain stream flag: %b", env.Flags)
 	}
 }
+
+func TestExecAndAccountEnvelopesInferAccountID(t *testing.T) {
+	fill := model.Fill{
+		AccountID:    "T:acct",
+		InstrumentID: model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		ClientID:     "c1",
+		VenueOrderID: "v1",
+		TradeID:      "t1",
+		Timestamp:    time.Unix(11, 0),
+	}
+	fillEnv := NewExecEnvelope(FillEvent{Fill: fill})
+	if fillEnv.AccountID != "T:acct" {
+		t.Fatalf("fill envelope account id=%q, want T:acct", fillEnv.AccountID)
+	}
+
+	order := model.Order{Request: model.OrderRequest{AccountID: "T:acct", InstrumentID: fill.InstrumentID, ClientID: "c1"}}
+	orderEnv := NewExecEnvelope(OrderEvent{Order: order})
+	if orderEnv.AccountID != "T:acct" {
+		t.Fatalf("order envelope account id=%q, want T:acct", orderEnv.AccountID)
+	}
+
+	pos := model.Position{AccountID: "T:acct", InstrumentID: fill.InstrumentID, Side: enums.PosNet, UpdatedAt: time.Unix(12, 0)}
+	posEnv := NewAccountEnvelope(PositionEvent{Position: pos})
+	if posEnv.AccountID != "T:acct" {
+		t.Fatalf("position envelope account id=%q, want T:acct", posEnv.AccountID)
+	}
+
+	bal := model.AccountBalance{AccountID: "T:acct", Currency: "USDT", UpdatedAt: time.Unix(13, 0)}
+	balEnv := NewAccountEnvelope(BalanceEvent{Balance: bal})
+	if balEnv.AccountID != "T:acct" {
+		t.Fatalf("balance envelope account id=%q, want T:acct", balEnv.AccountID)
+	}
+}

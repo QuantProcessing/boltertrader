@@ -43,6 +43,7 @@ func (t AccountType) Valid() bool {
 // OKX's Pos+PosSide, and Hyperliquid's signed Szi. Side disambiguates hedge
 // mode where two legs of the same instrument coexist.
 type Position struct {
+	AccountID     string
 	InstrumentID  InstrumentID
 	Side          enums.PositionSide // PosLong/PosShort under hedge mode, else PosNet
 	Quantity      decimal.Decimal    // signed: + long, - short
@@ -56,6 +57,7 @@ type Position struct {
 // AccountBalance is a per-currency balance. Hyperliquid reports a single USDC
 // balance; Binance and OKX report many.
 type AccountBalance struct {
+	AccountID string
 	Currency  string
 	Total     decimal.Decimal
 	Free      decimal.Decimal

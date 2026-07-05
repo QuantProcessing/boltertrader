@@ -11,6 +11,7 @@ import (
 // portable fields; venue-only knobs go through Venue (the escape hatch), which
 // is nil for fully portable orders.
 type OrderRequest struct {
+	AccountID    string
 	InstrumentID InstrumentID
 	ClientID     string // idempotency key (Binance newClientOrderId / OKX clOrdId / HL cloid)
 	Side         enums.OrderSide
@@ -59,6 +60,7 @@ type Order struct {
 
 // Fill is a single execution against an order.
 type Fill struct {
+	AccountID    string
 	InstrumentID InstrumentID
 	VenueOrderID string
 	ClientID     string

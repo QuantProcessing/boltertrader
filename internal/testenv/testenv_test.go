@@ -152,6 +152,44 @@ func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(
 	}
 }
 
+func TestLighterTestnetEnvContractConstants(t *testing.T) {
+	if LighterTestnetPrivateKeyEnv != "LIGHTER_TESTNET_PRIVATE_KEY" {
+		t.Fatalf("LighterTestnetPrivateKeyEnv=%q", LighterTestnetPrivateKeyEnv)
+	}
+	if LighterTestnetAccountIndexEnv != "LIGHTER_TESTNET_ACCOUNT_INDEX" {
+		t.Fatalf("LighterTestnetAccountIndexEnv=%q", LighterTestnetAccountIndexEnv)
+	}
+	if LighterTestnetAPIKeyIndexEnv != "LIGHTER_TESTNET_API_KEY_INDEX" {
+		t.Fatalf("LighterTestnetAPIKeyIndexEnv=%q", LighterTestnetAPIKeyIndexEnv)
+	}
+}
+
+func TestLighterTestnetConfigFromEnvDefaultsMaxNotionalAndSymbols(t *testing.T) {
+	t.Setenv(LighterTestnetPrivateKeyEnv, "test-private")
+	t.Setenv(LighterTestnetAccountIndexEnv, "66")
+	t.Setenv(LighterTestnetAPIKeyIndexEnv, "4")
+	t.Setenv(LighterTestnetMaxNotionalUSDCEnv, "")
+	t.Setenv(LighterTestnetSpotSymbolEnv, "")
+	t.Setenv(LighterTestnetPerpSymbolEnv, "")
+
+	cfg, err := LighterTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("LighterTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.AccountIndex != 66 || cfg.APIKeyIndex != 4 {
+		t.Fatalf("unexpected indexes: %+v", cfg)
+	}
+	if cfg.MaxNotionalUSDC.String() != "100" {
+		t.Fatalf("max notional=%s, want 100", cfg.MaxNotionalUSDC)
+	}
+	if cfg.SpotSymbol != LighterTestnetDefaultSpotSymbol || cfg.PerpSymbol != LighterTestnetDefaultPerpSymbol {
+		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if strings.Contains(cfg.String(), "test-private") {
+		t.Fatalf("config String leaked private key: %s", cfg.String())
+	}
+}
+
 func TestRequireBinanceDemoWriteSkipsWithoutDemoCredentials(t *testing.T) {
 	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
 	t.Setenv("BINANCE_DEMO_API_KEY", "")

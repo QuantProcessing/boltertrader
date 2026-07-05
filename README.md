@@ -139,9 +139,10 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 
 Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
 **OKX Spot cash**, **Hyperliquid Spot cash**, **Hyperliquid Perp**, and
-**Hyperliquid HIP-3 Perp** for the supported live/Testnet subset. The explicit
-support matrix is in [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md).
-Adding a venue means writing one adapter; no runtime or strategy change.
+**Hyperliquid HIP-3 Perp**, **Lighter Spot cash**, and **Lighter Perp** for the
+supported live/Testnet subset. The explicit support matrix is in
+[`docs/adapter-capabilities.md`](docs/adapter-capabilities.md). Adding a venue
+means writing one adapter; no runtime or strategy change.
 
 ## Testing
 
@@ -257,6 +258,29 @@ make test-hyperliquid-testnet-perp
 make test-hyperliquid-testnet-runtime-perp
 make test-hyperliquid-testnet-hip3
 make test-hyperliquid-testnet-runtime-hip3
+```
+
+Lighter Testnet acceptance covers Spot and Perp under one unified account index.
+Read-only discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1`; write and
+runtime targets require `LIGHTER_TESTNET_PRIVATE_KEY`,
+`LIGHTER_TESTNET_ACCOUNT_INDEX`, `LIGHTER_TESTNET_API_KEY_INDEX`, and are
+enabled by the Makefile with `BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1`.
+
+```sh
+LIGHTER_TESTNET_PRIVATE_KEY=... \
+LIGHTER_TESTNET_ACCOUNT_INDEX=66 \
+LIGHTER_TESTNET_API_KEY_INDEX=4 \
+make test-lighter-testnet-acceptance
+```
+
+Product-qualified Lighter targets are:
+
+```sh
+make test-lighter-testnet-read
+make test-lighter-testnet-spot
+make test-lighter-testnet-runtime-spot
+make test-lighter-testnet-perp
+make test-lighter-testnet-runtime-perp
 ```
 
 Spot Demo data acceptance is read-only and uses the live-read gate:

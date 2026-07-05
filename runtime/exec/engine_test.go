@@ -211,6 +211,25 @@ func TestSubmitIntentCarriesAccountID(t *testing.T) {
 	t.Fatal("no command intent record")
 }
 
+func TestSubmitRequestCarriesEngineAccountID(t *testing.T) {
+	fake := runtimetest.NewFakeExec()
+	e, c, _ := testEngine(fake)
+	e.WithAccountID("acct-1")
+	var submitted model.OrderRequest
+	fake.OnSubmit(func(req model.OrderRequest) { submitted = req })
+
+	if _, err := e.Submit(context.Background(), testReq("account-request")); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if submitted.AccountID != "acct-1" {
+		t.Fatalf("submitted account_id=%q, want acct-1", submitted.AccountID)
+	}
+	cached, ok := c.Order("account-request")
+	if !ok || cached.Request.AccountID != "acct-1" {
+		t.Fatalf("cached order ok=%v account_id=%q, want acct-1", ok, cached.Request.AccountID)
+	}
+}
+
 func TestSubmitIntentDefaultsAccountIDFromPrefix(t *testing.T) {
 	fake := runtimetest.NewFakeExec()
 	e, _, j := testEngine(fake)

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -50,6 +51,18 @@ const (
 	HyperliquidTestnetHIP3SymbolEnv      = "HYPERLIQUID_TESTNET_HIP3_SYMBOL"
 
 	HyperliquidTestnetDefaultMaxNotionalUSDC = "100"
+
+	LighterTestnetPrivateKeyEnv      = "LIGHTER_TESTNET_PRIVATE_KEY"
+	LighterTestnetAccountIndexEnv    = "LIGHTER_TESTNET_ACCOUNT_INDEX"
+	LighterTestnetAPIKeyIndexEnv     = "LIGHTER_TESTNET_API_KEY_INDEX"
+	LighterTestnetEnableWriteEnv     = "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES"
+	LighterTestnetMaxNotionalUSDCEnv = "LIGHTER_TESTNET_MAX_NOTIONAL_USDC"
+	LighterTestnetSpotSymbolEnv      = "LIGHTER_TESTNET_SPOT_SYMBOL"
+	LighterTestnetPerpSymbolEnv      = "LIGHTER_TESTNET_PERP_SYMBOL"
+
+	LighterTestnetDefaultMaxNotionalUSDC = "100"
+	LighterTestnetDefaultSpotSymbol      = "ETH-USDC"
+	LighterTestnetDefaultPerpSymbol      = "ETH-USDC"
 )
 
 type OKXDemoConfig struct {
@@ -76,6 +89,16 @@ type HyperliquidTestnetConfig struct {
 	ProxyURL        string
 }
 
+type LighterTestnetConfig struct {
+	PrivateKey      string
+	AccountIndex    int64
+	APIKeyIndex     uint8
+	MaxNotionalUSDC decimal.Decimal
+	SpotSymbol      string
+	PerpSymbol      string
+	ProxyURL        string
+}
+
 func (c HyperliquidTestnetConfig) String() string {
 	return fmt.Sprintf(
 		"HyperliquidTestnetConfig{PrivateKey:%s AccountAddress:%q VaultAddress:%q MaxNotionalUSDC:%s SpotSymbol:%q PerpSymbol:%q HIP3Symbol:%q ProxyURL:%q}",
@@ -88,6 +111,23 @@ func (c HyperliquidTestnetConfig) String() string {
 		c.HIP3Symbol,
 		redactURL(c.ProxyURL),
 	)
+}
+
+func (c LighterTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"LighterTestnetConfig{PrivateKey:%s AccountIndex:%d APIKeyIndex:%d MaxNotionalUSDC:%s SpotSymbol:%q PerpSymbol:%q ProxyURL:%q}",
+		redactSecret(c.PrivateKey),
+		c.AccountIndex,
+		c.APIKeyIndex,
+		c.MaxNotionalUSDC.String(),
+		c.SpotSymbol,
+		c.PerpSymbol,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c LighterTestnetConfig) GoString() string {
+	return c.String()
 }
 
 func (c HyperliquidTestnetConfig) GoString() string {
@@ -266,8 +306,95 @@ func RequireHyperliquidTestnetRead(t testing.TB) HyperliquidTestnetConfig {
 	return cfg
 }
 
+func RequireLighterTestnetRead(t testing.TB) LighterTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Lighter Testnet read test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
+		t.Skip("skipping Lighter Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	cfg, err := LighterTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Lighter Testnet read env: %v", err)
+	}
+	return cfg
+}
+
+func RequireLighterTestnetWrite(t testing.TB) LighterTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Lighter Testnet write test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv(LighterTestnetEnableWriteEnv) != "1" {
+		t.Skipf("skipping Lighter Testnet write test: set %s=1 to enable real testnet writes", LighterTestnetEnableWriteEnv)
+	}
+	if missing := missingEnv(LighterTestnetPrivateKeyEnv, LighterTestnetAccountIndexEnv, LighterTestnetAPIKeyIndexEnv); len(missing) > 0 {
+		t.Skipf("skipping Lighter Testnet write test: missing required env %s", strings.Join(missing, ", "))
+	}
+	cfg, err := LighterTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Lighter Testnet env: %v", err)
+	}
+	return cfg
+}
+
 func HyperliquidTestnetConfigFromEnv() (HyperliquidTestnetConfig, error) {
 	return hyperliquidTestnetConfigFromEnv(true)
+}
+
+func LighterTestnetConfigFromEnv() (LighterTestnetConfig, error) {
+	return lighterTestnetConfigFromEnv(true)
+}
+
+func LighterTestnetReadConfigFromEnv() (LighterTestnetConfig, error) {
+	return lighterTestnetConfigFromEnv(false)
+}
+
+func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, error) {
+	required := []string{LighterTestnetAccountIndexEnv, LighterTestnetAPIKeyIndexEnv}
+	if requirePrivateKey {
+		required = append(required, LighterTestnetPrivateKeyEnv)
+	}
+	if missing := missingEnv(required...); len(missing) > 0 {
+		return LighterTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+	}
+	accountIndex, err := parseInt64Env(LighterTestnetAccountIndexEnv)
+	if err != nil {
+		return LighterTestnetConfig{}, err
+	}
+	apiKeyIndex64, err := parseUint8Env(LighterTestnetAPIKeyIndexEnv)
+	if err != nil {
+		return LighterTestnetConfig{}, err
+	}
+	maxNotional, err := decimal.NewFromString(envOrDefault(LighterTestnetMaxNotionalUSDCEnv, LighterTestnetDefaultMaxNotionalUSDC))
+	if err != nil {
+		return LighterTestnetConfig{}, fmt.Errorf("%s must be a decimal: %w", LighterTestnetMaxNotionalUSDCEnv, err)
+	}
+	if !maxNotional.IsPositive() {
+		return LighterTestnetConfig{}, fmt.Errorf("%s must be positive", LighterTestnetMaxNotionalUSDCEnv)
+	}
+	proxyURL := strings.TrimSpace(os.Getenv("PROXY"))
+	if proxyURL != "" {
+		if err := validateURL(proxyURL, "PROXY", "http", "https", "socks5"); err != nil {
+			return LighterTestnetConfig{}, err
+		}
+	}
+	return LighterTestnetConfig{
+		PrivateKey:      os.Getenv(LighterTestnetPrivateKeyEnv),
+		AccountIndex:    accountIndex,
+		APIKeyIndex:     apiKeyIndex64,
+		MaxNotionalUSDC: maxNotional,
+		SpotSymbol:      envOrDefault(LighterTestnetSpotSymbolEnv, LighterTestnetDefaultSpotSymbol),
+		PerpSymbol:      envOrDefault(LighterTestnetPerpSymbolEnv, LighterTestnetDefaultPerpSymbol),
+		ProxyURL:        proxyURL,
+	}, nil
 }
 
 func HyperliquidTestnetReadConfigFromEnv() (HyperliquidTestnetConfig, error) {
@@ -309,6 +436,14 @@ func hyperliquidTestnetConfigFromEnv(requirePrivateKey bool) (HyperliquidTestnet
 }
 
 func HyperliquidTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
+func LighterTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
+func proxiedHTTPClient(timeout time.Duration) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 
@@ -520,6 +655,30 @@ func envOrDefault(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+func parseInt64Env(key string) (int64, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func parseUint8Env(key string) (uint8, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0, fmt.Errorf("%s is required", key)
+	}
+	parsed, err := strconv.ParseUint(value, 10, 8)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an unsigned 8-bit integer: %w", key, err)
+	}
+	return uint8(parsed), nil
 }
 
 func validateURL(raw, envName string, allowedSchemes ...string) error {

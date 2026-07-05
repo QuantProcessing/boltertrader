@@ -5,7 +5,6 @@
 package cache
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
@@ -20,25 +19,28 @@ import (
 // learn about only from the venue.
 type orderKey = string
 
-// positionKey identifies a position by instrument and side (hedge mode can hold
-// a long and a short leg for the same instrument simultaneously).
+// positionKey identifies a position by account, instrument and side (hedge mode
+// can hold a long and a short leg for the same instrument simultaneously).
 type positionKey struct {
+	accountID  string
 	instrument string
 	side       enums.PositionSide
 }
 
+type balanceKey struct {
+	accountID string
+	currency  string
+}
+
 // Cache holds the live trading state.
 type Cache struct {
-	mu        sync.RWMutex
-	orders    map[orderKey]model.Order
-	positions map[positionKey]model.Position
-	balances  map[string]model.AccountBalance // keyed by currency
-	market    map[string]*marketState         // keyed by InstrumentID.String()
-	accounts  map[string]accounting.Account
-	// One runtime node owns one account/product per venue in this phase. A
-	// second same-venue account must use a separate node until positions and
-	// balances carry account IDs end to end.
-	accountByVenue    map[string]string
+	mu                sync.RWMutex
+	orders            map[orderKey]model.Order
+	positions         map[positionKey]model.Position
+	balances          map[balanceKey]model.AccountBalance
+	market            map[string]*marketState // keyed by InstrumentID.String()
+	accounts          map[string]accounting.Account
+	accountByVenue    map[string]map[string]struct{}
 	accountStaleAfter time.Duration
 }
 
@@ -47,10 +49,10 @@ func New() *Cache {
 	return &Cache{
 		orders:            make(map[orderKey]model.Order),
 		positions:         make(map[positionKey]model.Position),
-		balances:          make(map[string]model.AccountBalance),
+		balances:          make(map[balanceKey]model.AccountBalance),
 		market:            make(map[string]*marketState),
 		accounts:          make(map[string]accounting.Account),
-		accountByVenue:    make(map[string]string),
+		accountByVenue:    make(map[string]map[string]struct{}),
 		accountStaleAfter: accounting.DefaultStaleAfter,
 	}
 }
@@ -132,7 +134,7 @@ func isTerminal(s enums.OrderStatus) bool {
 func (c *Cache) UpsertPosition(p model.Position) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	k := positionKey{instrument: p.InstrumentID.String(), side: p.Side}
+	k := positionKey{accountID: p.AccountID, instrument: p.InstrumentID.String(), side: p.Side}
 	if p.Quantity.IsZero() {
 		delete(c.positions, k)
 		return
@@ -144,7 +146,25 @@ func (c *Cache) UpsertPosition(p model.Position) {
 func (c *Cache) Position(id model.InstrumentID, side enums.PositionSide) (model.Position, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	p, ok := c.positions[positionKey{instrument: id.String(), side: side}]
+	var out model.Position
+	found := false
+	for key, p := range c.positions {
+		if key.instrument != id.String() || key.side != side {
+			continue
+		}
+		if found {
+			return model.Position{}, false
+		}
+		out = p
+		found = true
+	}
+	return out, found
+}
+
+func (c *Cache) PositionForAccount(accountID string, id model.InstrumentID, side enums.PositionSide) (model.Position, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	p, ok := c.positions[positionKey{accountID: accountID, instrument: id.String(), side: side}]
 	return p, ok
 }
 
@@ -164,14 +184,33 @@ func (c *Cache) Positions() []model.Position {
 func (c *Cache) UpsertBalance(b model.AccountBalance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.balances[b.Currency] = b.Normalized()
+	b = b.Normalized()
+	c.balances[balanceKey{accountID: b.AccountID, currency: b.Currency}] = b
 }
 
 // Balance returns the balance for a currency.
 func (c *Cache) Balance(currency string) (model.AccountBalance, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	b, ok := c.balances[currency]
+	var out model.AccountBalance
+	found := false
+	for key, b := range c.balances {
+		if key.currency != currency {
+			continue
+		}
+		if found {
+			return model.AccountBalance{}, false
+		}
+		out = b
+		found = true
+	}
+	return out, found
+}
+
+func (c *Cache) BalanceForAccount(accountID, currency string) (model.AccountBalance, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	b, ok := c.balances[balanceKey{accountID: accountID, currency: currency}]
 	return b, ok
 }
 
@@ -195,9 +234,6 @@ func (c *Cache) ApplyAccountStateAt(state model.AccountState, appliedAt time.Tim
 	defer c.mu.Unlock()
 	acct, ok := c.accounts[state.AccountID]
 	if !ok {
-		if err := c.ensureVenueAccountInvariantLocked(state.Venue, state.AccountID); err != nil {
-			return err
-		}
 		var err error
 		acct, err = accounting.New(state, c.accountStaleAfter, appliedAt)
 		if err != nil {
@@ -209,7 +245,11 @@ func (c *Cache) ApplyAccountStateAt(state model.AccountState, appliedAt time.Tim
 		return err
 	}
 	for _, bal := range acct.Balances() {
-		c.balances[bal.Currency] = bal.Normalized()
+		bal = bal.Normalized()
+		if bal.AccountID == "" {
+			bal.AccountID = state.AccountID
+		}
+		c.balances[balanceKey{accountID: bal.AccountID, currency: bal.Currency}] = bal
 	}
 	return nil
 }
@@ -232,12 +272,27 @@ func (c *Cache) Account(accountID string) (accounting.Account, bool) {
 func (c *Cache) AccountForVenue(venue string) (accounting.Account, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	accountID, ok := c.accountByVenue[venue]
-	if !ok {
+	accountIDs := c.accountByVenue[venue]
+	if len(accountIDs) != 1 {
 		return nil, false
+	}
+	var accountID string
+	for id := range accountIDs {
+		accountID = id
 	}
 	acct, ok := c.accounts[accountID]
 	return acct, ok
+}
+
+func (c *Cache) AccountIDsForVenue(venue string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	accountIDs := c.accountByVenue[venue]
+	out := make([]string, 0, len(accountIDs))
+	for id := range accountIDs {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (c *Cache) Accounts() []accounting.Account {
@@ -250,20 +305,12 @@ func (c *Cache) Accounts() []accounting.Account {
 	return out
 }
 
-func (c *Cache) ensureVenueAccountInvariantLocked(venue, accountID string) error {
-	if venue == "" {
-		return nil
-	}
-	existing, ok := c.accountByVenue[venue]
-	if !ok || existing == accountID {
-		return nil
-	}
-	return fmt.Errorf("cache: multiple account states for venue %s are not supported in one runtime node: existing %s new %s", venue, existing, accountID)
-}
-
 func (c *Cache) indexAccountByVenue(venue, accountID string) {
 	if venue == "" {
 		return
 	}
-	c.accountByVenue[venue] = accountID
+	if c.accountByVenue[venue] == nil {
+		c.accountByVenue[venue] = make(map[string]struct{})
+	}
+	c.accountByVenue[venue][accountID] = struct{}{}
 }

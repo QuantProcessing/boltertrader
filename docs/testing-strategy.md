@@ -86,6 +86,18 @@ and exchange state are available.
   Testnet execution through `runtime.TradingNode`.
 - `make test-hyperliquid-testnet-acceptance`: complete Hyperliquid Testnet
   acceptance gate for Spot, standard Perp, and configured HIP-3.
+- `make test-lighter-testnet-read`: read-only Lighter Testnet Spot/Perp market
+  and unified account discovery.
+- `make test-lighter-testnet-spot`: adapter-level Lighter Testnet Spot
+  execution.
+- `make test-lighter-testnet-runtime-spot`: runtime-level Lighter Testnet Spot
+  execution through `runtime.TradingNode`.
+- `make test-lighter-testnet-perp`: adapter-level Lighter Testnet Perp
+  execution.
+- `make test-lighter-testnet-runtime-perp`: runtime-level Lighter Testnet Perp
+  execution through `runtime.TradingNode`.
+- `make test-lighter-testnet-acceptance`: complete Lighter Testnet acceptance
+  gate for Spot and Perp under the unified account model.
 
 See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_testing.md)
 for the execution acceptance spec and pass criteria.
@@ -107,15 +119,15 @@ translation code. Default tests must prove:
   or account mode is insufficient.
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
-fake-venue end-to-end gate for this behavior. Demo runtime acceptance for
-Binance and OKX must run the same shape against exchange snapshots before and
-after order flows.
+fake-venue end-to-end gate for this behavior. Demo/Testnet runtime acceptance
+for Binance, OKX, Hyperliquid, and Lighter must run the same shape against
+exchange snapshots before and after order flows.
 
-Current runtime ownership is intentionally one account/product per venue per
-`TradingNode`. The cache rejects a second account state for the same venue
-inside one node; running Binance Spot and USD-M, or OKX Spot and SWAP, should use
-separate product adapters/nodes until balances and positions become account-ID
-owned throughout cache, portfolio, risk, and reconciliation.
+Runtime ownership is account-id based. A venue may expose multiple account
+states in one process, and cache, portfolio, risk, reconciliation, balances, and
+positions are keyed by account id. Product-specific venues such as Binance Spot
+and USD-M may still use separate nodes, while unified venues such as Lighter can
+run Spot and Perp against the same `LIGHTER:account:<index>` account id.
 
 Risk gates are strict by default for spot orders once this account-state runtime
 path is in use: a missing account state rejects instead of silently falling back
@@ -293,6 +305,47 @@ state through the runtime cache, assert no REST open orders remain, and require 
 flat final cache/portfolio. Perp and HIP-3 runtime tests skip when the testnet
 account is not flat before the run; the Make acceptance gate reports that skip
 as a failed acceptance run.
+
+## Lighter Testnet Writes
+
+Lighter acceptance uses Lighter Testnet and never falls back to mainnet. Lighter
+uses one unified account index for Spot and Perp, so runtime tests must pass the
+same account id into `runtime.WithAccountID` and verify account-state cache,
+portfolio, risk, and reconciliation behavior through that account id.
+
+Expose credentials and selectors under:
+
+- `LIGHTER_TESTNET_PRIVATE_KEY`
+- `LIGHTER_TESTNET_ACCOUNT_INDEX`
+- `LIGHTER_TESTNET_API_KEY_INDEX`
+- optional `LIGHTER_TESTNET_MAX_NOTIONAL_USDC`, default `100`
+- optional `LIGHTER_TESTNET_SPOT_SYMBOL`, default `ETH-USDC`
+- optional `LIGHTER_TESTNET_PERP_SYMBOL`, default `ETH-USDC`
+
+Read-only testnet discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1` and
+requires account/api-key indexes but not the private key. Write and runtime
+tests require the private key plus `BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1`; the
+Makefile write/runtime targets set that enable flag command-locally.
+
+Run the full Lighter Testnet gate with:
+
+```sh
+LIGHTER_TESTNET_PRIVATE_KEY=... \
+LIGHTER_TESTNET_ACCOUNT_INDEX=66 \
+LIGHTER_TESTNET_API_KEY_INDEX=4 \
+make test-lighter-testnet-acceptance
+```
+
+The Lighter Make acceptance targets fail when a selected acceptance test skips.
+A skipped write/runtime test means the account, symbol, funding, dirty open
+orders, or dirty positions did not satisfy the spec and the NT-style acceptance
+evidence is incomplete.
+
+The adapter-level tests place and cancel a conservative resting post-only order.
+Runtime tests construct `runtime.TradingNode`, reconcile account state before
+and after the write flow, require explicit account-id risk, submit through
+`node.Exec`, observe cancel state through the runtime cache, assert no REST open
+orders remain, and require a flat final cache/portfolio.
 
 ## Fixture Rules
 

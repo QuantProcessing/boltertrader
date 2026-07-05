@@ -254,6 +254,9 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	if req.ClientID == "" {
 		req.ClientID = e.nextClientID()
 	}
+	if req.AccountID == "" {
+		req.AccountID = e.accountID
+	}
 	cmd.ClientID = req.ClientID
 
 	if e.gate != nil {

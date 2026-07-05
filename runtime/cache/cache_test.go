@@ -71,11 +71,50 @@ func TestHedgeLegsCoexist(t *testing.T) {
 	}
 }
 
+func TestPositionsAreScopedByAccountID(t *testing.T) {
+	c := New()
+	c.UpsertPosition(model.Position{AccountID: "T:acct-a", InstrumentID: inst, Side: enums.PosNet, Quantity: decimal.RequireFromString("1")})
+	c.UpsertPosition(model.Position{AccountID: "T:acct-b", InstrumentID: inst, Side: enums.PosNet, Quantity: decimal.RequireFromString("2")})
+
+	gotA, ok := c.PositionForAccount("T:acct-a", inst, enums.PosNet)
+	if !ok || !gotA.Quantity.Equal(decimal.RequireFromString("1")) {
+		t.Fatalf("acct-a position=%+v ok=%v, want qty 1", gotA, ok)
+	}
+	gotB, ok := c.PositionForAccount("T:acct-b", inst, enums.PosNet)
+	if !ok || !gotB.Quantity.Equal(decimal.RequireFromString("2")) {
+		t.Fatalf("acct-b position=%+v ok=%v, want qty 2", gotB, ok)
+	}
+	if got := c.Positions(); len(got) != 2 {
+		t.Fatalf("positions len=%d, want 2: %+v", len(got), got)
+	}
+	if _, ok := c.Position(inst, enums.PosNet); ok {
+		t.Fatal("legacy position lookup should be ambiguous across accounts")
+	}
+}
+
 func TestBalanceUpsert(t *testing.T) {
 	c := New()
 	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: decimal.RequireFromString("100")})
 	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(decimal.RequireFromString("100")) {
 		t.Fatalf("balance: ok=%v total=%s", ok, b.Total)
+	}
+}
+
+func TestBalancesAreScopedByAccountID(t *testing.T) {
+	c := New()
+	c.UpsertBalance(model.AccountBalance{AccountID: "T:acct-a", Currency: "USDT", Total: decimal.RequireFromString("100"), Free: decimal.RequireFromString("100")})
+	c.UpsertBalance(model.AccountBalance{AccountID: "T:acct-b", Currency: "USDT", Total: decimal.RequireFromString("200"), Free: decimal.RequireFromString("200")})
+
+	gotA, ok := c.BalanceForAccount("T:acct-a", "USDT")
+	if !ok || !gotA.Total.Equal(decimal.RequireFromString("100")) {
+		t.Fatalf("acct-a balance=%+v ok=%v, want total 100", gotA, ok)
+	}
+	gotB, ok := c.BalanceForAccount("T:acct-b", "USDT")
+	if !ok || !gotB.Total.Equal(decimal.RequireFromString("200")) {
+		t.Fatalf("acct-b balance=%+v ok=%v, want total 200", gotB, ok)
+	}
+	if _, ok := c.Balance("USDT"); ok {
+		t.Fatal("legacy balance lookup should be ambiguous across accounts")
 	}
 }
 
@@ -146,7 +185,7 @@ func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
 	}
 }
 
-func TestApplyAccountStateRejectsMultipleAccountsForSameVenue(t *testing.T) {
+func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	state := model.AccountState{
@@ -178,7 +217,10 @@ func TestApplyAccountStateRejectsMultipleAccountsForSameVenue(t *testing.T) {
 	state.ModeInfo.AccountID = model.AccountIDBinanceUSDM
 	state.ModeInfo.AccountMode = "USD-M"
 	state.ModeInfo.ProductScope = []enums.InstrumentKind{enums.KindPerp}
-	if err := c.ApplyAccountStateAt(state, ts); err == nil {
-		t.Fatal("second account for same venue should be rejected")
+	if err := c.ApplyAccountStateAt(state, ts); err != nil {
+		t.Fatalf("second account for same venue should be accepted under account-id ownership: %v", err)
+	}
+	if _, ok := c.AccountForVenue("BINANCE"); ok {
+		t.Fatal("venue fallback should be ambiguous when two accounts exist for one venue")
 	}
 }

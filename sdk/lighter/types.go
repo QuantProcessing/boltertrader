@@ -50,6 +50,7 @@ const (
 	IsolatedMarginMode = 1
 
 	MainnetChainID = 304
+	TestnetChainID = 300
 )
 
 type OrderStatus string
@@ -378,29 +379,33 @@ type AccountResponse struct {
 }
 
 type Account struct {
-	Code                     int32        `json:"code"`
-	Msg                      string       `json:"message"`
-	AccountType              int8         `json:"account_type"`
-	Index                    int64        `json:"index"`
-	L1Address                string       `json:"l1_address"`
-	CancelAllTime            int64        `json:"cancel_all_time"`
-	TotalOrderCount          int64        `json:"total_order_count"`
-	TotalIsolatedOrderCount  int64        `json:"total_isolated_order_count"`
-	PendingOrderCount        int64        `json:"pending_order_count"`
-	AvailableBalance         string       `json:"available_balance"`
-	Status                   uint8        `json:"status"`
-	Collateral               string       `json:"collateral"`
-	AccountIndex             int64        `json:"account_index"`
-	Name                     string       `json:"name"`
-	Description              string       `json:"description"`
-	CanInvite                bool         `json:"can_invite"`
-	ReferralPointsPercentage string       `json:"referral_points_percentage"`
-	Positions                []*Position  `json:"positions"`
-	Assets                   []*SpotAsset `json:"assets"`
-	TotalAssetValue          string       `json:"total_asset_value"`
-	CrossAssetValue          string       `json:"cross_asset_value"`
-	PoolInfo                 *PoolInfo    `json:"pool_info"`
-	Shares                   []*Share     `json:"shares"`
+	Code                      int32        `json:"code"`
+	Msg                       string       `json:"message"`
+	AccountType               int8         `json:"account_type"`
+	Index                     int64        `json:"index"`
+	L1Address                 string       `json:"l1_address"`
+	CancelAllTime             int64        `json:"cancel_all_time"`
+	TotalOrderCount           int64        `json:"total_order_count"`
+	TotalIsolatedOrderCount   int64        `json:"total_isolated_order_count"`
+	PendingOrderCount         int64        `json:"pending_order_count"`
+	AvailableBalance          string       `json:"available_balance"`
+	Status                    uint8        `json:"status"`
+	Collateral                string       `json:"collateral"`
+	TransactionTime           int64        `json:"transaction_time"`
+	AccountTradingMode        int          `json:"account_trading_mode"`
+	AccountIndex              int64        `json:"account_index"`
+	Name                      string       `json:"name"`
+	Description               string       `json:"description"`
+	CanInvite                 bool         `json:"can_invite"`
+	ReferralPointsPercentage  string       `json:"referral_points_percentage"`
+	Positions                 []*Position  `json:"positions"`
+	Assets                    []*SpotAsset `json:"assets"`
+	TotalAssetValue           string       `json:"total_asset_value"`
+	CrossAssetValue           string       `json:"cross_asset_value"`
+	CrossInitialMarginReq     string       `json:"cross_initial_margin_requirement"`
+	CrossMaintenanceMarginReq string       `json:"cross_maintenance_margin_requirement"`
+	PoolInfo                  *PoolInfo    `json:"pool_info"`
+	Shares                    []*Share     `json:"shares"`
 }
 
 type SpotAsset struct {
@@ -408,6 +413,8 @@ type SpotAsset struct {
 	AssetId       int    `json:"asset_id"`
 	Balance       string `json:"balance"`
 	LockedBalance string `json:"locked_balance"`
+	MarginMode    string `json:"margin_mode"`
+	MarginBalance string `json:"margin_balance"`
 }
 
 type Position struct {

@@ -237,6 +237,53 @@ func TestSpotRiskUsesAccountFreeBalanceWhenPresent(t *testing.T) {
 	}
 }
 
+func TestRiskUsesExplicitOrderAccountID(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyCashAccount(t, c, "T:poor", now, "10")
+	applyCashAccount(t, c, "T:rich", now, "1000")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+	req := model.OrderRequest{AccountID: "T:rich", InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	if err := e.Check(req, spot); err != nil {
+		t.Fatalf("explicit rich account should pass, got %v", err)
+	}
+	req.AccountID = "T:poor"
+	err := e.Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "account T:poor") {
+		t.Fatalf("explicit poor account should reject with account id, got %v", err)
+	}
+}
+
+func TestRiskAllowsUnifiedMarginAccountForSpotWhenScopeIncludesSpot(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyUnifiedMarginAccount(t, c, "T:unified", now)
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+	req := model.OrderRequest{AccountID: "T:unified", InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	if err := e.Check(req, spot); err != nil {
+		t.Fatalf("unified margin account with spot scope should pass spot risk, got %v", err)
+	}
+}
+
+func TestRiskRejectsAmbiguousVenueAccountFallback(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	applyCashAccount(t, c, "T:acct-a", now, "1000")
+	applyCashAccount(t, c, "T:acct-b", now, "1000")
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("1"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := e.Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "ambiguous account state") {
+		t.Fatalf("missing account id should reject ambiguous venue fallback, got %v", err)
+	}
+}
+
 func TestAccountRequiredRejectsNoAccount(t *testing.T) {
 	e := New(Limits{}, cache.New()).RequireAccountState()
 
@@ -366,5 +413,58 @@ func applyMarginAccount(t *testing.T, c *cache.Cache, accountID string, eventTim
 	}
 	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
 		t.Fatalf("apply margin account: %v", err)
+	}
+}
+
+func applyCashAccount(t *testing.T, c *cache.Cache, accountID string, eventTime time.Time, free string) {
+	t.Helper()
+	state := model.AccountState{
+		AccountID:    accountID,
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{AccountID: accountID, Currency: "USDT", Total: d(free), Free: d(free)},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    accountID,
+			AccountMode:  "spot",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot},
+			Verified:     true,
+			VerifiedAt:   eventTime,
+			Source:       "test",
+		},
+		TsEvent: eventTime,
+	}
+	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
+		t.Fatalf("apply cash account: %v", err)
+	}
+}
+
+func applyUnifiedMarginAccount(t *testing.T, c *cache.Cache, accountID string, eventTime time.Time) {
+	t.Helper()
+	state := model.AccountState{
+		AccountID:    accountID,
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{AccountID: accountID, Currency: "USDT", Total: d("1000"), Free: d("1000")},
+			{AccountID: accountID, Currency: "BTC", Total: d("1"), Free: d("1")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:        "T",
+			AccountID:    accountID,
+			AccountMode:  "unified",
+			ProductScope: []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
+			Verified:     true,
+			VerifiedAt:   eventTime,
+			Source:       "test",
+		},
+		TsEvent: eventTime,
+	}
+	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
+		t.Fatalf("apply unified margin account: %v", err)
 	}
 }

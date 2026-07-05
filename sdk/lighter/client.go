@@ -21,7 +21,15 @@ import (
 
 const (
 	MainnetAPIURL  = "https://mainnet.zklighter.elliot.ai"
+	TestnetAPIURL  = "https://testnet.zklighter.elliot.ai"
 	ExplorerAPIURL = "https://explorer.elliot.ai/api"
+)
+
+type Environment string
+
+const (
+	EnvironmentMainnet Environment = "mainnet"
+	EnvironmentTestnet Environment = "testnet"
 )
 
 type Client struct {
@@ -47,6 +55,25 @@ func NewClient() *Client {
 		Logger:     zap.NewNop().Sugar().Named("lighter-rest"),
 		ChainId:    MainnetChainID,
 	}
+}
+
+func (c *Client) WithEnvironment(env Environment) *Client {
+	switch env {
+	case EnvironmentTestnet:
+		c.BaseURL = TestnetAPIURL
+		c.ChainId = TestnetChainID
+	default:
+		c.BaseURL = MainnetAPIURL
+		c.ChainId = MainnetChainID
+	}
+	return c
+}
+
+func (c *Client) WithBaseURL(baseURL string) *Client {
+	if baseURL != "" {
+		c.BaseURL = baseURL
+	}
+	return c
 }
 
 func (c *Client) WithCredentials(privateKey string, accountIndex int64, keyIndex uint8) *Client {

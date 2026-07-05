@@ -205,7 +205,7 @@ func (c *Client) ModifyOrder(ctx context.Context, req ModifyOrderRequest) (*Modi
 		"tx_info": string(txInfoBytes),
 	}
 
-	data, err := c.PostForm(ctx, "/api/v1/sendTx", params, false)
+	data, err := c.PostForm(ctx, "/api/v1/sendTx", params, true)
 	if err != nil {
 		return nil, err
 	}

@@ -154,6 +154,9 @@ func (a *baseAccount) Apply(state model.AccountState, appliedAt time.Time) error
 	a.balances = make(map[string]model.AccountBalance, len(state.Balances))
 	for _, bal := range state.Balances {
 		bal = bal.Normalized()
+		if bal.AccountID == "" {
+			bal.AccountID = state.AccountID
+		}
 		a.balances[bal.Currency] = bal
 	}
 	a.margins = make(map[marginKey]model.MarginBalance, len(state.Margins))

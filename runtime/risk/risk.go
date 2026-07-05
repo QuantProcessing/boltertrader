@@ -162,7 +162,7 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 	// Resulting-position cap: current signed qty + this order's signed delta.
 	if lim := e.limits.MaxPositionQty; req.InstrumentID.Kind != enums.KindSpot && !lim.IsZero() {
 		cur := decimal.Zero
-		if p, ok := e.cache.Position(req.InstrumentID, req.PositionSide); ok {
+		if p, ok := e.positionForRequest(req); ok {
 			cur = p.Quantity
 		}
 		delta := req.Quantity
@@ -183,7 +183,9 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 }
 
 func (e *Engine) checkSpotBalance(req model.OrderRequest, inst *model.Instrument) error {
-	if acct, ok := e.accountForVenue(req.InstrumentID.Venue); ok {
+	if acct, ok, err := e.accountForRequest(req); err != nil {
+		return err
+	} else if ok {
 		return e.checkSpotAccountBalance(req, inst, acct)
 	}
 	if e.requireAccountState || !e.allowLegacyBalance {
@@ -230,7 +232,7 @@ func (e *Engine) checkLegacySpotBalance(req model.OrderRequest, inst *model.Inst
 }
 
 func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Instrument, acct accounting.Account) error {
-	if acct.Type() != model.AccountCash || !accountSupportsKind(acct, enums.KindSpot) {
+	if (acct.Type() != model.AccountCash && acct.Type() != model.AccountMargin) || !accountSupportsKind(acct, enums.KindSpot) {
 		return fmt.Errorf("%w: unsupported account mode %s for spot order", ErrRiskRejected, acct.Type())
 	}
 	if err := e.ensureFreshAccount(acct); err != nil {
@@ -250,7 +252,7 @@ func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Ins
 			return fmt.Errorf("%w: missing free balance for %s on account %s", ErrRiskRejected, inst.Quote, acct.ID())
 		}
 		if required.GreaterThan(free) {
-			return fmt.Errorf("%w: insufficient %s cash: need %s, free %s", ErrRiskRejected, inst.Quote, required, free)
+			return fmt.Errorf("%w: insufficient %s cash on account %s: need %s, free %s", ErrRiskRejected, inst.Quote, acct.ID(), required, free)
 		}
 	case enums.SideSell:
 		if inst.Base == "" {
@@ -262,14 +264,17 @@ func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Ins
 			return fmt.Errorf("%w: missing free balance for %s on account %s", ErrRiskRejected, inst.Base, acct.ID())
 		}
 		if required.GreaterThan(free) {
-			return fmt.Errorf("%w: insufficient %s inventory: need %s, free %s", ErrRiskRejected, inst.Base, required, free)
+			return fmt.Errorf("%w: insufficient %s inventory on account %s: need %s, free %s", ErrRiskRejected, inst.Base, acct.ID(), required, free)
 		}
 	}
 	return nil
 }
 
 func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrument) error {
-	acct, ok := e.accountForVenue(req.InstrumentID.Venue)
+	acct, ok, err := e.accountForRequest(req)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
 	}
@@ -292,16 +297,38 @@ func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrume
 	}
 	required := orderNotional(req, inst)
 	if required.GreaterThan(free) {
-		return fmt.Errorf("%w: insufficient %s margin: need %s, free %s", ErrRiskRejected, ccy, required, free)
+		return fmt.Errorf("%w: insufficient %s margin on account %s: need %s, free %s", ErrRiskRejected, ccy, acct.ID(), required, free)
 	}
 	return nil
 }
 
-func (e *Engine) accountForVenue(venue string) (accounting.Account, bool) {
+func (e *Engine) accountForRequest(req model.OrderRequest) (accounting.Account, bool, error) {
 	if e.cache == nil {
-		return nil, false
+		return nil, false, nil
 	}
-	return e.cache.AccountForVenue(venue)
+	if req.AccountID != "" {
+		acct, ok := e.cache.Account(req.AccountID)
+		if !ok {
+			return nil, false, fmt.Errorf("%w: no account state for account %s", ErrRiskRejected, req.AccountID)
+		}
+		return acct, true, nil
+	}
+	ids := e.cache.AccountIDsForVenue(req.InstrumentID.Venue)
+	if len(ids) > 1 {
+		return nil, false, fmt.Errorf("%w: ambiguous account state for venue %s; account id required", ErrRiskRejected, req.InstrumentID.Venue)
+	}
+	acct, ok := e.cache.AccountForVenue(req.InstrumentID.Venue)
+	return acct, ok, nil
+}
+
+func (e *Engine) positionForRequest(req model.OrderRequest) (model.Position, bool) {
+	if e.cache == nil {
+		return model.Position{}, false
+	}
+	if req.AccountID != "" {
+		return e.cache.PositionForAccount(req.AccountID, req.InstrumentID, req.PositionSide)
+	}
+	return e.cache.Position(req.InstrumentID, req.PositionSide)
 }
 
 func (e *Engine) ensureFreshAccount(acct accounting.Account) error {
@@ -349,7 +376,14 @@ func marginCurrency(id model.InstrumentID, inst *model.Instrument) string {
 			return inst.Quote
 		}
 	}
-	_, quote, ok := strings.Cut(id.Symbol, "-")
+	quote := ""
+	for i := len(id.Symbol) - 1; i >= 0; i-- {
+		if id.Symbol[i] == '-' {
+			quote = id.Symbol[i+1:]
+			break
+		}
+	}
+	ok := quote != ""
 	if !ok {
 		return ""
 	}
