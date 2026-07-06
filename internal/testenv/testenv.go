@@ -694,7 +694,14 @@ func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, 
 }
 
 func HyperliquidTestnetReadConfigFromEnv() (HyperliquidTestnetConfig, error) {
-	return hyperliquidTestnetConfigFromEnv(false)
+	cfg, err := hyperliquidTestnetConfigFromEnv(false)
+	if err != nil {
+		return HyperliquidTestnetConfig{}, err
+	}
+	if strings.TrimSpace(cfg.PrivateKey) == "" && strings.TrimSpace(cfg.AccountAddress) == "" {
+		return HyperliquidTestnetConfig{}, fmt.Errorf("missing Hyperliquid read identity: set %s or %s", HyperliquidTestnetPrivateKeyEnv, HyperliquidTestnetAccountAddressEnv)
+	}
+	return cfg, nil
 }
 
 func hyperliquidTestnetConfigFromEnv(requirePrivateKey bool) (HyperliquidTestnetConfig, error) {

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"sync"
 
+	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -22,6 +24,7 @@ type accountClient struct {
 	clk                clock.Clock
 	marginModeLeverage decimal.Decimal
 	accountMode        sdk.AccountAbstraction
+	accountID          string
 	stream             *wsstream.Stream[contract.AccountEnvelope]
 
 	mu          sync.RWMutex
@@ -29,7 +32,7 @@ type accountClient struct {
 	defaultMode string
 }
 
-func newAccountClient(rest *sdkperp.Client, provider *instruments.Registry, clk clock.Clock, mode string, marginModeLeverage decimal.Decimal, accountMode sdk.AccountAbstraction) *accountClient {
+func newAccountClient(rest *sdkperp.Client, provider *instruments.Registry, clk clock.Clock, mode string, marginModeLeverage decimal.Decimal, accountMode sdk.AccountAbstraction, accountID ...string) *accountClient {
 	normalized, err := normalizeMarginMode(mode)
 	if err != nil {
 		normalized = "cross"
@@ -43,6 +46,7 @@ func newAccountClient(rest *sdkperp.Client, provider *instruments.Registry, clk 
 		clk:                clk,
 		marginModeLeverage: marginModeLeverage,
 		accountMode:        accountMode,
+		accountID:          firstAccountID(accountID),
 		stream:             wsstream.New[contract.AccountEnvelope](256),
 		marginModes:        make(map[string]string),
 		defaultMode:        normalized,
@@ -68,11 +72,43 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 	if err != nil {
 		return nil, err
 	}
-	balance, ok := balanceFromPerpPosition(state, c.clk)
+	balance, ok := balanceFromPerpPosition(state, c.clk, c.accountID)
 	if !ok {
 		return []model.AccountBalance{}, nil
 	}
 	return []model.AccountBalance{balance}, nil
+}
+
+func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
+	mode := c.accountMode
+	if mode == sdk.AccountAbstractionUnknown {
+		resolved, err := c.rest.GetUserAbstraction(ctx, c.rest.AccountAddr)
+		if err != nil {
+			return model.AccountState{}, err
+		}
+		mode = resolved
+	}
+	perpState, err := c.rest.GetBalance(ctx)
+	if err != nil {
+		return model.AccountState{}, err
+	}
+	spotState, err := c.rest.GetSpotClearinghouseState(ctx, c.rest.AccountAddr)
+	if err != nil {
+		return model.AccountState{}, err
+	}
+	return hlaccount.BuildAccountState(hlaccount.StateInput{
+		AccountID:         c.accountID,
+		AccountMode:       mode,
+		Perp:              perpState,
+		Spot:              spotState,
+		ProductScope:      []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
+		Now:               c.clk.Now(),
+		AccountModeSource: "userAbstraction",
+		Details: map[string]string{
+			"account_address": c.rest.AccountAddr,
+			"adapter":         "perp",
+		},
+	})
 }
 
 func (c *accountClient) spotClearinghouseBalances(ctx context.Context) ([]model.AccountBalance, error) {
@@ -86,6 +122,7 @@ func (c *accountClient) spotClearinghouseBalances(ctx context.Context) ([]model.
 		total := dec(b.Total)
 		locked := dec(b.Hold)
 		out = append(out, model.AccountBalance{
+			AccountID: c.accountID,
 			Currency:  b.Coin,
 			Total:     total,
 			Available: total.Sub(locked),
@@ -103,7 +140,7 @@ func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error)
 	}
 	now := c.clk.Now()
 	out := make([]model.Position, 0, len(state.AssetPositions))
-	for _, pos := range positionsFromPerpPosition(state, c.provider, now) {
+	for _, pos := range positionsFromPerpPosition(state, c.provider, now, c.accountID) {
 		if pos.Quantity.IsZero() {
 			continue
 		}
@@ -177,4 +214,11 @@ func (c *accountClient) emit(ev contract.AccountEvent) {
 func (c *accountClient) Close() error {
 	c.stream.Close()
 	return nil
+}
+
+func firstAccountID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }

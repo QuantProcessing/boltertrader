@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -18,6 +19,7 @@ import (
 
 type Config struct {
 	PrivateKey         string
+	AccountID          string
 	AccountAddress     string
 	VaultAddress       string
 	Environment        sdk.Environment
@@ -55,17 +57,28 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		vault := cfg.VaultAddress
 		base.WithCredentials(cfg.PrivateKey, &vault)
 	}
-	if cfg.AccountAddress != "" {
-		base.WithAccount(cfg.AccountAddress)
-	}
 	if cfg.RESTBaseURL != "" {
 		base.BaseURL = cfg.RESTBaseURL
 	}
 	if cfg.HTTPClient != nil {
 		base.Http = cfg.HTTPClient
 	}
+	apiAccountAddress, err := hlaccount.ResolveAPIAccountAddress(ctx, base, cfg.AccountAddress)
+	if err != nil {
+		return nil, err
+	}
 
 	rest := sdkperp.NewClient(base)
+	identity, err := hlaccount.ResolveIdentity(hlaccount.Source{
+		ExplicitAccountID: cfg.AccountID,
+		AccountAddress:    apiAccountAddress,
+		VaultAddress:      cfg.VaultAddress,
+		SignerAddress:     base.AccountAddr,
+	})
+	if err != nil {
+		return nil, err
+	}
+	accountID := identity.AccountID
 	insts, err := buildRegistryInstruments(ctx, rest, sdkspot.NewClient(base), cfg)
 	if err != nil {
 		return nil, err
@@ -80,8 +93,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		vault := cfg.VaultAddress
 		wsBase.WithCredentials(cfg.PrivateKey, &vault)
 	}
-	if cfg.AccountAddress != "" {
-		wsBase.AccountAddr = cfg.AccountAddress
+	if apiAccountAddress != "" {
+		wsBase.AccountAddr = apiAccountAddress
 	}
 	ws := sdkperp.NewWebsocketClient(wsBase)
 
@@ -89,8 +102,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, provider, clk, cfg.MarginMode, cfg.MarginModeLeverage, accountMode)
+	exec := newExecutionClient(rest, provider, clk, accountID)
+	acct := newAccountClient(rest, provider, clk, cfg.MarginMode, cfg.MarginModeLeverage, accountMode, accountID)
 	market := newMarketDataClient(rest, ws, provider, clk)
 
 	return &Adapter{
@@ -254,7 +267,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 	account := a.ws.AccountAddr
 	if err := a.ws.SubscribeOrderUpdates(account, func(updates []sdk.WsOrderUpdate) {
 		for _, update := range updates {
-			for _, ev := range execEventsFromOrderUpdate(update, a.provider) {
+			for _, ev := range execEventsFromOrderUpdate(update, a.provider, a.exec.accountID) {
 				a.exec.emit(ev)
 			}
 		}
@@ -262,14 +275,14 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return err
 	}
 	if err := a.ws.SubscribeUserFills(account, func(fills sdk.WsUserFills) {
-		for _, ev := range execEventsFromUserFills(fills, a.provider) {
+		for _, ev := range execEventsFromUserFills(fills, a.provider, a.exec.accountID) {
 			a.exec.emit(ev)
 		}
 	}); err != nil {
 		return err
 	}
 	return a.ws.SubscribeWebData2(account, func(pos sdkperp.PerpPosition) {
-		for _, ev := range accountEventsFromPerpPosition(&pos, a.provider, a.clk) {
+		for _, ev := range accountEventsFromPerpPosition(&pos, a.provider, a.clk, a.acct.accountID) {
 			a.acct.emit(ev)
 		}
 	})

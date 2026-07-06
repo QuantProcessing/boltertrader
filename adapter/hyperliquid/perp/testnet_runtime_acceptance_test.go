@@ -74,6 +74,10 @@ func newHyperliquidPerpTestnetRuntimeAdapter(t *testing.T, ctx context.Context, 
 
 func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Context, adapter *Adapter, cfg testenv.HyperliquidTestnetConfig, inst *model.Instrument, label string) {
 	t.Helper()
+	accountID := adapter.acct.accountID
+	if accountID == "" || adapter.exec.accountID != accountID {
+		t.Fatalf("adapter account ids acct=%q exec=%q, want shared canonical account id", adapter.acct.accountID, adapter.exec.accountID)
+	}
 	if open, err := adapter.Execution.OpenOrders(ctx, inst.ID); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid "+label+" Testnet runtime open order preflight")
 		t.Fatalf("open order preflight: %v", err)
@@ -98,18 +102,22 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
 		clock.NewRealClock(),
 		"hyperliquid-"+strings.ToLower(strings.ReplaceAll(label, "-", ""))+"-testnet",
+		btruntime.WithAccountID(accountID),
+		btruntime.WithAccountStaleAfter(2*time.Minute),
 	)
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache).
-		AllowLegacyBalanceFallback()
+	riskEngine := risk.New(risk.Limits{}, node.Cache).
+		RequireAccountState()
 	btruntime.WithRisk(riskEngine, adapter.Market.InstrumentProvider())(node)
 
-	if _, err := node.Resync(ctx); err != nil {
+	rep, err := node.Resync(ctx)
+	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid "+label+" Testnet runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
-	if got := node.Cache.Balances(); len(got) == 0 {
-		t.Fatalf("runtime cache has no balances after initial reconcile")
+	if rep.AccountStatesApplied != 1 {
+		t.Fatalf("initial runtime reconcile account states=%d, want 1 (report=%+v)", rep.AccountStatesApplied, rep)
 	}
+	assertHyperliquidPerpRuntimeAccountReady(t, node, accountID)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("runtime cache has %d pre-existing positions after clean preflight", got)
 	}
@@ -128,16 +136,17 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 	if err := waitForHyperliquidPerpRuntimeActive(ctx, node); err != nil {
 		t.Fatalf("runtime did not become active before Hyperliquid %s Testnet writes: %v", label, err)
 	}
+	oversizedQty := hyperliquidPerpAccountBackedRejectQuantity(t, node, accountID, inst, qty, price)
 	if _, err := node.Exec.Submit(ctx, model.OrderRequest{
 		InstrumentID: inst.ID,
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifGTX,
-		Quantity:     qty,
-		Price:        price.Mul(decimal.NewFromInt(10)),
+		Quantity:     oversizedQty,
+		Price:        price,
 		PositionSide: enums.PosNet,
-	}); !errors.Is(err, risk.ErrRiskRejected) {
-		t.Fatalf("risk probe err=%v, want ErrRiskRejected", err)
+	}); !errors.Is(err, risk.ErrRiskRejected) || !strings.Contains(err.Error(), "account") {
+		t.Fatalf("account-state risk probe err=%v, want account-backed ErrRiskRejected", err)
 	}
 
 	var venueOrderID string
@@ -158,6 +167,9 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 	if err != nil {
 		t.Fatalf("runtime submit Hyperliquid %s Testnet resting order: %v", label, err)
 	}
+	if order.Request.AccountID != accountID {
+		t.Fatalf("submitted %s order account id=%q, want %q", label, order.Request.AccountID, accountID)
+	}
 	venueOrderID = order.VenueOrderID
 	if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
 		t.Fatalf("resting runtime order unexpectedly filled: %+v", order)
@@ -172,9 +184,14 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 	if err := waitForNoHyperliquidPerpOpenOrders(ctx, adapter, inst.ID); err != nil {
 		t.Fatalf("wait for no Hyperliquid %s Testnet open orders: %v", label, err)
 	}
-	if _, err := node.Resync(ctx); err != nil {
+	finalRep, err := node.Resync(ctx)
+	if err != nil {
 		t.Fatalf("final Hyperliquid %s Testnet runtime reconcile: %v", label, err)
 	}
+	if finalRep.AccountStatesApplied != 1 {
+		t.Fatalf("final runtime reconcile account states=%d, want 1 (report=%+v)", finalRep.AccountStatesApplied, finalRep)
+	}
+	assertHyperliquidPerpRuntimeAccountReady(t, node, accountID)
 	if got := len(node.Cache.OpenOrders()); got != 0 {
 		t.Fatalf("runtime cache open orders=%d, want 0 after final reconcile", got)
 	}
@@ -184,6 +201,51 @@ func runHyperliquidPerpTestnetRuntimeAcceptance(t *testing.T, ctx context.Contex
 	if got := node.Portfolio.NetQty(inst.ID, enums.PosNet); !got.IsZero() {
 		t.Fatalf("runtime portfolio net qty=%s, want flat", got)
 	}
+}
+
+func assertHyperliquidPerpRuntimeAccountReady(t *testing.T, node *btruntime.TradingNode, accountID string) decimal.Decimal {
+	t.Helper()
+	acct, ok := node.Cache.Account(accountID)
+	if !ok {
+		t.Fatalf("runtime cache missing account state for %s", accountID)
+	}
+	if !acct.IsFresh(time.Now()) {
+		t.Fatalf("runtime account %s is stale: %+v", accountID, acct.Freshness())
+	}
+	if _, ok := node.Portfolio.Account(accountID); !ok {
+		t.Fatalf("runtime portfolio missing account %s", accountID)
+	}
+	if equity, ok := node.Portfolio.Equity(accountID); !ok || len(equity) == 0 {
+		t.Fatalf("runtime portfolio equity=%v ok=%v, want non-empty account equity", equity, ok)
+	}
+	free, ok := acct.BalanceFree("USDC")
+	if !ok {
+		t.Fatalf("runtime account %s missing free USDC", accountID)
+	}
+	if _, ok := node.Cache.BalanceForAccount(accountID, "USDC"); !ok {
+		t.Fatalf("runtime cache missing account-scoped USDC balance for %s", accountID)
+	}
+	if metrics := node.Metrics(); metrics.Accounts != 1 || metrics.AccountStateAgeNs < 0 {
+		t.Fatalf("runtime metrics accounts=%d accountAgeNs=%d, want one fresh account", metrics.Accounts, metrics.AccountStateAgeNs)
+	}
+	return free
+}
+
+func hyperliquidPerpAccountBackedRejectQuantity(t *testing.T, node *btruntime.TradingNode, accountID string, inst *model.Instrument, validQty, price decimal.Decimal) decimal.Decimal {
+	t.Helper()
+	free := assertHyperliquidPerpRuntimeAccountReady(t, node, accountID)
+	denom := price.Mul(hyperliquidPerpContractMultiplier(inst))
+	if !denom.IsPositive() {
+		t.Fatalf("invalid account-backed risk denominator price=%s multiplier=%s", price, hyperliquidPerpContractMultiplier(inst))
+	}
+	return free.Div(denom).Add(validQty)
+}
+
+func hyperliquidPerpContractMultiplier(inst *model.Instrument) decimal.Decimal {
+	if inst != nil && inst.ContractMultiplier.IsPositive() {
+		return inst.ContractMultiplier
+	}
+	return decimal.NewFromInt(1)
 }
 
 func ensureNoHyperliquidPerpTestnetPositions(t *testing.T, ctx context.Context, adapter *Adapter, label string) {
@@ -200,21 +262,22 @@ func ensureNoHyperliquidPerpTestnetPositions(t *testing.T, ctx context.Context, 
 
 func ensurePerpTestnetCollateral(t *testing.T, ctx context.Context, adapter *Adapter, label string, qty, price decimal.Decimal) {
 	t.Helper()
-	balances, err := adapter.Account.Balances(ctx)
+	state, err := adapter.acct.AccountState(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid "+label+" Testnet runtime balances")
-		t.Fatalf("balances: %v", err)
+		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid "+label+" Testnet runtime account state")
+		t.Fatalf("account state: %v", err)
 	}
 	required := qty.Mul(price)
-	for _, balance := range balances {
+	for _, balance := range state.Balances {
 		if balance.Currency == "USDC" {
-			if balance.Available.LessThan(required) {
-				t.Skipf("skipping Hyperliquid %s Testnet runtime acceptance: available USDC %s below required notional %s", label, balance.Available, required)
+			free := balance.FreeOrAvailable()
+			if free.LessThan(required) {
+				t.Skipf("skipping Hyperliquid %s Testnet runtime acceptance: account-state free USDC %s below required notional %s", label, free, required)
 			}
 			return
 		}
 	}
-	t.Skipf("skipping Hyperliquid %s Testnet runtime acceptance: no USDC balance found", label)
+	t.Skipf("skipping Hyperliquid %s Testnet runtime acceptance: no USDC balance found in account state", label)
 }
 
 func waitForHyperliquidPerpRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {

@@ -288,17 +288,24 @@ by the Makefile with `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1`. HIP-3 also
 requires `HYPERLIQUID_TESTNET_HIP3_SYMBOL` in explicit dex-qualified form,
 such as raw venue `dex:coin` or runtime-neutral `dex:coin-USDC`. UI display
 symbols such as `TSLA-USDC` can map to multiple HIP-3 dexes and are ambiguous.
+Read-only Hyperliquid adapter construction still requires account identity:
+provide either `HYPERLIQUID_TESTNET_PK` or `HYPERLIQUID_ACCOUNT_ADDRESS`.
+When using a Hyperliquid API wallet, set `HYPERLIQUID_ACCOUNT_ADDRESS` to the
+owner 0x user address; the adapter resolves the signer relationship through
+Hyperliquid `userRole` and rejects non-0x account aliases.
 
 ```sh
 HYPERLIQUID_TESTNET_PK=... \
-HYPERLIQUID_TESTNET_HIP3_SYMBOL=stocks:TSLA-USDC \
+HYPERLIQUID_TESTNET_HIP3_SYMBOL=xyz:TSLA-USDC \
 make test-hyperliquid-testnet-acceptance
 ```
 
 The Hyperliquid Make targets wrap `go test -json` and fail if any selected
 acceptance test skips. This keeps the full gate honest: missing funding, dirty
 open orders, dirty positions, or missing HIP-3 symbol config are incomplete
-acceptance runs, not green runs.
+acceptance runs, not green runs. Runtime targets require
+`AccountStateReporter` snapshots, `runtime.WithAccountID`, and
+`risk.RequireAccountState()` before any risk-increasing order is allowed.
 
 Product-qualified Hyperliquid targets are:
 

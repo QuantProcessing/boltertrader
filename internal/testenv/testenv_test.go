@@ -663,6 +663,7 @@ func TestHyperliquidTestnetConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
 func TestHyperliquidTestnetReadConfigFromEnvDoesNotRequirePrivateKey(t *testing.T) {
 	t.Setenv(HyperliquidTestnetPrivateKeyEnv, "")
 	clearHyperliquidTestnetOptionalEnv(t)
+	t.Setenv(HyperliquidTestnetAccountAddressEnv, "0xabc0000000000000000000000000000000000000")
 
 	cfg, err := HyperliquidTestnetReadConfigFromEnv()
 	if err != nil {
@@ -671,15 +672,27 @@ func TestHyperliquidTestnetReadConfigFromEnvDoesNotRequirePrivateKey(t *testing.
 	if cfg.PrivateKey != "" {
 		t.Fatal("read config should not require or synthesize a private key")
 	}
+	if cfg.AccountAddress != "0xabc0000000000000000000000000000000000000" {
+		t.Fatalf("account address=%q, want configured read identity", cfg.AccountAddress)
+	}
 	if got := cfg.MaxNotionalUSDC.String(); got != "100" {
 		t.Fatalf("default max notional=%s, want 100", got)
+	}
+}
+
+func TestHyperliquidTestnetReadConfigRequiresIdentity(t *testing.T) {
+	t.Setenv(HyperliquidTestnetPrivateKeyEnv, "")
+	clearHyperliquidTestnetOptionalEnv(t)
+
+	if _, err := HyperliquidTestnetReadConfigFromEnv(); err == nil {
+		t.Fatal("expected read config to require private key or account address")
 	}
 }
 
 func TestHyperliquidTestnetConfigFromEnvAcceptsOverrides(t *testing.T) {
 	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
 	clearHyperliquidTestnetOptionalEnv(t)
-	t.Setenv(HyperliquidTestnetAccountAddressEnv, "0xabc")
+	t.Setenv(HyperliquidTestnetAccountAddressEnv, "0xabc0000000000000000000000000000000000000")
 	t.Setenv(HyperliquidTestnetVaultEnv, "0xdef")
 	t.Setenv(HyperliquidTestnetMaxNotionalUSDCEnv, "12.5")
 	t.Setenv(HyperliquidTestnetSpotSymbolEnv, "PURR/USDC")
@@ -690,7 +703,7 @@ func TestHyperliquidTestnetConfigFromEnvAcceptsOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HyperliquidTestnetConfigFromEnv: %v", err)
 	}
-	if cfg.AccountAddress != "0xabc" || cfg.VaultAddress != "0xdef" {
+	if cfg.AccountAddress != "0xabc0000000000000000000000000000000000000" || cfg.VaultAddress != "0xdef" {
 		t.Fatalf("account/vault not applied: account=%q vault=%q", cfg.AccountAddress, cfg.VaultAddress)
 	}
 	if got := cfg.MaxNotionalUSDC.String(); got != "12.5" {

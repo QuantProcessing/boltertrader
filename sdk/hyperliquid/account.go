@@ -15,6 +15,26 @@ const (
 	AccountAbstractionPortfolioMargin AccountAbstraction = "portfolioMargin"
 )
 
+type UserRoleType string
+
+const (
+	UserRoleUnknown    UserRoleType = ""
+	UserRoleUser       UserRoleType = "user"
+	UserRoleAgent      UserRoleType = "agent"
+	UserRoleVault      UserRoleType = "vault"
+	UserRoleSubAccount UserRoleType = "subAccount"
+)
+
+type UserRole struct {
+	Role UserRoleType `json:"role"`
+	Data UserRoleData `json:"data"`
+}
+
+type UserRoleData struct {
+	User   string `json:"user"`
+	Master string `json:"master"`
+}
+
 func (a AccountAbstraction) UsesSpotClearinghouseState() bool {
 	return a == AccountAbstractionUnifiedAccount || a == AccountAbstractionPortfolioMargin
 }
@@ -29,6 +49,27 @@ type SpotBalance struct {
 	Hold     string `json:"hold"`
 	Total    string `json:"total"`
 	EntryNtl string `json:"entryNtl"`
+}
+
+func (c *Client) GetUserRole(ctx context.Context, user string) (UserRole, error) {
+	if user == "" {
+		user = c.AccountAddr
+	}
+	if user == "" {
+		return UserRole{}, fmt.Errorf("userRole requires user address")
+	}
+	data, err := c.Post(ctx, "/info", map[string]string{
+		"type": "userRole",
+		"user": user,
+	})
+	if err != nil {
+		return UserRole{}, err
+	}
+	var role UserRole
+	if err := json.Unmarshal(data, &role); err != nil {
+		return UserRole{}, err
+	}
+	return role, nil
 }
 
 func (c *Client) GetUserAbstraction(ctx context.Context, user string) (AccountAbstraction, error) {

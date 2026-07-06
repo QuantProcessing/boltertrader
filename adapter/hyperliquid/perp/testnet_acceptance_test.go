@@ -24,8 +24,11 @@ func TestHyperliquidPerpTestnetReadAcceptance(t *testing.T) {
 		t.Fatalf("Hyperliquid Testnet HTTP client: %v", err)
 	}
 	adapter, err := New(ctx, Config{
-		Environment: sdk.EnvironmentTestnet,
-		HTTPClient:  httpClient,
+		PrivateKey:     cfg.PrivateKey,
+		AccountAddress: cfg.AccountAddress,
+		VaultAddress:   cfg.VaultAddress,
+		Environment:    sdk.EnvironmentTestnet,
+		HTTPClient:     httpClient,
 	})
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Perp Testnet adapter initialization")
@@ -72,10 +75,13 @@ func TestHyperliquidPerpTestnetHIP3ReadAcceptance(t *testing.T) {
 		t.Fatalf("Hyperliquid Testnet HTTP client: %v", err)
 	}
 	adapter, err := New(ctx, Config{
-		Environment: sdk.EnvironmentTestnet,
-		HTTPClient:  httpClient,
-		IncludeHIP3: true,
-		HIP3Dexes:   []string{dex},
+		PrivateKey:     cfg.PrivateKey,
+		AccountAddress: cfg.AccountAddress,
+		VaultAddress:   cfg.VaultAddress,
+		Environment:    sdk.EnvironmentTestnet,
+		HTTPClient:     httpClient,
+		IncludeHIP3:    true,
+		HIP3Dexes:      []string{dex},
 	})
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid HIP-3 Testnet adapter initialization")

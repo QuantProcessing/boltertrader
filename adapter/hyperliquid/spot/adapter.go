@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -13,6 +14,7 @@ import (
 
 type Config struct {
 	PrivateKey     string
+	AccountID      string
 	AccountAddress string
 	VaultAddress   string
 	Environment    sdk.Environment
@@ -46,16 +48,27 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		vault := cfg.VaultAddress
 		base.WithCredentials(cfg.PrivateKey, &vault)
 	}
-	if cfg.AccountAddress != "" {
-		base.WithAccount(cfg.AccountAddress)
-	}
 	if cfg.RESTBaseURL != "" {
 		base.BaseURL = cfg.RESTBaseURL
 	}
 	if cfg.HTTPClient != nil {
 		base.Http = cfg.HTTPClient
 	}
+	apiAccountAddress, err := hlaccount.ResolveAPIAccountAddress(ctx, base, cfg.AccountAddress)
+	if err != nil {
+		return nil, err
+	}
 	rest := sdkspot.NewClient(base)
+	identity, err := hlaccount.ResolveIdentity(hlaccount.Source{
+		ExplicitAccountID: cfg.AccountID,
+		AccountAddress:    apiAccountAddress,
+		VaultAddress:      cfg.VaultAddress,
+		SignerAddress:     base.AccountAddr,
+	})
+	if err != nil {
+		return nil, err
+	}
+	accountID := identity.AccountID
 
 	meta, err := rest.GetSpotMeta(ctx)
 	if err != nil {
@@ -73,8 +86,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	ws := sdkspot.NewWebsocketClient(wsBase)
 
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, clk)
+	exec := newExecutionClient(rest, provider, clk, accountID)
+	acct := newAccountClient(rest, clk, accountID)
 	market := newMarketDataClient(rest, provider, clk)
 
 	return &Adapter{

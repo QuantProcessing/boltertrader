@@ -3,8 +3,10 @@ package hyperliquid
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +35,29 @@ func TestClientGetUserAbstraction(t *testing.T) {
 	}
 	if got != AccountAbstractionUnifiedAccount || !got.UsesSpotClearinghouseState() {
 		t.Fatalf("mode=%q", got)
+	}
+}
+
+func TestClientGetUserRoleAgentReturnsOwner(t *testing.T) {
+	var seenBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = string(body)
+		_, _ = w.Write([]byte(`{"role":"agent","data":{"user":"0xabc0000000000000000000000000000000000000"}}`))
+	}))
+	defer srv.Close()
+	client := NewClient()
+	client.BaseURL = srv.URL
+
+	role, err := client.GetUserRole(context.Background(), "0xagent000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("GetUserRole: %v", err)
+	}
+	if role.Role != UserRoleAgent || role.Data.User != "0xabc0000000000000000000000000000000000000" {
+		t.Fatalf("role=%+v, want agent owner user", role)
+	}
+	if !strings.Contains(seenBody, `"type":"userRole"`) || !strings.Contains(seenBody, `"user":"0xagent000000000000000000000000000000000000"`) {
+		t.Fatalf("unexpected userRole body: %s", seenBody)
 	}
 }
 

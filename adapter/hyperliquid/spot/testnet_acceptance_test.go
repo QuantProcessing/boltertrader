@@ -24,8 +24,11 @@ func TestHyperliquidSpotTestnetReadAcceptance(t *testing.T) {
 		t.Fatalf("Hyperliquid Testnet HTTP client: %v", err)
 	}
 	adapter, err := New(ctx, Config{
-		Environment: sdk.EnvironmentTestnet,
-		HTTPClient:  httpClient,
+		PrivateKey:     cfg.PrivateKey,
+		AccountAddress: cfg.AccountAddress,
+		VaultAddress:   cfg.VaultAddress,
+		Environment:    sdk.EnvironmentTestnet,
+		HTTPClient:     httpClient,
 	})
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet adapter initialization")

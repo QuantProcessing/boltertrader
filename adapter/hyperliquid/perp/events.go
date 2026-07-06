@@ -14,13 +14,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func execEventsFromOrderUpdate(update sdk.WsOrderUpdate, provider *instruments.Registry) []contract.ExecEvent {
+func execEventsFromOrderUpdate(update sdk.WsOrderUpdate, provider *instruments.Registry, accountID ...string) []contract.ExecEvent {
 	id, ok := provider.ResolveVenueSymbol(update.Order.Coin)
 	if !ok {
 		return nil
 	}
 	order := model.Order{
 		Request: model.OrderRequest{
+			AccountID:    firstAccountID(accountID),
 			InstrumentID: id,
 			ClientID:     update.Order.Cliod,
 			Side:         sideFromHL(update.Order.Side),
@@ -38,7 +39,7 @@ func execEventsFromOrderUpdate(update sdk.WsOrderUpdate, provider *instruments.R
 	return []contract.ExecEvent{contract.OrderEvent{Order: order}}
 }
 
-func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Registry) []contract.ExecEvent {
+func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Registry, accountID ...string) []contract.ExecEvent {
 	out := make([]contract.ExecEvent, 0, len(fills.Fills))
 	for _, fill := range fills.Fills {
 		id, ok := provider.ResolveVenueSymbol(fill.Coin)
@@ -50,6 +51,7 @@ func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Regist
 			liq = enums.LiqTaker
 		}
 		out = append(out, contract.FillEvent{Fill: model.Fill{
+			AccountID:    firstAccountID(accountID),
 			InstrumentID: id,
 			VenueOrderID: fmt.Sprint(fill.Oid),
 			TradeID:      fmt.Sprint(fill.Tid),
@@ -65,16 +67,16 @@ func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Regist
 	return out
 }
 
-func accountEventsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, clk clock.Clock) []contract.AccountEvent {
+func accountEventsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, clk clock.Clock, accountID ...string) []contract.AccountEvent {
 	if state == nil {
 		return nil
 	}
 	var out []contract.AccountEvent
-	if balance, ok := balanceFromPerpPosition(state, clk); ok {
+	if balance, ok := balanceFromPerpPosition(state, clk, accountID...); ok {
 		out = append(out, contract.BalanceEvent{Balance: balance})
 	}
 	now := clk.Now()
-	for _, pos := range positionsFromPerpPosition(state, provider, now) {
+	for _, pos := range positionsFromPerpPosition(state, provider, now, accountID...) {
 		if pos.Quantity.IsZero() {
 			continue
 		}
@@ -83,7 +85,7 @@ func accountEventsFromPerpPosition(state *sdkperp.PerpPosition, provider *instru
 	return out
 }
 
-func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock) (model.AccountBalance, bool) {
+func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock, accountID ...string) (model.AccountBalance, bool) {
 	if state == nil {
 		return model.AccountBalance{}, false
 	}
@@ -104,6 +106,7 @@ func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock) (mode
 		updatedAt = clk.Now()
 	}
 	return model.AccountBalance{
+		AccountID: firstAccountID(accountID),
 		Currency:  "USDC",
 		Total:     total,
 		Available: available,
@@ -112,7 +115,7 @@ func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock) (mode
 	}, true
 }
 
-func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, fallbackTime time.Time) []model.Position {
+func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, fallbackTime time.Time, accountID ...string) []model.Position {
 	if state == nil {
 		return nil
 	}
@@ -135,6 +138,7 @@ func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instrument
 			continue
 		}
 		out = append(out, model.Position{
+			AccountID:     firstAccountID(accountID),
 			InstrumentID:  id,
 			Side:          enums.PosNet,
 			Quantity:      qty,

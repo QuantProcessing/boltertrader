@@ -392,7 +392,9 @@ to mainnet. Expose credentials and optional selectors under:
 
 - `HYPERLIQUID_TESTNET_PK`
 - optional `HYPERLIQUID_ACCOUNT_ADDRESS`, when trading from an address different
-  from the private-key address
+  from the private-key address. For API wallet keys, set this to the owner 0x
+  user address; non-0x account aliases are rejected, and the adapter verifies
+  the signer through Hyperliquid `userRole`.
 - optional `HYPERLIQUID_TESTNET_VAULT`
 - optional `HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC`, default `100`
 - optional `HYPERLIQUID_TESTNET_SPOT_SYMBOL`
@@ -401,18 +403,20 @@ to mainnet. Expose credentials and optional selectors under:
   `dex:coin` or `dex:coin-USDC` form
 
 Read-only testnet discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1` and
-does not require `HYPERLIQUID_TESTNET_PK`. Write and runtime tests require the
-private key plus `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1`; the Makefile
-write/runtime targets set that enable flag command-locally. HIP-3 runtime write
-acceptance also requires `HYPERLIQUID_TESTNET_HIP3_SYMBOL`. UI display symbols
-such as `TSLA-USDC` can map to multiple HIP-3 dexes and are intentionally not
+does not require write enablement, but Hyperliquid adapter construction still
+requires account identity via `HYPERLIQUID_TESTNET_PK` or
+`HYPERLIQUID_ACCOUNT_ADDRESS`. Write and runtime tests require the private key
+plus `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1`; the Makefile write/runtime
+targets set that enable flag command-locally. HIP-3 runtime write acceptance
+also requires `HYPERLIQUID_TESTNET_HIP3_SYMBOL`. UI display symbols such as
+`TSLA-USDC` can map to multiple HIP-3 dexes and are intentionally not
 accepted without a dex qualifier.
 
 Run the full Hyperliquid Testnet gate with:
 
 ```sh
 HYPERLIQUID_TESTNET_PK=... \
-HYPERLIQUID_TESTNET_HIP3_SYMBOL=stocks:TSLA-USDC \
+HYPERLIQUID_TESTNET_HIP3_SYMBOL=xyz:TSLA-USDC \
 make test-hyperliquid-testnet-acceptance
 ```
 
@@ -422,8 +426,11 @@ account, symbol, or funding preflight did not satisfy the spec and the NT-style
 acceptance evidence is incomplete.
 
 The adapter-level tests place and cancel a conservative resting order. Runtime
-tests construct `runtime.TradingNode`, call `node.Resync` before and after the
-write flow, attach the risk engine, submit through `node.Exec`, observe cancel
+tests construct `runtime.TradingNode` with the adapter's canonical account id,
+call `node.Resync` before and after the write flow, require a verified
+`AccountStateReporter` snapshot in cache/portfolio/health/metrics, attach
+`risk.RequireAccountState()`, prove an account-state-backed oversized order is
+rejected before the venue boundary, submit through `node.Exec`, observe cancel
 state through the runtime cache, assert no REST open orders remain, and require a
 flat final cache/portfolio. Perp and HIP-3 runtime tests skip when the testnet
 account is not flat before the run; the Make acceptance gate reports that skip

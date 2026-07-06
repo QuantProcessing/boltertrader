@@ -35,7 +35,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     venueName,
 		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
-		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true, AccountStateSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: c.stream != nil},
 		Latency:   contract.LatencyCapabilities{},
 	}

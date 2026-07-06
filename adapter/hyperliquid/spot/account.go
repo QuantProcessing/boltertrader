@@ -4,26 +4,31 @@ import (
 	"context"
 	"fmt"
 
+	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
+	sdkperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/spot"
 	"github.com/shopspring/decimal"
 )
 
 type accountClient struct {
-	rest   *sdkspot.Client
-	clk    clock.Clock
-	stream *wsstream.Stream[contract.AccountEnvelope]
+	rest      *sdkspot.Client
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *sdkspot.Client, clk clock.Clock) *accountClient {
+func newAccountClient(rest *sdkspot.Client, clk clock.Clock, accountID ...string) *accountClient {
 	return &accountClient{
-		rest:   rest,
-		clk:    clk,
-		stream: wsstream.New[contract.AccountEnvelope](256),
+		rest:      rest,
+		clk:       clk,
+		accountID: firstAccountID(accountID),
+		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
 
@@ -39,6 +44,7 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 		locked := dec(b.Hold)
 		available := total.Sub(locked)
 		out = append(out, model.AccountBalance{
+			AccountID: c.accountID,
 			Currency:  b.Coin,
 			Total:     total,
 			Available: available,
@@ -47,6 +53,34 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 		})
 	}
 	return out, nil
+}
+
+func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
+	mode, err := c.rest.GetUserAbstraction(ctx, c.rest.AccountAddr)
+	if err != nil {
+		return model.AccountState{}, err
+	}
+	perpState, err := sdkperp.NewClient(c.rest.Client).GetBalance(ctx)
+	if err != nil {
+		return model.AccountState{}, err
+	}
+	spotState, err := c.rest.GetSpotClearinghouseState(ctx, c.rest.AccountAddr)
+	if err != nil {
+		return model.AccountState{}, err
+	}
+	return hlaccount.BuildAccountState(hlaccount.StateInput{
+		AccountID:         c.accountID,
+		AccountMode:       mode,
+		Perp:              perpState,
+		Spot:              spotState,
+		ProductScope:      []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
+		Now:               c.clk.Now(),
+		AccountModeSource: "userAbstraction",
+		Details: map[string]string{
+			"account_address": c.rest.AccountAddr,
+			"adapter":         "spot",
+		},
+	})
 }
 
 func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error) {
@@ -66,4 +100,11 @@ func (c *accountClient) Events() <-chan contract.AccountEnvelope { return c.stre
 func (c *accountClient) Close() error {
 	c.stream.Close()
 	return nil
+}
+
+func firstAccountID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }

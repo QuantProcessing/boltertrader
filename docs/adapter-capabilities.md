@@ -17,9 +17,9 @@ reconciliation.
 | BITGET | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-spot-acceptance |
 | BITGET | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdt-perp-acceptance |
 | BITGET | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdc-perp-acceptance |
-| HYPERLIQUID | Spot cash | no | no | no | no | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-spot |
-| HYPERLIQUID | Perp | yes | yes | yes | no | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-perp |
-| HYPERLIQUID | HIP-3 Perp | yes | yes | yes | no | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-hip3 |
+| HYPERLIQUID | Spot cash | no | no | no | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-spot |
+| HYPERLIQUID | Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-perp |
+| HYPERLIQUID | HIP-3 Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-hip3 |
 | LIGHTER | Spot cash | no | no | no | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-lighter-testnet-runtime-spot |
 | LIGHTER | Perp | no | no | no | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-lighter-testnet-runtime-perp |
 
@@ -39,6 +39,12 @@ make test-bybit-bitget-acceptance
 
 Raw live `go test` runs skip when required Demo/Testnet credentials are absent.
 CEX rows use Demo or paper-trading environments, while DEX rows use Testnet.
+Hyperliquid Testnet runtime acceptance requires a verified
+`contract.AccountStateReporter` snapshot before risk-increasing orders; API
+wallet keys are resolved through Hyperliquid `userRole`, and
+`HYPERLIQUID_ACCOUNT_ADDRESS` should be the owner 0x user address when it differs
+from the signing key. Non-0x Hyperliquid account aliases are rejected before
+venue `/info` requests.
 The Hyperliquid, Lighter, Bybit, and Bitget Make acceptance targets additionally
 fail on any selected skipped test, so missing funding, missing HIP-3 config,
 missing Demo/Testnet credentials, invalid Bitget endpoint overrides, or dirty

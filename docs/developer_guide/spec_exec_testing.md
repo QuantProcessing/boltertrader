@@ -100,7 +100,9 @@ For Hyperliquid Testnet:
 - `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1` for direct write/runtime `go test`
   runs; Makefile write/runtime targets set it command-locally
 - optional `HYPERLIQUID_ACCOUNT_ADDRESS`, when trading from an address different
-  from the private-key address
+  from the private-key address. API wallet keys should use the owner 0x user
+  address here; non-0x account aliases are rejected, and the adapter checks the
+  signer through Hyperliquid `userRole`.
 - optional `HYPERLIQUID_TESTNET_VAULT`
 - optional `HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC`, default `100`
 - optional `HYPERLIQUID_TESTNET_SPOT_SYMBOL`
@@ -188,8 +190,9 @@ noskip targets to pass against the configured real Demo/Testnet accounts.
 
 `make test-hyperliquid-testnet-spot-read` and
 `make test-hyperliquid-testnet-perp-read` are read-only and enable
-`BOLTER_ENABLE_LIVE_READ_TESTS=1`. Hyperliquid write/runtime targets require
-`HYPERLIQUID_TESTNET_PK`; their Makefile targets set
+`BOLTER_ENABLE_LIVE_READ_TESTS=1`; they still need account identity from either
+`HYPERLIQUID_TESTNET_PK` or `HYPERLIQUID_ACCOUNT_ADDRESS`. Hyperliquid
+write/runtime targets require `HYPERLIQUID_TESTNET_PK`; their Makefile targets set
 `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1` command-locally. HIP-3 targets
 additionally require `HYPERLIQUID_TESTNET_HIP3_SYMBOL` for the configured
 testnet `dex:coin` or `dex:coin-USDC`. UI display symbols such as `TSLA-USDC`
@@ -213,13 +216,15 @@ enabled through `node.Resync` before and after the live write flow.
 
 Hyperliquid runtime Testnet acceptance follows the same runtime-node shape but
 uses conservative resting orders plus explicit cancel rather than requiring a
-fill. It attaches the risk engine, proves an oversized order is rejected before
-the venue boundary, observes cancel state through the runtime cache, checks REST
-open orders after cancel, and requires the final cache/portfolio to be flat.
-Perp and HIP-3 runs must start from a flat derivatives account; otherwise the
-test skips and asks the operator to clean the testnet account first. The Make
-acceptance gate treats that skip as failed evidence until the account is clean
-and the place/cancel path actually runs.
+fill. It constructs the node with the adapter's canonical account id, requires a
+verified `AccountStateReporter` snapshot during startup reconciliation, attaches
+`risk.RequireAccountState()`, proves an account-state-backed oversized order is
+rejected before the venue boundary, observes cancel state through the runtime
+cache, checks REST open orders after cancel, and requires the final
+cache/portfolio to be flat. Perp and HIP-3 runs must start from a flat
+derivatives account; otherwise the test skips and asks the operator to clean the
+testnet account first. The Make acceptance gate treats that skip as failed
+evidence until the account is clean and the place/cancel path actually runs.
 
 Bybit and Bitget runtime acceptance use the same NT-style safety envelope for
 their first unified-account slice. The node must reconcile one authoritative

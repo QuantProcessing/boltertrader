@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 
+	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/cloid"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -20,23 +21,25 @@ import (
 )
 
 type executionClient struct {
-	rest     *sdkspot.Client
-	provider *instruments.Registry
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.ExecEnvelope]
-	mu       sync.RWMutex
-	orders   map[string]model.Order
-	ids      *cloid.Mapper
+	rest      *sdkspot.Client
+	provider  *instruments.Registry
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.ExecEnvelope]
+	mu        sync.RWMutex
+	orders    map[string]model.Order
+	ids       *cloid.Mapper
 }
 
-func newExecutionClient(rest *sdkspot.Client, provider *instruments.Registry, clk clock.Clock) *executionClient {
+func newExecutionClient(rest *sdkspot.Client, provider *instruments.Registry, clk clock.Clock, accountID ...string) *executionClient {
 	return &executionClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		stream:   wsstream.New[contract.ExecEnvelope](256),
-		orders:   make(map[string]model.Order),
-		ids:      cloid.NewMapper(),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: firstAccountID(accountID),
+		stream:    wsstream.New[contract.ExecEnvelope](256),
+		orders:    make(map[string]model.Order),
+		ids:       cloid.NewMapper(),
 	}
 }
 
@@ -65,6 +68,11 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if err := rejectDerivativeOrderFields(req); err != nil {
 		return nil, err
 	}
+	accountID, err := c.scopedAccountID(req.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	req.AccountID = accountID
 	hlReq, err := c.placeOrderRequest(req)
 	if err != nil {
 		return nil, err
@@ -217,7 +225,7 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	order := &model.Order{Request: model.OrderRequest{InstrumentID: id, PositionSide: enums.PosNet}, VenueOrderID: venueOrderID, UpdatedAt: c.clk.Now()}
+	order := &model.Order{Request: model.OrderRequest{AccountID: c.accountID, InstrumentID: id, PositionSide: enums.PosNet}, VenueOrderID: venueOrderID, UpdatedAt: c.clk.Now()}
 	applyOrderStatus(order, status)
 	*order = c.rememberOrder(*order)
 	return order, nil
@@ -237,19 +245,20 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 		if orders[i].Coin != inst.VenueSymbol {
 			continue
 		}
-		order := orderFromHL(&orders[i], id)
+		order := orderFromHL(&orders[i], id, c.accountID)
 		order = c.rememberOrder(order)
 		out = append(out, order)
 	}
 	return out, nil
 }
 
-func orderFromHL(o *sdkspot.Order, id model.InstrumentID) model.Order {
+func orderFromHL(o *sdkspot.Order, id model.InstrumentID, accountID string) model.Order {
 	if o == nil {
 		return model.Order{}
 	}
 	return model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: id,
 			ClientID:     o.Cliod,
 			Side:         sideFromHL(o.Side),
@@ -267,6 +276,11 @@ func orderFromHL(o *sdkspot.Order, id model.InstrumentID) model.Order {
 }
 
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	accountID, err := c.scopedAccountID(query.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	query.AccountID = accountID
 	orders, err := c.rest.UserOpenOrders(ctx, c.rest.AccountAddr)
 	if err != nil {
 		return nil, err
@@ -282,7 +296,7 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 			continue
 		}
 		order = c.rememberOrder(order)
-		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: order, ReportedAt: now})
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now})
 	}
 	return out, nil
 }
@@ -295,7 +309,7 @@ func (c *executionClient) orderFromOpenOrder(o *sdkspot.Order) (model.Order, boo
 	if !ok {
 		return model.Order{}, false
 	}
-	return orderFromHL(o, id), true
+	return orderFromHL(o, id, c.accountID), true
 }
 
 func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
@@ -320,12 +334,17 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	mass := model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now())
+	accountID, err := c.scopedAccountID(query.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	query.AccountID = accountID
+	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Partial = true
 	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: query.AccountID, ClientID: query.ClientID, OpenOnly: true})
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -377,6 +396,9 @@ func (c *executionClient) normalizeExecEvent(ev contract.ExecEvent) contract.Exe
 		typed.Order = c.rememberOrder(typed.Order)
 		return typed
 	case contract.FillEvent:
+		if c.accountID != "" {
+			typed.Fill.AccountID = c.accountID
+		}
 		if clientID := c.ids.ClientID(typed.Fill.ClientID, typed.Fill.VenueOrderID); clientID != "" {
 			typed.Fill.ClientID = clientID
 		}
@@ -392,6 +414,9 @@ func (c *executionClient) normalizeExecEvent(ev contract.ExecEvent) contract.Exe
 }
 
 func (c *executionClient) normalizeOrderIdentity(order model.Order) model.Order {
+	if c.accountID != "" {
+		order.Request.AccountID = c.accountID
+	}
 	rawClientID := order.Request.ClientID
 	clientID := c.ids.ClientID(rawClientID, order.VenueOrderID)
 	if clientID == "" {
@@ -404,6 +429,10 @@ func (c *executionClient) normalizeOrderIdentity(order model.Order) model.Order 
 	order.Request.ClientID = clientID
 	c.ids.Remember(order.Request.ClientID, venueCloid, order.VenueOrderID)
 	return order
+}
+
+func (c *executionClient) scopedAccountID(accountID string) (string, error) {
+	return hlaccount.ResolveScopedAccountID(accountID, c.accountID)
 }
 
 func (c *executionClient) Close() error {
