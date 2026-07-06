@@ -28,7 +28,7 @@ func TestBitgetAcceptanceLifecycleQuantityCoversRestingMinNotional(t *testing.T)
 		Asks: []model.BookLevel{{Price: decimal.RequireFromString("101")}},
 	}
 
-	spec := bitgetAcceptanceLifecycleSpec(t, adapter, "Bitget Testnet Spot", inst.ID, book, decimal.RequireFromString("20"))
+	spec := bitgetAcceptanceLifecycleSpec(t, adapter, "Bitget Demo Spot", inst.ID, book, decimal.RequireFromString("20"))
 	if spec.Quantity.Mul(spec.RestingPrice).LessThan(inst.MinNotional) {
 		t.Fatalf("resting notional %s below min %s with spec %+v", spec.Quantity.Mul(spec.RestingPrice), inst.MinNotional, spec)
 	}

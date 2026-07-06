@@ -8,8 +8,8 @@ BolterTrader follows the NautilusTrader-style testing split:
 
 Default tests must be deterministic and credential-free. Demo/Testnet acceptance
 is explicitly invoked, bounded by a notional envelope, and responsible for
-cleaning up any exchange state it creates. Bybit first-stage acceptance uses
-Demo Trading; Bitget first-stage acceptance uses Testnet/simulated trading.
+cleaning up any exchange state it creates. CEX first-stage acceptance uses Demo
+or paper-trading environments; DEX first-stage acceptance uses Testnet.
 
 ## Baseline Runtime Smoke
 
@@ -75,21 +75,24 @@ For Bybit Demo:
 The Bybit Demo key must be created from Bybit Demo Trading. Bybit Testnet keys
 are a separate credential scope and are rejected by the Demo Trading REST host.
 
-For Bitget Testnet:
+For Bitget Demo:
 
-- `BITGET_TESTNET_API_KEY`
-- `BITGET_TESTNET_SECRET_KEY`
-- `BITGET_TESTNET_PASSPHRASE`
-- optional `BITGET_TESTNET_REST_BASE_URL`, default `https://api.bitget.com`
-- optional `BITGET_TESTNET_PUBLIC_WS_URL`, default
+- `BITGET_DEMO_API_KEY`
+- `BITGET_DEMO_SECRET_KEY`
+- `BITGET_DEMO_PASSPHRASE`
+- optional `BITGET_DEMO_REST_BASE_URL`, default `https://api.bitget.com`
+- optional `BITGET_DEMO_PUBLIC_WS_URL`, default
   `wss://wspap.bitget.com/v3/ws/public`
-- optional `BITGET_TESTNET_PRIVATE_WS_URL`, default
+- optional `BITGET_DEMO_PRIVATE_WS_URL`, default
   `wss://wspap.bitget.com/v3/ws/private`
-- optional `BITGET_TESTNET_SYMBOL`, default `BTCUSDT`
-- optional `BITGET_TESTNET_USDT_PERP_SYMBOL`, default `BTCUSDT`
-- optional `BITGET_TESTNET_USDC_PERP_SYMBOL`, default `BTCPERP`
-- optional `BITGET_TESTNET_MAX_NOTIONAL_USDT`, default `100`
-- optional `BITGET_TESTNET_MAX_NOTIONAL_USDC`, default `100`
+- optional `BITGET_DEMO_SYMBOL`, default `BTCUSDT`
+- optional `BITGET_DEMO_USDT_PERP_SYMBOL`, default `BTCUSDT`
+- optional `BITGET_DEMO_USDC_PERP_SYMBOL`, default `BTCPERP`
+- optional `BITGET_DEMO_MAX_NOTIONAL_USDT`, default `100`
+- optional `BITGET_DEMO_MAX_NOTIONAL_USDC`, default `100`
+
+`BITGET_TESTNET_*` variables are accepted only as legacy local aliases; new
+configuration should use `BITGET_DEMO_*`.
 
 For Hyperliquid Testnet:
 
@@ -133,12 +136,12 @@ make test-bybit-demo-runtime-usdt-perp
 make test-bybit-demo-usdc-perp
 make test-bybit-demo-runtime-usdc-perp
 make test-bybit-acceptance
-make test-bitget-testnet-spot
-make test-bitget-testnet-runtime-spot
-make test-bitget-testnet-usdt-perp
-make test-bitget-testnet-runtime-usdt-perp
-make test-bitget-testnet-usdc-perp
-make test-bitget-testnet-runtime-usdc-perp
+make test-bitget-demo-spot
+make test-bitget-demo-runtime-spot
+make test-bitget-demo-usdt-perp
+make test-bitget-demo-runtime-usdt-perp
+make test-bitget-demo-usdc-perp
+make test-bitget-demo-runtime-usdc-perp
 make test-bitget-acceptance
 make test-bybit-bitget-acceptance
 make test-hyperliquid-testnet-spot-read
@@ -171,7 +174,7 @@ Demo write gates. `make test-okx-demo-runtime-spot` and
 
 `make test-bybit-acceptance` and `make test-bitget-acceptance` are product-level
 non-production gates for Spot cash, USDT-linear Perp, and USDC-linear Perp:
-Bybit uses Demo Trading, while Bitget uses Testnet/simulated trading.
+Bybit uses Demo Trading, while Bitget uses Demo/paper trading.
 Each venue also exposes product aggregates such as
 `make test-bybit-spot-acceptance` and `make test-bitget-usdt-perp-acceptance`.
 These targets use `noskipgotest`, so missing credentials, unsupported account

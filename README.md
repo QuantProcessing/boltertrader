@@ -257,6 +257,30 @@ Bybit Testnet keys are a separate credential scope and are rejected by the Demo
 Trading REST host. If direct access to Bybit Demo hosts is unavailable, pass a
 command-local `PROXY=...`.
 
+Bitget Demo acceptance uses Bitget's paper-trading profile. It is named Demo in
+BolterTrader because Bitget is a CEX; the actual REST requests use
+`paptrading: 1` and the WS endpoints use `wspap.bitget.com`.
+
+```sh
+BITGET_DEMO_API_KEY=... \
+BITGET_DEMO_SECRET_KEY=... \
+BITGET_DEMO_PASSPHRASE=... \
+make test-bitget-acceptance
+```
+
+`BITGET_DEMO_MAX_NOTIONAL_USDT` and `BITGET_DEMO_MAX_NOTIONAL_USDC` are optional
+and default to `100`. Existing `BITGET_TESTNET_*` variables are accepted only as
+legacy aliases for local `.env` files. Product-qualified Bitget targets are:
+
+```sh
+make test-bitget-demo-spot
+make test-bitget-demo-runtime-spot
+make test-bitget-demo-usdt-perp
+make test-bitget-demo-runtime-usdt-perp
+make test-bitget-demo-usdc-perp
+make test-bitget-demo-runtime-usdc-perp
+```
+
 Hyperliquid Testnet acceptance covers Spot, standard Perp, and configured HIP-3
 Perp. Read-only discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1`; write
 and runtime targets require `HYPERLIQUID_TESTNET_PK` and are explicitly enabled

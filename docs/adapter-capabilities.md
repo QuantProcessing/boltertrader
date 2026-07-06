@@ -38,6 +38,7 @@ make test-bybit-bitget-acceptance
 ```
 
 Raw live `go test` runs skip when required Demo/Testnet credentials are absent.
+CEX rows use Demo or paper-trading environments, while DEX rows use Testnet.
 The Hyperliquid, Lighter, Bybit, and Bitget Make acceptance targets additionally
 fail on any selected skipped test, so missing funding, missing HIP-3 config,
 missing Demo/Testnet credentials, invalid Bitget endpoint overrides, or dirty
@@ -49,12 +50,12 @@ those venues. The offline contract currently proves SDK conversion, stream
 decoding, account-mode safety envelopes, account-state reconciliation,
 portfolio/risk reads, and private stream subscription wiring. The Bybit and
 Bitget first-stage acceptance contracts use their own non-production venues:
-Bybit Demo Trading and Bitget Testnet/simulated trading. Those Make targets are
+Bybit Demo Trading and Bitget Demo/paper trading. Those Make targets are
 intentionally noskip-gated and must not be marked accepted until the configured
 venue accounts run through the adapter/runtime targets successfully. The
-current Bybit/Bitget runtime acceptance entrypoints
-verify live market data, authoritative account-state snapshots, risk fail-closed
-behavior, reconciliation into the cache/portfolio, private stream startup, and a
-bounded resting-cancel plus IOC fill/close cleanup ladder. These rows remain
-unaccepted until the noskip Demo/Testnet gates pass with real credentials and
-clean venue accounts.
+current Bybit/Bitget runtime acceptance entrypoints verify live market data,
+authoritative account-state snapshots, risk fail-closed behavior,
+reconciliation into the cache/portfolio, private stream startup, and a bounded
+resting-cancel plus IOC fill/close cleanup ladder. These rows remain unaccepted
+until the noskip Demo gates pass with real credentials and clean venue
+accounts.

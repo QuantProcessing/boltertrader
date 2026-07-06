@@ -55,17 +55,30 @@ const (
 	BybitDefaultUSDTPerpSymbol  = "BTCUSDT"
 	BybitDefaultUSDCPerpSymbol  = "BTCPERP"
 
-	BitgetTestnetAPIKeyEnv          = "BITGET_TESTNET_API_KEY"
-	BitgetTestnetAPISecretEnv       = "BITGET_TESTNET_SECRET_KEY"
-	BitgetTestnetPassphraseEnv      = "BITGET_TESTNET_PASSPHRASE"
-	BitgetTestnetSpotSymbolEnv      = "BITGET_TESTNET_SYMBOL"
-	BitgetTestnetUSDTPerpSymbolEnv  = "BITGET_TESTNET_USDT_PERP_SYMBOL"
-	BitgetTestnetUSDCPerpSymbolEnv  = "BITGET_TESTNET_USDC_PERP_SYMBOL"
-	BitgetTestnetMaxNotionalUSDTEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDT"
-	BitgetTestnetMaxNotionalUSDCEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDC"
-	BitgetTestnetRESTBaseURLEnv     = "BITGET_TESTNET_REST_BASE_URL"
-	BitgetTestnetPublicWSURLEnv     = "BITGET_TESTNET_PUBLIC_WS_URL"
-	BitgetTestnetPrivateWSURLEnv    = "BITGET_TESTNET_PRIVATE_WS_URL"
+	BitgetDemoAPIKeyEnv          = "BITGET_DEMO_API_KEY"
+	BitgetDemoAPISecretEnv       = "BITGET_DEMO_SECRET_KEY"
+	BitgetDemoPassphraseEnv      = "BITGET_DEMO_PASSPHRASE"
+	BitgetDemoSpotSymbolEnv      = "BITGET_DEMO_SYMBOL"
+	BitgetDemoUSDTPerpSymbolEnv  = "BITGET_DEMO_USDT_PERP_SYMBOL"
+	BitgetDemoUSDCPerpSymbolEnv  = "BITGET_DEMO_USDC_PERP_SYMBOL"
+	BitgetDemoMaxNotionalUSDTEnv = "BITGET_DEMO_MAX_NOTIONAL_USDT"
+	BitgetDemoMaxNotionalUSDCEnv = "BITGET_DEMO_MAX_NOTIONAL_USDC"
+	BitgetDemoRESTBaseURLEnv     = "BITGET_DEMO_REST_BASE_URL"
+	BitgetDemoPublicWSURLEnv     = "BITGET_DEMO_PUBLIC_WS_URL"
+	BitgetDemoPrivateWSURLEnv    = "BITGET_DEMO_PRIVATE_WS_URL"
+
+	// Deprecated: use the matching BITGET_DEMO_* environment variables.
+	BitgetLegacyTestnetAPIKeyEnv          = "BITGET_TESTNET_API_KEY"
+	BitgetLegacyTestnetAPISecretEnv       = "BITGET_TESTNET_SECRET_KEY"
+	BitgetLegacyTestnetPassphraseEnv      = "BITGET_TESTNET_PASSPHRASE"
+	BitgetLegacyTestnetSpotSymbolEnv      = "BITGET_TESTNET_SYMBOL"
+	BitgetLegacyTestnetUSDTPerpSymbolEnv  = "BITGET_TESTNET_USDT_PERP_SYMBOL"
+	BitgetLegacyTestnetUSDCPerpSymbolEnv  = "BITGET_TESTNET_USDC_PERP_SYMBOL"
+	BitgetLegacyTestnetMaxNotionalUSDTEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDT"
+	BitgetLegacyTestnetMaxNotionalUSDCEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDC"
+	BitgetLegacyTestnetRESTBaseURLEnv     = "BITGET_TESTNET_REST_BASE_URL"
+	BitgetLegacyTestnetPublicWSURLEnv     = "BITGET_TESTNET_PUBLIC_WS_URL"
+	BitgetLegacyTestnetPrivateWSURLEnv    = "BITGET_TESTNET_PRIVATE_WS_URL"
 
 	BitgetDefaultMaxNotionalUSDT = "100"
 	BitgetDefaultMaxNotionalUSDC = "100"
@@ -139,7 +152,7 @@ type BitgetEndpointProfile struct {
 	OfficialTestnet bool
 }
 
-type BitgetTestnetConfig struct {
+type BitgetDemoConfig struct {
 	APIKey          string
 	APISecret       string
 	Passphrase      string
@@ -151,6 +164,9 @@ type BitgetTestnetConfig struct {
 	Profile         BitgetEndpointProfile
 	ProxyURL        string
 }
+
+// Deprecated: use BitgetDemoConfig.
+type BitgetTestnetConfig = BitgetDemoConfig
 
 type BlockedReleaseError struct {
 	Venue       string
@@ -255,9 +271,9 @@ func (c BybitDemoConfig) GoString() string {
 	return c.String()
 }
 
-func (c BitgetTestnetConfig) String() string {
+func (c BitgetDemoConfig) String() string {
 	return fmt.Sprintf(
-		"BitgetTestnetConfig{APIKey:%s APISecret:%s Passphrase:%s MaxNotionalUSDT:%s MaxNotionalUSDC:%s SpotSymbol:%q USDTPerpSymbol:%q USDCPerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		"BitgetDemoConfig{APIKey:%s APISecret:%s Passphrase:%s MaxNotionalUSDT:%s MaxNotionalUSDC:%s SpotSymbol:%q USDTPerpSymbol:%q USDCPerpSymbol:%q Profile:%+v ProxyURL:%q}",
 		redactSecret(c.APIKey),
 		redactSecret(c.APISecret),
 		redactSecret(c.Passphrase),
@@ -271,7 +287,7 @@ func (c BitgetTestnetConfig) String() string {
 	)
 }
 
-func (c BitgetTestnetConfig) GoString() string {
+func (c BitgetDemoConfig) GoString() string {
 	return c.String()
 }
 
@@ -419,25 +435,31 @@ func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
 	return cfg
 }
 
-func RequireBitgetTestnetWrite(t testing.TB) BitgetTestnetConfig {
+func RequireBitgetDemoWrite(t testing.TB) BitgetDemoConfig {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("skipping: Bitget Testnet write test excluded by -short")
+		t.Skip("skipping: Bitget Demo write test excluded by -short")
 	}
 	if err := LoadRepoEnv(); err != nil {
 		t.Fatalf("load repo .env: %v", err)
 	}
-	if missing := missingEnv(BitgetTestnetAPIKeyEnv, BitgetTestnetAPISecretEnv, BitgetTestnetPassphraseEnv); len(missing) > 0 {
-		t.Skipf("skipping Bitget Testnet write test: missing required env %s", strings.Join(missing, ", "))
+	if missing := missingEnv(BitgetDemoAPIKeyEnv, BitgetDemoAPISecretEnv, BitgetDemoPassphraseEnv); len(missing) > 0 {
+		t.Skipf("skipping Bitget Demo write test: missing required env %s", strings.Join(missing, ", "))
 	}
-	cfg, err := BitgetTestnetConfigFromEnv()
+	cfg, err := BitgetDemoConfigFromEnv()
 	if err != nil {
 		if IsBlockedRelease(err) {
 			t.Skip(err.Error())
 		}
-		t.Fatalf("Bitget Testnet env: %v", err)
+		t.Fatalf("Bitget Demo env: %v", err)
 	}
 	return cfg
+}
+
+// Deprecated: use RequireBitgetDemoWrite.
+func RequireBitgetTestnetWrite(t testing.TB) BitgetTestnetConfig {
+	t.Helper()
+	return RequireBitgetDemoWrite(t)
 }
 
 func RequireHyperliquidTestnetWrite(t testing.TB) HyperliquidTestnetConfig {
@@ -569,61 +591,66 @@ func BybitDemoConfigFromEnv() (BybitDemoConfig, error) {
 	}, nil
 }
 
-func BitgetTestnetConfigFromEnv() (BitgetTestnetConfig, error) {
-	missing := missingEnv(BitgetTestnetAPIKeyEnv, BitgetTestnetAPISecretEnv, BitgetTestnetPassphraseEnv)
+func BitgetDemoConfigFromEnv() (BitgetDemoConfig, error) {
+	applyLegacyAliases()
+	missing := missingEnv(BitgetDemoAPIKeyEnv, BitgetDemoAPISecretEnv, BitgetDemoPassphraseEnv)
 	if len(missing) > 0 {
-		return BitgetTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+		return BitgetDemoConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
 	}
-	restBaseURL := strings.TrimSpace(os.Getenv(BitgetTestnetRESTBaseURLEnv))
-	publicWSURL := strings.TrimSpace(os.Getenv(BitgetTestnetPublicWSURLEnv))
-	privateWSURL := strings.TrimSpace(os.Getenv(BitgetTestnetPrivateWSURLEnv))
+	restBaseURL := strings.TrimSpace(os.Getenv(BitgetDemoRESTBaseURLEnv))
+	publicWSURL := strings.TrimSpace(os.Getenv(BitgetDemoPublicWSURLEnv))
+	privateWSURL := strings.TrimSpace(os.Getenv(BitgetDemoPrivateWSURLEnv))
 	if restBaseURL == "" && publicWSURL == "" && privateWSURL == "" {
 		restBaseURL = "https://api.bitget.com"
 		publicWSURL = "wss://wspap.bitget.com/v3/ws/public"
 		privateWSURL = "wss://wspap.bitget.com/v3/ws/private"
 	}
 	if restBaseURL == "" || publicWSURL == "" || privateWSURL == "" {
-		return BitgetTestnetConfig{}, fmt.Errorf("%s, %s, and %s must be set together", BitgetTestnetRESTBaseURLEnv, BitgetTestnetPublicWSURLEnv, BitgetTestnetPrivateWSURLEnv)
+		return BitgetDemoConfig{}, fmt.Errorf("%s, %s, and %s must be set together", BitgetDemoRESTBaseURLEnv, BitgetDemoPublicWSURLEnv, BitgetDemoPrivateWSURLEnv)
 	}
-	if err := validateURL(restBaseURL, BitgetTestnetRESTBaseURLEnv, "http", "https"); err != nil {
-		return BitgetTestnetConfig{}, err
+	if err := validateURL(restBaseURL, BitgetDemoRESTBaseURLEnv, "http", "https"); err != nil {
+		return BitgetDemoConfig{}, err
 	}
-	if err := validateURL(publicWSURL, BitgetTestnetPublicWSURLEnv, "ws", "wss"); err != nil {
-		return BitgetTestnetConfig{}, err
+	if err := validateURL(publicWSURL, BitgetDemoPublicWSURLEnv, "ws", "wss"); err != nil {
+		return BitgetDemoConfig{}, err
 	}
-	if err := validateURL(privateWSURL, BitgetTestnetPrivateWSURLEnv, "ws", "wss"); err != nil {
-		return BitgetTestnetConfig{}, err
+	if err := validateURL(privateWSURL, BitgetDemoPrivateWSURLEnv, "ws", "wss"); err != nil {
+		return BitgetDemoConfig{}, err
 	}
-	maxUSDT, err := parsePositiveDecimalEnv(BitgetTestnetMaxNotionalUSDTEnv, BitgetDefaultMaxNotionalUSDT)
+	maxUSDT, err := parsePositiveDecimalEnv(BitgetDemoMaxNotionalUSDTEnv, BitgetDefaultMaxNotionalUSDT)
 	if err != nil {
-		return BitgetTestnetConfig{}, err
+		return BitgetDemoConfig{}, err
 	}
-	maxUSDC, err := parsePositiveDecimalEnv(BitgetTestnetMaxNotionalUSDCEnv, BitgetDefaultMaxNotionalUSDC)
+	maxUSDC, err := parsePositiveDecimalEnv(BitgetDemoMaxNotionalUSDCEnv, BitgetDefaultMaxNotionalUSDC)
 	if err != nil {
-		return BitgetTestnetConfig{}, err
+		return BitgetDemoConfig{}, err
 	}
 	proxyURL, err := proxyURLFromEnv()
 	if err != nil {
-		return BitgetTestnetConfig{}, err
+		return BitgetDemoConfig{}, err
 	}
-	return BitgetTestnetConfig{
-		APIKey:          os.Getenv(BitgetTestnetAPIKeyEnv),
-		APISecret:       os.Getenv(BitgetTestnetAPISecretEnv),
-		Passphrase:      os.Getenv(BitgetTestnetPassphraseEnv),
+	return BitgetDemoConfig{
+		APIKey:          os.Getenv(BitgetDemoAPIKeyEnv),
+		APISecret:       os.Getenv(BitgetDemoAPISecretEnv),
+		Passphrase:      os.Getenv(BitgetDemoPassphraseEnv),
 		MaxNotionalUSDT: maxUSDT,
 		MaxNotionalUSDC: maxUSDC,
-		SpotSymbol:      envOrDefault(BitgetTestnetSpotSymbolEnv, BitgetDefaultSpotSymbol),
-		USDTPerpSymbol:  envOrDefault(BitgetTestnetUSDTPerpSymbolEnv, BitgetDefaultUSDTPerpSymbol),
-		USDCPerpSymbol:  envOrDefault(BitgetTestnetUSDCPerpSymbolEnv, BitgetDefaultUSDCPerpSymbol),
+		SpotSymbol:      envOrDefault(BitgetDemoSpotSymbolEnv, BitgetDefaultSpotSymbol),
+		USDTPerpSymbol:  envOrDefault(BitgetDemoUSDTPerpSymbolEnv, BitgetDefaultUSDTPerpSymbol),
+		USDCPerpSymbol:  envOrDefault(BitgetDemoUSDCPerpSymbolEnv, BitgetDefaultUSDCPerpSymbol),
 		Profile: BitgetEndpointProfile{
-			RESTBaseURL:     restBaseURL,
-			PublicWSURL:     publicWSURL,
-			PrivateWSURL:    privateWSURL,
-			PAPTrading:      restBaseURL == "https://api.bitget.com" && strings.Contains(publicWSURL, "wspap.bitget.com") && strings.Contains(privateWSURL, "wspap.bitget.com"),
-			OfficialTestnet: true,
+			RESTBaseURL:  restBaseURL,
+			PublicWSURL:  publicWSURL,
+			PrivateWSURL: privateWSURL,
+			PAPTrading:   restBaseURL == "https://api.bitget.com" && strings.Contains(publicWSURL, "wspap.bitget.com") && strings.Contains(privateWSURL, "wspap.bitget.com"),
 		},
 		ProxyURL: proxyURL,
 	}, nil
+}
+
+// Deprecated: use BitgetDemoConfigFromEnv.
+func BitgetTestnetConfigFromEnv() (BitgetTestnetConfig, error) {
+	return BitgetDemoConfigFromEnv()
 }
 
 func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, error) {
@@ -799,8 +826,13 @@ func BybitDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 
-func BitgetTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+func BitgetDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
+}
+
+// Deprecated: use BitgetDemoHTTPClient.
+func BitgetTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return BitgetDemoHTTPClient(timeout)
 }
 
 func SkipIfTransientLiveNetworkError(t testing.TB, err error, context string) {
@@ -885,12 +917,23 @@ func findRepoRoot() (string, error) {
 
 func applyLegacyAliases() {
 	for legacy, canonical := range map[string]string{
-		"EDGEX_PRIVATE_KEY":     "EDGEX_STARK_PRIVATE_KEY",
-		"NADO_SUB_ACCOUNT_NAME": "NADO_SUBACCOUNT_NAME",
-		"OKX_SECRET_KEY":        "OKX_API_SECRET",
-		"OKX_PASSPHRASE":        "OKX_API_PASSPHRASE",
+		"EDGEX_PRIVATE_KEY":                   "EDGEX_STARK_PRIVATE_KEY",
+		"NADO_SUB_ACCOUNT_NAME":               "NADO_SUBACCOUNT_NAME",
+		"OKX_SECRET_KEY":                      "OKX_API_SECRET",
+		"OKX_PASSPHRASE":                      "OKX_API_PASSPHRASE",
+		BitgetLegacyTestnetAPIKeyEnv:          BitgetDemoAPIKeyEnv,
+		BitgetLegacyTestnetAPISecretEnv:       BitgetDemoAPISecretEnv,
+		BitgetLegacyTestnetPassphraseEnv:      BitgetDemoPassphraseEnv,
+		BitgetLegacyTestnetSpotSymbolEnv:      BitgetDemoSpotSymbolEnv,
+		BitgetLegacyTestnetUSDTPerpSymbolEnv:  BitgetDemoUSDTPerpSymbolEnv,
+		BitgetLegacyTestnetUSDCPerpSymbolEnv:  BitgetDemoUSDCPerpSymbolEnv,
+		BitgetLegacyTestnetMaxNotionalUSDTEnv: BitgetDemoMaxNotionalUSDTEnv,
+		BitgetLegacyTestnetMaxNotionalUSDCEnv: BitgetDemoMaxNotionalUSDCEnv,
+		BitgetLegacyTestnetRESTBaseURLEnv:     BitgetDemoRESTBaseURLEnv,
+		BitgetLegacyTestnetPublicWSURLEnv:     BitgetDemoPublicWSURLEnv,
+		BitgetLegacyTestnetPrivateWSURLEnv:    BitgetDemoPrivateWSURLEnv,
 	} {
-		if _, exists := os.LookupEnv(canonical); exists {
+		if strings.TrimSpace(os.Getenv(canonical)) != "" {
 			continue
 		}
 		if value, exists := os.LookupEnv(legacy); exists {

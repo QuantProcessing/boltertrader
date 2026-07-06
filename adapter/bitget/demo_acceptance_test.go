@@ -16,34 +16,34 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestBitgetTestnetSpotAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetAcceptance(t, "Bitget Testnet Spot", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.SpotSymbol, enums.KindSpot, "", cfg.MaxNotionalUSDT)
+func TestBitgetDemoSpotAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetAcceptance(t, "Bitget Demo Spot", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.SpotSymbol, enums.KindSpot, "", cfg.MaxNotionalUSDT)
 }
 
-func TestBitgetTestnetUSDTPerpAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetAcceptance(t, "Bitget Testnet USDT Perp", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDTPerpSymbol, enums.KindPerp, "USDT", cfg.MaxNotionalUSDT)
+func TestBitgetDemoUSDTPerpAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetAcceptance(t, "Bitget Demo USDT Perp", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDTPerpSymbol, enums.KindPerp, "USDT", cfg.MaxNotionalUSDT)
 }
 
-func TestBitgetTestnetUSDCPerpAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetAcceptance(t, "Bitget Testnet USDC Perp", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDCPerpSymbol, enums.KindPerp, "USDC", cfg.MaxNotionalUSDC)
+func TestBitgetDemoUSDCPerpAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetAcceptance(t, "Bitget Demo USDC Perp", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDCPerpSymbol, enums.KindPerp, "USDC", cfg.MaxNotionalUSDC)
 }
 
-func TestBitgetTestnetSpotRuntimeAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetRuntimeAcceptance(t, "Bitget Testnet Spot Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.SpotSymbol, enums.KindSpot, "", cfg.MaxNotionalUSDT)
+func TestBitgetDemoSpotRuntimeAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetRuntimeAcceptance(t, "Bitget Demo Spot Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.SpotSymbol, enums.KindSpot, "", cfg.MaxNotionalUSDT)
 }
 
-func TestBitgetTestnetUSDTPerpRuntimeAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetRuntimeAcceptance(t, "Bitget Testnet USDT Perp Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDTPerpSymbol, enums.KindPerp, "USDT", cfg.MaxNotionalUSDT)
+func TestBitgetDemoUSDTPerpRuntimeAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetRuntimeAcceptance(t, "Bitget Demo USDT Perp Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDTPerpSymbol, enums.KindPerp, "USDT", cfg.MaxNotionalUSDT)
 }
 
-func TestBitgetTestnetUSDCPerpRuntimeAcceptance(t *testing.T) {
-	cfg := testenv.RequireBitgetTestnetWrite(t)
-	runBitgetRuntimeAcceptance(t, "Bitget Testnet USDC Perp Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDCPerpSymbol, enums.KindPerp, "USDC", cfg.MaxNotionalUSDC)
+func TestBitgetDemoUSDCPerpRuntimeAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	runBitgetRuntimeAcceptance(t, "Bitget Demo USDC Perp Runtime", cfg.APIKey, cfg.APISecret, cfg.Passphrase, cfg.Profile, cfg.USDCPerpSymbol, enums.KindPerp, "USDC", cfg.MaxNotionalUSDC)
 }
 
 func runBitgetAcceptance(t *testing.T, label, apiKey, apiSecret, passphrase string, profile testenv.BitgetEndpointProfile, symbol string, kind enums.InstrumentKind, settle string, maxNotional decimal.Decimal) {
@@ -141,7 +141,7 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 
 func newBitgetAcceptanceAdapter(t *testing.T, ctx context.Context, apiKey, apiSecret, passphrase string, profile testenv.BitgetEndpointProfile) *Adapter {
 	t.Helper()
-	httpClient, err := testenv.BitgetTestnetHTTPClient(45 * time.Second)
+	httpClient, err := testenv.BitgetDemoHTTPClient(45 * time.Second)
 	if err != nil {
 		t.Fatalf("Bitget HTTP client: %v", err)
 	}
@@ -218,8 +218,8 @@ func bitgetAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string,
 
 func acceptanceEnvironment(label string) string {
 	switch {
-	case strings.Contains(label, "Testnet"):
-		return "Testnet"
+	case strings.Contains(label, "Demo"):
+		return "Demo"
 	default:
 		return ""
 	}

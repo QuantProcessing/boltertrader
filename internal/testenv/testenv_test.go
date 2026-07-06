@@ -328,61 +328,77 @@ func TestBybitDemoConfigRejectsTestnetCredentialScope(t *testing.T) {
 }
 
 func TestBitgetEnvContractConstants(t *testing.T) {
-	if BitgetTestnetAPIKeyEnv != "BITGET_TESTNET_API_KEY" {
-		t.Fatalf("BitgetTestnetAPIKeyEnv=%q", BitgetTestnetAPIKeyEnv)
+	if BitgetDemoAPIKeyEnv != "BITGET_DEMO_API_KEY" {
+		t.Fatalf("BitgetDemoAPIKeyEnv=%q", BitgetDemoAPIKeyEnv)
 	}
-	if BitgetTestnetAPISecretEnv != "BITGET_TESTNET_SECRET_KEY" {
-		t.Fatalf("BitgetTestnetAPISecretEnv=%q", BitgetTestnetAPISecretEnv)
+	if BitgetDemoAPISecretEnv != "BITGET_DEMO_SECRET_KEY" {
+		t.Fatalf("BitgetDemoAPISecretEnv=%q", BitgetDemoAPISecretEnv)
 	}
-	if BitgetTestnetPassphraseEnv != "BITGET_TESTNET_PASSPHRASE" {
-		t.Fatalf("BitgetTestnetPassphraseEnv=%q", BitgetTestnetPassphraseEnv)
+	if BitgetDemoPassphraseEnv != "BITGET_DEMO_PASSPHRASE" {
+		t.Fatalf("BitgetDemoPassphraseEnv=%q", BitgetDemoPassphraseEnv)
 	}
-	if BitgetTestnetUSDTPerpSymbolEnv != "BITGET_TESTNET_USDT_PERP_SYMBOL" {
-		t.Fatalf("BitgetTestnetUSDTPerpSymbolEnv=%q", BitgetTestnetUSDTPerpSymbolEnv)
+	if BitgetDemoUSDTPerpSymbolEnv != "BITGET_DEMO_USDT_PERP_SYMBOL" {
+		t.Fatalf("BitgetDemoUSDTPerpSymbolEnv=%q", BitgetDemoUSDTPerpSymbolEnv)
 	}
-	if BitgetTestnetUSDCPerpSymbolEnv != "BITGET_TESTNET_USDC_PERP_SYMBOL" {
-		t.Fatalf("BitgetTestnetUSDCPerpSymbolEnv=%q", BitgetTestnetUSDCPerpSymbolEnv)
+	if BitgetDemoUSDCPerpSymbolEnv != "BITGET_DEMO_USDC_PERP_SYMBOL" {
+		t.Fatalf("BitgetDemoUSDCPerpSymbolEnv=%q", BitgetDemoUSDCPerpSymbolEnv)
 	}
 }
 
-func TestBitgetTestnetConfigDefaultsToPAPTradingProfile(t *testing.T) {
-	setBitgetTestnetCredentials(t)
-	clearBitgetTestnetOptionalEnv(t)
+func TestBitgetDemoConfigDefaultsToPAPTradingProfile(t *testing.T) {
+	setBitgetDemoCredentials(t)
+	clearBitgetDemoOptionalEnv(t)
 
-	cfg, err := BitgetTestnetConfigFromEnv()
+	cfg, err := BitgetDemoConfigFromEnv()
 	if err != nil {
-		t.Fatalf("BitgetTestnetConfigFromEnv: %v", err)
+		t.Fatalf("BitgetDemoConfigFromEnv: %v", err)
 	}
 	if !cfg.Profile.PAPTrading {
-		t.Fatalf("Bitget Testnet must use paptrading simulated profile by default: %+v", cfg.Profile)
+		t.Fatalf("Bitget Demo must use paptrading simulated profile by default: %+v", cfg.Profile)
 	}
 	if cfg.Profile.RESTBaseURL != "https://api.bitget.com" {
-		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+		t.Fatalf("demo rest=%q", cfg.Profile.RESTBaseURL)
 	}
 	if cfg.Profile.PublicWSURL != "wss://wspap.bitget.com/v3/ws/public" {
-		t.Fatalf("testnet public ws=%q", cfg.Profile.PublicWSURL)
+		t.Fatalf("demo public ws=%q", cfg.Profile.PublicWSURL)
 	}
 	if cfg.Profile.PrivateWSURL != "wss://wspap.bitget.com/v3/ws/private" {
-		t.Fatalf("testnet private ws=%q", cfg.Profile.PrivateWSURL)
+		t.Fatalf("demo private ws=%q", cfg.Profile.PrivateWSURL)
 	}
 }
 
-func TestBitgetTestnetConfigAcceptsExplicitOfficialEndpointProfile(t *testing.T) {
-	setBitgetTestnetCredentials(t)
-	clearBitgetTestnetOptionalEnv(t)
-	t.Setenv(BitgetTestnetRESTBaseURLEnv, "https://testnet-api.bitget.example")
-	t.Setenv(BitgetTestnetPublicWSURLEnv, "wss://testnet-ws.bitget.example/v3/ws/public")
-	t.Setenv(BitgetTestnetPrivateWSURLEnv, "wss://testnet-ws.bitget.example/v3/ws/private")
+func TestBitgetDemoConfigAcceptsExplicitDemoEndpointProfile(t *testing.T) {
+	setBitgetDemoCredentials(t)
+	clearBitgetDemoOptionalEnv(t)
+	t.Setenv(BitgetDemoRESTBaseURLEnv, "https://demo-api.bitget.example")
+	t.Setenv(BitgetDemoPublicWSURLEnv, "wss://demo-ws.bitget.example/v3/ws/public")
+	t.Setenv(BitgetDemoPrivateWSURLEnv, "wss://demo-ws.bitget.example/v3/ws/private")
 
-	cfg, err := BitgetTestnetConfigFromEnv()
+	cfg, err := BitgetDemoConfigFromEnv()
 	if err != nil {
-		t.Fatalf("BitgetTestnetConfigFromEnv: %v", err)
+		t.Fatalf("BitgetDemoConfigFromEnv: %v", err)
 	}
-	if cfg.Profile.RESTBaseURL != "https://testnet-api.bitget.example" {
-		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+	if cfg.Profile.RESTBaseURL != "https://demo-api.bitget.example" {
+		t.Fatalf("demo rest=%q", cfg.Profile.RESTBaseURL)
 	}
 	if cfg.Profile.PAPTrading {
-		t.Fatalf("Bitget Testnet must not silently use paptrading demo profile")
+		t.Fatalf("Bitget Demo must not silently use paptrading profile when custom endpoints are set")
+	}
+}
+
+func TestBitgetDemoConfigAcceptsLegacyTestnetEnvAliases(t *testing.T) {
+	clearBitgetDemoOptionalEnv(t)
+	t.Setenv(BitgetDemoAPIKeyEnv, "")
+	t.Setenv(BitgetDemoAPISecretEnv, "")
+	t.Setenv(BitgetDemoPassphraseEnv, "")
+	setBitgetLegacyTestnetCredentials(t)
+
+	cfg, err := BitgetDemoConfigFromEnv()
+	if err != nil {
+		t.Fatalf("BitgetDemoConfigFromEnv with legacy aliases: %v", err)
+	}
+	if cfg.APIKey != "legacy-testnet-key" || cfg.APISecret != "legacy-testnet-secret" || cfg.Passphrase != "legacy-testnet-passphrase" {
+		t.Fatalf("legacy aliases were not loaded: %+v", cfg)
 	}
 }
 
@@ -889,23 +905,40 @@ func clearBybitDemoOptionalEnv(t *testing.T) {
 	t.Setenv("PROXY", "")
 }
 
-func setBitgetTestnetCredentials(t *testing.T) {
+func setBitgetDemoCredentials(t *testing.T) {
 	t.Helper()
-	t.Setenv(BitgetTestnetAPIKeyEnv, "testnet-key")
-	t.Setenv(BitgetTestnetAPISecretEnv, "testnet-secret")
-	t.Setenv(BitgetTestnetPassphraseEnv, "testnet-passphrase")
+	t.Setenv(BitgetDemoAPIKeyEnv, "demo-key")
+	t.Setenv(BitgetDemoAPISecretEnv, "demo-secret")
+	t.Setenv(BitgetDemoPassphraseEnv, "demo-passphrase")
 }
 
-func clearBitgetTestnetOptionalEnv(t *testing.T) {
+func setBitgetLegacyTestnetCredentials(t *testing.T) {
 	t.Helper()
-	t.Setenv(BitgetTestnetMaxNotionalUSDTEnv, "")
-	t.Setenv(BitgetTestnetMaxNotionalUSDCEnv, "")
-	t.Setenv(BitgetTestnetSpotSymbolEnv, "")
-	t.Setenv(BitgetTestnetUSDTPerpSymbolEnv, "")
-	t.Setenv(BitgetTestnetUSDCPerpSymbolEnv, "")
-	t.Setenv(BitgetTestnetRESTBaseURLEnv, "")
-	t.Setenv(BitgetTestnetPublicWSURLEnv, "")
-	t.Setenv(BitgetTestnetPrivateWSURLEnv, "")
+	t.Setenv(BitgetLegacyTestnetAPIKeyEnv, "legacy-testnet-key")
+	t.Setenv(BitgetLegacyTestnetAPISecretEnv, "legacy-testnet-secret")
+	t.Setenv(BitgetLegacyTestnetPassphraseEnv, "legacy-testnet-passphrase")
+}
+
+func clearBitgetDemoOptionalEnv(t *testing.T) {
+	t.Helper()
+	for _, env := range []string{
+		BitgetDemoMaxNotionalUSDTEnv,
+		BitgetDemoMaxNotionalUSDCEnv,
+		BitgetDemoSpotSymbolEnv,
+		BitgetDemoUSDTPerpSymbolEnv,
+		BitgetDemoUSDCPerpSymbolEnv,
+		BitgetDemoRESTBaseURLEnv,
+		BitgetDemoPublicWSURLEnv,
+		BitgetDemoPrivateWSURLEnv,
+		BitgetLegacyTestnetSpotSymbolEnv,
+		BitgetLegacyTestnetUSDTPerpSymbolEnv,
+		BitgetLegacyTestnetUSDCPerpSymbolEnv,
+		BitgetLegacyTestnetRESTBaseURLEnv,
+		BitgetLegacyTestnetPublicWSURLEnv,
+		BitgetLegacyTestnetPrivateWSURLEnv,
+	} {
+		t.Setenv(env, "")
+	}
 	t.Setenv("PROXY", "")
 }
 
