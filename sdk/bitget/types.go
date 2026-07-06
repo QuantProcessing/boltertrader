@@ -169,15 +169,29 @@ type AccountAssets struct {
 }
 
 type AccountInfo struct {
-	UserID      string   `json:"userId"`
-	InviterID   string   `json:"inviterId"`
-	ParentID    string   `json:"parentId"`
-	ChannelCode string   `json:"channelCode"`
-	Channel     string   `json:"channel"`
-	IPs         string   `json:"ips"`
-	PermType    string   `json:"permType"`
-	Permissions []string `json:"permissions"`
-	RegisTime   string   `json:"regisTime"`
+	UserID      string       `json:"userId"`
+	InviterID   string       `json:"inviterId"`
+	ParentID    NumberString `json:"parentId"`
+	ChannelCode string       `json:"channelCode"`
+	Channel     string       `json:"channel"`
+	IPs         string       `json:"ips"`
+	PermType    string       `json:"permType"`
+	Permissions []string     `json:"permissions"`
+	RegisTime   string       `json:"regisTime"`
+}
+
+type AccountSettings struct {
+	AccountMode    string                 `json:"accountMode"`
+	AssetMode      string                 `json:"assetMode"`
+	AccountLevel   string                 `json:"accountLevel"`
+	HoldMode       string                 `json:"holdMode"`
+	SymbolSettings []AccountSymbolSetting `json:"symbolSettings"`
+}
+
+type AccountSymbolSetting struct {
+	Symbol     string `json:"symbol"`
+	Category   string `json:"category"`
+	MarginMode string `json:"marginMode"`
 }
 
 type FundingAsset struct {

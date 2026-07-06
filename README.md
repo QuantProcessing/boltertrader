@@ -228,6 +228,35 @@ assert runtime cache/portfolio observations. If direct access to OKX Demo hosts
 is unavailable, pass a command-local `PROXY=...`; inherited shell proxy
 variables are not part of the test contract.
 
+Bybit Demo acceptance uses Bybit Demo Trading credentials generated after
+switching a mainnet Bybit account into Demo Trading, not Bybit Testnet,
+Testnet demo, or production trading API keys. The implemented Bybit Demo gate
+covers Spot cash, USDT-linear Perp, and USDC-linear Perp through adapter and
+runtime rows. Demo REST uses `https://api-demo.bybit.com`; private streams use
+`wss://stream-demo.bybit.com/v5/private`.
+
+```sh
+BYBIT_DEMO_API_KEY=... \
+BYBIT_DEMO_API_SECRET=... \
+make test-bybit-acceptance
+```
+
+`BYBIT_DEMO_MAX_NOTIONAL_USDT` and `BYBIT_DEMO_MAX_NOTIONAL_USDC` are optional
+and default to `100`. Product-qualified Bybit targets are:
+
+```sh
+make test-bybit-demo-spot
+make test-bybit-demo-runtime-spot
+make test-bybit-demo-usdt-perp
+make test-bybit-demo-runtime-usdt-perp
+make test-bybit-demo-usdc-perp
+make test-bybit-demo-runtime-usdc-perp
+```
+
+Bybit Testnet keys are a separate credential scope and are rejected by the Demo
+Trading REST host. If direct access to Bybit Demo hosts is unavailable, pass a
+command-local `PROXY=...`.
+
 Hyperliquid Testnet acceptance covers Spot, standard Perp, and configured HIP-3
 Perp. Read-only discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1`; write
 and runtime targets require `HYPERLIQUID_TESTNET_PK` and are explicitly enabled

@@ -41,6 +41,16 @@ type WSPositionMessage struct {
 	Data  []PositionRecord `json:"data"`
 }
 
+type WSWalletMessage struct {
+	Topic string            `json:"topic"`
+	Data  []WSWalletAccount `json:"data"`
+}
+
+type WSWalletAccount struct {
+	AccountType string       `json:"accountType"`
+	Coins       []WalletCoin `json:"coin"`
+}
+
 func NewPrivateWSClient() *PrivateWSClient {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PrivateWSClient{
@@ -87,6 +97,14 @@ func DecodeExecutionMessage(payload []byte) (*WSExecutionMessage, error) {
 
 func DecodePositionMessage(payload []byte) (*WSPositionMessage, error) {
 	var msg WSPositionMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func DecodeWalletMessage(payload []byte) (*WSWalletMessage, error) {
+	var msg WSWalletMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return nil, err
 	}
@@ -152,7 +170,7 @@ func (c *PrivateWSClient) Connect(ctx context.Context) error {
 		return nil
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.url, nil)
+	conn, _, err := websocketDialerFromEnvironment().DialContext(ctx, c.url, nil)
 	if err != nil {
 		c.mu.Unlock()
 		return err

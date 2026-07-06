@@ -130,6 +130,25 @@ func WaitForOrderFilled(ctx context.Context, node *btruntime.TradingNode, client
 	}
 }
 
+func WaitForOrderStatus(ctx context.Context, node *btruntime.TradingNode, clientID string, status enums.OrderStatus) error {
+	var last enums.OrderStatus
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if order, ok := node.Cache.Order(clientID); ok {
+			last = order.Status
+			if order.Status == status {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for runtime order %s status %s; last=%v: %w", clientID, status, last, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func WaitForPortfolioNetQty(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {
 	var last decimal.Decimal
 	ticker := time.NewTicker(500 * time.Millisecond)

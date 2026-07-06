@@ -50,6 +50,8 @@ and exchange state are available.
   capability probes, including the account-state snapshot contract.
 - `make test-p6-offline`: the full credential-free acceptance gate for core,
   runtime, SDK, adapter, and capability behavior.
+- `make test-demo-acceptance`: the aggregate credential-gated Demo acceptance
+  gate for Binance, OKX, and Bybit.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
 - `make test-binance-demo-runtime-perp`: runtime-level Binance USD-M Demo
   execution through `runtime.TradingNode`.
@@ -68,6 +70,34 @@ and exchange state are available.
   execution through `runtime.TradingNode`.
 - `make test-okx-demo-acceptance`: complete OKX Demo acceptance gate for the
   implemented OKX Spot/Perp subset.
+- `make test-bybit-demo-spot`: adapter-level Bybit Demo Spot cash
+  acceptance.
+- `make test-bybit-demo-runtime-spot`: runtime-level Bybit Demo Spot cash
+  acceptance through `runtime.TradingNode`.
+- `make test-bybit-demo-usdt-perp`: adapter-level Bybit Demo USDT-linear
+  Perp acceptance.
+- `make test-bybit-demo-runtime-usdt-perp`: runtime-level Bybit Demo
+  USDT-linear Perp acceptance through `runtime.TradingNode`.
+- `make test-bybit-demo-usdc-perp`: adapter-level Bybit Demo USDC-linear
+  Perp acceptance.
+- `make test-bybit-demo-runtime-usdc-perp`: runtime-level Bybit Demo
+  USDC-linear Perp acceptance through `runtime.TradingNode`.
+- `make test-bybit-acceptance`: complete Bybit Demo acceptance gate for
+  Spot, USDT-linear Perp, and USDC-linear Perp.
+- `make test-bitget-testnet-spot`: adapter-level Bitget Testnet Spot cash
+  acceptance.
+- `make test-bitget-testnet-runtime-spot`: runtime-level Bitget Testnet Spot
+  cash acceptance through `runtime.TradingNode`.
+- `make test-bitget-testnet-usdt-perp`: adapter-level Bitget Testnet
+  USDT-linear Perp acceptance.
+- `make test-bitget-testnet-runtime-usdt-perp`: runtime-level Bitget Testnet
+  USDT-linear Perp acceptance through `runtime.TradingNode`.
+- `make test-bitget-testnet-usdc-perp`: adapter-level Bitget Testnet
+  USDC-linear Perp acceptance.
+- `make test-bitget-testnet-runtime-usdc-perp`: runtime-level Bitget Testnet
+  USDC-linear Perp acceptance through `runtime.TradingNode`.
+- `make test-bitget-acceptance`: complete Bitget Testnet/simulated-trading
+  acceptance gate for Spot, USDT-linear Perp, and USDC-linear Perp.
 - `make test-hyperliquid-testnet-spot-read`: read-only Hyperliquid Testnet Spot
   market/account discovery.
 - `make test-hyperliquid-testnet-spot`: adapter-level Hyperliquid Testnet Spot
@@ -119,9 +149,9 @@ translation code. Default tests must prove:
   or account mode is insufficient.
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
-fake-venue end-to-end gate for this behavior. Demo/Testnet runtime acceptance
-for Binance, OKX, Hyperliquid, and Lighter must run the same shape against
-exchange snapshots before and after order flows.
+fake-venue end-to-end gate for this behavior. Non-production runtime acceptance
+for Binance, OKX, Bybit, Bitget, Hyperliquid, and Lighter must run the same
+shape against exchange snapshots before and after order flows.
 
 Runtime ownership is account-id based. A venue may expose multiple account
 states in one process, and cache, portfolio, risk, reconciliation, balances, and
@@ -261,6 +291,96 @@ present, no open orders remain, and final reconciliation is flat. Tests skip
 cleanly when Demo credentials are absent and classify funding, existing open
 orders/exposure, network/proxy, venue rejection, implementation, and cleanup
 failures separately in their failure messages.
+
+## Bybit Demo Acceptance
+
+Bybit acceptance uses explicit Bybit Demo credentials and never falls back to
+production or Testnet credentials. The first-stage aggregate targets use
+Bybit's Demo Trading environment because Bybit Testnet derivative writes can be
+blocked by identity/product-access requirements even when Spot writes are
+available. Bybit is treated as a unified-account venue: Spot cash, USDT-linear
+Perp, and USDC-linear Perp share the canonical `BYBIT:unified` account id.
+Bybit UTA 1.0, UTA 1.0 Pro, UTA 2.0, and UTA 2.0 Pro account states are
+accepted as official unified-account modes for this Spot/linear phase; Classic
+and unknown account modes fail closed before runtime trading.
+
+Expose credentials and selectors under:
+
+- `BYBIT_DEMO_API_KEY`
+- `BYBIT_DEMO_API_SECRET`
+- optional `BYBIT_DEMO_SYMBOL`, default `BTCUSDT`
+- optional `BYBIT_DEMO_USDT_PERP_SYMBOL`, default `BTCUSDT`
+- optional `BYBIT_DEMO_USDC_PERP_SYMBOL`, default `BTCPERP`
+- optional `BYBIT_DEMO_MAX_NOTIONAL_USDT`, default `100`
+- optional `BYBIT_DEMO_MAX_NOTIONAL_USDC`, default `100`
+
+Run the full Bybit gate with:
+
+```sh
+BYBIT_DEMO_API_KEY=... \
+BYBIT_DEMO_API_SECRET=... \
+make test-bybit-acceptance
+```
+
+`BYBIT_DEMO_API_KEY` and `BYBIT_DEMO_API_SECRET` must be created after
+switching a mainnet Bybit account into Demo Trading. Keys created for Bybit
+Testnet or Testnet demo are rejected by `https://api-demo.bybit.com`.
+Acceptance first calls the read-only `/v5/user/query-api` endpoint so an
+invalid or wrong-scope key fails before account-state reconciliation and order
+lifecycle checks. That preflight requires a non-read-only unified-account key
+(`uta != 0`), Spot trade permission for Spot rows, and `ContractTrade:
+Position` for every row because unified account-state reconciliation reads
+linear positions even when validating the Spot lifecycle.
+
+Bybit Make acceptance targets fail when a selected test skips. The current
+adapter/runtime entrypoints verify live market data, authoritative unified
+account-state snapshots, runtime reconciliation into cache/portfolio, risk
+fail-closed behavior, private stream startup, and a bounded resting-cancel plus
+IOC fill/close cleanup ladder. Bybit is NT-style execution accepted only after
+these noskip Demo targets pass with real Demo Trading credentials, sufficient
+USDT/USDC demo balance, and clean venue state.
+
+## Bitget Testnet Acceptance
+
+Bitget acceptance uses explicit Testnet/simulated-trading credentials and never
+falls back to production credentials. The first-stage aggregate targets use the
+`testnet` name for Bitget's paper trading profile. Bitget is treated as a
+unified-account venue: Spot cash, USDT-linear Perp, and USDC-linear Perp share
+the canonical `BITGET:unified` account id. Only UTA/unified account mode is
+accepted for this phase; classic or unknown account modes fail closed.
+
+Expose credentials and selectors under:
+
+- `BITGET_TESTNET_API_KEY`
+- `BITGET_TESTNET_SECRET_KEY`
+- `BITGET_TESTNET_PASSPHRASE`
+- optional `BITGET_TESTNET_REST_BASE_URL`, default `https://api.bitget.com`
+- optional `BITGET_TESTNET_PUBLIC_WS_URL`, default
+  `wss://wspap.bitget.com/v3/ws/public`
+- optional `BITGET_TESTNET_PRIVATE_WS_URL`, default
+  `wss://wspap.bitget.com/v3/ws/private`
+- optional `BITGET_TESTNET_SYMBOL`, default `BTCUSDT`
+- optional `BITGET_TESTNET_USDT_PERP_SYMBOL`, default `BTCUSDT`
+- optional `BITGET_TESTNET_USDC_PERP_SYMBOL`, default `BTCPERP`
+- optional `BITGET_TESTNET_MAX_NOTIONAL_USDT`, default `100`
+- optional `BITGET_TESTNET_MAX_NOTIONAL_USDC`, default `100`
+
+Run the full Bitget gate with:
+
+```sh
+BITGET_TESTNET_API_KEY=... \
+BITGET_TESTNET_SECRET_KEY=... \
+BITGET_TESTNET_PASSPHRASE=... \
+make test-bitget-acceptance
+```
+
+Bitget Testnet defaults to the official paper-trading profile: REST requests use
+`paptrading: 1` and private/public streams use `wspap.bitget.com`. Like Bybit,
+the current adapter/runtime entrypoints verify live market data, authoritative
+account-state snapshots, runtime reconciliation into cache/portfolio, risk
+fail-closed behavior, private stream startup, and a bounded resting-cancel plus
+IOC fill/close cleanup ladder. Bitget is NT-style execution accepted only after
+these noskip Testnet targets pass with real credentials and clean venue state.
 
 ## Hyperliquid Testnet Writes
 

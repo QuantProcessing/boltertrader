@@ -41,6 +41,38 @@ const (
 	OKXDemoHostProfileEEA    = "eea"
 	OKXDemoHostProfileCustom = "custom"
 
+	BybitDemoAPIKeyEnv          = "BYBIT_DEMO_API_KEY"
+	BybitDemoAPISecretEnv       = "BYBIT_DEMO_API_SECRET"
+	BybitDemoSpotSymbolEnv      = "BYBIT_DEMO_SYMBOL"
+	BybitDemoUSDTPerpSymbolEnv  = "BYBIT_DEMO_USDT_PERP_SYMBOL"
+	BybitDemoUSDCPerpSymbolEnv  = "BYBIT_DEMO_USDC_PERP_SYMBOL"
+	BybitDemoMaxNotionalUSDTEnv = "BYBIT_DEMO_MAX_NOTIONAL_USDT"
+	BybitDemoMaxNotionalUSDCEnv = "BYBIT_DEMO_MAX_NOTIONAL_USDC"
+
+	BybitDefaultMaxNotionalUSDT = "100"
+	BybitDefaultMaxNotionalUSDC = "100"
+	BybitDefaultSpotSymbol      = "BTCUSDT"
+	BybitDefaultUSDTPerpSymbol  = "BTCUSDT"
+	BybitDefaultUSDCPerpSymbol  = "BTCPERP"
+
+	BitgetTestnetAPIKeyEnv          = "BITGET_TESTNET_API_KEY"
+	BitgetTestnetAPISecretEnv       = "BITGET_TESTNET_SECRET_KEY"
+	BitgetTestnetPassphraseEnv      = "BITGET_TESTNET_PASSPHRASE"
+	BitgetTestnetSpotSymbolEnv      = "BITGET_TESTNET_SYMBOL"
+	BitgetTestnetUSDTPerpSymbolEnv  = "BITGET_TESTNET_USDT_PERP_SYMBOL"
+	BitgetTestnetUSDCPerpSymbolEnv  = "BITGET_TESTNET_USDC_PERP_SYMBOL"
+	BitgetTestnetMaxNotionalUSDTEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDT"
+	BitgetTestnetMaxNotionalUSDCEnv = "BITGET_TESTNET_MAX_NOTIONAL_USDC"
+	BitgetTestnetRESTBaseURLEnv     = "BITGET_TESTNET_REST_BASE_URL"
+	BitgetTestnetPublicWSURLEnv     = "BITGET_TESTNET_PUBLIC_WS_URL"
+	BitgetTestnetPrivateWSURLEnv    = "BITGET_TESTNET_PRIVATE_WS_URL"
+
+	BitgetDefaultMaxNotionalUSDT = "100"
+	BitgetDefaultMaxNotionalUSDC = "100"
+	BitgetDefaultSpotSymbol      = "BTCUSDT"
+	BitgetDefaultUSDTPerpSymbol  = "BTCUSDT"
+	BitgetDefaultUSDCPerpSymbol  = "BTCPERP"
+
 	HyperliquidTestnetPrivateKeyEnv      = "HYPERLIQUID_TESTNET_PK"
 	HyperliquidTestnetEnableWriteEnv     = "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES"
 	HyperliquidTestnetAccountAddressEnv  = "HYPERLIQUID_ACCOUNT_ADDRESS"
@@ -76,6 +108,56 @@ type OKXDemoConfig struct {
 	RESTBaseURL     string
 	WSBaseURL       string
 	ProxyURL        string
+}
+
+type BybitEndpointProfile struct {
+	RESTBaseURL       string
+	PublicSpotWSURL   string
+	PublicLinearWSURL string
+	PrivateWSURL      string
+	TradeWSURL        string
+	SupportsWSTrade   bool
+}
+
+type BybitDemoConfig struct {
+	APIKey          string
+	APISecret       string
+	MaxNotionalUSDT decimal.Decimal
+	MaxNotionalUSDC decimal.Decimal
+	SpotSymbol      string
+	USDTPerpSymbol  string
+	USDCPerpSymbol  string
+	Profile         BybitEndpointProfile
+	ProxyURL        string
+}
+
+type BitgetEndpointProfile struct {
+	RESTBaseURL     string
+	PublicWSURL     string
+	PrivateWSURL    string
+	PAPTrading      bool
+	OfficialTestnet bool
+}
+
+type BitgetTestnetConfig struct {
+	APIKey          string
+	APISecret       string
+	Passphrase      string
+	MaxNotionalUSDT decimal.Decimal
+	MaxNotionalUSDC decimal.Decimal
+	SpotSymbol      string
+	USDTPerpSymbol  string
+	USDCPerpSymbol  string
+	Profile         BitgetEndpointProfile
+	ProxyURL        string
+}
+
+type BlockedReleaseError struct {
+	Venue       string
+	Environment string
+	Product     string
+	Capability  string
+	Evidence    string
 }
 
 type HyperliquidTestnetConfig struct {
@@ -152,6 +234,61 @@ func (c OKXDemoConfig) String() string {
 
 func (c OKXDemoConfig) GoString() string {
 	return c.String()
+}
+
+func (c BybitDemoConfig) String() string {
+	return fmt.Sprintf(
+		"BybitDemoConfig{APIKey:%s APISecret:%s MaxNotionalUSDT:%s MaxNotionalUSDC:%s SpotSymbol:%q USDTPerpSymbol:%q USDCPerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		redactSecret(c.APIKey),
+		redactSecret(c.APISecret),
+		c.MaxNotionalUSDT.String(),
+		c.MaxNotionalUSDC.String(),
+		c.SpotSymbol,
+		c.USDTPerpSymbol,
+		c.USDCPerpSymbol,
+		c.Profile,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c BybitDemoConfig) GoString() string {
+	return c.String()
+}
+
+func (c BitgetTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"BitgetTestnetConfig{APIKey:%s APISecret:%s Passphrase:%s MaxNotionalUSDT:%s MaxNotionalUSDC:%s SpotSymbol:%q USDTPerpSymbol:%q USDCPerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		redactSecret(c.APIKey),
+		redactSecret(c.APISecret),
+		redactSecret(c.Passphrase),
+		c.MaxNotionalUSDT.String(),
+		c.MaxNotionalUSDC.String(),
+		c.SpotSymbol,
+		c.USDTPerpSymbol,
+		c.USDCPerpSymbol,
+		c.Profile,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c BitgetTestnetConfig) GoString() string {
+	return c.String()
+}
+
+func (e *BlockedReleaseError) Error() string {
+	return fmt.Sprintf(
+		"blocked-release: venue=%s environment=%s product=%s capability=%s evidence=%s",
+		e.Venue,
+		e.Environment,
+		e.Product,
+		e.Capability,
+		e.Evidence,
+	)
+}
+
+func IsBlockedRelease(err error) bool {
+	var blocked *BlockedReleaseError
+	return errors.As(err, &blocked)
 }
 
 // LoadRepoEnv loads the repo-root .env into the current process without
@@ -267,6 +404,42 @@ func RequireOKXDemoWrite(t testing.TB) OKXDemoConfig {
 	return cfg
 }
 
+func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Bybit Demo write test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	cfg, err := BybitDemoConfigFromEnv()
+	if err != nil {
+		t.Skipf("skipping Bybit Demo write test: %v", err)
+	}
+	return cfg
+}
+
+func RequireBitgetTestnetWrite(t testing.TB) BitgetTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Bitget Testnet write test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if missing := missingEnv(BitgetTestnetAPIKeyEnv, BitgetTestnetAPISecretEnv, BitgetTestnetPassphraseEnv); len(missing) > 0 {
+		t.Skipf("skipping Bitget Testnet write test: missing required env %s", strings.Join(missing, ", "))
+	}
+	cfg, err := BitgetTestnetConfigFromEnv()
+	if err != nil {
+		if IsBlockedRelease(err) {
+			t.Skip(err.Error())
+		}
+		t.Fatalf("Bitget Testnet env: %v", err)
+	}
+	return cfg
+}
+
 func RequireHyperliquidTestnetWrite(t testing.TB) HyperliquidTestnetConfig {
 	t.Helper()
 	if testing.Short() {
@@ -355,6 +528,102 @@ func LighterTestnetConfigFromEnv() (LighterTestnetConfig, error) {
 
 func LighterTestnetReadConfigFromEnv() (LighterTestnetConfig, error) {
 	return lighterTestnetConfigFromEnv(false)
+}
+
+func BybitDemoConfigFromEnv() (BybitDemoConfig, error) {
+	missing := missingEnv(BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv)
+	if len(missing) > 0 {
+		if hasAnyEnv("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET") {
+			return BybitDemoConfig{}, fmt.Errorf("missing required env %s; BYBIT_TESTNET_* credentials are a separate Bybit Testnet scope and are not accepted for Bybit Demo Trading, use %s and %s", strings.Join(missing, ", "), BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv)
+		}
+		return BybitDemoConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+	}
+	maxUSDT, err := parsePositiveDecimalEnv(BybitDemoMaxNotionalUSDTEnv, BybitDefaultMaxNotionalUSDT)
+	if err != nil {
+		return BybitDemoConfig{}, err
+	}
+	maxUSDC, err := parsePositiveDecimalEnv(BybitDemoMaxNotionalUSDCEnv, BybitDefaultMaxNotionalUSDC)
+	if err != nil {
+		return BybitDemoConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return BybitDemoConfig{}, err
+	}
+	return BybitDemoConfig{
+		APIKey:          os.Getenv(BybitDemoAPIKeyEnv),
+		APISecret:       os.Getenv(BybitDemoAPISecretEnv),
+		MaxNotionalUSDT: maxUSDT,
+		MaxNotionalUSDC: maxUSDC,
+		SpotSymbol:      envOrDefault(BybitDemoSpotSymbolEnv, BybitDefaultSpotSymbol),
+		USDTPerpSymbol:  envOrDefault(BybitDemoUSDTPerpSymbolEnv, BybitDefaultUSDTPerpSymbol),
+		USDCPerpSymbol:  envOrDefault(BybitDemoUSDCPerpSymbolEnv, BybitDefaultUSDCPerpSymbol),
+		Profile: BybitEndpointProfile{
+			RESTBaseURL:       "https://api-demo.bybit.com",
+			PublicSpotWSURL:   "wss://stream.bybit.com/v5/public/spot",
+			PublicLinearWSURL: "wss://stream.bybit.com/v5/public/linear",
+			PrivateWSURL:      "wss://stream-demo.bybit.com/v5/private",
+			SupportsWSTrade:   false,
+		},
+		ProxyURL: proxyURL,
+	}, nil
+}
+
+func BitgetTestnetConfigFromEnv() (BitgetTestnetConfig, error) {
+	missing := missingEnv(BitgetTestnetAPIKeyEnv, BitgetTestnetAPISecretEnv, BitgetTestnetPassphraseEnv)
+	if len(missing) > 0 {
+		return BitgetTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+	}
+	restBaseURL := strings.TrimSpace(os.Getenv(BitgetTestnetRESTBaseURLEnv))
+	publicWSURL := strings.TrimSpace(os.Getenv(BitgetTestnetPublicWSURLEnv))
+	privateWSURL := strings.TrimSpace(os.Getenv(BitgetTestnetPrivateWSURLEnv))
+	if restBaseURL == "" && publicWSURL == "" && privateWSURL == "" {
+		restBaseURL = "https://api.bitget.com"
+		publicWSURL = "wss://wspap.bitget.com/v3/ws/public"
+		privateWSURL = "wss://wspap.bitget.com/v3/ws/private"
+	}
+	if restBaseURL == "" || publicWSURL == "" || privateWSURL == "" {
+		return BitgetTestnetConfig{}, fmt.Errorf("%s, %s, and %s must be set together", BitgetTestnetRESTBaseURLEnv, BitgetTestnetPublicWSURLEnv, BitgetTestnetPrivateWSURLEnv)
+	}
+	if err := validateURL(restBaseURL, BitgetTestnetRESTBaseURLEnv, "http", "https"); err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	if err := validateURL(publicWSURL, BitgetTestnetPublicWSURLEnv, "ws", "wss"); err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	if err := validateURL(privateWSURL, BitgetTestnetPrivateWSURLEnv, "ws", "wss"); err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	maxUSDT, err := parsePositiveDecimalEnv(BitgetTestnetMaxNotionalUSDTEnv, BitgetDefaultMaxNotionalUSDT)
+	if err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	maxUSDC, err := parsePositiveDecimalEnv(BitgetTestnetMaxNotionalUSDCEnv, BitgetDefaultMaxNotionalUSDC)
+	if err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return BitgetTestnetConfig{}, err
+	}
+	return BitgetTestnetConfig{
+		APIKey:          os.Getenv(BitgetTestnetAPIKeyEnv),
+		APISecret:       os.Getenv(BitgetTestnetAPISecretEnv),
+		Passphrase:      os.Getenv(BitgetTestnetPassphraseEnv),
+		MaxNotionalUSDT: maxUSDT,
+		MaxNotionalUSDC: maxUSDC,
+		SpotSymbol:      envOrDefault(BitgetTestnetSpotSymbolEnv, BitgetDefaultSpotSymbol),
+		USDTPerpSymbol:  envOrDefault(BitgetTestnetUSDTPerpSymbolEnv, BitgetDefaultUSDTPerpSymbol),
+		USDCPerpSymbol:  envOrDefault(BitgetTestnetUSDCPerpSymbolEnv, BitgetDefaultUSDCPerpSymbol),
+		Profile: BitgetEndpointProfile{
+			RESTBaseURL:     restBaseURL,
+			PublicWSURL:     publicWSURL,
+			PrivateWSURL:    privateWSURL,
+			PAPTrading:      restBaseURL == "https://api.bitget.com" && strings.Contains(publicWSURL, "wspap.bitget.com") && strings.Contains(privateWSURL, "wspap.bitget.com"),
+			OfficialTestnet: true,
+		},
+		ProxyURL: proxyURL,
+	}, nil
 }
 
 func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, error) {
@@ -523,24 +792,15 @@ func OKXDemoConfigFromEnv() (OKXDemoConfig, error) {
 }
 
 func OKXDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
+	return proxiedHTTPClient(timeout)
+}
 
-	if proxy := strings.TrimSpace(os.Getenv("PROXY")); proxy != "" {
-		proxyURL, err := url.Parse(proxy)
-		if err != nil {
-			return nil, fmt.Errorf("invalid PROXY: %w", err)
-		}
-		if err := validateURL(proxy, "PROXY", "http", "https", "socks5"); err != nil {
-			return nil, err
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
+func BybitDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
 
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-	}, nil
+func BitgetTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
 }
 
 func SkipIfTransientLiveNetworkError(t testing.TB, err error, context string) {
@@ -649,12 +909,44 @@ func missingEnv(vars ...string) []string {
 	return missing
 }
 
+func hasAnyEnv(vars ...string) bool {
+	for _, key := range vars {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func envOrDefault(key, defaultValue string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return defaultValue
 	}
 	return value
+}
+
+func parsePositiveDecimalEnv(key, defaultValue string) (decimal.Decimal, error) {
+	value := envOrDefault(key, defaultValue)
+	parsed, err := decimal.NewFromString(value)
+	if err != nil {
+		return decimal.Decimal{}, fmt.Errorf("%s must be a decimal: %w", key, err)
+	}
+	if !parsed.IsPositive() {
+		return decimal.Decimal{}, fmt.Errorf("%s must be positive", key)
+	}
+	return parsed, nil
+}
+
+func proxyURLFromEnv() (string, error) {
+	proxyURL := strings.TrimSpace(os.Getenv("PROXY"))
+	if proxyURL == "" {
+		return "", nil
+	}
+	if err := validateURL(proxyURL, "PROXY", "http", "https", "socks5"); err != nil {
+		return "", err
+	}
+	return proxyURL, nil
 }
 
 func parseInt64Env(key string) (int64, error) {

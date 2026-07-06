@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -106,5 +107,71 @@ func TestClient_HasCredentials(t *testing.T) {
 	}
 	if !NewClient().WithCredentials("key", "secret", "pass").HasCredentials() {
 		t.Fatal("expected credentials to be detected")
+	}
+}
+
+func TestEnvironmentProfiles(t *testing.T) {
+	demo := DemoEnvironmentProfile()
+	if demo.RESTBaseURL != "https://api.bitget.com" {
+		t.Fatalf("demo rest=%q", demo.RESTBaseURL)
+	}
+	if demo.PublicWSURL != "wss://wspap.bitget.com/v3/ws/public" {
+		t.Fatalf("demo public ws=%q", demo.PublicWSURL)
+	}
+	if demo.PrivateWSURL != "wss://wspap.bitget.com/v3/ws/private" {
+		t.Fatalf("demo private ws=%q", demo.PrivateWSURL)
+	}
+	if !demo.PAPTrading {
+		t.Fatalf("demo profile must set paptrading: %+v", demo)
+	}
+
+	testnet, err := NewTestnetEnvironmentProfile("https://testnet-api.bitget.example", "wss://testnet.bitget.example/public", "wss://testnet.bitget.example/private")
+	if err != nil {
+		t.Fatalf("testnet profile: %v", err)
+	}
+	if !testnet.OfficialTestnet || testnet.PAPTrading {
+		t.Fatalf("testnet profile should be official and non-demo: %+v", testnet)
+	}
+}
+
+func TestClient_WithEnvironmentProfileAddsPAPTradingHeader(t *testing.T) {
+	var seenHeader string
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithEnvironmentProfile(DemoEnvironmentProfile()).
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenHeader = req.Header.Get("paptrading")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{"userId":"u1","permType":"read","permissions":["uta"]}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	if _, err := client.GetAccountInfo(context.Background()); err != nil {
+		t.Fatalf("GetAccountInfo: %v", err)
+	}
+	if seenHeader != "1" {
+		t.Fatalf("paptrading header=%q, want 1", seenHeader)
+	}
+}
+
+func TestWSClientsUseEnvironmentProfiles(t *testing.T) {
+	demo := DemoEnvironmentProfile()
+
+	public := NewPublicWSClientWithProfile(demo)
+	if public.url != "wss://wspap.bitget.com/v3/ws/public" {
+		t.Fatalf("public ws url=%q", public.url)
+	}
+
+	private := NewPrivateWSClientWithProfile(demo)
+	if private.url != "wss://wspap.bitget.com/v3/ws/private" {
+		t.Fatalf("private ws url=%q", private.url)
+	}
+}
+
+func TestSettlementProductTypeConstants(t *testing.T) {
+	if ProductTypeUSDTFutures != "USDT-FUTURES" || ProductTypeUSDCFutures != "USDC-FUTURES" {
+		t.Fatalf("product constants usdt=%q usdc=%q", ProductTypeUSDTFutures, ProductTypeUSDCFutures)
 	}
 }

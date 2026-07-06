@@ -35,6 +35,18 @@ func (c *Client) GetAccountInfo(ctx context.Context) (*AccountInfo, error) {
 	return &resp.Result, nil
 }
 
+func (c *Client) GetAPIKeyInfo(ctx context.Context) (*APIKeyInfo, error) {
+	var resp responseEnvelope[APIKeyInfo]
+	err := c.getPrivate(ctx, "/v5/user/query-api", nil, &resp)
+	if err != nil {
+		return nil, err
+	}
+	if resp.RetCode != 0 {
+		return nil, fmt.Errorf("bybit sdk: query api key failed: %d %s", resp.RetCode, resp.RetMsg)
+	}
+	return &resp.Result, nil
+}
+
 func (c *Client) GetFeeRates(ctx context.Context, category, symbol string) ([]FeeRateRecord, error) {
 	var resp responseEnvelope[FeeRatesResult]
 	err := c.getPrivate(ctx, "/v5/account/fee-rate", map[string]string{

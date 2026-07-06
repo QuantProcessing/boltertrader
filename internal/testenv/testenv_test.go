@@ -259,6 +259,133 @@ func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentials(t *testing.T) {
 	RequireBinanceDemoWrite(t)
 }
 
+func TestBybitDemoEnvContractConstants(t *testing.T) {
+	if BybitDemoAPIKeyEnv != "BYBIT_DEMO_API_KEY" {
+		t.Fatalf("BybitDemoAPIKeyEnv=%q", BybitDemoAPIKeyEnv)
+	}
+	if BybitDemoAPISecretEnv != "BYBIT_DEMO_API_SECRET" {
+		t.Fatalf("BybitDemoAPISecretEnv=%q", BybitDemoAPISecretEnv)
+	}
+}
+
+func TestBybitDemoConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
+	setBybitDemoCredentials(t)
+	clearBybitDemoOptionalEnv(t)
+
+	cfg, err := BybitDemoConfigFromEnv()
+	if err != nil {
+		t.Fatalf("BybitDemoConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.RESTBaseURL != "https://api-demo.bybit.com" {
+		t.Fatalf("demo rest=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.PublicSpotWSURL != "wss://stream.bybit.com/v5/public/spot" {
+		t.Fatalf("demo spot ws=%q", cfg.Profile.PublicSpotWSURL)
+	}
+	if cfg.Profile.PublicLinearWSURL != "wss://stream.bybit.com/v5/public/linear" {
+		t.Fatalf("demo linear ws=%q", cfg.Profile.PublicLinearWSURL)
+	}
+	if cfg.Profile.PrivateWSURL != "wss://stream-demo.bybit.com/v5/private" {
+		t.Fatalf("demo private ws=%q", cfg.Profile.PrivateWSURL)
+	}
+	if cfg.Profile.SupportsWSTrade || cfg.Profile.TradeWSURL != "" {
+		t.Fatalf("Bybit Demo must not expose WS Trade: %+v", cfg.Profile)
+	}
+}
+
+func TestRequireBybitDemoWriteRejectsProductionCredentials(t *testing.T) {
+	t.Setenv("BYBIT_API_KEY", "prod-key")
+	t.Setenv("BYBIT_API_SECRET", "prod-secret")
+	clearBybitDemoCredentials(t)
+	clearBybitDemoOptionalEnv(t)
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		_ = RequireBybitDemoWrite(t)
+		t.Fatalf("expected RequireBybitDemoWrite to reject production credentials")
+	})
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestBybitDemoConfigRejectsTestnetCredentialScope(t *testing.T) {
+	t.Setenv("BYBIT_TESTNET_API_KEY", "testnet-key")
+	t.Setenv("BYBIT_TESTNET_API_SECRET", "testnet-secret")
+	clearBybitDemoCredentials(t)
+	clearBybitDemoOptionalEnv(t)
+
+	_, err := BybitDemoConfigFromEnv()
+	if err == nil {
+		t.Fatalf("expected BybitDemoConfigFromEnv to reject Testnet credentials")
+	}
+	if !strings.Contains(err.Error(), "BYBIT_TESTNET") || !strings.Contains(err.Error(), "BYBIT_DEMO") {
+		t.Fatalf("expected error to identify Testnet/Demo credential mismatch, got %v", err)
+	}
+}
+
+func TestBitgetEnvContractConstants(t *testing.T) {
+	if BitgetTestnetAPIKeyEnv != "BITGET_TESTNET_API_KEY" {
+		t.Fatalf("BitgetTestnetAPIKeyEnv=%q", BitgetTestnetAPIKeyEnv)
+	}
+	if BitgetTestnetAPISecretEnv != "BITGET_TESTNET_SECRET_KEY" {
+		t.Fatalf("BitgetTestnetAPISecretEnv=%q", BitgetTestnetAPISecretEnv)
+	}
+	if BitgetTestnetPassphraseEnv != "BITGET_TESTNET_PASSPHRASE" {
+		t.Fatalf("BitgetTestnetPassphraseEnv=%q", BitgetTestnetPassphraseEnv)
+	}
+	if BitgetTestnetUSDTPerpSymbolEnv != "BITGET_TESTNET_USDT_PERP_SYMBOL" {
+		t.Fatalf("BitgetTestnetUSDTPerpSymbolEnv=%q", BitgetTestnetUSDTPerpSymbolEnv)
+	}
+	if BitgetTestnetUSDCPerpSymbolEnv != "BITGET_TESTNET_USDC_PERP_SYMBOL" {
+		t.Fatalf("BitgetTestnetUSDCPerpSymbolEnv=%q", BitgetTestnetUSDCPerpSymbolEnv)
+	}
+}
+
+func TestBitgetTestnetConfigDefaultsToPAPTradingProfile(t *testing.T) {
+	setBitgetTestnetCredentials(t)
+	clearBitgetTestnetOptionalEnv(t)
+
+	cfg, err := BitgetTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("BitgetTestnetConfigFromEnv: %v", err)
+	}
+	if !cfg.Profile.PAPTrading {
+		t.Fatalf("Bitget Testnet must use paptrading simulated profile by default: %+v", cfg.Profile)
+	}
+	if cfg.Profile.RESTBaseURL != "https://api.bitget.com" {
+		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.PublicWSURL != "wss://wspap.bitget.com/v3/ws/public" {
+		t.Fatalf("testnet public ws=%q", cfg.Profile.PublicWSURL)
+	}
+	if cfg.Profile.PrivateWSURL != "wss://wspap.bitget.com/v3/ws/private" {
+		t.Fatalf("testnet private ws=%q", cfg.Profile.PrivateWSURL)
+	}
+}
+
+func TestBitgetTestnetConfigAcceptsExplicitOfficialEndpointProfile(t *testing.T) {
+	setBitgetTestnetCredentials(t)
+	clearBitgetTestnetOptionalEnv(t)
+	t.Setenv(BitgetTestnetRESTBaseURLEnv, "https://testnet-api.bitget.example")
+	t.Setenv(BitgetTestnetPublicWSURLEnv, "wss://testnet-ws.bitget.example/v3/ws/public")
+	t.Setenv(BitgetTestnetPrivateWSURLEnv, "wss://testnet-ws.bitget.example/v3/ws/private")
+
+	cfg, err := BitgetTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("BitgetTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.RESTBaseURL != "https://testnet-api.bitget.example" {
+		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.PAPTrading {
+		t.Fatalf("Bitget Testnet must not silently use paptrading demo profile")
+	}
+}
+
 func TestOKXDemoEnvContractConstants(t *testing.T) {
 	if OKXDemoAPIKeyEnv != "OKX_DEMO_API_KEY" {
 		t.Fatalf("OKXDemoAPIKeyEnv=%q", OKXDemoAPIKeyEnv)
@@ -737,6 +864,48 @@ func clearOKXDemoOptionalEnv(t *testing.T) {
 	t.Setenv(OKXDemoHostProfileEnv, "")
 	t.Setenv(OKXDemoRESTBaseURLEnv, "")
 	t.Setenv(OKXDemoWSBaseURLEnv, "")
+	t.Setenv("PROXY", "")
+}
+
+func setBybitDemoCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitDemoAPIKeyEnv, "testnet-key")
+	t.Setenv(BybitDemoAPISecretEnv, "testnet-secret")
+}
+
+func clearBybitDemoCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitDemoAPIKeyEnv, "")
+	t.Setenv(BybitDemoAPISecretEnv, "")
+}
+
+func clearBybitDemoOptionalEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitDemoMaxNotionalUSDTEnv, "")
+	t.Setenv(BybitDemoMaxNotionalUSDCEnv, "")
+	t.Setenv(BybitDemoSpotSymbolEnv, "")
+	t.Setenv(BybitDemoUSDTPerpSymbolEnv, "")
+	t.Setenv(BybitDemoUSDCPerpSymbolEnv, "")
+	t.Setenv("PROXY", "")
+}
+
+func setBitgetTestnetCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(BitgetTestnetAPIKeyEnv, "testnet-key")
+	t.Setenv(BitgetTestnetAPISecretEnv, "testnet-secret")
+	t.Setenv(BitgetTestnetPassphraseEnv, "testnet-passphrase")
+}
+
+func clearBitgetTestnetOptionalEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(BitgetTestnetMaxNotionalUSDTEnv, "")
+	t.Setenv(BitgetTestnetMaxNotionalUSDCEnv, "")
+	t.Setenv(BitgetTestnetSpotSymbolEnv, "")
+	t.Setenv(BitgetTestnetUSDTPerpSymbolEnv, "")
+	t.Setenv(BitgetTestnetUSDCPerpSymbolEnv, "")
+	t.Setenv(BitgetTestnetRESTBaseURLEnv, "")
+	t.Setenv(BitgetTestnetPublicWSURLEnv, "")
+	t.Setenv(BitgetTestnetPrivateWSURLEnv, "")
 	t.Setenv("PROXY", "")
 }
 

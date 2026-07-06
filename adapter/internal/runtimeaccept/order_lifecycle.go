@@ -1,0 +1,550 @@
+package runtimeaccept
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/model"
+	btruntime "github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/orderstate"
+	"github.com/shopspring/decimal"
+)
+
+type OrderLifecycleSpec struct {
+	Label                 string
+	Venue                 string
+	Environment           string
+	Product               string
+	AccountID             string
+	InstrumentID          model.InstrumentID
+	Quantity              decimal.Decimal
+	RestingPrice          decimal.Decimal
+	FillPrice             decimal.Decimal
+	ClosePrice            decimal.Decimal
+	PositionSide          enums.PositionSide
+	CloseAfterFill        bool
+	CleanExistingPosition bool
+	PrivateStreamTopics   []string
+	PollInterval          time.Duration
+	PollRequestTimeout    time.Duration
+	Logf                  func(format string, args ...any)
+}
+
+type OrderLifecycleResult struct {
+	Resting   model.Order
+	Filled    model.Order
+	Closed    model.Order
+	FilledQty decimal.Decimal
+}
+
+func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) (*OrderLifecycleResult, error) {
+	if err := validateOrderLifecycleSpec(spec); err != nil {
+		return nil, err
+	}
+	spec.logAcceptanceStart("adapter")
+	if spec.CleanExistingPosition && spec.InstrumentID.Kind != enums.KindSpot {
+		if err := cleanExistingPosition(ctx, exec, spec); err != nil {
+			return nil, fmt.Errorf("%s clean existing position: %w", spec.label(), err)
+		}
+	}
+	if err := waitForNoOpenOrders(ctx, exec, spec); err != nil {
+		return nil, fmt.Errorf("%s open-order preflight: %w", spec.label(), err)
+	}
+
+	resting, err := exec.Submit(ctx, model.OrderRequest{
+		AccountID:    spec.AccountID,
+		ClientID:     orderLifecycleClientID("rest"),
+		InstrumentID: spec.InstrumentID,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTX,
+		Quantity:     spec.Quantity,
+		Price:        spec.RestingPrice,
+		PositionSide: spec.PositionSide,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s submit resting order: %w", spec.label(), err)
+	}
+	if resting == nil {
+		return nil, fmt.Errorf("%s submit resting order returned nil", spec.label())
+	}
+	spec.logOrder("resting_order", resting, resting.FilledQty)
+	restingNeedsCancel := true
+	defer func() {
+		if restingNeedsCancel && resting.VenueOrderID != "" {
+			_ = exec.Cancel(context.Background(), spec.InstrumentID, resting.VenueOrderID)
+		}
+	}()
+	if resting.Status == enums.StatusFilled || !resting.FilledQty.IsZero() {
+		return nil, fmt.Errorf("%s resting order unexpectedly filled: %+v", spec.label(), *resting)
+	}
+	if err := exec.Cancel(ctx, spec.InstrumentID, resting.VenueOrderID); err != nil {
+		return nil, fmt.Errorf("%s cancel resting order %s: %w", spec.label(), resting.VenueOrderID, err)
+	}
+	restingNeedsCancel = false
+	if err := waitForNoOpenOrders(ctx, exec, spec); err != nil {
+		return nil, fmt.Errorf("%s wait for resting order cancel: %w", spec.label(), err)
+	}
+	spec.logf("canceled_order label=%q client_id=%s venue_order_id=%s cleanup=no_open_orders", spec.label(), resting.Request.ClientID, resting.VenueOrderID)
+
+	filled, filledQty, err := submitAndWaitFilled(ctx, exec, spec, "fill", enums.SideBuy, spec.FillPrice, false, spec.Quantity)
+	if err != nil {
+		return nil, err
+	}
+	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
+
+	if spec.CloseAfterFill {
+		closeOrder, _, err := submitAndWaitFilled(
+			ctx,
+			exec,
+			spec,
+			"close",
+			enums.SideSell,
+			spec.ClosePrice,
+			spec.InstrumentID.Kind != enums.KindSpot,
+			filledQty,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result.Closed = *closeOrder
+		if err := waitForNoOpenOrders(ctx, exec, spec); err != nil {
+			return nil, fmt.Errorf("%s wait for no open orders after close: %w", spec.label(), err)
+		}
+		spec.logf("cleanup label=%q cleanup=no_open_orders", spec.label())
+		if spec.InstrumentID.Kind != enums.KindSpot {
+			if err := waitForFlatPosition(ctx, exec, spec); err != nil {
+				return nil, fmt.Errorf("%s wait for flat position: %w", spec.label(), err)
+			}
+			spec.logf("cleanup label=%q cleanup=flat_position", spec.label())
+		}
+	}
+	return result, nil
+}
+
+func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, venueExec contract.ExecutionClient, spec OrderLifecycleSpec) (*OrderLifecycleResult, error) {
+	if node == nil || node.Exec == nil {
+		return nil, fmt.Errorf("%s runtime execution engine is required", spec.label())
+	}
+	if err := validateOrderLifecycleSpec(spec); err != nil {
+		return nil, err
+	}
+	spec.logAcceptanceStart("runtime")
+	if err := WaitForActive(ctx, node); err != nil {
+		return nil, fmt.Errorf("%s runtime did not become active before lifecycle: %w", spec.label(), err)
+	}
+	if venueExec != nil {
+		if err := waitForNoOpenOrders(ctx, venueExec, spec); err != nil {
+			return nil, fmt.Errorf("%s open-order preflight: %w", spec.label(), err)
+		}
+	}
+
+	resting, err := node.Exec.Submit(ctx, model.OrderRequest{
+		AccountID:    spec.AccountID,
+		ClientID:     orderLifecycleClientID("rest"),
+		InstrumentID: spec.InstrumentID,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTX,
+		Quantity:     spec.Quantity,
+		Price:        spec.RestingPrice,
+		PositionSide: spec.PositionSide,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s runtime submit resting order: %w", spec.label(), err)
+	}
+	if resting == nil {
+		return nil, fmt.Errorf("%s runtime submit resting order returned nil", spec.label())
+	}
+	spec.logOrder("runtime_resting_order", resting, resting.FilledQty)
+	restingNeedsCancel := true
+	defer func() {
+		if restingNeedsCancel && venueExec != nil && resting.VenueOrderID != "" {
+			_ = venueExec.Cancel(context.Background(), spec.InstrumentID, resting.VenueOrderID)
+		}
+	}()
+	if resting.Status == enums.StatusFilled || !resting.FilledQty.IsZero() {
+		return nil, fmt.Errorf("%s runtime resting order unexpectedly filled: %+v", spec.label(), *resting)
+	}
+	if err := node.Exec.Cancel(ctx, resting.Request.ClientID); err != nil {
+		return nil, fmt.Errorf("%s runtime cancel resting order %s: %w", spec.label(), resting.VenueOrderID, err)
+	}
+	restingNeedsCancel = false
+	if err := WaitForOrderStatus(ctx, node, resting.Request.ClientID, enums.StatusCanceled); err != nil {
+		return nil, fmt.Errorf("%s runtime cache did not observe resting cancel: %w", spec.label(), err)
+	}
+	spec.logf("runtime_canceled_order label=%q client_id=%s venue_order_id=%s cleanup=runtime_cache_canceled", spec.label(), resting.Request.ClientID, resting.VenueOrderID)
+	if venueExec != nil {
+		if err := waitForNoOpenOrders(ctx, venueExec, spec); err != nil {
+			return nil, fmt.Errorf("%s wait for no venue open orders after runtime cancel: %w", spec.label(), err)
+		}
+		spec.logf("cleanup label=%q cleanup=no_open_orders", spec.label())
+	}
+
+	filled, filledQty, err := submitRuntimeAndWaitFilled(ctx, node, spec, "fill", enums.SideBuy, spec.FillPrice, false, spec.Quantity)
+	if err != nil {
+		return nil, err
+	}
+	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
+
+	if spec.CloseAfterFill {
+		closeOrder, _, err := submitRuntimeAndWaitFilled(
+			ctx,
+			node,
+			spec,
+			"close",
+			enums.SideSell,
+			spec.ClosePrice,
+			spec.InstrumentID.Kind != enums.KindSpot,
+			filledQty,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result.Closed = *closeOrder
+	}
+	if venueExec != nil {
+		if err := waitForNoOpenOrders(ctx, venueExec, spec); err != nil {
+			return nil, fmt.Errorf("%s wait for no venue open orders after runtime lifecycle: %w", spec.label(), err)
+		}
+		spec.logf("cleanup label=%q cleanup=no_open_orders", spec.label())
+	}
+	if open := node.Cache.OpenOrders(); len(open) != 0 {
+		return nil, fmt.Errorf("%s runtime cache has %d open orders after lifecycle: %+v", spec.label(), len(open), open)
+	}
+	spec.logf("cleanup label=%q cleanup=runtime_cache_no_open_orders", spec.label())
+	return result, nil
+}
+
+func submitRuntimeAndWaitFilled(ctx context.Context, node *btruntime.TradingNode, spec OrderLifecycleSpec, idKind string, side enums.OrderSide, price decimal.Decimal, reduceOnly bool, qty decimal.Decimal) (*model.Order, decimal.Decimal, error) {
+	order, err := node.Exec.Submit(ctx, model.OrderRequest{
+		AccountID:    spec.AccountID,
+		ClientID:     orderLifecycleClientID(idKind),
+		InstrumentID: spec.InstrumentID,
+		Side:         side,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     qty,
+		Price:        price,
+		PositionSide: spec.PositionSide,
+		ReduceOnly:   reduceOnly,
+	})
+	if err != nil {
+		return nil, decimal.Zero, fmt.Errorf("%s runtime submit %s order: %w", spec.label(), idKind, err)
+	}
+	if order == nil {
+		return nil, decimal.Zero, fmt.Errorf("%s runtime submit %s order returned nil", spec.label(), idKind)
+	}
+	cached, filledQty, err := waitForRuntimeFilledQty(ctx, node, spec, order.Request.ClientID)
+	if err != nil {
+		return nil, decimal.Zero, fmt.Errorf("%s runtime wait for %s fill: %w", spec.label(), idKind, err)
+	}
+	spec.logOrder("runtime_"+filledEventName(idKind), &cached, filledQty)
+	return &cached, filledQty, nil
+}
+
+func submitAndWaitFilled(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec, idKind string, side enums.OrderSide, price decimal.Decimal, reduceOnly bool, qty decimal.Decimal) (*model.Order, decimal.Decimal, error) {
+	order, err := exec.Submit(ctx, model.OrderRequest{
+		AccountID:    spec.AccountID,
+		ClientID:     orderLifecycleClientID(idKind),
+		InstrumentID: spec.InstrumentID,
+		Side:         side,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     qty,
+		Price:        price,
+		PositionSide: spec.PositionSide,
+		ReduceOnly:   reduceOnly,
+	})
+	if err != nil {
+		return nil, decimal.Zero, fmt.Errorf("%s submit %s order: %w", spec.label(), idKind, err)
+	}
+	if order == nil {
+		return nil, decimal.Zero, fmt.Errorf("%s submit %s order returned nil", spec.label(), idKind)
+	}
+	filledQty, err := waitForFilledQty(ctx, exec, spec, *order)
+	if err != nil {
+		return nil, decimal.Zero, fmt.Errorf("%s wait for %s fill: %w", spec.label(), idKind, err)
+	}
+	if filledQty.IsZero() {
+		return nil, decimal.Zero, fmt.Errorf("%s %s order reported zero filled quantity: %+v", spec.label(), idKind, *order)
+	}
+	spec.logOrder(filledEventName(idKind), order, filledQty)
+	return order, filledQty, nil
+}
+
+func cleanExistingPosition(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) error {
+	reports, err := exec.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: spec.AccountID, InstrumentID: spec.InstrumentID})
+	if err != nil {
+		return err
+	}
+	total := decimal.Zero
+	for _, report := range reports {
+		if report.Position.InstrumentID != spec.InstrumentID {
+			continue
+		}
+		total = total.Add(report.Position.Quantity)
+	}
+	if total.IsZero() {
+		return nil
+	}
+	side := enums.SideSell
+	qty := total
+	if total.IsNegative() {
+		side = enums.SideBuy
+		qty = total.Abs()
+	}
+	order, _, err := submitAndWaitFilled(ctx, exec, spec, "preclean", side, spec.ClosePrice, true, qty)
+	if err != nil {
+		return err
+	}
+	spec.logOrder("preclean_order", order, qty)
+	if err := waitForNoOpenOrders(ctx, exec, spec); err != nil {
+		return err
+	}
+	if err := waitForFlatPosition(ctx, exec, spec); err != nil {
+		return err
+	}
+	spec.logf("cleanup label=%q cleanup=preclean_flat_position", spec.label())
+	return nil
+}
+
+func validateOrderLifecycleSpec(spec OrderLifecycleSpec) error {
+	if spec.InstrumentID.Symbol == "" {
+		return fmt.Errorf("order lifecycle instrument id is required")
+	}
+	for name, value := range map[string]decimal.Decimal{
+		"quantity":     spec.Quantity,
+		"restingPrice": spec.RestingPrice,
+		"fillPrice":    spec.FillPrice,
+		"closePrice":   spec.ClosePrice,
+	} {
+		if !value.IsPositive() {
+			return fmt.Errorf("order lifecycle %s must be positive, got %s", name, value)
+		}
+	}
+	return nil
+}
+
+func (s OrderLifecycleSpec) label() string {
+	if s.Label != "" {
+		return s.Label
+	}
+	return s.InstrumentID.String()
+}
+
+func (s OrderLifecycleSpec) logAcceptanceStart(path string) {
+	venue := s.Venue
+	if venue == "" {
+		venue = s.InstrumentID.Venue
+	}
+	s.logf(
+		"acceptance_start path=%s label=%q venue=%s environment=%s product=%s instrument=%s account_id=%s private_stream_topics=%s",
+		path,
+		s.label(),
+		venue,
+		s.Environment,
+		s.Product,
+		s.InstrumentID.String(),
+		s.AccountID,
+		strings.Join(s.PrivateStreamTopics, ","),
+	)
+}
+
+func (s OrderLifecycleSpec) logOrder(event string, order *model.Order, filledQty decimal.Decimal) {
+	if order == nil {
+		return
+	}
+	s.logf(
+		"%s label=%q client_id=%s venue_order_id=%s side=%s tif=%s qty=%s filled_qty=%s price=%s",
+		event,
+		s.label(),
+		order.Request.ClientID,
+		order.VenueOrderID,
+		order.Request.Side,
+		order.Request.TIF,
+		order.Request.Quantity,
+		filledQty,
+		order.Request.Price,
+	)
+}
+
+func (s OrderLifecycleSpec) logf(format string, args ...any) {
+	if s.Logf != nil {
+		s.Logf(format, args...)
+	}
+}
+
+func filledEventName(kind string) string {
+	switch kind {
+	case "fill":
+		return "filled_order"
+	case "close":
+		return "closed_order"
+	default:
+		return kind + "_order"
+	}
+}
+
+func orderLifecycleClientID(kind string) string {
+	return "btac" + kind + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func waitForNoOpenOrders(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) error {
+	interval := spec.interval()
+	var lastLen int
+	var lastErr error
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		callCtx, cancel := spec.pollCallContext(ctx)
+		open, err := exec.OpenOrders(callCtx, spec.InstrumentID)
+		cancel()
+		if err == nil {
+			lastLen = len(open)
+			if len(open) == 0 {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for no open orders; lastLen=%d lastErr=%v: %w", lastLen, lastErr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec, order model.Order) (decimal.Decimal, error) {
+	interval := spec.interval()
+	var lastStatus enums.OrderStatus
+	var lastErr error
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
+			return order.FilledQty, nil
+		}
+		callCtx, cancel := spec.pollCallContext(ctx)
+		report, err := exec.GenerateOrderStatusReport(callCtx, model.SingleOrderStatusQuery{
+			AccountID:    spec.AccountID,
+			InstrumentID: spec.InstrumentID,
+			ClientID:     order.Request.ClientID,
+			VenueOrderID: order.VenueOrderID,
+		})
+		cancel()
+		if err == nil && report != nil {
+			lastStatus = report.Order.Status
+			if report.Order.Status == enums.StatusFilled || !report.Order.FilledQty.IsZero() {
+				return report.Order.FilledQty, nil
+			}
+			if orderstate.IsTerminal(report.Order.Status) {
+				return decimal.Zero, fmt.Errorf("order reached terminal non-filled status %s", report.Order.Status)
+			}
+		} else if err != nil {
+			lastErr = err
+		}
+		callCtx, cancel = spec.pollCallContext(ctx)
+		fills, err := exec.GenerateFillReports(callCtx, model.FillReportQuery{
+			AccountID:    spec.AccountID,
+			InstrumentID: spec.InstrumentID,
+			ClientID:     order.Request.ClientID,
+			VenueOrderID: order.VenueOrderID,
+		})
+		cancel()
+		if err == nil {
+			total := decimal.Zero
+			for _, report := range fills {
+				total = total.Add(report.Fill.Quantity)
+			}
+			if !total.IsZero() {
+				return total, nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return decimal.Zero, fmt.Errorf("timed out waiting for order %s/%s filled; lastStatus=%s lastErr=%v: %w", order.Request.ClientID, order.VenueOrderID, lastStatus, lastErr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForRuntimeFilledQty(ctx context.Context, node *btruntime.TradingNode, spec OrderLifecycleSpec, clientID string) (model.Order, decimal.Decimal, error) {
+	interval := spec.interval()
+	var last model.Order
+	var seen bool
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if order, ok := node.Cache.Order(clientID); ok {
+			last = order
+			seen = true
+			if order.FilledQty.IsPositive() {
+				return order, order.FilledQty, nil
+			}
+			if orderstate.IsTerminal(order.Status) && order.Status != enums.StatusFilled {
+				return model.Order{}, decimal.Zero, fmt.Errorf("runtime order reached terminal non-filled status %s", order.Status)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if !seen {
+				return model.Order{}, decimal.Zero, fmt.Errorf("runtime cache missing order %s: %w", clientID, ctx.Err())
+			}
+			return model.Order{}, decimal.Zero, fmt.Errorf("timed out waiting for runtime order %s filled quantity; lastStatus=%s lastFilledQty=%s: %w", clientID, last.Status, last.FilledQty, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForFlatPosition(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) error {
+	interval := spec.interval()
+	var last decimal.Decimal
+	var lastErr error
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		callCtx, cancel := spec.pollCallContext(ctx)
+		reports, err := exec.GeneratePositionReports(callCtx, model.PositionReportQuery{AccountID: spec.AccountID, InstrumentID: spec.InstrumentID})
+		cancel()
+		if err == nil {
+			last = decimal.Zero
+			for _, report := range reports {
+				last = last.Add(report.Position.Quantity)
+			}
+			if last.IsZero() {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for flat position; last=%s lastErr=%v: %w", last, lastErr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s OrderLifecycleSpec) interval() time.Duration {
+	if s.PollInterval > 0 {
+		return s.PollInterval
+	}
+	return 500 * time.Millisecond
+}
+
+func (s OrderLifecycleSpec) pollCallContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := s.PollRequestTimeout
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
+}

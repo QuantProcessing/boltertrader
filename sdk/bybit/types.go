@@ -184,6 +184,38 @@ type AccountInfo struct {
 	SMPGroup            int                 `json:"smpGroup"`
 }
 
+type APIKeyInfo struct {
+	ReadOnly    int               `json:"readOnly"`
+	UTA         int               `json:"uta"`
+	Permissions APIKeyPermissions `json:"permissions"`
+}
+
+type APIKeyPermissions struct {
+	ContractTrade []string `json:"ContractTrade"`
+	Spot          []string `json:"Spot"`
+}
+
+func (p APIKeyPermissions) HasSpotTrade() bool {
+	return hasBybitPermission(p.Spot, "SpotTrade")
+}
+
+func (p APIKeyPermissions) HasContractOrder() bool {
+	return hasBybitPermission(p.ContractTrade, "Order")
+}
+
+func (p APIKeyPermissions) HasContractPosition() bool {
+	return hasBybitPermission(p.ContractTrade, "Position")
+}
+
+func hasBybitPermission(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a AccountInfo) AccountMode() AccountMode {
 	switch a.UnifiedMarginStatus {
 	case UnifiedMarginStatusClassic:

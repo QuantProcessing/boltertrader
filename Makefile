@@ -1,4 +1,6 @@
 .PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-runtime-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance test-hyperliquid-testnet test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-runtime-hip3 test-hyperliquid-testnet-acceptance test-lighter-testnet test-lighter-testnet-read test-lighter-testnet-spot test-lighter-testnet-runtime-spot test-lighter-testnet-perp test-lighter-testnet-runtime-perp test-lighter-testnet-acceptance
+.PHONY: test-bybit-demo test-bybit-demo-spot test-bybit-demo-runtime-spot test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp test-bybit-demo-acceptance test-bybit-spot-acceptance test-bybit-usdt-perp-acceptance test-bybit-usdc-perp-acceptance test-bybit-acceptance
+.PHONY: test-bitget-testnet test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp test-bitget-testnet-acceptance test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance test-bitget-acceptance test-bybit-bitget-acceptance
 
 test:
 	go test ./...
@@ -24,7 +26,7 @@ test-p6-offline: test-core test-adapter test-sdk test-capabilities
 test-live-read:
 	BOLTER_ENABLE_LIVE_READ_TESTS=1 go test ./sdk/... ./adapter/...
 
-test-demo-acceptance: test-binance-demo-acceptance test-okx-demo-acceptance
+test-demo-acceptance: test-binance-demo-acceptance test-okx-demo-acceptance test-bybit-acceptance
 
 test-binance-demo: test-binance-demo-acceptance
 
@@ -107,3 +109,65 @@ test-lighter-testnet-runtime-perp:
 	BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run TestLighterTestnetPerpRuntimeAcceptance ./adapter/lighter/ -count=1 -timeout=4m
 
 test-lighter-testnet-acceptance: test-lighter-testnet-read test-lighter-testnet-spot test-lighter-testnet-runtime-spot test-lighter-testnet-perp test-lighter-testnet-runtime-perp
+
+test-bybit-demo: test-bybit-demo-acceptance
+
+test-bybit-demo-spot:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoSpotAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-runtime-spot:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoSpotRuntimeAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-usdt-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoUSDTPerpAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-runtime-usdt-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoUSDTPerpRuntimeAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-usdc-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoUSDCPerpAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-runtime-usdc-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoUSDCPerpRuntimeAcceptance$$' ./adapter/bybit/ -count=1 -timeout=3m
+
+test-bybit-demo-acceptance: test-bybit-demo-spot test-bybit-demo-runtime-spot test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp
+
+test-bybit-spot-acceptance: test-bybit-demo-spot test-bybit-demo-runtime-spot
+
+test-bybit-usdt-perp-acceptance: test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp
+
+test-bybit-usdc-perp-acceptance: test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp
+
+test-bybit-acceptance: test-bybit-spot-acceptance test-bybit-usdt-perp-acceptance test-bybit-usdc-perp-acceptance
+
+test-bitget-testnet: test-bitget-testnet-acceptance
+
+test-bitget-testnet-spot:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetSpotAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-runtime-spot:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetSpotRuntimeAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-usdt-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetUSDTPerpAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-runtime-usdt-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetUSDTPerpRuntimeAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-usdc-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetUSDCPerpAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-runtime-usdc-perp:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetTestnetUSDCPerpRuntimeAcceptance$$' ./adapter/bitget/ -count=1 -timeout=3m
+
+test-bitget-testnet-acceptance: test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp
+
+test-bitget-spot-acceptance: test-bitget-testnet-spot test-bitget-testnet-runtime-spot
+
+test-bitget-usdt-perp-acceptance: test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp
+
+test-bitget-usdc-perp-acceptance: test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp
+
+test-bitget-acceptance: test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance
+
+test-bybit-bitget-acceptance: test-bybit-acceptance test-bitget-acceptance

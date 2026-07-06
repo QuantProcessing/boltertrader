@@ -390,6 +390,47 @@ func TestAccountRequiredAllowsFreshMarginAccountWithFreeBalance(t *testing.T) {
 	}
 }
 
+func TestUnifiedCollateralMarginCanUseBaseCurrencyFreeBalance(t *testing.T) {
+	now := time.Unix(100, 0)
+	c := cache.New()
+	state := model.AccountState{
+		AccountID:    "T:unified",
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USD",
+		Balances: []model.AccountBalance{
+			{Currency: "USD", Total: d("1000"), Free: d("1000")},
+		},
+		ModeInfo: model.AccountModeInfo{
+			Venue:          "T",
+			AccountID:      "T:unified",
+			AccountMode:    "unified",
+			CollateralMode: "unified",
+			ProductScope:   []enums.InstrumentKind{enums.KindPerp},
+			Verified:       true,
+			VerifiedAt:     now,
+			Source:         "test",
+		},
+		TsEvent: now,
+	}
+	if err := c.ApplyAccountStateAt(state, now); err != nil {
+		t.Fatalf("apply unified margin account: %v", err)
+	}
+	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
+	req := model.OrderRequest{
+		AccountID:    "T:unified",
+		InstrumentID: model.InstrumentID{Venue: "T", Symbol: "BTC-USDC", Kind: enums.KindPerp},
+		Side:         enums.SideBuy,
+		Quantity:     d("1"),
+		Price:        d("100"),
+	}
+	inst := &model.Instrument{ID: req.InstrumentID, Settle: "USDC"}
+
+	if err := e.Check(req, inst); err != nil {
+		t.Fatalf("unified USD free balance should satisfy USDC margin check: %v", err)
+	}
+}
+
 func applyMarginAccount(t *testing.T, c *cache.Cache, accountID string, eventTime time.Time, balanceCurrency string) {
 	t.Helper()
 	state := model.AccountState{

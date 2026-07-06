@@ -32,6 +32,74 @@ func TestClient_GetAccountInfo(t *testing.T) {
 	}
 }
 
+func TestClient_GetAPIKeyInfoBuildsUserQueryAPIRequest(t *testing.T) {
+	t.Parallel()
+
+	var seenPath string
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenPath = req.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+					"retCode": 0,
+					"retMsg": "OK",
+					"result": {
+						"readOnly": 0,
+						"uta": 1,
+						"permissions": {
+							"ContractTrade": ["Order", "Position"],
+							"Spot": ["SpotTrade"]
+						}
+					}
+				}`)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetAPIKeyInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetAPIKeyInfo returned error: %v", err)
+	}
+	if seenPath != "/v5/user/query-api" {
+		t.Fatalf("unexpected path: %s", seenPath)
+	}
+	if got == nil || got.ReadOnly != 0 || got.UTA != 1 {
+		t.Fatalf("unexpected api key info: %+v", got)
+	}
+	if !got.Permissions.HasSpotTrade() {
+		t.Fatalf("expected spot trade permission: %+v", got.Permissions)
+	}
+	if !got.Permissions.HasContractOrder() || !got.Permissions.HasContractPosition() {
+		t.Fatalf("expected contract order and position permissions: %+v", got.Permissions)
+	}
+}
+
+func TestClient_GetAPIKeyInfoReturnsRetCodeError(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"retCode":10003,"retMsg":"API key is invalid.","result":{}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	_, err := client.GetAPIKeyInfo(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "query api key failed: 10003 API key is invalid") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestClient_GetFeeRates(t *testing.T) {
 	got, err := newLivePrivateClient(t).GetFeeRates(context.Background(), "linear", bybitLinearSymbol)
 	if err != nil {

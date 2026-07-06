@@ -120,6 +120,58 @@ func TestClient_ModifyOrderBuildsUTARequest(t *testing.T) {
 	}
 }
 
+func TestClient_GetAccountSettingsBuildsUTARequest(t *testing.T) {
+	var seenPath string
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenPath = req.URL.Path
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"code":"00000","msg":"success","data":{"accountMode":"unified","assetMode":"union","accountLevel":"trader","holdMode":"single_hold","symbolSettings":[{"symbol":"BTCUSDT","category":"USDT-FUTURES","marginMode":"crossed"}]}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetAccountSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetAccountSettings: %v", err)
+	}
+	if seenPath != "/api/v3/account/settings" {
+		t.Fatalf("unexpected path: %s", seenPath)
+	}
+	if got.AccountMode != "unified" || got.HoldMode != "single_hold" {
+		t.Fatalf("unexpected account settings: %+v", got)
+	}
+	if len(got.SymbolSettings) != 1 || got.SymbolSettings[0].Category != ProductTypeUSDTFutures {
+		t.Fatalf("unexpected symbol settings: %+v", got.SymbolSettings)
+	}
+}
+
+func TestClient_GetAccountInfoAcceptsNumericParentID(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"code":"00000","msg":"success","data":{"userId":"100","inviterId":"0","parentId":12345,"channelCode":"","channel":"","ips":"","permType":"read_write","permissions":["trade"],"regisTime":"1"}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetAccountInfo(context.Background())
+	if err != nil {
+		t.Fatalf("GetAccountInfo: %v", err)
+	}
+	if got.ParentID != "12345" {
+		t.Fatalf("parent id=%q, want numeric value preserved as string", got.ParentID)
+	}
+}
+
 func TestClient_PlaceOrderBuildsNativeUTAParams(t *testing.T) {
 	var seenBody string
 	client := NewClient().

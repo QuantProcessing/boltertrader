@@ -68,6 +68,12 @@ type WSFillMessage struct {
 	Data   []FillRecord `json:"data"`
 }
 
+type WSAccountMessage struct {
+	Arg    WSArg          `json:"arg"`
+	Action string         `json:"action"`
+	Data   []AccountAsset `json:"data"`
+}
+
 func DecodeOrderMessage(payload []byte) (*WSOrderMessage, error) {
 	var msg WSOrderMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -86,6 +92,14 @@ func DecodePositionMessage(payload []byte) (*WSPositionMessage, error) {
 
 func DecodeFillMessage(payload []byte) (*WSFillMessage, error) {
 	var msg WSFillMessage
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return nil, err
+	}
+	return &msg, nil
+}
+
+func DecodeAccountMessage(payload []byte) (*WSAccountMessage, error) {
+	var msg WSAccountMessage
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return nil, err
 	}
@@ -130,7 +144,7 @@ func (c *PrivateWSClient) Connect(ctx context.Context) error {
 		return nil
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.url, nil)
+	conn, _, err := websocketDialerFromEnvironment().DialContext(ctx, c.url, nil)
 	if err != nil {
 		c.mu.Unlock()
 		return err
@@ -248,7 +262,7 @@ func (c *PrivateWSClient) writeJSON(v any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.debug {
-		if payload, err := json.Marshal(v); err == nil {
+		if payload, err := marshalPrivateWSDebugPayload(v); err == nil {
 			fmt.Printf("bitget private ws send: %s\n", string(payload))
 		}
 	}
@@ -262,11 +276,42 @@ func (c *PrivateWSClient) writeJSONLocked(v any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	if c.debug {
-		if payload, err := json.Marshal(v); err == nil {
+		if payload, err := marshalPrivateWSDebugPayload(v); err == nil {
 			fmt.Printf("bitget private ws send: %s\n", string(payload))
 		}
 	}
 	return c.conn.WriteJSON(v)
+}
+
+func marshalPrivateWSDebugPayload(v any) ([]byte, error) {
+	switch req := v.(type) {
+	case wsLoginRequest:
+		req.Args = redactWSLoginArgs(req.Args)
+		return json.Marshal(req)
+	case *wsLoginRequest:
+		if req == nil {
+			return json.Marshal(req)
+		}
+		redacted := *req
+		redacted.Args = redactWSLoginArgs(req.Args)
+		return json.Marshal(redacted)
+	default:
+		return json.Marshal(v)
+	}
+}
+
+func redactWSLoginArgs(args []wsLoginArgs) []wsLoginArgs {
+	if len(args) == 0 {
+		return args
+	}
+	redacted := make([]wsLoginArgs, len(args))
+	copy(redacted, args)
+	for i := range redacted {
+		redacted[i].APIKey = "<redacted>"
+		redacted[i].Passphrase = "<redacted>"
+		redacted[i].Sign = "<redacted>"
+	}
+	return redacted
 }
 
 func (c *PrivateWSClient) sendRequest(id string, req any) ([]byte, error) {

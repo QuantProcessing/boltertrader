@@ -291,15 +291,41 @@ func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrume
 	if ccy == "" {
 		return fmt.Errorf("%w: missing margin currency metadata for %s", ErrRiskRejected, req.InstrumentID)
 	}
+	required := orderNotional(req, inst)
 	free, ok := acct.BalanceFree(ccy)
+	if ok && required.LessThanOrEqual(free) {
+		return nil
+	}
+	baseCcy, baseFree, baseOK := unifiedCollateralBaseFree(acct, ccy)
+	if baseOK && required.LessThanOrEqual(baseFree) {
+		return nil
+	}
 	if !ok {
 		return fmt.Errorf("%w: missing free balance for %s on account %s", ErrRiskRejected, ccy, acct.ID())
 	}
-	required := orderNotional(req, inst)
 	if required.GreaterThan(free) {
+		if baseOK {
+			return fmt.Errorf("%w: insufficient unified margin on account %s: need %s, %s free %s, %s free %s", ErrRiskRejected, acct.ID(), required, ccy, free, baseCcy, baseFree)
+		}
 		return fmt.Errorf("%w: insufficient %s margin on account %s: need %s, free %s", ErrRiskRejected, ccy, acct.ID(), required, free)
 	}
 	return nil
+}
+
+func unifiedCollateralBaseFree(acct accounting.Account, primaryCurrency string) (string, decimal.Decimal, bool) {
+	state := acct.LastEvent()
+	if !strings.EqualFold(state.ModeInfo.CollateralMode, "unified") {
+		return "", decimal.Zero, false
+	}
+	base := strings.ToUpper(strings.TrimSpace(state.BaseCurrency))
+	if base == "" || strings.EqualFold(base, primaryCurrency) {
+		return "", decimal.Zero, false
+	}
+	free, ok := acct.BalanceFree(base)
+	if !ok {
+		return "", decimal.Zero, false
+	}
+	return base, free, true
 }
 
 func (e *Engine) accountForRequest(req model.OrderRequest) (accounting.Account, bool, error) {

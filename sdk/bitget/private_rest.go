@@ -179,6 +179,18 @@ func (c *Client) GetAccountInfo(ctx context.Context) (*AccountInfo, error) {
 	return &out.Data, nil
 }
 
+func (c *Client) GetAccountSettings(ctx context.Context) (*AccountSettings, error) {
+	var out responseEnvelope[AccountSettings]
+	err := c.getPrivate(ctx, "/api/v3/account/settings", nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	if out.Code != "00000" {
+		return nil, fmt.Errorf("bitget sdk: get account settings failed: %s %s", out.Code, out.Msg)
+	}
+	return &out.Data, nil
+}
+
 func (c *Client) GetFundingAssets(ctx context.Context, coin string) ([]FundingAsset, error) {
 	var out responseEnvelope[[]FundingAsset]
 	err := c.getPrivate(ctx, "/api/v3/account/funding-assets", map[string]string{"coin": coin}, &out)

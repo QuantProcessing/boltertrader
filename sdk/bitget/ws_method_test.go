@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -71,5 +73,21 @@ func TestPrivateWSClient_Close(t *testing.T) {
 	}
 	if !client.closed {
 		t.Fatal("expected client to be closed")
+	}
+}
+
+func TestWebsocketProxyReadsProjectProxyFallback(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("ALL_PROXY", "")
+	t.Setenv("PROXY", "http://127.0.0.1:7897")
+
+	proxyURL, err := websocketProxyFromEnvironment(&http.Request{URL: &url.URL{Scheme: "wss", Host: "wspap.bitget.com"}})
+	if err != nil {
+		t.Fatalf("websocketProxyFromEnvironment: %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:7897" {
+		t.Fatalf("proxy=%v, want project PROXY fallback", proxyURL)
 	}
 }

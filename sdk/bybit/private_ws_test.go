@@ -40,6 +40,19 @@ func TestPrivateWSClient_Unsubscribe(t *testing.T) {
 	}
 }
 
+func TestDecodeWalletMessage(t *testing.T) {
+	msg, err := DecodeWalletMessage([]byte(`{"topic":"wallet","data":[{"accountType":"UNIFIED","coin":[{"coin":"USDT","walletBalance":"100","availableToWithdraw":"90"}]}]}`))
+	if err != nil {
+		t.Fatalf("DecodeWalletMessage: %v", err)
+	}
+	if msg.Topic != "wallet" || len(msg.Data) != 1 || msg.Data[0].AccountType != "UNIFIED" {
+		t.Fatalf("unexpected wallet message: %+v", msg)
+	}
+	if len(msg.Data[0].Coins) != 1 || msg.Data[0].Coins[0].Coin != "USDT" {
+		t.Fatalf("unexpected wallet coins: %+v", msg.Data[0].Coins)
+	}
+}
+
 func newLivePrivateWSClient(t *testing.T) *PrivateWSClient {
 	t.Helper()
 	testenv.RequireLiveRead(t, "BYBIT_API_KEY", "BYBIT_SECRET_KEY")

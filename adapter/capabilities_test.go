@@ -30,15 +30,21 @@ func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 		t.Fatal("docs/adapter-capabilities.md must expose the account-state snapshot capability column")
 	}
 	want := map[string]bool{
-		"BINANCE|USD-M Perp":     true,
-		"BINANCE|Spot":           true,
-		"OKX|USDT-linear SWAP":   true,
-		"OKX|Spot cash":          true,
-		"HYPERLIQUID|Spot cash":  false,
-		"HYPERLIQUID|Perp":       false,
-		"HYPERLIQUID|HIP-3 Perp": false,
-		"LIGHTER|Spot cash":      true,
-		"LIGHTER|Perp":           true,
+		"BINANCE|USD-M Perp":           true,
+		"BINANCE|Spot":                 true,
+		"OKX|USDT-linear SWAP":         true,
+		"OKX|Spot cash":                true,
+		"BYBIT|Spot cash":              true,
+		"BYBIT|USDT-linear Perp/SWAP":  true,
+		"BYBIT|USDC-linear Perp/SWAP":  true,
+		"BITGET|Spot cash":             true,
+		"BITGET|USDT-linear Perp/SWAP": true,
+		"BITGET|USDC-linear Perp/SWAP": true,
+		"HYPERLIQUID|Spot cash":        false,
+		"HYPERLIQUID|Perp":             false,
+		"HYPERLIQUID|HIP-3 Perp":       false,
+		"LIGHTER|Spot cash":            true,
+		"LIGHTER|Perp":                 true,
 	}
 	for _, row := range CapabilityMatrix() {
 		key := row.Venue + "|" + row.Product

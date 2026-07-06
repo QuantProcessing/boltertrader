@@ -86,3 +86,70 @@ func TestClient_WithHTTPClient(t *testing.T) {
 		t.Fatal("WithHTTPClient did not install provided client")
 	}
 }
+
+func TestEnvironmentProfiles(t *testing.T) {
+	demo := DemoEnvironmentProfile()
+	if demo.RESTBaseURL != "https://api-demo.bybit.com" {
+		t.Fatalf("demo rest=%q", demo.RESTBaseURL)
+	}
+	if demo.PublicWSURL("linear") != "wss://stream.bybit.com/v5/public/linear" {
+		t.Fatalf("demo public linear ws=%q", demo.PublicWSURL("linear"))
+	}
+	if demo.PrivateWSURL != "wss://stream-demo.bybit.com/v5/private" {
+		t.Fatalf("demo private ws=%q", demo.PrivateWSURL)
+	}
+	if demo.SupportsWSTrade || demo.TradeWSURL != "" {
+		t.Fatalf("demo must not expose trade ws: %+v", demo)
+	}
+
+	testnet := TestnetEnvironmentProfile()
+	if testnet.RESTBaseURL != "https://api-testnet.bybit.com" {
+		t.Fatalf("testnet rest=%q", testnet.RESTBaseURL)
+	}
+	if testnet.PublicWSURL("spot") != "wss://stream-testnet.bybit.com/v5/public/spot" {
+		t.Fatalf("testnet spot ws=%q", testnet.PublicWSURL("spot"))
+	}
+	if !testnet.SupportsWSTrade || testnet.TradeWSURL != "wss://stream-testnet.bybit.com/v5/trade" {
+		t.Fatalf("testnet trade ws=%+v", testnet)
+	}
+}
+
+func TestClient_WithEnvironmentProfileUsesRESTBaseURL(t *testing.T) {
+	client := NewClient().WithEnvironmentProfile(DemoEnvironmentProfile())
+
+	if client.baseURL != "https://api-demo.bybit.com" {
+		t.Fatalf("client baseURL=%q", client.baseURL)
+	}
+}
+
+func TestWSClientsUseEnvironmentProfiles(t *testing.T) {
+	demo := DemoEnvironmentProfile()
+
+	public := NewPublicWSClientWithProfile(demo, "linear")
+	if public.url != "wss://stream.bybit.com/v5/public/linear" {
+		t.Fatalf("public ws url=%q", public.url)
+	}
+
+	private := NewPrivateWSClientWithProfile(demo)
+	if private.url != "wss://stream-demo.bybit.com/v5/private" {
+		t.Fatalf("private ws url=%q", private.url)
+	}
+
+	if _, err := NewTradeWSClientWithProfile(demo); err == nil {
+		t.Fatal("expected Demo profile to reject WS Trade client")
+	}
+
+	trade, err := NewTradeWSClientWithProfile(TestnetEnvironmentProfile())
+	if err != nil {
+		t.Fatalf("testnet trade ws: %v", err)
+	}
+	if trade.url != "wss://stream-testnet.bybit.com/v5/trade" {
+		t.Fatalf("trade ws url=%q", trade.url)
+	}
+}
+
+func TestSettlementConstants(t *testing.T) {
+	if SettleCoinUSDT != "USDT" || SettleCoinUSDC != "USDC" {
+		t.Fatalf("settle constants usdt=%q usdc=%q", SettleCoinUSDT, SettleCoinUSDC)
+	}
+}

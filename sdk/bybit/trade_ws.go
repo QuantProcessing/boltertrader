@@ -114,7 +114,7 @@ func (c *TradeWSClient) Connect(ctx context.Context) error {
 		return nil
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.url, nil)
+	conn, _, err := websocketDialerFromEnvironment().DialContext(ctx, c.url, nil)
 	if err != nil {
 		c.mu.Unlock()
 		return err
