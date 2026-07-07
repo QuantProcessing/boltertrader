@@ -16,27 +16,38 @@ import (
 )
 
 type accountClient struct {
-	rest     *okx.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.AccountEnvelope]
+	rest      *okx.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock) *accountClient {
+func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *accountClient {
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = model.AccountIDOKXDefault
+	}
 	return &accountClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		stream:   wsstream.New[contract.AccountEnvelope](256),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: accountID,
+		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	bals, err := c.rest.GetAccountBalance(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	return spotBalancesFromOKX(bals, c.clk.Now()), nil
+	return spotBalancesFromOKX(bals, c.accountID, c.clk.Now()), nil
 }
 
 func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
@@ -53,20 +64,20 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		return model.AccountState{}, err
 	}
 	now := c.clk.Now()
-	balances := spotBalancesFromOKX(bals, now)
+	balances := spotBalancesFromOKX(bals, c.accountID, now)
 	return model.AccountState{
-		AccountID: model.AccountIDOKXSpot,
+		AccountID: c.accountID,
 		Venue:     venueName,
 		Type:      model.AccountCash,
 		Balances:  balances,
-		ModeInfo:  okxSpotModeInfo(cfg, now),
+		ModeInfo:  okxSpotModeInfo(cfg, c.accountID, now),
 		Reported:  true,
 		TsEvent:   latestBalanceTime(bals, now),
 		TsInit:    now,
 	}, nil
 }
 
-func spotBalancesFromOKX(bals []okx.Balance, now time.Time) []model.AccountBalance {
+func spotBalancesFromOKX(bals []okx.Balance, accountID string, now time.Time) []model.AccountBalance {
 	out := make([]model.AccountBalance, 0)
 	for _, b := range bals {
 		for _, d := range b.Details {
@@ -74,6 +85,7 @@ func spotBalancesFromOKX(bals []okx.Balance, now time.Time) []model.AccountBalan
 			total := firstNonZero(dec(d.Eq), dec(d.CashBal), available)
 			locked := firstNonZero(dec(d.FrozenBal), total.Sub(available))
 			out = append(out, model.AccountBalance{
+				AccountID: accountID,
 				Currency:  d.Ccy,
 				Total:     total,
 				Free:      available,
@@ -86,10 +98,10 @@ func spotBalancesFromOKX(bals []okx.Balance, now time.Time) []model.AccountBalan
 	return out
 }
 
-func okxSpotModeInfo(cfg okx.AccountConfig, now time.Time) model.AccountModeInfo {
+func okxSpotModeInfo(cfg okx.AccountConfig, accountID string, now time.Time) model.AccountModeInfo {
 	return model.AccountModeInfo{
 		Venue:        venueName,
-		AccountID:    model.AccountIDOKXSpot,
+		AccountID:    accountID,
 		AccountMode:  okxAccountModeLabel(cfg),
 		MarginMode:   defaultSpotTdMode,
 		PositionMode: firstNonEmpty(cfg.PosMode, "net_mode"),

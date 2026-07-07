@@ -15,18 +15,28 @@ import (
 )
 
 type executionClient struct {
-	rest     *bitgetsdk.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.ExecEnvelope]
+	rest      *bitgetsdk.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.ExecEnvelope]
 }
 
-func newExecutionClient(rest *bitgetsdk.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
+func newExecutionClient(rest *bitgetsdk.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *executionClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
-	return &executionClient{rest: rest, provider: provider, clk: clk, stream: wsstream.New[contract.ExecEnvelope](256)}
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = AccountIDUnified
+	}
+	return &executionClient{rest: rest, provider: provider, clk: clk, accountID: accountID, stream: wsstream.New[contract.ExecEnvelope](256)}
 }
+
+func (c *executionClient) AccountID() string { return c.accountID }
 
 func (c *executionClient) instrument(id model.InstrumentID) (*model.Instrument, error) {
 	inst, ok := c.provider.Instrument(id)
@@ -42,7 +52,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 		return nil, err
 	}
 	if req.AccountID == "" {
-		req.AccountID = AccountIDUnified
+		req.AccountID = c.accountID
 	}
 	venueReq, err := orderRequestToBitget(req, inst)
 	if err != nil {
@@ -100,7 +110,7 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	req := model.OrderRequest{AccountID: AccountIDUnified, InstrumentID: id, Quantity: newQty, Price: newPrice}
+	req := model.OrderRequest{AccountID: c.accountID, InstrumentID: id, Quantity: newQty, Price: newPrice}
 	order := model.Order{Request: req, VenueOrderID: resp.OrderID, Status: enums.StatusNew, UpdatedAt: c.clk.Now()}
 	return &order, nil
 }
@@ -120,12 +130,15 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	}
 	out := make([]model.Order, 0, len(records))
 	for _, record := range records {
-		out = append(out, orderFromBitgetRecord(record, id, AccountIDUnified))
+		out = append(out, orderFromBitgetRecord(record, id, c.accountID))
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	category, symbol, err := c.categoryAndSymbol(query.InstrumentID)
 	if err != nil {
 		return nil, err
@@ -138,16 +151,19 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	out := make([]model.OrderStatusReport, 0, len(records))
 	for _, record := range records {
 		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-		order := orderFromBitgetRecord(record, id, AccountIDUnified)
+		order := orderFromBitgetRecord(record, id, c.accountID)
 		if !model.OrderMatchesStatusQuery(order, query) {
 			continue
 		}
-		out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: AccountIDUnified, Order: order, ReportedAt: now})
+		out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	if query.ClientID != "" || query.VenueOrderID != "" {
 		category, symbol, err := c.categoryAndSymbol(query.InstrumentID)
 		if err != nil {
@@ -158,8 +174,16 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 			return nil, err
 		}
 		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-		order := orderFromBitgetRecord(*record, id, AccountIDUnified)
-		report := model.OrderStatusReport{Venue: VenueName, AccountID: AccountIDUnified, Order: order, ReportedAt: c.clk.Now()}
+		order := orderFromBitgetRecord(*record, id, c.accountID)
+		if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{
+			InstrumentID: query.InstrumentID,
+			AccountID:    query.AccountID,
+			ClientID:     query.ClientID,
+			VenueOrderID: query.VenueOrderID,
+		}) {
+			return nil, nil
+		}
+		report := model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: c.clk.Now()}
 		return &report, nil
 	}
 	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{InstrumentID: query.InstrumentID, AccountID: query.AccountID})
@@ -170,6 +194,9 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	category, _, err := c.categoryAndSymbol(query.InstrumentID)
 	if err != nil {
 		return nil, err
@@ -182,16 +209,19 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 	out := make([]model.FillReport, 0, len(records))
 	for _, record := range records {
 		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-		fill := fillFromBitget(record, id, AccountIDUnified)
-		if query.InstrumentID.Symbol != "" && fill.InstrumentID != query.InstrumentID {
+		fill := fillFromBitget(record, id, c.accountID)
+		if !model.FillMatchesReportQuery(fill, query) {
 			continue
 		}
-		out = append(out, model.FillReport{Venue: VenueName, AccountID: AccountIDUnified, Fill: fill, ReportedAt: now})
+		out = append(out, model.FillReport{Venue: VenueName, AccountID: c.accountID, Fill: fill, ReportedAt: now})
 	}
 	return out, nil
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	categories := []string{bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures}
 	if query.InstrumentID.Symbol != "" {
 		if inst, ok := c.provider.Instrument(query.InstrumentID); ok {
@@ -211,21 +241,24 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 		}
 		for _, record := range records {
 			id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-			pos := positionFromBitget(record, func(string) model.InstrumentID { return id }, AccountIDUnified, now)
+			pos := positionFromBitget(record, func(string) model.InstrumentID { return id }, c.accountID, now)
 			if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
 				continue
 			}
-			out = append(out, model.PositionReport{Venue: VenueName, AccountID: AccountIDUnified, Position: pos, ReportedAt: now})
+			out = append(out, model.PositionReport{Venue: VenueName, AccountID: c.accountID, Position: pos, ReportedAt: now})
 		}
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	mass := model.NewExecutionMassStatus(VenueName, AccountIDUnified, c.clk.Now())
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return model.NewExecutionMassStatus(VenueName, query.AccountID, c.clk.Now()), nil
+	}
+	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Partial = true
-	orders, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: AccountIDUnified, ClientID: query.ClientID, OpenOnly: true})
+	orders, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true})
 	if err != nil {
 		return nil, err
 	}

@@ -55,8 +55,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		wsByCategory[category] = bybitsdk.NewPublicWSClientWithProfile(profile, category)
 	}
 	market := newMarketDataClient(rest, wsByCategory, provider, clk)
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
+	exec := newExecutionClient(rest, provider, clk, cfg.AccountID)
+	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}, cfg.AccountID)
 
 	return &Adapter{
 		Market:    market,
@@ -83,7 +83,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		for _, event := range execEventsFromOrderMessage(msg, resolve) {
+		for _, event := range execEventsFromOrderMessage(msg, resolve, a.exec.accountID) {
 			a.exec.emit(event)
 		}
 	}); err != nil {
@@ -94,7 +94,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		for _, event := range execEventsFromExecutionMessage(msg, resolve) {
+		for _, event := range execEventsFromExecutionMessage(msg, resolve, a.exec.accountID) {
 			a.exec.emit(event)
 		}
 	}); err != nil {
@@ -105,7 +105,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		for _, event := range accountEventsFromPositionMessage(msg, resolve, a.clk.Now()) {
+		for _, event := range accountEventsFromPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now()) {
 			a.acct.emit(event)
 		}
 	}); err != nil {
@@ -116,7 +116,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		for _, event := range accountEventsFromWalletMessage(msg, a.clk.Now()) {
+		for _, event := range accountEventsFromWalletMessage(msg, a.acct.accountID, a.clk.Now()) {
 			a.acct.emit(event)
 		}
 	}); err != nil {

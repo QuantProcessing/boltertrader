@@ -25,6 +25,60 @@ var (
 	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
+func TestAccountIDOverridePropagatesToClients(t *testing.T) {
+	const accountID = "OKX-ALT"
+	provider := newInstrumentProvider()
+	clk := clock.NewRealClock()
+
+	exec := newExecutionClient(nil, provider, clk, "", accountID)
+	acct := newAccountClient(nil, provider, clk, "", accountID)
+
+	if exec.AccountID() != accountID || acct.AccountID() != accountID {
+		t.Fatalf("account ids exec=%q acct=%q, want %q", exec.AccountID(), acct.AccountID(), accountID)
+	}
+}
+
+func TestOKXPerpReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("unexpected venue request for mismatched account id: %s", r.URL.String())
+	}))
+	defer server.Close()
+
+	inst := testOKXLinearInstrument(t)
+	exec := newExecutionClient(
+		okx.NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL(server.URL),
+		testOKXProvider(inst),
+		clock.NewRealClock(),
+		"",
+	)
+
+	orders, err := exec.GenerateOrderStatusReports(context.Background(), model.OrderStatusReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("mismatched account order reports=%+v err=%v, want empty nil", orders, err)
+	}
+	order, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID, ClientID: "client"})
+	if err != nil || order != nil {
+		t.Fatalf("mismatched account single order=%+v err=%v, want nil nil", order, err)
+	}
+	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("mismatched account fill reports=%+v err=%v, want empty nil", fills, err)
+	}
+	positions, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(positions) != 0 {
+		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "OKX-OTHER", IncludeFills: true, IncludePositions: true})
+	if err != nil || mass == nil || mass.AccountID != "OKX-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
+		t.Fatalf("mismatched account mass=%+v err=%v, want empty OKX-OTHER mass", mass, err)
+	}
+	if called {
+		t.Fatal("mismatched account report crossed HTTP boundary")
+	}
+}
+
 func dd(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 func ptrString(v *string) string {
@@ -117,7 +171,7 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenOrder), &o); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := execEventsFromOrder(&o, stubResolver{})
+	events := execEventsFromOrder(&o, stubResolver{}, model.AccountIDOKXDefault)
 	if len(events) != 2 {
 		t.Fatalf("want OrderEvent+FillEvent, got %d", len(events))
 	}
@@ -127,6 +181,9 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	}
 	if oe.Order.Request.InstrumentID.Symbol != "BTC-USDT" {
 		t.Errorf("instId not mapped to neutral symbol: %s", oe.Order.Request.InstrumentID.Symbol)
+	}
+	if oe.Order.Request.AccountID != model.AccountIDOKXDefault {
+		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
 	}
 	fe := events[1].(contract.FillEvent)
 	if !fe.Fill.Price.Equal(dd("60000")) || !fe.Fill.Quantity.Equal(dd("1")) {
@@ -138,6 +195,9 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	// Fee is reported negative by OKX; adapter stores the magnitude.
 	if !fe.Fill.Fee.Equal(dd("0.03")) {
 		t.Errorf("fee=%s, want 0.03 (abs)", fe.Fill.Fee)
+	}
+	if fe.Fill.AccountID != model.AccountIDOKXDefault {
+		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
 
@@ -153,7 +213,7 @@ func TestPrivateEventTranslationSkipsUnsupportedInverseSwap(t *testing.T) {
 		AccFillSz: "1",
 		FillSz:    "1",
 	}
-	if got := execEventsFromOrder(order, stubResolver{}); len(got) != 0 {
+	if got := execEventsFromOrder(order, stubResolver{}, model.AccountIDOKXDefault); len(got) != 0 {
 		t.Fatalf("inverse SWAP order produced %d events, want 0", len(got))
 	}
 
@@ -163,7 +223,7 @@ func TestPrivateEventTranslationSkipsUnsupportedInverseSwap(t *testing.T) {
 		PosSide:  "net",
 		Pos:      "1",
 	}
-	if got := accountEventsFromPosition(position, stubResolver{}); len(got) != 0 {
+	if got := accountEventsFromPosition(position, stubResolver{}, model.AccountIDOKXDefault); len(got) != 0 {
 		t.Fatalf("inverse SWAP position produced %d events, want 0", len(got))
 	}
 }
@@ -180,7 +240,7 @@ func TestShortPositionSignedNegative(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenShortPosition), &p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := accountEventsFromPosition(&p, stubResolver{})
+	events := accountEventsFromPosition(&p, stubResolver{}, model.AccountIDOKXDefault)
 	pe := events[0].(contract.PositionEvent)
 	// OKX reports pos as a positive magnitude with posSide=short; the model must
 	// carry a SIGNED quantity (negative for short).
@@ -192,6 +252,9 @@ func TestShortPositionSignedNegative(t *testing.T) {
 	}
 	if !pe.Position.UnrealizedPnL.Equal(dd("250")) {
 		t.Errorf("uPnL=%s, want 250", pe.Position.UnrealizedPnL)
+	}
+	if pe.Position.AccountID != model.AccountIDOKXDefault {
+		t.Fatalf("position account_id=%q", pe.Position.AccountID)
 	}
 }
 
@@ -480,7 +543,7 @@ func TestOKXPerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXSwap || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
+	if state.AccountID != model.AccountIDOKXDefault || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
 		t.Fatalf("account state identity=%+v", state)
 	}
 	if state.ModeInfo.AccountMode != string(okx.AccountLevelSingleCurrencyMargin) || state.ModeInfo.MarginMode != "isolated" || state.ModeInfo.PositionMode != "long_short_mode" {

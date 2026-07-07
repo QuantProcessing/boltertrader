@@ -122,6 +122,7 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 
 func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 	caps := r.account.Capabilities()
+	scopeAccountID := r.accountID
 	var accountStateID string
 	var accountStateAppliedAt time.Time
 	if caps.Reports.AccountStateSnapshots {
@@ -132,6 +133,15 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		state, err := reporter.AccountState(ctx)
 		if err != nil {
 			return err
+		}
+		if state.AccountID == "" {
+			state.AccountID = scopeAccountID
+		}
+		if state.ModeInfo.AccountID == "" {
+			state.ModeInfo.AccountID = state.AccountID
+		}
+		if scopeAccountID == "" {
+			scopeAccountID = state.AccountID
 		}
 		appliedAt := time.Now()
 		if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {
@@ -147,6 +157,9 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 			return err
 		}
 		for _, b := range balances {
+			if b.AccountID == "" {
+				b.AccountID = scopeAccountID
+			}
 			r.cache.UpsertBalance(b)
 			rep.BalancesUpdated++
 		}
@@ -161,20 +174,34 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 	// stale cached positions the venue considers flat.
 	seen := make(map[positionKey]struct{}, len(positions))
 	for _, p := range positions {
-		if cp, ok := r.cache.Position(p.InstrumentID, p.Side); ok && !cp.Quantity.Equal(p.Quantity) {
+		if p.AccountID == "" {
+			p.AccountID = scopeAccountID
+		}
+		var cp model.Position
+		var ok bool
+		if p.AccountID != "" {
+			cp, ok = r.cache.PositionForAccount(p.AccountID, p.InstrumentID, p.Side)
+		} else {
+			cp, ok = r.cache.Position(p.InstrumentID, p.Side)
+		}
+		if ok && !cp.Quantity.Equal(p.Quantity) {
 			rep.PositionOverwrites++
 		}
 		r.cache.UpsertPosition(p)
 		rep.PositionsUpdated++
-		seen[positionKey{p.InstrumentID.String(), p.Side}] = struct{}{}
+		seen[positionKey{p.AccountID, p.InstrumentID.String(), p.Side}] = struct{}{}
 	}
 
 	for _, cp := range r.cache.Positions() {
-		k := positionKey{cp.InstrumentID.String(), cp.Side}
+		if scopeAccountID != "" && cp.AccountID != scopeAccountID {
+			continue
+		}
+		k := positionKey{cp.AccountID, cp.InstrumentID.String(), cp.Side}
 		if _, ok := seen[k]; !ok {
 			// Venue no longer reports this position: force it flat. A
 			// zero-quantity upsert removes it from the cache.
 			r.cache.UpsertPosition(model.Position{
+				AccountID:    cp.AccountID,
 				InstrumentID: cp.InstrumentID,
 				Side:         cp.Side,
 			})
@@ -231,12 +258,19 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	venueKeys := make(map[string]struct{}, len(mass.OrderReports))
 	for _, report := range mass.OrderReports {
 		o := report.Order
+		accountID := report.AccountID
+		if accountID == "" {
+			accountID = mass.AccountID
+		}
+		if o.Request.AccountID == "" {
+			o.Request.AccountID = accountID
+		}
 		k := orderKeyOf(o)
 		venueKeys[k] = struct{}{}
 		if o.VenueOrderID != "" {
 			venueKeys[o.VenueOrderID] = struct{}{}
 		}
-		if _, known := r.cache.Order(k); known {
+		if _, known := r.cache.OrderForAccount(accountID, k); known {
 			rep.OrdersUpdated++
 		} else {
 			rep.OrdersExternal++
@@ -252,6 +286,9 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	}
 
 	for _, co := range r.cache.OpenOrders() {
+		if !orderInAccountScope(co, mass.AccountID) {
+			continue
+		}
 		if _, ok := venueKeys[orderKeyOf(co)]; ok {
 			continue
 		}
@@ -298,16 +335,22 @@ func (r *Reconciler) applyFillReports(ctx context.Context, pass PassHeader, mass
 				accountID = mass.AccountID
 			}
 			fill := report.Fill
+			if fill.AccountID == "" {
+				fill.AccountID = accountID
+			}
 			if fill.ClientID == "" && r.resolver != nil {
 				if resolvedFill, resolved := r.resolver.ResolveFillInFlight(fill, fillResolvedAt(fill, pass)); resolved {
 					fill = resolvedFill
 				}
 			}
+			if fill.AccountID == "" {
+				fill.AccountID = accountID
+			}
 			if fill.TradeID == "" {
 				fill.TradeID = SyntheticTradeID(accountID, fill, pass.StableEventAt)
 				rep.FillsInferred++
 			}
-			fillKey := accountID + "\x00" + orderstate.FillKey(fill)
+			fillKey := orderstate.FillKey(fill)
 			if _, ok := r.fills[fillKey]; ok {
 				rep.FillsDuplicate++
 				continue
@@ -352,17 +395,25 @@ func fillResolvedAt(fill model.Fill, pass PassHeader) time.Time {
 }
 
 func (r *Reconciler) orderForFill(fill model.Fill) (model.Order, bool) {
+	accountID := fill.AccountID
+	if accountID == "" {
+		accountID = r.accountID
+	}
 	if fill.ClientID != "" {
-		if o, ok := r.cache.Order(fill.ClientID); ok {
-			return o, true
+		if o, ok := r.cache.OrderForAccount(accountID, fill.ClientID); ok {
+			if orderMatchesFillAccount(o, fill) {
+				return o, true
+			}
 		}
 	}
 	if fill.VenueOrderID != "" {
-		if o, ok := r.cache.Order(fill.VenueOrderID); ok {
-			return o, true
+		if o, ok := r.cache.OrderForAccount(accountID, fill.VenueOrderID); ok {
+			if orderMatchesFillAccount(o, fill) {
+				return o, true
+			}
 		}
 		for _, o := range r.cache.Orders() {
-			if o.VenueOrderID == fill.VenueOrderID {
+			if o.VenueOrderID == fill.VenueOrderID && orderMatchesAccountID(o, accountID) && orderMatchesFillAccount(o, fill) {
 				return o, true
 			}
 		}
@@ -374,13 +425,35 @@ func (r *Reconciler) applyFillToOrder(order model.Order, fill model.Fill) {
 	r.cache.UpsertOrder(orderstate.ApplyFill(order, fill, time.Now()))
 }
 
+func orderMatchesFillAccount(o model.Order, fill model.Fill) bool {
+	if fill.AccountID == "" || o.Request.AccountID == "" {
+		return true
+	}
+	return o.Request.AccountID == fill.AccountID
+}
+
+func orderMatchesAccountID(o model.Order, accountID string) bool {
+	if accountID == "" || o.Request.AccountID == "" {
+		return true
+	}
+	return o.Request.AccountID == accountID
+}
+
+func orderInAccountScope(o model.Order, accountID string) bool {
+	return accountID == "" || o.Request.AccountID == "" || o.Request.AccountID == accountID
+}
+
 func materializeOrderFromFill(fill model.Fill, stableEventAt time.Time) (model.Order, bool) {
 	if fill.InstrumentID.Symbol == "" || fill.VenueOrderID == "" || fill.Quantity.IsZero() {
 		return model.Order{}, false
 	}
 	clientID := fill.ClientID
 	if clientID == "" {
-		clientID = "external-" + fill.VenueOrderID
+		clientID = "external-"
+		if fill.AccountID != "" {
+			clientID += fill.AccountID + "-"
+		}
+		clientID += fill.VenueOrderID
 	}
 	if fill.ClientID == "" && fill.TradeID != "" {
 		clientID += "-" + fill.TradeID
@@ -391,6 +464,7 @@ func materializeOrderFromFill(fill model.Fill, stableEventAt time.Time) (model.O
 	}
 	return model.Order{
 		Request: model.OrderRequest{
+			AccountID:    fill.AccountID,
 			InstrumentID: fill.InstrumentID,
 			ClientID:     clientID,
 			Side:         fill.Side,
@@ -432,6 +506,7 @@ func orderKeyOf(o model.Order) string {
 }
 
 type positionKey struct {
+	accountID  string
 	instrument string
 	side       enums.PositionSide
 }

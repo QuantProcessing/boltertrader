@@ -19,29 +19,40 @@ import (
 // OKX REST PlaceOrder blocks until the venue responds, so Submit is naturally
 // synchronous.
 type executionClient struct {
-	rest     *okx.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	tdMode   string
-	stream   *wsstream.Stream[contract.ExecEnvelope]
-	algoMu   sync.Mutex
-	algoIDs  map[string]struct{}
+	rest      *okx.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	tdMode    string
+	accountID string
+	stream    *wsstream.Stream[contract.ExecEnvelope]
+	algoMu    sync.Mutex
+	algoIDs   map[string]struct{}
 }
 
-func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string) *executionClient {
+func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk clock.Clock, tdMode string, accountIDs ...string) *executionClient {
 	normalized, err := normalizeDerivativeTdMode(tdMode)
 	if err != nil {
 		normalized = defaultDerivativeTdMode
 	}
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = model.AccountIDOKXDefault
+	}
 	return &executionClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		tdMode:   normalized,
-		stream:   wsstream.New[contract.ExecEnvelope](256),
-		algoIDs:  make(map[string]struct{}),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		tdMode:    normalized,
+		accountID: accountID,
+		stream:    wsstream.New[contract.ExecEnvelope](256),
+		algoIDs:   make(map[string]struct{}),
 	}
 }
+
+func (c *executionClient) AccountID() string { return c.accountID }
 
 // checkSCode inspects OKX's per-order result codes. OKX returns HTTP 200 with a
 // per-order sCode that is non-"0" when the operation was rejected, so transport
@@ -74,6 +85,9 @@ func (c *executionClient) instID(id model.InstrumentID) (string, error) {
 }
 
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if req.AccountID == "" {
+		req.AccountID = c.accountID
+	}
 	instID, err := c.instID(req.InstrumentID)
 	if err != nil {
 		return nil, err
@@ -162,6 +176,9 @@ func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
 }
 
 func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, instID, side string) (*model.Order, error) {
+	if req.AccountID == "" {
+		req.AccountID = c.accountID
+	}
 	ordType, err := algoOrdTypeToOKX(req.Type)
 	if err != nil {
 		return nil, err
@@ -298,7 +315,7 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 		vid = ids[0].OrdId
 	}
 	return &model.Order{
-		Request:      model.OrderRequest{InstrumentID: id},
+		Request:      model.OrderRequest{AccountID: c.accountID, InstrumentID: id},
 		VenueOrderID: vid,
 		UpdatedAt:    c.clk.Now(),
 	}, nil
@@ -316,7 +333,7 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	}
 	out := make([]model.Order, 0, len(orders))
 	for i := range orders {
-		out = append(out, orderFromOKX(&orders[i], c.provider))
+		out = append(out, orderFromOKX(&orders[i], c.provider, c.accountID))
 	}
 	return out, nil
 }
@@ -325,6 +342,11 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 // instruments in one call. OKX's orders-pending endpoint returns the full set
 // when instId is omitted (nil), which is the venue-wide reconciliation feed.
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
+	accountID := c.accountID
+	query.AccountID = accountID
 	instType := instTypeSwap
 	orders, err := c.rest.GetOrders(ctx, &instType, nil)
 	if err != nil {
@@ -333,11 +355,11 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	now := c.clk.Now()
 	out := make([]model.OrderStatusReport, 0, len(orders))
 	for i := range orders {
-		o := orderFromOKX(&orders[i], c.provider)
+		o := orderFromOKX(&orders[i], c.provider, accountID)
 		if !model.OrderMatchesStatusQuery(o, query) {
 			continue
 		}
-		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: o, ReportedAt: now})
 	}
 	return out, nil
 }
@@ -356,19 +378,29 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("okx: fill report history is not implemented: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("okx: position reports are served by the account client: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: query.AccountID, ClientID: query.ClientID, OpenOnly: true})
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+	}
+	accountID := c.accountID
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	mass := model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now())
+	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Partial = true

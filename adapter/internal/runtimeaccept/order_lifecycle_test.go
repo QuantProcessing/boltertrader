@@ -99,6 +99,26 @@ func TestAdapterOrderLifecycleLogsAcceptanceEvidence(t *testing.T) {
 	}
 }
 
+func TestAdapterOrderLifecycleRejectsMismatchedAccountIDEvidence(t *testing.T) {
+	exec := &mismatchedAccountLifecycleExec{}
+	instID := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+
+	_, err := RunAdapterOrderLifecycle(context.Background(), exec, OrderLifecycleSpec{
+		Label:          "mismatched account",
+		AccountID:      "TEST:unified",
+		InstrumentID:   instID,
+		Quantity:       decimal.RequireFromString("0.01"),
+		RestingPrice:   decimal.RequireFromString("49000"),
+		FillPrice:      decimal.RequireFromString("51000"),
+		ClosePrice:     decimal.RequireFromString("50000"),
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "account_id") {
+		t.Fatalf("RunAdapterOrderLifecycle err=%v, want account_id mismatch", err)
+	}
+}
+
 func TestAdapterOrderLifecycleCanCleanExistingPosition(t *testing.T) {
 	exec := &cleanupLifecycleExec{existing: decimal.RequireFromString("0.0003")}
 	instID := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp}
@@ -355,6 +375,19 @@ func (e *recordingLifecycleExec) GenerateExecutionMassStatus(context.Context, mo
 
 func (e *recordingLifecycleExec) Events() <-chan contract.ExecEnvelope { return nil }
 func (e *recordingLifecycleExec) Close() error                         { return nil }
+
+type mismatchedAccountLifecycleExec struct {
+	recordingLifecycleExec
+}
+
+func (e *mismatchedAccountLifecycleExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	order, err := e.recordingLifecycleExec.Submit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	order.Request.AccountID = "TEST:other"
+	return order, nil
+}
 
 type runtimeLifecycleExec struct {
 	recordingLifecycleExec

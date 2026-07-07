@@ -33,6 +33,20 @@ func TestBitgetClientsImplementContractsAndCapabilities(t *testing.T) {
 	}
 }
 
+func TestBitgetAccountIDOverridePropagatesToClients(t *testing.T) {
+	const accountID = "BITGET-ALT"
+	provider := bitgetTestProvider()
+	clk := clock.NewSimulatedClock(time.Date(2026, 7, 6, 2, 0, 0, 0, time.UTC))
+	rest := bitgetsdk.NewClient().WithCredentials("key", "secret", "pass")
+
+	exec := newExecutionClient(rest, provider, clk, accountID)
+	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}, accountID)
+
+	if exec.AccountID() != accountID || acct.AccountID() != accountID {
+		t.Fatalf("account ids exec=%q acct=%q, want %q", exec.AccountID(), acct.AccountID(), accountID)
+	}
+}
+
 func TestBitgetAccountStateRequiresUnifiedAndSharedAccountID(t *testing.T) {
 	server := newBitgetAccountServer(t, bitgetAccountFixture{AccountMode: "unified"})
 	clk := clock.NewSimulatedClock(time.Date(2026, 7, 6, 2, 1, 0, 0, time.UTC))
@@ -277,6 +291,49 @@ func TestBitgetScopedReportsPreserveSpotInstrumentForAmbiguousVenueSymbol(t *tes
 	}
 	if len(fills) != 1 || fills[0].Fill.InstrumentID != spotID {
 		t.Fatalf("unexpected scoped spot fill reports: %+v", fills)
+	}
+}
+
+func TestBitgetReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("unexpected venue request for mismatched account id: %s", r.URL.String())
+	}))
+	defer server.Close()
+
+	exec := newExecutionClient(
+		bitgetsdk.NewClient().
+			WithCredentials("key", "secret", "pass").
+			WithBaseURL(server.URL).
+			WithHTTPClient(server.Client()),
+		bitgetTestProvider(),
+		clock.NewSimulatedClock(time.Date(2026, 7, 6, 2, 4, 0, 0, time.UTC)),
+	)
+	spotID := model.InstrumentID{Venue: VenueName, Symbol: "ETH-USDT", Kind: enums.KindSpot}
+
+	orders, err := exec.GenerateOrderStatusReports(context.Background(), model.OrderStatusReportQuery{AccountID: "BITGET-OTHER", InstrumentID: spotID})
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("mismatched account order reports=%+v err=%v, want empty nil", orders, err)
+	}
+	order, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{AccountID: "BITGET-OTHER", InstrumentID: spotID, ClientID: "client"})
+	if err != nil || order != nil {
+		t.Fatalf("mismatched account single order=%+v err=%v, want nil nil", order, err)
+	}
+	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: "BITGET-OTHER", InstrumentID: spotID})
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("mismatched account fill reports=%+v err=%v, want empty nil", fills, err)
+	}
+	positions, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{AccountID: "BITGET-OTHER", InstrumentID: spotID})
+	if err != nil || len(positions) != 0 {
+		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "BITGET-OTHER", IncludeFills: true, IncludePositions: true})
+	if err != nil || mass == nil || mass.AccountID != "BITGET-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
+		t.Fatalf("mismatched account mass=%+v err=%v, want empty BITGET-OTHER mass", mass, err)
+	}
+	if called {
+		t.Fatal("mismatched account report crossed HTTP boundary")
 	}
 }
 

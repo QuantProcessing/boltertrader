@@ -76,3 +76,25 @@ func TestReportValidation(t *testing.T) {
 		t.Fatal("overfilled order report should fail without explicit allowance")
 	}
 }
+
+func TestReportQueryMatchersRespectAccountID(t *testing.T) {
+	inst := InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	order := Order{
+		Request:      OrderRequest{AccountID: "acct-a", ClientID: "c1", InstrumentID: inst},
+		VenueOrderID: "v1",
+	}
+	if !OrderMatchesStatusQuery(order, OrderStatusReportQuery{AccountID: "acct-a", ClientID: "c1", VenueOrderID: "v1"}) {
+		t.Fatal("matching account order report query should match")
+	}
+	if OrderMatchesStatusQuery(order, OrderStatusReportQuery{AccountID: "acct-b", ClientID: "c1", VenueOrderID: "v1"}) {
+		t.Fatal("mismatched account order report query should not match")
+	}
+
+	fill := Fill{AccountID: "acct-a", InstrumentID: inst, ClientID: "c1", VenueOrderID: "v1", TradeID: "t1"}
+	if !FillMatchesReportQuery(fill, FillReportQuery{AccountID: "acct-a", ClientID: "c1", VenueOrderID: "v1"}) {
+		t.Fatal("matching account fill report query should match")
+	}
+	if FillMatchesReportQuery(fill, FillReportQuery{AccountID: "acct-b", ClientID: "c1", VenueOrderID: "v1"}) {
+		t.Fatal("mismatched account fill report query should not match")
+	}
+}

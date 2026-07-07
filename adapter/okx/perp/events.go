@@ -23,10 +23,11 @@ func parseMillis(s string) time.Time {
 }
 
 // orderFromOKX translates an OKX Order (REST or ws push) into a domain Order.
-func orderFromOKX(o *okx.Order, r instResolver) model.Order {
+func orderFromOKX(o *okx.Order, r instResolver, accountID string) model.Order {
 	otype, tif := ordTypeFromOKX(string(o.OrdType))
 	return model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: r.resolveInstID(o.InstId),
 			ClientID:     o.ClOrdId,
 			Side:         sideFromOKX(string(o.Side)),
@@ -47,16 +48,17 @@ func orderFromOKX(o *okx.Order, r instResolver) model.Order {
 // execEventsFromOrder translates an OKX order push into domain execution
 // events: an OrderEvent always, plus a FillEvent when the push reports a new
 // fill (execType + fillSz present).
-func execEventsFromOrder(o *okx.Order, r instResolver) []contract.ExecEvent {
+func execEventsFromOrder(o *okx.Order, r instResolver, accountID string) []contract.ExecEvent {
 	if o == nil || !isSupportedUSDTLinearSwapInstID(o.InstId) {
 		return nil
 	}
 	id := r.resolveInstID(o.InstId)
-	order := orderFromOKX(o, r)
+	order := orderFromOKX(o, r, accountID)
 	events := []contract.ExecEvent{contract.OrderEvent{Order: order}}
 
 	if dec(o.FillSz).IsPositive() {
 		events = append(events, contract.FillEvent{Fill: model.Fill{
+			AccountID:    accountID,
 			InstrumentID: id,
 			VenueOrderID: o.OrdId,
 			ClientID:     o.ClOrdId,
@@ -83,7 +85,7 @@ func execEventsFromOrder(o *okx.Order, r instResolver) []contract.ExecEvent {
 
 // accountEventsFromPosition translates an OKX position push into a domain
 // PositionEvent with a SIGNED quantity (negative for short).
-func accountEventsFromPosition(p *okx.Position, r instResolver) []contract.AccountEvent {
+func accountEventsFromPosition(p *okx.Position, r instResolver, accountID string) []contract.AccountEvent {
 	if p == nil || !isSupportedUSDTLinearSwapInstID(p.InstId) {
 		return nil
 	}
@@ -92,6 +94,7 @@ func accountEventsFromPosition(p *okx.Position, r instResolver) []contract.Accou
 		qty = qty.Neg()
 	}
 	return []contract.AccountEvent{contract.PositionEvent{Position: model.Position{
+		AccountID:     accountID,
 		InstrumentID:  r.resolveInstID(p.InstId),
 		Side:          positionSideFromOKX(string(p.PosSide)),
 		Quantity:      qty,

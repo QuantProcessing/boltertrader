@@ -58,7 +58,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceUSDM, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountMargin, enums.KindPerp)
 	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime user-data stream")
@@ -125,7 +125,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceUSDM, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountMargin, enums.KindPerp)
 	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
 		t.Fatalf("runtime cache still has Demo position after final reconcile")
 	}

@@ -84,3 +84,11 @@ type AccountClient interface {
 type AccountStateReporter interface {
 	AccountState(ctx context.Context) (model.AccountState, error)
 }
+
+// AccountIDProvider is the runtime identity contract for adapters which have
+// resolved their logical account scope. Runtime clients may implement it on the
+// execution client, account client, or both; if both expose an id they must
+// agree before the node is allowed to start.
+type AccountIDProvider interface {
+	AccountID() string
+}

@@ -26,6 +26,62 @@ var (
 	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
+func TestAccountIDOverridePropagatesToClients(t *testing.T) {
+	const accountID = "BINANCE-ALT"
+	provider := newInstrumentProvider()
+	clk := clock.NewRealClock()
+
+	exec := newExecutionClient(nil, provider, clk, accountID)
+	acct := newAccountClient(nil, provider, clk, accountID)
+
+	if exec.AccountID() != accountID || acct.AccountID() != accountID {
+		t.Fatalf("account ids exec=%q acct=%q, want %q", exec.AccountID(), acct.AccountID(), accountID)
+	}
+}
+
+func TestBinancePerpReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) {
+	called := false
+	rest := sdkperp.NewClient().WithCredentials("k", "s").WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			called = true
+			t.Fatalf("unexpected venue request for mismatched account id: %s", r.URL.String())
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`[]`)), Header: make(http.Header)}, nil
+		}),
+	})
+	inst := instrumentFromSymbolInfo(&sdkperp.SymbolInfo{
+		Symbol: "BTCUSDT", ContractType: "PERPETUAL", BaseAsset: "BTC", QuoteAsset: "USDT", MarginAsset: "USDT",
+		Filters: []map[string]any{{"filterType": "PRICE_FILTER", "tickSize": "0.10"}},
+	})
+	provider := newInstrumentProvider()
+	provider.byID[inst.ID.String()] = inst
+	provider.bySymbol[inst.VenueSymbol] = inst.ID
+	exec := newExecutionClient(rest, provider, clock.NewRealClock())
+
+	orders, err := exec.GenerateOrderStatusReports(context.Background(), model.OrderStatusReportQuery{AccountID: "BINANCE-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("mismatched account order reports=%+v err=%v, want empty nil", orders, err)
+	}
+	order, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{AccountID: "BINANCE-OTHER", InstrumentID: inst.ID, ClientID: "client"})
+	if err != nil || order != nil {
+		t.Fatalf("mismatched account single order=%+v err=%v, want nil nil", order, err)
+	}
+	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: "BINANCE-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("mismatched account fill reports=%+v err=%v, want empty nil", fills, err)
+	}
+	positions, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{AccountID: "BINANCE-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(positions) != 0 {
+		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "BINANCE-OTHER", IncludeFills: true, IncludePositions: true})
+	if err != nil || mass == nil || mass.AccountID != "BINANCE-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
+		t.Fatalf("mismatched account mass=%+v err=%v, want empty BINANCE-OTHER mass", mass, err)
+	}
+	if called {
+		t.Fatal("mismatched account report crossed HTTP boundary")
+	}
+}
+
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 // --- 1. Enum round-trip -----------------------------------------------------
@@ -109,7 +165,7 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenOrderTradeUpdate), &ev); err != nil {
 		t.Fatalf("unmarshal golden: %v", err)
 	}
-	events := execEventsFromOrderUpdate(&ev, stubResolver)
+	events := execEventsFromOrderUpdate(&ev, stubResolver, model.AccountIDBinanceDefault)
 	if len(events) != 2 {
 		t.Fatalf("expected OrderEvent+FillEvent, got %d events", len(events))
 	}
@@ -130,6 +186,9 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if oe.Order.Request.Side != enums.SideBuy {
 		t.Errorf("side=%v", oe.Order.Request.Side)
 	}
+	if oe.Order.Request.AccountID != model.AccountIDBinanceDefault {
+		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
+	}
 
 	fe, ok := events[1].(contract.FillEvent)
 	if !ok {
@@ -144,6 +203,9 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if !fe.Fill.Fee.Equal(d("0.24")) || fe.Fill.FeeCurrency != "USDT" {
 		t.Errorf("fee=%s %s", fe.Fill.Fee, fe.Fill.FeeCurrency)
 	}
+	if fe.Fill.AccountID != model.AccountIDBinanceDefault {
+		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
+	}
 }
 
 const goldenAccountUpdate = `{
@@ -157,7 +219,7 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenAccountUpdate), &ev); err != nil {
 		t.Fatalf("unmarshal golden: %v", err)
 	}
-	events := accountEventsFromUpdate(&ev, stubResolver)
+	events := accountEventsFromUpdate(&ev, stubResolver, model.AccountIDBinanceDefault)
 	if len(events) != 2 {
 		t.Fatalf("expected BalanceEvent+PositionEvent, got %d", len(events))
 	}
@@ -167,6 +229,9 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	}
 	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("1000.5")) || !be.Balance.Free.Equal(d("950.0")) || !be.Balance.Available.Equal(d("950.0")) {
 		t.Errorf("balance=%+v", be.Balance)
+	}
+	if be.Balance.AccountID != model.AccountIDBinanceDefault {
+		t.Fatalf("balance account_id=%q", be.Balance.AccountID)
 	}
 	pe, ok := events[1].(contract.PositionEvent)
 	if !ok {
@@ -178,6 +243,9 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	}
 	if !pe.Position.UnrealizedPnL.Equal(d("-12.5")) {
 		t.Errorf("uPnL=%s", pe.Position.UnrealizedPnL)
+	}
+	if pe.Position.AccountID != model.AccountIDBinanceDefault {
+		t.Fatalf("position account_id=%q", pe.Position.AccountID)
 	}
 }
 
@@ -281,7 +349,7 @@ func TestBinancePerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDBinanceUSDM || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
+	if state.AccountID != model.AccountIDBinanceDefault || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
 		t.Fatalf("account state identity=%+v", state)
 	}
 	if state.ModeInfo.AccountMode != "USD-M" || state.ModeInfo.PositionMode != "hedge" || state.ModeInfo.MarginMode != "multi_assets" {

@@ -22,23 +22,34 @@ import (
 // until the venue acknowledges, so no async bridging is needed (unlike
 // Hyperliquid).
 type executionClient struct {
-	rest     *sdkperp.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.ExecEnvelope]
-	algoMu   sync.Mutex
-	algoIDs  map[string]struct{}
+	rest      *sdkperp.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.ExecEnvelope]
+	algoMu    sync.Mutex
+	algoIDs   map[string]struct{}
 }
 
-func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock) *executionClient {
+func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *executionClient {
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = model.AccountIDBinanceDefault
+	}
 	return &executionClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		stream:   wsstream.New[contract.ExecEnvelope](256),
-		algoIDs:  make(map[string]struct{}),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: accountID,
+		stream:    wsstream.New[contract.ExecEnvelope](256),
+		algoIDs:   make(map[string]struct{}),
 	}
 }
+
+func (c *executionClient) AccountID() string { return c.accountID }
 
 func (c *executionClient) venueSymbol(id model.InstrumentID) (string, error) {
 	inst, ok := c.provider.Instrument(id)
@@ -49,6 +60,9 @@ func (c *executionClient) venueSymbol(id model.InstrumentID) (string, error) {
 }
 
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if req.AccountID == "" {
+		req.AccountID = c.accountID
+	}
 	symbol, err := c.venueSymbol(req.InstrumentID)
 	if err != nil {
 		return nil, err
@@ -123,6 +137,9 @@ func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
 }
 
 func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest, symbol, side, otype string) (*model.Order, error) {
+	if req.AccountID == "" {
+		req.AccountID = c.accountID
+	}
 	tif := "GTC"
 	if req.TIF != enums.TifUnknown {
 		var err error
@@ -242,7 +259,7 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	order := orderFromResponse(resp, model.OrderRequest{InstrumentID: id})
+	order := orderFromResponse(resp, model.OrderRequest{AccountID: c.accountID, InstrumentID: id})
 	order.UpdatedAt = c.clk.Now()
 	return &order, nil
 }
@@ -258,14 +275,14 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	}
 	out := make([]model.Order, 0, len(resps))
 	for i := range resps {
-		out = append(out, orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id}))
+		out = append(out, orderFromResponse(&resps[i], model.OrderRequest{AccountID: c.accountID, InstrumentID: id}))
 	}
 	algos, err := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{Symbol: symbol, AlgoType: "CONDITIONAL"})
 	if err != nil {
 		return nil, err
 	}
 	for i := range algos {
-		out = append(out, orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id}))
+		out = append(out, orderFromAlgoResponse(&algos[i], model.OrderRequest{AccountID: c.accountID, InstrumentID: id}))
 	}
 	return out, nil
 }
@@ -275,6 +292,11 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 // when the symbol is omitted; each row's symbol is resolved back to an
 // InstrumentID so reconciliation can rebuild orders the cache has never seen.
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
+	accountID := c.accountID
+	query.AccountID = accountID
 	resps, err := c.rest.GetOpenOrders(ctx, "")
 	if err != nil {
 		return nil, err
@@ -283,11 +305,11 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	out := make([]model.OrderStatusReport, 0, len(resps))
 	for i := range resps {
 		id := c.provider.resolveVenueSymbol(resps[i].Symbol)
-		o := orderFromResponse(&resps[i], model.OrderRequest{InstrumentID: id})
+		o := orderFromResponse(&resps[i], model.OrderRequest{AccountID: accountID, InstrumentID: id})
 		if !model.OrderMatchesStatusQuery(o, query) {
 			continue
 		}
-		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: o, ReportedAt: now})
 	}
 	algos, err := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{AlgoType: "CONDITIONAL"})
 	if err != nil {
@@ -295,11 +317,11 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	}
 	for i := range algos {
 		id := c.provider.resolveVenueSymbol(algos[i].Symbol)
-		o := orderFromAlgoResponse(&algos[i], model.OrderRequest{InstrumentID: id})
+		o := orderFromAlgoResponse(&algos[i], model.OrderRequest{AccountID: accountID, InstrumentID: id})
 		if !model.OrderMatchesStatusQuery(o, query) {
 			continue
 		}
-		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: query.AccountID, Order: o, ReportedAt: now})
+		out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: o, ReportedAt: now})
 	}
 	return out, nil
 }
@@ -318,19 +340,29 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("binance: fill report history is not implemented: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("binance: position reports are not served by execution client: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: query.AccountID, ClientID: query.ClientID, OpenOnly: true})
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+	}
+	accountID := c.accountID
+	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	mass := model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now())
+	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Partial = true
@@ -358,6 +390,9 @@ func (c *executionClient) Close() error {
 // orderFromResponse maps a Binance REST OrderResponse onto a domain Order,
 // preserving the originating request where available.
 func orderFromResponse(r *sdkperp.OrderResponse, req model.OrderRequest) model.Order {
+	if req.AccountID == "" {
+		req.AccountID = model.AccountIDBinanceDefault
+	}
 	if req.ClientID == "" {
 		req.ClientID = r.ClientOrderID
 	}
@@ -374,6 +409,9 @@ func orderFromResponse(r *sdkperp.OrderResponse, req model.OrderRequest) model.O
 }
 
 func orderFromAlgoResponse(r *sdkperp.AlgoOrderResponse, req model.OrderRequest) model.Order {
+	if req.AccountID == "" {
+		req.AccountID = model.AccountIDBinanceDefault
+	}
 	if req.ClientID == "" {
 		req.ClientID = r.ClientAlgoID
 	}

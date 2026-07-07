@@ -16,7 +16,7 @@ import (
 
 const (
 	VenueName        = "BYBIT"
-	AccountIDUnified = "BYBIT:unified"
+	AccountIDUnified = model.AccountIDBybitDefault
 )
 
 type Config struct {

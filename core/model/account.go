@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -9,11 +10,32 @@ import (
 )
 
 const (
-	AccountIDBinanceSpot = "BINANCE:spot"
-	AccountIDBinanceUSDM = "BINANCE:usdm"
-	AccountIDOKXSpot     = "OKX:spot"
-	AccountIDOKXSwap     = "OKX:swap"
+	AccountIDBinanceDefault     = "BINANCE-001"
+	AccountIDOKXDefault         = "OKX-001"
+	AccountIDBybitDefault       = "BYBIT-001"
+	AccountIDBitgetDefault      = "BITGET-001"
+	AccountIDLighterDefault     = "LIGHTER-001"
+	AccountIDHyperliquidDefault = "HYPERLIQUID-001"
 )
+
+func DefaultAccountIDForVenue(venue string) string {
+	switch strings.ToUpper(strings.TrimSpace(venue)) {
+	case "BINANCE":
+		return AccountIDBinanceDefault
+	case "OKX":
+		return AccountIDOKXDefault
+	case "BYBIT":
+		return AccountIDBybitDefault
+	case "BITGET":
+		return AccountIDBitgetDefault
+	case "LIGHTER":
+		return AccountIDLighterDefault
+	case "HYPERLIQUID":
+		return AccountIDHyperliquidDefault
+	default:
+		return ""
+	}
+}
 
 type AccountType uint8
 

@@ -49,6 +49,125 @@ func TestOrderUpsertRejectsStaleTerminalRegression(t *testing.T) {
 	}
 }
 
+func TestOrdersAreScopedByAccountID(t *testing.T) {
+	c := New()
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a", ClientID: "same-client"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusNew,
+	})
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-b", ClientID: "same-client"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusFilled,
+		FilledQty:    decimal.RequireFromString("1"),
+	})
+
+	if _, ok := c.Order("same-client"); ok {
+		t.Fatal("legacy client-id lookup should be ambiguous across accounts")
+	}
+	if _, ok := c.Order("same-venue"); ok {
+		t.Fatal("legacy venue-order-id lookup should be ambiguous across accounts")
+	}
+	if got, ok := c.OrderForAccount("acct-a", "same-client"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-a order=%+v ok=%v, want NEW", got, ok)
+	}
+	if got, ok := c.OrderForAccount("acct-b", "same-client"); !ok || got.Status != enums.StatusFilled {
+		t.Fatalf("acct-b order=%+v ok=%v, want FILLED", got, ok)
+	}
+	if got, ok := c.OrderForAccount("acct-a", "same-venue"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-a venue lookup=%+v ok=%v, want NEW", got, ok)
+	}
+	if got, ok := c.OrderForAccount("acct-b", "same-venue"); !ok || got.Status != enums.StatusFilled {
+		t.Fatalf("acct-b venue lookup=%+v ok=%v, want FILLED", got, ok)
+	}
+}
+
+func TestVenueOrderMergeIsScopedByAccountID(t *testing.T) {
+	c := New()
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a", ClientID: "client-a"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusNew,
+	})
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-b", ClientID: "client-b"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusNew,
+	})
+
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusCanceled,
+	})
+
+	if got, ok := c.OrderForAccount("acct-a", "client-a"); !ok || got.Status != enums.StatusCanceled {
+		t.Fatalf("acct-a merged order=%+v ok=%v, want CANCELED", got, ok)
+	}
+	if got, ok := c.OrderForAccount("acct-b", "client-b"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-b order=%+v ok=%v, want untouched NEW", got, ok)
+	}
+}
+
+func TestAmbiguousVenueOrderUpdateWithoutAccountIDDoesNotMergeAcrossAccounts(t *testing.T) {
+	c := New()
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a", ClientID: "client-a"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusNew,
+	})
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-b", ClientID: "client-b"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusNew,
+	})
+
+	c.UpsertOrder(model.Order{VenueOrderID: "same-venue", Status: enums.StatusCanceled})
+
+	if got, ok := c.OrderForAccount("acct-a", "client-a"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-a order=%+v ok=%v, want untouched NEW", got, ok)
+	}
+	if got, ok := c.OrderForAccount("acct-b", "client-b"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-b order=%+v ok=%v, want untouched NEW", got, ok)
+	}
+	if _, ok := c.Order("same-venue"); ok {
+		t.Fatal("legacy venue lookup should stay ambiguous after unscoped update")
+	}
+
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a"},
+		VenueOrderID: "same-venue",
+		Status:       enums.StatusPartiallyFilled,
+		FilledQty:    decimal.RequireFromString("0.5"),
+	})
+	if got, ok := c.OrderForAccount("acct-a", "client-a"); !ok || got.Status != enums.StatusPartiallyFilled {
+		t.Fatalf("later acct-a update=%+v ok=%v, want PARTIALLY_FILLED without inherited cancel", got, ok)
+	}
+}
+
+func TestOrderUpsertMigratesLegacyEmptyAccountOrderIntoScopedKey(t *testing.T) {
+	c := New()
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{ClientID: "client-a"},
+		VenueOrderID: "venue-a",
+		Status:       enums.StatusNew,
+	})
+
+	c.UpsertOrder(model.Order{
+		Request:      model.OrderRequest{AccountID: "acct-a"},
+		VenueOrderID: "venue-a",
+		Status:       enums.StatusCanceled,
+	})
+
+	if got := c.Orders(); len(got) != 1 {
+		t.Fatalf("orders=%+v, want single migrated order", got)
+	}
+	if got, ok := c.OrderForAccount("acct-a", "client-a"); !ok || got.Status != enums.StatusCanceled {
+		t.Fatalf("migrated order=%+v ok=%v, want CANCELED", got, ok)
+	}
+}
+
 func TestPositionUpsertRemovesFlat(t *testing.T) {
 	c := New()
 	c.UpsertPosition(model.Position{InstrumentID: inst, Side: enums.PosNet, Quantity: decimal.RequireFromString("1.5")})
@@ -122,7 +241,7 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -133,7 +252,7 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceSpot,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "spot",
 			ProductScope: []enums.InstrumentKind{enums.KindSpot},
 			Verified:     true,
@@ -146,11 +265,11 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("apply account state: %v", err)
 	}
-	acct, ok := c.Account(model.AccountIDBinanceSpot)
-	if !ok || acct.ID() != model.AccountIDBinanceSpot {
+	acct, ok := c.Account(model.AccountIDBinanceDefault)
+	if !ok || acct.ID() != model.AccountIDBinanceDefault {
 		t.Fatalf("account lookup failed: ok=%v acct=%v", ok, acct)
 	}
-	if acct, ok := c.AccountForVenue("BINANCE"); !ok || acct.ID() != model.AccountIDBinanceSpot {
+	if acct, ok := c.AccountForVenue("BINANCE"); !ok || acct.ID() != model.AccountIDBinanceDefault {
 		t.Fatalf("account for venue failed: ok=%v acct=%v", ok, acct)
 	}
 	if b, ok := c.Balance("USDT"); !ok || !b.Free.Equal(decimal.RequireFromString("90")) {
@@ -162,7 +281,7 @@ func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	err := c.ApplyAccountStateAt(model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -172,7 +291,7 @@ func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:      "BINANCE",
-			AccountID:  model.AccountIDBinanceSpot,
+			AccountID:  model.AccountIDBinanceDefault,
 			Verified:   true,
 			VerifiedAt: ts,
 			Source:     "test",
@@ -189,7 +308,7 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 	c := New()
 	ts := time.Unix(10, 0)
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -199,7 +318,7 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceSpot,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "spot",
 			ProductScope: []enums.InstrumentKind{enums.KindSpot},
 			Verified:     true,
@@ -212,9 +331,9 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("apply spot: %v", err)
 	}
-	state.AccountID = model.AccountIDBinanceUSDM
+	state.AccountID = "BINANCE-002"
 	state.Type = model.AccountMargin
-	state.ModeInfo.AccountID = model.AccountIDBinanceUSDM
+	state.ModeInfo.AccountID = "BINANCE-002"
 	state.ModeInfo.AccountMode = "USD-M"
 	state.ModeInfo.ProductScope = []enums.InstrumentKind{enums.KindPerp}
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {

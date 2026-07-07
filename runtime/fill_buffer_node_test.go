@@ -214,11 +214,11 @@ func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 		Timestamp:    clk.Now(),
 	})
 	waitFill(t, filled)
-	order, ok := node.Cache.Order("external-external-venue-external-trade")
+	order, ok := node.Cache.Order("external-external-fill-external-venue-external-trade")
 	if !ok {
 		t.Fatal("materialized external order missing")
 	}
-	if order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("1")) {
+	if order.Request.AccountID != "external-fill" || order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("1")) {
 		t.Fatalf("external order=%+v, want filled qty 1", order)
 	}
 
@@ -237,8 +237,8 @@ func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 		UpdatedAt:    clk.Now(),
 	})
 	waitUntil(t, func() bool { return node.Metrics().OrdersSeen == 1 }, "stale order event should be processed")
-	order, ok = node.Cache.Order("external-external-venue-external-trade")
-	if !ok || order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("1")) {
+	order, ok = node.Cache.Order("external-external-fill-external-venue-external-trade")
+	if !ok || order.Request.AccountID != "external-fill" || order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("1")) {
 		t.Fatalf("external order after stale order ok=%v order=%+v, want still filled", ok, order)
 	}
 }

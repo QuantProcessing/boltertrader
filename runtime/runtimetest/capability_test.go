@@ -107,7 +107,7 @@ func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
 
 	ts := time.Unix(1, 0)
 	account.SetAccountStateSnapshot(model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -117,7 +117,7 @@ func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceSpot,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "spot",
 			ProductScope: []enums.InstrumentKind{enums.KindSpot},
 			Verified:     true,

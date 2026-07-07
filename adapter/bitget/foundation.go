@@ -17,7 +17,7 @@ import (
 
 const (
 	VenueName        = "BITGET"
-	AccountIDUnified = "BITGET:unified"
+	AccountIDUnified = model.AccountIDBitgetDefault
 )
 
 type Config struct {

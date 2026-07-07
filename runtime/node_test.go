@@ -135,7 +135,7 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 
 	ts := clk.Now()
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -145,7 +145,7 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceSpot,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "spot",
 			ProductScope: []enums.InstrumentKind{enums.KindSpot},
 			Verified:     true,
@@ -157,12 +157,12 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 	}
 	facct.EmitAccountState(state)
 	waitUntil(t, func() bool {
-		_, ok := node.Cache.Account(model.AccountIDBinanceSpot)
+		_, ok := node.Cache.Account(model.AccountIDBinanceDefault)
 		return ok
 	}, "timed out waiting for account state")
 
-	acct, ok := node.Cache.Account(model.AccountIDBinanceSpot)
-	if !ok || acct.ID() != model.AccountIDBinanceSpot {
+	acct, ok := node.Cache.Account(model.AccountIDBinanceDefault)
+	if !ok || acct.ID() != model.AccountIDBinanceDefault {
 		t.Fatalf("cache account missing: ok=%v acct=%v", ok, acct)
 	}
 	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Free.Equal(d("100")) {

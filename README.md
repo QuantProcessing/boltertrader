@@ -100,7 +100,6 @@ node := runtime.NewNode(
     runtime.WithBars(inst, time.Minute, "1m"),
     runtime.WithRisk(riskEngine, adapter.Market.InstrumentProvider()),
     runtime.WithJournal(journalStore),
-    runtime.WithAccountID("binance-main"),
 )
 
 node.Resync(ctx)          // reconcile cache from REST
@@ -112,10 +111,11 @@ node.Run(ctx)             // blocks
 See [`cmd/livedemo`](cmd/livedemo/main.go) for a full env-gated live wiring and
 [`strategy/strategies`](strategy/strategies/) for example strategies.
 
-For live trading, keep `WithJournal` on a file-backed journal and set a stable
-`WithAccountID` scope. The demo accepts `BT_ACCOUNT_ID` and optional
-`BT_JOURNAL_PATH`; omitting the account id fails fast instead of silently
-running with venue-only recovery scope.
+For live trading, keep `WithJournal` on a file-backed journal. Adapters expose
+their logical runtime account id; `WithAccountID` is an optional expected-id
+guard. The demo accepts `BT_ACCOUNT_ID` and optional `BT_JOURNAL_PATH`; when
+`BT_ACCOUNT_ID` is set it must match the adapter-provided account id before the
+runtime starts.
 
 ## Writing a strategy
 
@@ -304,8 +304,9 @@ The Hyperliquid Make targets wrap `go test -json` and fail if any selected
 acceptance test skips. This keeps the full gate honest: missing funding, dirty
 open orders, dirty positions, or missing HIP-3 symbol config are incomplete
 acceptance runs, not green runs. Runtime targets require
-`AccountStateReporter` snapshots, `runtime.WithAccountID`, and
-`risk.RequireAccountState()` before any risk-increasing order is allowed.
+`AccountStateReporter` snapshots, the adapter-provided logical account id (or a
+matching `runtime.WithAccountID` guard), and `risk.RequireAccountState()` before
+any risk-increasing order is allowed.
 
 Product-qualified Hyperliquid targets are:
 

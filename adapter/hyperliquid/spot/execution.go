@@ -43,6 +43,8 @@ func newExecutionClient(rest *sdkspot.Client, provider *instruments.Registry, cl
 	}
 }
 
+func (c *executionClient) AccountID() string { return c.accountID }
+
 func (c *executionClient) instrument(id model.InstrumentID) (*model.Instrument, error) {
 	inst, ok := c.provider.Instrument(id)
 	if !ok {
@@ -276,9 +278,9 @@ func orderFromHL(o *sdkspot.Order, id model.InstrumentID, accountID string) mode
 }
 
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
-	accountID, err := c.scopedAccountID(query.AccountID)
-	if err != nil {
-		return nil, err
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
+		return nil, nil
 	}
 	query.AccountID = accountID
 	orders, err := c.rest.UserOpenOrders(ctx, c.rest.AccountAddr)
@@ -326,17 +328,23 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	if _, ok := c.scopedReportAccountID(query.AccountID); !ok {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("hyperliquid spot: fill report history is not implemented: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
+	if _, ok := c.scopedReportAccountID(query.AccountID); !ok {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("hyperliquid spot: cash positions are balance-sourced: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	accountID, err := c.scopedAccountID(query.AccountID)
-	if err != nil {
-		return nil, err
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
+		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
 	}
 	query.AccountID = accountID
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
@@ -433,6 +441,14 @@ func (c *executionClient) normalizeOrderIdentity(order model.Order) model.Order 
 
 func (c *executionClient) scopedAccountID(accountID string) (string, error) {
 	return hlaccount.ResolveScopedAccountID(accountID, c.accountID)
+}
+
+func (c *executionClient) scopedReportAccountID(accountID string) (string, bool) {
+	resolved, err := c.scopedAccountID(accountID)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
 func (c *executionClient) Close() error {

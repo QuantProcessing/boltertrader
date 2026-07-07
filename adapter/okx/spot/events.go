@@ -11,10 +11,11 @@ type instResolver interface {
 	resolveInstID(instID string) model.InstrumentID
 }
 
-func orderFromOKX(o *okx.Order, r instResolver) model.Order {
+func orderFromOKX(o *okx.Order, r instResolver, accountID string) model.Order {
 	otype, tif := ordTypeFromOKX(string(o.OrdType))
 	return model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: r.resolveInstID(o.InstId),
 			ClientID:     o.ClOrdId,
 			Side:         sideFromOKX(string(o.Side)),
@@ -33,16 +34,17 @@ func orderFromOKX(o *okx.Order, r instResolver) model.Order {
 	}
 }
 
-func execEventsFromOrder(o *okx.Order, r instResolver) []contract.ExecEvent {
+func execEventsFromOrder(o *okx.Order, r instResolver, accountID string) []contract.ExecEvent {
 	if o == nil || (o.InstType != "" && o.InstType != instTypeSpot) {
 		return nil
 	}
 	id := r.resolveInstID(o.InstId)
-	order := orderFromOKX(o, r)
+	order := orderFromOKX(o, r, accountID)
 	events := []contract.ExecEvent{contract.OrderEvent{Order: order}}
 
 	if dec(o.FillSz).IsPositive() {
 		events = append(events, contract.FillEvent{Fill: model.Fill{
+			AccountID:    accountID,
 			InstrumentID: id,
 			VenueOrderID: o.OrdId,
 			ClientID:     o.ClOrdId,

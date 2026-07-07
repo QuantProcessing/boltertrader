@@ -17,8 +17,10 @@ type registry struct {
 	byMarketID map[int]*model.Instrument
 }
 
+// AccountIDForIndex is retained for compatibility with older tests/callers.
+// AccountIndex is a Lighter selector, not a runtime account identity.
 func AccountIDForIndex(index int64) string {
-	return fmt.Sprintf("%s:account:%d", venueName, index)
+	return model.AccountIDLighterDefault
 }
 
 func newRegistry(insts []*model.Instrument) *registry {

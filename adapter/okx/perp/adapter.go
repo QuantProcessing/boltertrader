@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
@@ -14,6 +15,7 @@ type Config struct {
 	APIKey     string
 	APISecret  string
 	Passphrase string // OKX-specific third credential factor
+	AccountID  string
 	TdMode     string // cross (default) or isolated for derivative orders
 
 	Environment     okx.Environment
@@ -73,6 +75,10 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.HTTPClient != nil {
 		rest.WithHTTPClient(cfg.HTTPClient)
 	}
+	accountID := cfg.AccountID
+	if accountID == "" {
+		accountID = model.AccountIDOKXDefault
+	}
 
 	provider := newInstrumentProvider()
 	if err := provider.Load(ctx, rest); err != nil {
@@ -88,8 +94,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		wsPublic.WithURL(cfg.WSPublicURL)
 	}
 
-	exec := newExecutionClient(rest, provider, clk, tdMode)
-	acct := newAccountClient(rest, provider, clk, tdMode)
+	exec := newExecutionClient(rest, provider, clk, tdMode, accountID)
+	acct := newAccountClient(rest, provider, clk, tdMode, accountID)
 	market := newMarketDataClient(rest, wsPublic, provider, clk)
 
 	return &Adapter{
@@ -128,14 +134,14 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 
 	if err := ws.SubscribeOrders(instTypeSwap, nil, func(o *okx.Order) {
-		for _, e := range execEventsFromOrder(o, a.provider) {
+		for _, e := range execEventsFromOrder(o, a.provider, a.exec.accountID) {
 			a.exec.emit(e)
 		}
 	}); err != nil {
 		return err
 	}
 	if err := ws.SubscribePositions(instTypeSwap, func(p *okx.Position) {
-		for _, e := range accountEventsFromPosition(p, a.provider) {
+		for _, e := range accountEventsFromPosition(p, a.provider, a.acct.accountID) {
 			a.acct.emit(e)
 		}
 	}); err != nil {

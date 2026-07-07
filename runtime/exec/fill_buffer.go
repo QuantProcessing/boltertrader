@@ -14,17 +14,22 @@ type BufferedFill struct {
 	Meta contract.EventMeta
 }
 
+type fillIndexKey struct {
+	accountID string
+	id        string
+}
+
 type FillBuffer struct {
 	mu       sync.Mutex
-	byClient map[string][]BufferedFill
-	byVenue  map[string][]BufferedFill
+	byClient map[fillIndexKey][]BufferedFill
+	byVenue  map[fillIndexKey][]BufferedFill
 	seen     map[string]struct{}
 }
 
 func NewFillBuffer() *FillBuffer {
 	return &FillBuffer{
-		byClient: make(map[string][]BufferedFill),
-		byVenue:  make(map[string][]BufferedFill),
+		byClient: make(map[fillIndexKey][]BufferedFill),
+		byVenue:  make(map[fillIndexKey][]BufferedFill),
 		seen:     make(map[string]struct{}),
 	}
 }
@@ -52,10 +57,12 @@ func (b *FillBuffer) BufferEnvelope(fill model.Fill, meta contract.EventMeta) {
 	defer b.mu.Unlock()
 	buffered := BufferedFill{Fill: fill, Meta: meta}
 	if fill.ClientID != "" {
-		b.byClient[fill.ClientID] = append(b.byClient[fill.ClientID], buffered)
+		key := fillIndexKey{accountID: fill.AccountID, id: fill.ClientID}
+		b.byClient[key] = append(b.byClient[key], buffered)
 	}
 	if fill.VenueOrderID != "" {
-		b.byVenue[fill.VenueOrderID] = append(b.byVenue[fill.VenueOrderID], buffered)
+		key := fillIndexKey{accountID: fill.AccountID, id: fill.VenueOrderID}
+		b.byVenue[key] = append(b.byVenue[key], buffered)
 	}
 }
 
@@ -72,15 +79,27 @@ func (b *FillBuffer) DrainBuffered(order model.Order) []BufferedFill {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []BufferedFill
+	accountID := order.Request.AccountID
 	if clientID := order.Request.ClientID; clientID != "" {
-		out = append(out, b.byClient[clientID]...)
-		delete(b.byClient, clientID)
+		out = append(out, b.drainIndex(b.byClient, accountID, clientID)...)
 	}
 	if venueID := order.VenueOrderID; venueID != "" {
-		out = append(out, b.byVenue[venueID]...)
-		delete(b.byVenue, venueID)
+		out = append(out, b.drainIndex(b.byVenue, accountID, venueID)...)
 	}
 	return dedupeBufferedFills(out)
+}
+
+func (b *FillBuffer) drainIndex(index map[fillIndexKey][]BufferedFill, accountID, id string) []BufferedFill {
+	var out []BufferedFill
+	if accountID != "" {
+		key := fillIndexKey{accountID: accountID, id: id}
+		out = append(out, index[key]...)
+		delete(index, key)
+	}
+	unscoped := fillIndexKey{id: id}
+	out = append(out, index[unscoped]...)
+	delete(index, unscoped)
+	return out
 }
 
 func (b *FillBuffer) Count() int {
@@ -129,6 +148,7 @@ func pendingFillKey(fill model.Fill) string {
 		return key
 	}
 	return strings.Join([]string{
+		fill.AccountID,
 		fill.InstrumentID.String(),
 		fill.ClientID,
 		fill.VenueOrderID,

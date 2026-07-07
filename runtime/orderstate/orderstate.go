@@ -24,6 +24,9 @@ func ApplyFill(order model.Order, fill model.Fill, fallbackTime time.Time) model
 	if order.Request.ClientID == "" {
 		order.Request.ClientID = fill.ClientID
 	}
+	if order.Request.AccountID == "" {
+		order.Request.AccountID = fill.AccountID
+	}
 	if order.Request.InstrumentID.Symbol == "" {
 		order.Request.InstrumentID = fill.InstrumentID
 	}
@@ -58,6 +61,9 @@ func Merge(existing, incoming model.Order) model.Order {
 	out := incoming
 	if out.Request.ClientID == "" {
 		out.Request.ClientID = existing.Request.ClientID
+	}
+	if out.Request.AccountID == "" {
+		out.Request.AccountID = existing.Request.AccountID
 	}
 	if out.Request.InstrumentID.Symbol == "" {
 		out.Request.InstrumentID = existing.Request.InstrumentID
@@ -109,6 +115,7 @@ func FillKey(fill model.Fill) string {
 		return ""
 	}
 	return strings.Join([]string{
+		fill.AccountID,
 		fill.InstrumentID.String(),
 		fill.ClientID,
 		fill.VenueOrderID,

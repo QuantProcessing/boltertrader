@@ -6,7 +6,7 @@
 // and exits 0, so it is safe to build and run in CI without network or secrets.
 //
 //	BINANCE_API_KEY=... BINANCE_API_SECRET=... \
-//	BT_ACCOUNT_ID=binance-main BT_SYMBOL=BTC-USDT BT_QTY=0.001 \
+//	BT_SYMBOL=BTC-USDT BT_QTY=0.001 \
 //	BT_JOURNAL_PATH=.boltertrader/livedemo.journal go run ./cmd/livedemo
 package main
 
@@ -39,9 +39,6 @@ func main() {
 		return
 	}
 	accountID := os.Getenv("BT_ACCOUNT_ID")
-	if accountID == "" {
-		log.Fatal("livedemo: set BT_ACCOUNT_ID to a stable logical account scope (for example binance-main).")
-	}
 
 	symbol := getenv("BT_SYMBOL", "BTC-USDT")
 	journalPath := getenv("BT_JOURNAL_PATH", filepath.Join(".boltertrader", "livedemo.journal"))
@@ -78,6 +75,15 @@ func main() {
 		Logf:       log.Printf,
 	}
 
+	nodeOpts := []runtime.Option{
+		runtime.WithStrategy(strat),
+		runtime.WithBars(inst, time.Minute, "1m"),
+		runtime.WithJournal(journalStore),
+	}
+	if accountID != "" {
+		nodeOpts = append(nodeOpts, runtime.WithAccountID(accountID))
+	}
+
 	node := runtime.NewNode(
 		runtime.Clients{
 			Market:    adapter.Market,
@@ -85,10 +91,7 @@ func main() {
 			Account:   adapter.Account,
 		},
 		clk, "livedemo",
-		runtime.WithStrategy(strat),
-		runtime.WithBars(inst, time.Minute, "1m"),
-		runtime.WithJournal(journalStore),
-		runtime.WithAccountID(accountID),
+		nodeOpts...,
 	)
 
 	// Pre-trade risk: cap a single order and the resulting position.

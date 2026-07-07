@@ -73,6 +73,9 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 	if resting == nil {
 		return nil, fmt.Errorf("%s submit resting order returned nil", spec.label())
 	}
+	if err := ensureOrderAccount(spec, "resting_order", resting); err != nil {
+		return nil, err
+	}
 	spec.logOrder("resting_order", resting, resting.FilledQty)
 	restingNeedsCancel := true
 	defer func() {
@@ -161,6 +164,9 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 	if resting == nil {
 		return nil, fmt.Errorf("%s runtime submit resting order returned nil", spec.label())
 	}
+	if err := ensureOrderAccount(spec, "runtime_resting_order", resting); err != nil {
+		return nil, err
+	}
 	spec.logOrder("runtime_resting_order", resting, resting.FilledQty)
 	restingNeedsCancel := true
 	defer func() {
@@ -240,9 +246,15 @@ func submitRuntimeAndWaitFilled(ctx context.Context, node *btruntime.TradingNode
 	if order == nil {
 		return nil, decimal.Zero, fmt.Errorf("%s runtime submit %s order returned nil", spec.label(), idKind)
 	}
+	if err := ensureOrderAccount(spec, "runtime_"+idKind+"_order", order); err != nil {
+		return nil, decimal.Zero, err
+	}
 	cached, filledQty, err := waitForRuntimeFilledQty(ctx, node, spec, order.Request.ClientID)
 	if err != nil {
 		return nil, decimal.Zero, fmt.Errorf("%s runtime wait for %s fill: %w", spec.label(), idKind, err)
+	}
+	if err := ensureOrderAccount(spec, "runtime_cached_"+idKind+"_order", &cached); err != nil {
+		return nil, decimal.Zero, err
 	}
 	spec.logOrder("runtime_"+filledEventName(idKind), &cached, filledQty)
 	return &cached, filledQty, nil
@@ -266,6 +278,9 @@ func submitAndWaitFilled(ctx context.Context, exec contract.ExecutionClient, spe
 	}
 	if order == nil {
 		return nil, decimal.Zero, fmt.Errorf("%s submit %s order returned nil", spec.label(), idKind)
+	}
+	if err := ensureOrderAccount(spec, idKind+"_order", order); err != nil {
+		return nil, decimal.Zero, err
 	}
 	filledQty, err := waitForFilledQty(ctx, exec, spec, *order)
 	if err != nil {
@@ -317,6 +332,9 @@ func cleanExistingPosition(ctx context.Context, exec contract.ExecutionClient, s
 func validateOrderLifecycleSpec(spec OrderLifecycleSpec) error {
 	if spec.InstrumentID.Symbol == "" {
 		return fmt.Errorf("order lifecycle instrument id is required")
+	}
+	if strings.TrimSpace(spec.AccountID) == "" {
+		return fmt.Errorf("order lifecycle account id is required")
 	}
 	for name, value := range map[string]decimal.Decimal{
 		"quantity":     spec.Quantity,
@@ -380,6 +398,46 @@ func (s OrderLifecycleSpec) logf(format string, args ...any) {
 	}
 }
 
+func ensureOrderAccount(spec OrderLifecycleSpec, evidence string, order *model.Order) error {
+	if order == nil {
+		return fmt.Errorf("%s %s returned nil order", spec.label(), evidence)
+	}
+	if order.Request.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s account_id=%q, want %q", spec.label(), evidence, order.Request.AccountID, spec.AccountID)
+	}
+	return nil
+}
+
+func ensureOrderStatusReportAccount(spec OrderLifecycleSpec, evidence string, report *model.OrderStatusReport) error {
+	if report == nil {
+		return fmt.Errorf("%s %s returned nil report", spec.label(), evidence)
+	}
+	if report.AccountID != "" && report.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s report account_id=%q, want %q", spec.label(), evidence, report.AccountID, spec.AccountID)
+	}
+	return ensureOrderAccount(spec, evidence+"_order", &report.Order)
+}
+
+func ensureFillReportAccount(spec OrderLifecycleSpec, evidence string, report model.FillReport) error {
+	if report.AccountID != "" && report.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s report account_id=%q, want %q", spec.label(), evidence, report.AccountID, spec.AccountID)
+	}
+	if report.Fill.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s fill account_id=%q, want %q", spec.label(), evidence, report.Fill.AccountID, spec.AccountID)
+	}
+	return nil
+}
+
+func ensurePositionReportAccount(spec OrderLifecycleSpec, evidence string, report model.PositionReport) error {
+	if report.AccountID != "" && report.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s report account_id=%q, want %q", spec.label(), evidence, report.AccountID, spec.AccountID)
+	}
+	if report.Position.AccountID != spec.AccountID {
+		return fmt.Errorf("%s %s position account_id=%q, want %q", spec.label(), evidence, report.Position.AccountID, spec.AccountID)
+	}
+	return nil
+}
+
 func filledEventName(kind string) string {
 	switch kind {
 	case "fill":
@@ -407,6 +465,11 @@ func waitForNoOpenOrders(ctx context.Context, exec contract.ExecutionClient, spe
 		cancel()
 		if err == nil {
 			lastLen = len(open)
+			for _, order := range open {
+				if err := ensureOrderAccount(spec, "open_order", &order); err != nil {
+					return err
+				}
+			}
 			if len(open) == 0 {
 				return nil
 			}
@@ -440,6 +503,9 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 		})
 		cancel()
 		if err == nil && report != nil {
+			if err := ensureOrderStatusReportAccount(spec, "order_status_report", report); err != nil {
+				return decimal.Zero, err
+			}
 			lastStatus = report.Order.Status
 			if report.Order.Status == enums.StatusFilled || !report.Order.FilledQty.IsZero() {
 				return report.Order.FilledQty, nil
@@ -461,6 +527,9 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 		if err == nil {
 			total := decimal.Zero
 			for _, report := range fills {
+				if err := ensureFillReportAccount(spec, "fill_report", report); err != nil {
+					return decimal.Zero, err
+				}
 				total = total.Add(report.Fill.Quantity)
 			}
 			if !total.IsZero() {
@@ -518,6 +587,9 @@ func waitForFlatPosition(ctx context.Context, exec contract.ExecutionClient, spe
 		if err == nil {
 			last = decimal.Zero
 			for _, report := range reports {
+				if err := ensurePositionReportAccount(spec, "position_report", report); err != nil {
+					return err
+				}
 				last = last.Add(report.Position.Quantity)
 			}
 			if last.IsZero() {

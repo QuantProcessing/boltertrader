@@ -31,21 +31,27 @@ type executionClient struct {
 	ordersByVenueID map[string]model.Order
 }
 
-func newExecutionClient(rest *sdk.Client, provider *registry, clk clock.Clock, accountIndex int64) *executionClient {
+func newExecutionClient(rest *sdk.Client, provider *registry, clk clock.Clock, accountIndex int64, accountIDs ...string) *executionClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
+	}
+	accountID := model.AccountIDLighterDefault
+	if len(accountIDs) > 0 && accountIDs[0] != "" {
+		accountID = accountIDs[0]
 	}
 	return &executionClient{
 		rest:            rest,
 		provider:        provider,
 		clk:             clk,
 		accountIndex:    accountIndex,
-		accountID:       AccountIDForIndex(accountIndex),
+		accountID:       accountID,
 		stream:          wsstream.New[contract.ExecEnvelope](256),
 		clientIndexToID: make(map[int64]string),
 		ordersByVenueID: make(map[string]model.Order),
 	}
 }
+
+func (c *executionClient) AccountID() string { return c.accountID }
 
 func (c *executionClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
@@ -442,6 +448,11 @@ func avgFillPrice(o *sdk.Order) decimal.Decimal {
 }
 
 func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query model.OrderStatusReportQuery) ([]model.OrderStatusReport, error) {
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
+		return nil, nil
+	}
+	query.AccountID = accountID
 	marketIDs := c.marketIDsForQuery(query.InstrumentID)
 	now := c.clk.Now()
 	out := make([]model.OrderStatusReport, 0)
@@ -456,7 +467,7 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 				continue
 			}
 			order = c.rememberOrder(order)
-			out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: firstNonEmpty(query.AccountID, c.accountID), Order: order, ReportedAt: now})
+			out = append(out, model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now})
 		}
 	}
 	return out, nil
@@ -477,11 +488,18 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	if _, ok := c.scopedReportAccountID(query.AccountID); !ok {
+		return nil, nil
+	}
 	return nil, fmt.Errorf("lighter: fill report history is not implemented: %w", errs.ErrNotSupported)
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
-	acct := newAccountClient(c.rest, c.provider, c.clk, c.accountIndex)
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
+		return nil, nil
+	}
+	acct := newAccountClient(c.rest, c.provider, c.clk, c.accountIndex, c.accountID)
 	positions, err := acct.Positions(ctx)
 	if err != nil {
 		return nil, err
@@ -492,13 +510,16 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 		if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
 			continue
 		}
-		out = append(out, model.PositionReport{Venue: venueName, AccountID: firstNonEmpty(query.AccountID, c.accountID), Position: pos, ReportedAt: now})
+		out = append(out, model.PositionReport{Venue: venueName, AccountID: accountID, Position: pos, ReportedAt: now})
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	accountID := firstNonEmpty(query.AccountID, c.accountID)
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
+		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+	}
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
@@ -514,6 +535,13 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		}
 	}
 	return mass, nil
+}
+
+func (c *executionClient) scopedReportAccountID(accountID string) (string, bool) {
+	if accountID == "" {
+		return c.accountID, true
+	}
+	return c.accountID, accountID == c.accountID
 }
 
 func (c *executionClient) marketIDsForQuery(id model.InstrumentID) []int {
@@ -592,15 +620,6 @@ func firstNonZeroInt64(values ...int64) int64 {
 		}
 	}
 	return 0
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }

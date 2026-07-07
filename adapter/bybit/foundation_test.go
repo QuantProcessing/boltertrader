@@ -9,7 +9,7 @@ import (
 )
 
 func TestAccountIDIsCanonicalUnifiedPool(t *testing.T) {
-	if AccountIDUnified != "BYBIT:unified" {
+	if AccountIDUnified != model.AccountIDBybitDefault {
 		t.Fatalf("AccountIDUnified=%q", AccountIDUnified)
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDUnified || AccountIDForKind(enums.KindPerp) != AccountIDUnified {

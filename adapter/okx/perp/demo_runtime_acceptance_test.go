@@ -50,7 +50,7 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSwap, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXDefault, model.AccountMargin, enums.KindPerp)
 	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo runtime private stream")
@@ -186,7 +186,7 @@ func TestOKXPerpDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final OKX Perp Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSwap, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXDefault, model.AccountMargin, enums.KindPerp)
 	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
 		t.Fatalf("runtime cache still has OKX Perp Demo position after final reconcile")
 	}

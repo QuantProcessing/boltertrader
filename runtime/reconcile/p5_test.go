@@ -371,6 +371,39 @@ func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	}
 }
 
+func TestFillReportMaterializesExternalOrderWithAccountScope(t *testing.T) {
+	c := cache.New()
+	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	mass := model.NewExecutionMassStatus("T", "acct-a", generatedAt)
+	fill := model.Fill{
+		InstrumentID: btc,
+		VenueOrderID: "external-venue",
+		TradeID:      "external-trade",
+		Side:         enums.SideBuy,
+		Price:        d("100"),
+		Quantity:     d("2"),
+		Timestamp:    generatedAt,
+	}
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct-a", Fill: fill, ReportedAt: generatedAt}); err != nil {
+		t.Fatalf("add fill: %v", err)
+	}
+	r := New(nil, &snapshotExec{mass: mass}, c).WithAccountID("acct-a")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.OrdersMaterialized != 1 || rep.FillsApplied != 1 {
+		t.Fatalf("report=%+v, want materialized=1 fills=1", rep)
+	}
+	order, ok := c.Order("external-acct-a-external-venue-external-trade")
+	if !ok {
+		t.Fatal("account-scoped materialized external order missing")
+	}
+	if order.Request.AccountID != "acct-a" || order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("2")) {
+		t.Fatalf("order=%+v, want acct-a filled qty 2", order)
+	}
+}
+
 func TestDuplicateTradeIDIgnored(t *testing.T) {
 	c := cache.New()
 	c.UpsertOrder(order("known", btc, "10", enums.StatusNew))

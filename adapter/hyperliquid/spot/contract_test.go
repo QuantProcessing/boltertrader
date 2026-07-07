@@ -77,7 +77,7 @@ func TestHyperliquidSpotContractCapabilities(t *testing.T) {
 	provider := testProvider(t)
 	rest := testREST(func(*http.Request, []byte) (string, int) { return `{}`, http.StatusOK })
 	market := newMarketDataClient(rest, provider, clock.NewRealClock())
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 	acct := newAccountClient(rest, clock.NewRealClock())
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{
@@ -159,7 +159,7 @@ func TestHyperliquidSpotAdapterPropagatesCanonicalAccountID(t *testing.T) {
 	}
 	defer adapter.Close()
 
-	const want = "HYPERLIQUID:0xabcdef0000000000000000000000000000000000"
+	const want = model.AccountIDHyperliquidDefault
 	if adapter.acct.accountID != want {
 		t.Fatalf("account client accountID=%q, want %q", adapter.acct.accountID, want)
 	}
@@ -288,7 +288,7 @@ func TestHyperliquidSpotAdapterResolvesAgentOwnerForConfiguredHexOwner(t *testin
 	if adapter.rest.AccountAddr != owner {
 		t.Fatalf("rest account address=%q, want owner %q", adapter.rest.AccountAddr, owner)
 	}
-	const wantAccountID = "HYPERLIQUID:0xabc0000000000000000000000000000000000000"
+	const wantAccountID = model.AccountIDHyperliquidDefault
 	if adapter.acct.accountID != wantAccountID || adapter.exec.accountID != wantAccountID {
 		t.Fatalf("adapter account ids acct=%q exec=%q, want owner account id", adapter.acct.accountID, adapter.exec.accountID)
 	}
@@ -383,7 +383,7 @@ func TestHyperliquidSpotSubmitOrderRequestTranslation(t *testing.T) {
 		}
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":555,"cloid":"` + cloid.ForClientID("c-spot-1") + `","status":"open"}}]}}}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -397,7 +397,7 @@ func TestHyperliquidSpotSubmitOrderRequestTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if order.VenueOrderID != "555" || order.Status != enums.StatusNew || order.Request.AccountID != "HYPERLIQUID:0xabc" || order.Request.ClientID != "c-spot-1" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
+	if order.VenueOrderID != "555" || order.Status != enums.StatusNew || order.Request.AccountID != model.AccountIDHyperliquidDefault || order.Request.ClientID != "c-spot-1" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
 		t.Fatalf("order=%+v", order)
 	}
 }
@@ -408,10 +408,10 @@ func TestHyperliquidSpotSubmitRejectsMismatchedAccountID(t *testing.T) {
 		t.Fatalf("unexpected REST call for mismatched account id: %s", body)
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	_, err := exec.Submit(context.Background(), model.OrderRequest{
-		AccountID:    "HYPERLIQUID:0xdef",
+		AccountID:    "HYPERLIQUID-OTHER",
 		InstrumentID: testSpotID(),
 		ClientID:     "c-spot-mismatch",
 		Side:         enums.SideBuy,
@@ -470,7 +470,7 @@ func TestHyperliquidSpotCancelModifyAndOpenOrders(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	if err := exec.Cancel(context.Background(), testSpotID(), "555"); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -485,18 +485,18 @@ func TestHyperliquidSpotCancelModifyAndOpenOrders(t *testing.T) {
 	if !sawCancel || !sawModify || openCalls == 0 {
 		t.Fatalf("expected cancel/modify/open paths, got cancel=%v modify=%v openCalls=%d", sawCancel, sawModify, openCalls)
 	}
-	if len(open) != 1 || open[0].VenueOrderID != "555" || open[0].Request.AccountID != "HYPERLIQUID:0xabc" || open[0].Request.ClientID != cloid.ForClientID("c-spot-1") {
+	if len(open) != 1 || open[0].VenueOrderID != "555" || open[0].Request.AccountID != model.AccountIDHyperliquidDefault || open[0].Request.ClientID != cloid.ForClientID("c-spot-1") {
 		t.Fatalf("open orders=%+v", open)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if !mass.Partial || mass.AccountID != "HYPERLIQUID:0xabc" || len(mass.OrderReports) != 1 {
+	if !mass.Partial || mass.AccountID != model.AccountIDHyperliquidDefault || len(mass.OrderReports) != 1 {
 		t.Fatalf("mass=%+v", mass)
 	}
 	for _, report := range mass.OrderReports {
-		if report.AccountID != "HYPERLIQUID:0xabc" || report.Order.Request.AccountID != "HYPERLIQUID:0xabc" {
+		if report.AccountID != model.AccountIDHyperliquidDefault || report.Order.Request.AccountID != model.AccountIDHyperliquidDefault {
 			t.Fatalf("mass report account ids report=%q order=%q", report.AccountID, report.Order.Request.AccountID)
 		}
 	}
@@ -518,7 +518,7 @@ func TestHyperliquidSpotOpenOrdersRestoresRuntimeClientIDFromMappedCloid(t *test
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	_, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -561,7 +561,7 @@ func TestHyperliquidSpotCancelEmitsCanceledOrderEvent(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -584,7 +584,7 @@ func TestHyperliquidSpotCancelEmitsCanceledOrderEvent(t *testing.T) {
 		if !ok {
 			t.Fatalf("event=%T, want OrderEvent", env.Payload)
 		}
-		if oe.Order.Status != enums.StatusCanceled || oe.Order.Request.AccountID != "HYPERLIQUID:0xabc" || oe.Order.Request.ClientID != "c-spot-1" || oe.Order.VenueOrderID != "555" {
+		if oe.Order.Status != enums.StatusCanceled || oe.Order.Request.AccountID != model.AccountIDHyperliquidDefault || oe.Order.Request.ClientID != "c-spot-1" || oe.Order.VenueOrderID != "555" {
 			t.Fatalf("order event=%+v", oe.Order)
 		}
 		if env.Source != contract.SourceAdapterREST || !env.Flags.Has(contract.EventFlagSynthetic) {
@@ -602,13 +602,13 @@ func TestHyperliquidSpotBalancesAndMarginOps(t *testing.T) {
 		}
 		return `{"balances":[{"coin":"USDC","token":0,"hold":"1.5","total":"10","entryNtl":"0"}]}`, 200
 	})
-	acct := newAccountClient(rest, clock.NewRealClock(), "HYPERLIQUID:0xabc")
+	acct := newAccountClient(rest, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
 
 	balances, err := acct.Balances(context.Background())
 	if err != nil {
 		t.Fatalf("Balances: %v", err)
 	}
-	if len(balances) != 1 || balances[0].AccountID != "HYPERLIQUID:0xabc" || balances[0].Currency != "USDC" || !balances[0].Total.Equal(d("10")) || !balances[0].Available.Equal(d("8.5")) || !balances[0].Locked.Equal(d("1.5")) {
+	if len(balances) != 1 || balances[0].AccountID != model.AccountIDHyperliquidDefault || balances[0].Currency != "USDC" || !balances[0].Total.Equal(d("10")) || !balances[0].Available.Equal(d("8.5")) || !balances[0].Locked.Equal(d("1.5")) {
 		t.Fatalf("balances=%+v", balances)
 	}
 	if err := acct.SetLeverage(context.Background(), testSpotID(), d("2")); !errors.Is(err, contract.ErrNotSupported) {
@@ -643,13 +643,13 @@ func TestHyperliquidSpotAccountStateReporterCombinesPerpAndSpot(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	acct := newAccountClient(rest, clock.NewSimulatedClock(time.Unix(1700000000, 0)), "HYPERLIQUID:0xabc")
+	acct := newAccountClient(rest, clock.NewSimulatedClock(time.Unix(1700000000, 0)), model.AccountIDHyperliquidDefault)
 
 	state, err := acct.AccountState(context.Background())
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != "HYPERLIQUID:0xabc" || state.Type != model.AccountMargin || state.ModeInfo.CollateralMode != "unified" {
+	if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || state.ModeInfo.CollateralMode != "unified" {
 		t.Fatalf("state=%+v", state)
 	}
 	if len(state.Balances) != 2 || state.Balances[0].Currency != "USDC" || !state.Balances[0].Free.Equal(d("88")) || state.Balances[1].Currency != "PURR" {

@@ -25,26 +25,32 @@ type accountClient struct {
 	stream       *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *sdk.Client, provider *registry, clk clock.Clock, accountIndex int64) *accountClient {
+func newAccountClient(rest *sdk.Client, provider *registry, clk clock.Clock, accountIndex int64, accountIDs ...string) *accountClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
+	}
+	accountID := model.AccountIDLighterDefault
+	if len(accountIDs) > 0 && accountIDs[0] != "" {
+		accountID = accountIDs[0]
 	}
 	return &accountClient{
 		rest:         rest,
 		provider:     provider,
 		clk:          clk,
 		accountIndex: accountIndex,
-		accountID:    AccountIDForIndex(accountIndex),
+		accountID:    accountID,
 		stream:       wsstream.New[contract.AccountEnvelope](256),
 	}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
 	acct, err := c.fetchAccount(ctx)
 	if err != nil {
 		return model.AccountState{}, err
 	}
-	return accountStateFromLighterAccount(acct, c.clk.Now()), nil
+	return accountStateFromLighterAccount(acct, c.accountID, c.clk.Now()), nil
 }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
@@ -91,12 +97,14 @@ func (c *accountClient) fetchAccount(ctx context.Context) (*sdk.Account, error) 
 	return nil, fmt.Errorf("lighter: account index %d not found", c.accountIndex)
 }
 
-func accountStateFromLighterAccount(acct *sdk.Account, now time.Time) model.AccountState {
+func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now time.Time) model.AccountState {
+	if accountID == "" {
+		accountID = model.AccountIDLighterDefault
+	}
 	accountIndex := acct.AccountIndex
 	if accountIndex == 0 {
 		accountIndex = acct.Index
 	}
-	accountID := AccountIDForIndex(accountIndex)
 	balances := make([]model.AccountBalance, 0, len(acct.Assets))
 	for _, asset := range acct.Assets {
 		if asset == nil {

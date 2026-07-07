@@ -16,13 +16,14 @@ type symbolResolver func(venueSymbol string) model.InstrumentID
 // execEventsFromOrderUpdate translates a Binance ORDER_TRADE_UPDATE into domain
 // execution events: always an OrderEvent reflecting the new state, plus a
 // FillEvent when the execution type is a trade.
-func execEventsFromOrderUpdate(ev *sdkperp.OrderUpdateEvent, resolve symbolResolver) []contract.ExecEvent {
+func execEventsFromOrderUpdate(ev *sdkperp.OrderUpdateEvent, resolve symbolResolver, accountID string) []contract.ExecEvent {
 	o := ev.Order
 	id := resolve(o.Symbol)
 	ts := time.UnixMilli(ev.EventTime)
 
 	order := model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: id,
 			ClientID:     o.ClientOrderID,
 			Side:         sideFromBinance(o.Side),
@@ -48,6 +49,7 @@ func execEventsFromOrderUpdate(ev *sdkperp.OrderUpdateEvent, resolve symbolResol
 			liq = enums.LiqMaker
 		}
 		fill := model.Fill{
+			AccountID:    accountID,
 			InstrumentID: id,
 			VenueOrderID: itoa(o.OrderID),
 			ClientID:     o.ClientOrderID,
@@ -72,13 +74,14 @@ func execEventsFromOrderUpdate(ev *sdkperp.OrderUpdateEvent, resolve symbolResol
 
 // accountEventsFromUpdate translates a Binance ACCOUNT_UPDATE into domain
 // balance and position events.
-func accountEventsFromUpdate(ev *sdkperp.AccountUpdateEvent, resolve symbolResolver) []contract.AccountEvent {
+func accountEventsFromUpdate(ev *sdkperp.AccountUpdateEvent, resolve symbolResolver, accountID string) []contract.AccountEvent {
 	ts := time.UnixMilli(ev.EventTime)
 	var out []contract.AccountEvent
 
 	for _, b := range ev.UpdateData.Balances {
 		free := dec(b.CrossWalletBalance)
 		out = append(out, contract.BalanceEvent{Balance: model.AccountBalance{
+			AccountID: accountID,
 			Currency:  b.Asset,
 			Total:     dec(b.WalletBalance),
 			Free:      free,
@@ -90,6 +93,7 @@ func accountEventsFromUpdate(ev *sdkperp.AccountUpdateEvent, resolve symbolResol
 	for _, p := range ev.UpdateData.Positions {
 		qty := dec(p.PositionAmount)
 		out = append(out, contract.PositionEvent{Position: model.Position{
+			AccountID:     accountID,
 			InstrumentID:  resolve(p.Symbol),
 			Side:          positionSideFromBinance(p.PositionSide),
 			Quantity:      qty,

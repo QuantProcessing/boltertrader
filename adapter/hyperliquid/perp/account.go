@@ -53,6 +53,8 @@ func newAccountClient(rest *sdkperp.Client, provider *instruments.Registry, clk 
 	}
 }
 
+func (c *accountClient) AccountID() string { return c.accountID }
+
 func (c *accountClient) instrument(id model.InstrumentID) (*model.Instrument, error) {
 	inst, ok := c.provider.Instrument(id)
 	if !ok {
@@ -217,8 +219,8 @@ func (c *accountClient) Close() error {
 }
 
 func firstAccountID(ids []string) string {
-	if len(ids) == 0 {
-		return ""
+	if len(ids) == 0 || ids[0] == "" {
+		return model.AccountIDHyperliquidDefault
 	}
 	return ids[0]
 }

@@ -14,7 +14,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// lot is the running average-cost state for one instrument/side.
+type lotKey struct {
+	accountID  string
+	instrument model.InstrumentID
+	side       enums.PositionSide
+}
+
+// lot is the running average-cost state for one account/instrument/side.
 type lot struct {
 	qty                decimal.Decimal // signed: + long, - short
 	avgPrice           decimal.Decimal
@@ -26,7 +32,7 @@ type lot struct {
 // goroutine and read (snapshots) under an RWMutex.
 type Portfolio struct {
 	mu             sync.RWMutex
-	lots           map[string]*lot // key: instrument|side
+	lots           map[lotKey]*lot
 	realized       decimal.Decimal // total realized PnL across all instruments
 	fees           decimal.Decimal // fees in the PnL currency only
 	feesByCurrency map[string]decimal.Decimal
@@ -45,7 +51,7 @@ type AccountSource interface {
 // New returns an empty Portfolio.
 func New() *Portfolio {
 	return &Portfolio{
-		lots:           make(map[string]*lot),
+		lots:           make(map[lotKey]*lot),
 		feesByCurrency: make(map[string]decimal.Decimal),
 	}
 }
@@ -58,8 +64,8 @@ func (pf *Portfolio) WithAccountSource(source AccountSource) *Portfolio {
 	return pf
 }
 
-func lotKey(id model.InstrumentID, side enums.PositionSide) string {
-	return id.String() + "|" + side.String()
+func lotKeyOf(accountID string, id model.InstrumentID, side enums.PositionSide) lotKey {
+	return lotKey{accountID: accountID, instrument: id, side: side}
 }
 
 // OnFill updates the average-cost book and accrues realized PnL when a fill
@@ -73,7 +79,7 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
 
-	k := lotKey(f.InstrumentID, posSide)
+	k := lotKeyOf(f.AccountID, f.InstrumentID, posSide)
 	l := pf.lots[k]
 	if l == nil {
 		l = &lot{feesPaidByCurrency: make(map[string]decimal.Decimal)}
@@ -221,7 +227,16 @@ func (pf *Portfolio) RealizedPnLNetFees() decimal.Decimal {
 func (pf *Portfolio) AvgPrice(id model.InstrumentID, side enums.PositionSide) decimal.Decimal {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
-	if l := pf.lots[lotKey(id, side)]; l != nil {
+	if l := pf.legacyLot(id, side); l != nil {
+		return l.avgPrice
+	}
+	return decimal.Zero
+}
+
+func (pf *Portfolio) AvgPriceForAccount(accountID string, id model.InstrumentID, side enums.PositionSide) decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	if l := pf.lots[lotKeyOf(accountID, id, side)]; l != nil {
 		return l.avgPrice
 	}
 	return decimal.Zero
@@ -232,7 +247,16 @@ func (pf *Portfolio) AvgPrice(id model.InstrumentID, side enums.PositionSide) de
 func (pf *Portfolio) NetQty(id model.InstrumentID, side enums.PositionSide) decimal.Decimal {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
-	if l := pf.lots[lotKey(id, side)]; l != nil {
+	if l := pf.legacyLot(id, side); l != nil {
+		return l.qty
+	}
+	return decimal.Zero
+}
+
+func (pf *Portfolio) NetQtyForAccount(accountID string, id model.InstrumentID, side enums.PositionSide) decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	if l := pf.lots[lotKeyOf(accountID, id, side)]; l != nil {
 		return l.qty
 	}
 	return decimal.Zero
@@ -242,7 +266,81 @@ func (pf *Portfolio) NetQty(id model.InstrumentID, side enums.PositionSide) deci
 func (pf *Portfolio) UnrealizedPnL(id model.InstrumentID, side enums.PositionSide, markPrice decimal.Decimal) decimal.Decimal {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
-	l := pf.lots[lotKey(id, side)]
+	l := pf.legacyLot(id, side)
+	return unrealizedForLot(l, markPrice)
+}
+
+func (pf *Portfolio) UnrealizedPnLForAccount(accountID string, id model.InstrumentID, side enums.PositionSide, markPrice decimal.Decimal) decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	return unrealizedForLot(pf.lots[lotKeyOf(accountID, id, side)], markPrice)
+}
+
+func (pf *Portfolio) RealizedPnLForAccount(accountID string) decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	var realized decimal.Decimal
+	for key, l := range pf.lots {
+		if key.accountID == accountID {
+			realized = realized.Add(l.realized)
+		}
+	}
+	return realized
+}
+
+func (pf *Portfolio) FeesByCurrencyForAccount(accountID string) map[string]decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	out := make(map[string]decimal.Decimal)
+	for key, l := range pf.lots {
+		if key.accountID != accountID {
+			continue
+		}
+		for ccy, fee := range l.feesPaidByCurrency {
+			out[ccy] = out[ccy].Add(fee)
+		}
+	}
+	return out
+}
+
+func (pf *Portfolio) RealizedPnLNetFeesForAccount(accountID string) decimal.Decimal {
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	var realized, fees decimal.Decimal
+	for key, l := range pf.lots {
+		if key.accountID != accountID {
+			continue
+		}
+		realized = realized.Add(l.realized)
+		for ccy, fee := range l.feesPaidByCurrency {
+			if ccy == pnlCurrency(key.instrument) {
+				fees = fees.Add(fee)
+			}
+		}
+	}
+	return realized.Sub(fees)
+}
+
+func (pf *Portfolio) legacyLot(id model.InstrumentID, side enums.PositionSide) *lot {
+	if l := pf.lots[lotKeyOf("", id, side)]; l != nil {
+		return l
+	}
+	var out *lot
+	found := false
+	for key, l := range pf.lots {
+		if key.instrument != id || key.side != side {
+			continue
+		}
+		if found {
+			return nil
+		}
+		out = l
+		found = true
+	}
+	return out
+}
+
+func unrealizedForLot(l *lot, markPrice decimal.Decimal) decimal.Decimal {
 	if l == nil || l.qty.IsZero() {
 		return decimal.Zero
 	}

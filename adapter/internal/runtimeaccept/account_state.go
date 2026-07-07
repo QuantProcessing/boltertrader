@@ -33,6 +33,12 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	if err := state.Validate(); err != nil {
 		t.Fatalf("runtime account %s state invalid: %v", accountID, err)
 	}
+	if state.AccountID != accountID {
+		t.Fatalf("runtime account state account_id=%q, want %q", state.AccountID, accountID)
+	}
+	if state.ModeInfo.AccountID != accountID {
+		t.Fatalf("runtime account mode info account_id=%q, want %q", state.ModeInfo.AccountID, accountID)
+	}
 	if err := state.ModeInfo.ValidateVerified(); err != nil {
 		t.Fatalf("runtime account %s mode info not verified: %v", accountID, err)
 	}
@@ -44,6 +50,18 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	}
 	if len(acct.Balances()) == 0 {
 		t.Fatalf("runtime account %s has no balances", accountID)
+	}
+	for _, balance := range acct.Balances() {
+		if balance.AccountID != accountID {
+			t.Fatalf("runtime account balance %s account_id=%q, want %q", balance.Currency, balance.AccountID, accountID)
+		}
+		cached, ok := node.Cache.BalanceForAccount(accountID, balance.Currency)
+		if !ok {
+			t.Fatalf("runtime cache missing account-scoped balance %s/%s", accountID, balance.Currency)
+		}
+		if cached.AccountID != accountID {
+			t.Fatalf("runtime cache balance %s account_id=%q, want %q", balance.Currency, cached.AccountID, accountID)
+		}
 	}
 	if _, ok := node.Portfolio.Account(accountID); !ok {
 		t.Fatalf("runtime portfolio cannot read account %s", accountID)

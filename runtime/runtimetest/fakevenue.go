@@ -130,16 +130,14 @@ func (f *FakeExec) GenerateOrderStatusReports(ctx context.Context, query model.O
 	}
 	out := make([]model.OrderStatusReport, 0, len(f.reports))
 	for _, o := range f.reports {
-		if query.InstrumentID.Symbol != "" && o.Request.InstrumentID != query.InstrumentID {
+		if !model.OrderMatchesStatusQuery(o, query) {
 			continue
 		}
-		if query.ClientID != "" && o.Request.ClientID != query.ClientID {
-			continue
+		accountID := query.AccountID
+		if accountID == "" {
+			accountID = o.Request.AccountID
 		}
-		if query.VenueOrderID != "" && o.VenueOrderID != query.VenueOrderID {
-			continue
-		}
-		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, Order: o, ReportedAt: time.Now()})
+		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: accountID, Order: o, ReportedAt: time.Now()})
 	}
 	return out, nil
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/lighter"
 )
 
@@ -13,6 +14,7 @@ import (
 // index across spot and perps, so all adapter clients share the same account id.
 type Config struct {
 	PrivateKey   string
+	AccountID    string
 	AccountIndex int64
 	APIKeyIndex  uint8
 
@@ -64,6 +66,10 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.PrivateKey != "" {
 		rest.WithCredentials(cfg.PrivateKey, cfg.AccountIndex, cfg.APIKeyIndex)
 	}
+	accountID := cfg.AccountID
+	if accountID == "" {
+		accountID = model.AccountIDLighterDefault
+	}
 
 	details, err := rest.GetOrderBookDetails(ctx, nil, nil)
 	if err != nil {
@@ -80,8 +86,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		ws.WithURL(cfg.WSURL)
 	}
 
-	exec := newExecutionClient(rest, provider, clk, cfg.AccountIndex)
-	acct := newAccountClient(rest, provider, clk, cfg.AccountIndex)
+	exec := newExecutionClient(rest, provider, clk, cfg.AccountIndex, accountID)
+	acct := newAccountClient(rest, provider, clk, cfg.AccountIndex, accountID)
 	market := newMarketDataClient(rest, provider, clk)
 
 	return &Adapter{

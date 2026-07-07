@@ -296,7 +296,7 @@ func TestAccountRequiredRejectsNoAccount(t *testing.T) {
 func TestAccountRequiredRejectsStaleAccount(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
-	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now.Add(-time.Minute), "USDT")
+	applyMarginAccount(t, c, model.AccountIDBinanceDefault, now.Add(-time.Minute), "USDT")
 	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
 
 	err := e.Check(buy("1", "100"), nil)
@@ -308,7 +308,7 @@ func TestAccountRequiredRejectsStaleAccount(t *testing.T) {
 func TestAccountRequiredRejectsMissingPrice(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
-	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "USDT")
+	applyMarginAccount(t, c, model.AccountIDBinanceDefault, now, "USDT")
 	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
 	req := model.OrderRequest{InstrumentID: inst, Side: enums.SideBuy, Quantity: d("1")}
 
@@ -321,7 +321,7 @@ func TestAccountRequiredRejectsMissingPrice(t *testing.T) {
 func TestAccountRequiredRejectsMissingFreeBalance(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
-	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "BTC")
+	applyMarginAccount(t, c, model.AccountIDBinanceDefault, now, "BTC")
 	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
 
 	err := e.Check(buy("1", "100"), nil)
@@ -382,7 +382,7 @@ func TestAccountRequiredRejectsEmptyProductScope(t *testing.T) {
 func TestAccountRequiredAllowsFreshMarginAccountWithFreeBalance(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
-	applyMarginAccount(t, c, model.AccountIDBinanceUSDM, now, "USDT")
+	applyMarginAccount(t, c, model.AccountIDBinanceDefault, now, "USDT")
 	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
 
 	if err := e.Check(buy("1", "100"), nil); err != nil {

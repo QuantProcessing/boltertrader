@@ -6,6 +6,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +50,11 @@ type TradingNode struct {
 	clk       clock.Clock
 	bus       *bus.Bus
 	accountID string
+
+	expectedAccountID       string
+	accountIDConfigErr      error
+	adapterBackedAccountID  bool
+	legacyAccountIDFallback string
 
 	// onFill is an optional raw hook invoked (on the bus goroutine) after each
 	// fill is applied to cache and portfolio. Used by tests and simple wiring.
@@ -123,16 +130,12 @@ func WithJournal(store journal.Store) Option {
 
 func WithAccountID(accountID string) Option {
 	return func(n *TradingNode) {
+		accountID = strings.TrimSpace(accountID)
 		if accountID == "" {
 			return
 		}
-		n.accountID = accountID
-		if n.Exec != nil {
-			n.Exec.WithAccountID(accountID)
-		}
-		if n.reconciler != nil {
-			n.reconciler.WithAccountID(accountID)
-		}
+		n.expectedAccountID = accountID
+		n.applyResolvedAccountID()
 	}
 }
 
@@ -152,9 +155,9 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
-	accountID := idPrefix
-	if accountID == "" {
-		accountID = "bt"
+	legacyAccountIDFallback := strings.TrimSpace(idPrefix)
+	if legacyAccountIDFallback == "" {
+		legacyAccountIDFallback = "bt"
 	}
 	c := cache.New()
 	pf := portfolio.New().WithAccountSource(c)
@@ -173,20 +176,20 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	}
 
 	n := &TradingNode{
-		Cache:       c,
-		Portfolio:   pf,
-		clients:     clients,
-		clk:         clk,
-		accountID:   accountID,
-		bus:         bus.New(marketCh, execCh, accountCh),
-		aggregators: make(map[string]*data.BarAggregator),
-		latency:     latency.NewRecorder(4096),
-		life:        lifecycle.New(),
-		fills:       exec.NewFillBuffer(),
+		Cache:                   c,
+		Portfolio:               pf,
+		clients:                 clients,
+		clk:                     clk,
+		accountID:               legacyAccountIDFallback,
+		legacyAccountIDFallback: legacyAccountIDFallback,
+		bus:                     bus.New(marketCh, execCh, accountCh),
+		aggregators:             make(map[string]*data.BarAggregator),
+		latency:                 latency.NewRecorder(4096),
+		life:                    lifecycle.New(),
+		fills:                   exec.NewFillBuffer(),
 	}
 	if clients.Execution != nil {
 		n.Exec = exec.New(clients.Execution, c, clk, idPrefix)
-		n.Exec.WithAccountID(n.accountID)
 		n.Exec.WithLatencyRecorder(n.latency)
 		n.Exec.WithCommandGate(n.life)
 		n.Exec.WithRecoverabilityHandler(func(err error) {
@@ -197,7 +200,6 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	// account client, open orders from the execution client. Either may be nil.
 	if clients.Account != nil || clients.Execution != nil {
 		n.reconciler = reconcile.New(clients.Account, clients.Execution, c)
-		n.reconciler.WithAccountID(n.accountID)
 		n.reconciler.WithLatencyRecorder(n.latency)
 		if n.Exec != nil {
 			n.reconciler.WithInFlightResolver(n.Exec)
@@ -206,7 +208,132 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	for _, o := range opts {
 		o(n)
 	}
+	n.applyResolvedAccountID()
 	return n
+}
+
+type resolvedAccountID struct {
+	accountID string
+	provided  bool
+}
+
+func accountIDFromProvider(name string, client any) (resolvedAccountID, error) {
+	if client == nil {
+		return resolvedAccountID{}, nil
+	}
+	provider, ok := client.(contract.AccountIDProvider)
+	if !ok {
+		return resolvedAccountID{}, nil
+	}
+	accountID := strings.TrimSpace(provider.AccountID())
+	if accountID == "" {
+		return resolvedAccountID{provided: true}, fmt.Errorf("runtime account id: %s client exposed empty account id", name)
+	}
+	return resolvedAccountID{accountID: accountID, provided: true}, nil
+}
+
+func clientMissingAccountIDProvider(name string, client interface{ Capabilities() contract.Capabilities }) (string, bool) {
+	if client == nil {
+		return "", false
+	}
+	if _, ok := client.(contract.AccountIDProvider); ok {
+		return "", false
+	}
+	venue := strings.TrimSpace(client.Capabilities().Venue)
+	if isTestRuntimeVenue(venue) {
+		return "", false
+	}
+	if venue == "" {
+		return fmt.Sprintf("%s client with empty venue", name), true
+	}
+	return fmt.Sprintf("%s client for venue %q", name, venue), true
+}
+
+func venueClientMissingAccountIDProvider(clients Clients) (string, bool) {
+	if desc, ok := clientMissingAccountIDProvider("execution", clients.Execution); ok {
+		return desc, true
+	}
+	if desc, ok := clientMissingAccountIDProvider("account", clients.Account); ok {
+		return desc, true
+	}
+	return "", false
+}
+
+func isTestRuntimeVenue(venue string) bool {
+	switch strings.ToUpper(strings.TrimSpace(venue)) {
+	case "FAKE", "TEST", "T":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveRuntimeAccountID(clients Clients, expectedAccountID, fallbackAccountID string) (string, bool, error) {
+	expectedAccountID = strings.TrimSpace(expectedAccountID)
+	fallbackAccountID = strings.TrimSpace(fallbackAccountID)
+	if fallbackAccountID == "" {
+		fallbackAccountID = "bt"
+	}
+
+	execution, err := accountIDFromProvider("execution", clients.Execution)
+	if err != nil {
+		return "", false, err
+	}
+	account, err := accountIDFromProvider("account", clients.Account)
+	if err != nil {
+		return "", false, err
+	}
+
+	var adapterAccountID string
+	if execution.provided {
+		adapterAccountID = execution.accountID
+	}
+	if account.provided {
+		if adapterAccountID != "" && adapterAccountID != account.accountID {
+			return "", false, fmt.Errorf("runtime account id: execution client account id %q does not match account client account id %q", execution.accountID, account.accountID)
+		}
+		adapterAccountID = account.accountID
+	}
+	if missing, ok := venueClientMissingAccountIDProvider(clients); ok {
+		return "", false, fmt.Errorf("runtime account id: %s must expose AccountIDProvider", missing)
+	}
+
+	if adapterAccountID != "" {
+		if expectedAccountID != "" && expectedAccountID != adapterAccountID {
+			return "", false, fmt.Errorf("runtime account id: expected account id %q does not match adapter account id %q", expectedAccountID, adapterAccountID)
+		}
+		return adapterAccountID, true, nil
+	}
+	if expectedAccountID != "" {
+		return expectedAccountID, false, nil
+	}
+	return fallbackAccountID, false, nil
+}
+
+func (n *TradingNode) applyResolvedAccountID() {
+	accountID, adapterBacked, err := resolveRuntimeAccountID(n.clients, n.expectedAccountID, n.legacyAccountIDFallback)
+	n.accountIDConfigErr = err
+	if err != nil {
+		n.adapterBackedAccountID = false
+		return
+	}
+	n.accountID = accountID
+	n.adapterBackedAccountID = adapterBacked
+	if n.Exec != nil {
+		n.Exec.WithAccountID(accountID)
+	}
+	if n.reconciler != nil {
+		n.reconciler.WithAccountID(accountID)
+	}
+}
+
+func (n *TradingNode) accountIDReady() error {
+	if n.accountIDConfigErr == nil {
+		return nil
+	}
+	n.life.ForceFailed(n.accountIDConfigErr.Error())
+	n.emitHealth("failed", n.accountIDConfigErr.Error())
+	return n.accountIDConfigErr
 }
 
 // WithRisk attaches a pre-trade risk gate to the execution engine. The provider
@@ -348,6 +475,10 @@ func (n *TradingNode) Resync(ctx context.Context) (reconcile.Report, error) {
 }
 
 func (n *TradingNode) resync(ctx context.Context, reason string, restoreRunning bool) (reconcile.Report, error) {
+	if err := n.accountIDReady(); err != nil {
+		n.life.SetLastReconciliationError(err)
+		return reconcile.Report{}, err
+	}
 	if n.reconciler == nil {
 		return reconcile.Report{}, nil
 	}
@@ -393,6 +524,9 @@ func (n *TradingNode) resync(ctx context.Context, reason string, restoreRunning 
 // (contract.Reconnectable), then reconciles. Clients that auto-reconnect
 // internally are skipped. Returns the reconciliation report.
 func (n *TradingNode) Reconnect(ctx context.Context) (reconcile.Report, error) {
+	if err := n.accountIDReady(); err != nil {
+		return reconcile.Report{}, err
+	}
 	if err := n.life.Transition(lifecycle.NodeReconnecting, lifecycle.TradingReconciling, "reconnect"); err != nil {
 		return reconcile.Report{}, err
 	}
@@ -421,6 +555,9 @@ func (n *TradingNode) Reconnect(ctx context.Context) (reconcile.Report, error) {
 // calls the strategy's OnStart before the loop and OnStop after. It blocks; run
 // with `go node.Run(ctx)` or from a dedicated goroutine.
 func (n *TradingNode) Run(ctx context.Context) {
+	if err := n.accountIDReady(); err != nil {
+		return
+	}
 	if err := n.life.Transition(lifecycle.NodeStarting, lifecycle.TradingDisabled, "run start"); err != nil {
 		n.life.ForceFailed(err.Error())
 		n.emitHealth("failed", err.Error())
@@ -469,6 +606,9 @@ func (n *TradingNode) emitHealth(status, detail string) {
 // remains exported for tests and simple embedders that want explicit lifecycle
 // control.
 func (n *TradingNode) Start(ctx context.Context) {
+	if err := n.accountIDReady(); err != nil {
+		return
+	}
 	if n.obs != nil {
 		n.obs.OnNodeStart()
 	}
@@ -518,7 +658,9 @@ func (n *TradingNode) onExec(env contract.ExecEnvelope) {
 		}
 		for _, fill := range n.fills.DrainBuffered(e.Order) {
 			fillEnv := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill.Fill}, fill.Meta)
-			n.applyFill(fill.Fill, fillEnv)
+			if !n.applyFill(fill.Fill, fillEnv) {
+				n.fills.BufferEnvelope(fill.Fill, fill.Meta)
+			}
 		}
 	case contract.FillEvent:
 		if !n.applyFill(e.Fill, env) {
@@ -527,7 +669,7 @@ func (n *TradingNode) onExec(env contract.ExecEnvelope) {
 	case contract.RejectEvent:
 		atomic.AddInt64(&n.counters.Rejects, 1)
 		venueOrderID := ""
-		if o, ok := n.Cache.Order(e.ClientID); ok {
+		if o, ok := n.Cache.OrderForAccount(n.accountID, e.ClientID); ok {
 			o.Status = enums.StatusRejected
 			o.RejectReason = e.Reason
 			o.UpdatedAt = n.clk.Now()
@@ -562,6 +704,15 @@ func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool
 	if !ok {
 		return false
 	}
+	if fill.AccountID == "" {
+		fill.AccountID = o.Request.AccountID
+	}
+	if fill.AccountID == "" {
+		fill.AccountID = n.accountID
+	}
+	if o.Request.AccountID == "" {
+		o.Request.AccountID = fill.AccountID
+	}
 	if !n.fills.MarkApplied(fill) {
 		return true
 	}
@@ -591,22 +742,44 @@ func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool
 }
 
 func (n *TradingNode) orderForFill(fill model.Fill) (model.Order, bool) {
+	accountID := strings.TrimSpace(fill.AccountID)
+	if accountID == "" {
+		accountID = n.accountID
+	}
 	if fill.ClientID != "" {
-		if o, ok := n.Cache.Order(fill.ClientID); ok {
-			return o, true
+		if o, ok := n.Cache.OrderForAccount(accountID, fill.ClientID); ok {
+			if orderMatchesFillAccount(o, fill) {
+				return o, true
+			}
 		}
 	}
 	if fill.VenueOrderID != "" {
-		if o, ok := n.Cache.Order(fill.VenueOrderID); ok {
-			return o, true
+		if o, ok := n.Cache.OrderForAccount(accountID, fill.VenueOrderID); ok {
+			if orderMatchesFillAccount(o, fill) {
+				return o, true
+			}
 		}
 		for _, o := range n.Cache.Orders() {
-			if o.VenueOrderID == fill.VenueOrderID {
+			if o.VenueOrderID == fill.VenueOrderID && orderMatchesAccountID(o, accountID) && orderMatchesFillAccount(o, fill) {
 				return o, true
 			}
 		}
 	}
 	return model.Order{}, false
+}
+
+func orderMatchesAccountID(o model.Order, accountID string) bool {
+	if accountID == "" || o.Request.AccountID == "" {
+		return true
+	}
+	return o.Request.AccountID == accountID
+}
+
+func orderMatchesFillAccount(o model.Order, fill model.Fill) bool {
+	if fill.AccountID == "" || o.Request.AccountID == "" {
+		return true
+	}
+	return o.Request.AccountID == fill.AccountID
 }
 
 func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient bool) (model.Order, bool) {
@@ -617,9 +790,13 @@ func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient
 	if fill.ClientID != "" && !allowKnownClient {
 		return model.Order{}, false
 	}
+	accountID := strings.TrimSpace(fill.AccountID)
+	if accountID == "" {
+		accountID = n.accountID
+	}
 	clientID := fill.ClientID
 	if clientID == "" {
-		clientID = "external-" + fill.VenueOrderID
+		clientID = "external-" + accountID + "-" + fill.VenueOrderID
 	}
 	if fill.ClientID == "" && fill.TradeID != "" {
 		clientID += "-" + fill.TradeID
@@ -630,6 +807,7 @@ func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient
 	}
 	order := model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: fill.InstrumentID,
 			ClientID:     clientID,
 			Side:         fill.Side,
@@ -653,11 +831,26 @@ func (n *TradingNode) onAccount(env contract.AccountEnvelope) {
 	applied := time.Now()
 	switch e := env.Payload.(type) {
 	case contract.BalanceEvent:
-		n.Cache.UpsertBalance(e.Balance)
+		balance := e.Balance
+		if balance.AccountID == "" {
+			balance.AccountID = n.accountID
+		}
+		n.Cache.UpsertBalance(balance)
 	case contract.PositionEvent:
-		n.Cache.UpsertPosition(e.Position)
+		position := e.Position
+		if position.AccountID == "" {
+			position.AccountID = n.accountID
+		}
+		n.Cache.UpsertPosition(position)
 	case contract.AccountStateEvent:
-		if err := n.Cache.ApplyAccountStateAt(e.State, applied); err != nil {
+		state := e.State
+		if state.AccountID == "" {
+			state.AccountID = n.accountID
+		}
+		if state.ModeInfo.AccountID == "" {
+			state.ModeInfo.AccountID = state.AccountID
+		}
+		if err := n.Cache.ApplyAccountStateAt(state, applied); err != nil {
 			n.life.ForceFailed(err.Error())
 			n.emitHealth("failed", err.Error())
 		}

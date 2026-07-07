@@ -13,7 +13,7 @@ func dec(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 func cashState(ts time.Time) model.AccountState {
 	return model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -24,7 +24,7 @@ func cashState(ts time.Time) model.AccountState {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceSpot,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "spot",
 			ProductScope: []enums.InstrumentKind{enums.KindSpot},
 			Verified:     true,
@@ -42,7 +42,7 @@ func TestCashAccountApplyAndLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new account: %v", err)
 	}
-	if acct.ID() != model.AccountIDBinanceSpot || acct.Type() != model.AccountCash {
+	if acct.ID() != model.AccountIDBinanceDefault || acct.Type() != model.AccountCash {
 		t.Fatalf("account identity/type mismatch: %s %s", acct.ID(), acct.Type())
 	}
 	free, ok := acct.BalanceFree("USDT")
@@ -82,7 +82,7 @@ func TestMarginAccountStoresMargins(t *testing.T) {
 	ts := time.Unix(2, 0)
 	inst := model.InstrumentID{Venue: "BINANCE", Symbol: "ETH-USDT", Kind: enums.KindPerp}
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceUSDM,
+		AccountID: model.AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      model.AccountMargin,
 		Balances: []model.AccountBalance{{
@@ -98,7 +98,7 @@ func TestMarginAccountStoresMargins(t *testing.T) {
 		}},
 		ModeInfo: model.AccountModeInfo{
 			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceUSDM,
+			AccountID:    model.AccountIDBinanceDefault,
 			AccountMode:  "futures",
 			ProductScope: []enums.InstrumentKind{enums.KindPerp},
 			Verified:     true,

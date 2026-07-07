@@ -25,6 +25,19 @@ var (
 	_ contract.MarketDataClient     = (*marketDataClient)(nil)
 )
 
+func TestAccountIDOverridePropagatesToClients(t *testing.T) {
+	const accountID = "OKX-ALT"
+	provider := newInstrumentProvider()
+	clk := clock.NewRealClock()
+
+	exec := newExecutionClient(nil, provider, clk, "", accountID)
+	acct := newAccountClient(nil, provider, clk, accountID)
+
+	if exec.AccountID() != accountID || acct.AccountID() != accountID {
+		t.Fatalf("account ids exec=%q acct=%q, want %q", exec.AccountID(), acct.AccountID(), accountID)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -356,6 +369,41 @@ func TestOKXSpotOpenOrdersTranslation(t *testing.T) {
 	}
 }
 
+func TestOKXSpotReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) {
+	called := false
+	inst := testSpotInstrument()
+	rest := testREST(func(r *http.Request) (string, int) {
+		called = true
+		t.Fatalf("unexpected venue request for mismatched account id: %s", r.URL.String())
+		return "", 0
+	})
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
+
+	orders, err := exec.GenerateOrderStatusReports(context.Background(), model.OrderStatusReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("mismatched account order reports=%+v err=%v, want empty nil", orders, err)
+	}
+	order, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID, ClientID: "client"})
+	if err != nil || order != nil {
+		t.Fatalf("mismatched account single order=%+v err=%v, want nil nil", order, err)
+	}
+	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("mismatched account fill reports=%+v err=%v, want empty nil", fills, err)
+	}
+	positions, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{AccountID: "OKX-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(positions) != 0 {
+		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "OKX-OTHER", IncludeFills: true, IncludePositions: true})
+	if err != nil || mass == nil || mass.AccountID != "OKX-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
+		t.Fatalf("mismatched account mass=%+v err=%v, want empty OKX-OTHER mass", mass, err)
+	}
+	if called {
+		t.Fatal("mismatched account report crossed HTTP boundary")
+	}
+}
+
 func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	inst := testSpotInstrument()
 	rest := testREST(func(r *http.Request) (string, int) {
@@ -394,7 +442,7 @@ func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXSpot || state.Type != model.AccountCash || state.ModeInfo.AccountMode != string(okx.AccountLevelSimple) {
+	if state.AccountID != model.AccountIDOKXDefault || state.Type != model.AccountCash || state.ModeInfo.AccountMode != string(okx.AccountLevelSimple) {
 		t.Fatalf("account state identity/mode=%+v", state)
 	}
 	if !state.ModeInfo.Verified || state.ModeInfo.Source != "GET /api/v5/account/balance + GET /api/v5/account/config" {
@@ -436,7 +484,7 @@ func TestOKXSpotOrderUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(golden), &o); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := execEventsFromOrder(&o, testProvider(testSpotInstrument()))
+	events := execEventsFromOrder(&o, testProvider(testSpotInstrument()), model.AccountIDOKXDefault)
 	if len(events) != 2 {
 		t.Fatalf("want OrderEvent+FillEvent, got %d", len(events))
 	}
@@ -444,9 +492,15 @@ func TestOKXSpotOrderUpdateTranslation(t *testing.T) {
 	if oe.Order.Request.PositionSide != enums.PosNet || oe.Order.Request.ReduceOnly {
 		t.Fatalf("spot order leaked derivative fields: %+v", oe.Order.Request)
 	}
+	if oe.Order.Request.AccountID != model.AccountIDOKXDefault {
+		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
+	}
 	fe := events[1].(contract.FillEvent)
 	if fe.Fill.TradeID != "99" || !fe.Fill.Price.Equal(d("3000")) || !fe.Fill.Fee.Equal(d("0.003")) {
 		t.Fatalf("fill=%+v", fe.Fill)
+	}
+	if fe.Fill.AccountID != model.AccountIDOKXDefault {
+		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
 

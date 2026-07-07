@@ -366,7 +366,7 @@ func (e *Engine) Cancel(ctx context.Context, clientID string) error {
 	if err := e.ensureSupported(journal.CommandCancel); err != nil {
 		return err
 	}
-	o, ok := e.cache.Order(clientID)
+	o, ok := e.cache.OrderForAccount(e.accountID, clientID)
 	if !ok {
 		return fmt.Errorf("exec: unknown order %q", clientID)
 	}
@@ -392,7 +392,7 @@ func (e *Engine) Modify(ctx context.Context, clientID string, newPrice, newQty d
 	if err := e.ensureSupported(journal.CommandModify); err != nil {
 		return nil, err
 	}
-	o, ok := e.cache.Order(clientID)
+	o, ok := e.cache.OrderForAccount(e.accountID, clientID)
 	if !ok {
 		return nil, fmt.Errorf("exec: unknown order %q", clientID)
 	}

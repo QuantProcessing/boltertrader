@@ -177,6 +177,32 @@ func TestReconcileOrders(t *testing.T) {
 	}
 }
 
+func TestReconcileOrdersClosesOnlyScopedAccountOrders(t *testing.T) {
+	c := cache.New()
+	acctAOpen := order("acct-a-open", btc, "1", enums.StatusNew)
+	acctAOpen.Request.AccountID = "acct-a"
+	acctBOpen := order("acct-b-open", btc, "1", enums.StatusNew)
+	acctBOpen.Request.AccountID = "acct-b"
+	c.UpsertOrder(acctAOpen)
+	c.UpsertOrder(acctBOpen)
+
+	mass := model.NewExecutionMassStatus("T", "acct-a", time.Unix(100, 0))
+	r := New(nil, &snapshotExec{mass: mass}, c).WithAccountID("acct-a")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.OrdersClosedUnknown != 1 {
+		t.Fatalf("report=%+v, want one scoped close", rep)
+	}
+	if got, ok := c.Order("acct-a-open"); !ok || got.Status != enums.StatusUnknown {
+		t.Fatalf("acct-a order=%+v ok=%v, want unknown", got, ok)
+	}
+	if got, ok := c.Order("acct-b-open"); !ok || got.Status != enums.StatusNew {
+		t.Fatalf("acct-b order=%+v ok=%v, want untouched NEW", got, ok)
+	}
+}
+
 // TestReconcileOrdersNilExec: with no execution client, order reconciliation is
 // skipped and the cache's orders are untouched.
 func TestReconcileOrdersNilExec(t *testing.T) {
@@ -235,13 +261,48 @@ func TestReconcileCorrectsCache(t *testing.T) {
 	}
 }
 
+func TestReconcileAccountSnapshotsAreScopedByAccountID(t *testing.T) {
+	c := cache.New()
+	c.UpsertPosition(model.Position{AccountID: "acct-a", InstrumentID: btc, Side: enums.PosNet, Quantity: d("1")})
+	c.UpsertPosition(model.Position{AccountID: "acct-a", InstrumentID: eth, Side: enums.PosNet, Quantity: d("3")})
+	c.UpsertPosition(model.Position{AccountID: "acct-b", InstrumentID: eth, Side: enums.PosNet, Quantity: d("7")})
+
+	acct := &snapshotAccount{
+		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}},
+		positions: []model.Position{
+			{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2.5"), EntryPrice: d("60000")},
+		},
+	}
+
+	r := New(acct, nil, c).WithAccountID("acct-a")
+	rep, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 || rep.PositionsCleared != 1 {
+		t.Fatalf("report=%+v, want balances=1 positions=1 cleared=1", rep)
+	}
+	if p, ok := c.PositionForAccount("acct-a", btc, enums.PosNet); !ok || !p.Quantity.Equal(d("2.5")) {
+		t.Fatalf("acct-a BTC position=%+v ok=%v, want qty 2.5", p, ok)
+	}
+	if _, ok := c.PositionForAccount("acct-a", eth, enums.PosNet); ok {
+		t.Fatal("acct-a stale ETH position should be cleared")
+	}
+	if p, ok := c.PositionForAccount("acct-b", eth, enums.PosNet); !ok || !p.Quantity.Equal(d("7")) {
+		t.Fatalf("acct-b ETH position=%+v ok=%v, want untouched qty 7", p, ok)
+	}
+	if b, ok := c.BalanceForAccount("acct-a", "USDT"); !ok || !b.Free.Equal(d("900")) {
+		t.Fatalf("acct-a balance=%+v ok=%v, want free 900", b, ok)
+	}
+}
+
 func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	c := cache.New()
 	ts := time.Unix(20, 0)
 	acct := &snapshotAccount{
 		hasAccountState: true,
 		accountState: model.AccountState{
-			AccountID: model.AccountIDBinanceUSDM,
+			AccountID: model.AccountIDBinanceDefault,
 			Venue:     "BINANCE",
 			Type:      model.AccountMargin,
 			Balances: []model.AccountBalance{{
@@ -251,7 +312,7 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 			}},
 			ModeInfo: model.AccountModeInfo{
 				Venue:        "BINANCE",
-				AccountID:    model.AccountIDBinanceUSDM,
+				AccountID:    model.AccountIDBinanceDefault,
 				AccountMode:  "USD-M",
 				ProductScope: []enums.InstrumentKind{enums.KindPerp},
 				Verified:     true,
@@ -275,7 +336,7 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
 		t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
 	}
-	cached, ok := c.Account(model.AccountIDBinanceUSDM)
+	cached, ok := c.Account(model.AccountIDBinanceDefault)
 	if !ok {
 		t.Fatal("account state not applied to cache")
 	}
@@ -295,7 +356,7 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 		hasAccountState: true,
 		positionErr:     positionErr,
 		accountState: model.AccountState{
-			AccountID: model.AccountIDBinanceUSDM,
+			AccountID: model.AccountIDBinanceDefault,
 			Venue:     "BINANCE",
 			Type:      model.AccountMargin,
 			Balances: []model.AccountBalance{{
@@ -305,7 +366,7 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 			}},
 			ModeInfo: model.AccountModeInfo{
 				Venue:        "BINANCE",
-				AccountID:    model.AccountIDBinanceUSDM,
+				AccountID:    model.AccountIDBinanceDefault,
 				ProductScope: []enums.InstrumentKind{enums.KindPerp},
 				Verified:     true,
 				VerifiedAt:   ts,
@@ -321,7 +382,7 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 	if !errors.Is(err, positionErr) {
 		t.Fatalf("run err=%v, want positions error", err)
 	}
-	cached, ok := c.Account(model.AccountIDBinanceUSDM)
+	cached, ok := c.Account(model.AccountIDBinanceDefault)
 	if !ok {
 		t.Fatal("account state should be applied before positions fail")
 	}

@@ -74,6 +74,9 @@ type OrderStatusReport struct {
 }
 
 func OrderMatchesStatusQuery(o Order, query OrderStatusReportQuery) bool {
+	if query.AccountID != "" && o.Request.AccountID != "" && o.Request.AccountID != query.AccountID {
+		return false
+	}
 	if query.InstrumentID.Symbol != "" && o.Request.InstrumentID != query.InstrumentID {
 		return false
 	}
@@ -81,6 +84,22 @@ func OrderMatchesStatusQuery(o Order, query OrderStatusReportQuery) bool {
 		return false
 	}
 	if query.VenueOrderID != "" && o.VenueOrderID != query.VenueOrderID {
+		return false
+	}
+	return true
+}
+
+func FillMatchesReportQuery(fill Fill, query FillReportQuery) bool {
+	if query.AccountID != "" && fill.AccountID != "" && fill.AccountID != query.AccountID {
+		return false
+	}
+	if query.InstrumentID.Symbol != "" && fill.InstrumentID != query.InstrumentID {
+		return false
+	}
+	if query.ClientID != "" && fill.ClientID != query.ClientID {
+		return false
+	}
+	if query.VenueOrderID != "" && fill.VenueOrderID != query.VenueOrderID {
 		return false
 	}
 	return true

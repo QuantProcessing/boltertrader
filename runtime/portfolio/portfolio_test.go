@@ -208,6 +208,47 @@ func TestUnrealized(t *testing.T) {
 	}
 }
 
+func TestLotsAreScopedByAccountID(t *testing.T) {
+	pf := New()
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	acctABuy := fill(enums.SideBuy, "100", "1", "0")
+	acctABuy.AccountID = "acct-a"
+	acctBBuy := fill(enums.SideBuy, "200", "2", "0")
+	acctBBuy.AccountID = "acct-b"
+
+	pf.OnFill(acctABuy, enums.PosNet)
+	pf.OnFill(acctBBuy, enums.PosNet)
+
+	if got := pf.NetQtyForAccount("acct-a", id, enums.PosNet); !got.Equal(d("1")) {
+		t.Fatalf("acct-a net qty=%s, want 1", got)
+	}
+	if got := pf.NetQtyForAccount("acct-b", id, enums.PosNet); !got.Equal(d("2")) {
+		t.Fatalf("acct-b net qty=%s, want 2", got)
+	}
+	if got := pf.AvgPriceForAccount("acct-b", id, enums.PosNet); !got.Equal(d("200")) {
+		t.Fatalf("acct-b avg=%s, want 200", got)
+	}
+	if got := pf.NetQty(id, enums.PosNet); !got.IsZero() {
+		t.Fatalf("legacy net qty should not aggregate ambiguous accounts, got %s", got)
+	}
+	if got := pf.UnrealizedPnL(id, enums.PosNet, d("210")); !got.IsZero() {
+		t.Fatalf("legacy unrealized should not aggregate ambiguous accounts, got %s", got)
+	}
+
+	acctASell := fill(enums.SideSell, "110", "1", "0")
+	acctASell.AccountID = "acct-a"
+	pf.OnFill(acctASell, enums.PosNet)
+	if got := pf.RealizedPnLForAccount("acct-a"); !got.Equal(d("10")) {
+		t.Fatalf("acct-a realized=%s, want 10", got)
+	}
+	if got := pf.RealizedPnLForAccount("acct-b"); !got.IsZero() {
+		t.Fatalf("acct-b realized=%s, want 0", got)
+	}
+	if got := pf.UnrealizedPnLForAccount("acct-b", id, enums.PosNet, d("210")); !got.Equal(d("20")) {
+		t.Fatalf("acct-b unrealized=%s, want 20", got)
+	}
+}
+
 func TestAccountViewsAggregateEquityMarginAndExposure(t *testing.T) {
 	c := cache.New()
 	now := time.Unix(100, 0)

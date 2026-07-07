@@ -32,6 +32,8 @@ func newAccountClient(rest *sdkspot.Client, clk clock.Clock, accountID ...string
 	}
 }
 
+func (c *accountClient) AccountID() string { return c.accountID }
+
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	bal, err := c.rest.GetBalance()
 	if err != nil {
@@ -103,8 +105,8 @@ func (c *accountClient) Close() error {
 }
 
 func firstAccountID(ids []string) string {
-	if len(ids) == 0 {
-		return ""
+	if len(ids) == 0 || ids[0] == "" {
+		return model.AccountIDHyperliquidDefault
 	}
 	return ids[0]
 }

@@ -11,11 +11,12 @@ import (
 
 type symbolResolver func(venueSymbol string) model.InstrumentID
 
-func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve symbolResolver) []contract.ExecEvent {
+func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve symbolResolver, accountID string) []contract.ExecEvent {
 	id := resolve(ev.Symbol)
 	ts := time.UnixMilli(ev.EventTime)
 	order := model.Order{
 		Request: model.OrderRequest{
+			AccountID:    accountID,
 			InstrumentID: id,
 			ClientID:     ev.ClientOrderID,
 			Side:         sideFromBinance(ev.Side),
@@ -41,6 +42,7 @@ func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve sym
 			liq = enums.LiqMaker
 		}
 		fill := model.Fill{
+			AccountID:    accountID,
 			InstrumentID: id,
 			VenueOrderID: itoa(ev.OrderID),
 			ClientID:     ev.ClientOrderID,
@@ -61,13 +63,14 @@ func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve sym
 	return events
 }
 
-func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent) []contract.AccountEvent {
+func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent, accountID string) []contract.AccountEvent {
 	ts := time.UnixMilli(ev.EventTime)
 	out := make([]contract.AccountEvent, 0, len(ev.Balances))
 	for _, b := range ev.Balances {
 		free := dec(b.Free)
 		locked := dec(b.Locked)
 		out = append(out, contract.BalanceEvent{Balance: model.AccountBalance{
+			AccountID: accountID,
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
 			Free:      free,

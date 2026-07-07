@@ -14,10 +14,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/orderstate"
 )
 
-// orderKey identifies an order. ClientID is preferred (assigned by us, stable
-// across the submit/ack boundary); VenueOrderID is the fallback for orders we
-// learn about only from the venue.
-type orderKey = string
+// orderKey identifies an order inside one logical runtime account. ClientID is
+// preferred (assigned by us, stable across the submit/ack boundary);
+// VenueOrderID is the fallback for orders we learn about only from the venue.
+type orderKey struct {
+	accountID string
+	id        string
+}
 
 // positionKey identifies a position by account, instrument and side (hedge mode
 // can hold a long and a short leg for the same instrument simultaneously).
@@ -30,6 +33,11 @@ type positionKey struct {
 type balanceKey struct {
 	accountID string
 	currency  string
+}
+
+type orderMergeCandidate struct {
+	key   orderKey
+	order model.Order
 }
 
 // Cache holds the live trading state.
@@ -66,11 +74,52 @@ func (c *Cache) SetAccountStaleAfter(staleAfter time.Duration) {
 	c.accountStaleAfter = staleAfter
 }
 
-func keyForOrder(o model.Order) orderKey {
+func orderLookupID(o model.Order) string {
 	if o.Request.ClientID != "" {
 		return o.Request.ClientID
 	}
 	return o.VenueOrderID
+}
+
+func keyForOrder(o model.Order) orderKey {
+	return orderKey{accountID: o.Request.AccountID, id: orderLookupID(o)}
+}
+
+func orderLookupMatches(k orderKey, o model.Order, key string) bool {
+	return key != "" && (k.id == key || o.Request.ClientID == key || o.VenueOrderID == key)
+}
+
+func orderAccountIDsMergeable(a, b string) bool {
+	return a == "" || b == "" || a == b
+}
+
+func orderAccountMatches(accountID string, o model.Order) bool {
+	return accountID == "" || o.Request.AccountID == "" || o.Request.AccountID == accountID
+}
+
+func orderCandidateAccountID(candidate orderMergeCandidate) string {
+	if candidate.order.Request.AccountID != "" {
+		return candidate.order.Request.AccountID
+	}
+	return candidate.key.accountID
+}
+
+func orderMergeCandidatesUnambiguous(incomingAccountID string, candidates []orderMergeCandidate) bool {
+	scope := incomingAccountID
+	for _, candidate := range candidates {
+		accountID := orderCandidateAccountID(candidate)
+		if accountID == "" {
+			continue
+		}
+		if scope == "" {
+			scope = accountID
+			continue
+		}
+		if scope != accountID {
+			return false
+		}
+	}
+	return true
 }
 
 // UpsertOrder inserts or replaces an order. Called from the bus goroutine.
@@ -81,13 +130,24 @@ func (c *Cache) UpsertOrder(o model.Order) {
 	if existing, ok := c.orders[k]; ok {
 		o = orderstate.Merge(existing, o)
 	}
-	if o.VenueOrderID != "" {
-		for key, existing := range c.orders {
-			if key == k || existing.VenueOrderID != o.VenueOrderID {
-				continue
-			}
-			o = orderstate.Merge(existing, o)
-			delete(c.orders, key)
+	var candidates []orderMergeCandidate
+	for key, existing := range c.orders {
+		if key == k || !orderAccountIDsMergeable(key.accountID, k.accountID) {
+			continue
+		}
+		if orderLookupMatches(key, existing, k.id) ||
+			(o.VenueOrderID != "" && existing.VenueOrderID == o.VenueOrderID) {
+			candidates = append(candidates, orderMergeCandidate{key: key, order: existing})
+		}
+	}
+	unambiguous := orderMergeCandidatesUnambiguous(k.accountID, candidates)
+	if !unambiguous && k.accountID == "" {
+		return
+	}
+	if unambiguous {
+		for _, candidate := range candidates {
+			o = orderstate.Merge(candidate.order, o)
+			delete(c.orders, candidate.key)
 		}
 	}
 	c.orders[keyForOrder(o)] = o
@@ -97,8 +157,41 @@ func (c *Cache) UpsertOrder(o model.Order) {
 func (c *Cache) Order(key string) (model.Order, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	o, ok := c.orders[key]
-	return o, ok
+	var out model.Order
+	found := false
+	for orderKey, o := range c.orders {
+		if !orderLookupMatches(orderKey, o, key) {
+			continue
+		}
+		if found {
+			return model.Order{}, false
+		}
+		out = o
+		found = true
+	}
+	return out, found
+}
+
+// OrderForAccount returns an order for a client or venue id inside one account.
+func (c *Cache) OrderForAccount(accountID, key string) (model.Order, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if o, ok := c.orders[orderKey{accountID: accountID, id: key}]; ok {
+		return o, true
+	}
+	var out model.Order
+	found := false
+	for orderKey, o := range c.orders {
+		if !orderLookupMatches(orderKey, o, key) || !orderAccountMatches(accountID, o) {
+			continue
+		}
+		if found {
+			return model.Order{}, false
+		}
+		out = o
+		found = true
+	}
+	return out, found
 }
 
 // Orders returns a snapshot slice of all known orders.

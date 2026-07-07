@@ -48,8 +48,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		return nil, err
 	}
 	market := newMarketDataClient(rest, bitgetsdk.NewPublicWSClientWithProfile(profile), provider, clk)
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
+	exec := newExecutionClient(rest, provider, clk, cfg.AccountID)
+	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}, cfg.AccountID)
 	private := bitgetsdk.NewPrivateWSClientWithProfile(profile).WithCredentials(cfg.APIKey, cfg.APISecret, cfg.Passphrase)
 	return &Adapter{Market: market, Execution: exec, Account: acct, provider: provider, rest: rest, private: private, exec: exec, acct: acct, market: market, clk: clk}, nil
 }
@@ -66,7 +66,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "order"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodeOrderMessage(payload)
 			if err == nil {
-				for _, event := range execEventsFromOrderMessage(msg, resolve) {
+				for _, event := range execEventsFromOrderMessage(msg, resolve, a.exec.accountID) {
 					a.exec.emit(event)
 				}
 			}
@@ -74,7 +74,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "fill"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodeFillMessage(payload)
 			if err == nil {
-				for _, event := range execEventsFromFillMessage(msg, resolve) {
+				for _, event := range execEventsFromFillMessage(msg, resolve, a.exec.accountID) {
 					a.exec.emit(event)
 				}
 			}
@@ -82,7 +82,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "position"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodePositionMessage(payload)
 			if err == nil {
-				for _, event := range accountEventsFromPositionMessage(msg, resolve, a.clk.Now()) {
+				for _, event := range accountEventsFromPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now()) {
 					a.acct.emit(event)
 				}
 			}
@@ -90,7 +90,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "account"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodeAccountMessage(payload)
 			if err == nil {
-				for _, event := range accountEventsFromAccountMessage(msg, a.clk.Now()) {
+				for _, event := range accountEventsFromAccountMessage(msg, a.acct.accountID, a.clk.Now()) {
 					a.acct.emit(event)
 				}
 			}

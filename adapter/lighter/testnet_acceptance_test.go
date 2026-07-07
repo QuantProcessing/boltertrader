@@ -38,8 +38,8 @@ func TestLighterTestnetReadAcceptance(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter Testnet account state")
 		t.Fatalf("account state: %v", err)
 	}
-	if state.AccountID != AccountIDForIndex(cfg.AccountIndex) {
-		t.Fatalf("account id=%q, want %q", state.AccountID, AccountIDForIndex(cfg.AccountIndex))
+	if state.AccountID != model.AccountIDLighterDefault {
+		t.Fatalf("account id=%q, want %q", state.AccountID, model.AccountIDLighterDefault)
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("account state should validate: %v", err)
@@ -95,7 +95,7 @@ func runLighterTestnetWriteAcceptance(t *testing.T, kind enums.InstrumentKind, l
 		}
 	}()
 	order, err := adapter.Execution.Submit(ctx, model.OrderRequest{
-		AccountID:    AccountIDForIndex(cfg.AccountIndex),
+		AccountID:    model.AccountIDLighterDefault,
 		InstrumentID: inst.ID,
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,

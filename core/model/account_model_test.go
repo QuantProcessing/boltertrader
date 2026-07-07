@@ -17,6 +17,25 @@ func TestAccountTypeValid(t *testing.T) {
 	}
 }
 
+func TestDefaultAccountIDForVenue(t *testing.T) {
+	tests := map[string]string{
+		"binance":     AccountIDBinanceDefault,
+		" OKX ":       AccountIDOKXDefault,
+		"bybit":       AccountIDBybitDefault,
+		"bitget":      AccountIDBitgetDefault,
+		"lighter":     AccountIDLighterDefault,
+		"hyperliquid": AccountIDHyperliquidDefault,
+	}
+	for venue, want := range tests {
+		if got := DefaultAccountIDForVenue(venue); got != want {
+			t.Fatalf("DefaultAccountIDForVenue(%q)=%q, want %q", venue, got, want)
+		}
+	}
+	if got := DefaultAccountIDForVenue("unknown"); got != "" {
+		t.Fatalf("unknown venue default=%q, want empty", got)
+	}
+}
+
 func TestAccountBalanceFreeMigrationCompatibility(t *testing.T) {
 	old := AccountBalance{
 		Currency:  "USDT",
@@ -53,7 +72,7 @@ func TestAccountBalanceFreeMigrationCompatibility(t *testing.T) {
 func TestAccountStateValidateTradingReady(t *testing.T) {
 	now := time.Unix(100, 0)
 	state := AccountState{
-		AccountID: AccountIDBinanceSpot,
+		AccountID: AccountIDBinanceDefault,
 		Venue:     "BINANCE",
 		Type:      AccountCash,
 		Balances: []AccountBalance{{
@@ -63,7 +82,7 @@ func TestAccountStateValidateTradingReady(t *testing.T) {
 		}},
 		ModeInfo: AccountModeInfo{
 			Venue:          "BINANCE",
-			AccountID:      AccountIDBinanceSpot,
+			AccountID:      AccountIDBinanceDefault,
 			AccountMode:    "spot",
 			MarginMode:     "none",
 			PositionMode:   "net",

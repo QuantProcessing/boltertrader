@@ -16,27 +16,38 @@ import (
 )
 
 type accountClient struct {
-	rest     *sdkspot.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.AccountEnvelope]
+	rest      *sdkspot.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *sdkspot.Client, provider *instrumentProvider, clk clock.Clock) *accountClient {
+func newAccountClient(rest *sdkspot.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *accountClient {
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = model.AccountIDBinanceDefault
+	}
 	return &accountClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		stream:   wsstream.New[contract.AccountEnvelope](256),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: accountID,
+		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	acct, err := c.rest.GetAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return spotBalancesFromAccount(acct, c.clk.Now()), nil
+	return spotBalancesFromAccount(acct, c.accountID, c.clk.Now()), nil
 }
 
 func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
@@ -46,23 +57,24 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	}
 	now := c.clk.Now()
 	return model.AccountState{
-		AccountID: model.AccountIDBinanceSpot,
+		AccountID: c.accountID,
 		Venue:     venueName,
 		Type:      model.AccountCash,
-		Balances:  spotBalancesFromAccount(acct, now),
-		ModeInfo:  binanceSpotModeInfo(acct, now),
+		Balances:  spotBalancesFromAccount(acct, c.accountID, now),
+		ModeInfo:  binanceSpotModeInfo(acct, c.accountID, now),
 		Reported:  true,
 		TsEvent:   eventTimeFromMillis(acct.UpdateTime, now),
 		TsInit:    now,
 	}, nil
 }
 
-func spotBalancesFromAccount(acct *sdkspot.AccountResponse, now time.Time) []model.AccountBalance {
+func spotBalancesFromAccount(acct *sdkspot.AccountResponse, accountID string, now time.Time) []model.AccountBalance {
 	out := make([]model.AccountBalance, 0, len(acct.Balances))
 	for _, b := range acct.Balances {
 		free := dec(b.Free)
 		locked := dec(b.Locked)
 		out = append(out, model.AccountBalance{
+			AccountID: accountID,
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
 			Free:      free,
@@ -74,14 +86,14 @@ func spotBalancesFromAccount(acct *sdkspot.AccountResponse, now time.Time) []mod
 	return out
 }
 
-func binanceSpotModeInfo(acct *sdkspot.AccountResponse, now time.Time) model.AccountModeInfo {
+func binanceSpotModeInfo(acct *sdkspot.AccountResponse, accountID string, now time.Time) model.AccountModeInfo {
 	accountMode := acct.AccountType
 	if accountMode == "" {
 		accountMode = "SPOT"
 	}
 	return model.AccountModeInfo{
 		Venue:        venueName,
-		AccountID:    model.AccountIDBinanceSpot,
+		AccountID:    accountID,
 		AccountMode:  accountMode,
 		MarginMode:   "cash",
 		PositionMode: "net",

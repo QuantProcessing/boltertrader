@@ -64,7 +64,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
 	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 before writes", got)
@@ -161,7 +161,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if postBuyReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("post-buy Binance Spot Demo runtime reconcile account states=%d, want 1: %+v", postBuyReconcile.AccountStatesApplied, postBuyReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
 
 	closeQty := floorDecimalToStep(baseDelta, spec.SizeStep)
 	if closeQty.LessThan(spec.MinQty) {
@@ -201,7 +201,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final Binance Spot Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
 	}

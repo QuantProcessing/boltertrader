@@ -19,20 +19,31 @@ import (
 // accountClient implements contract.AccountClient over the Binance REST +
 // user-data WebSocket.
 type accountClient struct {
-	rest     *sdkperp.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	stream   *wsstream.Stream[contract.AccountEnvelope]
+	rest      *sdkperp.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock) *accountClient {
+func newAccountClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *accountClient {
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = model.AccountIDBinanceDefault
+	}
 	return &accountClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		stream:   wsstream.New[contract.AccountEnvelope](256),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: accountID,
+		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	resps, err := c.rest.GetBalance(ctx)
@@ -47,6 +58,7 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 		}
 		free := dec(b.AvailableBalance)
 		out = append(out, model.AccountBalance{
+			AccountID: c.accountID,
 			Currency:  b.Asset,
 			Total:     dec(b.Balance),
 			Free:      free,
@@ -72,13 +84,13 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	}
 	now := c.clk.Now()
 	return model.AccountState{
-		AccountID:    model.AccountIDBinanceUSDM,
+		AccountID:    c.accountID,
 		Venue:        venueName,
 		Type:         model.AccountMargin,
 		BaseCurrency: "USD",
-		Balances:     perpBalancesFromAccount(acct, now),
+		Balances:     perpBalancesFromAccount(acct, c.accountID, now),
 		Margins:      c.marginBalancesFromAccount(acct, now),
-		ModeInfo:     binanceUSDMModeInfo(positionMode, multiAssetsMode, now),
+		ModeInfo:     binanceUSDMModeInfo(positionMode, multiAssetsMode, c.accountID, now),
 		Reported:     true,
 		TsEvent:      eventTimeFromMillis(acct.UpdateTime, now),
 		TsInit:       now,
@@ -98,6 +110,7 @@ func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error)
 			continue // skip flat legs
 		}
 		out = append(out, model.Position{
+			AccountID:     c.accountID,
 			InstrumentID:  c.provider.resolveVenueSymbol(p.Symbol),
 			Side:          positionSideFromBinance(p.PositionSide),
 			Quantity:      qty,
@@ -110,7 +123,7 @@ func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error)
 	return out, nil
 }
 
-func perpBalancesFromAccount(acct *sdkperp.AccountResponse, now time.Time) []model.AccountBalance {
+func perpBalancesFromAccount(acct *sdkperp.AccountResponse, accountID string, now time.Time) []model.AccountBalance {
 	out := make([]model.AccountBalance, 0, len(acct.Assets))
 	for _, b := range acct.Assets {
 		if strings.TrimSpace(b.Asset) == "" {
@@ -118,6 +131,7 @@ func perpBalancesFromAccount(acct *sdkperp.AccountResponse, now time.Time) []mod
 		}
 		free := dec(b.AvailableBalance)
 		out = append(out, model.AccountBalance{
+			AccountID: accountID,
 			Currency:  b.Asset,
 			Total:     dec(b.WalletBalance),
 			Free:      free,
@@ -169,7 +183,7 @@ func (c *accountClient) marginBalancesFromAccount(acct *sdkperp.AccountResponse,
 	return out
 }
 
-func binanceUSDMModeInfo(positionMode *sdkperp.PositionModeResponse, multiAssetsMode *sdkperp.MultiAssetsModeResponse, now time.Time) model.AccountModeInfo {
+func binanceUSDMModeInfo(positionMode *sdkperp.PositionModeResponse, multiAssetsMode *sdkperp.MultiAssetsModeResponse, accountID string, now time.Time) model.AccountModeInfo {
 	positionModeLabel := "one_way"
 	if positionMode != nil && positionMode.DualSidePosition {
 		positionModeLabel = "hedge"
@@ -180,7 +194,7 @@ func binanceUSDMModeInfo(positionMode *sdkperp.PositionModeResponse, multiAssets
 	}
 	return model.AccountModeInfo{
 		Venue:          venueName,
-		AccountID:      model.AccountIDBinanceUSDM,
+		AccountID:      accountID,
 		AccountMode:    "USD-M",
 		MarginMode:     marginMode,
 		PositionMode:   positionModeLabel,

@@ -50,7 +50,7 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 	qty := selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
 	ensureLighterTestnetCollateral(t, ctx, adapter, "runtime "+label, qty, price)
 
-	accountID := AccountIDForIndex(cfg.AccountIndex)
+	accountID := model.AccountIDLighterDefault
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
 		clock.NewRealClock(),

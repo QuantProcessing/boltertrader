@@ -1,6 +1,7 @@
 package lighter
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -82,9 +83,9 @@ func TestAccountStateFromLighterAccountIsUnifiedMargin(t *testing.T) {
 		},
 	}
 
-	state := accountStateFromLighterAccount(acct, now)
+	state := accountStateFromLighterAccount(acct, model.AccountIDLighterDefault, now)
 
-	if state.AccountID != AccountIDForIndex(66) || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
+	if state.AccountID != model.AccountIDLighterDefault || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
 		t.Fatalf("unexpected state identity: %+v", state)
 	}
 	if err := state.Validate(); err != nil {
@@ -120,7 +121,7 @@ func TestPlaceOrderRequestQuantizesTicksAndAccountID(t *testing.T) {
 	exec := newExecutionClient(nil, provider, clock.NewSimulatedClock(now), 66)
 
 	req, index, err := exec.placeOrderRequest(model.OrderRequest{
-		AccountID:    AccountIDForIndex(66),
+		AccountID:    model.AccountIDLighterDefault,
 		InstrumentID: inst.ID,
 		ClientID:     "lighter-test-order",
 		Side:         enums.SideBuy,
@@ -145,7 +146,7 @@ func TestPlaceOrderRequestQuantizesTicksAndAccountID(t *testing.T) {
 	}
 
 	_, _, err = exec.placeOrderRequest(model.OrderRequest{
-		AccountID:    AccountIDForIndex(67),
+		AccountID:    "LIGHTER-OTHER",
 		InstrumentID: inst.ID,
 		ClientID:     "wrong-account",
 		Side:         enums.SideBuy,
@@ -157,6 +158,37 @@ func TestPlaceOrderRequestQuantizesTicksAndAccountID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected account id mismatch")
+	}
+}
+
+func TestReportsRejectMismatchedAccountIDBeforeREST(t *testing.T) {
+	inst := &model.Instrument{
+		ID:         model.InstrumentID{Venue: venueName, Symbol: "ETH-USDC", Kind: enums.KindPerp},
+		AssetIndex: intPtr(0),
+		PriceTick:  decimal.RequireFromString("0.01"),
+		SizeStep:   decimal.RequireFromString("0.0001"),
+	}
+	exec := newExecutionClient(nil, newRegistry([]*model.Instrument{inst}), clock.NewRealClock(), 66)
+
+	orders, err := exec.GenerateOrderStatusReports(context.Background(), model.OrderStatusReportQuery{AccountID: "LIGHTER-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(orders) != 0 {
+		t.Fatalf("mismatched account order reports=%+v err=%v, want empty nil", orders, err)
+	}
+	order, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{AccountID: "LIGHTER-OTHER", InstrumentID: inst.ID, ClientID: "client"})
+	if err != nil || order != nil {
+		t.Fatalf("mismatched account single order=%+v err=%v, want nil nil", order, err)
+	}
+	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: "LIGHTER-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(fills) != 0 {
+		t.Fatalf("mismatched account fill reports=%+v err=%v, want empty nil", fills, err)
+	}
+	positions, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{AccountID: "LIGHTER-OTHER", InstrumentID: inst.ID})
+	if err != nil || len(positions) != 0 {
+		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "LIGHTER-OTHER", IncludeFills: true, IncludePositions: true})
+	if err != nil || mass == nil || mass.AccountID != "LIGHTER-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
+		t.Fatalf("mismatched account mass=%+v err=%v, want empty LIGHTER-OTHER mass", mass, err)
 	}
 }
 

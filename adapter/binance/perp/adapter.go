@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 )
 
@@ -13,6 +14,9 @@ import (
 type Config struct {
 	APIKey    string
 	APISecret string
+	// AccountID is the logical runtime account id. Product scope (USD-M perp)
+	// remains modeled separately in AccountState/ModeInfo.
+	AccountID string
 	// Environment selects Binance production or Demo endpoints. Zero value is
 	// LIVE; Demo is retained below as a compatibility shortcut.
 	Environment sdkperp.Environment
@@ -76,6 +80,10 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.HTTPClient != nil {
 		rest.WithHTTPClient(cfg.HTTPClient)
 	}
+	accountID := cfg.AccountID
+	if accountID == "" {
+		accountID = model.AccountIDBinanceDefault
+	}
 
 	provider := newInstrumentProvider()
 	if err := provider.Load(ctx, rest); err != nil {
@@ -84,8 +92,8 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 
 	wsMarket := sdkperp.NewWsMarketClientWithEndpointProfile(ctx, profile)
 
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, provider, clk)
+	exec := newExecutionClient(rest, provider, clk, accountID)
+	acct := newAccountClient(rest, provider, clk, accountID)
 	market := newMarketDataClient(rest, wsMarket, provider, clk)
 
 	return &Adapter{
@@ -111,12 +119,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 	resolve := a.provider.resolveVenueSymbol
 
 	ws.SubscribeOrderUpdate(func(ev *sdkperp.OrderUpdateEvent) {
-		for _, e := range execEventsFromOrderUpdate(ev, resolve) {
+		for _, e := range execEventsFromOrderUpdate(ev, resolve, a.exec.accountID) {
 			a.exec.emit(e)
 		}
 	})
 	ws.SubscribeAccountUpdate(func(ev *sdkperp.AccountUpdateEvent) {
-		for _, e := range accountEventsFromUpdate(ev, resolve) {
+		for _, e := range accountEventsFromUpdate(ev, resolve, a.acct.accountID) {
 			a.acct.emit(e)
 		}
 	})

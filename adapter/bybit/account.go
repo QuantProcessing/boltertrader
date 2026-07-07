@@ -17,32 +17,43 @@ import (
 )
 
 type accountClient struct {
-	rest     *bybitsdk.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	scope    []enums.InstrumentKind
-	stream   *wsstream.Stream[contract.AccountEnvelope]
+	rest      *bybitsdk.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	scope     []enums.InstrumentKind
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *bybitsdk.Client, provider *instrumentProvider, clk clock.Clock, scope []enums.InstrumentKind) *accountClient {
+func newAccountClient(rest *bybitsdk.Client, provider *instrumentProvider, clk clock.Clock, scope []enums.InstrumentKind, accountIDs ...string) *accountClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = AccountIDUnified
+	}
 	return &accountClient{
-		rest:     rest,
-		provider: provider,
-		clk:      clk,
-		scope:    bybitKinds(scope),
-		stream:   wsstream.New[contract.AccountEnvelope](256),
+		rest:      rest,
+		provider:  provider,
+		clk:       clk,
+		accountID: accountID,
+		scope:     bybitKinds(scope),
+		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	wallet, err := c.rest.GetWalletBalance(ctx, "UNIFIED", "")
 	if err != nil {
 		return nil, err
 	}
-	return balancesFromWallet(wallet, c.clk.Now()), nil
+	return balancesFromWallet(wallet, c.accountID, c.clk.Now()), nil
 }
 
 func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error) {
@@ -67,13 +78,13 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	}
 	now := c.clk.Now()
 	state := model.AccountState{
-		AccountID:    AccountIDUnified,
+		AccountID:    c.accountID,
 		Venue:        VenueName,
 		Type:         model.AccountMargin,
 		BaseCurrency: "USD",
-		Balances:     balancesFromWallet(wallet, now),
+		Balances:     balancesFromWallet(wallet, c.accountID, now),
 		Margins:      c.marginBalancesFromWalletAndPositions(wallet, positions, now),
-		ModeInfo:     modeInfoFromBybit(info, c.scope, now),
+		ModeInfo:     modeInfoFromBybit(info, c.accountID, c.scope, now),
 		Reported:     true,
 		TsEvent:      now,
 		TsInit:       now,
@@ -93,7 +104,7 @@ func (c *accountClient) positions(ctx context.Context) ([]model.Position, error)
 			return nil, err
 		}
 		for _, record := range records {
-			pos := positionFromBybit(record, c.provider.resolveVenueSymbol, AccountIDUnified, now)
+			pos := positionFromBybit(record, c.provider.resolveVenueSymbol, c.accountID, now)
 			if pos.InstrumentID.Symbol == "" {
 				continue
 			}
@@ -106,7 +117,7 @@ func (c *accountClient) positions(ctx context.Context) ([]model.Position, error)
 	return out, nil
 }
 
-func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, now time.Time) []model.AccountBalance {
+func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, accountID string, now time.Time) []model.AccountBalance {
 	if wallet == nil {
 		return nil
 	}
@@ -115,7 +126,7 @@ func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, now time.Time) []m
 		if account.TotalEquity != "" || account.TotalAvailableBalance != "" || account.TotalWalletBalance != "" {
 			available := dec(account.TotalAvailableBalance)
 			out = append(out, model.AccountBalance{
-				AccountID: AccountIDUnified,
+				AccountID: accountID,
 				Currency:  "USD",
 				Total:     firstNonZero(dec(account.TotalEquity), dec(account.TotalWalletBalance), available),
 				Free:      available,
@@ -138,7 +149,7 @@ func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, now time.Time) []m
 				free = decimal.Zero
 			}
 			out = append(out, model.AccountBalance{
-				AccountID: AccountIDUnified,
+				AccountID: accountID,
 				Currency:  coin.Coin,
 				Total:     total,
 				Free:      free,
@@ -189,7 +200,7 @@ func (c *accountClient) marginBalancesFromWalletAndPositions(wallet *bybitsdk.Wa
 	return out
 }
 
-func modeInfoFromBybit(info *bybitsdk.AccountInfo, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
+func modeInfoFromBybit(info *bybitsdk.AccountInfo, accountID string, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
 	mode := bybitsdk.AccountModeUnknown
 	marginMode := ""
 	spotHedging := ""
@@ -204,7 +215,7 @@ func modeInfoFromBybit(info *bybitsdk.AccountInfo, scope []enums.InstrumentKind,
 	}
 	return model.AccountModeInfo{
 		Venue:          VenueName,
-		AccountID:      AccountIDUnified,
+		AccountID:      accountID,
 		AccountMode:    string(mode),
 		MarginMode:     firstNonEmpty(marginMode, "unified"),
 		PositionMode:   positionMode,

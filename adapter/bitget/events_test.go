@@ -24,7 +24,7 @@ func TestBitgetOrderWSEventDoesNotCarryIncrementalFillQuantity(t *testing.T) {
 			AvgPrice:    "50000",
 			OrderStatus: "filled",
 		}},
-	}, func(string) model.InstrumentID { return id })
+	}, func(string) model.InstrumentID { return id }, AccountIDUnified)
 
 	if len(events) != 1 {
 		t.Fatalf("events len=%d", len(events))
@@ -38,6 +38,9 @@ func TestBitgetOrderWSEventDoesNotCarryIncrementalFillQuantity(t *testing.T) {
 	}
 	if orderEvent.Order.Status != enums.StatusFilled {
 		t.Fatalf("order status=%s, want filled", orderEvent.Order.Status)
+	}
+	if orderEvent.Order.Request.AccountID != AccountIDUnified {
+		t.Fatalf("order account_id=%q", orderEvent.Order.Request.AccountID)
 	}
 }
 
@@ -53,7 +56,7 @@ func TestBitgetFillWSEventCarriesIncrementalFillQuantity(t *testing.T) {
 			ExecPrice: "50000",
 			ExecQty:   "0.001",
 		}},
-	}, func(string) model.InstrumentID { return id })
+	}, func(string) model.InstrumentID { return id }, AccountIDUnified)
 
 	if len(events) != 1 {
 		t.Fatalf("events len=%d", len(events))
@@ -64,5 +67,8 @@ func TestBitgetFillWSEventCarriesIncrementalFillQuantity(t *testing.T) {
 	}
 	if !fillEvent.Fill.Quantity.Equal(decimal.RequireFromString("0.001")) || fillEvent.Fill.TradeID != "fill-1" {
 		t.Fatalf("unexpected fill event: %+v", fillEvent.Fill)
+	}
+	if fillEvent.Fill.AccountID != AccountIDUnified {
+		t.Fatalf("fill account_id=%q", fillEvent.Fill.AccountID)
 	}
 }

@@ -157,7 +157,12 @@ Runtime ownership is account-id based. A venue may expose multiple account
 states in one process, and cache, portfolio, risk, reconciliation, balances, and
 positions are keyed by account id. Product-specific venues such as Binance Spot
 and USD-M may still use separate nodes, while unified venues such as Lighter can
-run Spot and Perp against the same `LIGHTER:account:<index>` account id.
+run Spot and Perp against the same logical `LIGHTER-001` account id. Venue
+selectors such as Lighter account indexes, Hyperliquid owner/vault/signer
+addresses, OKX `tdMode`, and product scopes are configuration or mode metadata;
+they are not canonical runtime account ids. The phase-one default account-id
+matrix is `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `LIGHTER-001`,
+and `HYPERLIQUID-001`, unless a caller explicitly overrides the logical id.
 
 Risk gates are strict by default for spot orders once this account-state runtime
 path is in use: a missing account state rejects instead of silently falling back
@@ -292,6 +297,12 @@ cleanly when Demo credentials are absent and classify funding, existing open
 orders/exposure, network/proxy, venue rejection, implementation, and cleanup
 failures separately in their failure messages.
 
+The shared `adapter/internal/runtimeaccept` harness treats account-id
+consistency as acceptance evidence: account state, balances, cache mirrors,
+portfolio reads, risk probes, order returns, order status reports, fill reports,
+position reports, reconciliation counters, health, metrics, and lifecycle logs
+must all refer to the same logical account id.
+
 ## Bybit Demo Acceptance
 
 Bybit acceptance uses explicit Bybit Demo credentials and never falls back to
@@ -299,7 +310,7 @@ production or Testnet credentials. The first-stage aggregate targets use
 Bybit's Demo Trading environment because Bybit Testnet derivative writes can be
 blocked by identity/product-access requirements even when Spot writes are
 available. Bybit is treated as a unified-account venue: Spot cash, USDT-linear
-Perp, and USDC-linear Perp share the canonical `BYBIT:unified` account id.
+Perp, and USDC-linear Perp share the canonical logical `BYBIT-001` account id.
 Bybit UTA 1.0, UTA 1.0 Pro, UTA 2.0, and UTA 2.0 Pro account states are
 accepted as official unified-account modes for this Spot/linear phase; Classic
 and unknown account modes fail closed before runtime trading.
@@ -347,7 +358,7 @@ back to production credentials. The first-stage aggregate targets use the
 `demo` name because Bitget is a CEX and its non-production write surface is the
 paper-trading profile. Bitget is treated as a
 unified-account venue: Spot cash, USDT-linear Perp, and USDC-linear Perp share
-the canonical `BITGET:unified` account id. Only UTA/unified account mode is
+the canonical logical `BITGET-001` account id. Only UTA/unified account mode is
 accepted for this phase; classic or unknown account modes fail closed.
 
 Expose credentials and selectors under:
@@ -439,8 +450,8 @@ as a failed acceptance run.
 ## Lighter Testnet Writes
 
 Lighter acceptance uses Lighter Testnet and never falls back to mainnet. Lighter
-uses one unified account index for Spot and Perp, so runtime tests must pass the
-same account id into `runtime.WithAccountID` and verify account-state cache,
+uses one unified account index selector for Spot and Perp, while runtime tests
+use the logical `LIGHTER-001` account id and verify account-state cache,
 portfolio, risk, and reconciliation behavior through that account id.
 
 Expose credentials and selectors under:

@@ -54,7 +54,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXDefault, model.AccountCash, enums.KindSpot)
 	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 before writes", got)
@@ -157,7 +157,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if postBuyReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("post-buy OKX Spot Demo runtime reconcile account states=%d, want 1: %+v", postBuyReconcile.AccountStatesApplied, postBuyReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXDefault, model.AccountCash, enums.KindSpot)
 
 	closeClientID := demoClientOrderID("runtime-close")
 	cleanup.Arm(closeClientID)
@@ -198,7 +198,7 @@ func TestOKXSpotDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final OKX Spot Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXSpot, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDOKXDefault, model.AccountCash, enums.KindSpot)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
 	}

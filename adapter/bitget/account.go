@@ -17,26 +17,36 @@ import (
 )
 
 type accountClient struct {
-	rest     *bitgetsdk.Client
-	provider *instrumentProvider
-	clk      clock.Clock
-	scope    []enums.InstrumentKind
-	stream   *wsstream.Stream[contract.AccountEnvelope]
+	rest      *bitgetsdk.Client
+	provider  *instrumentProvider
+	clk       clock.Clock
+	accountID string
+	scope     []enums.InstrumentKind
+	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
-func newAccountClient(rest *bitgetsdk.Client, provider *instrumentProvider, clk clock.Clock, scope []enums.InstrumentKind) *accountClient {
+func newAccountClient(rest *bitgetsdk.Client, provider *instrumentProvider, clk clock.Clock, scope []enums.InstrumentKind, accountIDs ...string) *accountClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
-	return &accountClient{rest: rest, provider: provider, clk: clk, scope: bitgetKinds(scope), stream: wsstream.New[contract.AccountEnvelope](256)}
+	accountID := ""
+	if len(accountIDs) > 0 {
+		accountID = accountIDs[0]
+	}
+	if accountID == "" {
+		accountID = AccountIDUnified
+	}
+	return &accountClient{rest: rest, provider: provider, clk: clk, accountID: accountID, scope: bitgetKinds(scope), stream: wsstream.New[contract.AccountEnvelope](256)}
 }
+
+func (c *accountClient) AccountID() string { return c.accountID }
 
 func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, error) {
 	assets, err := c.rest.GetAccountAssets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return balancesFromAssets(assets, c.clk.Now()), nil
+	return balancesFromAssets(assets, c.accountID, c.clk.Now()), nil
 }
 
 func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error) {
@@ -65,13 +75,13 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	}
 	now := c.clk.Now()
 	state := model.AccountState{
-		AccountID:    AccountIDUnified,
+		AccountID:    c.accountID,
 		Venue:        VenueName,
 		Type:         model.AccountMargin,
 		BaseCurrency: "USD",
-		Balances:     balancesFromAssets(assets, now),
+		Balances:     balancesFromAssets(assets, c.accountID, now),
 		Margins:      c.marginBalancesFromAssetsAndPositions(assets, positions, now),
-		ModeInfo:     modeInfoFromBitget(info, settings, c.scope, now),
+		ModeInfo:     modeInfoFromBitget(info, settings, c.accountID, c.scope, now),
 		Reported:     true,
 		TsEvent:      now,
 		TsInit:       now,
@@ -91,7 +101,7 @@ func (c *accountClient) positions(ctx context.Context) ([]model.Position, error)
 			return nil, err
 		}
 		for _, record := range records {
-			pos := positionFromBitget(record, c.provider.resolveVenueSymbol, AccountIDUnified, now)
+			pos := positionFromBitget(record, c.provider.resolveVenueSymbol, c.accountID, now)
 			if pos.InstrumentID.Symbol == "" || pos.Quantity.IsZero() {
 				continue
 			}
@@ -101,7 +111,7 @@ func (c *accountClient) positions(ctx context.Context) ([]model.Position, error)
 	return out, nil
 }
 
-func balancesFromAssets(assets *bitgetsdk.AccountAssets, now time.Time) []model.AccountBalance {
+func balancesFromAssets(assets *bitgetsdk.AccountAssets, accountID string, now time.Time) []model.AccountBalance {
 	if assets == nil {
 		return nil
 	}
@@ -113,7 +123,7 @@ func balancesFromAssets(assets *bitgetsdk.AccountAssets, now time.Time) []model.
 		free := dec(asset.Available)
 		total := firstNonZero(dec(asset.Equity), free.Add(dec(asset.Frozen)), dec(asset.USDTValue))
 		out = append(out, model.AccountBalance{
-			AccountID: AccountIDUnified,
+			AccountID: accountID,
 			Currency:  asset.Coin,
 			Total:     total,
 			Free:      free,
@@ -151,7 +161,7 @@ func (c *accountClient) marginBalancesFromAssetsAndPositions(assets *bitgetsdk.A
 	return out
 }
 
-func modeInfoFromBitget(info *bitgetsdk.AccountInfo, settings *bitgetsdk.AccountSettings, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
+func modeInfoFromBitget(info *bitgetsdk.AccountInfo, settings *bitgetsdk.AccountSettings, accountID string, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
 	mode := ""
 	assetMode := ""
 	holdMode := ""
@@ -170,7 +180,7 @@ func modeInfoFromBitget(info *bitgetsdk.AccountInfo, settings *bitgetsdk.Account
 	}
 	return model.AccountModeInfo{
 		Venue:          VenueName,
-		AccountID:      AccountIDUnified,
+		AccountID:      accountID,
 		AccountMode:    mode,
 		MarginMode:     marginModeFromSettings(settings),
 		PositionMode:   firstNonEmpty(holdMode, "single_hold"),

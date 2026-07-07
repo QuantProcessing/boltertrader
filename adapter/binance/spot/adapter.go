@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
 )
 
@@ -25,6 +26,7 @@ type Config struct {
 
 	DemoAPIKey    string
 	DemoAPISecret string
+	AccountID     string
 	HTTPClient    *http.Client
 	Clock         clock.Clock
 }
@@ -76,14 +78,18 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.HTTPClient != nil {
 		rest.HTTPClient = cfg.HTTPClient
 	}
+	accountID := cfg.AccountID
+	if accountID == "" {
+		accountID = model.AccountIDBinanceDefault
+	}
 
 	provider := newInstrumentProvider()
 	if err := provider.Load(ctx, rest); err != nil {
 		return nil, err
 	}
 
-	exec := newExecutionClient(rest, provider, clk)
-	acct := newAccountClient(rest, provider, clk)
+	exec := newExecutionClient(rest, provider, clk, accountID)
+	acct := newAccountClient(rest, provider, clk, accountID)
 	market := newMarketDataClient(rest, wsMarket, provider, clk)
 
 	return &Adapter{
@@ -108,12 +114,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 	resolve := a.provider.resolveVenueSymbol
 
 	ws.SubscribeExecutionReport(func(ev *sdkspot.ExecutionReportEvent) {
-		for _, e := range execEventsFromExecutionReport(ev, resolve) {
+		for _, e := range execEventsFromExecutionReport(ev, resolve, a.exec.accountID) {
 			a.exec.emit(e)
 		}
 	})
 	ws.SubscribeAccountPosition(func(ev *sdkspot.AccountPositionEvent) {
-		for _, e := range accountEventsFromAccountPosition(ev) {
+		for _, e := range accountEventsFromAccountPosition(ev, a.acct.accountID) {
 			a.acct.emit(e)
 		}
 	})
