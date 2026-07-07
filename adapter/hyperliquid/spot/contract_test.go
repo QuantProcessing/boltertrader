@@ -649,7 +649,7 @@ func TestHyperliquidSpotAccountStateReporterCombinesPerpAndSpot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || state.ModeInfo.CollateralMode != "unified" {
+	if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
 		t.Fatalf("state=%+v", state)
 	}
 	if len(state.Balances) != 2 || state.Balances[0].Currency != "USDC" || !state.Balances[0].Free.Equal(d("88")) || state.Balances[1].Currency != "PURR" {

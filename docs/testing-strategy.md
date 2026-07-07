@@ -16,6 +16,10 @@ make test-capabilities
 make test-p6-offline
 ```
 
+The default Make targets use Go's `-short` mode where adapter or SDK packages
+may otherwise discover local credentials. Keep real venue reads/writes on the
+explicit live, demo, or testnet targets below.
+
 ## Test Levels
 
 1. Unit tests cover pure model, enum, cache, risk, accounting, conversion, and
@@ -27,10 +31,10 @@ make test-p6-offline
 4. Scenario tests cover product-level flows such as spot inventory, perp
    funding, futures expiry, options exercise, liquidation, reconnect, and
    reconciliation.
-5. Account-state acceptance tests cover the NT-style safety envelope: account
-   mode discovery, canonical account IDs, balance/free/locked totals, margin
-   requirements, cache freshness, portfolio reads, risk fail-closed behavior,
-   and reconciliation application from one authoritative snapshot.
+5. Account-state acceptance tests cover the NT-style safety envelope: canonical
+   account IDs, reported venue balances/free/locked totals, margin requirements,
+   cache freshness, portfolio reads, risk fail-closed behavior, and
+   reconciliation application from one authoritative snapshot.
 6. Deterministic replay tests feed fixed event streams and assert exact final
    orders, fills, positions, balances, and PnL.
 7. Race and lifecycle tests cover runtime goroutine boundaries, cancellation,
@@ -146,7 +150,7 @@ translation code. Default tests must prove:
   older consumers during migration;
 - portfolio account views can read equity, margin, and exposure from the cache;
 - risk checks can require fresh account state and fail closed when free balance
-  or account mode is insufficient.
+  is missing or insufficient.
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
 fake-venue end-to-end gate for this behavior. Non-production runtime acceptance
@@ -184,6 +188,7 @@ credentials. Examples:
 ```sh
 OKX_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/okx
 BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/binance/perp
+NADO_ENABLE_LIVE_WRITE_TESTS=1 go test ./sdk/nado -run 'TestPlace|TestWs'
 ```
 
 Live write tests may create, modify, cancel, or close real exchange state. They
@@ -312,8 +317,9 @@ blocked by identity/product-access requirements even when Spot writes are
 available. Bybit is treated as a unified-account venue: Spot cash, USDT-linear
 Perp, and USDC-linear Perp share the canonical logical `BYBIT-001` account id.
 Bybit UTA 1.0, UTA 1.0 Pro, UTA 2.0, and UTA 2.0 Pro account states are
-accepted as official unified-account modes for this Spot/linear phase; Classic
-and unknown account modes fail closed before runtime trading.
+accepted as phase-one unified account preflight inputs for this Spot/linear
+phase; Classic and unknown account configurations fail closed before runtime
+trading.
 
 Expose credentials and selectors under:
 
@@ -358,8 +364,9 @@ back to production credentials. The first-stage aggregate targets use the
 `demo` name because Bitget is a CEX and its non-production write surface is the
 paper-trading profile. Bitget is treated as a
 unified-account venue: Spot cash, USDT-linear Perp, and USDC-linear Perp share
-the canonical logical `BITGET-001` account id. Only UTA/unified account mode is
-accepted for this phase; classic or unknown account modes fail closed.
+the canonical logical `BITGET-001` account id. Only UTA/unified account
+configurations are accepted for this phase; classic or unknown configurations
+fail closed.
 
 Expose credentials and selectors under:
 

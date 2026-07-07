@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
@@ -14,14 +13,11 @@ import (
 )
 
 type StateInput struct {
-	AccountID         string
-	AccountMode       sdk.AccountAbstraction
-	Perp              *sdkperp.PerpPosition
-	Spot              *sdk.SpotClearinghouseState
-	ProductScope      []enums.InstrumentKind
-	Now               time.Time
-	Details           map[string]string
-	AccountModeSource string
+	AccountID   string
+	AccountMode sdk.AccountAbstraction
+	Perp        *sdkperp.PerpPosition
+	Spot        *sdk.SpotClearinghouseState
+	Now         time.Time
 }
 
 func BuildAccountState(in StateInput) (model.AccountState, error) {
@@ -38,8 +34,7 @@ func BuildAccountState(in StateInput) (model.AccountState, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	modeInfo, err := modeInfoFromInput(in, now)
-	if err != nil {
+	if err := validateAccountMode(in.AccountMode); err != nil {
 		return model.AccountState{}, err
 	}
 	balances, margins, err := balancesAndMargins(in.AccountID, in.Perp, in.Spot, now)
@@ -53,51 +48,22 @@ func BuildAccountState(in StateInput) (model.AccountState, error) {
 		BaseCurrency: "USDC",
 		Balances:     balances,
 		Margins:      margins,
-		ModeInfo:     modeInfo,
 		Reported:     true,
+		EventID:      model.AccountStateEventID(instruments.VenueName, in.AccountID, now),
 		TsEvent:      now,
 		TsInit:       now,
 	}, nil
 }
 
-func modeInfoFromInput(in StateInput, now time.Time) (model.AccountModeInfo, error) {
-	collateralMode := ""
-	switch in.AccountMode {
+func validateAccountMode(mode sdk.AccountAbstraction) error {
+	switch mode {
 	case sdk.AccountAbstractionDefault:
-		collateralMode = "single_usdc"
 	case sdk.AccountAbstractionUnifiedAccount:
-		collateralMode = "unified"
 	case sdk.AccountAbstractionPortfolioMargin:
-		collateralMode = "portfolio_margin"
 	default:
-		return model.AccountModeInfo{}, fmt.Errorf("hyperliquid account state: unsupported account mode %q", in.AccountMode)
+		return fmt.Errorf("hyperliquid account state: unsupported account mode %q", mode)
 	}
-	scope := append([]enums.InstrumentKind(nil), in.ProductScope...)
-	if len(scope) == 0 {
-		scope = []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}
-	}
-	source := strings.TrimSpace(in.AccountModeSource)
-	if source == "" {
-		source = "hyperliquid.account_state"
-	}
-	details := make(map[string]string, len(in.Details)+1)
-	for k, v := range in.Details {
-		details[k] = v
-	}
-	details["account_mode"] = string(in.AccountMode)
-	return model.AccountModeInfo{
-		Venue:          instruments.VenueName,
-		AccountID:      in.AccountID,
-		AccountMode:    string(in.AccountMode),
-		MarginMode:     "cross",
-		PositionMode:   "net",
-		CollateralMode: collateralMode,
-		ProductScope:   scope,
-		Verified:       true,
-		VerifiedAt:     now,
-		Source:         source,
-		Details:        details,
-	}, nil
+	return nil
 }
 
 func balancesAndMargins(accountID string, perp *sdkperp.PerpPosition, spot *sdk.SpotClearinghouseState, now time.Time) ([]model.AccountBalance, []model.MarginBalance, error) {

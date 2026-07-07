@@ -73,17 +73,10 @@ func TestAccountStateEnvelopeInfersMeta(t *testing.T) {
 			Total:    decimal.RequireFromString("100"),
 			Free:     decimal.RequireFromString("100"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}})
 	if env.Venue != "BINANCE" || env.AccountID != model.AccountIDBinanceDefault {
 		t.Fatalf("account state meta not inferred: %+v", env.EventMeta)

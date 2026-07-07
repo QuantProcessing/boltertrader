@@ -264,21 +264,16 @@ func TestAccountViewsAggregateEquityMarginAndExposure(t *testing.T) {
 		Margins: []model.MarginBalance{
 			{Currency: "USDT", Initial: d("100"), Maintenance: d("50")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    "T:perp",
-			AccountMode:  "perp",
-			ProductScope: []enums.InstrumentKind{enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   now,
-			Source:       "test",
-		},
-		TsEvent: now,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:perp", now),
+		TsEvent:  now,
+		TsInit:   now,
 	}
 	if err := c.ApplyAccountStateAt(state, now); err != nil {
 		t.Fatalf("apply account state: %v", err)
 	}
 	c.UpsertPosition(model.Position{
+		AccountID:     "T:perp",
 		InstrumentID:  id,
 		Side:          enums.PosNet,
 		Quantity:      d("2"),
@@ -318,7 +313,7 @@ func TestAccountViewsAggregateEquityMarginAndExposure(t *testing.T) {
 	}
 }
 
-func TestAccountViewsRejectEmptyProductScopeAtAdmission(t *testing.T) {
+func TestAccountViewsRequireAccountIDOwnership(t *testing.T) {
 	c := cache.New()
 	now := time.Unix(100, 0)
 	if err := c.ApplyAccountStateAt(model.AccountState{
@@ -329,13 +324,31 @@ func TestAccountViewsRejectEmptyProductScopeAtAdmission(t *testing.T) {
 		Balances: []model.AccountBalance{
 			{Currency: "USDT", Total: d("1000"), Free: d("900")},
 		},
-		TsEvent: now,
-	}, now); err == nil {
-		t.Fatal("account state with empty product scope should not enter portfolio account source")
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:perp", now),
+		TsEvent:  now,
+		TsInit:   now,
+	}, now); err != nil {
+		t.Fatalf("mode-free account state should enter portfolio account source: %v", err)
+	}
+	pf := New().WithAccountSource(c)
+	c.UpsertPosition(model.Position{
+		AccountID:    "T:other",
+		InstrumentID: model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		Side:         enums.PosNet,
+		Quantity:     d("1"),
+		MarkPrice:    d("100"),
+	})
+	exposure, ok := pf.NetExposure("T:perp")
+	if !ok {
+		t.Fatal("net exposure account lookup failed")
+	}
+	if len(exposure) != 0 {
+		t.Fatalf("account view should exclude positions owned by another account, got %#v", exposure)
 	}
 }
 
-func TestAccountViewsRespectProductScope(t *testing.T) {
+func TestAccountViewsUseAccountIDInsteadOfProductMetadata(t *testing.T) {
 	c := cache.New()
 	now := time.Unix(100, 0)
 	perpID := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
@@ -347,21 +360,16 @@ func TestAccountViewsRespectProductScope(t *testing.T) {
 		Balances: []model.AccountBalance{
 			{Currency: "USDT", Total: d("100"), Free: d("80"), Locked: d("20")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    "T:spot",
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   now,
-			Source:       "test",
-		},
-		TsEvent: now,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:spot", now),
+		TsEvent:  now,
+		TsInit:   now,
 	}
 	if err := c.ApplyAccountStateAt(spotState, now); err != nil {
 		t.Fatalf("apply spot account state: %v", err)
 	}
 	c.UpsertPosition(model.Position{
+		AccountID:     "T:other",
 		InstrumentID:  perpID,
 		Side:          enums.PosNet,
 		Quantity:      d("1"),

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
@@ -36,14 +37,14 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	if state.AccountID != accountID {
 		t.Fatalf("runtime account state account_id=%q, want %q", state.AccountID, accountID)
 	}
-	if state.ModeInfo.AccountID != accountID {
-		t.Fatalf("runtime account mode info account_id=%q, want %q", state.ModeInfo.AccountID, accountID)
+	if kind == enums.KindUnknown {
+		t.Fatalf("runtime account %s requires a concrete product kind", accountID)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("runtime account %s mode info not verified: %v", accountID, err)
+	if err := runtimeProductSupportReady(node.RuntimeCapabilities(), node.Exec != nil, kind); err != nil {
+		t.Fatalf("runtime account %s product %s support incomplete: %v", accountID, kind, err)
 	}
-	if !supportsKind(state.ModeInfo.ProductScope, kind) {
-		t.Fatalf("runtime account %s scope=%v, want %s", accountID, state.ModeInfo.ProductScope, kind)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("runtime account %s state envelope incomplete: %+v", accountID, state)
 	}
 	if !acct.IsFresh(time.Now()) {
 		t.Fatalf("runtime account %s is not fresh after reconcile: %+v", accountID, acct.Freshness())
@@ -85,6 +86,34 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	if health.Accounts == 0 || health.AccountStateAgeNs < 0 {
 		t.Fatalf("runtime health did not expose account state: %+v", health)
 	}
+}
+
+func runtimeProductSupportReady(caps []contract.Capabilities, requireTrading bool, kind enums.InstrumentKind) error {
+	if kind == enums.KindUnknown {
+		return fmt.Errorf("product kind is required")
+	}
+	trading := false
+	accountState := false
+	for _, cap := range caps {
+		for _, product := range cap.Products {
+			if product.Kind != kind {
+				continue
+			}
+			if product.Trading && cap.Trading.Submit {
+				trading = true
+			}
+			if product.Account && (cap.Reports.AccountStateSnapshots || cap.Streaming.AccountState) {
+				accountState = true
+			}
+		}
+	}
+	if requireTrading && !trading {
+		return fmt.Errorf("missing trading submit capability for %s", kind)
+	}
+	if !accountState {
+		return fmt.Errorf("missing account-state capability for %s", kind)
+	}
+	return nil
 }
 
 func AssertOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID) {
@@ -203,16 +232,4 @@ func WaitForPortfolioFlat(ctx context.Context, node *btruntime.TradingNode, id m
 		case <-ticker.C:
 		}
 	}
-}
-
-func supportsKind(scope []enums.InstrumentKind, kind enums.InstrumentKind) bool {
-	if len(scope) == 0 {
-		return false
-	}
-	for _, got := range scope {
-		if got == kind {
-			return true
-		}
-	}
-	return false
 }

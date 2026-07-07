@@ -3,7 +3,6 @@ package nado
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +17,12 @@ import (
 
 func requireFullEnv(t *testing.T) {
 	t.Helper()
-	testenv.RequireFull(t, "NADO_PRIVATE_KEY", "NADO_SUBACCOUNT_NAME")
+	testenv.RequireLiveRead(t, "NADO_PRIVATE_KEY", "NADO_SUBACCOUNT_NAME")
+}
+
+func requireWriteEnv(t *testing.T) {
+	t.Helper()
+	testenv.RequireLiveWrite(t, "NADO_ENABLE_LIVE_WRITE_TESTS", "NADO_PRIVATE_KEY", "NADO_SUBACCOUNT_NAME")
 }
 
 func GetEnv() (string, string) {
@@ -60,7 +64,7 @@ func TestGetNonces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println(nonces)
+	t.Logf("nonces=%+v", nonces)
 }
 
 func TestGetCandlesticks(t *testing.T) {
@@ -79,32 +83,32 @@ func TestGetCandlesticks(t *testing.T) {
 			},
 		})
 	})
-	fmt.Println(candlesticks)
+	t.Logf("candlesticks=%+v", candlesticks)
 }
 
 func TestGetContracts(t *testing.T) {
+	testenv.RequireLiveRead(t)
 	client := NewClient()
 	contracts, err := client.GetContracts(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println(contracts)
+	t.Logf("contracts=%d", len(contracts))
 }
 
 func TestGetTickers(t *testing.T) {
+	testenv.RequireLiveRead(t)
 	client := NewClient()
 	tickers, err := client.GetTickers(context.Background(), MarketTypePerp, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println(tickers)
+	t.Logf("tickers=%d", len(tickers))
 }
 
 // TestGetFundingRate tests the GetFundingRate method
 func TestGetFundingRate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+	testenv.RequireLiveRead(t)
 
 	client := NewClient()
 	ctx := context.Background()
@@ -134,9 +138,7 @@ func TestGetFundingRate(t *testing.T) {
 
 // TestGetAllFundingRates tests the GetAllFundingRates method
 func TestGetAllFundingRates(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test")
-	}
+	testenv.RequireLiveRead(t)
 
 	client := NewClient()
 	ctx := context.Background()

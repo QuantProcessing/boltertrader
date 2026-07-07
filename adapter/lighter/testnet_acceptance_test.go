@@ -44,11 +44,8 @@ func TestLighterTestnetReadAcceptance(t *testing.T) {
 	if err := state.Validate(); err != nil {
 		t.Fatalf("account state should validate: %v", err)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("account mode should be verified: %v", err)
-	}
-	if !scopeContains(state.ModeInfo.ProductScope, enums.KindSpot) || !scopeContains(state.ModeInfo.ProductScope, enums.KindPerp) {
-		t.Fatalf("account product scope=%v, want spot and perp", state.ModeInfo.ProductScope)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if len(state.Balances) == 0 {
 		t.Fatalf("account state has no balances")
@@ -209,11 +206,11 @@ func lighterRestingBuyPrice(inst *model.Instrument, book *model.OrderBook) decim
 		tick = decimal.RequireFromString("0.01")
 	}
 	price := tick
-	if book != nil && len(book.Asks) > 0 {
-		price = book.Asks[0].Price.Sub(tick)
-	}
-	if book != nil && len(book.Bids) > 0 && !price.GreaterThan(book.Bids[0].Price) {
-		price = book.Bids[0].Price.Sub(tick)
+	offset := tick.Mul(decimal.NewFromInt(10))
+	if book != nil && len(book.Bids) > 0 {
+		price = book.Bids[0].Price.Sub(offset)
+	} else if book != nil && len(book.Asks) > 0 {
+		price = book.Asks[0].Price.Sub(offset)
 	}
 	if !price.IsPositive() {
 		price = tick

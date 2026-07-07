@@ -7,7 +7,6 @@ import (
 	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -71,17 +70,11 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		return model.AccountState{}, err
 	}
 	return hlaccount.BuildAccountState(hlaccount.StateInput{
-		AccountID:         c.accountID,
-		AccountMode:       mode,
-		Perp:              perpState,
-		Spot:              spotState,
-		ProductScope:      []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
-		Now:               c.clk.Now(),
-		AccountModeSource: "userAbstraction",
-		Details: map[string]string{
-			"account_address": c.rest.AccountAddr,
-			"adapter":         "spot",
-		},
+		AccountID:   c.accountID,
+		AccountMode: mode,
+		Perp:        perpState,
+		Spot:        spotState,
+		Now:         c.clk.Now(),
 	})
 }
 

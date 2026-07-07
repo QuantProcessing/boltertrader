@@ -91,17 +91,14 @@ func TestAccountStateFromLighterAccountIsUnifiedMargin(t *testing.T) {
 	if err := state.Validate(); err != nil {
 		t.Fatalf("state should validate: %v", err)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("mode info should validate: %v", err)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if got := state.Balances[1].Total; !got.Equal(decimal.RequireFromString("10000")) {
 		t.Fatalf("USDC total=%s, want 10000", got)
 	}
 	if got := state.Margins[0].Initial; !got.Equal(decimal.RequireFromString("10")) {
 		t.Fatalf("initial margin=%s, want 10", got)
-	}
-	if state.ModeInfo.Details["account_index"] != "66" || state.ModeInfo.Details["account_trading_mode"] != "1" {
-		t.Fatalf("missing mode details: %+v", state.ModeInfo.Details)
 	}
 }
 

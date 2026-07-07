@@ -144,6 +144,31 @@ func TestCancelReplaceOrderResponse_UnmarshalJSON(t *testing.T) {
 	}
 }
 
+func TestOrderResponseUnmarshalFullFills(t *testing.T) {
+	var got OrderResponse
+	err := json.Unmarshal([]byte(`{
+		"symbol":"ETHUSDT",
+		"orderId":555,
+		"clientOrderId":"c-fill",
+		"status":"FILLED",
+		"executedQty":"0.0100",
+		"cummulativeQuoteQty":"30.00",
+		"fills":[
+			{"price":"3000.00","qty":"0.0100","commission":"0.003","commissionAsset":"BNB","tradeId":456}
+		]
+	}`), &got)
+	if err != nil {
+		t.Fatalf("UnmarshalJSON returned error: %v", err)
+	}
+	if len(got.Fills) != 1 {
+		t.Fatalf("fills len=%d, want 1", len(got.Fills))
+	}
+	fill := got.Fills[0]
+	if fill.TradeID != 456 || fill.Price != "3000.00" || fill.Qty != "0.0100" || fill.CommissionAsset != "BNB" {
+		t.Fatalf("unexpected fill: %+v", fill)
+	}
+}
+
 func envOrDefault(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

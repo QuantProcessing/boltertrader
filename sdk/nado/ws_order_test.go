@@ -2,7 +2,6 @@ package nado
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -22,7 +21,7 @@ func connectWsAPI(t *testing.T, client *WsApiClient) {
 }
 
 func TestWsPlaceOrder(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	if subaccount == "" {
 		subaccount = "default"
@@ -47,7 +46,7 @@ func TestWsPlaceOrder(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatal(err)
 	}
-	fmt.Println(order)
+	t.Logf("order=%+v", order)
 
 	time.Sleep(10 * time.Second)
 
@@ -58,11 +57,11 @@ func TestWsPlaceOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Println("order canceled", cancelResp)
+	t.Logf("order canceled: %+v", cancelResp)
 }
 
 func TestWsCancelAndPlace(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	if subaccount == "" {
 		subaccount = "default"
@@ -87,7 +86,7 @@ func TestWsCancelAndPlace(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatal(err)
 	}
-	fmt.Println(order)
+	t.Logf("order=%+v", order)
 
 	time.Sleep(10 * time.Second)
 
@@ -107,5 +106,5 @@ func TestWsCancelAndPlace(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatal(err)
 	}
-	fmt.Println("order canceled", cancelResp)
+	t.Logf("order canceled: %+v", cancelResp)
 }

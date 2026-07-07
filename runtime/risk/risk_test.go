@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
@@ -214,16 +215,10 @@ func TestSpotRiskUsesAccountFreeBalanceWhenPresent(t *testing.T) {
 		Balances: []model.AccountBalance{
 			{Currency: "USDT", Total: d("50"), Free: d("50")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    "T:spot",
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   now,
-			Source:       "test",
-		},
-		TsEvent: now,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:spot", now),
+		TsEvent:  now,
+		TsInit:   now,
 	}, now); err != nil {
 		t.Fatalf("apply account state: %v", err)
 	}
@@ -256,7 +251,7 @@ func TestRiskUsesExplicitOrderAccountID(t *testing.T) {
 	}
 }
 
-func TestRiskAllowsUnifiedMarginAccountForSpotWhenScopeIncludesSpot(t *testing.T) {
+func TestRiskAllowsMarginAccountForSpotCashPath(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
 	applyUnifiedMarginAccount(t, c, "T:unified", now)
@@ -265,7 +260,7 @@ func TestRiskAllowsUnifiedMarginAccountForSpotWhenScopeIncludesSpot(t *testing.T
 	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
 
 	if err := e.Check(req, spot); err != nil {
-		t.Fatalf("unified margin account with spot scope should pass spot risk, got %v", err)
+		t.Fatalf("margin account with reported spot balances should pass spot risk, got %v", err)
 	}
 }
 
@@ -330,7 +325,7 @@ func TestAccountRequiredRejectsMissingFreeBalance(t *testing.T) {
 	}
 }
 
-func TestAccountRequiredRejectsUnsupportedAccountMode(t *testing.T) {
+func TestAccountRequiredRejectsUnsupportedAccountType(t *testing.T) {
 	now := time.Unix(100, 0)
 	c := cache.New()
 	if err := c.ApplyAccountStateAt(model.AccountState{
@@ -341,41 +336,42 @@ func TestAccountRequiredRejectsUnsupportedAccountMode(t *testing.T) {
 		Balances: []model.AccountBalance{
 			{Currency: "USDT", Total: d("1000"), Free: d("1000")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    "T:spot",
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   now,
-			Source:       "test",
-		},
-		TsEvent: now,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:spot", now),
+		TsEvent:  now,
+		TsInit:   now,
 	}, now); err != nil {
 		t.Fatalf("apply account state: %v", err)
 	}
 	e := New(Limits{}, c).WithClock(func() time.Time { return now }).RequireAccountState()
 
 	err := e.Check(buy("1", "100"), nil)
-	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "unsupported account mode") {
-		t.Fatalf("want unsupported-mode rejection, got %v", err)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "unsupported account type") {
+		t.Fatalf("want unsupported-account-type rejection, got %v", err)
 	}
 }
 
-func TestAccountRequiredRejectsEmptyProductScope(t *testing.T) {
-	now := time.Unix(100, 0)
-	c := cache.New()
-	if err := c.ApplyAccountStateAt(model.AccountState{
-		AccountID:    "T:perp",
-		Venue:        "T",
-		Type:         model.AccountMargin,
-		BaseCurrency: "USDT",
-		Balances: []model.AccountBalance{
-			{Currency: "USDT", Total: d("1000"), Free: d("1000")},
-		},
-		TsEvent: now,
-	}, now); err == nil {
-		t.Fatal("account admission should reject empty product scope before risk sees it")
+func TestProductCapabilityGateRejectsUnsupportedTradingProduct(t *testing.T) {
+	e := New(Limits{}, cache.New())
+	e.SetRuntimeCapabilities()
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "unsupported product") {
+		t.Fatalf("want unsupported product rejection, got %v", err)
+	}
+}
+
+func TestProductCapabilityGateRequiresAccountStateSupport(t *testing.T) {
+	e := New(Limits{}, cache.New()).RequireAccountState()
+	e.SetRuntimeCapabilities(contract.Capabilities{
+		Venue:    "T",
+		Products: []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true}},
+		Trading:  contract.TradingCapabilities{Submit: true},
+	})
+
+	err := e.Check(buy("1", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "account-state-backed risk") {
+		t.Fatalf("want missing account-state product support rejection, got %v", err)
 	}
 }
 
@@ -401,17 +397,10 @@ func TestUnifiedCollateralMarginCanUseBaseCurrencyFreeBalance(t *testing.T) {
 		Balances: []model.AccountBalance{
 			{Currency: "USD", Total: d("1000"), Free: d("1000")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:          "T",
-			AccountID:      "T:unified",
-			AccountMode:    "unified",
-			CollateralMode: "unified",
-			ProductScope:   []enums.InstrumentKind{enums.KindPerp},
-			Verified:       true,
-			VerifiedAt:     now,
-			Source:         "test",
-		},
-		TsEvent: now,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:unified", now),
+		TsEvent:  now,
+		TsInit:   now,
 	}
 	if err := c.ApplyAccountStateAt(state, now); err != nil {
 		t.Fatalf("apply unified margin account: %v", err)
@@ -426,8 +415,9 @@ func TestUnifiedCollateralMarginCanUseBaseCurrencyFreeBalance(t *testing.T) {
 	}
 	inst := &model.Instrument{ID: req.InstrumentID, Settle: "USDC"}
 
-	if err := e.Check(req, inst); err != nil {
-		t.Fatalf("unified USD free balance should satisfy USDC margin check: %v", err)
+	err := e.Check(req, inst)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "missing free balance for USDC") {
+		t.Fatalf("base-currency free balance should not be used as generic unified collateral, got %v", err)
 	}
 }
 
@@ -441,16 +431,10 @@ func applyMarginAccount(t *testing.T, c *cache.Cache, accountID string, eventTim
 		Balances: []model.AccountBalance{
 			{Currency: balanceCurrency, Total: d("1000"), Free: d("1000")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    accountID,
-			AccountMode:  "perp",
-			ProductScope: []enums.InstrumentKind{enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   eventTime,
-			Source:       "test",
-		},
-		TsEvent: eventTime,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, eventTime),
+		TsEvent:  eventTime,
+		TsInit:   eventTime,
 	}
 	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
 		t.Fatalf("apply margin account: %v", err)
@@ -467,16 +451,10 @@ func applyCashAccount(t *testing.T, c *cache.Cache, accountID string, eventTime 
 		Balances: []model.AccountBalance{
 			{AccountID: accountID, Currency: "USDT", Total: d(free), Free: d(free)},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    accountID,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   eventTime,
-			Source:       "test",
-		},
-		TsEvent: eventTime,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, eventTime),
+		TsEvent:  eventTime,
+		TsInit:   eventTime,
 	}
 	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
 		t.Fatalf("apply cash account: %v", err)
@@ -494,16 +472,10 @@ func applyUnifiedMarginAccount(t *testing.T, c *cache.Cache, accountID string, e
 			{AccountID: accountID, Currency: "USDT", Total: d("1000"), Free: d("1000")},
 			{AccountID: accountID, Currency: "BTC", Total: d("1"), Free: d("1")},
 		},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    accountID,
-			AccountMode:  "unified",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   eventTime,
-			Source:       "test",
-		},
-		TsEvent: eventTime,
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, eventTime),
+		TsEvent:  eventTime,
+		TsInit:   eventTime,
 	}
 	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
 		t.Fatalf("apply unified margin account: %v", err)

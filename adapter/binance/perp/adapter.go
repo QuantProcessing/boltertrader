@@ -15,7 +15,7 @@ type Config struct {
 	APIKey    string
 	APISecret string
 	// AccountID is the logical runtime account id. Product scope (USD-M perp)
-	// remains modeled separately in AccountState/ModeInfo.
+	// remains modeled separately in AccountState.
 	AccountID string
 	// Environment selects Binance production or Demo endpoints. Zero value is
 	// LIVE; Demo is retained below as a compatibility shortcut.

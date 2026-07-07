@@ -3,7 +3,6 @@ package nado
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 )
 
@@ -18,7 +17,7 @@ func TestFeeRates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fmt.Printf("%+v\n", feeRates)
+	t.Logf("fee_rates=%+v", feeRates)
 }
 
 func TestGetAccount(t *testing.T) {
@@ -33,5 +32,5 @@ func TestGetAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(account)
-	fmt.Printf("%+v\n", string(data))
+	t.Logf("account=%s", string(data))
 }

@@ -137,11 +137,11 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		if state.AccountID == "" {
 			state.AccountID = scopeAccountID
 		}
-		if state.ModeInfo.AccountID == "" {
-			state.ModeInfo.AccountID = state.AccountID
-		}
 		if scopeAccountID == "" {
 			scopeAccountID = state.AccountID
+		}
+		if state.EventID == "" {
+			state.EventID = model.AccountStateEventID(state.Venue, state.AccountID, state.TsEvent)
 		}
 		appliedAt := time.Now()
 		if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {

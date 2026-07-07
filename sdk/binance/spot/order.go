@@ -8,19 +8,28 @@ import (
 // Order Placement
 
 type OrderResponse struct {
-	Symbol              string `json:"symbol"`
-	OrderID             int64  `json:"orderId"`
-	OrderListID         int64  `json:"orderListId"`
-	ClientOrderID       string `json:"clientOrderId"`
-	TransactTime        int64  `json:"transactTime"`
-	Price               string `json:"price"`
-	OrigQty             string `json:"origQty"`
-	ExecutedQty         string `json:"executedQty"`
-	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
-	Status              string `json:"status"`
-	TimeInForce         string `json:"timeInForce"`
-	Type                string `json:"type"`
-	Side                string `json:"side"`
+	Symbol              string      `json:"symbol"`
+	OrderID             int64       `json:"orderId"`
+	OrderListID         int64       `json:"orderListId"`
+	ClientOrderID       string      `json:"clientOrderId"`
+	TransactTime        int64       `json:"transactTime"`
+	Price               string      `json:"price"`
+	OrigQty             string      `json:"origQty"`
+	ExecutedQty         string      `json:"executedQty"`
+	CummulativeQuoteQty string      `json:"cummulativeQuoteQty"`
+	Status              string      `json:"status"`
+	TimeInForce         string      `json:"timeInForce"`
+	Type                string      `json:"type"`
+	Side                string      `json:"side"`
+	Fills               []OrderFill `json:"fills,omitempty"`
+}
+
+type OrderFill struct {
+	Price           string `json:"price"`
+	Qty             string `json:"qty"`
+	Commission      string `json:"commission"`
+	CommissionAsset string `json:"commissionAsset"`
+	TradeID         int64  `json:"tradeId"`
 }
 
 type PlaceOrderParams struct {

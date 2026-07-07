@@ -229,10 +229,11 @@ evidence until the account is clean and the place/cancel path actually runs.
 Bybit and Bitget runtime acceptance use the same NT-style safety envelope for
 their first unified-account slice. The node must reconcile one authoritative
 account state before private stream startup, portfolio and risk must read by
-canonical account id, unsupported account modes must fail closed, and the order
-lifecycle must pass through runtime execution with a resting cancel, IOC fill,
-IOC close, final open-order check, and final reconciliation. These targets are
-not accepted when they skip or cannot reach the live venue.
+canonical account id, unsupported venue account configurations must fail
+closed, and the order lifecycle must pass through runtime execution with a
+resting cancel, IOC fill, IOC close, final open-order check, and final
+reconciliation. These targets are not accepted when they skip or cannot reach
+the live venue.
 
 Risk engine behavior remains covered by deterministic runtime tests. Add a
 separate non-production risk-gate acceptance only when the desired assertion

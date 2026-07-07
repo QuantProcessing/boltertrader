@@ -21,7 +21,6 @@ type accountClient struct {
 	provider  *instrumentProvider
 	clk       clock.Clock
 	accountID string
-	scope     []enums.InstrumentKind
 	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
@@ -36,7 +35,7 @@ func newAccountClient(rest *bitgetsdk.Client, provider *instrumentProvider, clk 
 	if accountID == "" {
 		accountID = AccountIDUnified
 	}
-	return &accountClient{rest: rest, provider: provider, clk: clk, accountID: accountID, scope: bitgetKinds(scope), stream: wsstream.New[contract.AccountEnvelope](256)}
+	return &accountClient{rest: rest, provider: provider, clk: clk, accountID: accountID, stream: wsstream.New[contract.AccountEnvelope](256)}
 }
 
 func (c *accountClient) AccountID() string { return c.accountID }
@@ -54,10 +53,6 @@ func (c *accountClient) Positions(ctx context.Context) ([]model.Position, error)
 }
 
 func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, error) {
-	info, err := c.rest.GetAccountInfo(ctx)
-	if err != nil {
-		return model.AccountState{}, err
-	}
 	settings, err := c.rest.GetAccountSettings(ctx)
 	if err != nil {
 		return model.AccountState{}, err
@@ -81,8 +76,8 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		BaseCurrency: "USD",
 		Balances:     balancesFromAssets(assets, c.accountID, now),
 		Margins:      c.marginBalancesFromAssetsAndPositions(assets, positions, now),
-		ModeInfo:     modeInfoFromBitget(info, settings, c.accountID, c.scope, now),
 		Reported:     true,
+		EventID:      model.AccountStateEventID(VenueName, c.accountID, now),
 		TsEvent:      now,
 		TsInit:       now,
 	}
@@ -159,51 +154,6 @@ func (c *accountClient) marginBalancesFromAssetsAndPositions(assets *bitgetsdk.A
 		out = append(out, model.MarginBalance{Currency: inst.Settle, InstrumentID: &id, UpdatedAt: now})
 	}
 	return out
-}
-
-func modeInfoFromBitget(info *bitgetsdk.AccountInfo, settings *bitgetsdk.AccountSettings, accountID string, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
-	mode := ""
-	assetMode := ""
-	holdMode := ""
-	accountLevel := ""
-	if settings != nil {
-		mode = strings.ToUpper(settings.AccountMode)
-		assetMode = settings.AssetMode
-		holdMode = settings.HoldMode
-		accountLevel = settings.AccountLevel
-	}
-	userID := ""
-	permType := ""
-	if info != nil {
-		userID = info.UserID
-		permType = info.PermType
-	}
-	return model.AccountModeInfo{
-		Venue:          VenueName,
-		AccountID:      accountID,
-		AccountMode:    mode,
-		MarginMode:     marginModeFromSettings(settings),
-		PositionMode:   firstNonEmpty(holdMode, "single_hold"),
-		CollateralMode: firstNonEmpty(assetMode, "union"),
-		ProductScope:   bitgetKinds(scope),
-		Verified:       isUnifiedMode(mode),
-		VerifiedAt:     now,
-		Source:         "GET /api/v3/account/info + GET /api/v3/account/settings + GET /api/v3/account/assets",
-		Details: map[string]string{
-			"userId":       userID,
-			"permType":     permType,
-			"accountLevel": accountLevel,
-			"assetMode":    assetMode,
-			"holdMode":     holdMode,
-		},
-	}
-}
-
-func marginModeFromSettings(settings *bitgetsdk.AccountSettings) string {
-	if settings == nil || len(settings.SymbolSettings) == 0 {
-		return "crossed"
-	}
-	return firstNonEmpty(settings.SymbolSettings[0].MarginMode, "crossed")
 }
 
 func isUnifiedMode(mode string) bool {

@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/shopspring/decimal"
 )
 
@@ -80,19 +79,8 @@ func TestAccountStateValidateTradingReady(t *testing.T) {
 			Total:    decimal.RequireFromString("100"),
 			Free:     decimal.RequireFromString("100"),
 		}},
-		ModeInfo: AccountModeInfo{
-			Venue:          "BINANCE",
-			AccountID:      AccountIDBinanceDefault,
-			AccountMode:    "spot",
-			MarginMode:     "none",
-			PositionMode:   "net",
-			CollateralMode: "cash",
-			ProductScope:   []enums.InstrumentKind{enums.KindSpot},
-			Verified:       true,
-			VerifiedAt:     now,
-			Source:         "fixture",
-		},
 		Reported: true,
+		EventID:  AccountStateEventID("BINANCE", AccountIDBinanceDefault, now),
 		TsEvent:  now,
 		TsInit:   now,
 	}
@@ -101,16 +89,29 @@ func TestAccountStateValidateTradingReady(t *testing.T) {
 		t.Fatalf("valid trading-ready state rejected: %v", err)
 	}
 
-	state.ModeInfo.Verified = false
+	state.Reported = false
 	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {
-		t.Fatal("unverified mode info should reject trading-ready state")
+		t.Fatal("unreported state should reject trading-ready state")
 	}
-	state.ModeInfo.Verified = true
-	state.ModeInfo.ProductScope = nil
+	state.Reported = true
+
+	state.EventID = ""
 	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {
-		t.Fatal("verified mode info without product scope should reject trading-ready state")
+		t.Fatal("missing event id should reject trading-ready state")
 	}
-	state.ModeInfo.ProductScope = []enums.InstrumentKind{enums.KindSpot}
+	state.EventID = AccountStateEventID("BINANCE", AccountIDBinanceDefault, now)
+
+	state.TsEvent = time.Time{}
+	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {
+		t.Fatal("missing event timestamp should reject trading-ready state")
+	}
+	state.TsEvent = now
+
+	state.TsInit = time.Time{}
+	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {
+		t.Fatal("missing init timestamp should reject trading-ready state")
+	}
+	state.TsInit = now
 
 	state.AccountID = ""
 	if err := state.Validate(); err == nil {

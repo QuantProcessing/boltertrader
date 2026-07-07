@@ -341,10 +341,30 @@ func (n *TradingNode) accountIDReady() error {
 // minimums; it may be nil. No-op if the node has no execution client.
 func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
 	return func(n *TradingNode) {
+		if aware, ok := r.(interface {
+			SetRuntimeCapabilities(...contract.Capabilities)
+		}); ok {
+			aware.SetRuntimeCapabilities(runtimeRiskCapabilities(n.clients)...)
+		}
 		if n.Exec != nil {
 			n.Exec.WithRisk(r, provider)
 		}
 	}
+}
+
+func runtimeRiskCapabilities(clients Clients) []contract.Capabilities {
+	caps := make([]contract.Capabilities, 0, 2)
+	if clients.Execution != nil {
+		caps = append(caps, clients.Execution.Capabilities())
+	}
+	if clients.Account != nil {
+		caps = append(caps, clients.Account.Capabilities())
+	}
+	return caps
+}
+
+func (n *TradingNode) RuntimeCapabilities() []contract.Capabilities {
+	return runtimeRiskCapabilities(n.clients)
 }
 
 // WithObserver registers an observability sink that receives lifecycle, order,
@@ -829,33 +849,51 @@ func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient
 // goroutine.
 func (n *TradingNode) onAccount(env contract.AccountEnvelope) {
 	applied := time.Now()
-	switch e := env.Payload.(type) {
+	payload, meta := n.normalizedAccountPayloadAndMeta(env)
+	switch e := payload.(type) {
 	case contract.BalanceEvent:
-		balance := e.Balance
-		if balance.AccountID == "" {
-			balance.AccountID = n.accountID
-		}
-		n.Cache.UpsertBalance(balance)
+		n.Cache.UpsertBalance(e.Balance)
 	case contract.PositionEvent:
-		position := e.Position
-		if position.AccountID == "" {
-			position.AccountID = n.accountID
-		}
-		n.Cache.UpsertPosition(position)
+		n.Cache.UpsertPosition(e.Position)
 	case contract.AccountStateEvent:
-		state := e.State
-		if state.AccountID == "" {
-			state.AccountID = n.accountID
-		}
-		if state.ModeInfo.AccountID == "" {
-			state.ModeInfo.AccountID = state.AccountID
-		}
-		if err := n.Cache.ApplyAccountStateAt(state, applied); err != nil {
+		if err := n.Cache.ApplyAccountStateAt(e.State, applied); err != nil {
 			n.life.ForceFailed(err.Error())
 			n.emitHealth("failed", err.Error())
 		}
 	}
-	n.recordEventLatency(latency.ChainAccount, env.Meta(), applied, time.Now())
+	n.recordEventLatency(latency.ChainAccount, meta, applied, time.Now())
+}
+
+func (n *TradingNode) normalizedAccountPayloadAndMeta(env contract.AccountEnvelope) (contract.AccountEvent, contract.EventMeta) {
+	meta := env.Meta()
+	switch e := env.Payload.(type) {
+	case contract.BalanceEvent:
+		if e.Balance.AccountID == "" {
+			e.Balance.AccountID = n.accountID
+		}
+		meta.AccountID = e.Balance.AccountID
+		return e, meta
+	case contract.PositionEvent:
+		if e.Position.AccountID == "" {
+			e.Position.AccountID = n.accountID
+		}
+		meta.AccountID = e.Position.AccountID
+		return e, meta
+	case contract.AccountStateEvent:
+		if e.State.AccountID == "" {
+			e.State.AccountID = n.accountID
+		}
+		if e.State.EventID == "" || meta.AccountID != e.State.AccountID {
+			e.State.EventID = model.AccountStateEventID(e.State.Venue, e.State.AccountID, e.State.TsEvent)
+		}
+		meta.Venue = e.State.Venue
+		meta.AccountID = e.State.AccountID
+		meta.TsVenue = e.State.TsEvent
+		meta.EventID = e.State.EventID
+		return e, meta
+	default:
+		return env.Payload, meta
+	}
 }
 
 // onMarket is the DataEngine: it writes the latest market snapshot to the cache

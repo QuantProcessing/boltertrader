@@ -246,7 +246,10 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 		meta.Venue = p.State.Venue
 		meta.AccountID = p.State.AccountID
 		meta.TsVenue = p.State.TsEvent
-		meta.EventID = model.EventID(joinEventID("account", "state", p.State.Venue, p.State.AccountID, p.State.TsEvent.Format(time.RFC3339Nano)))
+		meta.EventID = p.State.EventID
+		if meta.EventID == "" {
+			meta.EventID = model.AccountStateEventID(p.State.Venue, p.State.AccountID, p.State.TsEvent)
+		}
 	}
 	if meta.EventID == "" {
 		meta.EventID = model.EventID(joinEventID("account", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))

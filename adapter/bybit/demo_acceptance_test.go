@@ -146,8 +146,11 @@ func runBybitAcceptance(t *testing.T, label, apiKey, apiSecret string, profile t
 	if state.AccountID != AccountIDUnified {
 		t.Fatalf("%s account id=%q, want %q", label, state.AccountID, AccountIDUnified)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("%s mode info invalid: %v", label, err)
+	if err := state.Validate(); err != nil {
+		t.Fatalf("%s account state invalid: %v", label, err)
+	}
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("%s account state envelope incomplete: %+v", label, state)
 	}
 	ensureBybitLifecycleFunds(t, label, adapter, state, lifecycle)
 	if _, err := runtimeaccept.RunAdapterOrderLifecycle(ctx, adapter.Execution, lifecycle); err != nil {
@@ -323,9 +326,15 @@ func bybitAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string, 
 	if !ok {
 		t.Fatalf("%s instrument %s not available", label, id)
 	}
+	fillMultiplier := decimal.RequireFromString("1.001")
+	closeMultiplier := decimal.RequireFromString("0.999")
+	if inst.ID.Kind != enums.KindSpot {
+		fillMultiplier = decimal.RequireFromString("1.01")
+		closeMultiplier = decimal.RequireFromString("0.99")
+	}
 	restingPrice := floorBybitAcceptanceDecimal(book.Bids[0].Price.Mul(decimal.RequireFromString("0.80")), inst.PriceTick)
-	fillPrice := ceilBybitAcceptanceDecimal(book.Asks[0].Price.Mul(decimal.RequireFromString("1.001")), inst.PriceTick)
-	closePrice := floorBybitAcceptanceDecimal(book.Bids[0].Price.Mul(decimal.RequireFromString("0.999")), inst.PriceTick)
+	fillPrice := ceilBybitAcceptanceDecimal(book.Asks[0].Price.Mul(fillMultiplier), inst.PriceTick)
+	closePrice := floorBybitAcceptanceDecimal(book.Bids[0].Price.Mul(closeMultiplier), inst.PriceTick)
 	qty := bybitAcceptanceQuantity(t, label, inst, maxNotional, minPositiveBybitDecimal(restingPrice, fillPrice, closePrice), maxPositiveBybitDecimal(restingPrice, fillPrice, closePrice))
 	return runtimeaccept.OrderLifecycleSpec{
 		Label:                 label,

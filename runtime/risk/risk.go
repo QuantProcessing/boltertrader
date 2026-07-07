@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime/accounting"
@@ -43,11 +44,45 @@ type Engine struct {
 	requireAccountState bool
 	allowLegacyBalance  bool
 	now                 func() time.Time
+	productSupport      map[enums.InstrumentKind]riskProductSupport
+	productSupportReady bool
 }
 
 // New builds a risk Engine reading positions from c.
 func New(limits Limits, c *cache.Cache) *Engine {
 	return &Engine{limits: limits, cache: c, seen: make(map[string]struct{}), now: time.Now}
+}
+
+type riskProductSupport struct {
+	trading      bool
+	account      bool
+	accountState bool
+}
+
+// SetRuntimeCapabilities installs the product-support contract provided by the
+// runtime clients. When configured, every order must target an advertised
+// trading product, and account-state-backed risk also requires an account-state
+// capable account client for that product.
+func (e *Engine) SetRuntimeCapabilities(caps ...contract.Capabilities) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.productSupportReady = true
+	e.productSupport = make(map[enums.InstrumentKind]riskProductSupport)
+	for _, cap := range caps {
+		for _, product := range cap.Products {
+			support := e.productSupport[product.Kind]
+			if product.Trading && cap.Trading.Submit {
+				support.trading = true
+			}
+			if product.Account {
+				support.account = true
+				if cap.Reports.AccountStateSnapshots || cap.Streaming.AccountState {
+					support.accountState = true
+				}
+			}
+			e.productSupport[product.Kind] = support
+		}
+	}
 }
 
 // RequireAccountState makes pre-trade checks fail closed when no fresh account
@@ -132,6 +167,9 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 		if notional.GreaterThan(lim) {
 			return fmt.Errorf("%w: order notional %s exceeds max %s", ErrRiskRejected, notional, lim)
 		}
+	}
+	if err := e.ensureProductSupported(req.InstrumentID.Kind); err != nil {
+		return err
 	}
 
 	// Instrument minimums.
@@ -232,8 +270,8 @@ func (e *Engine) checkLegacySpotBalance(req model.OrderRequest, inst *model.Inst
 }
 
 func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Instrument, acct accounting.Account) error {
-	if (acct.Type() != model.AccountCash && acct.Type() != model.AccountMargin) || !accountSupportsKind(acct, enums.KindSpot) {
-		return fmt.Errorf("%w: unsupported account mode %s for spot order", ErrRiskRejected, acct.Type())
+	if acct.Type() != model.AccountCash && acct.Type() != model.AccountMargin {
+		return fmt.Errorf("%w: unsupported account type %s for spot order", ErrRiskRejected, acct.Type())
 	}
 	if err := e.ensureFreshAccount(acct); err != nil {
 		return err
@@ -278,8 +316,8 @@ func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrume
 	if !ok {
 		return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
 	}
-	if acct.Type() != model.AccountMargin || !accountSupportsKind(acct, req.InstrumentID.Kind) {
-		return fmt.Errorf("%w: unsupported account mode %s for %s order", ErrRiskRejected, acct.Type(), req.InstrumentID.Kind)
+	if acct.Type() != model.AccountMargin {
+		return fmt.Errorf("%w: unsupported account type %s for %s order", ErrRiskRejected, acct.Type(), req.InstrumentID.Kind)
 	}
 	if err := e.ensureFreshAccount(acct); err != nil {
 		return err
@@ -296,36 +334,13 @@ func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrume
 	if ok && required.LessThanOrEqual(free) {
 		return nil
 	}
-	baseCcy, baseFree, baseOK := unifiedCollateralBaseFree(acct, ccy)
-	if baseOK && required.LessThanOrEqual(baseFree) {
-		return nil
-	}
 	if !ok {
 		return fmt.Errorf("%w: missing free balance for %s on account %s", ErrRiskRejected, ccy, acct.ID())
 	}
 	if required.GreaterThan(free) {
-		if baseOK {
-			return fmt.Errorf("%w: insufficient unified margin on account %s: need %s, %s free %s, %s free %s", ErrRiskRejected, acct.ID(), required, ccy, free, baseCcy, baseFree)
-		}
 		return fmt.Errorf("%w: insufficient %s margin on account %s: need %s, free %s", ErrRiskRejected, ccy, acct.ID(), required, free)
 	}
 	return nil
-}
-
-func unifiedCollateralBaseFree(acct accounting.Account, primaryCurrency string) (string, decimal.Decimal, bool) {
-	state := acct.LastEvent()
-	if !strings.EqualFold(state.ModeInfo.CollateralMode, "unified") {
-		return "", decimal.Zero, false
-	}
-	base := strings.ToUpper(strings.TrimSpace(state.BaseCurrency))
-	if base == "" || strings.EqualFold(base, primaryCurrency) {
-		return "", decimal.Zero, false
-	}
-	free, ok := acct.BalanceFree(base)
-	if !ok {
-		return "", decimal.Zero, false
-	}
-	return base, free, true
 }
 
 func (e *Engine) accountForRequest(req model.OrderRequest) (accounting.Account, bool, error) {
@@ -357,6 +372,20 @@ func (e *Engine) positionForRequest(req model.OrderRequest) (model.Position, boo
 	return e.cache.Position(req.InstrumentID, req.PositionSide)
 }
 
+func (e *Engine) ensureProductSupported(kind enums.InstrumentKind) error {
+	if !e.productSupportReady {
+		return nil
+	}
+	support, ok := e.productSupport[kind]
+	if !ok || !support.trading {
+		return fmt.Errorf("%w: unsupported product %s for trading", ErrRiskRejected, kind)
+	}
+	if e.requireAccountState && (!support.account || !support.accountState) {
+		return fmt.Errorf("%w: unsupported product %s for account-state-backed risk", ErrRiskRejected, kind)
+	}
+	return nil
+}
+
 func (e *Engine) ensureFreshAccount(acct accounting.Account) error {
 	now := time.Now
 	if e.now != nil {
@@ -367,19 +396,6 @@ func (e *Engine) ensureFreshAccount(acct accounting.Account) error {
 	}
 	f := acct.Freshness()
 	return fmt.Errorf("%w: stale account state for %s age %s exceeds %s", ErrRiskRejected, acct.ID(), f.Age(now()), f.StaleAfter)
-}
-
-func accountSupportsKind(acct accounting.Account, kind enums.InstrumentKind) bool {
-	scope := acct.LastEvent().ModeInfo.ProductScope
-	if len(scope) == 0 {
-		return false
-	}
-	for _, supported := range scope {
-		if supported == kind {
-			return true
-		}
-	}
-	return false
 }
 
 func orderNotional(req model.OrderRequest, inst *model.Instrument) decimal.Decimal {

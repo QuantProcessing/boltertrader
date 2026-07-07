@@ -7,7 +7,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -56,14 +55,15 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		return model.AccountState{}, err
 	}
 	now := c.clk.Now()
+	tsEvent := eventTimeFromMillis(acct.UpdateTime, now)
 	return model.AccountState{
 		AccountID: c.accountID,
 		Venue:     venueName,
 		Type:      model.AccountCash,
 		Balances:  spotBalancesFromAccount(acct, c.accountID, now),
-		ModeInfo:  binanceSpotModeInfo(acct, c.accountID, now),
 		Reported:  true,
-		TsEvent:   eventTimeFromMillis(acct.UpdateTime, now),
+		EventID:   model.AccountStateEventID(venueName, c.accountID, tsEvent),
+		TsEvent:   tsEvent,
 		TsInit:    now,
 	}, nil
 }
@@ -84,27 +84,6 @@ func spotBalancesFromAccount(acct *sdkspot.AccountResponse, accountID string, no
 		})
 	}
 	return out
-}
-
-func binanceSpotModeInfo(acct *sdkspot.AccountResponse, accountID string, now time.Time) model.AccountModeInfo {
-	accountMode := acct.AccountType
-	if accountMode == "" {
-		accountMode = "SPOT"
-	}
-	return model.AccountModeInfo{
-		Venue:        venueName,
-		AccountID:    accountID,
-		AccountMode:  accountMode,
-		MarginMode:   "cash",
-		PositionMode: "net",
-		ProductScope: []enums.InstrumentKind{enums.KindSpot},
-		Verified:     true,
-		VerifiedAt:   now,
-		Source:       "GET /api/v3/account",
-		Details: map[string]string{
-			"canTrade": fmt.Sprintf("%t", acct.CanTrade),
-		},
-	}
 }
 
 func eventTimeFromMillis(ms int64, fallback time.Time) time.Time {

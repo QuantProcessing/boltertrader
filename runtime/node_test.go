@@ -9,7 +9,9 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/latency"
 	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
+	"github.com/QuantProcessing/boltertrader/runtime/observ"
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 	"github.com/shopspring/decimal"
 )
@@ -143,17 +145,10 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 			Total:    d("100"),
 			Free:     d("100"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}
 	facct.EmitAccountState(state)
 	waitUntil(t, func() bool {
@@ -170,6 +165,47 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 	}
 	if m := node.Metrics(); m.Accounts != 1 || m.AccountStateAgeNs < 0 {
 		t.Fatalf("metrics did not expose account state: %+v", m)
+	}
+}
+
+func TestAccountStateEventLatencyUsesNormalizedAccountID(t *testing.T) {
+	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	facct := runtimetest.NewFakeAccount()
+	obs := &recordingLatencyObserver{ch: make(chan latency.EventLatency, 1)}
+	node := runtime.NewNode(
+		runtime.Clients{Account: facct},
+		clk,
+		"test",
+		runtime.WithObserver(obs),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go node.Run(ctx)
+	waitNodeRunning(t, node)
+
+	ts := clk.Now()
+	facct.EmitAccountState(model.AccountState{
+		Venue: "FAKE",
+		Type:  model.AccountCash,
+		Balances: []model.AccountBalance{{
+			Currency: "USDT",
+			Total:    d("100"),
+			Free:     d("100"),
+		}},
+		Reported: true,
+		TsEvent:  ts,
+		TsInit:   ts,
+	})
+
+	want := model.AccountStateEventID("FAKE", "test", ts)
+	select {
+	case got := <-obs.ch:
+		if got.Chain != latency.ChainAccount || got.AccountID != "test" || got.EventID != want {
+			t.Fatalf("latency=%+v, want account_id test and event id %s", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for account latency")
 	}
 }
 
@@ -243,4 +279,16 @@ func waitNodeRunning(t *testing.T, node *runtime.TradingNode) {
 	waitUntil(t, func() bool {
 		return node.State().Node == lifecycle.NodeRunning
 	}, "timed out waiting for node running")
+}
+
+type recordingLatencyObserver struct {
+	observ.Base
+	ch chan latency.EventLatency
+}
+
+func (o *recordingLatencyObserver) OnLatency(lat latency.EventLatency) {
+	select {
+	case o.ch <- lat:
+	default:
+	}
 }

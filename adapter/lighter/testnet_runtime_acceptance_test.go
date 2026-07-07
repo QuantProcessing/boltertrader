@@ -96,6 +96,18 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 		t.Fatalf("risk probe err=%v, want ErrRiskRejected", err)
 	}
 
+	book, err = adapter.Market.OrderBook(ctx, inst.ID, 5)
+	if err != nil {
+		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter "+label+" Testnet runtime refreshed order book")
+		t.Fatalf("refreshed order book: %v", err)
+	}
+	if len(book.Asks) == 0 {
+		t.Fatalf("empty refreshed Lighter %s Testnet runtime asks for %s", label, inst.VenueSymbol)
+	}
+	price = lighterRestingBuyPrice(inst, book)
+	qty = selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	ensureLighterTestnetCollateral(t, ctx, adapter, "runtime "+label, qty, price)
+
 	var venueOrderID string
 	defer func() {
 		if venueOrderID != "" {

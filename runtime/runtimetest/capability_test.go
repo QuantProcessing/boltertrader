@@ -115,16 +115,10 @@ func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
 			Total:    decimal.NewFromInt(1),
 			Free:     decimal.NewFromInt(1),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
-		TsEvent: ts,
+		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+		TsEvent:  ts,
+		TsInit:   ts,
 	})
 	caps = account.Capabilities()
 	if !caps.Reports.AccountStateSnapshots || !caps.Streaming.AccountState {

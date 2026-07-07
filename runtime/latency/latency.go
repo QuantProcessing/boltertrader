@@ -30,6 +30,7 @@ type EventLatency struct {
 	Chain          Chain
 	EventID        model.EventID
 	Venue          string
+	AccountID      string
 	InstrumentID   model.InstrumentID
 	ClientID       string
 	VenueOrderID   string
@@ -48,6 +49,7 @@ func EventFromMeta(chain Chain, meta contract.EventMeta, applied, callbackDone t
 		Chain:          chain,
 		EventID:        meta.EventID,
 		Venue:          meta.Venue,
+		AccountID:      meta.AccountID,
 		InstrumentID:   meta.InstrumentID,
 		ClientID:       meta.ClientID,
 		VenueOrderID:   meta.VenueOrderID,

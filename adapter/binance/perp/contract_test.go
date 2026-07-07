@@ -3,6 +3,7 @@ package perp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -331,7 +332,10 @@ func TestPerpCapabilitySuite(t *testing.T) {
 				if err := state.Validate(); err != nil {
 					return err
 				}
-				return state.ModeInfo.ValidateVerified()
+				if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+					return errors.New("account state envelope incomplete")
+				}
+				return nil
 			}},
 			Balances:          contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			Positions:         contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
@@ -349,14 +353,11 @@ func TestBinancePerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDBinanceDefault || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
+	if state.AccountID != model.AccountIDBinanceDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
 		t.Fatalf("account state identity=%+v", state)
 	}
-	if state.ModeInfo.AccountMode != "USD-M" || state.ModeInfo.PositionMode != "hedge" || state.ModeInfo.MarginMode != "multi_assets" {
-		t.Fatalf("mode info=%+v", state.ModeInfo)
-	}
-	if !state.ModeInfo.Verified || len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindPerp {
-		t.Fatalf("mode verification/scope=%+v", state.ModeInfo)
+	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if state.TsEvent.UnixMilli() != 1700000000000 {
 		t.Fatalf("TsEvent=%s, want REST updateTime", state.TsEvent)
@@ -378,9 +379,6 @@ func TestBinancePerpAccountStateTranslation(t *testing.T) {
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("account state validate: %v", err)
-	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("mode validate: %v", err)
 	}
 }
 

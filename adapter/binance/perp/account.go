@@ -8,7 +8,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -74,15 +73,8 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	if err != nil {
 		return model.AccountState{}, err
 	}
-	positionMode, err := c.rest.GetPositionMode(ctx)
-	if err != nil {
-		return model.AccountState{}, err
-	}
-	multiAssetsMode, err := c.rest.GetMultiAssetsMode(ctx)
-	if err != nil {
-		return model.AccountState{}, err
-	}
 	now := c.clk.Now()
+	tsEvent := eventTimeFromMillis(acct.UpdateTime, now)
 	return model.AccountState{
 		AccountID:    c.accountID,
 		Venue:        venueName,
@@ -90,9 +82,9 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		BaseCurrency: "USD",
 		Balances:     perpBalancesFromAccount(acct, c.accountID, now),
 		Margins:      c.marginBalancesFromAccount(acct, now),
-		ModeInfo:     binanceUSDMModeInfo(positionMode, multiAssetsMode, c.accountID, now),
 		Reported:     true,
-		TsEvent:      eventTimeFromMillis(acct.UpdateTime, now),
+		EventID:      model.AccountStateEventID(venueName, c.accountID, tsEvent),
+		TsEvent:      tsEvent,
 		TsInit:       now,
 	}, nil
 }
@@ -181,33 +173,6 @@ func (c *accountClient) marginBalancesFromAccount(acct *sdkperp.AccountResponse,
 		})
 	}
 	return out
-}
-
-func binanceUSDMModeInfo(positionMode *sdkperp.PositionModeResponse, multiAssetsMode *sdkperp.MultiAssetsModeResponse, accountID string, now time.Time) model.AccountModeInfo {
-	positionModeLabel := "one_way"
-	if positionMode != nil && positionMode.DualSidePosition {
-		positionModeLabel = "hedge"
-	}
-	marginMode := "single_asset"
-	if multiAssetsMode != nil && multiAssetsMode.MultiAssetsMargin {
-		marginMode = "multi_assets"
-	}
-	return model.AccountModeInfo{
-		Venue:          venueName,
-		AccountID:      accountID,
-		AccountMode:    "USD-M",
-		MarginMode:     marginMode,
-		PositionMode:   positionModeLabel,
-		CollateralMode: marginMode,
-		ProductScope:   []enums.InstrumentKind{enums.KindPerp},
-		Verified:       true,
-		VerifiedAt:     now,
-		Source:         "GET /fapi/v2/account + GET /fapi/v1/positionSide/dual + GET /fapi/v1/multiAssetsMargin",
-		Details: map[string]string{
-			"dualSidePosition":  fmt.Sprintf("%t", positionMode != nil && positionMode.DualSidePosition),
-			"multiAssetsMargin": fmt.Sprintf("%t", multiAssetsMode != nil && multiAssetsMode.MultiAssetsMargin),
-		},
-	}
 }
 
 func marginCurrencyForInstrument(id model.InstrumentID) string {

@@ -21,7 +21,6 @@ type accountClient struct {
 	provider  *instrumentProvider
 	clk       clock.Clock
 	accountID string
-	scope     []enums.InstrumentKind
 	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
@@ -41,7 +40,6 @@ func newAccountClient(rest *bybitsdk.Client, provider *instrumentProvider, clk c
 		provider:  provider,
 		clk:       clk,
 		accountID: accountID,
-		scope:     bybitKinds(scope),
 		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
 }
@@ -84,8 +82,8 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		BaseCurrency: "USD",
 		Balances:     balancesFromWallet(wallet, c.accountID, now),
 		Margins:      c.marginBalancesFromWalletAndPositions(wallet, positions, now),
-		ModeInfo:     modeInfoFromBybit(info, c.accountID, c.scope, now),
 		Reported:     true,
+		EventID:      model.AccountStateEventID(VenueName, c.accountID, now),
 		TsEvent:      now,
 		TsInit:       now,
 	}
@@ -198,37 +196,6 @@ func (c *accountClient) marginBalancesFromWalletAndPositions(wallet *bybitsdk.Wa
 		})
 	}
 	return out
-}
-
-func modeInfoFromBybit(info *bybitsdk.AccountInfo, accountID string, scope []enums.InstrumentKind, now time.Time) model.AccountModeInfo {
-	mode := bybitsdk.AccountModeUnknown
-	marginMode := ""
-	spotHedging := ""
-	if info != nil {
-		mode = info.AccountMode()
-		marginMode = info.MarginMode
-		spotHedging = info.SpotHedgingStatus
-	}
-	positionMode := "one_way"
-	if strings.EqualFold(spotHedging, "ON") {
-		positionMode = "hedge"
-	}
-	return model.AccountModeInfo{
-		Venue:          VenueName,
-		AccountID:      accountID,
-		AccountMode:    string(mode),
-		MarginMode:     firstNonEmpty(marginMode, "unified"),
-		PositionMode:   positionMode,
-		CollateralMode: "unified",
-		ProductScope:   bybitKinds(scope),
-		Verified:       mode.IsUnified(),
-		VerifiedAt:     now,
-		Source:         "GET /v5/account/info + GET /v5/account/wallet-balance + GET /v5/position/list",
-		Details: map[string]string{
-			"unifiedMarginStatus": fmt.Sprintf("%d", info.UnifiedMarginStatus),
-			"spotHedgingStatus":   spotHedging,
-		},
-	}
 }
 
 func (c *accountClient) SetLeverage(ctx context.Context, id model.InstrumentID, leverage decimal.Decimal) error {

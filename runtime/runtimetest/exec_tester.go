@@ -18,18 +18,20 @@ type ExecTesterConfig struct {
 	InstrumentID   model.InstrumentID
 	OrderQty       decimal.Decimal
 	RestingPrice   decimal.Decimal
+	FillPrice      decimal.Decimal
 	PositionSide   enums.PositionSide
 	ClientIDPrefix string
 }
 
 // ExecTester submits a post-only resting order, cancels it, then submits a
-// market order and waits for the market fill via runtime callbacks.
+// fill order and waits for the fill via runtime callbacks.
 type ExecTester struct {
 	strategy.Base
 
 	instID       model.InstrumentID
 	qty          decimal.Decimal
 	restingPrice decimal.Decimal
+	fillPrice    decimal.Decimal
 	posSide      enums.PositionSide
 	prefix       string
 
@@ -56,6 +58,7 @@ func NewExecTester(config ExecTesterConfig) *ExecTester {
 		instID:       config.InstrumentID,
 		qty:          config.OrderQty,
 		restingPrice: config.RestingPrice,
+		fillPrice:    config.FillPrice,
 		posSide:      posSide,
 		prefix:       prefix,
 		fillCh:       make(chan model.Fill, 1),
@@ -86,14 +89,20 @@ func (s *ExecTester) OnStart(c *strategy.Context) {
 	}
 
 	fillClientID := s.clientOrderID("fill")
-	filled, err := c.Orders.Submit(c.Ctx, model.OrderRequest{
+	fillReq := model.OrderRequest{
 		InstrumentID: s.instID,
 		ClientID:     fillClientID,
 		Side:         enums.SideBuy,
 		Type:         enums.TypeMarket,
 		Quantity:     s.qty,
 		PositionSide: s.posSide,
-	})
+	}
+	if s.fillPrice.IsPositive() {
+		fillReq.Type = enums.TypeLimit
+		fillReq.TIF = enums.TifIOC
+		fillReq.Price = s.fillPrice
+	}
+	filled, err := c.Orders.Submit(c.Ctx, fillReq)
 	if err != nil {
 		s.fail(fmt.Errorf("runtime submit fill order: %w", err))
 		return

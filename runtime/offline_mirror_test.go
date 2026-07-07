@@ -207,23 +207,14 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 			Maintenance:  d("25"),
 			UpdatedAt:    start,
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "FAKE",
-			AccountID:    accountID,
-			AccountMode:  "unified-demo",
-			MarginMode:   "cross",
-			PositionMode: "one-way",
-			ProductScope: []enums.InstrumentKind{enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   start,
-			Source:       "runtimetest",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("FAKE", accountID, start),
 		TsEvent:  start,
 		TsInit:   start,
 	}
 	facct.SetAccountStateSnapshot(state)
 	facct.SetSnapshots(nil, []model.Position{{
+		AccountID:     accountID,
 		InstrumentID:  inst,
 		Side:          enums.PosNet,
 		Quantity:      d("1"),

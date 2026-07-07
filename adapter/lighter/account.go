@@ -3,7 +3,6 @@ package lighter
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -101,10 +100,6 @@ func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now tim
 	if accountID == "" {
 		accountID = model.AccountIDLighterDefault
 	}
-	accountIndex := acct.AccountIndex
-	if accountIndex == 0 {
-		accountIndex = acct.Index
-	}
 	balances := make([]model.AccountBalance, 0, len(acct.Assets))
 	for _, asset := range acct.Assets {
 		if asset == nil {
@@ -140,6 +135,7 @@ func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now tim
 		Maintenance: dec(acct.CrossMaintenanceMarginReq),
 		UpdatedAt:   now,
 	}}
+	tsEvent := lighterAccountTime(acct, now)
 	return model.AccountState{
 		AccountID:    accountID,
 		Venue:        venueName,
@@ -147,28 +143,10 @@ func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now tim
 		BaseCurrency: "USDC",
 		Balances:     balances,
 		Margins:      margins,
-		ModeInfo: model.AccountModeInfo{
-			Venue:          venueName,
-			AccountID:      accountID,
-			AccountMode:    "UNIFIED",
-			MarginMode:     "cross",
-			PositionMode:   "net",
-			CollateralMode: "unified",
-			ProductScope:   []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
-			Verified:       true,
-			VerifiedAt:     now,
-			Source:         "GET /api/v1/account?by=index&value=<account_index>",
-			Details: map[string]string{
-				"account_index":        strconv.FormatInt(accountIndex, 10),
-				"account_type":         strconv.Itoa(int(acct.AccountType)),
-				"account_status":       strconv.Itoa(int(acct.Status)),
-				"account_trading_mode": strconv.Itoa(acct.AccountTradingMode),
-				"l1_address":           acct.L1Address,
-			},
-		},
-		Reported: true,
-		TsEvent:  lighterAccountTime(acct, now),
-		TsInit:   now,
+		Reported:     true,
+		EventID:      model.AccountStateEventID(venueName, accountID, tsEvent),
+		TsEvent:      tsEvent,
+		TsInit:       now,
 	}
 }
 

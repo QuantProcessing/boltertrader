@@ -250,17 +250,10 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 			Free:     decimal.RequireFromString("90"),
 			Locked:   decimal.RequireFromString("10"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("apply account state: %v", err)
@@ -277,7 +270,7 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 	}
 }
 
-func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
+func TestApplyAccountStateRejectsNonTradingReadyState(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	err := c.ApplyAccountStateAt(model.AccountState{
@@ -289,18 +282,12 @@ func TestApplyAccountStateRejectsNonTradingReadyMode(t *testing.T) {
 			Total:    decimal.RequireFromString("100"),
 			Free:     decimal.RequireFromString("90"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:      "BINANCE",
-			AccountID:  model.AccountIDBinanceDefault,
-			Verified:   true,
-			VerifiedAt: ts,
-			Source:     "test",
-		},
 		Reported: true,
 		TsEvent:  ts,
+		TsInit:   ts,
 	}, ts)
 	if err == nil {
-		t.Fatal("account state without product scope should not enter runtime")
+		t.Fatal("account state without event id should not enter runtime")
 	}
 }
 
@@ -316,26 +303,17 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 			Total:    decimal.RequireFromString("1"),
 			Free:     decimal.RequireFromString("1"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("apply spot: %v", err)
 	}
 	state.AccountID = "BINANCE-002"
 	state.Type = model.AccountMargin
-	state.ModeInfo.AccountID = "BINANCE-002"
-	state.ModeInfo.AccountMode = "USD-M"
-	state.ModeInfo.ProductScope = []enums.InstrumentKind{enums.KindPerp}
+	state.EventID = model.AccountStateEventID("BINANCE", "BINANCE-002", ts)
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("second account for same venue should be accepted under account-id ownership: %v", err)
 	}

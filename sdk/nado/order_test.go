@@ -2,7 +2,6 @@ package nado
 
 import (
 	"context"
-	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ func skipIfOrderTestEnvironmentIssue(t *testing.T, err error) {
 }
 
 func TestPlaceOrder(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	client, err := NewClient().WithCredentials(privateKey, subaccount)
 	if err != nil {
@@ -43,12 +42,12 @@ func TestPlaceOrder(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatalf("PlaceOrder request failed: %v", err)
 	} else {
-		fmt.Printf("PlaceOrder success: %+v\n", order)
+		t.Logf("PlaceOrder success: %+v", order)
 	}
 }
 
 func TestPlaceMarketOrder(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	client, err := NewClient().WithCredentials(privateKey, subaccount)
 	if err != nil {
@@ -70,12 +69,12 @@ func TestPlaceMarketOrder(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatalf("PlaceOrder request failed: %v", err)
 	} else {
-		fmt.Printf("PlaceOrder success: %+v\n", order)
+		t.Logf("PlaceOrder success: %+v", order)
 	}
 }
 
 func TestCancelOrders(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	client, err := NewClient().WithCredentials(privateKey, subaccount)
 	if err != nil {
@@ -91,12 +90,12 @@ func TestCancelOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CancelOrders request failed (as expected for test creds): %v", err)
 	} else {
-		fmt.Printf("CancelOrders success: %+v\n", cancelResp)
+		t.Logf("CancelOrders success: %+v", cancelResp)
 	}
 }
 
 func TestPlaceOrderAndCancelOrder(t *testing.T) {
-	requireFullEnv(t)
+	requireWriteEnv(t)
 	privateKey, subaccount := GetEnv()
 	client, err := NewClient().WithCredentials(privateKey, subaccount)
 	if err != nil {
@@ -118,7 +117,7 @@ func TestPlaceOrderAndCancelOrder(t *testing.T) {
 		skipIfOrderTestEnvironmentIssue(t, err)
 		t.Fatalf("PlaceOrder request failed: %v", err)
 	}
-	fmt.Printf("PlaceOrder success: %+v\n", order)
+	t.Logf("PlaceOrder success: %+v", order)
 
 	time.Sleep(3 * time.Second)
 	// cancel order
@@ -130,7 +129,7 @@ func TestPlaceOrderAndCancelOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CancelOrders request failed (as expected for test creds): %v", err)
 	} else {
-		fmt.Printf("CancelOrders success: %+v\n", cancelResp)
+		t.Logf("CancelOrders success: %+v", cancelResp)
 	}
 }
 

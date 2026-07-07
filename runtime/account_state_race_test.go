@@ -116,15 +116,8 @@ func concurrentAccountState(ts time.Time, free string) model.AccountState {
 			Maintenance:  decimal.NewFromInt(5),
 			UpdatedAt:    ts,
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "T",
-			AccountID:    "T:perp",
-			ProductScope: []enums.InstrumentKind{enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "race-test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:perp", ts),
 		TsEvent:  ts,
 		TsInit:   ts,
 	}

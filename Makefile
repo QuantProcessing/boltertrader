@@ -3,7 +3,7 @@
 .PHONY: test-bitget-demo test-bitget-demo-spot test-bitget-demo-runtime-spot test-bitget-demo-usdt-perp test-bitget-demo-runtime-usdt-perp test-bitget-demo-usdc-perp test-bitget-demo-runtime-usdc-perp test-bitget-demo-acceptance test-bitget-testnet test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp test-bitget-testnet-acceptance test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance test-bitget-acceptance test-bybit-bitget-acceptance
 
 test:
-	go test ./...
+	go test -short ./...
 
 test-race:
 	go test -race ./runtime/...
@@ -12,14 +12,14 @@ test-core:
 	go test ./core/... ./runtime/... ./strategy/...
 
 test-adapter:
-	go test ./adapter/...
+	go test -short ./adapter/...
 
 test-sdk:
-	go test ./sdk/...
+	go test -short ./sdk/...
 
 test-capabilities:
-	go test ./adapter -count=1
-	go test ./adapter/... -run Capabilit -count=1
+	go test -short ./adapter -count=1
+	go test -short ./adapter/... -run Capabilit -count=1
 
 test-p6-offline: test-core test-adapter test-sdk test-capabilities
 

@@ -14,7 +14,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (*Adapter, demoAcceptanceSymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal) {
+func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (*Adapter, demoAcceptanceSymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
 	t.Helper()
 
 	adapter, err := New(ctx, Config{
@@ -56,7 +56,12 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 		_ = adapter.Close()
 		t.Fatalf("computed non-positive resting price %s from reference %s", restingPrice, refPrice)
 	}
-	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
+	fillPrice := ceilDecimalToStep(refPrice.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
+	if fillPrice.LessThanOrEqual(decimal.Zero) {
+		_ = adapter.Close()
+		t.Fatalf("computed non-positive fill price %s from reference %s", fillPrice, refPrice)
+	}
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, fillPrice)
 	if err != nil {
 		_ = adapter.Close()
 		t.Fatalf("select safe Demo runtime order quantity: %v", err)
@@ -79,7 +84,7 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 		t.Skipf("skipping Binance Demo runtime acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
 	}
 
-	return adapter, spec, instID, qty, restingPrice
+	return adapter, spec, instID, qty, restingPrice, fillPrice
 }
 
 func waitForDemoRuntimePosition(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {

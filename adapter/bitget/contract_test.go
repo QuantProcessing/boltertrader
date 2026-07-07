@@ -67,11 +67,8 @@ func TestBitgetAccountStateRequiresUnifiedAndSharedAccountID(t *testing.T) {
 	if err := state.Validate(); err != nil {
 		t.Fatalf("state invalid: %v", err)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("mode info invalid: %v", err)
-	}
-	if state.ModeInfo.AccountMode != "UNIFIED" || state.ModeInfo.PositionMode != "single_hold" || state.ModeInfo.CollateralMode != "union" {
-		t.Fatalf("unexpected mode info: %+v", state.ModeInfo)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDForKind(enums.KindPerp) {
 		t.Fatalf("spot/perp must share Bitget unified account id")
@@ -95,11 +92,11 @@ func TestBitgetAccountStateAcceptsHybridUTAAccountMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.ModeInfo.AccountMode != "HYBRID" {
-		t.Fatalf("account mode=%q, want HYBRID", state.ModeInfo.AccountMode)
+	if err := state.Validate(); err != nil {
+		t.Fatalf("state invalid: %v", err)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("hybrid mode info invalid: %v", err)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("hybrid account state envelope incomplete: %+v", state)
 	}
 }
 

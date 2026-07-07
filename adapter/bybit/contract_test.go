@@ -54,13 +54,12 @@ func TestBybitAccountIDOverridePropagatesToClients(t *testing.T) {
 func TestBybitAccountStateAcceptsUnifiedModesAndSharedAccountID(t *testing.T) {
 	for _, tt := range []struct {
 		name string
-		mode bybitsdk.AccountMode
 		code bybitsdk.UnifiedMarginStatus
 	}{
-		{name: "UTA1", mode: bybitsdk.AccountModeUTA1, code: bybitsdk.UnifiedMarginStatusUTA1},
-		{name: "UTA1Pro", mode: bybitsdk.AccountModeUTA1, code: bybitsdk.UnifiedMarginStatusUTA1Pro},
-		{name: "UTA2", mode: bybitsdk.AccountModeUTA2, code: bybitsdk.UnifiedMarginStatusUTA2},
-		{name: "UTA2Pro", mode: bybitsdk.AccountModeUTA2, code: bybitsdk.UnifiedMarginStatusUTA2Pro},
+		{name: "UTA1", code: bybitsdk.UnifiedMarginStatusUTA1},
+		{name: "UTA1Pro", code: bybitsdk.UnifiedMarginStatusUTA1Pro},
+		{name: "UTA2", code: bybitsdk.UnifiedMarginStatusUTA2},
+		{name: "UTA2Pro", code: bybitsdk.UnifiedMarginStatusUTA2Pro},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newBybitAccountServer(t, bybitAccountFixture{
@@ -84,11 +83,8 @@ func TestBybitAccountStateAcceptsUnifiedModesAndSharedAccountID(t *testing.T) {
 			if err := state.Validate(); err != nil {
 				t.Fatalf("state invalid: %v", err)
 			}
-			if err := state.ModeInfo.ValidateVerified(); err != nil {
-				t.Fatalf("mode info invalid: %v", err)
-			}
-			if state.ModeInfo.AccountMode != string(tt.mode) || !strings.Contains(state.ModeInfo.Source, "/v5/account/info") || !strings.Contains(state.ModeInfo.Source, "/v5/account/wallet-balance") {
-				t.Fatalf("unexpected mode info: %+v", state.ModeInfo)
+			if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+				t.Fatalf("account state envelope incomplete: %+v", state)
 			}
 			if AccountIDForKind(enums.KindSpot) != AccountIDForKind(enums.KindPerp) {
 				t.Fatalf("spot/perp must share Bybit unified account id")

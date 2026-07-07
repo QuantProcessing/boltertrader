@@ -171,42 +171,6 @@ type MarginRequirement struct {
 	Maintenance decimal.Decimal
 }
 
-type AccountModeInfo struct {
-	Venue          string
-	AccountID      string
-	AccountMode    string
-	MarginMode     string
-	PositionMode   string
-	CollateralMode string
-	ProductScope   []enums.InstrumentKind
-	Verified       bool
-	VerifiedAt     time.Time
-	Source         string
-	Details        map[string]string
-}
-
-func (m AccountModeInfo) ValidateVerified() error {
-	if m.Venue == "" {
-		return fmt.Errorf("account mode info: venue required")
-	}
-	if m.AccountID == "" {
-		return fmt.Errorf("account mode info: account id required")
-	}
-	if !m.Verified {
-		return fmt.Errorf("account mode info %s: not verified", m.AccountID)
-	}
-	if m.VerifiedAt.IsZero() {
-		return fmt.Errorf("account mode info %s: verified time required", m.AccountID)
-	}
-	if m.Source == "" {
-		return fmt.Errorf("account mode info %s: source required", m.AccountID)
-	}
-	if len(m.ProductScope) == 0 {
-		return fmt.Errorf("account mode info %s: product scope required", m.AccountID)
-	}
-	return nil
-}
-
 type AccountState struct {
 	AccountID    string
 	Venue        string
@@ -214,10 +178,24 @@ type AccountState struct {
 	BaseCurrency string
 	Balances     []AccountBalance
 	Margins      []MarginBalance
-	ModeInfo     AccountModeInfo
 	Reported     bool
+	EventID      EventID
 	TsEvent      time.Time
 	TsInit       time.Time
+}
+
+func AccountStateEventID(venue, accountID string, ts time.Time) EventID {
+	return EventID(joinAccountStateEventID("account", "state", venue, accountID, ts.Format(time.RFC3339Nano)))
+}
+
+func joinAccountStateEventID(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			out = append(out, strings.ReplaceAll(part, "|", "/"))
+		}
+	}
+	return strings.Join(out, "|")
 }
 
 func CloneMarginBalance(m MarginBalance) MarginBalance {
@@ -235,14 +213,6 @@ func CloneAccountState(s AccountState) AccountState {
 	for _, margin := range margins {
 		s.Margins = append(s.Margins, CloneMarginBalance(margin))
 	}
-	s.ModeInfo.ProductScope = append([]enums.InstrumentKind(nil), s.ModeInfo.ProductScope...)
-	if s.ModeInfo.Details != nil {
-		details := make(map[string]string, len(s.ModeInfo.Details))
-		for k, v := range s.ModeInfo.Details {
-			details[k] = v
-		}
-		s.ModeInfo.Details = details
-	}
 	return s
 }
 
@@ -255,12 +225,6 @@ func (s AccountState) Validate() error {
 	}
 	if !s.Type.Valid() {
 		return fmt.Errorf("account state %s: invalid type %s", s.AccountID, s.Type)
-	}
-	if s.ModeInfo.AccountID != "" && s.ModeInfo.AccountID != s.AccountID {
-		return fmt.Errorf("account state %s: mode account id mismatch %s", s.AccountID, s.ModeInfo.AccountID)
-	}
-	if s.ModeInfo.Venue != "" && s.ModeInfo.Venue != s.Venue {
-		return fmt.Errorf("account state %s: mode venue mismatch %s", s.AccountID, s.ModeInfo.Venue)
 	}
 	for _, bal := range s.Balances {
 		if s.Type == AccountCash {
@@ -285,8 +249,17 @@ func (s AccountState) ValidateTradingReady(f AccountFreshness, now time.Time) er
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	if err := s.ModeInfo.ValidateVerified(); err != nil {
-		return err
+	if !s.Reported {
+		return fmt.Errorf("account state %s: reported state required", s.AccountID)
+	}
+	if s.EventID == "" {
+		return fmt.Errorf("account state %s: event id required", s.AccountID)
+	}
+	if s.TsEvent.IsZero() {
+		return fmt.Errorf("account state %s: event timestamp required", s.AccountID)
+	}
+	if s.TsInit.IsZero() {
+		return fmt.Errorf("account state %s: init timestamp required", s.AccountID)
 	}
 	if err := f.ValidateTradingReady(now); err != nil {
 		return err

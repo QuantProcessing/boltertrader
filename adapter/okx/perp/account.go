@@ -8,7 +8,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
 	"github.com/QuantProcessing/boltertrader/internal/wsstream"
@@ -72,11 +71,11 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 	if err != nil {
 		return model.AccountState{}, err
 	}
-	cfg, err := firstAccountConfig(configs)
-	if err != nil {
+	if _, err := firstAccountConfig(configs); err != nil {
 		return model.AccountState{}, err
 	}
 	now := c.clk.Now()
+	tsEvent := latestAccountTime(bals, positions, now)
 	return model.AccountState{
 		AccountID:    c.accountID,
 		Venue:        venueName,
@@ -84,9 +83,9 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		BaseCurrency: usdtSettlement,
 		Balances:     perpBalancesFromOKX(bals, c.accountID, now),
 		Margins:      c.marginBalancesFromOKX(bals, positions, now),
-		ModeInfo:     okxSwapModeInfo(cfg, c.tdMode, c.accountID, now),
 		Reported:     true,
-		TsEvent:      latestAccountTime(bals, positions, now),
+		EventID:      model.AccountStateEventID(venueName, c.accountID, tsEvent),
+		TsEvent:      tsEvent,
 		TsInit:       now,
 	}, nil
 }
@@ -167,28 +166,6 @@ func (c *accountClient) marginBalancesFromOKX(bals []okx.Balance, positions []ok
 	return out
 }
 
-func okxSwapModeInfo(cfg okx.AccountConfig, tdMode string, accountID string, now time.Time) model.AccountModeInfo {
-	return model.AccountModeInfo{
-		Venue:          venueName,
-		AccountID:      accountID,
-		AccountMode:    okxAccountModeLabel(cfg),
-		MarginMode:     tdMode,
-		PositionMode:   firstNonEmpty(cfg.PosMode, "net_mode"),
-		CollateralMode: okxAccountModeLabel(cfg),
-		ProductScope:   []enums.InstrumentKind{enums.KindPerp},
-		Verified:       true,
-		VerifiedAt:     now,
-		Source:         "GET /api/v5/account/balance + GET /api/v5/account/positions + GET /api/v5/account/config",
-		Details: map[string]string{
-			"acctLv":     cfg.AcctLv,
-			"ctIsoMode":  cfg.CtIsoMode,
-			"mgnIsoMode": cfg.MgnIsoMode,
-			"tdMode":     tdMode,
-			"settleCcy":  cfg.SettleCcy,
-		},
-	}
-}
-
 func firstAccountConfig(configs []okx.AccountConfig) (okx.AccountConfig, error) {
 	if len(configs) == 0 {
 		return okx.AccountConfig{}, fmt.Errorf("okx: account config response was empty")
@@ -249,25 +226,6 @@ func firstNonZeroDecimal(values ...decimal.Decimal) decimal.Decimal {
 		}
 	}
 	return decimal.Zero
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
-func okxAccountModeLabel(cfg okx.AccountConfig) string {
-	if level := string(cfg.AccountLevel()); level != "" {
-		return level
-	}
-	if cfg.AcctLv != "" {
-		return "acctLv:" + cfg.AcctLv
-	}
-	return "unknown"
 }
 
 func (c *accountClient) SetLeverage(ctx context.Context, id model.InstrumentID, leverage decimal.Decimal) error {

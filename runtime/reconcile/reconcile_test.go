@@ -310,17 +310,10 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 				Total:    d("1000"),
 				Free:     d("950"),
 			}},
-			ModeInfo: model.AccountModeInfo{
-				Venue:        "BINANCE",
-				AccountID:    model.AccountIDBinanceDefault,
-				AccountMode:  "USD-M",
-				ProductScope: []enums.InstrumentKind{enums.KindPerp},
-				Verified:     true,
-				VerifiedAt:   ts,
-				Source:       "test",
-			},
 			Reported: true,
+			EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 			TsEvent:  ts,
+			TsInit:   ts,
 		},
 		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1"), Available: d("1")}},
 	}
@@ -348,6 +341,39 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	}
 }
 
+func TestReconcileNormalizesScopedAccountStateEventID(t *testing.T) {
+	c := cache.New()
+	ts := time.Unix(21, 0)
+	acct := &snapshotAccount{
+		hasAccountState: true,
+		accountState: model.AccountState{
+			Venue: "BINANCE",
+			Type:  model.AccountMargin,
+			Balances: []model.AccountBalance{{
+				Currency: "USDT",
+				Total:    d("1000"),
+				Free:     d("950"),
+			}},
+			Reported: true,
+			TsEvent:  ts,
+			TsInit:   ts,
+		},
+	}
+
+	r := New(acct, nil, c).WithAccountID(model.AccountIDBinanceDefault)
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	cached, ok := c.Account(model.AccountIDBinanceDefault)
+	if !ok {
+		t.Fatal("account state not applied to cache")
+	}
+	want := model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts)
+	if got := cached.LastEvent().EventID; got != want {
+		t.Fatalf("event id=%q, want %q", got, want)
+	}
+}
+
 func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 	c := cache.New()
 	ts := time.Unix(20, 0)
@@ -364,16 +390,10 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 				Total:    d("1000"),
 				Free:     d("950"),
 			}},
-			ModeInfo: model.AccountModeInfo{
-				Venue:        "BINANCE",
-				AccountID:    model.AccountIDBinanceDefault,
-				ProductScope: []enums.InstrumentKind{enums.KindPerp},
-				Verified:     true,
-				VerifiedAt:   ts,
-				Source:       "test",
-			},
 			Reported: true,
+			EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 			TsEvent:  ts,
+			TsInit:   ts,
 		},
 	}
 

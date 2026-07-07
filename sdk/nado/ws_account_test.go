@@ -2,7 +2,6 @@ package nado
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -17,17 +16,15 @@ func TestOrderUpdate(t *testing.T) {
 	// Connect (internal 10s timeout)
 	err := subscriptionClient.Connect()
 	if err != nil {
-		fmt.Println(err)
-		return
+		t.Fatal(err)
 	}
 
 	productID := int64(2)
 	err = subscriptionClient.SubscribeOrders(&productID, func(order *OrderUpdate) {
-		fmt.Println(order)
+		t.Logf("order update: %+v", order)
 	})
 	if err != nil {
-		fmt.Println(err)
-		return
+		t.Fatal(err)
 	}
 
 	timeout := time.NewTimer(1 * time.Minute)

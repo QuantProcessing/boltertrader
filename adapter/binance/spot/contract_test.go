@@ -170,8 +170,86 @@ func TestBinanceSpotSubmitOrderRequestTranslation(t *testing.T) {
 	if submit.Get("reduceOnly") != "" || submit.Get("positionSide") != "" {
 		t.Fatalf("spot submit leaked derivative-only fields: %s", submit.Encode())
 	}
+	if submit.Get("newOrderRespType") != "FULL" {
+		t.Fatalf("newOrderRespType=%q, want FULL", submit.Get("newOrderRespType"))
+	}
 	if order.VenueOrderID != "555" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
 		t.Fatalf("order=%+v", order)
+	}
+}
+
+func TestBinanceSpotSubmitImmediateFillEmitsFillEvent(t *testing.T) {
+	inst := testSpotInstrument()
+	rest := testREST(func(r *http.Request) (string, int) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v3/order" {
+			t.Fatalf("request=%s %s, want POST /api/v3/order", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("newOrderRespType"); got != "FULL" {
+			t.Fatalf("newOrderRespType=%q, want FULL", got)
+		}
+		return `{
+			"orderId":556,
+			"clientOrderId":"c-spot-fill",
+			"symbol":"ETHUSDT",
+			"status":"FILLED",
+			"side":"BUY",
+			"type":"LIMIT",
+			"timeInForce":"IOC",
+			"origQty":"0.0100",
+			"price":"3001.00",
+			"executedQty":"0.0100",
+			"cummulativeQuoteQty":"30.01",
+			"transactTime":1700000000123,
+			"fills":[
+				{"price":"3001.00","qty":"0.0100","commission":"0.003","commissionAsset":"BNB","tradeId":789}
+			]
+		}`, 200
+	})
+	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock())
+
+	order, err := exec.Submit(context.Background(), model.OrderRequest{
+		InstrumentID: inst.ID,
+		ClientID:     "c-spot-fill",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     d("0.0100"),
+		Price:        d("3001.00"),
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if order.Status != enums.StatusFilled || !order.FilledQty.Equal(d("0.0100")) {
+		t.Fatalf("order=%+v, want filled order", order)
+	}
+
+	var got []contract.ExecEvent
+	for i := 0; i < 2; i++ {
+		select {
+		case env := <-exec.Events():
+			if env.Source != contract.SourceAdapterREST || !env.Flags.Has(contract.EventFlagSynthetic) {
+				t.Fatalf("event %d source=%s flags=%d, want REST synthetic", i, env.Source, env.Flags)
+			}
+			got = append(got, env.Payload)
+		default:
+			t.Fatalf("event %d missing; got=%#v", i, got)
+		}
+	}
+	if _, ok := got[0].(contract.OrderEvent); !ok {
+		t.Fatalf("event[0]=%T, want OrderEvent", got[0])
+	}
+	fillEvent, ok := got[1].(contract.FillEvent)
+	if !ok {
+		t.Fatalf("event[1]=%T, want FillEvent", got[1])
+	}
+	if fillEvent.Fill.ClientID != "c-spot-fill" ||
+		fillEvent.Fill.VenueOrderID != "556" ||
+		fillEvent.Fill.TradeID != "789" ||
+		!fillEvent.Fill.Price.Equal(d("3001.00")) ||
+		!fillEvent.Fill.Quantity.Equal(d("0.0100")) ||
+		fillEvent.Fill.FeeCurrency != "BNB" ||
+		fillEvent.Fill.AccountID != model.AccountIDBinanceDefault {
+		t.Fatalf("fill event=%+v", fillEvent.Fill)
 	}
 }
 
@@ -383,14 +461,11 @@ func TestBinanceSpotAccountBalancesTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDBinanceDefault || state.Type != model.AccountCash || state.ModeInfo.AccountMode != "SPOT" {
-		t.Fatalf("account state identity/mode=%+v", state)
+	if state.AccountID != model.AccountIDBinanceDefault || state.Venue != venueName || state.Type != model.AccountCash {
+		t.Fatalf("account state identity/type=%+v", state)
 	}
-	if !state.ModeInfo.Verified || state.ModeInfo.Source != "GET /api/v3/account" {
-		t.Fatalf("account mode not verified: %+v", state.ModeInfo)
-	}
-	if len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindSpot {
-		t.Fatalf("product scope=%v, want spot", state.ModeInfo.ProductScope)
+	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if state.TsEvent.UnixMilli() != 1700000000000 {
 		t.Fatalf("TsEvent=%s, want REST updateTime", state.TsEvent)
@@ -528,7 +603,10 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 				if err := state.Validate(); err != nil {
 					return err
 				}
-				return state.ModeInfo.ValidateVerified()
+				if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+					return errors.New("account state envelope incomplete")
+				}
+				return nil
 			}},
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},
 			Positions: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {

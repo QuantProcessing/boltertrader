@@ -35,7 +35,7 @@ func TestBybitAcceptanceLifecycleQuantityCoversRestingMinNotional(t *testing.T) 
 	}
 }
 
-func TestBybitAcceptanceLifecyclePricesUseTightIOCSlippage(t *testing.T) {
+func TestBybitSpotAcceptanceLifecyclePricesUseTightIOCSlippage(t *testing.T) {
 	provider := newInstrumentProvider()
 	inst := &model.Instrument{
 		ID:          model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindSpot},
@@ -60,6 +60,35 @@ func TestBybitAcceptanceLifecyclePricesUseTightIOCSlippage(t *testing.T) {
 		t.Fatalf("fill price %s uses too much IOC buy slippage", spec.FillPrice)
 	}
 	if spec.ClosePrice.LessThan(decimal.RequireFromString("99.90")) {
+		t.Fatalf("close price %s uses too much IOC sell slippage", spec.ClosePrice)
+	}
+}
+
+func TestBybitPerpAcceptanceLifecyclePricesUseWiderIOCSlippage(t *testing.T) {
+	provider := newInstrumentProvider()
+	inst := &model.Instrument{
+		ID:          model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		Base:        "BTC",
+		Quote:       "USDT",
+		Settle:      "USDT",
+		VenueSymbol: "BTCUSDT",
+		PriceTick:   decimal.RequireFromString("0.01"),
+		SizeStep:    decimal.RequireFromString("0.000001"),
+		MinQty:      decimal.RequireFromString("0.000001"),
+		MinNotional: decimal.RequireFromString("1"),
+	}
+	provider.LoadSnapshot([]*model.Instrument{inst})
+	adapter := &Adapter{provider: provider}
+	book := &model.OrderBook{
+		Bids: []model.BookLevel{{Price: decimal.RequireFromString("100")}},
+		Asks: []model.BookLevel{{Price: decimal.RequireFromString("101")}},
+	}
+
+	spec := bybitAcceptanceLifecycleSpec(t, adapter, "Bybit Demo USDT Perp", inst.ID, book, decimal.RequireFromString("20"))
+	if spec.FillPrice.GreaterThan(decimal.RequireFromString("102.02")) {
+		t.Fatalf("fill price %s uses too much IOC buy slippage", spec.FillPrice)
+	}
+	if spec.ClosePrice.LessThan(decimal.RequireFromString("99.00")) {
 		t.Fatalf("close price %s uses too much IOC sell slippage", spec.ClosePrice)
 	}
 }

@@ -442,14 +442,11 @@ func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXDefault || state.Type != model.AccountCash || state.ModeInfo.AccountMode != string(okx.AccountLevelSimple) {
-		t.Fatalf("account state identity/mode=%+v", state)
+	if state.AccountID != model.AccountIDOKXDefault || state.Venue != venueName || state.Type != model.AccountCash {
+		t.Fatalf("account state identity/type=%+v", state)
 	}
-	if !state.ModeInfo.Verified || state.ModeInfo.Source != "GET /api/v5/account/balance + GET /api/v5/account/config" {
-		t.Fatalf("account mode not verified: %+v", state.ModeInfo)
-	}
-	if len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindSpot {
-		t.Fatalf("product scope=%v, want spot", state.ModeInfo.ProductScope)
+	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if state.TsEvent.UnixMilli() != 1700000000001 {
 		t.Fatalf("TsEvent=%s, want latest balance detail uTime", state.TsEvent)
@@ -556,7 +553,10 @@ func TestOKXSpotContractCapabilities(t *testing.T) {
 				if err := state.Validate(); err != nil {
 					return err
 				}
-				return state.ModeInfo.ValidateVerified()
+				if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+					return errors.New("account state envelope incomplete")
+				}
+				return nil
 			}},
 			Balances: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo account tests")},
 			Positions: contracttest.CapabilityProbe{Support: contracttest.Supported(), Probe: func(ctx context.Context) error {

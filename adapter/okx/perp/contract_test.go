@@ -521,7 +521,10 @@ func TestPerpCapabilitySuite(t *testing.T) {
 				if err := state.Validate(); err != nil {
 					return err
 				}
-				return state.ModeInfo.ValidateVerified()
+				if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+					return errors.New("account state envelope incomplete")
+				}
+				return nil
 			}},
 			Balances:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 			Positions:   contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
@@ -543,14 +546,11 @@ func TestOKXPerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXDefault || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
+	if state.AccountID != model.AccountIDOKXDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
 		t.Fatalf("account state identity=%+v", state)
 	}
-	if state.ModeInfo.AccountMode != string(okx.AccountLevelSingleCurrencyMargin) || state.ModeInfo.MarginMode != "isolated" || state.ModeInfo.PositionMode != "long_short_mode" {
-		t.Fatalf("mode info=%+v", state.ModeInfo)
-	}
-	if !state.ModeInfo.Verified || len(state.ModeInfo.ProductScope) != 1 || state.ModeInfo.ProductScope[0] != enums.KindPerp {
-		t.Fatalf("mode verification/scope=%+v", state.ModeInfo)
+	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 	if state.TsEvent.UnixMilli() != 1700000000002 {
 		t.Fatalf("TsEvent=%s, want latest position uTime", state.TsEvent)
@@ -572,9 +572,6 @@ func TestOKXPerpAccountStateTranslation(t *testing.T) {
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("account state validate: %v", err)
-	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("mode validate: %v", err)
 	}
 }
 

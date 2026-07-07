@@ -47,6 +47,10 @@ func NewFakeExec() *FakeExec {
 func (f *FakeExec) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue: "FAKE",
+		Products: []contract.ProductCapability{
+			{Kind: enums.KindSpot, Trading: true},
+			{Kind: enums.KindPerp, Trading: true},
+		},
 		Reports: contract.ReportCapabilities{
 			SingleOrderStatus:         true,
 			OpenOrders:                true,
@@ -248,7 +252,11 @@ func (f *FakeAccount) Capabilities() contract.Capabilities {
 		streaming.AccountState = true
 	}
 	return contract.Capabilities{
-		Venue:     "FAKE",
+		Venue: "FAKE",
+		Products: []contract.ProductCapability{
+			{Kind: enums.KindSpot, Account: true},
+			{Kind: enums.KindPerp, Account: true},
+		},
 		Reports:   reports,
 		Streaming: streaming,
 	}

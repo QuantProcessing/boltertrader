@@ -90,6 +90,13 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if res.Code != 0 && res.Code != 200 {
 		return &model.Order{Request: req, Status: enums.StatusRejected, RejectReason: res.Message, UpdatedAt: c.clk.Now()}, fmt.Errorf("lighter: place order rejected code=%d message=%s", res.Code, res.Message)
 	}
+	if wire.TimeInForce == sdk.OrderTimeInForceImmediateOrCancel {
+		order, err := c.waitForInactiveOrder(ctx, req, wire.MarketId, clientIndex)
+		if err != nil {
+			return nil, err
+		}
+		return order, nil
+	}
 	order, err := c.waitForOpenOrder(ctx, req, wire.MarketId, clientIndex)
 	if err != nil {
 		return nil, err
@@ -230,13 +237,15 @@ func clientOrderIndex(clientID string) int64 {
 }
 
 func (c *executionClient) waitForOpenOrder(ctx context.Context, req model.OrderRequest, marketID int, clientIndex int64) (*model.Order, error) {
-	deadline, cancel := context.WithTimeout(ctx, 15*time.Second)
+	deadline, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
 	for {
-		orders, err := c.openOrdersForMarket(deadline, marketID)
+		callCtx, cancelCall := context.WithTimeout(deadline, 15*time.Second)
+		orders, err := c.openOrdersForMarket(callCtx, marketID)
+		cancelCall()
 		if err != nil {
 			lastErr = err
 		}
@@ -255,6 +264,9 @@ func (c *executionClient) waitForOpenOrder(ctx context.Context, req model.OrderR
 		}
 		select {
 		case <-deadline.Done():
+			if order, err := c.findInactiveOrder(ctx, req, marketID, clientIndex); err == nil {
+				return order, nil
+			}
 			if lastErr != nil {
 				return nil, fmt.Errorf("lighter: submitted order not observed in active orders before timeout: %w", lastErr)
 			}
@@ -262,6 +274,49 @@ func (c *executionClient) waitForOpenOrder(ctx context.Context, req model.OrderR
 		case <-ticker.C:
 		}
 	}
+}
+
+func (c *executionClient) waitForInactiveOrder(ctx context.Context, req model.OrderRequest, marketID int, clientIndex int64) (*model.Order, error) {
+	deadline, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		order, err := c.findInactiveOrder(deadline, req, marketID, clientIndex)
+		if err == nil {
+			return order, nil
+		}
+		lastErr = err
+		select {
+		case <-deadline.Done():
+			return nil, fmt.Errorf("lighter: submitted order not observed in inactive orders before timeout: %w", lastErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (c *executionClient) findInactiveOrder(ctx context.Context, req model.OrderRequest, marketID int, clientIndex int64) (*model.Order, error) {
+	callCtx, cancelCall := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelCall()
+	orders, err := c.rest.GetInactiveOrders(callCtx, &marketID, 100)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range orders.Orders {
+		if raw == nil || raw.ClientOrderIndex != clientIndex {
+			continue
+		}
+		order := c.orderFromLighter(raw)
+		if order.Request.ClientID == "" {
+			order.Request.ClientID = req.ClientID
+		}
+		order.Request.AccountID = c.accountID
+		order.Request.PositionSide = enums.PosNet
+		order = c.rememberOrder(order)
+		return &order, nil
+	}
+	return nil, fmt.Errorf("lighter: inactive order client_index=%d not found", clientIndex)
 }
 
 func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error {

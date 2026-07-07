@@ -473,14 +473,5 @@ func accountOwnsPosition(acct accounting.Account, pos model.Position) bool {
 	if acct == nil || acct.Venue() != pos.InstrumentID.Venue {
 		return false
 	}
-	scope := acct.LastEvent().ModeInfo.ProductScope
-	if len(scope) == 0 {
-		return false
-	}
-	for _, kind := range scope {
-		if kind == pos.InstrumentID.Kind {
-			return true
-		}
-	}
-	return false
+	return pos.AccountID == acct.ID()
 }

@@ -20,7 +20,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	adapter, spec, instID, qty, restingPrice := newBinanceDemoRuntimeAcceptanceFixture(t, ctx)
+	adapter, spec, instID, qty, restingPrice, fillPrice := newBinanceDemoRuntimeAcceptanceFixture(t, ctx)
 	defer adapter.Close()
 	cleanupArmed := false
 	defer func() {
@@ -39,6 +39,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 		InstrumentID:   instID,
 		OrderQty:       qty,
 		RestingPrice:   restingPrice,
+		FillPrice:      fillPrice,
 		PositionSide:   enums.PosNet,
 		ClientIDPrefix: "btdr",
 	})

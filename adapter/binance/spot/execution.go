@@ -79,6 +79,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 		Type:             otype,
 		Quantity:         req.Quantity.String(),
 		NewClientOrderID: req.ClientID,
+		NewOrderRespType: "FULL",
 	}
 	if !req.Price.IsZero() {
 		p.Price = req.Price.String()
@@ -101,6 +102,9 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	order := orderFromResponse(resp, req)
 	order.CreatedAt = c.clk.Now()
 	order.UpdatedAt = order.CreatedAt
+	for _, ev := range execEventsFromOrderResponse(resp, req) {
+		c.emitRESTSynthetic(ev)
+	}
 	return &order, nil
 }
 
@@ -282,6 +286,13 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
 
 func (c *executionClient) emit(ev contract.ExecEvent) { c.stream.Emit(contract.NewExecEnvelope(ev)) }
+
+func (c *executionClient) emitRESTSynthetic(ev contract.ExecEvent) {
+	c.stream.Emit(contract.NewExecEnvelopeWithMeta(ev, contract.EventMeta{
+		Source: contract.SourceAdapterREST,
+		Flags:  contract.EventFlagSynthetic,
+	}))
+}
 
 func (c *executionClient) Close() error {
 	c.stream.Close()

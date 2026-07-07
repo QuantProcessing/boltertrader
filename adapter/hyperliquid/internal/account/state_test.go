@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
@@ -14,14 +13,11 @@ import (
 func TestBuildAccountStateMergesPerpAndSpotWithoutDoubleCountingUSDC(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	state, err := BuildAccountState(StateInput{
-		AccountID:         model.AccountIDHyperliquidDefault,
-		AccountMode:       sdk.AccountAbstractionDefault,
-		Perp:              perpState("100", "88", "12", "7"),
-		Spot:              spotState(rawSpotBalance("USDC", "10", "1.5"), rawSpotBalance("PURR", "2", "0.5")),
-		ProductScope:      []enums.InstrumentKind{enums.KindSpot, enums.KindPerp},
-		Now:               now,
-		Details:           map[string]string{"account_address": "0xabc"},
-		AccountModeSource: "userAbstraction",
+		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountMode: sdk.AccountAbstractionDefault,
+		Perp:        perpState("100", "88", "12", "7"),
+		Spot:        spotState(rawSpotBalance("USDC", "10", "1.5"), rawSpotBalance("PURR", "2", "0.5")),
+		Now:         now,
 	})
 	if err != nil {
 		t.Fatalf("BuildAccountState: %v", err)
@@ -40,14 +36,11 @@ func TestBuildAccountStateMergesPerpAndSpotWithoutDoubleCountingUSDC(t *testing.
 	if len(state.Margins) != 1 || state.Margins[0].Currency != "USDC" || !state.Margins[0].Initial.Equal(d("12")) || !state.Margins[0].Maintenance.Equal(d("7")) {
 		t.Fatalf("margins=%+v, want USDC initial=12 maintenance=7", state.Margins)
 	}
-	if state.ModeInfo.AccountMode != "default" || state.ModeInfo.MarginMode != "cross" || state.ModeInfo.PositionMode != "net" || state.ModeInfo.CollateralMode != "single_usdc" {
-		t.Fatalf("mode info=%+v", state.ModeInfo)
-	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("state invalid: %v", err)
 	}
-	if err := state.ModeInfo.ValidateVerified(); err != nil {
-		t.Fatalf("mode info invalid: %v", err)
+	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+		t.Fatalf("account state envelope incomplete: %+v", state)
 	}
 }
 
@@ -71,28 +64,25 @@ func TestBuildAccountStateUsesSpotUSDCWhenPerpSummaryIsEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildAccountStateMapsAccountAbstractions(t *testing.T) {
-	tests := []struct {
-		mode       sdk.AccountAbstraction
-		collateral string
-	}{
-		{sdk.AccountAbstractionDefault, "single_usdc"},
-		{sdk.AccountAbstractionUnifiedAccount, "unified"},
-		{sdk.AccountAbstractionPortfolioMargin, "portfolio_margin"},
+func TestBuildAccountStateAcceptsSupportedAccountAbstractions(t *testing.T) {
+	tests := []sdk.AccountAbstraction{
+		sdk.AccountAbstractionDefault,
+		sdk.AccountAbstractionUnifiedAccount,
+		sdk.AccountAbstractionPortfolioMargin,
 	}
-	for _, tt := range tests {
+	for _, mode := range tests {
 		state, err := BuildAccountState(StateInput{
 			AccountID:   model.AccountIDHyperliquidDefault,
-			AccountMode: tt.mode,
+			AccountMode: mode,
 			Perp:        perpState("1", "1", "0", "0"),
 			Spot:        spotState(),
 			Now:         time.Unix(1700000000, 0),
 		})
 		if err != nil {
-			t.Fatalf("BuildAccountState(%s): %v", tt.mode, err)
+			t.Fatalf("BuildAccountState(%s): %v", mode, err)
 		}
-		if state.ModeInfo.AccountMode != string(tt.mode) || state.ModeInfo.CollateralMode != tt.collateral {
-			t.Fatalf("mode=%s modeInfo=%+v, want collateral=%s", tt.mode, state.ModeInfo, tt.collateral)
+		if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" {
+			t.Fatalf("mode=%s account state=%+v", mode, state)
 		}
 	}
 }

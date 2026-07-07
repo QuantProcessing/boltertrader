@@ -63,6 +63,39 @@ func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve sym
 	return events
 }
 
+func execEventsFromOrderResponse(resp *sdkspot.OrderResponse, req model.OrderRequest) []contract.ExecEvent {
+	order := orderFromResponse(resp, req)
+	if resp.TransactTime > 0 {
+		order.UpdatedAt = time.UnixMilli(resp.TransactTime)
+	}
+	events := []contract.ExecEvent{contract.OrderEvent{Order: order}}
+	for _, fillResp := range resp.Fills {
+		qty := dec(fillResp.Qty)
+		if !qty.IsPositive() {
+			continue
+		}
+		ts := order.UpdatedAt
+		if ts.IsZero() {
+			ts = time.Now()
+		}
+		events = append(events, contract.FillEvent{Fill: model.Fill{
+			AccountID:    order.Request.AccountID,
+			InstrumentID: order.Request.InstrumentID,
+			VenueOrderID: order.VenueOrderID,
+			ClientID:     order.Request.ClientID,
+			TradeID:      itoa(fillResp.TradeID),
+			Side:         order.Request.Side,
+			Liquidity:    enums.LiqTaker,
+			Price:        dec(fillResp.Price),
+			Quantity:     qty,
+			Fee:          dec(fillResp.Commission),
+			FeeCurrency:  fillResp.CommissionAsset,
+			Timestamp:    ts,
+		}})
+	}
+	return events
+}
+
 func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent, accountID string) []contract.AccountEvent {
 	ts := time.UnixMilli(ev.EventTime)
 	out := make([]contract.AccountEvent, 0, len(ev.Balances))

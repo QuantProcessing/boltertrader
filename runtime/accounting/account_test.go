@@ -22,17 +22,10 @@ func cashState(ts time.Time) model.AccountState {
 			Free:     dec("80"),
 			Locked:   dec("20"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "spot",
-			ProductScope: []enums.InstrumentKind{enums.KindSpot},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}
 }
 
@@ -96,17 +89,10 @@ func TestMarginAccountStoresMargins(t *testing.T) {
 			Initial:      dec("50"),
 			Maintenance:  dec("20"),
 		}},
-		ModeInfo: model.AccountModeInfo{
-			Venue:        "BINANCE",
-			AccountID:    model.AccountIDBinanceDefault,
-			AccountMode:  "futures",
-			ProductScope: []enums.InstrumentKind{enums.KindPerp},
-			Verified:     true,
-			VerifiedAt:   ts,
-			Source:       "test",
-		},
 		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
 		TsEvent:  ts,
+		TsInit:   ts,
 	}
 	acct, err := New(state, time.Minute, ts)
 	if err != nil {

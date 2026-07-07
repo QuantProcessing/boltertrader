@@ -53,7 +53,7 @@ not accepted as fallback inputs for Demo/Testnet acceptance.
 
 Bybit and Bitget rows are the first unified-account adapter/runtime slice for
 those venues. The offline contract currently proves SDK conversion, stream
-decoding, account-mode safety envelopes, account-state reconciliation,
+decoding, account-state safety envelopes, account-state reconciliation,
 portfolio/risk reads, and private stream subscription wiring. The Bybit and
 Bitget first-stage acceptance contracts use their own non-production venues:
 Bybit Demo Trading and Bitget Demo/paper trading. Those Make targets are

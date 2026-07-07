@@ -56,6 +56,29 @@ func TestExecTesterSubmitsRestingCancelThenMarket(t *testing.T) {
 	}
 }
 
+func TestExecTesterUsesLimitIOCWhenFillPriceProvided(t *testing.T) {
+	inst := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindPerp}
+	orders := &recordingSubmitter{}
+	tester := NewExecTester(ExecTesterConfig{
+		InstrumentID:   inst,
+		OrderQty:       decimal.RequireFromString("0.01"),
+		RestingPrice:   decimal.RequireFromString("1500"),
+		FillPrice:      decimal.RequireFromString("1600"),
+		PositionSide:   enums.PosNet,
+		ClientIDPrefix: "bte",
+	})
+
+	tester.OnStart(&strategy.Context{Ctx: context.Background(), Orders: orders})
+
+	if len(orders.submits) != 2 {
+		t.Fatalf("submits=%d, want resting+fill", len(orders.submits))
+	}
+	fill := orders.submits[1]
+	if fill.Type != enums.TypeLimit || fill.TIF != enums.TifIOC || !fill.Price.Equal(decimal.RequireFromString("1600")) {
+		t.Fatalf("unexpected fill request: %+v", fill)
+	}
+}
+
 type recordingSubmitter struct {
 	submits []model.OrderRequest
 	cancels []string
