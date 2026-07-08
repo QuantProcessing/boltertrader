@@ -86,6 +86,21 @@ const (
 	BitgetDefaultUSDTPerpSymbol  = "BTCUSDT"
 	BitgetDefaultUSDCPerpSymbol  = "BTCPERP"
 
+	GateTestnetAPIKeyEnv           = "GATE_TESTNET_API_KEY"
+	GateTestnetAPISecretEnv        = "GATE_TESTNET_API_SECRET"
+	GateTestnetEnableWriteEnv      = "BOLTER_ENABLE_GATE_TESTNET_WRITES"
+	GateTestnetSpotSymbolEnv       = "GATE_TESTNET_SPOT_SYMBOL"
+	GateTestnetUSDTPerpSymbolEnv   = "GATE_TESTNET_USDT_PERP_SYMBOL"
+	GateTestnetMaxNotionalUSDTEnv  = "GATE_TESTNET_MAX_NOTIONAL_USDT"
+	GateTestnetRESTBaseURLEnv      = "GATE_TESTNET_REST_BASE_URL"
+	GateTestnetSpotWSURLEnv        = "GATE_TESTNET_SPOT_WS_URL"
+	GateTestnetUSDTFuturesWSURLEnv = "GATE_TESTNET_USDT_FUTURES_WS_URL"
+	// Deprecated: use GateTestnetUSDTFuturesWSURLEnv.
+	GateTestnetFuturesUSDTWSURLEnv    = "GATE_TESTNET_FUTURES_USDT_WS_URL"
+	GateTestnetDefaultMaxNotionalUSDT = "100"
+	GateTestnetDefaultSpotSymbol      = "ETH_USDT"
+	GateTestnetDefaultUSDTPerpSymbol  = "BTC_USDT"
+
 	HyperliquidTestnetPrivateKeyEnv      = "HYPERLIQUID_TESTNET_PK"
 	HyperliquidTestnetEnableWriteEnv     = "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES"
 	HyperliquidTestnetAccountAddressEnv  = "HYPERLIQUID_ACCOUNT_ADDRESS"
@@ -167,6 +182,23 @@ type BitgetDemoConfig struct {
 
 // Deprecated: use BitgetDemoConfig.
 type BitgetTestnetConfig = BitgetDemoConfig
+
+type GateEndpointProfile struct {
+	RESTBaseURL      string
+	SpotWSURL        string
+	FuturesUSDTWSURL string
+	OfficialTestnet  bool
+}
+
+type GateTestnetConfig struct {
+	APIKey          string
+	APISecret       string
+	MaxNotionalUSDT decimal.Decimal
+	SpotSymbol      string
+	USDTPerpSymbol  string
+	Profile         GateEndpointProfile
+	ProxyURL        string
+}
 
 type BlockedReleaseError struct {
 	Venue       string
@@ -288,6 +320,23 @@ func (c BitgetDemoConfig) String() string {
 }
 
 func (c BitgetDemoConfig) GoString() string {
+	return c.String()
+}
+
+func (c GateTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"GateTestnetConfig{APIKey:%s APISecret:%s MaxNotionalUSDT:%s SpotSymbol:%q USDTPerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		redactSecret(c.APIKey),
+		redactSecret(c.APISecret),
+		c.MaxNotionalUSDT.String(),
+		c.SpotSymbol,
+		c.USDTPerpSymbol,
+		c.Profile,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c GateTestnetConfig) GoString() string {
 	return c.String()
 }
 
@@ -460,6 +509,48 @@ func RequireBitgetDemoWrite(t testing.TB) BitgetDemoConfig {
 func RequireBitgetTestnetWrite(t testing.TB) BitgetTestnetConfig {
 	t.Helper()
 	return RequireBitgetDemoWrite(t)
+}
+
+func RequireGateTestnetWrite(t testing.TB) GateTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Gate Testnet write test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv(GateTestnetEnableWriteEnv) != "1" {
+		t.Skipf("skipping Gate Testnet write test: set %s=1 to enable real testnet writes", GateTestnetEnableWriteEnv)
+	}
+	if missing := missingEnv(GateTestnetAPIKeyEnv, GateTestnetAPISecretEnv); len(missing) > 0 {
+		t.Skipf("skipping Gate Testnet write test: missing required env %s", strings.Join(missing, ", "))
+	}
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Gate Testnet env: %v", err)
+	}
+	return cfg
+}
+
+func RequireGateTestnetRead(t testing.TB) GateTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Gate Testnet read test excluded by -short")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
+		t.Skip("skipping Gate Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	if missing := missingEnv(GateTestnetAPIKeyEnv, GateTestnetAPISecretEnv); len(missing) > 0 {
+		t.Skipf("skipping Gate Testnet read test: missing required env %s", strings.Join(missing, ", "))
+	}
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Gate Testnet read env: %v", err)
+	}
+	return cfg
 }
 
 func RequireHyperliquidTestnetWrite(t testing.TB) HyperliquidTestnetConfig {
@@ -653,6 +744,46 @@ func BitgetTestnetConfigFromEnv() (BitgetTestnetConfig, error) {
 	return BitgetDemoConfigFromEnv()
 }
 
+func GateTestnetConfigFromEnv() (GateTestnetConfig, error) {
+	if missing := missingEnv(GateTestnetAPIKeyEnv, GateTestnetAPISecretEnv); len(missing) > 0 {
+		return GateTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+	}
+	restBaseURL := envOrDefault(GateTestnetRESTBaseURLEnv, "https://api-testnet.gateapi.io/api/v4")
+	spotWSURL := envOrDefault(GateTestnetSpotWSURLEnv, "wss://ws-testnet.gate.com/v4/ws/spot")
+	futuresUSDTWSURL := envOrDefaultAny([]string{GateTestnetUSDTFuturesWSURLEnv, GateTestnetFuturesUSDTWSURLEnv}, "wss://ws-testnet.gate.com/v4/ws/futures/usdt")
+	if err := validateGateTestnetURL(restBaseURL, GateTestnetRESTBaseURLEnv, "http", "https"); err != nil {
+		return GateTestnetConfig{}, err
+	}
+	if err := validateGateTestnetURL(spotWSURL, GateTestnetSpotWSURLEnv, "ws", "wss"); err != nil {
+		return GateTestnetConfig{}, err
+	}
+	if err := validateGateTestnetURL(futuresUSDTWSURL, GateTestnetUSDTFuturesWSURLEnv, "ws", "wss"); err != nil {
+		return GateTestnetConfig{}, err
+	}
+	maxUSDT, err := parsePositiveDecimalEnv(GateTestnetMaxNotionalUSDTEnv, GateTestnetDefaultMaxNotionalUSDT)
+	if err != nil {
+		return GateTestnetConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return GateTestnetConfig{}, err
+	}
+	return GateTestnetConfig{
+		APIKey:          os.Getenv(GateTestnetAPIKeyEnv),
+		APISecret:       os.Getenv(GateTestnetAPISecretEnv),
+		MaxNotionalUSDT: maxUSDT,
+		SpotSymbol:      envOrDefault(GateTestnetSpotSymbolEnv, GateTestnetDefaultSpotSymbol),
+		USDTPerpSymbol:  envOrDefault(GateTestnetUSDTPerpSymbolEnv, GateTestnetDefaultUSDTPerpSymbol),
+		Profile: GateEndpointProfile{
+			RESTBaseURL:      restBaseURL,
+			SpotWSURL:        spotWSURL,
+			FuturesUSDTWSURL: futuresUSDTWSURL,
+			OfficialTestnet:  true,
+		},
+		ProxyURL: proxyURL,
+	}, nil
+}
+
 func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, error) {
 	required := []string{LighterTestnetAccountIndexEnv, LighterTestnetAPIKeyIndexEnv}
 	if requirePrivateKey {
@@ -837,6 +968,10 @@ func BitgetDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 
+func GateTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
 // Deprecated: use BitgetDemoHTTPClient.
 func BitgetTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return BitgetDemoHTTPClient(timeout)
@@ -976,6 +1111,16 @@ func envOrDefault(key, defaultValue string) string {
 	return value
 }
 
+func envOrDefaultAny(keys []string, defaultValue string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value != "" {
+			return value
+		}
+	}
+	return defaultValue
+}
+
 func parsePositiveDecimalEnv(key, defaultValue string) (decimal.Decimal, error) {
 	value := envOrDefault(key, defaultValue)
 	parsed, err := decimal.NewFromString(value)
@@ -1038,6 +1183,23 @@ func validateURL(raw, envName string, allowedSchemes ...string) error {
 		}
 	}
 	return fmt.Errorf("%s must use one of schemes: %s", envName, strings.Join(allowedSchemes, ", "))
+}
+
+func validateGateTestnetURL(raw, envName string, allowedSchemes ...string) error {
+	if err := validateURL(raw, envName, allowedSchemes...); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s has invalid URL: %w", envName, err)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, productionHost := range []string{"api.gateio.ws", "fx-ws.gateio.ws"} {
+		if host == productionHost {
+			return fmt.Errorf("%s must not point Gate Testnet acceptance at production host %s", envName, productionHost)
+		}
+	}
+	return nil
 }
 
 func redactSecret(value string) string {

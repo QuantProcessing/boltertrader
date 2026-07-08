@@ -402,6 +402,171 @@ func TestBitgetDemoConfigAcceptsLegacyTestnetEnvAliases(t *testing.T) {
 	}
 }
 
+func TestGateTestnetEnvContractConstants(t *testing.T) {
+	if GateTestnetAPIKeyEnv != "GATE_TESTNET_API_KEY" {
+		t.Fatalf("GateTestnetAPIKeyEnv=%q", GateTestnetAPIKeyEnv)
+	}
+	if GateTestnetAPISecretEnv != "GATE_TESTNET_API_SECRET" {
+		t.Fatalf("GateTestnetAPISecretEnv=%q", GateTestnetAPISecretEnv)
+	}
+	if GateTestnetEnableWriteEnv != "BOLTER_ENABLE_GATE_TESTNET_WRITES" {
+		t.Fatalf("GateTestnetEnableWriteEnv=%q", GateTestnetEnableWriteEnv)
+	}
+	if GateTestnetUSDTFuturesWSURLEnv != "GATE_TESTNET_USDT_FUTURES_WS_URL" {
+		t.Fatalf("GateTestnetUSDTFuturesWSURLEnv=%q", GateTestnetUSDTFuturesWSURLEnv)
+	}
+}
+
+func TestGateTestnetConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("GateTestnetConfigFromEnv: %v", err)
+	}
+	if got := cfg.MaxNotionalUSDT.String(); got != "100" {
+		t.Fatalf("default max notional=%s, want 100", got)
+	}
+	if cfg.SpotSymbol != GateTestnetDefaultSpotSymbol {
+		t.Fatalf("default spot symbol=%q, want %q", cfg.SpotSymbol, GateTestnetDefaultSpotSymbol)
+	}
+	if cfg.USDTPerpSymbol != GateTestnetDefaultUSDTPerpSymbol {
+		t.Fatalf("default perp symbol=%q, want %q", cfg.USDTPerpSymbol, GateTestnetDefaultUSDTPerpSymbol)
+	}
+	if cfg.Profile.RESTBaseURL != "https://api-testnet.gateapi.io/api/v4" {
+		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.SpotWSURL != "wss://ws-testnet.gate.com/v4/ws/spot" {
+		t.Fatalf("testnet spot ws=%q", cfg.Profile.SpotWSURL)
+	}
+	if cfg.Profile.FuturesUSDTWSURL != "wss://ws-testnet.gate.com/v4/ws/futures/usdt" {
+		t.Fatalf("testnet futures ws=%q", cfg.Profile.FuturesUSDTWSURL)
+	}
+	if !cfg.Profile.OfficialTestnet {
+		t.Fatalf("Gate Testnet profile must be marked official testnet: %+v", cfg.Profile)
+	}
+}
+
+func TestGateTestnetConfigFromEnvAcceptsOverrides(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetMaxNotionalUSDTEnv, "12.5")
+	t.Setenv(GateTestnetSpotSymbolEnv, "BTC_USDT")
+	t.Setenv(GateTestnetUSDTPerpSymbolEnv, "ETH_USDT")
+	t.Setenv(GateTestnetRESTBaseURLEnv, "https://gate-testnet.example/api/v4")
+	t.Setenv(GateTestnetSpotWSURLEnv, "wss://gate-testnet.example/ws/spot")
+	t.Setenv(GateTestnetUSDTFuturesWSURLEnv, "wss://gate-testnet.example/ws/usdt")
+
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("GateTestnetConfigFromEnv: %v", err)
+	}
+	if got := cfg.MaxNotionalUSDT.String(); got != "12.5" {
+		t.Fatalf("max notional=%s, want 12.5", got)
+	}
+	if cfg.SpotSymbol != "BTC_USDT" || cfg.USDTPerpSymbol != "ETH_USDT" {
+		t.Fatalf("symbols not applied: %+v", cfg)
+	}
+	if cfg.Profile.RESTBaseURL != "https://gate-testnet.example/api/v4" {
+		t.Fatalf("rest override=%q", cfg.Profile.RESTBaseURL)
+	}
+}
+
+func TestGateTestnetConfigFromEnvAcceptsPartialEndpointOverrides(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetRESTBaseURLEnv, "https://gate-testnet.example/api/v4")
+
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("GateTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.RESTBaseURL != "https://gate-testnet.example/api/v4" {
+		t.Fatalf("rest override=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.SpotWSURL != "wss://ws-testnet.gate.com/v4/ws/spot" {
+		t.Fatalf("spot ws default=%q", cfg.Profile.SpotWSURL)
+	}
+}
+
+func TestGateTestnetConfigFromEnvRejectsInvalidURLs(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetRESTBaseURLEnv, "wss://not-rest.example.test")
+	t.Setenv(GateTestnetSpotWSURLEnv, "wss://gate-testnet.example/ws/spot")
+	t.Setenv(GateTestnetUSDTFuturesWSURLEnv, "wss://gate-testnet.example/ws/usdt")
+
+	if _, err := GateTestnetConfigFromEnv(); err == nil {
+		t.Fatalf("expected invalid REST URL scheme to fail")
+	}
+}
+
+func TestGateTestnetConfigFromEnvRejectsProductionHosts(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetRESTBaseURLEnv, "https://api.gateio.ws/api/v4")
+
+	if _, err := GateTestnetConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "production host") {
+		t.Fatalf("expected production REST host rejection, got %v", err)
+	}
+
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetUSDTFuturesWSURLEnv, "wss://fx-ws.gateio.ws/v4/ws/usdt")
+	if _, err := GateTestnetConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "production host") {
+		t.Fatalf("expected production WS host rejection, got %v", err)
+	}
+}
+
+func TestGateTestnetConfigFromEnvAcceptsLegacyFuturesWSAlias(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetFuturesUSDTWSURLEnv, "wss://gate-testnet.example/ws/legacy-usdt")
+
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("GateTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.FuturesUSDTWSURL != "wss://gate-testnet.example/ws/legacy-usdt" {
+		t.Fatalf("legacy futures ws alias not applied: %q", cfg.Profile.FuturesUSDTWSURL)
+	}
+}
+
+func TestRequireGateTestnetWriteSkipsWithoutEnableFlag(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv(GateTestnetEnableWriteEnv, "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		_ = RequireGateTestnetWrite(t)
+		t.Fatalf("expected RequireGateTestnetWrite to skip without enable flag")
+	})
+	if !skipped {
+		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestGateTestnetConfigStringRedactsSecrets(t *testing.T) {
+	setGateTestnetCredentials(t)
+	clearGateTestnetOptionalEnv(t)
+	t.Setenv("PROXY", "socks5://proxy-user:proxy-pass@127.0.0.1:1080")
+
+	cfg, err := GateTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("GateTestnetConfigFromEnv: %v", err)
+	}
+	rendered := fmt.Sprintf("%v %#v", cfg, cfg)
+	for _, secret := range []string{"gate-key", "gate-secret", "proxy-user", "proxy-pass"} {
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("rendered config leaked secret %q: %s", secret, rendered)
+		}
+	}
+}
+
 func TestOKXDemoEnvContractConstants(t *testing.T) {
 	if OKXDemoAPIKeyEnv != "OKX_DEMO_API_KEY" {
 		t.Fatalf("OKXDemoAPIKeyEnv=%q", OKXDemoAPIKeyEnv)
@@ -949,6 +1114,28 @@ func clearBitgetDemoOptionalEnv(t *testing.T) {
 		BitgetLegacyTestnetRESTBaseURLEnv,
 		BitgetLegacyTestnetPublicWSURLEnv,
 		BitgetLegacyTestnetPrivateWSURLEnv,
+	} {
+		t.Setenv(env, "")
+	}
+	t.Setenv("PROXY", "")
+}
+
+func setGateTestnetCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(GateTestnetAPIKeyEnv, "gate-key")
+	t.Setenv(GateTestnetAPISecretEnv, "gate-secret")
+}
+
+func clearGateTestnetOptionalEnv(t *testing.T) {
+	t.Helper()
+	for _, env := range []string{
+		GateTestnetMaxNotionalUSDTEnv,
+		GateTestnetSpotSymbolEnv,
+		GateTestnetUSDTPerpSymbolEnv,
+		GateTestnetRESTBaseURLEnv,
+		GateTestnetSpotWSURLEnv,
+		GateTestnetUSDTFuturesWSURLEnv,
+		GateTestnetFuturesUSDTWSURLEnv,
 	} {
 		t.Setenv(env, "")
 	}

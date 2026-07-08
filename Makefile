@@ -1,6 +1,7 @@
 .PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-runtime-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance test-hyperliquid-testnet test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-runtime-hip3 test-hyperliquid-testnet-acceptance test-lighter-testnet test-lighter-testnet-read test-lighter-testnet-spot test-lighter-testnet-runtime-spot test-lighter-testnet-perp test-lighter-testnet-runtime-perp test-lighter-testnet-acceptance
 .PHONY: test-bybit-demo test-bybit-demo-spot test-bybit-demo-runtime-spot test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp test-bybit-demo-acceptance test-bybit-spot-acceptance test-bybit-usdt-perp-acceptance test-bybit-usdc-perp-acceptance test-bybit-acceptance
 .PHONY: test-bitget-demo test-bitget-demo-spot test-bitget-demo-runtime-spot test-bitget-demo-usdt-perp test-bitget-demo-runtime-usdt-perp test-bitget-demo-usdc-perp test-bitget-demo-runtime-usdc-perp test-bitget-demo-acceptance test-bitget-testnet test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp test-bitget-testnet-acceptance test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance test-bitget-acceptance test-bybit-bitget-acceptance
+.PHONY: test-gate-testnet test-gate-testnet-read test-gate-testnet-spot test-gate-testnet-runtime-spot test-gate-testnet-usdt-perp test-gate-testnet-runtime-usdt-perp test-gate-testnet-usdc-perp-deferred test-gate-testnet-acceptance test-gate-spot-acceptance test-gate-usdt-perp-acceptance test-gate-acceptance
 
 test:
 	go test -short ./...
@@ -187,3 +188,31 @@ test-bitget-usdc-perp-acceptance: test-bitget-demo-usdc-perp test-bitget-demo-ru
 test-bitget-acceptance: test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance
 
 test-bybit-bitget-acceptance: test-bybit-acceptance test-bitget-acceptance
+
+test-gate-testnet: test-gate-testnet-acceptance
+
+test-gate-testnet-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetReadAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-gate-testnet-spot:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetSpotAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-gate-testnet-runtime-spot:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetSpotRuntimeAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-gate-testnet-usdt-perp:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetUSDTPerpAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-gate-testnet-runtime-usdt-perp:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetUSDTPerpRuntimeAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-gate-testnet-usdc-perp-deferred:
+	go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetUSDCPerpDeferredCapability$$' ./adapter/gate/ -count=1 -timeout=2m
+
+test-gate-testnet-acceptance: test-gate-testnet-read test-gate-testnet-spot test-gate-testnet-runtime-spot test-gate-testnet-usdt-perp test-gate-testnet-runtime-usdt-perp test-gate-testnet-usdc-perp-deferred
+
+test-gate-spot-acceptance: test-gate-testnet-spot test-gate-testnet-runtime-spot
+
+test-gate-usdt-perp-acceptance: test-gate-testnet-usdt-perp test-gate-testnet-runtime-usdt-perp
+
+test-gate-acceptance: test-gate-testnet-acceptance

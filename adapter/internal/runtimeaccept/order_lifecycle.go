@@ -23,6 +23,7 @@ type OrderLifecycleSpec struct {
 	AccountID             string
 	InstrumentID          model.InstrumentID
 	Quantity              decimal.Decimal
+	CloseQuantity         decimal.Decimal
 	RestingPrice          decimal.Decimal
 	FillPrice             decimal.Decimal
 	ClosePrice            decimal.Decimal
@@ -102,6 +103,7 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
 
 	if spec.CloseAfterFill {
+		closeQty := spec.closeQuantity(filledQty)
 		closeOrder, _, err := submitAndWaitFilled(
 			ctx,
 			exec,
@@ -110,7 +112,7 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 			enums.SideSell,
 			spec.ClosePrice,
 			spec.InstrumentID.Kind != enums.KindSpot,
-			filledQty,
+			closeQty,
 		)
 		if err != nil {
 			return nil, err
@@ -199,6 +201,7 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
 
 	if spec.CloseAfterFill {
+		closeQty := spec.closeQuantity(filledQty)
 		closeOrder, _, err := submitRuntimeAndWaitFilled(
 			ctx,
 			node,
@@ -207,7 +210,7 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 			enums.SideSell,
 			spec.ClosePrice,
 			spec.InstrumentID.Kind != enums.KindSpot,
-			filledQty,
+			closeQty,
 		)
 		if err != nil {
 			return nil, err
@@ -346,7 +349,17 @@ func validateOrderLifecycleSpec(spec OrderLifecycleSpec) error {
 			return fmt.Errorf("order lifecycle %s must be positive, got %s", name, value)
 		}
 	}
+	if !spec.CloseQuantity.IsZero() && !spec.CloseQuantity.IsPositive() {
+		return fmt.Errorf("order lifecycle closeQuantity must be positive when set, got %s", spec.CloseQuantity)
+	}
 	return nil
+}
+
+func (s OrderLifecycleSpec) closeQuantity(filledQty decimal.Decimal) decimal.Decimal {
+	if s.CloseQuantity.IsPositive() {
+		return s.CloseQuantity
+	}
+	return filledQty
 }
 
 func (s OrderLifecycleSpec) label() string {

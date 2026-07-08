@@ -17,6 +17,8 @@ reconciliation.
 | BITGET | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-spot-acceptance |
 | BITGET | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdt-perp-acceptance |
 | BITGET | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdc-perp-acceptance |
+| GATE | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open-order mass status | venue order id | yes | runtime timestamps | make test-gate-spot-acceptance |
+| GATE | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-gate-usdt-perp-acceptance |
 | HYPERLIQUID | Spot cash | no | no | no | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-spot |
 | HYPERLIQUID | Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-perp |
 | HYPERLIQUID | HIP-3 Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-hip3 |
@@ -34,22 +36,34 @@ make test-hyperliquid-testnet-acceptance
 make test-lighter-testnet-acceptance
 make test-bybit-acceptance
 make test-bitget-acceptance
+make test-gate-testnet-acceptance
 make test-bybit-bitget-acceptance
 ```
 
 Raw live `go test` runs skip when required Demo/Testnet credentials are absent.
-CEX rows use Demo or paper-trading environments, while DEX rows use Testnet.
+CEX rows use each venue's official non-production write surface: Demo Trading,
+paper trading, or Testnet. DEX rows use Testnet.
 Hyperliquid Testnet runtime acceptance requires a verified
 `contract.AccountStateReporter` snapshot before risk-increasing orders; API
 wallet keys are resolved through Hyperliquid `userRole`, and
 `HYPERLIQUID_ACCOUNT_ADDRESS` should be the owner 0x user address when it differs
 from the signing key. Non-0x Hyperliquid account aliases are rejected before
 venue `/info` requests.
-The Hyperliquid, Lighter, Bybit, and Bitget Make acceptance targets additionally
-fail on any selected skipped test, so missing funding, missing HIP-3 config,
-missing Demo/Testnet credentials, invalid Bitget endpoint overrides, or dirty
-account state is reported as incomplete acceptance. Production credentials are
-not accepted as fallback inputs for Demo/Testnet acceptance.
+The Hyperliquid, Lighter, Bybit, Bitget, and Gate Make acceptance targets
+additionally fail on any selected skipped test, so missing funding, missing
+HIP-3 config, missing Demo/Testnet credentials, invalid endpoint overrides, or
+dirty account state is reported as incomplete acceptance. Production
+credentials are not accepted as fallback inputs for Demo/Testnet acceptance.
+
+Gate rows use Gate's official Testnet endpoint profile. The phase-one support
+surface is Spot cash plus USDT-linear futures/perps only; USDC-linear futures
+are intentionally deferred until an official non-production path is proven.
+
+## Deferred / Unsupported Products
+
+| Venue | Product | Status | Contract result | Acceptance guard |
+| --- | --- | --- | --- | --- |
+| GATE | USDC-linear Perp/Futures | deferred | `contract.ErrNotSupported` | `TestGateTestnetUSDCPerpDeferredCapability` |
 
 Bybit and Bitget rows are the first unified-account adapter/runtime slice for
 those venues. The offline contract proves SDK conversion, stream decoding,

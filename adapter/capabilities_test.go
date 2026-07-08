@@ -40,6 +40,8 @@ func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 		"BITGET|Spot cash":             true,
 		"BITGET|USDT-linear Perp/SWAP": true,
 		"BITGET|USDC-linear Perp/SWAP": true,
+		"GATE|Spot cash":               true,
+		"GATE|USDT-linear Perp/SWAP":   true,
 		"HYPERLIQUID|Spot cash":        true,
 		"HYPERLIQUID|Perp":             true,
 		"HYPERLIQUID|HIP-3 Perp":       true,

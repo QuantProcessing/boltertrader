@@ -14,6 +14,7 @@ const (
 	AccountIDOKXDefault         = "OKX-001"
 	AccountIDBybitDefault       = "BYBIT-001"
 	AccountIDBitgetDefault      = "BITGET-001"
+	AccountIDGateDefault        = "GATE-001"
 	AccountIDLighterDefault     = "LIGHTER-001"
 	AccountIDHyperliquidDefault = "HYPERLIQUID-001"
 )
@@ -28,6 +29,8 @@ func DefaultAccountIDForVenue(venue string) string {
 		return AccountIDBybitDefault
 	case "BITGET":
 		return AccountIDBitgetDefault
+	case "GATE":
+		return AccountIDGateDefault
 	case "LIGHTER":
 		return AccountIDLighterDefault
 	case "HYPERLIQUID":

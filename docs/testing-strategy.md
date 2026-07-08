@@ -54,8 +54,8 @@ and exchange state are available.
   capability probes, including the account-state snapshot contract.
 - `make test-p6-offline`: the full credential-free acceptance gate for core,
   runtime, SDK, adapter, and capability behavior.
-- `make test-demo-acceptance`: the aggregate credential-gated CEX Demo
-  acceptance gate for Binance, OKX, Bybit, and Bitget.
+- `make test-demo-acceptance`: the aggregate credential-gated CEX Demo or
+  paper-trading acceptance gate for Binance, OKX, Bybit, and Bitget.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
 - `make test-binance-demo-runtime-perp`: runtime-level Binance USD-M Demo
   execution through `runtime.TradingNode`.
@@ -102,6 +102,20 @@ and exchange state are available.
   USDC-linear Perp acceptance through `runtime.TradingNode`.
 - `make test-bitget-acceptance`: complete Bitget Demo/paper-trading acceptance
   gate for Spot, USDT-linear Perp, and USDC-linear Perp.
+- `make test-gate-testnet-read`: read-only Gate Testnet Spot/USDT futures
+  market and account-state discovery.
+- `make test-gate-testnet-spot`: adapter-level Gate Testnet Spot cash
+  acceptance.
+- `make test-gate-testnet-runtime-spot`: runtime-level Gate Testnet Spot cash
+  acceptance through `runtime.TradingNode`.
+- `make test-gate-testnet-usdt-perp`: adapter-level Gate Testnet USDT-linear
+  Perp/SWAP acceptance.
+- `make test-gate-testnet-runtime-usdt-perp`: runtime-level Gate Testnet
+  USDT-linear Perp/SWAP acceptance through `runtime.TradingNode`.
+- `make test-gate-testnet-usdc-perp-deferred`: credential-free regression that
+  Gate USDC-linear futures remain unsupported/deferred in phase one.
+- `make test-gate-testnet-acceptance`: complete Gate Testnet acceptance gate
+  for Spot cash and USDT-linear Perp/SWAP.
 - `make test-hyperliquid-testnet-spot-read`: read-only Hyperliquid Testnet Spot
   market/account discovery.
 - `make test-hyperliquid-testnet-spot`: adapter-level Hyperliquid Testnet Spot
@@ -154,7 +168,7 @@ translation code. Default tests must prove:
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
 fake-venue end-to-end gate for this behavior. Non-production runtime acceptance
-for Binance, OKX, Bybit, Bitget, Hyperliquid, and Lighter must run the same
+for Binance, OKX, Bybit, Bitget, Gate, Hyperliquid, and Lighter must run the same
 shape against exchange snapshots before and after order flows.
 
 Runtime ownership is account-id based. A venue may expose multiple account
@@ -165,8 +179,9 @@ run Spot and Perp against the same logical `LIGHTER-001` account id. Venue
 selectors such as Lighter account indexes, Hyperliquid owner/vault/signer
 addresses, OKX `tdMode`, and product scopes are configuration or mode metadata;
 they are not canonical runtime account ids. The phase-one default account-id
-matrix is `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `LIGHTER-001`,
-and `HYPERLIQUID-001`, unless a caller explicitly overrides the logical id.
+matrix is `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `GATE-001`,
+`LIGHTER-001`, and `HYPERLIQUID-001`, unless a caller explicitly overrides the
+logical id.
 
 Risk gates are strict by default for spot orders once this account-state runtime
 path is in use: a missing account state rejects instead of silently falling back
@@ -403,6 +418,49 @@ reconciliation into cache/portfolio, risk fail-closed behavior, private stream
 startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder.
 Future reruns remain NT-style noskip gates and require real credentials and
 clean venue state.
+
+## Gate Testnet Writes
+
+Gate acceptance uses explicit Gate Testnet credentials and never falls back to
+production credentials. Gate is a CEX, but the current official non-production
+write surface for this adapter is Testnet rather than a separate Demo Trading
+profile. The first-stage scope is Spot cash plus USDT-linear futures/perps with
+the canonical logical `GATE-001` account id. Spot margin, delivery futures,
+options, and USDC-linear futures are out of scope until an official
+non-production validation path is proven.
+
+Expose credentials and selectors under:
+
+- `GATE_TESTNET_API_KEY`
+- `GATE_TESTNET_API_SECRET`
+- optional `GATE_TESTNET_REST_BASE_URL`, default
+  `https://api-testnet.gateapi.io/api/v4`
+- optional `GATE_TESTNET_SPOT_WS_URL`, default
+  `wss://ws-testnet.gate.com/v4/ws/spot`
+- optional `GATE_TESTNET_USDT_FUTURES_WS_URL`, default
+  `wss://ws-testnet.gate.com/v4/ws/futures/usdt`
+- optional `GATE_TESTNET_SPOT_SYMBOL`, default `ETH_USDT`
+- optional `GATE_TESTNET_USDT_PERP_SYMBOL`, default `BTC_USDT`
+- optional `GATE_TESTNET_MAX_NOTIONAL_USDT`, default `100`
+
+Run the full Gate gate with:
+
+```sh
+GATE_TESTNET_API_KEY=... \
+GATE_TESTNET_API_SECRET=... \
+make test-gate-testnet-acceptance
+```
+
+The Makefile sets `BOLTER_ENABLE_GATE_TESTNET_WRITES=1` command-locally and
+wraps each target with noskip validation. `GATE_TESTNET_REST_BASE_URL`,
+`GATE_TESTNET_SPOT_WS_URL`, and `GATE_TESTNET_USDT_FUTURES_WS_URL` may be
+overridden independently for non-production hosts; known Gate production hosts
+are rejected before writes. Adapter-level tests load Testnet
+instruments, verify order books and account-state snapshots, then run the
+resting-cancel plus IOC fill/close lifecycle. Runtime-level tests construct
+`runtime.TradingNode`, reconcile before and after writes, require
+account-state-backed risk, assert cache/portfolio/metrics observations, start
+the relevant private streams, and require no open venue orders at cleanup.
 
 ## Hyperliquid Testnet Writes
 

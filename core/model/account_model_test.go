@@ -22,6 +22,7 @@ func TestDefaultAccountIDForVenue(t *testing.T) {
 		" OKX ":       AccountIDOKXDefault,
 		"bybit":       AccountIDBybitDefault,
 		"bitget":      AccountIDBitgetDefault,
+		"gate":        AccountIDGateDefault,
 		"lighter":     AccountIDLighterDefault,
 		"hyperliquid": AccountIDHyperliquidDefault,
 	}

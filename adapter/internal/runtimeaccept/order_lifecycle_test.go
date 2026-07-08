@@ -53,6 +53,32 @@ func TestAdapterOrderLifecyclePlacesCancelsFillsAndCloses(t *testing.T) {
 	}
 }
 
+func TestAdapterOrderLifecycleUsesExplicitCloseQuantity(t *testing.T) {
+	exec := &recordingLifecycleExec{}
+	instID := model.InstrumentID{Venue: "TEST", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+	_, err := RunAdapterOrderLifecycle(context.Background(), exec, OrderLifecycleSpec{
+		Label:          "test spot",
+		AccountID:      "TEST:cash",
+		InstrumentID:   instID,
+		Quantity:       decimal.RequireFromString("0.01"),
+		CloseQuantity:  decimal.RequireFromString("0.009"),
+		RestingPrice:   decimal.RequireFromString("4900"),
+		FillPrice:      decimal.RequireFromString("5100"),
+		ClosePrice:     decimal.RequireFromString("5000"),
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+	})
+	if err != nil {
+		t.Fatalf("RunAdapterOrderLifecycle: %v", err)
+	}
+	if len(exec.submits) != 3 {
+		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
+	}
+	if got := exec.submits[2]; got.Side != enums.SideSell || got.Quantity.String() != "0.009" || got.ReduceOnly {
+		t.Fatalf("close submit=%+v", got)
+	}
+}
+
 func TestAdapterOrderLifecycleLogsAcceptanceEvidence(t *testing.T) {
 	exec := &recordingLifecycleExec{}
 	var logs []string

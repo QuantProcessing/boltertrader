@@ -140,6 +140,7 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
 **OKX Spot cash**, **Bybit Spot cash**, **Bybit USDT/USDC-linear Perp**,
 **Bitget Spot cash**, **Bitget USDT/USDC-linear Perp**,
+**Gate Spot cash**, **Gate USDT-linear Perp/SWAP**,
 **Hyperliquid Spot cash**, **Hyperliquid Perp**, **Hyperliquid HIP-3 Perp**,
 **Lighter Spot cash**, and **Lighter Perp** for the supported Demo/Testnet
 subset. The explicit support matrix is in
@@ -282,6 +283,33 @@ make test-bitget-demo-runtime-usdt-perp
 make test-bitget-demo-usdc-perp
 make test-bitget-demo-runtime-usdc-perp
 ```
+
+Gate Testnet acceptance uses Gate's official Testnet profile, not production
+credentials. The implemented first-stage gate covers Spot cash and USDT-linear
+Perp/SWAP through adapter and runtime rows; USDC-linear futures are deferred
+until an official non-production validation path is proven.
+
+```sh
+GATE_TESTNET_API_KEY=... \
+GATE_TESTNET_API_SECRET=... \
+make test-gate-testnet-acceptance
+```
+
+`GATE_TESTNET_MAX_NOTIONAL_USDT` is optional and defaults to `100`. Product-
+qualified Gate targets are:
+
+```sh
+make test-gate-testnet-read
+make test-gate-testnet-spot
+make test-gate-testnet-runtime-spot
+make test-gate-testnet-usdt-perp
+make test-gate-testnet-runtime-usdt-perp
+make test-gate-testnet-usdc-perp-deferred
+```
+
+Optional endpoint overrides are `GATE_TESTNET_REST_BASE_URL`,
+`GATE_TESTNET_SPOT_WS_URL`, and `GATE_TESTNET_USDT_FUTURES_WS_URL`; known Gate
+production hosts are rejected before Testnet write targets run.
 
 Hyperliquid Testnet acceptance covers Spot, standard Perp, and configured HIP-3
 Perp. Read-only discovery is gated by `BOLTER_ENABLE_LIVE_READ_TESTS=1`; write
