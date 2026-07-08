@@ -52,16 +52,13 @@ account state is reported as incomplete acceptance. Production credentials are
 not accepted as fallback inputs for Demo/Testnet acceptance.
 
 Bybit and Bitget rows are the first unified-account adapter/runtime slice for
-those venues. The offline contract currently proves SDK conversion, stream
-decoding, account-state safety envelopes, account-state reconciliation,
-portfolio/risk reads, and private stream subscription wiring. The Bybit and
-Bitget first-stage acceptance contracts use their own non-production venues:
-Bybit Demo Trading and Bitget Demo/paper trading. Those Make targets are
-intentionally noskip-gated and must not be marked accepted until the configured
-venue accounts run through the adapter/runtime targets successfully. The
-current Bybit/Bitget runtime acceptance entrypoints verify live market data,
-authoritative account-state snapshots, risk fail-closed behavior,
-reconciliation into the cache/portfolio, private stream startup, and a bounded
-resting-cancel plus IOC fill/close cleanup ladder. These rows remain unaccepted
-until the noskip Demo gates pass with real credentials and clean venue
+those venues. The offline contract proves SDK conversion, stream decoding,
+account-state safety envelopes, account-state reconciliation, portfolio/risk
+reads, and private stream subscription wiring. The current G010 evidence marks
+the first-stage Bybit Demo Trading and Bitget Demo/paper-trading rows accepted:
+the runtime entrypoints verified live market data, authoritative account-state
+snapshots, risk fail-closed behavior, reconciliation into cache/portfolio,
+private stream startup, and a bounded resting-cancel plus IOC fill/close cleanup
+ladder. Future acceptance reruns remain noskip-gated and require real
+credentials, sufficient funding, valid endpoint profiles, and clean venue
 accounts.

@@ -185,8 +185,10 @@ profiles are reported as incomplete acceptance instead of a green skip. The curr
 entrypoints verify live market data, authoritative account-state snapshots,
 runtime reconciliation into cache/portfolio, risk fail-closed behavior, and
 private stream startup, then execute a bounded resting-cancel plus IOC
-fill/close cleanup ladder. Final execution acceptance still requires these
-noskip targets to pass against the configured real Demo/Testnet accounts.
+fill/close cleanup ladder. The current G010 evidence accepted these rows after
+the noskip targets passed against configured real non-production accounts;
+future reruns keep the same noskip, funding, endpoint-profile, and clean-state
+requirements.
 
 `make test-hyperliquid-testnet-spot-read` and
 `make test-hyperliquid-testnet-perp-read` are read-only and enable
@@ -232,8 +234,8 @@ account state before private stream startup, portfolio and risk must read by
 canonical account id, unsupported venue account configurations must fail
 closed, and the order lifecycle must pass through runtime execution with a
 resting cancel, IOC fill, IOC close, final open-order check, and final
-reconciliation. These targets are not accepted when they skip or cannot reach
-the live venue.
+reconciliation. The current G010 evidence accepted these rows; future runs are
+not accepted when they skip or cannot reach the non-production venue.
 
 Risk engine behavior remains covered by deterministic runtime tests. Add a
 separate non-production risk-gate acceptance only when the desired assertion

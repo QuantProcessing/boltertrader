@@ -350,12 +350,12 @@ Position` for every row because unified account-state reconciliation reads
 linear positions even when validating the Spot lifecycle.
 
 Bybit Make acceptance targets fail when a selected test skips. The current
-adapter/runtime entrypoints verify live market data, authoritative unified
-account-state snapshots, runtime reconciliation into cache/portfolio, risk
-fail-closed behavior, private stream startup, and a bounded resting-cancel plus
-IOC fill/close cleanup ladder. Bybit is NT-style execution accepted only after
-these noskip Demo targets pass with real Demo Trading credentials, sufficient
-USDT/USDC demo balance, and clean venue state.
+G010 evidence accepted the adapter/runtime entrypoints after they verified live
+market data, authoritative unified account-state snapshots, runtime
+reconciliation into cache/portfolio, risk fail-closed behavior, private stream
+startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder.
+Future reruns remain NT-style noskip gates and require real Demo Trading
+credentials, sufficient USDT/USDC demo balance, and clean venue state.
 
 ## Bitget Demo Acceptance
 
@@ -397,11 +397,12 @@ make test-bitget-acceptance
 local `.env` files, but new configuration should use `BITGET_DEMO_*`. Bitget
 Demo defaults to the official paper-trading profile: REST requests use
 `paptrading: 1` and private/public streams use `wspap.bitget.com`. Like Bybit,
-the current adapter/runtime entrypoints verify live market data, authoritative
-account-state snapshots, runtime reconciliation into cache/portfolio, risk
-fail-closed behavior, private stream startup, and a bounded resting-cancel plus
-IOC fill/close cleanup ladder. Bitget is NT-style execution accepted only after
-these noskip Demo targets pass with real credentials and clean venue state.
+the current G010 evidence accepted the adapter/runtime entrypoints after they
+verified live market data, authoritative account-state snapshots, runtime
+reconciliation into cache/portfolio, risk fail-closed behavior, private stream
+startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder.
+Future reruns remain NT-style noskip gates and require real credentials and
+clean venue state.
 
 ## Hyperliquid Testnet Writes
 

@@ -39,7 +39,7 @@ core/                venue-neutral domain (decimal everywhere; no float64)
    ├─ contract/      MarketDataClient / ExecutionClient / AccountClient + typed events
    └─ clock/         Clock interface, RealClock, SimulatedClock
    │
-adapter/<venue>/     translate an SDK into the contract (Binance, OKX)
+adapter/<venue>/     translate SDKs into the contract (see Status)
    │
 sdk/<venue>/         faithful official-API clients (13 venues, pre-existing)
 ```
@@ -138,16 +138,18 @@ func (s *MyStrat) OnFill(c *strategy.Context, f model.Fill) {
 ## Status
 
 Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
-**OKX Spot cash**, **Hyperliquid Spot cash**, **Hyperliquid Perp**, and
-**Hyperliquid HIP-3 Perp**, **Lighter Spot cash**, and **Lighter Perp** for the
-supported live/Testnet subset. The explicit support matrix is in
+**OKX Spot cash**, **Bybit Spot cash**, **Bybit USDT/USDC-linear Perp**,
+**Bitget Spot cash**, **Bitget USDT/USDC-linear Perp**,
+**Hyperliquid Spot cash**, **Hyperliquid Perp**, **Hyperliquid HIP-3 Perp**,
+**Lighter Spot cash**, and **Lighter Perp** for the supported Demo/Testnet
+subset. The explicit support matrix is in
 [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md). Adding a venue
 means writing one adapter; no runtime or strategy change.
 
 ## Testing
 
 ```sh
-make test              # go test ./...
+make test              # go test -short ./...
 make test-race         # runtime race checks
 make test-core         # core/runtime/strategy packages
 make test-adapter      # adapter packages
