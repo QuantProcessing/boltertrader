@@ -7,12 +7,13 @@ import (
 )
 
 type Capabilities struct {
-	Venue     string
-	Products  []ProductCapability
-	Reports   ReportCapabilities
-	Streaming StreamCapabilities
-	Trading   TradingCapabilities
-	Latency   LatencyCapabilities
+	Venue         string
+	Products      []ProductCapability
+	Reports       ReportCapabilities
+	Streaming     StreamCapabilities
+	Trading       TradingCapabilities
+	Latency       LatencyCapabilities
+	ReferenceData ReferenceDataCapabilities
 }
 
 type ProductCapability struct {
@@ -55,4 +56,17 @@ type LatencyCapabilities struct {
 	VenueTimestamps   bool
 	AdapterTimestamps bool
 	SequenceNumbers   bool
+}
+
+type ReferenceDataCapabilities struct {
+	CurrentFunding      bool
+	CurrentMarkPrice    bool
+	CurrentIndexPrice   bool
+	CurrentOraclePrice  bool
+	ReferenceStream     bool
+	ReferencePolling    bool
+	FundingHistory      bool
+	CurrentOpenInterest bool
+	OpenInterestHistory bool
+	OpenInterestCached  bool
 }

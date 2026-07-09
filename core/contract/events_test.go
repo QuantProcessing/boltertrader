@@ -124,3 +124,29 @@ func TestExecAndAccountEnvelopesInferAccountID(t *testing.T) {
 		t.Fatalf("balance envelope account id=%q, want T:acct", balEnv.AccountID)
 	}
 }
+
+func TestReferenceDataEnvelopeInfersMarketMeta(t *testing.T) {
+	ts := time.Unix(20, 0)
+	id := model.InstrumentID{Venue: "BINANCE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	env := NewMarketEnvelopeWithMeta(ReferenceDataEvent{Snapshot: model.DerivativeReferenceSnapshot{
+		InstrumentID: id,
+		MarkPrice:    decimal.RequireFromString("64100.5"),
+		Timestamp:    ts,
+		Fields:       model.ReferenceHasMarkPrice,
+	}}, EventMeta{
+		Source: SourceAdapterREST,
+		Flags:  EventFlagFromSnapshot,
+	})
+	if env.InstrumentID != id || env.Venue != "BINANCE" {
+		t.Fatalf("reference meta not inferred: %+v", env.EventMeta)
+	}
+	if !env.TsVenue.Equal(ts) {
+		t.Fatalf("TsVenue=%s, want %s", env.TsVenue, ts)
+	}
+	if env.EventID == "" {
+		t.Fatal("reference event id should be inferred")
+	}
+	if env.Source != SourceAdapterREST || !env.Flags.Has(EventFlagFromSnapshot) {
+		t.Fatalf("source/flags not retained: %+v", env.EventMeta)
+	}
+}

@@ -12,6 +12,13 @@ func (c *marketDataClient) Capabilities() contract.Capabilities {
 		Reports:   contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
 		Streaming: contract.StreamCapabilities{Market: c.ws != nil},
 		Latency:   contract.LatencyCapabilities{},
+		ReferenceData: contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			ReferenceStream:     c.ws != nil,
+			CurrentOpenInterest: true,
+		},
 	}
 }
 

@@ -25,6 +25,8 @@ func TestBybitClientsImplementContractsAndCapabilities(t *testing.T) {
 	rest := bybitsdk.NewClient().WithCredentials("key", "secret")
 
 	var _ contract.MarketDataClient = newMarketDataClient(rest, nil, provider, clk)
+	var _ contract.DerivativeReferenceDataClient = newMarketDataClient(rest, nil, provider, clk)
+	var _ contract.OpenInterestClient = newMarketDataClient(rest, nil, provider, clk)
 	var _ contract.ExecutionClient = newExecutionClient(rest, provider, clk)
 	var _ contract.AccountClient = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
 	var _ contract.AccountStateReporter = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
@@ -34,6 +36,9 @@ func TestBybitClientsImplementContractsAndCapabilities(t *testing.T) {
 	}
 	if caps := newExecutionClient(rest, provider, clk).Capabilities(); !caps.Trading.Submit || !caps.Reports.OpenOrders {
 		t.Fatalf("execution capabilities missing submit/open-order support: %+v", caps)
+	}
+	if ref := newMarketDataClient(rest, nil, provider, clk).Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest || !ref.ReferencePolling {
+		t.Fatalf("reference capabilities incomplete: %+v", ref)
 	}
 }
 
@@ -167,6 +172,73 @@ func TestBybitRuntimeResyncUsesAccountStateFirst(t *testing.T) {
 		t.Fatalf("account states applied=%d, want 1: %+v", report.AccountStatesApplied, report)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, enums.KindPerp)
+}
+
+func TestBybitReferenceSnapshotOpenInterestAndTickerPayload(t *testing.T) {
+	provider := bybitTestProvider()
+	inst := provider.All()[1]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v5/market/tickers" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("category"); got != "linear" {
+			t.Fatalf("category=%q, want linear", got)
+		}
+		if got := r.URL.Query().Get("symbol"); got != inst.VenueSymbol {
+			t.Fatalf("symbol=%q, want %q", got, inst.VenueSymbol)
+		}
+		writeJSON(t, w, map[string]any{
+			"retCode": 0,
+			"retMsg":  "OK",
+			"time":    1700000000000,
+			"result": map[string]any{"category": "linear", "list": []any{map[string]any{
+				"symbol":              "BTCUSDT",
+				"markPrice":           "65000.5",
+				"indexPrice":          "64999.5",
+				"fundingRate":         "0.0001",
+				"nextFundingTime":     "1700003600000",
+				"fundingIntervalHour": "8",
+				"openInterest":        "123.45",
+			}}},
+		})
+	}))
+	defer server.Close()
+
+	rest := bybitsdk.NewClient().
+		WithCredentials("key", "secret").
+		WithBaseURL(server.URL).
+		WithHTTPClient(server.Client())
+	market := newMarketDataClient(rest, nil, provider, clock.NewRealClock())
+	ref, err := market.ReferenceSnapshot(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasIndexPrice) || !ref.Fields.Has(model.ReferenceHasFundingInterval) {
+		t.Fatalf("reference fields incomplete: %+v", ref)
+	}
+	if !ref.MarkPrice.Equal(decimal.RequireFromString("65000.5")) || ref.FundingInterval != 8*time.Hour {
+		t.Fatalf("unexpected reference snapshot: %+v", ref)
+	}
+	oi, err := market.OpenInterest(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.OpenInterest.Equal(decimal.RequireFromString("123.45")) || oi.Unit != "BTC" || oi.Timestamp.UnixMilli() != 1700000000000 {
+		t.Fatalf("unexpected OI: %+v", oi)
+	}
+
+	streamRef, ok := referenceFromBybitTickerPayload(inst.ID, []byte(`{"ts":1700000000100,"data":{"symbol":"BTCUSDT","markPrice":"65001","indexPrice":"65000","fundingRate":"0.0002","nextFundingTime":"1700007200000","fundingIntervalHour":"4"}}`), time.UnixMilli(1700000000200))
+	if !ok || !streamRef.Fields.Has(model.ReferenceHasMarkPrice) || !streamRef.Fields.Has(model.ReferenceHasIndexPrice) || streamRef.Timestamp.UnixMilli() != 1700000000100 {
+		t.Fatalf("unexpected stream reference=%+v ok=%v", streamRef, ok)
+	}
+
+	ancillaryRef, ok := referenceFromBybitTickerPayload(inst.ID, []byte(`{"ts":1700000000300,"data":{"nextFundingTime":"1700007200000","fundingIntervalHour":"8"}}`), time.UnixMilli(1700000000400))
+	if !ok || !ancillaryRef.Fields.Has(model.ReferenceHasNextFundingTime) || !ancillaryRef.Fields.Has(model.ReferenceHasFundingInterval) {
+		t.Fatalf("unexpected ancillary stream reference=%+v ok=%v", ancillaryRef, ok)
+	}
+	if ancillaryRef.Fields.Has(model.ReferenceHasMarkPrice) || ancillaryRef.Fields.Has(model.ReferenceHasIndexPrice) || ancillaryRef.Fields.Has(model.ReferenceHasFundingRate) {
+		t.Fatalf("ancillary delta should not synthesize core fields: %+v", ancillaryRef)
+	}
 }
 
 func TestBybitMassStatusQueriesLinearSettlementScopes(t *testing.T) {

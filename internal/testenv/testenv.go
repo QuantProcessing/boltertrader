@@ -448,7 +448,31 @@ func RequireBinanceDemoWrite(t testing.TB) {
 	if testing.Short() {
 		t.Skip("skipping: Binance Demo write test excluded by -short")
 	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
 	RequireEnv(t, BinanceDemoAPIKeyEnv, BinanceDemoAPISecretEnv)
+}
+
+func RequireBinanceDemoRead(t testing.TB) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Binance Demo read test excluded by -short")
+	}
+	RequireLiveRead(t, BinanceDemoAPIKeyEnv, BinanceDemoAPISecretEnv)
+}
+
+func RequireOKXDemoRead(t testing.TB) OKXDemoConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: OKX Demo read test excluded by -short")
+	}
+	RequireLiveRead(t, OKXDemoAPIKeyEnv, OKXDemoAPISecretEnv, OKXDemoAPIPassphraseEnv)
+	cfg, err := OKXDemoConfigFromEnv()
+	if err != nil {
+		t.Fatalf("OKX Demo read env: %v", err)
+	}
+	return cfg
 }
 
 func RequireOKXDemoWrite(t testing.TB) OKXDemoConfig {
@@ -469,6 +493,19 @@ func RequireOKXDemoWrite(t testing.TB) OKXDemoConfig {
 	return cfg
 }
 
+func RequireBybitDemoRead(t testing.TB) BybitDemoConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Bybit Demo read test excluded by -short")
+	}
+	RequireLiveRead(t, BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv)
+	cfg, err := BybitDemoConfigFromEnv()
+	if err != nil {
+		t.Skipf("skipping Bybit Demo read test: %v", err)
+	}
+	return cfg
+}
+
 func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
 	t.Helper()
 	if testing.Short() {
@@ -480,6 +517,22 @@ func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
 	cfg, err := BybitDemoConfigFromEnv()
 	if err != nil {
 		t.Skipf("skipping Bybit Demo write test: %v", err)
+	}
+	return cfg
+}
+
+func RequireBitgetDemoRead(t testing.TB) BitgetDemoConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Bitget Demo read test excluded by -short")
+	}
+	RequireLiveRead(t, BitgetDemoAPIKeyEnv, BitgetDemoAPISecretEnv, BitgetDemoPassphraseEnv)
+	cfg, err := BitgetDemoConfigFromEnv()
+	if err != nil {
+		if IsBlockedRelease(err) {
+			t.Skip(err.Error())
+		}
+		t.Fatalf("Bitget Demo read env: %v", err)
 	}
 	return cfg
 }
@@ -870,6 +923,10 @@ func hyperliquidTestnetConfigFromEnv(requirePrivateKey bool) (HyperliquidTestnet
 }
 
 func HyperliquidTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
+func BinanceDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 

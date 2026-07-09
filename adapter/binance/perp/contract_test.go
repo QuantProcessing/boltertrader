@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -21,10 +22,12 @@ import (
 
 // interface conformance
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient               = (*executionClient)(nil)
+	_ contract.AccountClient                 = (*accountClient)(nil)
+	_ contract.AccountStateReporter          = (*accountClient)(nil)
+	_ contract.MarketDataClient              = (*marketDataClient)(nil)
+	_ contract.DerivativeReferenceDataClient = (*marketDataClient)(nil)
+	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
 )
 
 func TestAccountIDOverridePropagatesToClients(t *testing.T) {
@@ -298,6 +301,13 @@ func TestNonPerpetualSkipped(t *testing.T) {
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
 	acct := testPerpAccountClient()
+	marketCaps := restOnly.Capabilities()
+	if !marketCaps.ReferenceData.CurrentFunding || !marketCaps.ReferenceData.CurrentMarkPrice || !marketCaps.ReferenceData.CurrentIndexPrice || !marketCaps.ReferenceData.CurrentOpenInterest {
+		t.Fatalf("reference data capabilities incomplete: %+v", marketCaps.ReferenceData)
+	}
+	if marketCaps.ReferenceData.ReferenceStream {
+		t.Fatal("REST-only client should not claim reference stream support")
+	}
 	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
 		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
 	}
@@ -344,6 +354,86 @@ func TestPerpCapabilitySuite(t *testing.T) {
 			SetIsolatedMargin: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter golden, fake transport, or explicit live-read tests")},
 		},
 	})
+}
+
+func TestBinancePerpReferenceSnapshotAndOpenInterest(t *testing.T) {
+	inst := instrumentFromSymbolInfo(&sdkperp.SymbolInfo{
+		Symbol: "BTCUSDT", ContractType: "PERPETUAL", BaseAsset: "BTC", QuoteAsset: "USDT", MarginAsset: "USDT",
+		Filters: []map[string]any{{"filterType": "PRICE_FILTER", "tickSize": "0.10"}},
+	})
+	provider := newInstrumentProvider()
+	provider.byID[inst.ID.String()] = inst
+	provider.bySymbol[inst.VenueSymbol] = inst.ID
+	rest := sdkperp.NewClient().WithHTTPClient(&http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var body string
+			switch r.URL.Path {
+			case "/fapi/v1/premiumIndex":
+				if r.URL.Query().Get("symbol") != "BTCUSDT" {
+					t.Fatalf("premiumIndex query=%s", r.URL.RawQuery)
+				}
+				body = `{"symbol":"BTCUSDT","markPrice":"43000.10","indexPrice":"42990.20","lastFundingRate":"0.00080000","nextFundingTime":1700003600000,"time":1700000000000}`
+			case "/fapi/v1/openInterest":
+				if r.URL.Query().Get("symbol") != "BTCUSDT" {
+					t.Fatalf("openInterest query=%s", r.URL.RawQuery)
+				}
+				body = `{"symbol":"BTCUSDT","openInterest":"12345.678","time":1700000001000}`
+			default:
+				return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		}),
+	})
+	market := newMarketDataClient(rest, nil, provider, clock.NewRealClock())
+
+	ref, err := market.ReferenceSnapshot(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasIndexPrice) || !ref.Fields.Has(model.ReferenceHasNextFundingTime) {
+		t.Fatalf("reference fields=%b", ref.Fields)
+	}
+	if !ref.FundingRate.Equal(d("0.00080000")) || !ref.MarkPrice.Equal(d("43000.10")) || !ref.IndexPrice.Equal(d("42990.20")) {
+		t.Fatalf("reference snapshot=%+v", ref)
+	}
+	if ref.Timestamp.UnixMilli() != 1700000000000 || ref.NextFundingTime.UnixMilli() != 1700003600000 {
+		t.Fatalf("reference times timestamp=%s next=%s", ref.Timestamp, ref.NextFundingTime)
+	}
+	if ref.FieldTimes.For(model.ReferenceFieldFundingRate).Venue.UnixMilli() != 1700000000000 {
+		t.Fatalf("funding field time=%+v", ref.FieldTimes.For(model.ReferenceFieldFundingRate))
+	}
+
+	oi, err := market.OpenInterest(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.Fields.Has(model.OpenInterestHasQuantity) || !oi.Fields.Has(model.OpenInterestHasUnit) {
+		t.Fatalf("OI fields=%b", oi.Fields)
+	}
+	if !oi.OpenInterest.Equal(d("12345.678")) || oi.Unit != "contracts" || oi.Timestamp.UnixMilli() != 1700000001000 {
+		t.Fatalf("OI snapshot=%+v", oi)
+	}
+}
+
+func TestBinancePerpReferenceFromMarkPriceEvent(t *testing.T) {
+	id := model.InstrumentID{Venue: venueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	receivedAt := time.UnixMilli(1700000000123)
+	ref := referenceFromMarkPriceEvent(id, &sdkperp.WsMarkPriceEvent{
+		EventTime:       1700000000000,
+		MarkPrice:       "43001.10",
+		IndexPrice:      "42991.20",
+		FundingRate:     "0.00070000",
+		NextFundingTime: 1700003600000,
+	}, receivedAt)
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasIndexPrice) || !ref.Fields.Has(model.ReferenceHasNextFundingTime) {
+		t.Fatalf("reference fields=%b", ref.Fields)
+	}
+	if !ref.FundingRate.Equal(d("0.00070000")) || !ref.MarkPrice.Equal(d("43001.10")) || !ref.IndexPrice.Equal(d("42991.20")) {
+		t.Fatalf("reference from ws=%+v", ref)
+	}
+	if ref.FieldTimes.For(model.ReferenceFieldMarkPrice).Received != receivedAt {
+		t.Fatalf("mark field received=%s", ref.FieldTimes.For(model.ReferenceFieldMarkPrice).Received)
+	}
 }
 
 func TestBinancePerpAccountStateTranslation(t *testing.T) {

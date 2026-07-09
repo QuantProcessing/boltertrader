@@ -91,6 +91,72 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 	return out, nil
 }
 
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	inst, err := c.instrument(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("gate: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("gate: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	_, settle, err := productForInstrument(inst)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	tickers, err := c.rest.ListFuturesTickers(ctx, settle, inst.VenueSymbol)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	if len(tickers) == 0 {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("gate: empty futures ticker response for %s", inst.VenueSymbol)
+	}
+	contract, err := c.rest.GetFuturesContract(ctx, settle, inst.VenueSymbol)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromGateFutures(id, &tickers[0], contract, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	snapshot, err := c.ReferenceSnapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+	c.emitWithMeta(
+		contract.ReferenceDataEvent{Snapshot: snapshot},
+		contract.EventMeta{Source: contract.SourceAdapterREST, Flags: contract.EventFlagFromSnapshot},
+	)
+	return nil
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	inst, err := c.instrument(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("gate: open interest only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("gate: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	_, settle, err := productForInstrument(inst)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	tickers, err := c.rest.ListFuturesTickers(ctx, settle, inst.VenueSymbol)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	if len(tickers) == 0 {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("gate: empty futures ticker response for %s", inst.VenueSymbol)
+	}
+	return openInterestFromGateFutures(id, &tickers[0], c.clk.Now()), nil
+}
+
 func (c *marketDataClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
 	inst, err := c.instrument(id)
 	if err != nil {
@@ -155,19 +221,37 @@ func (c *marketDataClient) subscribe(ctx context.Context, ws *gatesdk.WSClient, 
 
 func (c *marketDataClient) Capabilities() contract.Capabilities {
 	products := make([]contract.ProductCapability, 0, len(c.scope))
+	hasPerp := false
 	for _, kind := range c.scope {
+		if kind == enums.KindPerp {
+			hasPerp = true
+		}
 		products = append(products, contract.ProductCapability{Kind: kind, Market: true})
 	}
+	reference := contract.ReferenceDataCapabilities{}
+	if hasPerp {
+		reference = contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			ReferencePolling:    true,
+			CurrentOpenInterest: true,
+		}
+	}
 	return contract.Capabilities{
-		Venue:     VenueName,
-		Products:  products,
-		Streaming: contract.StreamCapabilities{Market: c.spotWS != nil || c.futuresWS != nil},
+		Venue:         VenueName,
+		Products:      products,
+		Streaming:     contract.StreamCapabilities{Market: c.spotWS != nil || c.futuresWS != nil},
+		ReferenceData: reference,
 	}
 }
 
 func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 func (c *marketDataClient) emit(ev contract.MarketEvent) {
 	c.stream.Emit(contract.NewMarketEnvelope(ev))
+}
+func (c *marketDataClient) emitWithMeta(ev contract.MarketEvent, meta contract.EventMeta) {
+	c.stream.Emit(contract.NewMarketEnvelopeWithMeta(ev, meta))
 }
 func (c *marketDataClient) Close() error {
 	if c.spotWS != nil {
@@ -307,6 +391,76 @@ func futuresTradesFromPayload(id model.InstrumentID, env *gatesdk.WSEnvelope, fa
 		})
 	}
 	return out
+}
+
+func referenceFromGateFutures(id model.InstrumentID, ticker *gatesdk.FuturesTicker, contract *gatesdk.Contract, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if ticker != nil {
+		if ticker.FundingRate != "" {
+			s.FundingRate = dec(ticker.FundingRate)
+			s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldFundingRate, receivedAt, receivedAt)
+		}
+		if ticker.MarkPrice != "" {
+			s.MarkPrice = dec(ticker.MarkPrice)
+			s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, receivedAt, receivedAt)
+		}
+		if ticker.IndexPrice != "" {
+			s.IndexPrice = dec(ticker.IndexPrice)
+			s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldIndexPrice, receivedAt, receivedAt)
+		}
+	}
+	if contract != nil {
+		if !s.Fields.Has(model.ReferenceHasFundingRate) && contract.FundingRate != "" {
+			s.FundingRate = dec(contract.FundingRate)
+			s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldFundingRate, receivedAt, receivedAt)
+		}
+		if contract.FundingInterval > 0 {
+			s.FundingInterval = gateFundingInterval(contract.FundingInterval)
+			s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, receivedAt, receivedAt)
+		}
+		if contract.FundingNextApply > 0 {
+			s.NextFundingTime = time.Unix(int64(contract.FundingNextApply), 0)
+			s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+			setGateReferenceFieldTime(&s, model.ReferenceFieldNextFundingTime, receivedAt, receivedAt)
+		}
+	}
+	return s
+}
+
+func setGateReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func gateFundingInterval(value int64) time.Duration {
+	if value <= 0 {
+		return 0
+	}
+	if value <= 24 {
+		return time.Duration(value) * time.Hour
+	}
+	return time.Duration(value) * time.Second
+}
+
+func openInterestFromGateFutures(id model.InstrumentID, ticker *gatesdk.FuturesTicker, receivedAt time.Time) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if ticker == nil {
+		return s
+	}
+	if ticker.TotalSize != "" {
+		s.OpenInterest = dec(ticker.TotalSize)
+		s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	}
+	s.Unit = "contracts"
+	s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	return s
 }
 
 func firstTicker(raw json.RawMessage) (gatesdk.Ticker, bool) {

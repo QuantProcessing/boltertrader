@@ -120,6 +120,72 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 	return out, nil
 }
 
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	if c.rest == nil {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("okx: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	instID, err := c.instID(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	funding, err := c.rest.GetFundingRate(ctx, instID)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	mark, err := c.rest.GetMarkPrice(ctx, instTypeSwap, instID)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	index, err := c.rest.GetIndexTicker(ctx, instIDToNeutral(instID))
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromOKX(id, funding, mark, index, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	return c.subscribe(id, func(instID string) error {
+		indexInstID := instIDToNeutral(instID)
+		if err := c.ws.SubscribeFundingRate(instID, func(f *okx.FundingRate) {
+			c.emitWithMeta(
+				contract.ReferenceDataEvent{Snapshot: referenceFromOKX(id, f, nil, nil, c.clk.Now())},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			)
+		}); err != nil {
+			return err
+		}
+		if err := c.ws.SubscribeMarkPrice(instID, func(m *okx.MarkPrice) {
+			c.emitWithMeta(
+				contract.ReferenceDataEvent{Snapshot: referenceFromOKX(id, nil, m, nil, c.clk.Now())},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			)
+		}); err != nil {
+			return err
+		}
+		return c.ws.SubscribeIndexTicker(indexInstID, func(i *okx.IndexTicker) {
+			c.emitWithMeta(
+				contract.ReferenceDataEvent{Snapshot: referenceFromOKX(id, nil, nil, i, c.clk.Now())},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			)
+		})
+	})
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	if c.rest == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("okx: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	instID, err := c.instID(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	oi, err := c.rest.GetOpenInterest(ctx, instID)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	return openInterestFromOKX(id, oi, c.clk.Now()), nil
+}
+
 func (c *marketDataClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
 	return c.subscribe(id, func(instID string) error {
 		return c.ws.SubscribeOrderBook(instID, func(b *okx.OrderBook, _ string) {
@@ -207,6 +273,10 @@ func (c *marketDataClient) emit(ev contract.MarketEvent) {
 	c.stream.Emit(contract.NewMarketEnvelope(ev))
 }
 
+func (c *marketDataClient) emitWithMeta(ev contract.MarketEvent, meta contract.EventMeta) {
+	c.stream.Emit(contract.NewMarketEnvelopeWithMeta(ev, meta))
+}
+
 func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 
 func (c *marketDataClient) Close() error {
@@ -233,4 +303,86 @@ func waitConnected(ctx context.Context, isUp func() bool) error {
 			}
 		}
 	}
+}
+
+func referenceFromOKX(id model.InstrumentID, funding *okx.FundingRate, mark *okx.MarkPrice, index *okx.IndexTicker, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, ReceivedAt: receivedAt}
+	if funding != nil {
+		ts := firstNonZeroTime(parseMillis(funding.Ts), parseMillis(funding.FundingTime), receivedAt)
+		if funding.FundingRate != "" {
+			s.FundingRate = dec(funding.FundingRate)
+			s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+			setOKXReferenceFieldTime(&s, model.ReferenceFieldFundingRate, ts, receivedAt)
+		}
+		if funding.NextFundingTime != "" {
+			s.NextFundingTime = parseMillis(funding.NextFundingTime)
+			s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+			setOKXReferenceFieldTime(&s, model.ReferenceFieldNextFundingTime, ts, receivedAt)
+		}
+		if funding.Premium != "" {
+			s.Premium = dec(funding.Premium)
+			s.Fields = s.Fields.With(model.ReferenceHasPremium)
+			setOKXReferenceFieldTime(&s, model.ReferenceFieldPremium, ts, receivedAt)
+		}
+		s.Timestamp = latestOKXReferenceTime(s.Timestamp, ts)
+	}
+	if mark != nil {
+		ts := firstNonZeroTime(parseMillis(mark.Ts), receivedAt)
+		if mark.MarkPx != "" {
+			s.MarkPrice = dec(mark.MarkPx)
+			s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+			setOKXReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, ts, receivedAt)
+		}
+		s.Timestamp = latestOKXReferenceTime(s.Timestamp, ts)
+	}
+	if index != nil {
+		ts := firstNonZeroTime(parseMillis(index.Ts), receivedAt)
+		if index.IdxPx != "" {
+			s.IndexPrice = dec(index.IdxPx)
+			s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+			setOKXReferenceFieldTime(&s, model.ReferenceFieldIndexPrice, ts, receivedAt)
+		}
+		s.Timestamp = latestOKXReferenceTime(s.Timestamp, ts)
+	}
+	if s.Timestamp.IsZero() {
+		s.Timestamp = receivedAt
+	}
+	return s
+}
+
+func setOKXReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func latestOKXReferenceTime(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.After(a)) {
+		return b
+	}
+	return a
+}
+
+func openInterestFromOKX(id model.InstrumentID, oi *okx.OpenInterest, receivedAt time.Time) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if oi == nil {
+		return s
+	}
+	if ts := parseMillis(oi.Ts); !ts.IsZero() {
+		s.Timestamp = ts
+	}
+	if oi.OI != "" {
+		s.OpenInterest = dec(oi.OI)
+		s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	}
+	if oi.OIUsd != "" {
+		s.OpenInterestNotional = dec(oi.OIUsd)
+		s.Fields = s.Fields.With(model.OpenInterestHasNotional)
+	}
+	if oi.OI != "" || oi.OICcy != "" {
+		s.Unit = "contracts"
+		s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	}
+	return s
 }

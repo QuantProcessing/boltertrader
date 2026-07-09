@@ -27,10 +27,12 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient               = (*executionClient)(nil)
+	_ contract.AccountClient                 = (*accountClient)(nil)
+	_ contract.AccountStateReporter          = (*accountClient)(nil)
+	_ contract.MarketDataClient              = (*marketDataClient)(nil)
+	_ contract.DerivativeReferenceDataClient = (*marketDataClient)(nil)
+	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -122,6 +124,9 @@ func TestHyperliquidPerpContractCapabilities(t *testing.T) {
 	}
 	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots {
 		t.Fatalf("account state snapshot capability=false, want true")
+	}
+	if ref := market.Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentOraclePrice || !ref.CurrentOpenInterest || ref.FundingHistory {
+		t.Fatalf("reference capabilities incomplete: %+v", ref)
 	}
 }
 
@@ -509,7 +514,7 @@ func TestHyperliquidPerpFundingRateTranslation(t *testing.T) {
 		if req["type"] != "metaAndAssetCtxs" {
 			t.Fatalf("unexpected funding request: %s", body)
 		}
-		return `[{"universe":[{"name":"BTC"},{"name":"ETH"}]},[{"funding":"0.0001","markPx":"65000.5","oraclePx":"64999.5","premium":"0.0002"},{"funding":"0.0003"}]]`, 200
+		return `[{"universe":[{"name":"BTC"},{"name":"ETH"}]},[{"funding":"0.0001","markPx":"65000.5","oraclePx":"64999.5","premium":"0.0002","openInterest":"123.45"},{"funding":"0.0003"}]]`, 200
 	})
 	market := newMarketDataClient(rest, nil, provider, clock.NewRealClock())
 
@@ -519,6 +524,20 @@ func TestHyperliquidPerpFundingRateTranslation(t *testing.T) {
 	}
 	if funding.InstrumentID != testPerpID() || !funding.Rate.Equal(d("0.0001")) || !funding.MarkPrice.Equal(d("65000.5")) || !funding.OraclePrice.Equal(d("64999.5")) {
 		t.Fatalf("funding=%+v", funding)
+	}
+	ref, err := market.ReferenceSnapshot(context.Background(), testPerpID())
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasOraclePrice) || !ref.Fields.Has(model.ReferenceHasPremium) || ref.FundingInterval != time.Hour {
+		t.Fatalf("unexpected reference snapshot: %+v", ref)
+	}
+	oi, err := market.OpenInterest(context.Background(), testPerpID())
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.OpenInterest.Equal(d("123.45")) || oi.Unit != "contracts" {
+		t.Fatalf("unexpected OI: %+v", oi)
 	}
 }
 

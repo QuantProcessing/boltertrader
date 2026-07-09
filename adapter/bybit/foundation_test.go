@@ -56,6 +56,20 @@ func TestInstrumentFromBybitRejectsUnsupportedSettlement(t *testing.T) {
 	}
 }
 
+func TestInstrumentFromBybitRejectsDatedLinearFutures(t *testing.T) {
+	got := instrumentFromBybit("linear", bybitsdk.Instrument{
+		Symbol:       "BTCUSDT-31JUL26",
+		BaseCoin:     "BTC",
+		QuoteCoin:    "USDT",
+		SettleCoin:   bybitsdk.SettleCoinUSDT,
+		Status:       "Trading",
+		DeliveryTime: "1785456000000",
+	})
+	if got != nil {
+		t.Fatalf("dated linear futures must not be modeled as perp: %+v", got)
+	}
+}
+
 func TestInstrumentProviderIndexesNeutralAndVenueSymbols(t *testing.T) {
 	provider := newInstrumentProvider()
 	provider.LoadSnapshot([]*model.Instrument{

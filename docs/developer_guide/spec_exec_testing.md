@@ -119,7 +119,16 @@ variables such as `ALL_PROXY` are not part of the test contract.
 make test-core
 make test-adapter
 make test-capabilities
+make test-reference-data-offline
 make test-p6-offline
+make test-reference-data-read
+make test-binance-demo-reference-data-read
+make test-okx-demo-reference-data-read
+make test-bybit-demo-reference-data-read
+make test-bitget-demo-reference-data-read
+make test-gate-testnet-reference-data-read
+make test-hyperliquid-testnet-reference-data-read
+make test-lighter-testnet-reference-data-read
 make test-binance-demo-perp
 make test-binance-demo-runtime-perp
 make test-binance-demo-spot-data
@@ -168,6 +177,12 @@ make test-lighter-testnet-acceptance
 write tests use `BINANCE_DEMO_API_KEY` and `BINANCE_DEMO_API_SECRET`; they are
 not called by `make test`. `make test-binance-demo-runtime-spot` runs the Spot
 cash write/cleanup path through `runtime.TradingNode`.
+
+`make test-reference-data-read` is the read-only funding/reference-data
+acceptance gate for implemented perp venues. It calls `SubscribeReference`,
+waits for fresh funding/mark/index-or-oracle in runtime cache, queries current
+open interest directly, and verifies OI remains query-only rather than cached.
+It must never submit, cancel, modify, or query live orders.
 
 `make test-okx-demo-spot` and `make test-okx-demo-perp` are adapter-level OKX
 Demo write gates. `make test-okx-demo-runtime-spot` and

@@ -571,6 +571,16 @@ func (n *TradingNode) Reconnect(ctx context.Context) (reconcile.Report, error) {
 	return rep, nil
 }
 
+// OpenInterest queries current venue open interest through the optional market
+// client surface. OI remains query-only and is not written to runtime cache.
+func (n *TradingNode) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	client, ok := n.clients.Market.(contract.OpenInterestClient)
+	if !ok || client == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("open interest: %w", contract.ErrNotSupported)
+	}
+	return client.OpenInterest(ctx, id)
+}
+
 // Run consumes events until ctx is cancelled or all client streams close. It
 // calls the strategy's OnStart before the loop and OnStop after. It blocks; run
 // with `go node.Run(ctx)` or from a dedicated goroutine.
@@ -634,14 +644,22 @@ func (n *TradingNode) Start(ctx context.Context) {
 	}
 	if n.strat != nil {
 		n.stratCtx = &strategy.Context{
-			Ctx:       ctx,
-			Clock:     n.clk,
-			Cache:     n.Cache,
-			Portfolio: n.Portfolio,
-			Orders:    n.Exec,
+			Ctx:                ctx,
+			Clock:              n.clk,
+			Cache:              n.Cache,
+			Portfolio:          n.Portfolio,
+			Orders:             n.Exec,
+			OpenInterestClient: openInterestClient(n.clients.Market),
 		}
 		n.strat.OnStart(n.stratCtx)
 	}
+}
+
+func openInterestClient(market contract.MarketDataClient) contract.OpenInterestClient {
+	if client, ok := market.(contract.OpenInterestClient); ok {
+		return client
+	}
+	return nil
 }
 
 // Stop fires the strategy's OnStop. Idempotent-safe to call once after Start.
@@ -919,6 +937,14 @@ func (n *TradingNode) onMarket(env contract.MarketEnvelope) {
 			if bar, ok := agg.OnTrade(e.Trade); ok && n.strat != nil {
 				n.stratCtx.SetCurrentEventMeta(env.Meta())
 				n.strat.OnBar(n.stratCtx, bar)
+			}
+		}
+	case contract.ReferenceDataEvent:
+		n.Cache.UpsertDerivativeReference(e.Snapshot)
+		if n.strat != nil {
+			if handler, ok := n.strat.(strategy.DerivativeReferenceHandler); ok {
+				n.stratCtx.SetCurrentEventMeta(env.Meta())
+				handler.OnDerivativeReference(n.stratCtx, e.Snapshot)
 			}
 		}
 	}

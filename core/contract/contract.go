@@ -33,6 +33,32 @@ type MarketDataClient interface {
 	Close() error
 }
 
+// DerivativeReferenceDataClient is an optional public derivative reference-data
+// surface implemented by market clients for perps/futures. Streamed or polled
+// updates arrive as ReferenceDataEvent values on the normal market Events()
+// channel after SubscribeReference.
+type DerivativeReferenceDataClient interface {
+	ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error)
+	SubscribeReference(ctx context.Context, id model.InstrumentID) error
+}
+
+// OpenInterestClient is an optional query-only surface for current open
+// interest. Phase one intentionally does not put OI in market events or cache.
+type OpenInterestClient interface {
+	OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error)
+}
+
+// FundingHistoryClient is optional. Venues that cannot provide normalized
+// funding history must return ErrNotSupported.
+type FundingHistoryClient interface {
+	FundingHistory(ctx context.Context, id model.InstrumentID, query model.FundingRateHistoryQuery) ([]model.FundingRateHistoryEntry, error)
+}
+
+// OpenInterestHistoryClient is optional. Phase one requires current OI only.
+type OpenInterestHistoryClient interface {
+	OpenInterestHistory(ctx context.Context, id model.InstrumentID, query model.OpenInterestHistoryQuery) ([]model.OpenInterestHistoryEntry, error)
+}
+
 // ExecutionClient is the order I/O surface. Submit is SYNCHRONOUS regardless of
 // whether the underlying venue is blocking (Binance/OKX) or async (Hyperliquid's
 // chan PostResult) — the adapter awaits the venue ack internally (deadline via

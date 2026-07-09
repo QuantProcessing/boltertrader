@@ -191,6 +191,43 @@ func (c *marketDataClient) SubscribeTrades(ctx context.Context, id model.Instrum
 	})
 }
 
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	symbol, err := c.venueSymbol(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	resp, err := c.rest.GetFundingRate(ctx, symbol)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromFundingRateData(id, resp, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	return c.subscribe(id, func(symbol string) error {
+		return c.ws.SubscribeMarkPrice(symbol, "1s", func(e *sdkperp.WsMarkPriceEvent) error {
+			snapshot := referenceFromMarkPriceEvent(id, e, c.clk.Now())
+			c.stream.Emit(contract.NewMarketEnvelopeWithMeta(
+				contract.ReferenceDataEvent{Snapshot: snapshot},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			))
+			return nil
+		})
+	})
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	symbol, err := c.venueSymbol(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	resp, err := c.rest.GetOpenInterest(ctx, symbol)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	return openInterestFromResponse(id, resp, c.clk.Now()), nil
+}
+
 func (c *marketDataClient) subscribe(id model.InstrumentID, fn func(symbol string) error) error {
 	if c.ws == nil {
 		return fmt.Errorf("binance: market websocket not configured: %w", errs.ErrNotSupported)
@@ -255,6 +292,98 @@ func bookFromDepthEvent(id model.InstrumentID, e *sdkperp.WsDepthEvent) model.Or
 		Sequence:     e.FinalUpdateID,
 		Timestamp:    time.UnixMilli(e.EventTime),
 	}
+}
+
+func referenceFromFundingRateData(id model.InstrumentID, r *sdkperp.FundingRateData, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	ts := receivedAt
+	if r != nil && r.Time > 0 {
+		ts = time.UnixMilli(r.Time)
+	}
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: ts, ReceivedAt: receivedAt}
+	if r == nil {
+		return s
+	}
+	if r.LastFundingRate != "" {
+		s.FundingRate = dec(r.LastFundingRate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+	}
+	if r.NextFundingTime > 0 {
+		s.NextFundingTime = time.UnixMilli(r.NextFundingTime)
+		s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+	}
+	if r.MarkPrice != "" {
+		s.MarkPrice = dec(r.MarkPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+	}
+	if r.IndexPrice != "" {
+		s.IndexPrice = dec(r.IndexPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+	}
+	setReferenceFieldTimes(&s, ts, receivedAt)
+	return s
+}
+
+func referenceFromMarkPriceEvent(id model.InstrumentID, e *sdkperp.WsMarkPriceEvent, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	ts := receivedAt
+	if e != nil && e.EventTime > 0 {
+		ts = time.UnixMilli(e.EventTime)
+	}
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: ts, ReceivedAt: receivedAt}
+	if e == nil {
+		return s
+	}
+	if e.FundingRate != "" {
+		s.FundingRate = dec(e.FundingRate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+	}
+	if e.NextFundingTime > 0 {
+		s.NextFundingTime = time.UnixMilli(e.NextFundingTime)
+		s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+	}
+	if e.MarkPrice != "" {
+		s.MarkPrice = dec(e.MarkPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+	}
+	if e.IndexPrice != "" {
+		s.IndexPrice = dec(e.IndexPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+	}
+	setReferenceFieldTimes(&s, ts, receivedAt)
+	return s
+}
+
+func setReferenceFieldTimes(s *model.DerivativeReferenceSnapshot, venueTime, receivedAt time.Time) {
+	freshness := model.FieldFreshness{Venue: venueTime, Received: receivedAt}
+	if s.Fields.Has(model.ReferenceHasFundingRate) {
+		s.FieldTimes.Set(model.ReferenceFieldFundingRate, freshness)
+	}
+	if s.Fields.Has(model.ReferenceHasNextFundingTime) {
+		s.FieldTimes.Set(model.ReferenceFieldNextFundingTime, freshness)
+	}
+	if s.Fields.Has(model.ReferenceHasMarkPrice) {
+		s.FieldTimes.Set(model.ReferenceFieldMarkPrice, freshness)
+	}
+	if s.Fields.Has(model.ReferenceHasIndexPrice) {
+		s.FieldTimes.Set(model.ReferenceFieldIndexPrice, freshness)
+	}
+}
+
+func openInterestFromResponse(id model.InstrumentID, r *sdkperp.OpenInterestResponse, receivedAt time.Time) model.OpenInterestSnapshot {
+	ts := receivedAt
+	if r != nil && r.Time > 0 {
+		ts = time.UnixMilli(r.Time)
+	}
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: ts, ReceivedAt: receivedAt}
+	if r == nil {
+		return s
+	}
+	if r.OpenInterest != "" {
+		s.OpenInterest = dec(r.OpenInterest)
+		s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	}
+	s.Unit = "contracts"
+	s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	return s
 }
 
 // waitConnected blocks until isUp reports true or ctx is cancelled, polling at a

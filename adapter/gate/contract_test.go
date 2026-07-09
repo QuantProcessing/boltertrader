@@ -25,6 +25,8 @@ func TestGateSpotClientsImplementContractsAndCapabilities(t *testing.T) {
 	rest := gatesdk.NewClient().WithCredentials("key", "secret")
 
 	var _ contract.MarketDataClient = newMarketDataClient(rest, nil, nil, provider, clk)
+	var _ contract.DerivativeReferenceDataClient = newMarketDataClient(rest, nil, nil, provider, clk)
+	var _ contract.OpenInterestClient = newMarketDataClient(rest, nil, nil, provider, clk)
 	var _ contract.ExecutionClient = newExecutionClient(rest, provider, clk)
 	var _ contract.AccountClient = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot})
 	var _ contract.AccountStateReporter = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot})
@@ -45,6 +47,13 @@ func TestGateRuntimeCapabilitiesFollowConfiguredProductScope(t *testing.T) {
 	spotMarketCaps := newMarketDataClient(rest, nil, nil, provider, clk).withScope([]enums.InstrumentKind{enums.KindSpot}).Capabilities()
 	if !gateCapabilitiesHasKind(spotMarketCaps, enums.KindSpot) || gateCapabilitiesHasKind(spotMarketCaps, enums.KindPerp) {
 		t.Fatalf("spot-scoped market capabilities overclaimed products: %+v", spotMarketCaps)
+	}
+	if spotMarketCaps.ReferenceData.CurrentFunding || spotMarketCaps.ReferenceData.CurrentOpenInterest {
+		t.Fatalf("spot-scoped market capabilities must not claim derivative reference data: %+v", spotMarketCaps.ReferenceData)
+	}
+	perpMarketCaps := newMarketDataClient(rest, nil, nil, provider, clk).withScope([]enums.InstrumentKind{enums.KindPerp}).Capabilities()
+	if ref := perpMarketCaps.ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest || !ref.ReferencePolling {
+		t.Fatalf("perp-scoped reference capabilities incomplete: %+v", ref)
 	}
 	perpExecCaps := newExecutionClient(rest, provider, clk).withScope([]enums.InstrumentKind{enums.KindPerp}).Capabilities()
 	if !gateCapabilitiesHasKind(perpExecCaps, enums.KindPerp) || gateCapabilitiesHasKind(perpExecCaps, enums.KindSpot) {
@@ -400,6 +409,23 @@ func TestGateUSDTPerpMarketSnapshotsAndPrivateEvents(t *testing.T) {
 	if len(bars) != 1 || !bars[0].Close.Equal(d("50001")) {
 		t.Fatalf("unexpected futures bars: %+v", bars)
 	}
+	ref, err := market.ReferenceSnapshot(context.Background(), perpID)
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasIndexPrice) || !ref.Fields.Has(model.ReferenceHasFundingInterval) || !ref.Fields.Has(model.ReferenceHasNextFundingTime) {
+		t.Fatalf("reference fields incomplete: %+v", ref)
+	}
+	if !ref.FundingRate.Equal(d("0.0001")) || !ref.MarkPrice.Equal(d("50001.5")) || !ref.IndexPrice.Equal(d("50000.5")) || ref.FundingInterval != 8*time.Hour || ref.NextFundingTime.Unix() != 1700006400 {
+		t.Fatalf("unexpected futures reference: %+v", ref)
+	}
+	oi, err := market.OpenInterest(context.Background(), perpID)
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.OpenInterest.Equal(d("42")) || oi.Unit != "contracts" {
+		t.Fatalf("unexpected futures OI: %+v", oi)
+	}
 	trades := tradesFromPayload(perpID, []byte(`{"time":1700000000,"channel":"futures.trades","event":"update","result":[{"id":99,"create_time":1700000000,"contract":"BTC_USDT","size":-2,"price":"50000"}]}`), time.Time{})
 	if len(trades) != 1 || trades[0].AggressorSide != enums.SideSell || !trades[0].Quantity.Equal(d("2")) {
 		t.Fatalf("unexpected futures trades: %+v", trades)
@@ -429,6 +455,26 @@ func TestGateUSDTPerpMarketSnapshotsAndPrivateEvents(t *testing.T) {
 	accountEvents := accountEventsFromFuturesPositionMessage(positionMsg, resolve, AccountIDUnified, time.Now())
 	if len(accountEvents) != 1 || accountEvents[0].(contract.PositionEvent).Position.Side != enums.PosLong {
 		t.Fatalf("unexpected futures position events: %+v", accountEvents)
+	}
+}
+
+func TestGateReferenceSnapshotKeepsTickerZeroFundingRate(t *testing.T) {
+	id := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	receivedAt := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)
+
+	ref := referenceFromGateFutures(id, &gatesdk.FuturesTicker{
+		Contract:    "BTC_USDT",
+		FundingRate: "0",
+	}, &gatesdk.Contract{
+		Name:        "BTC_USDT",
+		FundingRate: "0.0007",
+	}, receivedAt)
+
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) {
+		t.Fatalf("expected funding rate field presence: %+v", ref)
+	}
+	if !ref.FundingRate.Equal(decimal.Zero) {
+		t.Fatalf("ticker zero funding rate was overwritten by contract fallback: %+v", ref)
 	}
 }
 
@@ -523,6 +569,13 @@ func newGateSpotServer(t *testing.T) *httptest.Server {
 			writeJSON(t, w, []any{map[string]any{"id": "fill-1", "text": "t-spot-client-1", "currency_pair": "ETH_USDT", "order_id": "123", "side": "buy", "role": "taker", "amount": "0.01", "price": "1000", "fee": "-0.01", "fee_currency": "USDT", "create_time_ms": "1700000000123"}})
 		case "/futures/usdt/contracts":
 			writeJSON(t, w, []any{map[string]any{"name": "BTC_USDT", "status": "trading", "quanto_multiplier": "0.0001", "order_price_round": "0.1", "order_size_min": 1}})
+		case "/futures/usdt/contracts/BTC_USDT":
+			writeJSON(t, w, map[string]any{"name": "BTC_USDT", "status": "trading", "quanto_multiplier": "0.0001", "order_price_round": "0.1", "order_size_min": 1, "funding_rate": "0.0001", "funding_interval": 28800, "funding_next_apply": 1700006400})
+		case "/futures/usdt/tickers":
+			if got := r.URL.Query().Get("contract"); got != "BTC_USDT" {
+				t.Fatalf("futures ticker contract=%q, want BTC_USDT", got)
+			}
+			writeJSON(t, w, []any{map[string]any{"contract": "BTC_USDT", "total_size": "42", "mark_price": "50001.5", "index_price": "50000.5", "funding_rate": "0.0001"}})
 		case "/futures/usdt/accounts":
 			writeJSON(t, w, map[string]any{"total": "1000", "available": "900", "currency": "USDT", "position_initial_margin": "10", "maintenance_margin": "2", "position_margin": "10", "margin_mode": "cross"})
 		case "/futures/usdt/positions":

@@ -173,6 +173,9 @@ func instrumentFromBybit(category string, in bybitsdk.Instrument) *model.Instrum
 		kind = enums.KindSpot
 		settle = in.QuoteCoin
 	case "linear":
+		if isBybitDatedLinearInstrument(in) {
+			return nil
+		}
 		kind = enums.KindPerp
 		if settle == "" {
 			settle = in.QuoteCoin
@@ -199,6 +202,11 @@ func instrumentFromBybit(category string, in bybitsdk.Instrument) *model.Instrum
 		PricePrecision: decimalPlaces(tick),
 		PositionMode:   positionModeForKind(kind),
 	}
+}
+
+func isBybitDatedLinearInstrument(in bybitsdk.Instrument) bool {
+	deliveryTime := strings.TrimSpace(in.DeliveryTime)
+	return deliveryTime != "" && deliveryTime != "0"
 }
 
 func CapabilityRows() []adapter.CapabilityRow {

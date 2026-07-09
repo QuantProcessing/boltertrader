@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -74,6 +76,70 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 	return out, nil
 }
 
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("bitget: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("bitget: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	ticker, err := c.rest.GetTicker(ctx, category, inst.VenueSymbol)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromBitgetTicker(id, ticker, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return fmt.Errorf("bitget: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	snapshot, err := c.ReferenceSnapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+	if snapshot.Fields != 0 {
+		c.emitWithMeta(
+			contract.ReferenceDataEvent{Snapshot: snapshot},
+			contract.EventMeta{Source: contract.SourceAdapterREST, Flags: contract.EventFlagFromSnapshot},
+		)
+	}
+	return c.subscribe(ctx, bitgetWSArg(category, "ticker", inst.VenueSymbol), func(payload []byte) {
+		if snapshot, ok := referenceFromBitgetTickerPayload(id, payload, c.clk.Now()); ok {
+			c.emitWithMeta(
+				contract.ReferenceDataEvent{Snapshot: snapshot},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			)
+		}
+	})
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("bitget: open interest only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("bitget: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	oi, err := c.rest.GetOpenInterest(ctx, inst.VenueSymbol, category)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	return openInterestFromBitget(id, inst.VenueSymbol, oi, c.clk.Now(), firstNonEmpty(inst.Base, "contracts")), nil
+}
+
 func (c *marketDataClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
 	inst, category, err := c.instrument(id)
 	if err != nil {
@@ -121,19 +187,35 @@ func (c *marketDataClient) subscribe(ctx context.Context, arg bitgetsdk.WSArg, h
 }
 
 func (c *marketDataClient) Capabilities() contract.Capabilities {
+	streaming := c.ws != nil
+	reference := contract.ReferenceDataCapabilities{}
+	if bitgetProviderHasKind(c.provider, enums.KindPerp) {
+		reference = contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			ReferenceStream:     streaming,
+			ReferencePolling:    !streaming,
+			CurrentOpenInterest: true,
+		}
+	}
 	return contract.Capabilities{
 		Venue: VenueName,
 		Products: []contract.ProductCapability{
 			{Kind: enums.KindSpot, Market: true},
 			{Kind: enums.KindPerp, Market: true},
 		},
-		Streaming: contract.StreamCapabilities{Market: c.ws != nil},
+		Streaming:     contract.StreamCapabilities{Market: streaming},
+		ReferenceData: reference,
 	}
 }
 
 func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 func (c *marketDataClient) emit(ev contract.MarketEvent) {
 	c.stream.Emit(contract.NewMarketEnvelope(ev))
+}
+func (c *marketDataClient) emitWithMeta(ev contract.MarketEvent, meta contract.EventMeta) {
+	c.stream.Emit(contract.NewMarketEnvelopeWithMeta(ev, meta))
 }
 func (c *marketDataClient) Close() error {
 	if c.ws != nil {
@@ -201,4 +283,107 @@ func tradesFromPayload(id model.InstrumentID, payload []byte, fallback time.Time
 		out = append(out, model.TradeTick{InstrumentID: id, Price: dec(row.Price), Quantity: dec(row.Size), AggressorSide: sideFromBitget(row.Side), TradeID: row.ExecID, Timestamp: firstNonZeroTime(timeFromMillisString(row.TS), fallback)})
 	}
 	return out
+}
+
+func referenceFromBitgetTicker(id model.InstrumentID, ticker *bitgetsdk.Ticker, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, ReceivedAt: receivedAt}
+	if ticker == nil {
+		s.Timestamp = receivedAt
+		return s
+	}
+	ts := firstNonZeroTime(timeFromMillisString(ticker.Timestamp), receivedAt)
+	s.Timestamp = ts
+	if ticker.FundingRate != "" {
+		s.FundingRate = dec(ticker.FundingRate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+		setBitgetReferenceFieldTime(&s, model.ReferenceFieldFundingRate, ts, receivedAt)
+	}
+	if ticker.NextFundingTime != "" {
+		s.NextFundingTime = timeFromMillisString(ticker.NextFundingTime)
+		s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+		setBitgetReferenceFieldTime(&s, model.ReferenceFieldNextFundingTime, ts, receivedAt)
+	}
+	if interval := bitgetFundingInterval(ticker.FundingRateInterval); interval > 0 {
+		s.FundingInterval = interval
+		s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+		setBitgetReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, ts, receivedAt)
+	}
+	if ticker.MarkPrice != "" {
+		s.MarkPrice = dec(ticker.MarkPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+		setBitgetReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, ts, receivedAt)
+	}
+	if ticker.IndexPrice != "" {
+		s.IndexPrice = dec(ticker.IndexPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+		setBitgetReferenceFieldTime(&s, model.ReferenceFieldIndexPrice, ts, receivedAt)
+	}
+	return s
+}
+
+func referenceFromBitgetTickerPayload(id model.InstrumentID, payload []byte, receivedAt time.Time) (model.DerivativeReferenceSnapshot, bool) {
+	var msg struct {
+		Data []bitgetsdk.Ticker `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil || len(msg.Data) == 0 {
+		return model.DerivativeReferenceSnapshot{}, false
+	}
+	snapshot := referenceFromBitgetTicker(id, &msg.Data[0], receivedAt)
+	return snapshot, snapshot.Fields != 0
+}
+
+func setBitgetReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func bitgetFundingInterval(value string) time.Duration {
+	value = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), "h")
+	if value == "" {
+		return 0
+	}
+	hours, err := strconv.ParseFloat(value, 64)
+	if err != nil || hours <= 0 {
+		return 0
+	}
+	return time.Duration(hours * float64(time.Hour))
+}
+
+func openInterestFromBitget(id model.InstrumentID, venueSymbol string, oi *bitgetsdk.OpenInterest, receivedAt time.Time, unit string) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if oi == nil {
+		return s
+	}
+	if ts := timeFromMillisString(oi.TS); !ts.IsZero() {
+		s.Timestamp = ts
+	}
+	for _, row := range oi.List {
+		if row.Symbol != "" && !strings.EqualFold(row.Symbol, venueSymbol) {
+			continue
+		}
+		if row.Size != "" {
+			s.OpenInterest = dec(row.Size)
+			s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+		}
+		break
+	}
+	if unit != "" {
+		s.Unit = unit
+		s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	}
+	return s
+}
+
+func bitgetProviderHasKind(provider *instrumentProvider, kind enums.InstrumentKind) bool {
+	if provider == nil {
+		return false
+	}
+	for _, inst := range provider.All() {
+		if inst != nil && inst.ID.Kind == kind {
+			return true
+		}
+	}
+	return false
 }

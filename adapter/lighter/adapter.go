@@ -88,7 +88,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 
 	exec := newExecutionClient(rest, provider, clk, cfg.AccountIndex, accountID)
 	acct := newAccountClient(rest, provider, clk, cfg.AccountIndex, accountID)
-	market := newMarketDataClient(rest, provider, clk)
+	market := newMarketDataClient(rest, ws, provider, clk)
 
 	return &Adapter{
 		Market:    market,

@@ -27,11 +27,12 @@ type Submitter interface {
 // (cache, portfolio, clock) and the order-submission surface. It carries no
 // venue or adapter reference, keeping strategy code portable across adapters.
 type Context struct {
-	Ctx       context.Context
-	Clock     clock.Clock
-	Cache     *cache.Cache
-	Portfolio *portfolio.Portfolio
-	Orders    Submitter
+	Ctx                context.Context
+	Clock              clock.Clock
+	Cache              *cache.Cache
+	Portfolio          *portfolio.Portfolio
+	Orders             Submitter
+	OpenInterestClient contract.OpenInterestClient
 
 	currentEventMeta contract.EventMeta
 }
@@ -40,6 +41,18 @@ func (c *Context) CurrentEventMeta() contract.EventMeta { return c.currentEventM
 
 func (c *Context) SetCurrentEventMeta(meta contract.EventMeta) {
 	c.currentEventMeta = meta
+}
+
+// OpenInterest queries current venue OI through the runtime-injected market
+// client. OI is query-only in phase one and is not stored in Cache.
+func (c *Context) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	if ctx == nil {
+		ctx = c.Ctx
+	}
+	if c.OpenInterestClient == nil {
+		return model.OpenInterestSnapshot{}, contract.ErrNotSupported
+	}
+	return c.OpenInterestClient.OpenInterest(ctx, id)
 }
 
 // Buy submits a market or limit buy. A zero price means market.
@@ -87,6 +100,13 @@ type Strategy interface {
 	OnStop(c *Context)
 }
 
+// DerivativeReferenceHandler is an optional strategy callback for normalized
+// derivative funding/reference data. It is intentionally separate from Strategy
+// so direct Strategy implementations remain source-compatible.
+type DerivativeReferenceHandler interface {
+	OnDerivativeReference(c *Context, snapshot model.DerivativeReferenceSnapshot)
+}
+
 // Base is a no-op Strategy that concrete strategies embed so they only override
 // the callbacks they care about.
 type Base struct{}
@@ -97,3 +117,5 @@ func (Base) OnQuote(*Context, model.QuoteTick) {}
 func (Base) OnTrade(*Context, model.TradeTick) {}
 func (Base) OnFill(*Context, model.Fill)       {}
 func (Base) OnStop(*Context)                   {}
+func (Base) OnDerivativeReference(*Context, model.DerivativeReferenceSnapshot) {
+}

@@ -11,7 +11,14 @@ func (c *marketDataClient) Capabilities() contract.Capabilities {
 		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Market: true, Trading: true, Account: true}},
 		Reports:   contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
 		Streaming: contract.StreamCapabilities{Market: c.ws != nil},
-		Latency:   contract.LatencyCapabilities{},
+		ReferenceData: contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			ReferenceStream:     c.ws != nil,
+			CurrentOpenInterest: true,
+		},
+		Latency: contract.LatencyCapabilities{},
 	}
 }
 

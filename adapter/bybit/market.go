@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +88,70 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 	return out, nil
 }
 
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("bybit: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("bybit: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	ticker, err := c.rest.GetTicker(ctx, category, inst.VenueSymbol)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromBybitTicker(id, ticker, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return fmt.Errorf("bybit: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	snapshot, err := c.ReferenceSnapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+	if snapshot.Fields != 0 {
+		c.emitWithMeta(
+			contract.ReferenceDataEvent{Snapshot: snapshot},
+			contract.EventMeta{Source: contract.SourceAdapterREST, Flags: contract.EventFlagFromSnapshot},
+		)
+	}
+	return c.subscribe(ctx, category, "tickers."+inst.VenueSymbol, func(payload []byte) {
+		if snapshot, ok := referenceFromBybitTickerPayload(id, payload, c.clk.Now()); ok {
+			c.emitWithMeta(
+				contract.ReferenceDataEvent{Snapshot: snapshot},
+				contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+			)
+		}
+	})
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	inst, category, err := c.instrument(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("bybit: open interest only supported for perps: %w", errs.ErrNotSupported)
+	}
+	if c.rest == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("bybit: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	ticker, err := c.rest.GetTicker(ctx, category, inst.VenueSymbol)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	return openInterestFromBybitTicker(id, ticker, c.clk.Now(), firstNonEmpty(inst.Base, "contracts")), nil
+}
+
 func (c *marketDataClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
 	inst, category, err := c.instrument(id)
 	if err != nil {
@@ -142,14 +207,26 @@ func (c *marketDataClient) subscribe(ctx context.Context, category, topic string
 }
 
 func (c *marketDataClient) Capabilities() contract.Capabilities {
+	reference := contract.ReferenceDataCapabilities{}
+	if bybitProviderHasKind(c.provider, enums.KindPerp) {
+		reference = contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			ReferenceStream:     len(c.ws) > 0,
+			ReferencePolling:    len(c.ws) == 0,
+			CurrentOpenInterest: true,
+		}
+	}
 	return contract.Capabilities{
 		Venue: VenueName,
 		Products: []contract.ProductCapability{
 			{Kind: enums.KindSpot, Market: true},
 			{Kind: enums.KindPerp, Market: true},
 		},
-		Reports:   contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
-		Streaming: contract.StreamCapabilities{Market: len(c.ws) > 0},
+		Reports:       contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
+		Streaming:     contract.StreamCapabilities{Market: len(c.ws) > 0},
+		ReferenceData: reference,
 	}
 }
 
@@ -157,6 +234,10 @@ func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.st
 
 func (c *marketDataClient) emit(ev contract.MarketEvent) {
 	c.stream.Emit(contract.NewMarketEnvelope(ev))
+}
+
+func (c *marketDataClient) emitWithMeta(ev contract.MarketEvent, meta contract.EventMeta) {
+	c.stream.Emit(contract.NewMarketEnvelopeWithMeta(ev, meta))
 }
 
 func (c *marketDataClient) Close() error {
@@ -276,4 +357,118 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func referenceFromBybitTicker(id model.InstrumentID, ticker *bybitsdk.Ticker, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, ReceivedAt: receivedAt}
+	if ticker == nil {
+		s.Timestamp = receivedAt
+		return s
+	}
+	ts := firstNonZeroTime(timeFromMillisString(firstNonEmpty(ticker.Time, ticker.TS)), receivedAt)
+	s.Timestamp = ts
+	if ticker.FundingRate != "" {
+		s.FundingRate = dec(ticker.FundingRate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+		setBybitReferenceFieldTime(&s, model.ReferenceFieldFundingRate, ts, receivedAt)
+	}
+	if ticker.NextFundingTime != "" {
+		s.NextFundingTime = timeFromMillisString(ticker.NextFundingTime)
+		s.Fields = s.Fields.With(model.ReferenceHasNextFundingTime)
+		setBybitReferenceFieldTime(&s, model.ReferenceFieldNextFundingTime, ts, receivedAt)
+	}
+	if interval := bybitFundingInterval(ticker.FundingIntervalHour); interval > 0 {
+		s.FundingInterval = interval
+		s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+		setBybitReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, ts, receivedAt)
+	}
+	if ticker.MarkPrice != "" {
+		s.MarkPrice = dec(ticker.MarkPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+		setBybitReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, ts, receivedAt)
+	}
+	if ticker.IndexPrice != "" {
+		s.IndexPrice = dec(ticker.IndexPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+		setBybitReferenceFieldTime(&s, model.ReferenceFieldIndexPrice, ts, receivedAt)
+	}
+	return s
+}
+
+func referenceFromBybitTickerPayload(id model.InstrumentID, payload []byte, receivedAt time.Time) (model.DerivativeReferenceSnapshot, bool) {
+	var msg struct {
+		TS   int64           `json:"ts"`
+		Data bybitsdk.Ticker `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return model.DerivativeReferenceSnapshot{}, false
+	}
+	if msg.Data.Symbol == "" && msg.Data.MarkPrice == "" && msg.Data.IndexPrice == "" &&
+		msg.Data.FundingRate == "" && msg.Data.NextFundingTime == "" && msg.Data.FundingIntervalHour == "" {
+		return model.DerivativeReferenceSnapshot{}, false
+	}
+	if msg.Data.Time == "" && msg.TS > 0 {
+		msg.Data.Time = strconv.FormatInt(msg.TS, 10)
+	}
+	snapshot := referenceFromBybitTicker(id, &msg.Data, receivedAt)
+	return snapshot, snapshot.Fields != 0
+}
+
+func setBybitReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func bybitFundingInterval(value string) time.Duration {
+	value = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), "h")
+	if value == "" {
+		return 0
+	}
+	hours, err := strconv.ParseFloat(value, 64)
+	if err != nil || hours <= 0 {
+		return 0
+	}
+	return time.Duration(hours * float64(time.Hour))
+}
+
+func openInterestFromBybitTicker(id model.InstrumentID, ticker *bybitsdk.Ticker, receivedAt time.Time, unit string) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if ticker == nil {
+		return s
+	}
+	if ts := timeFromMillisString(firstNonEmpty(ticker.Time, ticker.TS)); !ts.IsZero() {
+		s.Timestamp = ts
+	}
+	if ticker.OpenInterest != "" {
+		s.OpenInterest = dec(ticker.OpenInterest)
+		s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	}
+	if unit != "" {
+		s.Unit = unit
+		s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	}
+	return s
+}
+
+func bybitProviderHasKind(provider *instrumentProvider, kind enums.InstrumentKind) bool {
+	if provider == nil {
+		return false
+	}
+	for _, inst := range provider.All() {
+		if inst != nil && inst.ID.Kind == kind {
+			return true
+		}
+	}
+	return false
 }

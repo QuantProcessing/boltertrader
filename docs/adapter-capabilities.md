@@ -59,10 +59,33 @@ Gate rows use Gate's official Testnet endpoint profile. The phase-one support
 surface is Spot cash plus USDT-linear futures/perps only; USDC-linear futures
 are intentionally deferred until an official non-production path is proven.
 
+## Derivative Reference Data
+
+Perp venues expose funding/reference data as market data. Funding rate, mark
+price, and index price or oracle price are streamed into
+`runtime.Cache.DerivativeReference`; current open interest is query-only through
+`contract.OpenInterestClient` and must not be cached.
+
+```sh
+make test-reference-data-offline
+make test-reference-data-read
+```
+
+| Venue | Product | Reference source | Index/oracle | Current OI | Read-only acceptance |
+| --- | --- | --- | --- | --- | --- |
+| BINANCE | USD-M Perp | WS mark-price stream | index price | REST query only | make test-binance-demo-reference-data-read |
+| OKX | USDT-linear SWAP | WS funding/mark/index streams | index price | REST query only | make test-okx-demo-reference-data-read |
+| BYBIT | USDT/USDC-linear Perp | WS ticker stream | index price | REST ticker query only | make test-bybit-demo-reference-data-read |
+| BITGET | USDT/USDC-linear Perp | WS ticker stream | index price | REST query only | make test-bitget-demo-reference-data-read |
+| GATE | USDT-linear Perp/SWAP | REST snapshot event | index price | REST ticker query only | make test-gate-testnet-reference-data-read |
+| HYPERLIQUID | Perp and HIP-3 Perp | REST snapshot event | oracle price | REST asset context query only | make test-hyperliquid-testnet-reference-data-read |
+| LIGHTER | Perp | WS market-stats stream | index price | REST order-book-detail query only | make test-lighter-testnet-reference-data-read |
+
 ## Deferred / Unsupported Products
 
 | Venue | Product | Status | Contract result | Acceptance guard |
 | --- | --- | --- | --- | --- |
+| BYBIT | Dated linear futures | deferred | filtered from first-phase perp registry | `TestInstrumentFromBybitRejectsDatedLinearFutures` |
 | GATE | USDC-linear Perp/Futures | deferred | `contract.ErrNotSupported` | `TestGateTestnetUSDCPerpDeferredCapability` |
 
 Bybit and Bitget rows are the first unified-account adapter/runtime slice for

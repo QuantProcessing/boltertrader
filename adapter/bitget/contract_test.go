@@ -24,12 +24,17 @@ func TestBitgetClientsImplementContractsAndCapabilities(t *testing.T) {
 	rest := bitgetsdk.NewClient().WithCredentials("key", "secret", "pass")
 
 	var _ contract.MarketDataClient = newMarketDataClient(rest, nil, provider, clk)
+	var _ contract.DerivativeReferenceDataClient = newMarketDataClient(rest, nil, provider, clk)
+	var _ contract.OpenInterestClient = newMarketDataClient(rest, nil, provider, clk)
 	var _ contract.ExecutionClient = newExecutionClient(rest, provider, clk)
 	var _ contract.AccountClient = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
 	var _ contract.AccountStateReporter = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
 
 	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountStateSnapshots || !caps.Streaming.Account {
 		t.Fatalf("account capabilities missing account-state/private stream support: %+v", caps)
+	}
+	if ref := newMarketDataClient(rest, nil, provider, clk).Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest || !ref.ReferencePolling {
+		t.Fatalf("reference capabilities incomplete: %+v", ref)
 	}
 }
 
@@ -206,6 +211,78 @@ func TestBitgetRuntimeResyncUsesAccountStateFirst(t *testing.T) {
 		t.Fatalf("account states applied=%d, want 1: %+v", report.AccountStatesApplied, report)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, enums.KindPerp)
+}
+
+func TestBitgetReferenceSnapshotOpenInterestAndTickerPayload(t *testing.T) {
+	provider := bitgetTestProvider()
+	inst := provider.All()[1]
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/market/tickers":
+			if got := r.URL.Query().Get("category"); got != bitgetsdk.ProductTypeUSDTFutures {
+				t.Fatalf("category=%q, want %s", got, bitgetsdk.ProductTypeUSDTFutures)
+			}
+			if got := r.URL.Query().Get("symbol"); got != inst.VenueSymbol {
+				t.Fatalf("symbol=%q, want %q", got, inst.VenueSymbol)
+			}
+			writeJSON(t, w, map[string]any{
+				"code":        "00000",
+				"msg":         "success",
+				"requestTime": 1700000000000,
+				"data": []any{map[string]any{
+					"category":            bitgetsdk.ProductTypeUSDTFutures,
+					"symbol":              "BTCUSDT",
+					"ts":                  "1700000000000",
+					"markPrice":           "65000.5",
+					"indexPrice":          "64999.5",
+					"fundingRate":         "0.0001",
+					"fundingRateInterval": "8",
+					"nextFundingTime":     "1700003600000",
+				}},
+			})
+		case "/api/v2/mix/market/open-interest":
+			if got := r.URL.Query().Get("productType"); got != bitgetsdk.ProductTypeUSDTFutures {
+				t.Fatalf("productType=%q, want %s", got, bitgetsdk.ProductTypeUSDTFutures)
+			}
+			writeJSON(t, w, map[string]any{
+				"code": "00000",
+				"msg":  "success",
+				"data": map[string]any{
+					"ts": "1700000001000",
+					"openInterestList": []any{
+						map[string]any{"symbol": "BTCUSDT", "size": "321.9"},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	rest := bitgetsdk.NewClient().
+		WithCredentials("key", "secret", "pass").
+		WithBaseURL(server.URL).
+		WithHTTPClient(server.Client())
+	market := newMarketDataClient(rest, nil, provider, clock.NewRealClock())
+	ref, err := market.ReferenceSnapshot(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.FundingRate.Equal(decimal.RequireFromString("0.0001")) || !ref.MarkPrice.Equal(decimal.RequireFromString("65000.5")) || ref.FundingInterval != 8*time.Hour {
+		t.Fatalf("unexpected reference snapshot: %+v", ref)
+	}
+	oi, err := market.OpenInterest(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.OpenInterest.Equal(decimal.RequireFromString("321.9")) || oi.Unit != "BTC" || oi.Timestamp.UnixMilli() != 1700000001000 {
+		t.Fatalf("unexpected OI: %+v", oi)
+	}
+	streamRef, ok := referenceFromBitgetTickerPayload(inst.ID, []byte(`{"data":[{"symbol":"BTCUSDT","ts":"1700000002000","markPrice":"65001","indexPrice":"65000","fundingRate":"0.0002","fundingRateInterval":"4","nextFundingTime":"1700007200000"}]}`), time.UnixMilli(1700000003000))
+	if !ok || !streamRef.Fields.Has(model.ReferenceHasMarkPrice) || !streamRef.Fields.Has(model.ReferenceHasIndexPrice) || streamRef.FundingInterval != 4*time.Hour {
+		t.Fatalf("unexpected stream reference=%+v ok=%v", streamRef, ok)
+	}
 }
 
 func TestBitgetScopedReportsPreserveSpotInstrumentForAmbiguousVenueSymbol(t *testing.T) {

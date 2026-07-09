@@ -51,6 +51,28 @@ func (c *marketDataClient) venueSymbol(id model.InstrumentID) (string, error) {
 	return inst.VenueSymbol, nil
 }
 
+func (c *marketDataClient) assetContext(ctx context.Context, id model.InstrumentID) (string, sdkperp.AssetContext, error) {
+	symbol, err := c.venueSymbol(id)
+	if err != nil {
+		return "", sdkperp.AssetContext{}, err
+	}
+	dex, coin := dexAndCoin(symbol)
+	meta, err := c.rest.GetMetaAndAssetCtxsForDex(ctx, dex)
+	if err != nil {
+		return "", sdkperp.AssetContext{}, err
+	}
+	for i, uni := range meta.Meta.Universe {
+		if uni.Name != coin && uni.Name != symbol {
+			continue
+		}
+		if i >= len(meta.AssetCtxs) {
+			return "", sdkperp.AssetContext{}, fmt.Errorf("hyperliquid perp: asset context not found for %s", symbol)
+		}
+		return symbol, meta.AssetCtxs[i], nil
+	}
+	return "", sdkperp.AssetContext{}, fmt.Errorf("hyperliquid perp: asset context not found for %s", symbol)
+}
+
 func (c *marketDataClient) OrderBook(ctx context.Context, id model.InstrumentID, depth int) (*model.OrderBook, error) {
 	symbol, err := c.venueSymbol(id)
 	if err != nil {
@@ -135,33 +157,46 @@ type FundingRateSnapshot struct {
 }
 
 func (c *marketDataClient) FundingRate(ctx context.Context, id model.InstrumentID) (*FundingRateSnapshot, error) {
-	symbol, err := c.venueSymbol(id)
+	_, assetCtx, err := c.assetContext(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	dex, coin := dexAndCoin(symbol)
-	meta, err := c.rest.GetMetaAndAssetCtxsForDex(ctx, dex)
+	return &FundingRateSnapshot{
+		InstrumentID: id,
+		Rate:         dec(assetCtx.Funding),
+		MarkPrice:    dec(assetCtx.MarkPx),
+		OraclePrice:  dec(assetCtx.OraclePx),
+		Premium:      dec(assetCtx.Premium),
+		Timestamp:    c.clk.Now(),
+	}, nil
+}
+
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	_, assetCtx, err := c.assetContext(ctx, id)
 	if err != nil {
-		return nil, err
+		return model.DerivativeReferenceSnapshot{}, err
 	}
-	for i, uni := range meta.Meta.Universe {
-		if uni.Name != coin && uni.Name != symbol {
-			continue
-		}
-		if i >= len(meta.AssetCtxs) {
-			return nil, fmt.Errorf("hyperliquid perp: asset context not found for %s", symbol)
-		}
-		ctx := meta.AssetCtxs[i]
-		return &FundingRateSnapshot{
-			InstrumentID: id,
-			Rate:         dec(ctx.Funding),
-			MarkPrice:    dec(ctx.MarkPx),
-			OraclePrice:  dec(ctx.OraclePx),
-			Premium:      dec(ctx.Premium),
-			Timestamp:    c.clk.Now(),
-		}, nil
+	return referenceFromHyperliquidAssetContext(id, assetCtx, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	snapshot, err := c.ReferenceSnapshot(ctx, id)
+	if err != nil {
+		return err
 	}
-	return nil, fmt.Errorf("hyperliquid perp: funding rate not found for %s", symbol)
+	c.emitWithMeta(
+		contract.ReferenceDataEvent{Snapshot: snapshot},
+		contract.EventMeta{Source: contract.SourceAdapterREST, Flags: contract.EventFlagFromSnapshot},
+	)
+	return nil
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	_, assetCtx, err := c.assetContext(ctx, id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	return openInterestFromHyperliquidAssetContext(id, assetCtx, c.clk.Now()), nil
 }
 
 func (c *marketDataClient) FundingHistory(ctx context.Context, id model.InstrumentID, start, end time.Time) ([]FundingRateSnapshot, error) {
@@ -282,9 +317,59 @@ func (c *marketDataClient) emit(ev contract.MarketEvent) {
 	c.stream.Emit(contract.NewMarketEnvelope(ev))
 }
 
+func (c *marketDataClient) emitWithMeta(ev contract.MarketEvent, meta contract.EventMeta) {
+	c.stream.Emit(contract.NewMarketEnvelopeWithMeta(ev, meta))
+}
+
 func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 
 func (c *marketDataClient) Close() error {
 	c.stream.Close()
 	return nil
+}
+
+func referenceFromHyperliquidAssetContext(id model.InstrumentID, assetCtx sdkperp.AssetContext, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if assetCtx.Funding != "" {
+		s.FundingRate = dec(assetCtx.Funding)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+		setHLReferenceFieldTime(&s, model.ReferenceFieldFundingRate, receivedAt, receivedAt)
+	}
+	s.FundingInterval = time.Hour
+	s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+	setHLReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, receivedAt, receivedAt)
+	if assetCtx.MarkPx != "" {
+		s.MarkPrice = dec(assetCtx.MarkPx)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+		setHLReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, receivedAt, receivedAt)
+	}
+	if assetCtx.OraclePx != "" {
+		s.OraclePrice = dec(assetCtx.OraclePx)
+		s.Fields = s.Fields.With(model.ReferenceHasOraclePrice)
+		setHLReferenceFieldTime(&s, model.ReferenceFieldOraclePrice, receivedAt, receivedAt)
+	}
+	if assetCtx.Premium != "" {
+		s.Premium = dec(assetCtx.Premium)
+		s.Fields = s.Fields.With(model.ReferenceHasPremium)
+		setHLReferenceFieldTime(&s, model.ReferenceFieldPremium, receivedAt, receivedAt)
+	}
+	return s
+}
+
+func setHLReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func openInterestFromHyperliquidAssetContext(id model.InstrumentID, assetCtx sdkperp.AssetContext, receivedAt time.Time) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if assetCtx.OpenInterest != "" {
+		s.OpenInterest = dec(assetCtx.OpenInterest)
+		s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	}
+	s.Unit = "contracts"
+	s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	return s
 }

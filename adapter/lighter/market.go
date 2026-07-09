@@ -2,9 +2,11 @@ package lighter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -19,17 +21,22 @@ import (
 
 type marketDataClient struct {
 	rest     *sdk.Client
+	ws       *sdk.WebsocketClient
 	provider *registry
 	clk      clock.Clock
 	stream   *wsstream.Stream[contract.MarketEnvelope]
+
+	connOnce sync.Once
+	connErr  error
 }
 
-func newMarketDataClient(rest *sdk.Client, provider *registry, clk clock.Clock) *marketDataClient {
+func newMarketDataClient(rest *sdk.Client, ws *sdk.WebsocketClient, provider *registry, clk clock.Clock) *marketDataClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
 	return &marketDataClient{
 		rest:     rest,
+		ws:       ws,
 		provider: provider,
 		clk:      clk,
 		stream:   wsstream.New[contract.MarketEnvelope](256),
@@ -37,14 +44,26 @@ func newMarketDataClient(rest *sdk.Client, provider *registry, clk clock.Clock) 
 }
 
 func (c *marketDataClient) Capabilities() contract.Capabilities {
+	reference := contract.ReferenceDataCapabilities{}
+	if lighterProviderHasKind(c.provider, enums.KindPerp) {
+		reference = contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    c.ws != nil,
+			CurrentIndexPrice:   c.ws != nil,
+			ReferenceStream:     c.ws != nil,
+			ReferencePolling:    c.ws == nil,
+			CurrentOpenInterest: true,
+		}
+	}
 	return contract.Capabilities{
 		Venue: venueName,
 		Products: []contract.ProductCapability{
 			{Kind: enums.KindSpot, Market: true, Trading: true, Account: true},
 			{Kind: enums.KindPerp, Market: true, Trading: true, Account: true},
 		},
-		Reports:   contract.ReportCapabilities{},
-		Streaming: contract.StreamCapabilities{Market: false},
+		Reports:       contract.ReportCapabilities{},
+		Streaming:     contract.StreamCapabilities{Market: c.ws != nil},
+		ReferenceData: reference,
 	}
 }
 
@@ -105,6 +124,75 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 		})
 	}
 	return out, nil
+}
+
+func (c *marketDataClient) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	inst, marketID, err := c.perpInstrument(id)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	if c.rest == nil {
+		return model.DerivativeReferenceSnapshot{}, fmt.Errorf("lighter: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	rate, err := c.rest.GetFundingRate(ctx, marketID)
+	if err != nil {
+		return model.DerivativeReferenceSnapshot{}, err
+	}
+	return referenceFromLighterFunding(inst.ID, rate, c.clk.Now()), nil
+}
+
+func (c *marketDataClient) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	inst, marketID, err := c.perpInstrument(id)
+	if err != nil {
+		return err
+	}
+	if c.ws == nil {
+		return fmt.Errorf("lighter: market websocket not configured: %w", errs.ErrNotSupported)
+	}
+	if err := c.connectWS(); err != nil {
+		return err
+	}
+	return c.ws.SubscribeMarketStats(marketID, func(payload []byte) {
+		snapshot, ok := referenceFromLighterMarketStats(inst.ID, payload, c.clk.Now())
+		if !ok {
+			return
+		}
+		c.stream.Emit(contract.NewMarketEnvelopeWithMeta(
+			contract.ReferenceDataEvent{Snapshot: snapshot},
+			contract.EventMeta{Source: contract.SourceAdapterStream, Flags: contract.EventFlagFromStream},
+		))
+	})
+}
+
+func (c *marketDataClient) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	inst, marketID, err := c.perpInstrument(id)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	if c.rest == nil {
+		return model.OpenInterestSnapshot{}, fmt.Errorf("lighter: rest client not configured: %w", errs.ErrNotSupported)
+	}
+	details, err := c.rest.GetOrderBookDetails(ctx, &marketID, nil)
+	if err != nil {
+		return model.OpenInterestSnapshot{}, err
+	}
+	for _, detail := range details.OrderBookDetails {
+		if detail != nil && detail.MarketId == marketID {
+			return openInterestFromLighterDetail(inst.ID, detail, c.clk.Now()), nil
+		}
+	}
+	return model.OpenInterestSnapshot{}, fmt.Errorf("lighter: open interest not found for market id %d", marketID)
+}
+
+func (c *marketDataClient) perpInstrument(id model.InstrumentID) (*model.Instrument, int, error) {
+	inst, ok := c.provider.Instrument(id)
+	if !ok || inst.AssetIndex == nil {
+		return nil, 0, fmt.Errorf("lighter: unknown instrument %s: %w", id, errs.ErrSymbolNotFound)
+	}
+	if inst.ID.Kind != enums.KindPerp {
+		return nil, 0, fmt.Errorf("lighter: reference data only supported for perps: %w", errs.ErrNotSupported)
+	}
+	return inst, *inst.AssetIndex, nil
 }
 
 func aggregateLighterBookLevels[T interface{ sdk.Ask | sdk.Bid }](orders []T, bids bool, depth int) []model.BookLevel {
@@ -176,6 +264,107 @@ func (c *marketDataClient) SubscribeTrades(ctx context.Context, id model.Instrum
 func (c *marketDataClient) Events() <-chan contract.MarketEnvelope { return c.stream.C() }
 
 func (c *marketDataClient) Close() error {
+	if c.ws != nil {
+		c.ws.Close()
+	}
 	c.stream.Close()
 	return nil
+}
+
+func (c *marketDataClient) connectWS() error {
+	c.connOnce.Do(func() { c.connErr = c.ws.Connect() })
+	if c.connErr != nil {
+		return fmt.Errorf("lighter: market websocket connect: %w", c.connErr)
+	}
+	return nil
+}
+
+func referenceFromLighterFunding(id model.InstrumentID, rate *sdk.FundingRate, receivedAt time.Time) model.DerivativeReferenceSnapshot {
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if rate != nil {
+		s.FundingRate = decimal.NewFromFloat(rate.Rate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldFundingRate, receivedAt, receivedAt)
+		s.FundingInterval = time.Hour
+		s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, receivedAt, receivedAt)
+	}
+	return s
+}
+
+func referenceFromLighterMarketStats(id model.InstrumentID, payload []byte, receivedAt time.Time) (model.DerivativeReferenceSnapshot, bool) {
+	var event sdk.WsMarketStatsEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return model.DerivativeReferenceSnapshot{}, false
+	}
+	ts := firstNonZeroTime(parseMillisOrMicros(firstNonZeroInt64(event.Timestamp, event.MarketStats.FundingTimestamp)), receivedAt)
+	s := model.DerivativeReferenceSnapshot{InstrumentID: id, Timestamp: ts, ReceivedAt: receivedAt}
+	if rate := firstNonEmpty(event.MarketStats.CurrentFundingRate, event.MarketStats.FundingRate); rate != "" {
+		s.FundingRate = dec(rate)
+		s.Fields = s.Fields.With(model.ReferenceHasFundingRate)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldFundingRate, ts, receivedAt)
+		s.FundingInterval = time.Hour
+		s.Fields = s.Fields.With(model.ReferenceHasFundingInterval)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldFundingInterval, ts, receivedAt)
+	}
+	if event.MarketStats.MarkPrice != "" {
+		s.MarkPrice = dec(event.MarketStats.MarkPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasMarkPrice)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldMarkPrice, ts, receivedAt)
+	}
+	if event.MarketStats.IndexPrice != "" {
+		s.IndexPrice = dec(event.MarketStats.IndexPrice)
+		s.Fields = s.Fields.With(model.ReferenceHasIndexPrice)
+		setLighterReferenceFieldTime(&s, model.ReferenceFieldIndexPrice, ts, receivedAt)
+	}
+	return s, s.Fields != 0
+}
+
+func setLighterReferenceFieldTime(s *model.DerivativeReferenceSnapshot, field model.ReferenceField, venueTime, receivedAt time.Time) {
+	if venueTime.IsZero() {
+		venueTime = receivedAt
+	}
+	s.FieldTimes.Set(field, model.FieldFreshness{Venue: venueTime, Received: receivedAt})
+}
+
+func openInterestFromLighterDetail(id model.InstrumentID, detail *sdk.OrderBookDetail, receivedAt time.Time) model.OpenInterestSnapshot {
+	s := model.OpenInterestSnapshot{InstrumentID: id, Timestamp: receivedAt, ReceivedAt: receivedAt}
+	if detail == nil {
+		return s
+	}
+	s.OpenInterest = decimal.NewFromFloat(detail.OpenInterest)
+	s.Fields = s.Fields.With(model.OpenInterestHasQuantity)
+	s.Unit = "contracts"
+	s.Fields = s.Fields.With(model.OpenInterestHasUnit)
+	return s
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func lighterProviderHasKind(provider *registry, kind enums.InstrumentKind) bool {
+	if provider == nil {
+		return false
+	}
+	for _, inst := range provider.All() {
+		if inst != nil && inst.ID.Kind == kind {
+			return true
+		}
+	}
+	return false
 }

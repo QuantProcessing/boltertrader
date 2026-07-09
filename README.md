@@ -156,13 +156,22 @@ make test-core         # core/runtime/strategy packages
 make test-adapter      # adapter packages
 make test-sdk          # SDK packages without live endpoints
 make test-capabilities # adapter capability matrix docs check
-make test-p6-offline   # P6 offline gate: core + adapter + sdk + matrix
+make test-reference-data-offline # funding/reference-data offline gate
+make test-p6-offline   # P6 offline gate: core + adapter + sdk + matrix + reference data
 ```
 
 Live read tests are opt-in:
 
 ```sh
 make test-live-read
+```
+
+Derivative funding/reference-data acceptance is also opt-in and read-only. It
+subscribes to funding/mark/index-or-oracle updates through the runtime cache,
+queries current OI directly, and asserts OI is not cached:
+
+```sh
+make test-reference-data-read
 ```
 
 Live write tests are venue-specific and may create, modify, cancel, or close

@@ -13,6 +13,7 @@ make test-core
 make test-adapter
 make test-sdk
 make test-capabilities
+make test-reference-data-offline
 make test-p6-offline
 ```
 
@@ -52,8 +53,27 @@ and exchange state are available.
 - `make test-sdk`: SDK request/response/stream behavior without live writes.
 - `make test-capabilities`: adapter capability matrix plus package-level
   capability probes, including the account-state snapshot contract.
+- `make test-reference-data-offline`: credential-free funding/reference-data
+  model, runtime cache, adapter conversion, and OI query-only checks.
 - `make test-p6-offline`: the full credential-free acceptance gate for core,
   runtime, SDK, adapter, and capability behavior.
+- `make test-reference-data-read`: read-only Demo/Testnet funding/reference-data
+  acceptance for all implemented perp venues.
+- `make test-binance-demo-reference-data-read`: read-only Binance Demo USD-M
+  funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-okx-demo-reference-data-read`: read-only OKX Demo SWAP
+  funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-bybit-demo-reference-data-read`: read-only Bybit Demo USDT/USDC
+  Perp funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-bitget-demo-reference-data-read`: read-only Bitget Demo USDT/USDC
+  Perp funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-gate-testnet-reference-data-read`: read-only Gate Testnet USDT
+  Perp funding/mark/index snapshot-cache plus current OI query acceptance.
+- `make test-hyperliquid-testnet-reference-data-read`: read-only Hyperliquid
+  Testnet standard Perp and configured HIP-3 funding/mark/oracle cache plus
+  current OI query acceptance.
+- `make test-lighter-testnet-reference-data-read`: read-only Lighter Testnet
+  Perp funding/mark/index stream-cache plus current OI query acceptance.
 - `make test-demo-acceptance`: the aggregate credential-gated CEX Demo or
   paper-trading acceptance gate for Binance, OKX, Bybit, and Bitget.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
@@ -188,6 +208,23 @@ path is in use: a missing account state rejects instead of silently falling back
 to raw cache balances. Legacy balance fallback exists only for adapters/tests
 that have not implemented `AccountStateReporter` yet, and those callers must opt
 in explicitly with `risk.Engine.AllowLegacyBalanceFallback()`.
+
+## Reference-Data Acceptance
+
+Funding/reference-data is a market-data contract, not an execution contract.
+Implemented perp venues must expose current funding, mark price, and index price
+or oracle price through `contract.DerivativeReferenceDataClient`.
+`SubscribeReference` must drive `contract.ReferenceDataEvent` into
+`runtime.Cache.DerivativeReference`, and adapters may use native WebSocket
+streams or REST snapshot events depending on venue support.
+
+Current open interest is intentionally query-only in phase one. It is exposed
+through `contract.OpenInterestClient` and `runtime.TradingNode.OpenInterest`,
+but it must not be represented as a market event or cached. The shared
+`adapter/internal/runtimeaccept.CheckReferenceDataReadOnly` helper proves this
+shape in Demo/Testnet: it starts a market-only runtime, subscribes reference
+data, waits for fresh funding/mark/index-or-oracle in cache, queries current OI,
+and asserts `OpenInterestCached` remains false.
 
 ## Live Tests
 

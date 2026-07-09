@@ -2,6 +2,7 @@
 .PHONY: test-bybit-demo test-bybit-demo-spot test-bybit-demo-runtime-spot test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp test-bybit-demo-acceptance test-bybit-spot-acceptance test-bybit-usdt-perp-acceptance test-bybit-usdc-perp-acceptance test-bybit-acceptance
 .PHONY: test-bitget-demo test-bitget-demo-spot test-bitget-demo-runtime-spot test-bitget-demo-usdt-perp test-bitget-demo-runtime-usdt-perp test-bitget-demo-usdc-perp test-bitget-demo-runtime-usdc-perp test-bitget-demo-acceptance test-bitget-testnet test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp test-bitget-testnet-acceptance test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance test-bitget-acceptance test-bybit-bitget-acceptance
 .PHONY: test-gate-testnet test-gate-testnet-read test-gate-testnet-spot test-gate-testnet-runtime-spot test-gate-testnet-usdt-perp test-gate-testnet-runtime-usdt-perp test-gate-testnet-usdc-perp-deferred test-gate-testnet-acceptance test-gate-spot-acceptance test-gate-usdt-perp-acceptance test-gate-acceptance
+.PHONY: test-reference-data-offline test-reference-data-read test-binance-demo-reference-data-read test-okx-demo-reference-data-read test-bybit-demo-reference-data-read test-bitget-demo-reference-data-read test-gate-testnet-reference-data-read test-hyperliquid-testnet-reference-data-read test-lighter-testnet-reference-data-read
 
 test:
 	go test -short ./...
@@ -22,10 +23,36 @@ test-capabilities:
 	go test -short ./adapter -count=1
 	go test -short ./adapter/... -run Capabilit -count=1
 
-test-p6-offline: test-core test-adapter test-sdk test-capabilities
+test-p6-offline: test-core test-adapter test-sdk test-capabilities test-reference-data-offline
+
+test-reference-data-offline:
+	go test -short ./core/model ./core/contract ./runtime/cache ./runtime ./runtime/runtimetest ./adapter/internal/runtimeaccept ./adapter/binance/perp ./adapter/okx/perp ./adapter/bybit ./adapter/bitget ./adapter/gate ./adapter/hyperliquid/perp ./adapter/lighter -run 'Reference|OpenInterest|Capabilit' -count=1
 
 test-live-read:
 	BOLTER_ENABLE_LIVE_READ_TESTS=1 go test ./sdk/... ./adapter/...
+
+test-reference-data-read: test-binance-demo-reference-data-read test-okx-demo-reference-data-read test-bybit-demo-reference-data-read test-bitget-demo-reference-data-read test-gate-testnet-reference-data-read test-hyperliquid-testnet-reference-data-read test-lighter-testnet-reference-data-read
+
+test-binance-demo-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceDemoReferenceDataReadAcceptance$$' ./adapter/binance/perp/ -count=1 -timeout=3m
+
+test-okx-demo-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestOKXPerpDemoReferenceDataReadAcceptance$$' ./adapter/okx/perp/ -count=1 -timeout=3m
+
+test-bybit-demo-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBybitDemoReferenceDataReadAcceptance$$' ./adapter/bybit/ -count=1 -timeout=4m
+
+test-bitget-demo-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBitgetDemoReferenceDataReadAcceptance$$' ./adapter/bitget/ -count=1 -timeout=4m
+
+test-gate-testnet-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestGateTestnetReferenceDataReadAcceptance$$' ./adapter/gate/ -count=1 -timeout=3m
+
+test-hyperliquid-testnet-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestHyperliquidPerpTestnetReferenceDataReadAcceptance$$' ./adapter/hyperliquid/perp/ -count=1 -timeout=4m
+
+test-lighter-testnet-reference-data-read:
+	BOLTER_ENABLE_LIVE_READ_TESTS=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestLighterTestnetReferenceDataReadAcceptance$$' ./adapter/lighter/ -count=1 -timeout=3m
 
 test-demo-acceptance: test-binance-demo-acceptance test-okx-demo-acceptance test-bybit-acceptance test-bitget-acceptance
 

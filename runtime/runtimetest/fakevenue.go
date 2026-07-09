@@ -319,8 +319,11 @@ func cloneAccountState(state model.AccountState) model.AccountState {
 // implements contract.Reconnectable so node.Reconnect can be exercised: each
 // call increments Reconnects and connected flips to true.
 type FakeMarket struct {
-	events   chan contract.MarketEnvelope
-	provider model.InstrumentProvider
+	events             chan contract.MarketEnvelope
+	provider           model.InstrumentProvider
+	referenceSnapshots map[string]model.DerivativeReferenceSnapshot
+	openInterests      map[string]model.OpenInterestSnapshot
+	referenceSubs      map[string]bool
 
 	Reconnects int  // number of Reconnect calls
 	connected  bool // reported by Connected; set true after Reconnect
@@ -328,7 +331,12 @@ type FakeMarket struct {
 
 // NewFakeMarket returns a FakeMarket with a buffered event channel.
 func NewFakeMarket() *FakeMarket {
-	return &FakeMarket{events: make(chan contract.MarketEnvelope, 1024)}
+	return &FakeMarket{
+		events:             make(chan contract.MarketEnvelope, 1024),
+		referenceSnapshots: make(map[string]model.DerivativeReferenceSnapshot),
+		openInterests:      make(map[string]model.OpenInterestSnapshot),
+		referenceSubs:      make(map[string]bool),
+	}
 }
 
 func (f *FakeMarket) Capabilities() contract.Capabilities {
@@ -337,6 +345,13 @@ func (f *FakeMarket) Capabilities() contract.Capabilities {
 		Reports:   contract.ReportCapabilities{},
 		Streaming: contract.StreamCapabilities{Market: true},
 		Latency:   contract.LatencyCapabilities{},
+		ReferenceData: contract.ReferenceDataCapabilities{
+			CurrentFunding:      true,
+			CurrentMarkPrice:    true,
+			CurrentIndexPrice:   true,
+			CurrentOpenInterest: true,
+			ReferenceStream:     true,
+		},
 	}
 }
 
@@ -350,8 +365,30 @@ func (f *FakeMarket) Bars(ctx context.Context, id model.InstrumentID, interval s
 func (f *FakeMarket) SubscribeBook(ctx context.Context, id model.InstrumentID) error   { return nil }
 func (f *FakeMarket) SubscribeQuotes(ctx context.Context, id model.InstrumentID) error { return nil }
 func (f *FakeMarket) SubscribeTrades(ctx context.Context, id model.InstrumentID) error { return nil }
-func (f *FakeMarket) Events() <-chan contract.MarketEnvelope                           { return f.events }
-func (f *FakeMarket) Close() error                                                     { close(f.events); return nil }
+func (f *FakeMarket) SubscribeReference(ctx context.Context, id model.InstrumentID) error {
+	f.referenceSubs[id.String()] = true
+	return nil
+}
+func (f *FakeMarket) ReferenceSnapshot(ctx context.Context, id model.InstrumentID) (model.DerivativeReferenceSnapshot, error) {
+	if s, ok := f.referenceSnapshots[id.String()]; ok {
+		return s, nil
+	}
+	return model.DerivativeReferenceSnapshot{}, fmt.Errorf("fake market reference snapshot: %w", contract.ErrNotSupported)
+}
+func (f *FakeMarket) SetReferenceSnapshot(s model.DerivativeReferenceSnapshot) {
+	f.referenceSnapshots[s.InstrumentID.String()] = s
+}
+func (f *FakeMarket) OpenInterest(ctx context.Context, id model.InstrumentID) (model.OpenInterestSnapshot, error) {
+	if s, ok := f.openInterests[id.String()]; ok {
+		return s, nil
+	}
+	return model.OpenInterestSnapshot{}, fmt.Errorf("fake market open interest: %w", contract.ErrNotSupported)
+}
+func (f *FakeMarket) SetOpenInterestSnapshot(s model.OpenInterestSnapshot) {
+	f.openInterests[s.InstrumentID.String()] = s
+}
+func (f *FakeMarket) Events() <-chan contract.MarketEnvelope { return f.events }
+func (f *FakeMarket) Close() error                           { close(f.events); return nil }
 
 // Connected reports the simulated link state.
 func (f *FakeMarket) Connected() bool { return f.connected }
@@ -372,6 +409,12 @@ func (f *FakeMarket) EmitQuote(q model.QuoteTick) {
 // EmitTrade pushes a public trade print.
 func (f *FakeMarket) EmitTrade(t model.TradeTick) {
 	f.events <- contract.NewMarketEnvelopeWithMeta(contract.TradeEvent{Trade: t}, testEventMeta())
+}
+
+// EmitDerivativeReference pushes a derivative reference-data update.
+func (f *FakeMarket) EmitDerivativeReference(s model.DerivativeReferenceSnapshot) {
+	f.SetReferenceSnapshot(s)
+	f.events <- contract.NewMarketEnvelopeWithMeta(contract.ReferenceDataEvent{Snapshot: s}, testEventMeta())
 }
 
 func testEventMeta() contract.EventMeta {

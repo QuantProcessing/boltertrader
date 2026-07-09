@@ -193,6 +193,11 @@ func inferMarketMeta(payload MarketEvent) EventMeta {
 		meta.Venue = p.Trade.InstrumentID.Venue
 		meta.TsVenue = p.Trade.Timestamp
 		meta.EventID = model.EventID(joinEventID("market", "trade", p.Trade.InstrumentID.String(), p.Trade.Timestamp.Format(time.RFC3339Nano)))
+	case ReferenceDataEvent:
+		meta.InstrumentID = p.Snapshot.InstrumentID
+		meta.Venue = p.Snapshot.InstrumentID.Venue
+		meta.TsVenue = p.Snapshot.Timestamp
+		meta.EventID = model.EventID(joinEventID("market", "reference", p.Snapshot.InstrumentID.String(), p.Snapshot.Timestamp.Format(time.RFC3339Nano)))
 	}
 	if meta.EventID == "" {
 		meta.EventID = model.EventID(joinEventID("market", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
@@ -316,6 +321,13 @@ type QuoteEvent struct{ Quote model.QuoteTick }
 // TradeEvent carries a public trade print.
 type TradeEvent struct{ Trade model.TradeTick }
 
-func (BookEvent) isMarketEvent()  {}
-func (QuoteEvent) isMarketEvent() {}
-func (TradeEvent) isMarketEvent() {}
+// ReferenceDataEvent carries normalized current derivative funding/reference
+// data. Current OI is query-only and must not be represented as this event.
+type ReferenceDataEvent struct {
+	Snapshot model.DerivativeReferenceSnapshot
+}
+
+func (BookEvent) isMarketEvent()          {}
+func (QuoteEvent) isMarketEvent()         {}
+func (TradeEvent) isMarketEvent()         {}
+func (ReferenceDataEvent) isMarketEvent() {}

@@ -19,10 +19,12 @@ import (
 
 // interface conformance
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient               = (*executionClient)(nil)
+	_ contract.AccountClient                 = (*accountClient)(nil)
+	_ contract.AccountStateReporter          = (*accountClient)(nil)
+	_ contract.MarketDataClient              = (*marketDataClient)(nil)
+	_ contract.DerivativeReferenceDataClient = (*marketDataClient)(nil)
+	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
 )
 
 func TestAccountIDOverridePropagatesToClients(t *testing.T) {
@@ -484,11 +486,74 @@ func TestSetLeverageUsesConfiguredTdMode(t *testing.T) {
 	}
 }
 
+func TestOKXPerpReferenceSnapshotAndOpenInterest(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s, want GET", r.Method)
+		}
+		switch r.URL.Path {
+		case "/api/v5/public/funding-rate":
+			if got := r.URL.Query().Get("instId"); got != inst.VenueSymbol {
+				t.Fatalf("funding instId=%q, want %q", got, inst.VenueSymbol)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","fundingRate":"0.0001","nextFundingTime":"1700003600000","premium":"0.0002","ts":"1700000000000"}]}`))
+		case "/api/v5/public/mark-price":
+			if got := r.URL.Query().Get("instType"); got != instTypeSwap {
+				t.Fatalf("mark instType=%q, want %s", got, instTypeSwap)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","markPx":"65000.5","ts":"1700000000100"}]}`))
+		case "/api/v5/market/index-tickers":
+			if got := r.URL.Query().Get("instId"); got != "BTC-USDT" {
+				t.Fatalf("index instId=%q, want BTC-USDT", got)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT","idxPx":"64999.5","ts":"1700000000200"}]}`))
+		case "/api/v5/public/open-interest":
+			if got := r.URL.Query().Get("instId"); got != inst.VenueSymbol {
+				t.Fatalf("open-interest instId=%q, want %q", got, inst.VenueSymbol)
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instType":"SWAP","instId":"BTC-USDT-SWAP","oi":"12345","oiCcy":"12.345","oiUsd":"801234.5","ts":"1700000000300"}]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	rest := okx.NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL(server.URL)
+	market := newMarketDataClient(rest, nil, testOKXProvider(inst), clock.NewRealClock())
+	ref, err := market.ReferenceSnapshot(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("ReferenceSnapshot: %v", err)
+	}
+	if !ref.Fields.Has(model.ReferenceHasFundingRate) || !ref.Fields.Has(model.ReferenceHasMarkPrice) || !ref.Fields.Has(model.ReferenceHasIndexPrice) || !ref.Fields.Has(model.ReferenceHasNextFundingTime) {
+		t.Fatalf("reference fields incomplete: %+v", ref)
+	}
+	if !ref.FundingRate.Equal(dd("0.0001")) || !ref.MarkPrice.Equal(dd("65000.5")) || !ref.IndexPrice.Equal(dd("64999.5")) || !ref.Premium.Equal(dd("0.0002")) {
+		t.Fatalf("unexpected reference snapshot: %+v", ref)
+	}
+	if ref.Timestamp.UnixMilli() != 1700000000200 {
+		t.Fatalf("reference timestamp=%s", ref.Timestamp)
+	}
+	oi, err := market.OpenInterest(context.Background(), inst.ID)
+	if err != nil {
+		t.Fatalf("OpenInterest: %v", err)
+	}
+	if !oi.Fields.Has(model.OpenInterestHasQuantity) || !oi.Fields.Has(model.OpenInterestHasNotional) || oi.Unit != "contracts" {
+		t.Fatalf("unexpected OI fields: %+v", oi)
+	}
+	if !oi.OpenInterest.Equal(dd("12345")) || !oi.OpenInterestNotional.Equal(dd("801234.5")) || oi.Timestamp.UnixMilli() != 1700000000300 {
+		t.Fatalf("unexpected OI: %+v", oi)
+	}
+}
+
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
 	account := testOKXAccountClient(t, "isolated")
 	if caps := account.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
 		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	}
+	if ref := restOnly.Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest {
+		t.Fatalf("reference capabilities incomplete: %+v", ref)
 	}
 	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
 		Venue: "OKX",
