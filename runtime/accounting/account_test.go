@@ -58,6 +58,70 @@ func TestCashAccountApplyAndLookup(t *testing.T) {
 	}
 }
 
+func TestAccountSummaryReturnsCopyAndUpdatesOnApply(t *testing.T) {
+	ts := time.Unix(1, 0)
+	state := cashState(ts)
+	state.Summary = &model.AccountSummary{
+		SettlementCurrency:  "USDT",
+		Equity:              dec("-5"),
+		AvailableCollateral: dec("80"),
+		UpdatedAt:           ts,
+	}
+	acct, err := New(state, time.Minute, ts)
+	if err != nil {
+		t.Fatalf("new account with summary: %v", err)
+	}
+	summary := acct.Summary()
+	if summary == nil {
+		t.Fatal("summary is nil")
+	}
+	if summary.SettlementCurrency != "USDT" || !summary.Equity.Equal(dec("-5")) || !summary.AvailableCollateral.Equal(dec("80")) {
+		t.Fatalf("summary=%+v, want USDT -5 80", summary)
+	}
+	summary.AvailableCollateral = dec("0")
+	again := acct.Summary()
+	if !again.AvailableCollateral.Equal(dec("80")) {
+		t.Fatalf("mutating returned summary changed account state: %s", again.AvailableCollateral)
+	}
+
+	next := cashState(ts.Add(time.Second))
+	next.Summary = &model.AccountSummary{
+		SettlementCurrency:  "USDT",
+		Equity:              dec("25"),
+		AvailableCollateral: dec("20"),
+		UpdatedAt:           ts.Add(time.Second),
+	}
+	if err := acct.Apply(next, ts.Add(time.Second)); err != nil {
+		t.Fatalf("apply summary update: %v", err)
+	}
+	updated := acct.Summary()
+	if updated == nil || !updated.Equity.Equal(dec("25")) || !updated.AvailableCollateral.Equal(dec("20")) {
+		t.Fatalf("updated summary=%+v, want equity 25 collateral 20", updated)
+	}
+}
+
+func TestAccountSummaryNilCompatibilityAndValidation(t *testing.T) {
+	ts := time.Unix(1, 0)
+	acct, err := New(cashState(ts), time.Minute, ts)
+	if err != nil {
+		t.Fatalf("new account without summary: %v", err)
+	}
+	if got := acct.Summary(); got != nil {
+		t.Fatalf("summary=%+v, want nil", got)
+	}
+
+	state := cashState(ts)
+	state.Summary = &model.AccountSummary{
+		SettlementCurrency:  "USDT",
+		Equity:              dec("1"),
+		AvailableCollateral: dec("-0.01"),
+		UpdatedAt:           ts,
+	}
+	if _, err := New(state, time.Minute, ts); err == nil {
+		t.Fatal("negative available collateral should reject account creation")
+	}
+}
+
 func TestAccountApplyRejectsIdentityChange(t *testing.T) {
 	ts := time.Unix(1, 0)
 	acct, err := New(cashState(ts), time.Minute, ts)
@@ -68,6 +132,32 @@ func TestAccountApplyRejectsIdentityChange(t *testing.T) {
 	next.AccountID = "other"
 	if err := acct.Apply(next, ts.Add(time.Second)); err == nil {
 		t.Fatal("account id change should fail")
+	}
+}
+
+func TestAccountApplyIgnoresOlderVenueState(t *testing.T) {
+	base := time.Unix(10, 0)
+	newer := cashState(base.Add(2 * time.Second))
+	newer.Balances[0].Free = dec("95")
+	newer.Balances[0].Locked = dec("5")
+	appliedAt := base.Add(10 * time.Second)
+	acct, err := New(newer, time.Minute, appliedAt)
+	if err != nil {
+		t.Fatalf("new account: %v", err)
+	}
+
+	older := cashState(base.Add(time.Second))
+	older.Balances[0].Free = dec("1")
+	older.Balances[0].Locked = dec("99")
+	if err := acct.Apply(older, appliedAt.Add(time.Second)); err != nil {
+		t.Fatalf("older account state should be ignored without failing recovery: %v", err)
+	}
+	free, _ := acct.BalanceFree("USDT")
+	if !free.Equal(dec("95")) || acct.LastEvent().EventID != newer.EventID {
+		t.Fatalf("older state replaced newer state: free=%s event=%s", free, acct.LastEvent().EventID)
+	}
+	if got := acct.Freshness().LastAccountStateAt; !got.Equal(appliedAt) {
+		t.Fatalf("older state refreshed account timestamp to %s, want %s", got, appliedAt)
 	}
 }
 

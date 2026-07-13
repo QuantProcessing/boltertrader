@@ -138,6 +138,9 @@ func TestBinanceDemoEnvContractConstants(t *testing.T) {
 }
 
 func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate allow-path test excluded by -short")
+	}
 	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
 	t.Setenv("BINANCE_DEMO_API_KEY", "demo-key")
 	t.Setenv("BINANCE_DEMO_API_SECRET", "demo-secret")
@@ -580,6 +583,9 @@ func TestOKXDemoEnvContractConstants(t *testing.T) {
 }
 
 func TestRequireOKXDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate allow-path test excluded by -short")
+	}
 	setOKXDemoCredentials(t)
 	clearOKXDemoOptionalEnv(t)
 
@@ -776,6 +782,9 @@ func TestRequireHyperliquidTestnetWriteSkipsWithoutEnableFlag(t *testing.T) {
 }
 
 func TestRequireHyperliquidTestnetWriteAllowsCanonicalPrivateKeyWithEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate allow-path test excluded by -short")
+	}
 	t.Setenv(HyperliquidTestnetPrivateKeyEnv, strings.Repeat("01", 32))
 	t.Setenv(HyperliquidTestnetEnableWriteEnv, "1")
 	clearHyperliquidTestnetOptionalEnv(t)
@@ -946,6 +955,130 @@ func TestIsTransientLiveNetworkError(t *testing.T) {
 	}
 	if IsTransientLiveNetworkError(errors.New("invalid signature")) {
 		t.Fatal("semantic exchange errors should not be treated as transient network errors")
+	}
+}
+
+func TestAsterTestnetReadConfigUsesOfficialProfilesAndDefaults(t *testing.T) {
+	clearAsterTestnetEnv(t)
+
+	cfg, err := AsterTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("AsterTestnetReadConfigFromEnv: %v", err)
+	}
+	if cfg.SpotProfile.RESTURL != "https://sapi.asterdex-testnet.com" || cfg.SpotProfile.ChainID != 714 {
+		t.Fatalf("spot profile=%+v", cfg.SpotProfile)
+	}
+	if cfg.PerpProfile.RESTURL != "https://fapi.asterdex-testnet.com" || cfg.PerpProfile.ChainID != 714 {
+		t.Fatalf("perp profile=%+v", cfg.PerpProfile)
+	}
+	if cfg.MaxNotionalUSDT.String() != "100" || cfg.SpotSymbol != "" || cfg.PerpSymbol != "" {
+		t.Fatalf("defaults=%+v", cfg)
+	}
+}
+
+func TestAsterTestnetConfigParsesCredentialsAndRedacts(t *testing.T) {
+	clearAsterTestnetEnv(t)
+	t.Setenv(AsterTestnetUserAddressEnv, "0x1111111111111111111111111111111111111111")
+	t.Setenv(AsterTestnetSignerPrivateKeyEnv, strings.Repeat("a", 64))
+	t.Setenv(AsterTestnetExpectedSignerAddressEnv, "0x2222222222222222222222222222222222222222")
+	t.Setenv(AsterTestnetSpotSymbolEnv, "ETHUSDT")
+	t.Setenv(AsterTestnetPerpSymbolEnv, "BTCUSDT")
+	t.Setenv(AsterTestnetMaxNotionalUSDTEnv, "25")
+	t.Setenv("PROXY", "http://user:proxy-password@127.0.0.1:7890")
+
+	cfg, err := AsterTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("AsterTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.UserAddress == "" || cfg.SignerPrivateKey == "" || cfg.ExpectedSignerAddress == "" {
+		t.Fatalf("credentials missing: %+v", cfg)
+	}
+	if cfg.MaxNotionalUSDT.String() != "25" || cfg.SpotSymbol != "ETHUSDT" || cfg.PerpSymbol != "BTCUSDT" {
+		t.Fatalf("parsed config=%+v", cfg)
+	}
+	printed := cfg.String()
+	for _, secret := range []string{cfg.SignerPrivateKey, "proxy-password"} {
+		if strings.Contains(printed, secret) {
+			t.Fatalf("config string leaked secret %q: %s", secret, printed)
+		}
+	}
+}
+
+func TestAsterTestnetConfigRejectsProductionEndpointOverrideWithoutEcho(t *testing.T) {
+	clearAsterTestnetEnv(t)
+	t.Setenv(AsterTestnetSpotRESTURLEnv, "https://sapi.asterdex.com/private-path")
+
+	_, err := AsterTestnetReadConfigFromEnv()
+	if err == nil || !strings.Contains(err.Error(), AsterTestnetSpotRESTURLEnv) {
+		t.Fatalf("production override err=%v", err)
+	}
+	if strings.Contains(err.Error(), "private-path") {
+		t.Fatalf("endpoint error echoed configured URL: %v", err)
+	}
+}
+
+func TestNadoTestnetReadConfigUsesOfficialProfileAndDefaults(t *testing.T) {
+	clearNadoTestnetEnv(t)
+
+	cfg, err := NadoTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("NadoTestnetReadConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.GatewayV1URL != "https://gateway.test.nado.xyz/v1" || cfg.Profile.ChainID != 763373 {
+		t.Fatalf("profile=%+v", cfg.Profile)
+	}
+	if cfg.Subaccount != "default" || cfg.MaxNotionalUSDT0.String() != "100" {
+		t.Fatalf("defaults=%+v", cfg)
+	}
+}
+
+func TestNadoTestnetConfigParsesCredentialsAndRedacts(t *testing.T) {
+	clearNadoTestnetEnv(t)
+	t.Setenv(NadoTestnetPrivateKeyEnv, strings.Repeat("b", 64))
+	t.Setenv(NadoTestnetSubaccountNameEnv, "strategy-a")
+	t.Setenv(NadoTestnetSpotSymbolEnv, "WBTC")
+	t.Setenv(NadoTestnetPerpSymbolEnv, "BTC-PERP")
+	t.Setenv(NadoTestnetMaxNotionalUSDT0Env, "40")
+	t.Setenv("PROXY", "http://user:nado-proxy-password@127.0.0.1:7890")
+
+	cfg, err := NadoTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("NadoTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.PrivateKey == "" || cfg.Subaccount != "strategy-a" || cfg.MaxNotionalUSDT0.String() != "40" {
+		t.Fatalf("parsed config=%+v", cfg)
+	}
+	printed := cfg.String()
+	for _, secret := range []string{cfg.PrivateKey, "nado-proxy-password"} {
+		if strings.Contains(printed, secret) {
+			t.Fatalf("config string leaked secret %q: %s", secret, printed)
+		}
+	}
+}
+
+func TestNadoTestnetConfigRejectsProductionEndpointOverrideWithoutEcho(t *testing.T) {
+	clearNadoTestnetEnv(t)
+	t.Setenv(NadoTestnetGatewayV1URLEnv, "https://gateway.prod.nado.xyz/v1/private-path")
+
+	_, err := NadoTestnetReadConfigFromEnv()
+	if err == nil || !strings.Contains(err.Error(), NadoTestnetGatewayV1URLEnv) {
+		t.Fatalf("production override err=%v", err)
+	}
+	if strings.Contains(err.Error(), "private-path") {
+		t.Fatalf("endpoint error echoed configured URL: %v", err)
+	}
+}
+
+func TestTestnetConfigDoesNotEchoMalformedProxyCredentials(t *testing.T) {
+	clearAsterTestnetEnv(t)
+	t.Setenv("PROXY", "http://proxy-user:proxy-secret@%zz")
+
+	_, err := AsterTestnetReadConfigFromEnv()
+	if err == nil {
+		t.Fatal("malformed proxy unexpectedly accepted")
+	}
+	if strings.Contains(err.Error(), "proxy-secret") {
+		t.Fatalf("proxy validation error leaked credentials: %v", err)
 	}
 }
 
@@ -1151,4 +1284,48 @@ func clearHyperliquidTestnetOptionalEnv(t *testing.T) {
 	t.Setenv(HyperliquidTestnetPerpSymbolEnv, "")
 	t.Setenv(HyperliquidTestnetHIP3SymbolEnv, "")
 	t.Setenv("PROXY", "")
+}
+
+func clearAsterTestnetEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		AsterTestnetUserAddressEnv,
+		AsterTestnetSignerPrivateKeyEnv,
+		AsterTestnetExpectedSignerAddressEnv,
+		AsterTestnetSpotSymbolEnv,
+		AsterTestnetPerpSymbolEnv,
+		AsterTestnetMaxNotionalUSDTEnv,
+		AsterTestnetSpotRESTURLEnv,
+		AsterTestnetSpotPublicWSURLEnv,
+		AsterTestnetSpotUserWSURLEnv,
+		AsterTestnetPerpRESTURLEnv,
+		AsterTestnetPerpPublicWSURLEnv,
+		AsterTestnetPerpUserWSURLEnv,
+		AsterTestnetEnableWriteEnv,
+		"PROXY",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
+func clearNadoTestnetEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		NadoTestnetPrivateKeyEnv,
+		NadoTestnetSubaccountNameEnv,
+		NadoTestnetSpotSymbolEnv,
+		NadoTestnetPerpSymbolEnv,
+		NadoTestnetMaxNotionalUSDT0Env,
+		NadoTestnetGatewayV1URLEnv,
+		NadoTestnetGatewayV2URLEnv,
+		NadoTestnetArchiveV1URLEnv,
+		NadoTestnetArchiveV2URLEnv,
+		NadoTestnetGatewayWSURLEnv,
+		NadoTestnetSubscriptionsWSURLEnv,
+		NadoTestnetTriggerURLEnv,
+		NadoTestnetEnableWriteEnv,
+		"PROXY",
+	} {
+		t.Setenv(key, "")
+	}
 }

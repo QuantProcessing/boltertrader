@@ -1,0 +1,17 @@
+[
+  {
+    "entryPrice": "1.2000",
+    "marginType": "cross",
+    "isAutoAddMargin": "false",
+    "isolatedMargin": "0",
+    "leverage": "10",
+    "liquidationPrice": "0.5000",
+    "markPrice": "1.2500",
+    "maxNotionalValue": "100000",
+    "positionAmt": "100.00",
+    "symbol": "ASTERUSDT",
+    "unRealizedProfit": "5.00000000",
+    "positionSide": "BOTH",
+    "updateTime": 1783641600000
+  }
+]

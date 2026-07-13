@@ -8,13 +8,23 @@ import (
 
 func TestOrderUpdate(t *testing.T) {
 	requireFullEnv(t)
-	privateKey, _ := GetEnv()
+	privateKey, subaccount := GetEnv()
+	if subaccount == "" {
+		subaccount = "default"
+	}
 	// Create a lifecycle context for the client
 	ctx := context.Background()
-	subscriptionClient := NewWsAccountClient(ctx).WithCredentials(privateKey)
+	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionClient, err := NewWsAccountClient(ctx, restClient)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Connect (internal 10s timeout)
-	err := subscriptionClient.Connect()
+	err = subscriptionClient.Connect()
 	if err != nil {
 		t.Fatal(err)
 	}

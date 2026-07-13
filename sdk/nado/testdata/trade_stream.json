@@ -1,0 +1,9 @@
+{
+  "type": "trade",
+  "timestamp": "1783641600200",
+  "product_id": 2,
+  "price": "2505000000000000000000",
+  "taker_qty": "100000000000000000",
+  "maker_qty": "-100000000000000000",
+  "is_taker_buyer": true
+}

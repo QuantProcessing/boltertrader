@@ -1,0 +1,6 @@
+{
+  "status": "failure",
+  "error": "product is not active",
+  "error_code": 2001,
+  "request_type": "query_max_order_size"
+}

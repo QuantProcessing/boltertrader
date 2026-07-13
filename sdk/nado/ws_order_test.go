@@ -27,7 +27,11 @@ func TestWsPlaceOrder(t *testing.T) {
 		subaccount = "default"
 	}
 
-	WsApiClient, err := NewWsApiClient(context.Background(), privateKey)
+	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	WsApiClient, err := NewWsApiClient(context.Background(), restClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +71,11 @@ func TestWsCancelAndPlace(t *testing.T) {
 		subaccount = "default"
 	}
 
-	WsApiClient, err := NewWsApiClient(context.Background(), privateKey)
+	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	WsApiClient, err := NewWsApiClient(context.Background(), restClient)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,11 +21,7 @@ func skipIfOrderTestEnvironmentIssue(t *testing.T, err error) {
 
 func TestPlaceOrder(t *testing.T) {
 	requireWriteEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 
 	input := ClientOrderInput{
 		ProductId:  2,
@@ -48,11 +44,7 @@ func TestPlaceOrder(t *testing.T) {
 
 func TestPlaceMarketOrder(t *testing.T) {
 	requireWriteEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 
 	input := ClientOrderInput{
 		ProductId:  2,
@@ -75,11 +67,7 @@ func TestPlaceMarketOrder(t *testing.T) {
 
 func TestCancelOrders(t *testing.T) {
 	requireWriteEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 
 	// cancel order
 	cancelInput := CancelOrdersInput{
@@ -96,11 +84,7 @@ func TestCancelOrders(t *testing.T) {
 
 func TestPlaceOrderAndCancelOrder(t *testing.T) {
 	requireWriteEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 
 	input := ClientOrderInput{
 		ProductId:  2,
@@ -185,5 +169,20 @@ func TestBuildAppendix(t *testing.T) {
 
 	if app4 != expectedBig.String() {
 		t.Errorf("Case 4 (Isolated): Expected %s, got %s", expectedBig.String(), app4)
+	}
+}
+
+func TestBuildAppendixPrefersExactIsolatedMarginX6(t *testing.T) {
+	marginX6 := big.NewInt(100_000_001)
+	got := BuildAppendix(ClientOrderInput{
+		OrderType:        OrderTypeLimit,
+		Isolated:         true,
+		IsolatedMargin:   100.000001,
+		IsolatedMarginX6: marginX6,
+	})
+	want := new(big.Int).Lsh(new(big.Int).Set(marginX6), AppendixOffsetValue)
+	want.Or(want, big.NewInt(1|(1<<AppendixOffsetIsolated)))
+	if got != want.String() {
+		t.Fatalf("appendix=%s, want exact x6 appendix %s", got, want)
 	}
 }

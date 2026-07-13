@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"math/rand"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -63,6 +64,11 @@ type ClientOrderInput struct {
 	// IsolatedMargin is the initial margin amount for the isolated position in standard units (e.g. USDC).
 	// It will be scaled to x6 precision (micros) internally.
 	IsolatedMargin float64
+	// IsolatedMarginX6 carries the exact signed-appendix value when callers
+	// already operate in venue precision. It takes precedence over IsolatedMargin.
+	IsolatedMarginX6 *big.Int
+	SpotLeverage     *bool
+	BorrowMargin     *bool
 
 	// Trigger related
 	TriggerType  int // 0=None, 1=Price, 2=Twap, 3=TwapCustom
@@ -70,11 +76,24 @@ type ClientOrderInput struct {
 	TwapSlippage float64
 }
 
-// PlaceOrder executes a new order.
+// PlaceOrder executes the venue's raw place_order API. It intentionally does
+// not apply the adapter/runtime max_order_size and prepared-order safety envelope.
+// Trading applications should submit through adapter/nado instead.
 func (c *Client) PlaceOrder(ctx context.Context, input ClientOrderInput) (*PlaceOrderResponse, error) {
-	// 1. Prepare Order Data
-	price := ToX18(input.Price)
-	amount := ToX18(input.Amount)
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
+	if _, err := c.ensureContracts(ctx); err != nil {
+		return nil, err
+	}
+	product, err := c.ResolveProduct(ctx, input.ProductId)
+	if err != nil {
+		return nil, err
+	}
+	input, price, amount, err := prepareNadoOrderInput(product, input)
+	if err != nil {
+		return nil, err
+	}
 
 	// If Sell, amount is negative
 	if input.Side == OrderSideSell {
@@ -125,12 +144,18 @@ func (c *Client) PlaceOrder(ctx context.Context, input ClientOrderInput) (*Place
 		"signature":  signature,
 		"id":         rand.Int63(),
 	}
+	if input.SpotLeverage != nil {
+		placeOrderReq["spot_leverage"] = *input.SpotLeverage
+	}
+	if input.BorrowMargin != nil {
+		placeOrderReq["borrow_margin"] = *input.BorrowMargin
+	}
 
 	req := map[string]interface{}{
 		"place_order": placeOrderReq,
 	}
 
-	data, err := c.Execute(ctx, req)
+	data, err := c.execute(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +173,7 @@ type PlaceMarketOrderInput struct {
 	Side         OrderSide
 	Slippage     float64 // Defaults to 0.005 (0.5%)
 	ReduceOnly   bool
-	SpotLeverage *float64
+	SpotLeverage *bool
 }
 
 // PlaceMarketOrder executes a FOK order using top of the book price with provided slippage.
@@ -241,21 +266,27 @@ func (c *Client) PlaceMarketOrder(ctx context.Context, params PlaceMarketOrderIn
 
 	// 5. Place (FOK) Order
 	orderParams := ClientOrderInput{
-		ProductId:  params.ProductId,
-		Price:      fmt.Sprintf("%.18f", fPrice), // Use high precision for calculated price
-		Amount:     fmt.Sprintf("%.18f", params.Amount),
-		Side:       params.Side,
-		OrderType:  OrderTypeFOK,
-		ReduceOnly: params.ReduceOnly,
+		ProductId:    params.ProductId,
+		Price:        fmt.Sprintf("%.18f", fPrice), // Use high precision for calculated price
+		Amount:       fmt.Sprintf("%.18f", params.Amount),
+		Side:         params.Side,
+		OrderType:    OrderTypeFOK,
+		ReduceOnly:   params.ReduceOnly,
+		SpotLeverage: params.SpotLeverage,
 	}
-	// SpotLeverage? The Python SDK passes it. Go SDK `ClientOrderInput` doesn't have it yet.
-	// Ignoring SpotLeverage for now unless added to struct.
 
 	return c.PlaceOrder(ctx, orderParams)
 }
 
 // CancelProductOrders cancels all orders for specific products or all if empty.
 func (c *Client) CancelProductOrders(ctx context.Context, productIds []int64) (*CancelProductOrdersResponse, error) {
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
+	contracts, err := c.ensureContracts(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	nonce := GetNonce()
 
@@ -265,8 +296,7 @@ func (c *Client) CancelProductOrders(ctx context.Context, productIds []int64) (*
 		Nonce:      strconv.FormatInt(nonce, 10),
 	}
 
-	verifyingContract := EndpointAddress
-	signature, err := c.Signer.SignCancelProductOrders(txCancel, verifyingContract)
+	signature, err := c.Signer.SignCancelProductOrders(txCancel, contracts.EndpointAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +311,7 @@ func (c *Client) CancelProductOrders(ctx context.Context, productIds []int64) (*
 	}
 
 	var resp CancelProductOrdersResponse
-	data, err := c.Execute(ctx, req)
+	data, err := c.execute(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +329,16 @@ type CancelOrdersInput struct {
 
 // CancelOrders cancels specific orders by their digests (IDs).
 func (c *Client) CancelOrders(ctx context.Context, input CancelOrdersInput) (*CancelOrdersResponse, error) {
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
+	if err := validateNadoCancelInput(input); err != nil {
+		return nil, err
+	}
+	contracts, err := c.ensureContracts(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Construct Nonce
 	nonceInt := GetNonce()
 	nonceStr := strconv.FormatInt(nonceInt, 10)
@@ -311,8 +351,7 @@ func (c *Client) CancelOrders(ctx context.Context, input CancelOrdersInput) (*Ca
 	}
 
 	// Sign
-	verifyingContract := EndpointAddress
-	signature, err := c.Signer.SignCancelOrders(txCancel, verifyingContract)
+	signature, err := c.Signer.SignCancelOrders(txCancel, contracts.EndpointAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +366,7 @@ func (c *Client) CancelOrders(ctx context.Context, input CancelOrdersInput) (*Ca
 		"cancel_orders": tx,
 	}
 
-	data, err := c.Execute(ctx, req)
+	data, err := c.execute(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -341,9 +380,24 @@ func (c *Client) CancelOrders(ctx context.Context, input CancelOrdersInput) (*Ca
 
 // CancelAndPlace executes a cancel and place order in a single transaction.
 func (c *Client) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInput, placeInput ClientOrderInput) (*PlaceOrderResponse, error) {
-	// 1. Prepare Place Order Data
-	price := ToX18(placeInput.Price)
-	amount := ToX18(placeInput.Amount)
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
+	if err := validateNadoCancelInput(cancelInput); err != nil {
+		return nil, err
+	}
+	contracts, err := c.ensureContracts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	product, err := c.ResolveProduct(ctx, placeInput.ProductId)
+	if err != nil {
+		return nil, err
+	}
+	placeInput, price, amount, err := prepareNadoOrderInput(product, placeInput)
+	if err != nil {
+		return nil, err
+	}
 
 	if placeInput.Side == OrderSideSell {
 		amount.Neg(amount)
@@ -383,6 +437,12 @@ func (c *Client) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInp
 		"order":      placeOrderMap,
 		"signature":  placeSignature,
 	}
+	if placeInput.SpotLeverage != nil {
+		placeOrderObj["spot_leverage"] = *placeInput.SpotLeverage
+	}
+	if placeInput.BorrowMargin != nil {
+		placeOrderObj["borrow_margin"] = *placeInput.BorrowMargin
+	}
 
 	// 2. Prepare Cancel Order Data
 	cancelNonce := strconv.FormatInt(GetNonce(), 10)
@@ -394,8 +454,7 @@ func (c *Client) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInp
 		Nonce:      cancelNonce,
 	}
 
-	cancelVerifyingContract := EndpointAddress
-	cancelSignature, err := c.Signer.SignCancelOrders(txCancel, cancelVerifyingContract)
+	cancelSignature, err := c.Signer.SignCancelOrders(txCancel, contracts.EndpointAddress)
 	if err != nil {
 		return nil, fmt.Errorf("sign cancel orders: %w", err)
 	}
@@ -412,7 +471,7 @@ func (c *Client) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInp
 	}
 
 	// 4. Execute
-	data, err := c.Execute(ctx, req)
+	data, err := c.execute(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -435,14 +494,95 @@ func GenOrderVerifyingContract(productID int64) string {
 	return "0x" + hexString
 }
 
-func GetNonce() int64 {
-	nowMs := time.Now().UnixMilli()
-	recvTime := nowMs + 60000 // 60s validity
-	randomInt := rand.Intn(1048575)
-	nonceInt := (recvTime << 20) + int64(randomInt)
-
-	return nonceInt
+func validateNadoTradingStatus(status TradingStatus, input ClientOrderInput) error {
+	switch status {
+	case TradingStatusLive:
+		return nil
+	case TradingStatusPostOnly:
+		if input.PostOnly {
+			return nil
+		}
+	case TradingStatusReduceOnly, TradingStatusSoftReduceOnly:
+		if input.ReduceOnly {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: product_id %d status %q rejects requested order mode", ErrNadoDiscoveryInactiveProduct, input.ProductId, status)
 }
+
+func prepareNadoOrderInput(product DiscoveredProduct, input ClientOrderInput) (ClientOrderInput, *big.Int, *big.Int, error) {
+	if input.ProductId < 0 || input.ProductId > int64(^uint32(0)) {
+		return input, nil, nil, fmt.Errorf("nado order: product id %d is outside uint32", input.ProductId)
+	}
+	if input.Side != OrderSideBuy && input.Side != OrderSideSell {
+		return input, nil, nil, fmt.Errorf("nado order: invalid side %q", input.Side)
+	}
+	switch input.OrderType {
+	case OrderTypeLimit, OrderTypeMarket, OrderTypeIOC, OrderTypeFOK:
+	default:
+		return input, nil, nil, fmt.Errorf("nado order: unsupported order type %q", input.OrderType)
+	}
+	if input.PostOnly && input.OrderType != OrderTypeLimit {
+		return input, nil, nil, fmt.Errorf("nado order: post-only requires a limit order")
+	}
+	if input.TriggerType != TriggerTypeNone || input.TwapTimes != 0 || input.TwapSlippage != 0 {
+		return input, nil, nil, fmt.Errorf("nado order: trigger and TWAP orders are not supported")
+	}
+	if err := validateNadoTradingStatus(product.Symbol.TradingStatus, input); err != nil {
+		return input, nil, nil, err
+	}
+
+	if product.ProductType == MarketTypeSpot {
+		if input.ReduceOnly {
+			return input, nil, nil, fmt.Errorf("nado order: reduce-only is not valid for spot")
+		}
+		if input.SpotLeverage != nil && *input.SpotLeverage {
+			return input, nil, nil, fmt.Errorf("nado order: spot leverage and borrowing are disabled")
+		}
+		spotLeverage := false
+		input.SpotLeverage = &spotLeverage
+	} else if input.SpotLeverage != nil {
+		return input, nil, nil, fmt.Errorf("nado order: spot_leverage is not valid for perp")
+	}
+
+	price, err := ParseX18(input.Price)
+	if err != nil || price.Sign() <= 0 {
+		return input, nil, nil, fmt.Errorf("nado order: invalid positive price %q", input.Price)
+	}
+	amount, err := ParseX18(input.Amount)
+	if err != nil || amount.Sign() <= 0 {
+		return input, nil, nil, fmt.Errorf("nado order: invalid positive amount %q", input.Amount)
+	}
+	return input, price, amount, nil
+}
+
+func validateNadoCancelInput(input CancelOrdersInput) error {
+	if len(input.ProductIds) == 0 || len(input.ProductIds) != len(input.Digests) {
+		return fmt.Errorf("nado cancel: product_ids and digests must be non-empty and have equal length")
+	}
+	for _, productID := range input.ProductIds {
+		if productID < 0 || productID > int64(^uint32(0)) {
+			return fmt.Errorf("nado cancel: product id %d is outside uint32", productID)
+		}
+	}
+	return nil
+}
+
+func GetNonce() int64 {
+	recvTime := time.Now().Add(time.Minute).UnixMilli()
+	candidate := (recvTime << 20) | int64(rand.Intn(1<<20))
+	for {
+		last := lastNadoNonce.Load()
+		if candidate <= last {
+			candidate = last + 1
+		}
+		if lastNadoNonce.CompareAndSwap(last, candidate) {
+			return candidate
+		}
+	}
+}
+
+var lastNadoNonce atomic.Int64
 
 func BuildAppendix(input ClientOrderInput) string {
 	var appendix big.Int
@@ -507,11 +647,10 @@ func BuildAppendix(input ClientOrderInput) string {
 	// Used for Isolated Margin OR TWAP parameters
 	var valueVal *big.Int
 
-	if input.Isolated && input.IsolatedMargin > 0 {
-		// Validation: Margin should be allowed only if Isolated is true (checked by if)
-		// Scale float margin to x6 (micros)
-		marginX6 := int64(input.IsolatedMargin * 1_000_000)
-		valueVal = big.NewInt(marginX6)
+	if input.Isolated && input.IsolatedMarginX6 != nil {
+		valueVal = new(big.Int).Set(input.IsolatedMarginX6)
+	} else if input.Isolated && input.IsolatedMargin > 0 {
+		valueVal = big.NewInt(int64(input.IsolatedMargin * 1_000_000))
 	} else if triggerType == TriggerTypeTwap || triggerType == TriggerTypeTwapCustomAmounts {
 		// Pack TWAP: | times (32) | slippage (32) |
 		// slippage_x6 = slippage * 1e6

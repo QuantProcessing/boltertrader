@@ -125,6 +125,7 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 	scopeAccountID := r.accountID
 	var accountStateID string
 	var accountStateAppliedAt time.Time
+	var accountSnapshotAt time.Time
 	if caps.Reports.AccountStateSnapshots {
 		reporter, ok := r.account.(contract.AccountStateReporter)
 		if !ok {
@@ -149,6 +150,7 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		}
 		accountStateID = state.AccountID
 		accountStateAppliedAt = appliedAt
+		accountSnapshotAt = state.TsEvent
 		rep.AccountStatesApplied++
 		rep.BalancesUpdated += len(state.Balances)
 	} else {
@@ -177,6 +179,9 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		if p.AccountID == "" {
 			p.AccountID = scopeAccountID
 		}
+		if p.UpdatedAt.IsZero() && !accountSnapshotAt.IsZero() {
+			p.UpdatedAt = accountSnapshotAt
+		}
 		var cp model.Position
 		var ok bool
 		if p.AccountID != "" {
@@ -204,8 +209,11 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 				AccountID:    cp.AccountID,
 				InstrumentID: cp.InstrumentID,
 				Side:         cp.Side,
+				UpdatedAt:    accountSnapshotAt,
 			})
-			rep.PositionsCleared++
+			if _, stillPresent := r.cache.PositionForAccount(cp.AccountID, cp.InstrumentID, cp.Side); !stillPresent {
+				rep.PositionsCleared++
+			}
 		}
 	}
 	if accountStateID != "" {

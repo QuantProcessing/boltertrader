@@ -68,6 +68,7 @@ func (s *snapshotAccount) Close() error                            { return nil 
 type snapshotExec struct {
 	reports []model.Order
 	mass    *model.ExecutionMassStatus
+	massErr error
 	queries []model.MassStatusQuery
 }
 
@@ -109,6 +110,9 @@ func (s *snapshotExec) GeneratePositionReports(context.Context, model.PositionRe
 }
 func (s *snapshotExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	s.queries = append(s.queries, query)
+	if s.massErr != nil {
+		return nil, s.massErr
+	}
 	if s.mass != nil {
 		mass := s.mass.Clone()
 		return &mass, nil
@@ -174,6 +178,66 @@ func TestReconcileOrders(t *testing.T) {
 		if o.Request.ClientID == "b" {
 			t.Fatal("order b still open after reconcile")
 		}
+	}
+}
+
+func TestReconcileCompleteOpenSetClosesMissingUnknownButFailedMassDoesNot(t *testing.T) {
+	t.Run("complete open set closes missing unknown", func(t *testing.T) {
+		c := cache.New()
+		c.UpsertOrder(order("missed-cancel", btc, "1", enums.StatusNew))
+		mass := model.NewExecutionMassStatus("T", "", time.Unix(100, 0))
+		rep, err := New(nil, &snapshotExec{mass: mass}, c).Run(context.Background())
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if rep.Partial || rep.OrdersClosedUnknown != 1 {
+			t.Fatalf("report=%+v, want non-partial close-unknown", rep)
+		}
+		if got, ok := c.Order("missed-cancel"); !ok || got.Status != enums.StatusUnknown {
+			t.Fatalf("order=%+v ok=%v, want StatusUnknown", got, ok)
+		}
+	})
+
+	t.Run("failed mass status leaves missing order open", func(t *testing.T) {
+		c := cache.New()
+		c.UpsertOrder(order("unknown-scope", btc, "1", enums.StatusNew))
+		fail := errors.New("instrument open-order query failed")
+		if _, err := New(nil, &snapshotExec{massErr: fail}, c).Run(context.Background()); !errors.Is(err, fail) {
+			t.Fatalf("run err=%v, want %v", err, fail)
+		}
+		if got, ok := c.Order("unknown-scope"); !ok || got.Status != enums.StatusNew {
+			t.Fatalf("order=%+v ok=%v, want still NEW after failed mass status", got, ok)
+		}
+	})
+}
+
+func TestReconcileOlderOrderSnapshotDoesNotRegressNewerStreamState(t *testing.T) {
+	c := cache.New()
+	newerAt := time.Unix(50, 0)
+	olderAt := newerAt.Add(-time.Second)
+	newer := order("partial", btc, "2", enums.StatusPartiallyFilled)
+	newer.Request.Price = d("101")
+	newer.FilledQty = d("1")
+	newer.AvgFillPrice = d("100")
+	newer.UpdatedAt = newerAt
+	c.UpsertOrder(newer)
+
+	older := order("partial", btc, "2", enums.StatusNew)
+	older.Request.Price = d("99")
+	older.UpdatedAt = olderAt
+	rep, err := New(nil, &snapshotExec{reports: []model.Order{older}}, c).Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.OrdersUpdated != 1 {
+		t.Fatalf("report=%+v, want one existing order update", rep)
+	}
+	got, ok := c.Order("partial")
+	if !ok || got.Status != enums.StatusPartiallyFilled || !got.UpdatedAt.Equal(newerAt) {
+		t.Fatalf("older snapshot regressed lifecycle: %+v ok=%v", got, ok)
+	}
+	if !got.Request.Price.Equal(d("101")) || !got.FilledQty.Equal(d("1")) {
+		t.Fatalf("older snapshot regressed order fields: %+v", got)
 	}
 }
 
@@ -338,6 +402,51 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	}
 	if bal, ok := c.Balance("USDT"); !ok || !bal.Free.Equal(d("950")) {
 		t.Fatalf("compat balance=%+v ok=%v, want free 950", bal, ok)
+	}
+}
+
+func TestReconcileOlderAccountSnapshotDoesNotClearNewerStreamPosition(t *testing.T) {
+	c := cache.New()
+	newerAt := time.Unix(30, 0)
+	olderAt := newerAt.Add(-time.Second)
+	newer := model.AccountState{
+		AccountID: model.AccountIDBinanceDefault,
+		Venue:     "BINANCE",
+		Type:      model.AccountMargin,
+		Balances: []model.AccountBalance{{
+			AccountID: model.AccountIDBinanceDefault,
+			Currency:  "USDT",
+			Total:     d("1000"),
+			Free:      d("900"),
+			UpdatedAt: newerAt,
+		}},
+		Reported: true,
+		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, newerAt),
+		TsEvent:  newerAt,
+		TsInit:   newerAt,
+	}
+	if err := c.ApplyAccountStateAt(newer, newerAt); err != nil {
+		t.Fatal(err)
+	}
+	c.UpsertPosition(model.Position{
+		AccountID:    model.AccountIDBinanceDefault,
+		InstrumentID: btc,
+		Side:         enums.PosNet,
+		Quantity:     d("2"),
+		UpdatedAt:    newerAt,
+	})
+
+	older := newer
+	older.EventID = model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, olderAt)
+	older.TsEvent = olderAt
+	older.TsInit = olderAt
+	older.Balances[0].UpdatedAt = olderAt
+	acct := &snapshotAccount{hasAccountState: true, accountState: older}
+	if _, err := New(acct, nil, c).Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got, ok := c.PositionForAccount(model.AccountIDBinanceDefault, btc, enums.PosNet); !ok || !got.Quantity.Equal(d("2")) {
+		t.Fatalf("older REST snapshot cleared newer stream position: %+v ok=%v", got, ok)
 	}
 }
 

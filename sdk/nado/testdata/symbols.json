@@ -1,0 +1,48 @@
+{
+  "status": "success",
+  "data": {
+    "symbols": {
+      "USDT0": {
+        "type": "spot",
+        "product_id": 0,
+        "symbol": "USDT0",
+        "price_increment_x18": "0",
+        "size_increment": "0",
+        "min_size": "0",
+        "maker_fee_rate_x18": "0",
+        "taker_fee_rate_x18": "0",
+        "long_weight_initial_x18": "1000000000000000000",
+        "long_weight_maintenance_x18": "1000000000000000000",
+        "trading_status": "live"
+      },
+      "ETH_USDT0": {
+        "type": "spot",
+        "product_id": 1,
+        "symbol": "ETH_USDT0",
+        "price_increment_x18": "100000000000000000",
+        "size_increment": "1000000000000000",
+        "min_size": "5000000000000000000",
+        "maker_fee_rate_x18": "0",
+        "taker_fee_rate_x18": "200000000000000",
+        "long_weight_initial_x18": "900000000000000000",
+        "long_weight_maintenance_x18": "950000000000000000",
+        "trading_status": "live"
+      },
+      "ETH-PERP_USDT0": {
+        "type": "perp",
+        "product_id": 2,
+        "symbol": "ETH-PERP_USDT0",
+        "price_increment_x18": "100000000000000000",
+        "size_increment": "1000000000000000",
+        "min_size": "5000000000000000000",
+        "maker_fee_rate_x18": "0",
+        "taker_fee_rate_x18": "200000000000000",
+        "long_weight_initial_x18": "950000000000000000",
+        "long_weight_maintenance_x18": "975000000000000000",
+        "max_open_interest_x18": "100000000000000000000000",
+        "trading_status": "live"
+      }
+    }
+  },
+  "request_type": "query_symbols"
+}

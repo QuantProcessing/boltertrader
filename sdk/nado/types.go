@@ -2,6 +2,11 @@ package nado
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // Common Types
@@ -47,14 +52,52 @@ const (
 	OrderSideSell OrderSide = "sell"
 )
 
+type OrderDirection string
+
+const (
+	OrderDirectionLong  OrderDirection = "long"
+	OrderDirectionShort OrderDirection = "short"
+)
+
+type TradingStatus string
+
+const (
+	TradingStatusLive           TradingStatus = "live"
+	TradingStatusPostOnly       TradingStatus = "post_only"
+	TradingStatusReduceOnly     TradingStatus = "reduce_only"
+	TradingStatusSoftReduceOnly TradingStatus = "soft_reduce_only"
+	TradingStatusNotTradable    TradingStatus = "not_tradable"
+)
+
+type SequencerStatus string
+
+const (
+	SequencerStatusActive SequencerStatus = "active"
+	SequencerStatusFailed SequencerStatus = "failed"
+)
+
 // OrderUpdateReason represents the WS order update reason string.
 // Nado uses event-based status via the "reason" field in order update messages.
 type OrderUpdateReason string
 
 const (
-	OrderReasonPlaced   OrderUpdateReason = "placed"
-	OrderReasonFilled   OrderUpdateReason = "filled"
-	OrderReasonCanceled OrderUpdateReason = "canceled"
+	OrderReasonPlaced    OrderUpdateReason = "placed"
+	OrderReasonFilled    OrderUpdateReason = "filled"
+	OrderReasonCancelled OrderUpdateReason = "cancelled"
+)
+
+type PositionChangeReason string
+
+const (
+	PositionReasonDepositCollateral    PositionChangeReason = "deposit_collateral"
+	PositionReasonMatchOrders          PositionChangeReason = "match_orders"
+	PositionReasonWithdrawCollateral   PositionChangeReason = "withdraw_collateral"
+	PositionReasonWithdrawCollateralV2 PositionChangeReason = "withdraw_collateral_v2"
+	PositionReasonTransferQuote        PositionChangeReason = "transfer_quote"
+	PositionReasonSettlePnL            PositionChangeReason = "settle_pnl"
+	PositionReasonMintNLP              PositionChangeReason = "mint_nlp"
+	PositionReasonBurnNLP              PositionChangeReason = "burn_nlp"
+	PositionReasonLiquidation          PositionChangeReason = "liquidate_subaccount"
 )
 
 // Data Structures
@@ -106,6 +149,29 @@ type AccountInfo struct {
 	HealthContributions []HealthContribution `json:"health_contributions"`
 	SpotCount           int                  `json:"spot_count"`
 	PerpCount           int                  `json:"perp_count"`
+	SpotBalances        []Balance            `json:"spot_balances"`
+	PerpBalances        []Balance            `json:"perp_balances"`
+	TakerFeeRatesX18    []string             `json:"taker_fee_rates_x18"`
+	MakerFeeRatesX18    []string             `json:"maker_fee_rates_x18"`
+	FeeTier             int                  `json:"fee_tier"`
+	PreState            *SubaccountPreState  `json:"pre_state,omitempty"`
+}
+
+type AccountSnapshot struct {
+	Account    AccountInfo `json:"account"`
+	ReceivedAt time.Time   `json:"received_at"`
+}
+
+func (s AccountSnapshot) FreshAt(now time.Time, maxAge time.Duration) bool {
+	if s.ReceivedAt.IsZero() || maxAge <= 0 || now.Before(s.ReceivedAt) {
+		return false
+	}
+	return now.Sub(s.ReceivedAt) <= maxAge
+}
+
+type SubaccountPreState struct {
+	Healths             []Health             `json:"healths"`
+	HealthContributions []HealthContribution `json:"health_contributions"`
 	SpotBalances        []Balance            `json:"spot_balances"`
 	PerpBalances        []Balance            `json:"perp_balances"`
 }
@@ -245,6 +311,7 @@ type ExecTransaction[T any] struct {
 	Tx        T       `json:"tx"`
 	Signature string  `json:"signature"`
 	Digest    *string `json:"digest"` // Nullable
+	ID        int64   `json:"id,omitempty"`
 }
 
 // V2 Types
@@ -299,27 +366,165 @@ type TickerV2 struct {
 
 type ContractV2Map map[string]ContractV2 // ticker_id -> Contract info object
 type ContractV2 struct {
-	ProductID                int     `json:"product_id"`
-	TickerID                 string  `json:"ticker_id"`
-	BaseCurrency             string  `json:"base_currency"`
-	QuoteCurrency            string  `json:"quote_currency"`
-	LastPrice                float64 `json:"last_price"`
-	BaseVolume               float64 `json:"base_volume"`
-	QuoteVolume              float64 `json:"quote_volume"`
-	ProductType              string  `json:"product_type"`
-	ContractPrice            float64 `json:"contract_price"`
-	ContractPriceCurrency    string  `json:"contract_price_currency"`
-	OpenInterest             float64 `json:"open_interest"`
-	OpenInterestUsd          float64 `json:"open_interest_usd"`
-	IndexPrice               float64 `json:"index_price"`
-	FundingRate              float64 `json:"funding_rate"`
-	NextFundingRateTimestamp int64   `json:"next_funding_rate_timestamp"`
-	PriceChangePercent24H    float64 `json:"price_change_percent_24h"`
+	ProductID                int      `json:"product_id"`
+	TickerID                 string   `json:"ticker_id"`
+	BaseCurrency             string   `json:"base_currency"`
+	QuoteCurrency            string   `json:"quote_currency"`
+	LastPrice                float64  `json:"last_price"`
+	BaseVolume               float64  `json:"base_volume"`
+	QuoteVolume              float64  `json:"quote_volume"`
+	ProductType              string   `json:"product_type"`
+	ContractPrice            float64  `json:"contract_price"`
+	ContractPriceCurrency    string   `json:"contract_price_currency"`
+	OpenInterest             *float64 `json:"open_interest"`
+	OpenInterestUsd          *float64 `json:"open_interest_usd"`
+	IndexPrice               *float64 `json:"index_price"`
+	MarkPrice                *float64 `json:"mark_price"`
+	FundingRate              *float64 `json:"funding_rate"`
+	NextFundingRateTimestamp *int64   `json:"next_funding_rate_timestamp"`
+	PriceChangePercent24H    float64  `json:"price_change_percent_24h"`
 }
 
 type ContractV1 struct {
 	ChainID         string `json:"chain_id"`
-	EndpointAddress string `json:"endpoint_address"`
+	EndpointAddress string `json:"endpoint_addr"`
+}
+
+var (
+	ErrNadoContractProfileMismatch   = errors.New("nado: contract profile mismatch")
+	ErrNadoContractEndpointMalformed = errors.New("nado: contract endpoint malformed")
+	ErrNadoDiscoveryMissingProduct0  = errors.New("nado: discovery missing product 0")
+	ErrNadoDiscoveryInactiveProduct  = errors.New("nado: discovery inactive product")
+	ErrNadoDiscoveryUnknownProduct   = errors.New("nado: discovery unknown product")
+	ErrNadoDiscoveryProductMismatch  = errors.New("nado: discovery product mismatch")
+	ErrNadoSequencerInactive         = errors.New("nado: sequencer is not active")
+)
+
+func (c *Client) ValidateContractV1(contract ContractV1) error {
+	chainID, err := strconv.ParseInt(contract.ChainID, 10, 64)
+	if err != nil || chainID != c.profile.ChainID() {
+		return fmt.Errorf("%w: chain_id %q does not match profile chain %d", ErrNadoContractProfileMismatch, contract.ChainID, c.profile.ChainID())
+	}
+	if !isNadoHexAddress(contract.EndpointAddress) {
+		return fmt.Errorf("%w: endpoint_addr %q", ErrNadoContractEndpointMalformed, contract.EndpointAddress)
+	}
+	return nil
+}
+
+func isNadoHexAddress(value string) bool {
+	if len(value) != 42 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	if strings.Trim(value[2:], "0") == "" {
+		return false
+	}
+	for _, r := range value[2:] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+type AllProductsResponse struct {
+	SpotProducts []SpotProduct `json:"spot_products"`
+	PerpProducts []PerpProduct `json:"perp_products"`
+}
+
+type ProductRisk struct {
+	LongWeightInitialX18      string `json:"long_weight_initial_x18"`
+	ShortWeightInitialX18     string `json:"short_weight_initial_x18"`
+	LongWeightMaintenanceX18  string `json:"long_weight_maintenance_x18"`
+	ShortWeightMaintenanceX18 string `json:"short_weight_maintenance_x18"`
+	PriceX18                  string `json:"price_x18"`
+	LargePositionPenaltyX18   string `json:"large_position_penalty_x18,omitempty"`
+}
+
+type ProductBookInfo struct {
+	SizeIncrement     string `json:"size_increment"`
+	PriceIncrementX18 string `json:"price_increment_x18"`
+	MinSize           string `json:"min_size"`
+	CollectedFees     string `json:"collected_fees"`
+}
+
+type SpotProduct struct {
+	ProductID      int64             `json:"product_id"`
+	OraclePriceX18 string            `json:"oracle_price_x18,omitempty"`
+	Risk           ProductRisk       `json:"risk"`
+	Config         SpotProductConfig `json:"config"`
+	State          SpotProductState  `json:"state"`
+	BookInfo       ProductBookInfo   `json:"book_info"`
+}
+
+type SpotProductConfig struct {
+	Token                     string `json:"token"`
+	InterestInflectionUtilX18 string `json:"interest_inflection_util_x18"`
+	InterestFloorX18          string `json:"interest_floor_x18"`
+	InterestSmallCapX18       string `json:"interest_small_cap_x18"`
+	InterestLargeCapX18       string `json:"interest_large_cap_x18"`
+	WithdrawFeeX18            string `json:"withdraw_fee_x18"`
+	MinDepositRateX18         string `json:"min_deposit_rate_x18"`
+}
+
+type SpotProductState struct {
+	CumulativeDepositsMultiplierX18 string `json:"cumulative_deposits_multiplier_x18"`
+	CumulativeBorrowsMultiplierX18  string `json:"cumulative_borrows_multiplier_x18"`
+	TotalDepositsNormalized         string `json:"total_deposits_normalized"`
+	TotalBorrowsNormalized          string `json:"total_borrows_normalized"`
+}
+
+type PerpProduct struct {
+	ProductID      int64            `json:"product_id"`
+	OraclePriceX18 string           `json:"oracle_price_x18,omitempty"`
+	IndexPriceX18  string           `json:"index_price_x18,omitempty"`
+	Risk           ProductRisk      `json:"risk"`
+	State          PerpProductState `json:"state"`
+	BookInfo       ProductBookInfo  `json:"book_info"`
+}
+
+type PerpProductState struct {
+	CumulativeFundingLongX18  string `json:"cumulative_funding_long_x18"`
+	CumulativeFundingShortX18 string `json:"cumulative_funding_short_x18"`
+	AvailableSettle           string `json:"available_settle"`
+	OpenInterest              string `json:"open_interest"`
+}
+
+type SymbolsRequest struct {
+	ProductType MarketType `json:"product_type,omitempty"`
+	ProductIDs  []int64    `json:"product_ids,omitempty"`
+}
+
+type MaxOrderSizeRequest struct {
+	ProductID    int64          `json:"product_id"`
+	Sender       string         `json:"sender"`
+	PriceX18     string         `json:"price_x18"`
+	AvgPriceX18  string         `json:"avg_price_x18,omitempty"`
+	Direction    OrderDirection `json:"direction"`
+	SpotLeverage *bool          `json:"spot_leverage,omitempty"`
+	ReduceOnly   *bool          `json:"reduce_only,omitempty"`
+	Isolated     *bool          `json:"isolated,omitempty"`
+	BorrowMargin *bool          `json:"borrow_margin,omitempty"`
+}
+
+type MaxOrderSizeResponse struct {
+	MaxOrderSize string `json:"max_order_size"`
+}
+
+type SubaccountInfoRequest struct {
+	Subaccount string                    `json:"subaccount"`
+	Txns       []SubaccountSimulationTxn `json:"txns,omitempty"`
+	PreState   *bool                     `json:"pre_state,omitempty"`
+}
+
+type SubaccountSimulationTxn struct {
+	ApplyDelta SubaccountSimulationDelta `json:"apply_delta"`
+}
+
+type SubaccountSimulationDelta struct {
+	ProductID   int64  `json:"product_id"`
+	Subaccount  string `json:"subaccount"`
+	AmountDelta string `json:"amount_delta"`
+	VQuoteDelta string `json:"v_quote_delta"`
 }
 
 type TradeV2 struct {
@@ -337,6 +542,10 @@ type MarketPrice struct {
 	ProductID int    `json:"product_id"`
 	BidX18    string `json:"bid_x18"`
 	AskX18    string `json:"ask_x18"`
+}
+
+type MarketPricesResponse struct {
+	MarketPrices []MarketPrice `json:"market_prices"`
 }
 
 type MarketPricesReq struct {
@@ -360,18 +569,101 @@ type SymbolsInfo struct {
 	Symbols map[string]Symbol `json:"symbols"`
 }
 type Symbol struct {
-	Type                     string  `json:"type"`
-	ProductID                int     `json:"product_id"`
-	Symbol                   string  `json:"symbol"`
-	PriceIncrementX18        string  `json:"price_increment_x18"`
-	SizeIncrement            string  `json:"size_increment"`
-	MinSize                  string  `json:"min_size"`
-	MakerFeeRateX18          string  `json:"maker_fee_rate_x18"`
-	TakerFeeRateX18          string  `json:"taker_fee_rate_x18"`
-	LongWeightInitialX18     string  `json:"long_weight_initial_x18"`
-	LongWeightMaintenanceX18 string  `json:"long_weight_maintenance_x18"`
-	MaxOpenInterestX18       *string `json:"max_open_interest_x18,omitempty"`
-	TradingStatus            string  `json:"trading_status,omitempty"`
+	Type                     string        `json:"type"`
+	ProductID                int           `json:"product_id"`
+	Symbol                   string        `json:"symbol"`
+	PriceIncrementX18        string        `json:"price_increment_x18"`
+	SizeIncrement            string        `json:"size_increment"`
+	MinSize                  string        `json:"min_size"`
+	MakerFeeRateX18          string        `json:"maker_fee_rate_x18"`
+	TakerFeeRateX18          string        `json:"taker_fee_rate_x18"`
+	LongWeightInitialX18     string        `json:"long_weight_initial_x18"`
+	LongWeightMaintenanceX18 string        `json:"long_weight_maintenance_x18"`
+	MaxOpenInterestX18       *string       `json:"max_open_interest_x18,omitempty"`
+	IsolatedOnly             bool          `json:"isolated_only,omitempty"`
+	TradingStatus            TradingStatus `json:"trading_status,omitempty"`
+}
+
+func ValidateNadoProductDiscovery(products AllProductsResponse, symbols SymbolsInfo) error {
+	productsByType := make(map[string]ProductBookInfo, len(products.SpotProducts)+len(products.PerpProducts))
+	foundProduct0 := 0
+	for _, product := range products.SpotProducts {
+		if product.ProductID == 0 {
+			foundProduct0++
+		}
+		key := productDiscoveryKey(product.ProductID, string(MarketTypeSpot))
+		if _, exists := productsByType[key]; exists {
+			return fmt.Errorf("%w: duplicate product_id %d type %s", ErrNadoDiscoveryProductMismatch, product.ProductID, MarketTypeSpot)
+		}
+		productsByType[key] = product.BookInfo
+	}
+	for _, product := range products.PerpProducts {
+		key := productDiscoveryKey(product.ProductID, string(MarketTypePerp))
+		if _, exists := productsByType[key]; exists {
+			return fmt.Errorf("%w: duplicate product_id %d type %s", ErrNadoDiscoveryProductMismatch, product.ProductID, MarketTypePerp)
+		}
+		productsByType[key] = product.BookInfo
+	}
+	if foundProduct0 != 1 {
+		return fmt.Errorf("%w: all_products spot_products does not include product_id 0", ErrNadoDiscoveryMissingProduct0)
+	}
+
+	seen := make(map[string]struct{}, len(symbols.Symbols))
+	for _, symbol := range symbols.Symbols {
+		if !isKnownNadoTradingStatus(symbol.TradingStatus) {
+			return fmt.Errorf("%w: product_id %d status %q", ErrNadoDiscoveryInactiveProduct, symbol.ProductID, symbol.TradingStatus)
+		}
+		if symbol.ProductID == 0 {
+			if symbol.Type != string(MarketTypeSpot) || symbol.Symbol != "USDT0" {
+				return fmt.Errorf("%w: product 0 symbol is inconsistent", ErrNadoDiscoveryProductMismatch)
+			}
+			continue
+		}
+		key := productDiscoveryKey(int64(symbol.ProductID), symbol.Type)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("%w: duplicate symbol for product_id %d type %s", ErrNadoDiscoveryProductMismatch, symbol.ProductID, symbol.Type)
+		}
+		seen[key] = struct{}{}
+		book, ok := productsByType[key]
+		if !ok {
+			return fmt.Errorf("%w: product_id %d type %s", ErrNadoDiscoveryUnknownProduct, symbol.ProductID, symbol.Type)
+		}
+		if err := validateDiscoveredProduct(int64(symbol.ProductID), symbol.Type, book, symbol); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateDiscoveredProduct(productID int64, productType string, book ProductBookInfo, symbol Symbol) error {
+	if int64(symbol.ProductID) != productID ||
+		symbol.Type != productType ||
+		symbol.PriceIncrementX18 != book.PriceIncrementX18 ||
+		symbol.SizeIncrement != book.SizeIncrement ||
+		symbol.MinSize != book.MinSize {
+		return fmt.Errorf("%w: product_id %d type %s", ErrNadoDiscoveryProductMismatch, productID, productType)
+	}
+	return nil
+}
+
+type DiscoveredProduct struct {
+	ProductID   int64
+	ProductType MarketType
+	Symbol      Symbol
+	BookInfo    ProductBookInfo
+}
+
+func productDiscoveryKey(productID int64, productType string) string {
+	return fmt.Sprintf("%d:%s", productID, productType)
+}
+
+func isKnownNadoTradingStatus(status TradingStatus) bool {
+	switch status {
+	case TradingStatusLive, TradingStatusPostOnly, TradingStatusReduceOnly, TradingStatusSoftReduceOnly, TradingStatusNotTradable:
+		return true
+	default:
+		return false
+	}
 }
 
 type FeeRates struct {
@@ -381,6 +673,7 @@ type FeeRates struct {
 	HealthCheckSequencerFee string   `json:"health_check_sequencer_fee"`
 	TakerSequencerFee       string   `json:"taker_sequencer_fee"`
 	WithdrawSequencerFees   []string `json:"withdraw_sequencer_fees"`
+	FeeTier                 int      `json:"fee_tier"`
 }
 
 type CancelOrdersResponse struct {
@@ -433,25 +726,24 @@ type FundingRateResponse struct {
 	UpdateTime     string `json:"update_time"`      // Epoch seconds
 }
 
-// FundingRateArchiveEntry is a single historical funding rate record returned
-// by the archive indexer's funding_rate_history query.
-type FundingRateArchiveEntry struct {
+// PerpPriceResponse is the archive price query response for one perpetual.
+// Prices retain the exchange's x18 integer encoding and source update time.
+type PerpPriceResponse struct {
+	ProductID     int64  `json:"product_id"`
+	IndexPriceX18 string `json:"index_price_x18"`
+	MarkPriceX18  string `json:"mark_price_x18"`
+	UpdateTime    string `json:"update_time"` // Epoch seconds
+}
+
+// OraclePriceResponse is one product entry from the archive oracle_price query.
+type OraclePriceResponse struct {
 	ProductID      int64  `json:"product_id"`
-	FundingRateX18 string `json:"funding_rate_x18"` // 24hr funding rate * 10^18
-	Timestamp      int64  `json:"timestamp"`        // Epoch milliseconds
+	OraclePriceX18 string `json:"oracle_price_x18"`
+	UpdateTime     string `json:"update_time"` // Epoch seconds
 }
 
-// FundingRateHistoryRequest is the archive V1 query for historical funding rates.
-type FundingRateHistoryRequest struct {
-	FundingRateHistory FundingRateHistoryQuery `json:"funding_rate_history"`
-}
-
-// FundingRateHistoryQuery specifies filter parameters for the history query.
-type FundingRateHistoryQuery struct {
-	ProductID int64 `json:"product_id"`
-	StartTime int64 `json:"start_time,omitempty"` // Epoch milliseconds; 0 = unbounded
-	EndTime   int64 `json:"end_time,omitempty"`   // Epoch milliseconds; 0 = unbounded
-	Limit     int   `json:"limit,omitempty"`
+type oraclePricesResponse struct {
+	Prices []OraclePriceResponse `json:"prices"`
 }
 
 // Archive Types

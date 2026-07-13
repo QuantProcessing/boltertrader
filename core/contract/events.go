@@ -182,25 +182,35 @@ func inferMarketMeta(payload MarketEvent) EventMeta {
 			meta.Sequence = uint64(p.Book.Sequence)
 		}
 		meta.TsVenue = p.Book.Timestamp
-		meta.EventID = model.EventID(joinEventID("market", "book", p.Book.InstrumentID.String(), fmt.Sprint(p.Book.Sequence), p.Book.Timestamp.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("market", "book", p.Book.InstrumentID.String(), fmt.Sprint(p.Book.Sequence), eventTimeKey(p.Book.Timestamp)))
 	case QuoteEvent:
 		meta.InstrumentID = p.Quote.InstrumentID
 		meta.Venue = p.Quote.InstrumentID.Venue
 		meta.TsVenue = p.Quote.Timestamp
-		meta.EventID = model.EventID(joinEventID("market", "quote", p.Quote.InstrumentID.String(), p.Quote.Timestamp.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID(
+			"market", "quote", p.Quote.InstrumentID.String(),
+			p.Quote.BidPrice.String(), p.Quote.BidSize.String(),
+			p.Quote.AskPrice.String(), p.Quote.AskSize.String(),
+			eventTimeKey(p.Quote.Timestamp),
+		))
 	case TradeEvent:
 		meta.InstrumentID = p.Trade.InstrumentID
 		meta.Venue = p.Trade.InstrumentID.Venue
+		meta.TradeID = p.Trade.TradeID
 		meta.TsVenue = p.Trade.Timestamp
-		meta.EventID = model.EventID(joinEventID("market", "trade", p.Trade.InstrumentID.String(), p.Trade.Timestamp.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID(
+			"market", "trade", p.Trade.InstrumentID.String(), p.Trade.TradeID,
+			p.Trade.Price.String(), p.Trade.Quantity.String(), p.Trade.AggressorSide.String(),
+			eventTimeKey(p.Trade.Timestamp),
+		))
 	case ReferenceDataEvent:
 		meta.InstrumentID = p.Snapshot.InstrumentID
 		meta.Venue = p.Snapshot.InstrumentID.Venue
 		meta.TsVenue = p.Snapshot.Timestamp
-		meta.EventID = model.EventID(joinEventID("market", "reference", p.Snapshot.InstrumentID.String(), p.Snapshot.Timestamp.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("market", "reference", p.Snapshot.InstrumentID.String(), eventTimeKey(p.Snapshot.Timestamp)))
 	}
 	if meta.EventID == "" {
-		meta.EventID = model.EventID(joinEventID("market", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("market", fmt.Sprintf("%T", payload), eventTimeKey(time.Now())))
 	}
 	return meta
 }
@@ -214,7 +224,11 @@ func inferExecMeta(payload ExecEvent) EventMeta {
 		meta.AccountID = p.Order.Request.AccountID
 		meta.ClientID = p.Order.Request.ClientID
 		meta.VenueOrderID = p.Order.VenueOrderID
-		meta.EventID = model.EventID(joinEventID("exec", "order", meta.Venue, meta.ClientID, meta.VenueOrderID, p.Order.Status.String()))
+		meta.TsVenue = p.Order.UpdatedAt
+		meta.EventID = model.EventID(joinEventID(
+			"exec", "order", meta.Venue, meta.AccountID, meta.ClientID, meta.VenueOrderID,
+			p.Order.Status.String(), p.Order.FilledQty.String(), eventTimeKey(p.Order.UpdatedAt),
+		))
 	case FillEvent:
 		meta.InstrumentID = p.Fill.InstrumentID
 		meta.Venue = p.Fill.InstrumentID.Venue
@@ -223,13 +237,13 @@ func inferExecMeta(payload ExecEvent) EventMeta {
 		meta.VenueOrderID = p.Fill.VenueOrderID
 		meta.TradeID = p.Fill.TradeID
 		meta.TsVenue = p.Fill.Timestamp
-		meta.EventID = model.EventID(joinEventID("exec", "fill", meta.Venue, meta.ClientID, meta.VenueOrderID, meta.TradeID, p.Fill.Timestamp.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("exec", "fill", meta.Venue, meta.AccountID, meta.ClientID, meta.VenueOrderID, meta.TradeID, eventTimeKey(p.Fill.Timestamp)))
 	case RejectEvent:
 		meta.ClientID = p.ClientID
 		meta.EventID = model.EventID(joinEventID("exec", "reject", p.ClientID, p.Reason))
 	}
 	if meta.EventID == "" {
-		meta.EventID = model.EventID(joinEventID("exec", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("exec", fmt.Sprintf("%T", payload), eventTimeKey(time.Now())))
 	}
 	return meta
 }
@@ -239,13 +253,21 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 	switch p := payload.(type) {
 	case BalanceEvent:
 		meta.AccountID = p.Balance.AccountID
-		meta.EventID = model.EventID(joinEventID("account", "balance", p.Balance.Currency, p.Balance.UpdatedAt.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID(
+			"account", "balance", p.Balance.AccountID, p.Balance.Currency,
+			p.Balance.Total.String(), p.Balance.Free.String(), p.Balance.Available.String(),
+			p.Balance.Locked.String(), p.Balance.Borrowed.String(), p.Balance.Interest.String(),
+			eventTimeKey(p.Balance.UpdatedAt),
+		))
 		meta.TsVenue = p.Balance.UpdatedAt
 	case PositionEvent:
 		meta.InstrumentID = p.Position.InstrumentID
 		meta.Venue = p.Position.InstrumentID.Venue
 		meta.AccountID = p.Position.AccountID
-		meta.EventID = model.EventID(joinEventID("account", "position", p.Position.InstrumentID.String(), p.Position.Side.String(), p.Position.UpdatedAt.Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID(
+			"account", "position", p.Position.AccountID, p.Position.InstrumentID.String(),
+			p.Position.Side.String(), p.Position.Quantity.String(), eventTimeKey(p.Position.UpdatedAt),
+		))
 		meta.TsVenue = p.Position.UpdatedAt
 	case AccountStateEvent:
 		meta.Venue = p.State.Venue
@@ -257,7 +279,7 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 		}
 	}
 	if meta.EventID == "" {
-		meta.EventID = model.EventID(joinEventID("account", fmt.Sprintf("%T", payload), time.Now().Format(time.RFC3339Nano)))
+		meta.EventID = model.EventID(joinEventID("account", fmt.Sprintf("%T", payload), eventTimeKey(time.Now())))
 	}
 	return meta
 }
@@ -270,6 +292,13 @@ func joinEventID(parts ...string) string {
 		}
 	}
 	return strings.Join(out, "|")
+}
+
+func eventTimeKey(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 // ExecEvent is the sum of execution-stream push events (order lifecycle).

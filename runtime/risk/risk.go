@@ -4,6 +4,7 @@
 package risk
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,11 +47,18 @@ type Engine struct {
 	now                 func() time.Time
 	productSupport      map[enums.InstrumentKind]riskProductSupport
 	productSupportReady bool
+	venueValidators     map[enums.InstrumentKind]contract.VenuePreTradeValidator
 }
 
 // New builds a risk Engine reading positions from c.
 func New(limits Limits, c *cache.Cache) *Engine {
-	return &Engine{limits: limits, cache: c, seen: make(map[string]struct{}), now: time.Now}
+	return &Engine{
+		limits:          limits,
+		cache:           c,
+		seen:            make(map[string]struct{}),
+		now:             time.Now,
+		venueValidators: make(map[enums.InstrumentKind]contract.VenuePreTradeValidator),
+	}
 }
 
 type riskProductSupport struct {
@@ -115,6 +123,31 @@ func (e *Engine) WithClock(now func() time.Time) *Engine {
 	return e
 }
 
+// WithVenuePreTradeValidator registers the venue's authoritative capacity and
+// prepared-payload validator for the supplied product kinds. A nil validator
+// removes those registrations.
+func (e *Engine) WithVenuePreTradeValidator(validator contract.VenuePreTradeValidator, kinds ...enums.InstrumentKind) *Engine {
+	e.SetVenuePreTradeValidator(validator, kinds...)
+	return e
+}
+
+// SetVenuePreTradeValidator is the non-fluent registration surface used by
+// venue-neutral runtime wiring.
+func (e *Engine) SetVenuePreTradeValidator(validator contract.VenuePreTradeValidator, kinds ...enums.InstrumentKind) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.venueValidators == nil {
+		e.venueValidators = make(map[enums.InstrumentKind]contract.VenuePreTradeValidator)
+	}
+	for _, kind := range kinds {
+		if validator == nil {
+			delete(e.venueValidators, kind)
+			continue
+		}
+		e.venueValidators[kind] = validator
+	}
+}
+
 // Trip activates the kill switch: all subsequent orders are rejected.
 func (e *Engine) Trip() {
 	e.mu.Lock()
@@ -142,58 +175,130 @@ func (e *Engine) Tripped() bool {
 func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if _, configured := e.venueValidators[req.InstrumentID.Kind]; configured {
+		return fmt.Errorf("%w: product %s requires context-aware venue pre-trade validation", ErrRiskRejected, req.InstrumentID.Kind)
+	}
+	_, err := e.checkLocked(req, inst, false)
+	return err
+}
+
+// CheckContext performs the same local checks as Check and, for product kinds
+// with a registered venue validator, invokes that validator only after local
+// checks pass. The risk mutex is never held across validator I/O.
+func (e *Engine) CheckContext(ctx context.Context, req model.OrderRequest, inst *model.Instrument) (contract.PreTradeLease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	e.mu.Lock()
+	validator, configured := e.venueValidators[req.InstrumentID.Kind]
+	reserved, err := e.checkLocked(req, inst, configured)
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if !configured {
+		return nil, nil
+	}
+
+	lease, validationErr := validator.ValidatePreTrade(ctx, req, inst)
+	if validationErr != nil {
+		if lease != nil {
+			lease.Release()
+		}
+		e.rollbackClientID(req.ClientID, reserved)
+		return nil, validationErr
+	}
+	if err := ctx.Err(); err != nil {
+		if lease != nil {
+			lease.Release()
+		}
+		e.rollbackClientID(req.ClientID, reserved)
+		return nil, err
+	}
+
+	// A kill switch tripped while the validator was in I/O still denies handoff.
+	e.mu.RLock()
+	tripped := e.tripped
+	e.mu.RUnlock()
+	if tripped {
+		if lease != nil {
+			lease.Release()
+		}
+		e.rollbackClientID(req.ClientID, reserved)
+		return nil, fmt.Errorf("%w: kill switch active", ErrRiskRejected)
+	}
+	return lease, nil
+}
+
+func (e *Engine) rollbackClientID(clientID string, reserved bool) {
+	if clientID == "" || !reserved {
+		return
+	}
+	e.mu.Lock()
+	delete(e.seen, clientID)
+	e.mu.Unlock()
+}
+
+// checkLocked performs only local/cache-backed checks. The caller must hold
+// e.mu for writing so duplicate client IDs can be reserved atomically.
+func (e *Engine) checkLocked(req model.OrderRequest, inst *model.Instrument, venueValidated bool) (bool, error) {
 
 	if e.tripped {
-		return fmt.Errorf("%w: kill switch active", ErrRiskRejected)
+		return false, fmt.Errorf("%w: kill switch active", ErrRiskRejected)
 	}
 
 	if req.Quantity.IsZero() || req.Quantity.IsNegative() {
-		return fmt.Errorf("%w: non-positive quantity %s", ErrRiskRejected, req.Quantity)
+		return false, fmt.Errorf("%w: non-positive quantity %s", ErrRiskRejected, req.Quantity)
 	}
 
 	// Duplicate client id (idempotency guard) — only when one is provided.
 	if req.ClientID != "" {
 		if _, dup := e.seen[req.ClientID]; dup {
-			return fmt.Errorf("%w: duplicate client id %q", ErrRiskRejected, req.ClientID)
+			return false, fmt.Errorf("%w: duplicate client id %q", ErrRiskRejected, req.ClientID)
 		}
 	}
 
 	if lim := e.limits.MaxOrderQty; !lim.IsZero() && req.Quantity.GreaterThan(lim) {
-		return fmt.Errorf("%w: order qty %s exceeds max %s", ErrRiskRejected, req.Quantity, lim)
+		return false, fmt.Errorf("%w: order qty %s exceeds max %s", ErrRiskRejected, req.Quantity, lim)
 	}
 
 	if lim := e.limits.MaxOrderNotional; !lim.IsZero() && !req.Price.IsZero() {
 		notional := req.Price.Mul(req.Quantity)
 		if notional.GreaterThan(lim) {
-			return fmt.Errorf("%w: order notional %s exceeds max %s", ErrRiskRejected, notional, lim)
+			return false, fmt.Errorf("%w: order notional %s exceeds max %s", ErrRiskRejected, notional, lim)
 		}
 	}
 	if err := e.ensureProductSupported(req.InstrumentID.Kind); err != nil {
-		return err
+		return false, err
 	}
 
 	// Instrument minimums.
 	if inst != nil {
 		if !inst.MinQty.IsZero() && req.Quantity.LessThan(inst.MinQty) {
-			return fmt.Errorf("%w: qty %s below instrument min %s", ErrRiskRejected, req.Quantity, inst.MinQty)
+			return false, fmt.Errorf("%w: qty %s below instrument min %s", ErrRiskRejected, req.Quantity, inst.MinQty)
 		}
 		if !inst.MinNotional.IsZero() && !req.Price.IsZero() {
 			if n := req.Price.Mul(req.Quantity); n.LessThan(inst.MinNotional) {
-				return fmt.Errorf("%w: notional %s below instrument min %s", ErrRiskRejected, n, inst.MinNotional)
+				return false, fmt.Errorf("%w: notional %s below instrument min %s", ErrRiskRejected, n, inst.MinNotional)
 			}
 		}
 	}
 
-	if req.InstrumentID.Kind == enums.KindSpot {
+	if venueValidated {
+		if err := e.checkVenueValidatedAccount(req, inst); err != nil {
+			return false, err
+		}
+	} else if req.InstrumentID.Kind == enums.KindSpot {
 		if inst == nil {
-			return fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
+			return false, fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
 		}
 		if err := e.checkSpotBalance(req, inst); err != nil {
-			return err
+			return false, err
 		}
 	} else if e.requireAccountState && !req.ReduceOnly {
 		if err := e.checkMarginAccount(req, inst); err != nil {
-			return err
+			return false, err
 		}
 	}
 
@@ -209,15 +314,38 @@ func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
 		}
 		resulting := cur.Add(delta).Abs()
 		if resulting.GreaterThan(lim) {
-			return fmt.Errorf("%w: resulting position %s exceeds max %s", ErrRiskRejected, resulting, lim)
+			return false, fmt.Errorf("%w: resulting position %s exceeds max %s", ErrRiskRejected, resulting, lim)
 		}
 	}
 
 	// Record the client id only after all checks pass.
+	reserved := false
 	if req.ClientID != "" {
 		e.seen[req.ClientID] = struct{}{}
+		reserved = true
 	}
-	return nil
+	return reserved, nil
+}
+
+func (e *Engine) checkVenueValidatedAccount(req model.OrderRequest, inst *model.Instrument) error {
+	if req.InstrumentID.Kind == enums.KindSpot && inst == nil {
+		return fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
+	}
+	acct, ok, err := e.accountForRequest(req)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
+	}
+	if req.InstrumentID.Kind == enums.KindSpot {
+		if acct.Type() != model.AccountCash && acct.Type() != model.AccountMargin {
+			return fmt.Errorf("%w: unsupported account type %s for spot order", ErrRiskRejected, acct.Type())
+		}
+	} else if acct.Type() != model.AccountMargin {
+		return fmt.Errorf("%w: unsupported account type %s for %s order", ErrRiskRejected, acct.Type(), req.InstrumentID.Kind)
+	}
+	return e.ensureFreshAccount(acct)
 }
 
 func (e *Engine) checkSpotBalance(req model.OrderRequest, inst *model.Instrument) error {

@@ -74,6 +74,10 @@ and exchange state are available.
   current OI query acceptance.
 - `make test-lighter-testnet-reference-data-read`: read-only Lighter Testnet
   Perp funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-aster-testnet-reference-data-read`: read-only Aster Testnet Perp
+  funding/mark/index stream-cache plus current OI query acceptance.
+- `make test-nado-testnet-reference-data-read`: read-only Nado Testnet Perp
+  funding/mark/index/oracle stream-cache plus current OI query acceptance.
 - `make test-demo-acceptance`: the aggregate credential-gated CEX Demo or
   paper-trading acceptance gate for Binance, OKX, Bybit, and Bitget.
 - `make test-binance-demo-perp`: adapter-level Binance USD-M Demo execution.
@@ -166,11 +170,32 @@ and exchange state are available.
   execution through `runtime.TradingNode`.
 - `make test-lighter-testnet-acceptance`: complete Lighter Testnet acceptance
   gate for Spot and Perp under the unified account model.
+- `make test-aster-testnet-read`: Aster V3 Testnet Spot/Perp discovery,
+  account-state, market, reference-data, and current-OI reads.
+- `make test-aster-testnet-spot` and `make test-aster-testnet-runtime-spot`:
+  Aster Spot adapter/runtime write and cleanup rows.
+- `make test-aster-testnet-perp` and `make test-aster-testnet-runtime-perp`:
+  Aster Perp adapter/runtime write, flatten, and cleanup rows.
+- `make test-aster-testnet-acceptance`: all Aster read and four write rows under
+  `noskipgotest`.
+- `make test-nado-testnet-read`: Nado Testnet Spot/Perp discovery, unified
+  account-state, market, reference-data, and current-OI reads.
+- `make test-nado-testnet-spot` and `make test-nado-testnet-runtime-spot`:
+  funded-only/no-borrow Nado Spot adapter/runtime write and cleanup rows.
+- `make test-nado-testnet-perp` and `make test-nado-testnet-runtime-perp`:
+  Nado Perp adapter/runtime write, flatten, and cleanup rows using the exact
+  prepared pre-trade payload.
+- `make test-nado-testnet-acceptance`: all Nado read and four write rows under
+  `noskipgotest`.
+- `make test-aster-nado-testnet-acceptance`: serial aggregate for both venues;
+  any skip, failed cleanup, or missing row is incomplete acceptance.
 
 See [`docs/developer_guide/spec_exec_testing.md`](developer_guide/spec_exec_testing.md)
 for the execution acceptance spec and pass criteria.
 See [`docs/adapter-capabilities.md`](adapter-capabilities.md) for the supported
 adapter/product/report matrix.
+See [`docs/aster-nado-test-traceability.md`](aster-nado-test-traceability.md)
+for the approved Aster/Nado spec-case to grouped-test mapping.
 
 ## Account-State Runtime Acceptance
 
@@ -188,8 +213,8 @@ translation code. Default tests must prove:
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
 fake-venue end-to-end gate for this behavior. Non-production runtime acceptance
-for Binance, OKX, Bybit, Bitget, Gate, Hyperliquid, and Lighter must run the same
-shape against exchange snapshots before and after order flows.
+for Binance, OKX, Bybit, Bitget, Gate, Hyperliquid, Lighter, Aster, and Nado must
+run the same shape against exchange snapshots before and after order flows.
 
 Runtime ownership is account-id based. A venue may expose multiple account
 states in one process, and cache, portfolio, risk, reconciliation, balances, and
@@ -200,8 +225,8 @@ selectors such as Lighter account indexes, Hyperliquid owner/vault/signer
 addresses, OKX `tdMode`, and product scopes are configuration or mode metadata;
 they are not canonical runtime account ids. The phase-one default account-id
 matrix is `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `GATE-001`,
-`LIGHTER-001`, and `HYPERLIQUID-001`, unless a caller explicitly overrides the
-logical id.
+`LIGHTER-001`, `HYPERLIQUID-001`, `ASTER-001`, and `NADO-001`, unless a caller
+explicitly overrides the logical id.
 
 Risk gates are strict by default for spot orders once this account-state runtime
 path is in use: a missing account state rejects instead of silently falling back
@@ -240,13 +265,14 @@ credentials. Examples:
 ```sh
 OKX_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/okx
 BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS=1 go test -run Live ./sdk/binance/perp
-NADO_ENABLE_LIVE_WRITE_TESTS=1 go test ./sdk/nado -run 'TestPlace|TestWs'
+BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES=1 go test ./sdk/nado -run 'TestPlace|TestWs'
 ```
 
 Live write tests may create, modify, cancel, or close real exchange state. They
 must never run from `make test`. Binance Demo acceptance is separate from
 production live writes: it uses Demo credentials and product-qualified make
-targets.
+targets. Nado's raw SDK example is Testnet-only, bypasses the adapter safety
+envelope by design, and is not a release-acceptance target.
 
 ## Binance Demo Writes
 
@@ -590,6 +616,57 @@ Runtime tests construct `runtime.TradingNode`, reconcile account state before
 and after the write flow, require explicit account-id risk, submit through
 `node.Exec`, observe cancel state through the runtime cache, assert no REST open
 orders remain, and require a flat final cache/portfolio.
+
+## Aster And Nado Testnet
+
+Aster acceptance uses only the official V3 Testnet profiles. Authenticated rows
+require `ASTER_TESTNET_USER_ADDRESS` and
+`ASTER_TESTNET_SIGNER_PRIVATE_KEY`; an optional
+`ASTER_TESTNET_EXPECTED_SIGNER_ADDRESS` fails fast on signer mismatch. Set
+`BOLTER_ENABLE_ASTER_TESTNET_WRITES=1` only for write rows. Optional Spot/Perp
+symbols are discovered when absent, but normalized `TEST*` listings are always
+rejected. `ASTER_TESTNET_MAX_NOTIONAL_USDT` defaults to `100`.
+
+Nado acceptance uses one official Testnet unified-margin profile and logical
+`NADO-001` account. Authenticated rows require `NADO_TESTNET_PRIVATE_KEY`;
+`NADO_TESTNET_SUBACCOUNT_NAME` defaults to `default`, and
+`NADO_TESTNET_MAX_NOTIONAL_USDT0` defaults to `100`. Spot acceptance is
+funded-only/no-borrow. Perp and Spot submissions must consume the exact payload
+prepared after the documented max-order-size pre-trade check. Set
+`BOLTER_ENABLE_NADO_TESTNET_WRITES=1` only for write rows.
+
+Current live status (2026-07-13): read-only Spot/Perp and reference/OI gates
+pass. All four Aster adapter/runtime write rows also pass with private events,
+runtime-local rejection before venue handoff, bounded Spot balance deltas, no
+open orders, and flat Perp positions. Nado's current Testnet products require
+slightly more than the default `100 USDT0`; run its write matrix with
+`NADO_TESTNET_MAX_NOTIONAL_USDT0=110`. All four Nado adapter/runtime rows pass.
+Nado write acceptance uses only
+documented API surfaces: local checks, `max_order_size`, exact signed
+preparation, one-time `place_order`, private lifecycle evidence, and bounded
+cleanup. The undocumented `validate_order` query is not part of the SDK,
+adapter, runtime, fixtures, or acceptance criteria.
+
+Nado Testnet acknowledges `order_update` subscriptions but did not emit order
+events during the accepted write matrix. The gate therefore requires private
+fill-stream evidence and verifies order lifecycle independently through
+`place_order`/cancel responses, REST open orders, archive fills, runtime cache,
+and reconciliation. Discovered isolated-only Perp products use 1x opening
+margin rounded up to appendix x6 precision; reduce-only closes transfer zero
+additional margin.
+
+The SDK still exposes Nado's raw REST/WS `place_order` methods so the low-level
+layer faithfully represents the official API. Those methods do not implement
+the adapter/runtime safety envelope and are never acceptance substitutes. Their legacy
+live integration tests require the separate
+`BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES=1` gate; normal Nado write acceptance
+uses only the adapter/runtime prepared-order path.
+
+Both venues load these values through `internal/testenv`. Optional endpoint
+variables are diagnostic assertions, not arbitrary overrides: a configured URL
+must equal the selected official Testnet endpoint. Config formatting redacts
+private keys and proxy credentials. The default `make test` and offline gates
+never require credentials or network access.
 
 ## Fixture Rules
 

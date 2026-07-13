@@ -2,17 +2,22 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strings"
+
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 // Depth
 
 type DepthResponse struct {
-	LastUpdateID int64      `json:"lastUpdateId"`
-	E            int64      `json:"E"`
-	T            int64      `json:"T"`
-	Bids         [][]string `json:"bids"`
-	Asks         [][]string `json:"asks"`
+	LastUpdateID    int64      `json:"lastUpdateId"`
+	EventTime       int64      `json:"E"`
+	TransactionTime int64      `json:"T"`
+	Bids            [][]string `json:"bids"`
+	Asks            [][]string `json:"asks"`
 }
 
 func (c *Client) Depth(ctx context.Context, symbol string, limit int) (*DepthResponse, error) {
@@ -24,7 +29,7 @@ func (c *Client) Depth(ctx context.Context, symbol string, limit int) (*DepthRes
 	}
 
 	var res DepthResponse
-	err := c.Get(ctx, "/fapi/v1/depth", params, false, &res)
+	err := c.Get(ctx, "/fapi/v3/depth", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -63,36 +68,58 @@ func (c *Client) Klines(ctx context.Context, symbol, interval string, limit int,
 	}
 
 	var res []KlineResponse
-	err := c.Get(ctx, "/fapi/v1/klines", params, false, &res)
+	err := c.Get(ctx, "/fapi/v3/klines", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
-// ContinousKlines
-func (c *Client) ContinousKlines(ctx context.Context, symbol, contractType string, interval string, limit int, startTime, endTime int64) ([]KlineResponse, error) {
-	params := map[string]interface{}{
-		"pair":         symbol,
-		"contractType": contractType,
-		"interval":     interval,
-	}
-	if limit > 0 {
-		params["limit"] = limit
-	}
-	if startTime > 0 {
-		params["startTime"] = startTime
-	}
-	if endTime > 0 {
-		params["endTime"] = endTime
-	}
+// ReferenceKlinesQuery describes the common parameters for mark and index
+// price kline endpoints. Symbol is encoded as `symbol` for mark price and
+// `pair` for index price, matching the official V3 API.
+type ReferenceKlinesQuery struct {
+	Symbol    string
+	Interval  string
+	Limit     int
+	StartTime int64
+	EndTime   int64
+}
 
-	var res []KlineResponse
-	err := c.Get(ctx, "/fapi/v1/continuousKlines", params, false, &res)
+func (c *Client) MarkPriceKlines(ctx context.Context, query ReferenceKlinesQuery) ([]KlineResponse, error) {
+	return c.referenceKlines(ctx, "/fapi/v3/markPriceKlines", "symbol", query)
+}
+
+func (c *Client) IndexPriceKlines(ctx context.Context, query ReferenceKlinesQuery) ([]KlineResponse, error) {
+	return c.referenceKlines(ctx, "/fapi/v3/indexPriceKlines", "pair", query)
+}
+
+func (c *Client) referenceKlines(ctx context.Context, endpoint, instrumentParam string, query ReferenceKlinesQuery) ([]KlineResponse, error) {
+	symbol, err := astercommon.NormalizeSymbol(c.profile, query.Symbol)
 	if err != nil {
 		return nil, err
 	}
-	return res, nil
+	if strings.TrimSpace(query.Interval) == "" {
+		return nil, fmt.Errorf("aster perp reference klines: interval is required")
+	}
+	params := map[string]interface{}{
+		instrumentParam: symbol,
+		"interval":      query.Interval,
+	}
+	if query.Limit > 0 {
+		params["limit"] = query.Limit
+	}
+	if query.StartTime > 0 {
+		params["startTime"] = query.StartTime
+	}
+	if query.EndTime > 0 {
+		params["endTime"] = query.EndTime
+	}
+	var response []KlineResponse
+	if err := c.Get(ctx, endpoint, params, false, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // Ticker
@@ -127,7 +154,7 @@ func (c *Client) Ticker(ctx context.Context, symbol string) (*TickerResponse, er
 	}
 
 	var res TickerResponse
-	err := c.Get(ctx, "/fapi/v1/ticker/24hr", params, false, &res)
+	err := c.Get(ctx, "/fapi/v3/ticker/24hr", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -142,6 +169,7 @@ type MarkPriceResponse struct {
 	IndexPrice           string `json:"indexPrice"`
 	EstimatedSettlePrice string `json:"estimatedSettlePrice"`
 	LastFundingRate      string `json:"lastFundingRate"`
+	InterestRate         string `json:"interestRate"`
 	NextFundingTime      int64  `json:"nextFundingTime"`
 	Time                 int64  `json:"time"`
 }
@@ -151,7 +179,7 @@ func (c *Client) MarkPrice(ctx context.Context, symbol string) (*MarkPriceRespon
 		"symbol": symbol,
 	}
 	var res MarkPriceResponse
-	err := c.Get(ctx, "/fapi/v1/premiumIndex", params, false, &res)
+	err := c.Get(ctx, "/fapi/v3/premiumIndex", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +190,7 @@ func (c *Client) MarkPrice(ctx context.Context, symbol string) (*MarkPriceRespon
 
 func (c *Client) ExchangeInfo(ctx context.Context) (*ExchangeInfoResponse, error) {
 	var res ExchangeInfoResponse
-	err := c.Get(ctx, "/fapi/v1/exchangeInfo", nil, false, &res)
+	err := c.Get(ctx, "/fapi/v3/exchangeInfo", nil, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -190,17 +218,7 @@ func (c *Client) GetAggTrades(ctx context.Context, symbol string, limit int) ([]
 	}
 
 	var res []AggTrade
-	err := c.Get(ctx, "/fapi/v1/aggTrades", params, false, &res)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
-}
-
-// GetFundingInfo retrieves funding rate configuration information
-func (c *Client) GetFundingInfo(ctx context.Context) ([]FundingInfo, error) {
-	var res []FundingInfo
-	err := c.Get(ctx, "/fapi/v1/fundingInfo", nil, false, &res)
+	err := c.Get(ctx, "/fapi/v3/aggTrades", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +231,7 @@ func (c *Client) GetFundingRate(ctx context.Context, symbol string) (*FundingRat
 		"symbol": symbol,
 	}
 	var res FundingRateData
-	err := c.Get(ctx, "/fapi/v1/premiumIndex", params, false, &res)
+	err := c.Get(ctx, "/fapi/v3/premiumIndex", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -223,14 +241,14 @@ func (c *Client) GetFundingRate(ctx context.Context, symbol string) (*FundingRat
 // GetAllFundingRates retrieves funding rates for all symbols.
 func (c *Client) GetAllFundingRates(ctx context.Context) ([]FundingRateData, error) {
 	var res []FundingRateData
-	err := c.Get(ctx, "/fapi/v1/premiumIndex", nil, false, &res)
+	err := c.Get(ctx, "/fapi/v3/premiumIndex", nil, false, &res)
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
-// AggTradesQuery is the full parameter set for /fapi/v1/aggTrades.
+// AggTradesQuery is the full parameter set for /fapi/v3/aggTrades.
 type AggTradesQuery struct {
 	Symbol    string
 	FromID    *int64
@@ -255,35 +273,55 @@ func (c *Client) GetAggTradesPaged(ctx context.Context, q AggTradesQuery) ([]Agg
 		params["limit"] = q.Limit
 	}
 	var res []AggTrade
-	if err := c.Get(ctx, "/fapi/v1/aggTrades", params, false, &res); err != nil {
+	if err := c.Get(ctx, "/fapi/v3/aggTrades", params, false, &res); err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
-// OpenInterestResponse matches /fapi/v1/openInterest.
+// OpenInterestResponse matches the probe-backed /fapi/v3/openInterest response.
 type OpenInterestResponse struct {
 	Symbol       string `json:"symbol"`
 	OpenInterest string `json:"openInterest"` // in base asset (contracts)
 	Time         int64  `json:"time"`
 }
 
+type OpenInterestUnavailableError struct {
+	cause error
+}
+
+func (e *OpenInterestUnavailableError) Error() string {
+	return "aster perp: probe-backed /fapi/v3/openInterest is unavailable or incompatible"
+}
+
+func (e *OpenInterestUnavailableError) Unwrap() error { return e.cause }
+
 // GetOpenInterest retrieves current open interest for a perp symbol.
 func (c *Client) GetOpenInterest(ctx context.Context, symbol string) (*OpenInterestResponse, error) {
-	params := map[string]interface{}{"symbol": symbol}
-	var res OpenInterestResponse
-	if err := c.Get(ctx, "/fapi/v1/openInterest", params, false, &res); err != nil {
+	normalized, err := astercommon.NormalizeSymbol(c.profile, symbol)
+	if err != nil {
 		return nil, err
+	}
+	params := map[string]interface{}{"symbol": normalized}
+	var res OpenInterestResponse
+	if err := c.Get(ctx, "/fapi/v3/openInterest", params, false, &res); err != nil {
+		var venueErr *astercommon.VenueError
+		if errors.As(err, &venueErr) && (venueErr.StatusCode() == http.StatusNotFound || venueErr.Code() == -1020) {
+			return nil, &OpenInterestUnavailableError{cause: err}
+		}
+		return nil, err
+	}
+	if res.Symbol != normalized || strings.TrimSpace(res.OpenInterest) == "" || res.Time <= 0 {
+		return nil, &OpenInterestUnavailableError{}
 	}
 	return &res, nil
 }
 
-// FundingRateHistoryEntry matches one element of /fapi/v1/fundingRate.
+// FundingRateHistoryEntry matches one element of /fapi/v3/fundingRate.
 type FundingRateHistoryEntry struct {
 	Symbol      string `json:"symbol"`
 	FundingRate string `json:"fundingRate"`
 	FundingTime int64  `json:"fundingTime"`
-	MarkPrice   string `json:"markPrice"`
 }
 
 // GetFundingRateHistory retrieves historical funding rate entries for a symbol.
@@ -300,7 +338,7 @@ func (c *Client) GetFundingRateHistory(ctx context.Context, symbol string, start
 		params["limit"] = limit
 	}
 	var res []FundingRateHistoryEntry
-	if err := c.Get(ctx, "/fapi/v1/fundingRate", params, false, &res); err != nil {
+	if err := c.Get(ctx, "/fapi/v3/fundingRate", params, false, &res); err != nil {
 		return nil, err
 	}
 	return res, nil

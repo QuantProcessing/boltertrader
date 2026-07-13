@@ -1,0 +1,8 @@
+{
+  "type": "order_update",
+  "timestamp": "1783641600300",
+  "product_id": 2,
+  "digest": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "amount": "100000000000000000",
+  "reason": "placed"
+}

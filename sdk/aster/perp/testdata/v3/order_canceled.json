@@ -1,0 +1,22 @@
+{
+  "clientOrderId": "fixture-perp-001",
+  "cumQty": "0",
+  "cumQuote": "0",
+  "executedQty": "0",
+  "orderId": 30001,
+  "origQty": "10.00",
+  "origType": "LIMIT",
+  "price": "1.2400",
+  "reduceOnly": false,
+  "side": "BUY",
+  "positionSide": "BOTH",
+  "status": "CANCELED",
+  "stopPrice": "0",
+  "closePosition": false,
+  "symbol": "ASTERUSDT",
+  "timeInForce": "GTC",
+  "type": "LIMIT",
+  "updateTime": 1783641600500,
+  "workingType": "CONTRACT_PRICE",
+  "priceProtect": false
+}

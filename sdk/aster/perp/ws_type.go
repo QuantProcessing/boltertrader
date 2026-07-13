@@ -16,7 +16,6 @@ var ArrayEventMap = map[string]string{
 
 // special handle kline and !bookTicker
 var SingleEventMap = map[string]string{
-	"depthUpdate":     "depth@100ms",  // only 100ms, its best choice
 	"markPriceUpdate": "markPrice@1s", // only use 1s, its best than 3s
 	"24hrTicker":      "ticker",
 	"24hrMiniTicker":  "miniTicker",

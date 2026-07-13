@@ -1,0 +1,21 @@
+{
+  "ETH-PERP_USDT0": {
+    "product_id": 2,
+    "ticker_id": "ETH-PERP_USDT0",
+    "base_currency": "ETH-PERP",
+    "quote_currency": "USDT0",
+    "last_price": 2504.0,
+    "base_volume": 1000.0,
+    "quote_volume": 2504000.0,
+    "product_type": "perpetual",
+    "contract_price": 2505.0,
+    "contract_price_currency": "USD",
+    "open_interest": 1250.0,
+    "open_interest_usd": 3131250.0,
+    "index_price": 2505.0,
+    "mark_price": 2504.5,
+    "funding_rate": 0.00024,
+    "next_funding_rate_timestamp": 1783645200,
+    "price_change_percent_24h": 1.25
+  }
+}

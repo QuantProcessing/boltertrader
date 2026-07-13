@@ -1,0 +1,53 @@
+{
+  "feeTier": 0,
+  "canTrade": true,
+  "canDeposit": true,
+  "canWithdraw": true,
+  "updateTime": 1783641600000,
+  "totalInitialMargin": "12.50000000",
+  "totalMaintMargin": "2.50000000",
+  "totalWalletBalance": "500.00000000",
+  "totalUnrealizedProfit": "5.00000000",
+  "totalMarginBalance": "505.00000000",
+  "totalPositionInitialMargin": "12.50000000",
+  "totalOpenOrderInitialMargin": "0.00000000",
+  "totalCrossWalletBalance": "500.00000000",
+  "totalCrossUnPnl": "5.00000000",
+  "availableBalance": "492.50000000",
+  "maxWithdrawAmount": "492.50000000",
+  "assets": [
+    {
+      "asset": "USDT",
+      "walletBalance": "500.00000000",
+      "unrealizedProfit": "5.00000000",
+      "marginBalance": "505.00000000",
+      "maintMargin": "2.50000000",
+      "initialMargin": "12.50000000",
+      "positionInitialMargin": "12.50000000",
+      "openOrderInitialMargin": "0.00000000",
+      "crossWalletBalance": "500.00000000",
+      "crossUnPnl": "5.00000000",
+      "availableBalance": "492.50000000",
+      "maxWithdrawAmount": "492.50000000",
+      "marginAvailable": true,
+      "updateTime": 1783641600000
+    }
+  ],
+  "positions": [
+    {
+      "symbol": "ASTERUSDT",
+      "initialMargin": "12.50000000",
+      "maintMargin": "2.50000000",
+      "unrealizedProfit": "5.00000000",
+      "positionInitialMargin": "12.50000000",
+      "openOrderInitialMargin": "0.00000000",
+      "leverage": "10",
+      "isolated": false,
+      "entryPrice": "1.2000",
+      "maxNotional": "100000",
+      "positionSide": "BOTH",
+      "positionAmt": "100.00",
+      "updateTime": 1783641600000
+    }
+  ]
+}

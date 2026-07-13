@@ -3,297 +3,250 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
-// Order Placement
-
 type OrderResponse struct {
-	Symbol              string `json:"symbol"`
-	OrderID             int64  `json:"orderId"`
-	OrderListID         int64  `json:"orderListId"`
-	ClientOrderID       string `json:"clientOrderId"`
-	TransactTime        int64  `json:"transactTime"`
-	Price               string `json:"price"`
-	OrigQty             string `json:"origQty"`
-	ExecutedQty         string `json:"executedQty"`
-	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
-	Status              string `json:"status"`
-	TimeInForce         string `json:"timeInForce"`
-	Type                string `json:"type"`
-	Side                string `json:"side"`
+	Symbol        string `json:"symbol"`
+	OrderID       int64  `json:"orderId"`
+	ClientOrderID string `json:"clientOrderId"`
+	UpdateTime    *int64 `json:"updateTime,omitempty"`
+	Time          *int64 `json:"time,omitempty"`
+	Price         string `json:"price"`
+	AvgPrice      string `json:"avgPrice"`
+	OrigQty       string `json:"origQty"`
+	CumQty        string `json:"cumQty"`
+	ExecutedQty   string `json:"executedQty"`
+	CumQuote      string `json:"cumQuote"`
+	Status        string `json:"status"`
+	TimeInForce   string `json:"timeInForce"`
+	StopPrice     string `json:"stopPrice"`
+	OrigType      string `json:"origType"`
+	Type          string `json:"type"`
+	Side          string `json:"side"`
 }
 
 type PlaceOrderParams struct {
 	Symbol           string
 	Side             string
 	Type             string
-	TimeInForce      string // Optional
+	TimeInForce      string
 	Quantity         string
-	Price            string // Optional
-	NewClientOrderID string // Optional
-	StopPrice        string // Optional
-	IcebergQty       string // Optional
-	NewOrderRespType string // Optional
+	QuoteOrderQty    string
+	Price            string
+	NewClientOrderID string
+	StopPrice        string
+	RecvWindow       *int64
 }
 
 func (c *Client) PlaceOrder(ctx context.Context, p PlaceOrderParams) (*OrderResponse, error) {
 	params := map[string]interface{}{
-		"symbol":   p.Symbol,
-		"side":     p.Side,
-		"type":     p.Type,
-		"quantity": p.Quantity,
+		"symbol": p.Symbol,
+		"side":   p.Side,
+		"type":   p.Type,
 	}
-	if p.TimeInForce != "" {
-		params["timeInForce"] = p.TimeInForce
-	}
-	if p.Price != "" {
-		params["price"] = p.Price
-	}
-	if p.NewClientOrderID != "" {
-		params["newClientOrderId"] = p.NewClientOrderID
-	}
-	if p.StopPrice != "" {
-		params["stopPrice"] = p.StopPrice
-	}
-	if p.IcebergQty != "" {
-		params["icebergQty"] = p.IcebergQty
-	}
-	if p.NewOrderRespType != "" {
-		params["newOrderRespType"] = p.NewOrderRespType
-	}
+	addStringParam(params, "timeInForce", p.TimeInForce)
+	addStringParam(params, "quantity", p.Quantity)
+	addStringParam(params, "quoteOrderQty", p.QuoteOrderQty)
+	addStringParam(params, "price", p.Price)
+	addStringParam(params, "newClientOrderId", p.NewClientOrderID)
+	addStringParam(params, "stopPrice", p.StopPrice)
+	addInt64Param(params, "recvWindow", p.RecvWindow)
 
-	var res OrderResponse
-	err := c.Post(ctx, "/api/v1/order", params, true, &res)
-	if err != nil {
+	var response OrderResponse
+	if err := c.Post(ctx, "/api/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
 
-// Cancel Order
-
-type CancelOrderResponse struct {
-	Symbol              string `json:"symbol"`
-	OrigClientOrderID   string `json:"origClientOrderId"`
-	OrderID             int64  `json:"orderId"`
-	OrderListID         int64  `json:"orderListId"`
-	ClientOrderID       string `json:"clientOrderId"`
-	Price               string `json:"price"`
-	OrigQty             string `json:"origQty"`
-	ExecutedQty         string `json:"executedQty"`
-	CummulativeQuoteQty string `json:"cummulativeQuoteQty"`
-	Status              string `json:"status"`
-	TimeInForce         string `json:"timeInForce"`
-	Type                string `json:"type"`
-	Side                string `json:"side"`
+type CancelOrderParams struct {
+	Symbol            string
+	OrderID           *int64
+	OrigClientOrderID string
+	RecvWindow        *int64
 }
 
-func (c *Client) CancelOrder(ctx context.Context, symbol string, orderID int64, origClientOrderID string) (*CancelOrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol": symbol,
-	}
-	if orderID != 0 {
-		params["orderId"] = orderID
-	}
-	if origClientOrderID != "" {
-		params["origClientOrderId"] = origClientOrderID
-	}
-
-	var res CancelOrderResponse
-	err := c.Delete(ctx, "/api/v1/order", params, true, &res)
+func (c *Client) CancelOrder(ctx context.Context, p CancelOrderParams) (*OrderResponse, error) {
+	params, err := orderIdentityParams(p.Symbol, p.OrderID, p.OrigClientOrderID, p.RecvWindow)
 	if err != nil {
+		return nil, fmt.Errorf("aster spot cancel order: %w", err)
+	}
+	var response OrderResponse
+	if err := c.Delete(ctx, "/api/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
 
-// Modify Order (Cancel Replace)
-
-type CancelReplaceOrderResponse struct {
-	CancelResult     string
-	NewOrderStatus   string
-	CancelResponse   *CancelOrderResponse
-	NewOrderResponse *OrderResponse
+type OrderQuery struct {
+	Symbol            string
+	OrderID           *int64
+	OrigClientOrderID string
+	RecvWindow        *int64
 }
 
-const cancelReplaceNewOrderKey = "new" + "Order" + "Result"
-
-func (r *CancelReplaceOrderResponse) UnmarshalJSON(data []byte) error {
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
+func (c *Client) QueryOrder(ctx context.Context, query OrderQuery) (*OrderResponse, error) {
+	params, err := orderIdentityParams(query.Symbol, query.OrderID, query.OrigClientOrderID, query.RecvWindow)
+	if err != nil {
+		return nil, fmt.Errorf("aster spot query order: %w", err)
 	}
+	var response OrderResponse
+	if err := c.Get(ctx, "/api/v3/order", params, true, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
 
-	if raw, ok := payload["cancelResult"]; ok {
-		if err := json.Unmarshal(raw, &r.CancelResult); err != nil {
-			return err
+type OpenOrdersQuery struct {
+	Symbol     string
+	RecvWindow *int64
+}
+
+func (c *Client) OpenOrders(ctx context.Context, query OpenOrdersQuery) ([]OrderResponse, error) {
+	params := make(map[string]interface{})
+	addStringParam(params, "symbol", query.Symbol)
+	addInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []OrderResponse
+	if err := c.Get(ctx, "/api/v3/openOrders", params, true, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+type AllOrdersQuery struct {
+	Symbol     string
+	OrderID    *int64
+	StartTime  *int64
+	EndTime    *int64
+	Limit      *int
+	RecvWindow *int64
+}
+
+func (c *Client) AllOrders(ctx context.Context, query AllOrdersQuery) ([]OrderResponse, error) {
+	params := map[string]interface{}{"symbol": query.Symbol}
+	addInt64Param(params, "orderId", query.OrderID)
+	addInt64Param(params, "startTime", query.StartTime)
+	addInt64Param(params, "endTime", query.EndTime)
+	addIntParam(params, "limit", query.Limit)
+	addInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []OrderResponse
+	if err := c.Get(ctx, "/api/v3/allOrders", params, true, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+type CancelAllOrdersParams struct {
+	Symbol             string
+	OrderIDs           []int64
+	OrigClientOrderIDs []string
+	RecvWindow         *int64
+}
+
+type CancelAllOrdersResponse struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+}
+
+func (c *Client) CancelAllOpenOrders(ctx context.Context, p CancelAllOrdersParams) (*CancelAllOrdersResponse, error) {
+	params := map[string]interface{}{"symbol": p.Symbol}
+	if len(p.OrderIDs) > 0 {
+		value, err := json.Marshal(p.OrderIDs)
+		if err != nil {
+			return nil, fmt.Errorf("aster spot cancel all: encode order ids: %w", err)
 		}
+		params["orderIdList"] = string(value)
 	}
-	if raw, ok := payload[cancelReplaceNewOrderKey]; ok {
-		if err := json.Unmarshal(raw, &r.NewOrderStatus); err != nil {
-			return err
+	if len(p.OrigClientOrderIDs) > 0 {
+		value, err := json.Marshal(p.OrigClientOrderIDs)
+		if err != nil {
+			return nil, fmt.Errorf("aster spot cancel all: encode client order ids: %w", err)
 		}
+		params["origClientOrderIdList"] = string(value)
 	}
-	if raw, ok := payload["cancelResponse"]; ok {
-		var cancelResponse CancelOrderResponse
-		if err := json.Unmarshal(raw, &cancelResponse); err != nil {
-			return err
-		}
-		r.CancelResponse = &cancelResponse
-	}
-	if raw, ok := payload["newOrderResponse"]; ok {
-		var newOrderResponse OrderResponse
-		if err := json.Unmarshal(raw, &newOrderResponse); err != nil {
-			return err
-		}
-		r.NewOrderResponse = &newOrderResponse
-	}
-
-	return nil
-}
-
-func (r CancelReplaceOrderResponse) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]any{
-		"cancelResult":           r.CancelResult,
-		cancelReplaceNewOrderKey: r.NewOrderStatus,
-		"cancelResponse":         r.CancelResponse,
-		"newOrderResponse":       r.NewOrderResponse,
-	})
-}
-
-type CancelReplaceOrderParams struct {
-	Symbol                  string
-	Side                    string
-	Type                    string
-	CancelReplaceMode       string // STOP_ON_FAILURE or ALLOW_FAILURE
-	TimeInForce             string // Optional
-	Quantity                string
-	Price                   string // Optional
-	CancelOrderID           int64  // Optional
-	CancelOrigClientOrderID string // Optional
-	NewClientOrderID        string // Optional
-	StopPrice               string // Optional
-	IcebergQty              string // Optional
-	NewOrderRespType        string // Optional
-}
-
-func (c *Client) ModifyOrder(ctx context.Context, p CancelReplaceOrderParams) (*CancelReplaceOrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol":            p.Symbol,
-		"side":              p.Side,
-		"type":              p.Type,
-		"cancelReplaceMode": p.CancelReplaceMode,
-		"quantity":          p.Quantity,
-	}
-	if p.TimeInForce != "" {
-		params["timeInForce"] = p.TimeInForce
-	}
-	if p.Price != "" {
-		params["price"] = p.Price
-	}
-	if p.CancelOrderID != 0 {
-		params["cancelOrderId"] = p.CancelOrderID
-	}
-	if p.CancelOrigClientOrderID != "" {
-		params["cancelOrigClientOrderId"] = p.CancelOrigClientOrderID
-	}
-	if p.NewClientOrderID != "" {
-		params["newClientOrderId"] = p.NewClientOrderID
-	}
-	if p.StopPrice != "" {
-		params["stopPrice"] = p.StopPrice
-	}
-	if p.IcebergQty != "" {
-		params["icebergQty"] = p.IcebergQty
-	}
-	if p.NewOrderRespType != "" {
-		params["newOrderRespType"] = p.NewOrderRespType
-	}
-
-	var res CancelReplaceOrderResponse
-	err := c.Post(ctx, "/api/v1/order/cancelReplace", params, true, &res)
-	if err != nil {
+	addInt64Param(params, "recvWindow", p.RecvWindow)
+	var response CancelAllOrdersResponse
+	if err := c.Delete(ctx, "/api/v3/allOpenOrders", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
-
-// Get Order
-
-func (c *Client) GetOrder(ctx context.Context, symbol string, orderID int64, origClientOrderID string) (*OrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol": symbol,
-	}
-	if orderID != 0 {
-		params["orderId"] = orderID
-	}
-	if origClientOrderID != "" {
-		params["origClientOrderId"] = origClientOrderID
-	}
-
-	var res OrderResponse
-	err := c.Get(ctx, "/api/v1/order", params, true, &res)
-	if err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
-// Open Orders
-
-func (c *Client) GetOpenOrders(ctx context.Context, symbol string) ([]OrderResponse, error) {
-	params := map[string]interface{}{}
-	if symbol != "" {
-		params["symbol"] = symbol
-	}
-
-	var res []OrderResponse
-	err := c.Get(ctx, "/api/v1/openOrders", params, true, &res)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
-}
-
-// Trade History
 
 type Trade struct {
 	Symbol          string `json:"symbol"`
 	ID              int64  `json:"id"`
 	OrderID         int64  `json:"orderId"`
-	OrderListID     int64  `json:"orderListId"`
+	Side            string `json:"side"`
 	Price           string `json:"price"`
 	Qty             string `json:"qty"`
 	QuoteQty        string `json:"quoteQty"`
 	Commission      string `json:"commission"`
 	CommissionAsset string `json:"commissionAsset"`
 	Time            int64  `json:"time"`
-	IsBuyer         bool   `json:"isBuyer"`
-	IsMaker         bool   `json:"isMaker"`
-	IsBestMatch     bool   `json:"isBestMatch"`
+	CounterpartyID  int64  `json:"counterpartyId"`
+	CreateUpdateID  *int64 `json:"createUpdateId"`
+	Maker           bool   `json:"maker"`
+	Buyer           bool   `json:"buyer"`
 }
 
-func (c *Client) MyTrades(ctx context.Context, symbol string, limit int, startTime, endTime int64, fromID int64) ([]Trade, error) {
-	params := map[string]interface{}{
-		"symbol": symbol,
-	}
-	if limit > 0 {
-		params["limit"] = limit
-	}
-	if startTime > 0 {
-		params["startTime"] = startTime
-	}
-	if endTime > 0 {
-		params["endTime"] = endTime
-	}
-	if fromID > 0 {
-		params["fromId"] = fromID
-	}
+type UserTradesQuery struct {
+	Symbol     string
+	OrderID    *int64
+	StartTime  *int64
+	EndTime    *int64
+	FromID     *int64
+	Limit      *int
+	RecvWindow *int64
+}
 
-	var res []Trade
-	err := c.Get(ctx, "/api/v1/myTrades", params, true, &res)
-	if err != nil {
+func (c *Client) UserTrades(ctx context.Context, query UserTradesQuery) ([]Trade, error) {
+	if query.OrderID != nil && query.Symbol == "" {
+		return nil, fmt.Errorf("aster spot user trades: symbol is required with orderId")
+	}
+	if query.FromID != nil && (query.StartTime != nil || query.EndTime != nil) {
+		return nil, fmt.Errorf("aster spot user trades: fromId cannot be combined with startTime or endTime")
+	}
+	params := make(map[string]interface{})
+	addStringParam(params, "symbol", query.Symbol)
+	addInt64Param(params, "orderId", query.OrderID)
+	addInt64Param(params, "startTime", query.StartTime)
+	addInt64Param(params, "endTime", query.EndTime)
+	addInt64Param(params, "fromId", query.FromID)
+	addIntParam(params, "limit", query.Limit)
+	addInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []Trade
+	if err := c.Get(ctx, "/api/v3/userTrades", params, true, &response); err != nil {
 		return nil, err
 	}
-	return res, nil
+	return response, nil
+}
+
+func orderIdentityParams(symbol string, orderID *int64, clientOrderID string, recvWindow *int64) (map[string]interface{}, error) {
+	if orderID == nil && clientOrderID == "" {
+		return nil, fmt.Errorf("orderId or origClientOrderId is required")
+	}
+	params := map[string]interface{}{"symbol": symbol}
+	addInt64Param(params, "orderId", orderID)
+	addStringParam(params, "origClientOrderId", clientOrderID)
+	addInt64Param(params, "recvWindow", recvWindow)
+	return params, nil
+}
+
+func addStringParam(params map[string]interface{}, key, value string) {
+	if value != "" {
+		params[key] = value
+	}
+}
+
+func addInt64Param(params map[string]interface{}, key string, value *int64) {
+	if value != nil {
+		params[key] = *value
+	}
+}
+
+func addIntParam(params map[string]interface{}, key string, value *int) {
+	if value != nil {
+		params[key] = *value
+	}
 }

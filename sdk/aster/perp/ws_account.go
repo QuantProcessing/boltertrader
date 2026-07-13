@@ -4,17 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
+
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 type WsAccountClient struct {
 	*WsClient
-	Client       *Client
-	KeepAliveInt time.Duration
-	ListenKey    string
+	Client        *Client
+	StreamMgr     *PerpUserStreamManager
+	KeepAliveInt  time.Duration
+	ListenKey     string
+	profile       astercommon.Profile
+	userStreamURL func(string) string
 
 	mu                           sync.Mutex
 	accountUpdateCallbacks       []func(*AccountUpdateEvent)
@@ -22,20 +29,27 @@ type WsAccountClient struct {
 	accountConfigUpdateCallbacks []func(*AccountConfigUpdateEvent)
 }
 
-func NewWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
-	client := &WsAccountClient{
-		Client:       NewClient().WithCredentials(apiKey, apiSecret),
-		WsClient:     NewWSClient(ctx, WSBaseURL),
-		KeepAliveInt: 50 * time.Minute,
+func NewWsAccountClient(ctx context.Context, profile astercommon.Profile, security *astercommon.SecurityContext) (*WsAccountClient, error) {
+	restClient, err := NewClient(profile, security)
+	if err != nil {
+		return nil, err
 	}
+	client := &WsAccountClient{
+		Client:       restClient,
+		StreamMgr:    NewPerpUserStreamManager(restClient),
+		WsClient:     newWSClient(ctx, strings.TrimSuffix(profile.UserWSURL(), "/")+"/ws"),
+		KeepAliveInt: 50 * time.Minute,
+		profile:      profile,
+		userStreamURL: func(listenKey string) string {
+			return strings.TrimSuffix(profile.UserWSURL(), "/") + "/ws/" + url.PathEscape(listenKey)
+		},
+	}
+	client.StreamMgr.KeepAliveInt = client.KeepAliveInt
 	client.WsClient.Logger = zap.NewNop().Sugar().Named("aster-account")
 	client.WsClient.Handler = client.handleMessage
-	return client
-}
-
-func (c *WsAccountClient) WithURL(url string) *WsAccountClient {
-	c.WsClient.URL = url
-	return c
+	client.StreamMgr.SetRenewHandler(client.handleListenKeyRenewed)
+	client.registerHandlers()
+	return client, nil
 }
 
 func (c *WsAccountClient) SubscribeAccountUpdate(callback func(*AccountUpdateEvent)) {
@@ -57,38 +71,37 @@ func (c *WsAccountClient) SubscribeAccountConfigUpdate(callback func(*AccountCon
 }
 
 func (c *WsAccountClient) Connect() error {
-	// 创建 listen key 时使用带超时的子 context
-	ctxAPI, cancelAPI := context.WithTimeout(c.ctx, 10*time.Second)
-	defer cancelAPI()
-	listenKey, err := c.Client.CreateListenKey(ctxAPI)
+	if c.IsConnected() {
+		return nil
+	}
+	c.registerHandlers()
+
+	listenKey, err := c.StreamMgr.Start(c.ctx)
 	if err != nil {
+		return fmt.Errorf("aster perp account websocket: start user stream: %w", err)
+	}
+	c.setListenKey(listenKey)
+
+	if err := c.WsClient.setURL(c.userStreamURL(listenKey)); err != nil {
+		c.stopStreamManager()
 		return err
 	}
-	c.ListenKey = listenKey
 
-	// Configure WsClient compatibility field with listenKey URL
-	c.WithURL(WSBaseURL + "/" + listenKey)
+	if err := c.WsClient.Connect(); err != nil {
+		c.stopStreamManager()
+		return fmt.Errorf("failed to connect user stream: %w", err)
+	}
+	return nil
+}
 
-	// Register handlers
+func (c *WsAccountClient) registerHandlers() {
 	c.SetHandler("ACCOUNT_UPDATE", c.handleAccountUpdate)
 	c.SetHandler("ORDER_TRADE_UPDATE", c.handleOrderUpdate)
 	c.SetHandler("ACCOUNT_CONFIG_UPDATE", c.handleAccountConfigUpdate)
 	c.SetHandler("listenKeyExpired", c.handleListenKeyExpired)
-
-	// Connect WebSocket
-	if err := c.WsClient.Connect(); err != nil {
-		return fmt.Errorf("failed to connect user stream: %w", err)
-	}
-
-	go c.keepAlive()
-
-	return nil
 }
 
 func (c *WsAccountClient) handleMessage(message []byte) {
-	c.Logger.Debugw("Received", "msg", string(message))
-
-	// Use generic map to handle various types
 	var raw map[string]interface{}
 	if err := json.Unmarshal(message, &raw); err != nil {
 		c.Logger.Error("Failed to unmarshal message", "error", err)
@@ -97,12 +110,9 @@ func (c *WsAccountClient) handleMessage(message []byte) {
 
 	eventType, ok := raw["e"].(string)
 	if !ok || eventType == "" {
-		// Log raw message if no type found
-		// c.Logger.Warn("No event type found (e)", "msg", string(message))
 		return
 	}
 
-	c.Logger.Info("Parsed Event Type", "type", eventType)
 	c.CallSubscription(eventType, message)
 }
 
@@ -112,9 +122,12 @@ func (c *WsAccountClient) handleAccountUpdate(data []byte) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cb := range c.accountUpdateCallbacks {
-		cb(&event)
+	callbacks := append([]func(*AccountUpdateEvent){}, c.accountUpdateCallbacks...)
+	c.mu.Unlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(&event)
+		}
 	}
 	return nil
 }
@@ -125,9 +138,12 @@ func (c *WsAccountClient) handleOrderUpdate(data []byte) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cb := range c.orderUpdateCallbacks {
-		cb(&event)
+	callbacks := append([]func(*OrderUpdateEvent){}, c.orderUpdateCallbacks...)
+	c.mu.Unlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(&event)
+		}
 	}
 	return nil
 }
@@ -138,67 +154,53 @@ func (c *WsAccountClient) handleAccountConfigUpdate(data []byte) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cb := range c.accountConfigUpdateCallbacks {
-		cb(&event)
+	callbacks := append([]func(*AccountConfigUpdateEvent){}, c.accountConfigUpdateCallbacks...)
+	c.mu.Unlock()
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(&event)
+		}
 	}
 	return nil
 }
 
 func (c *WsAccountClient) handleListenKeyExpired(data []byte) error {
-	c.Logger.Warn("ListenKey expired, reconnecting")
-
-	// Disconnect the WS connection without cancelling the lifecycle context.
-	// Close() would set isClosed=true and cancel ctx, making Connect() impossible.
-	c.Mu.Lock()
-	if c.Conn != nil {
-		c.Conn.Close()
-		c.Conn = nil
-	}
-	c.Mu.Unlock()
-
-	// Fetch a new listenKey
 	ctxAPI, cancelAPI := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancelAPI()
-	listenKey, err := c.Client.CreateListenKey(ctxAPI)
+	_, err := c.StreamMgr.Renew(ctxAPI)
 	if err != nil {
 		c.Logger.Error("failed to create new listenKey on expiry", "error", err)
 		return err
 	}
-	c.ListenKey = listenKey
-	c.WithURL(WSBaseURL + "/" + listenKey)
-
-	// Reconnect with the new URL (readLoop exit will trigger reconnect)
-	if err := c.WsClient.Connect(); err != nil {
-		c.Logger.Error("failed to reconnect after listenKey expiry", "error", err)
-		return err
-	}
-
-	c.Logger.Info("reconnected with new listenKey")
 	return nil
 }
 
-func (c *WsAccountClient) keepAlive() {
-	ticker := time.NewTicker(c.KeepAliveInt)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.Client.KeepAliveListenKey(c.ctx); err != nil {
-				c.Logger.Warn("failed to keep alive listen key", "error", err)
-			} else {
-				c.Logger.Debug("keep alive listen key ok")
-			}
-		}
+func (c *WsAccountClient) handleListenKeyRenewed(listenKey string) {
+	c.setListenKey(listenKey)
+	if err := c.WsClient.reconnectTo(c.userStreamURL(listenKey)); err != nil {
+		c.Logger.Errorw("failed to reconnect renewed Aster Perp user stream", "error", err)
 	}
 }
 
-func (c *WsAccountClient) Close() {
-	if c.cancel != nil {
-		c.cancel()
+func (c *WsAccountClient) setListenKey(listenKey string) {
+	c.mu.Lock()
+	c.ListenKey = listenKey
+	c.mu.Unlock()
+}
+
+func (c *WsAccountClient) stopStreamManager() {
+	if c.StreamMgr == nil {
+		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.StreamMgr.Stop(ctx); err != nil {
+		c.Logger.Warnw("failed to close Aster Perp user stream", "error", err)
+	}
+	c.setListenKey("")
+}
+
+func (c *WsAccountClient) Close() {
 	c.WsClient.Close()
+	c.stopStreamManager()
 }

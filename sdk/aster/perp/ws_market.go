@@ -8,23 +8,33 @@ import (
 	"strings"
 
 	"go.uber.org/zap"
+
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 type WsMarketClient struct {
 	*WsClient
+	profile astercommon.Profile
 }
 
-func NewWsMarketClient(ctx context.Context) *WsMarketClient {
+func NewWsMarketClient(ctx context.Context, profile astercommon.Profile) (*WsMarketClient, error) {
+	if profile.Product() != astercommon.ProductPerp {
+		return nil, fmt.Errorf("aster perp market websocket: profile product is %q", profile.Product())
+	}
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
 	client := &WsMarketClient{
-		WsClient: NewWSClient(ctx, WSBaseURL+"/public/ws"),
+		WsClient: newWSClient(ctx, strings.TrimSuffix(profile.PublicWSURL(), "/")+"/ws"),
+		profile:  profile,
 	}
 	client.WsClient.Logger = zap.NewNop().Sugar().Named("aster-market")
 	client.Handler = client.handleMessage
-	return client
+	return client, nil
 }
 
 func (c *WsMarketClient) handleMessage(message []byte) {
-	c.Logger.Debugw("Received", "msg", string(message))
+	c.Logger.Debugw("received websocket message", "bytes", len(message))
 
 	// trim space
 	message = bytes.TrimSpace(message)
@@ -94,9 +104,20 @@ func (c *WsMarketClient) handleObjectMessage(message []byte) {
 		keys = append(keys, fmt.Sprintf("%s@markPrice", symbol))
 		keys = append(keys, fmt.Sprintf("%s@markPrice@1s", symbol))
 		keys = append(keys, fmt.Sprintf("%s@markPrice@3s", symbol))
+	} else if event.EventType == "depthUpdate" && event.Symbol != "" {
+		keys = append(keys, fmt.Sprintf("%s@depth", strings.ToLower(event.Symbol)))
 	} else if eventName, ok := SingleEventMap[event.EventType]; ok {
 		stream := fmt.Sprintf("%s@%s", strings.ToLower(event.Symbol), eventName)
 		keys = append(keys, stream)
+	} else if event.EventType == "" && event.Symbol != "" {
+		var bookTicker struct {
+			UpdateID *int64 `json:"u"`
+			BidPrice string `json:"b"`
+			AskPrice string `json:"a"`
+		}
+		if err := json.Unmarshal(message, &bookTicker); err == nil && bookTicker.UpdateID != nil && bookTicker.BidPrice != "" && bookTicker.AskPrice != "" {
+			keys = append(keys, fmt.Sprintf("%s@bookTicker", strings.ToLower(event.Symbol)))
+		}
 	}
 
 	// special handle !bookTicker
@@ -116,17 +137,21 @@ func (c *WsMarketClient) handleObjectMessage(message []byte) {
 	}
 
 	if len(keys) == 0 {
-		c.Logger.Debugw("No routing keys generated for event", "msg", string(message))
+		c.Logger.Debugw("no routing keys generated for event", "eventType", event.EventType)
 	}
 }
 
 // SubscribeMarkPrice latest mark price
 // interval default 1s, option 3s
 func (c *WsMarketClient) SubscribeMarkPrice(symbol string, interval string, callback func(*WsMarkPriceEvent) error) error {
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
 	if interval == "" {
 		interval = "1s"
 	}
-	channel := fmt.Sprintf("%s@markPrice@%s", symbol, interval)
+	channel := fmt.Sprintf("%s@markPrice@%s", strings.ToLower(symbol), interval)
 	return c.Subscribe(channel, func(data []byte) error {
 		var wsData WsMarkPriceEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
@@ -152,35 +177,66 @@ func (c *WsMarketClient) SubscribeAllMarkPrice(interval string, callback func([]
 	})
 }
 
-// SubscribeIncrementOrderBook interval default 250ms, option 500ms 100ms
-// only increment depth
+// SubscribeIncrementOrderBook subscribes to diff depth. Empty interval selects
+// the documented 250ms default; explicit options are 100ms and 500ms.
 func (c *WsMarketClient) SubscribeIncrementOrderBook(symbol string, interval string, callback func(*WsDepthEvent) error) error {
-	channel := fmt.Sprintf("%s@depth@%s", symbol, interval)
-	return c.Subscribe(channel, func(data []byte) error {
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(symbol) + "@depth"
+	channel, err := perpDepthStream(prefix, 0, interval)
+	if err != nil {
+		return err
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != channel {
+		return fmt.Errorf("aster perp depth stream: %s already subscribed", existing)
+	}
+	c.SetHandler(prefix, func(data []byte) error {
 		var wsData WsDepthEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
 			return err
 		}
 		return callback(&wsData)
 	})
+	return c.Subscribe(channel, nil)
 }
 
-// SubscribeLimitOrderBook interval default 250ms, option 500ms 100ms
-// only limit depth, options: 5  10  20
+// SubscribeLimitOrderBook subscribes to 5, 10, or 20 levels. Empty interval
+// selects the documented 250ms default; explicit options are 100ms and 500ms.
 func (c *WsMarketClient) SubscribeLimitOrderBook(symbol string, levels int, interval string, callback func(*WsDepthEvent) error) error {
-	channel := fmt.Sprintf("%s@depth%d@%s", symbol, levels, interval)
-	return c.Subscribe(channel, func(data []byte) error {
+	if levels != 5 && levels != 10 && levels != 20 {
+		return fmt.Errorf("aster perp partial depth stream: unsupported levels %d", levels)
+	}
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(symbol) + "@depth"
+	channel, err := perpDepthStream(prefix, levels, interval)
+	if err != nil {
+		return err
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != channel {
+		return fmt.Errorf("aster perp depth stream: %s already subscribed", existing)
+	}
+	c.SetHandler(prefix, func(data []byte) error {
 		var wsData WsDepthEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
 			return err
 		}
 		return callback(&wsData)
 	})
+	return c.Subscribe(channel, nil)
 }
 
 // SubscribeBookTicker Optimal bid/ask price
 func (c *WsMarketClient) SubscribeBookTicker(symbol string, callback func(*WsBookTickerEvent) error) error {
-	channel := fmt.Sprintf("%s@bookTicker", symbol)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@bookTicker", strings.ToLower(symbol))
 	return c.Subscribe(channel, func(data []byte) error {
 		var wsData WsBookTickerEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
@@ -191,7 +247,11 @@ func (c *WsMarketClient) SubscribeBookTicker(symbol string, callback func(*WsBoo
 }
 
 func (c *WsMarketClient) SubscribeAggTrade(symbol string, callback func(*WsAggTradeEvent) error) error {
-	channel := fmt.Sprintf("%s@aggTrade", symbol)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@aggTrade", strings.ToLower(symbol))
 	return c.Subscribe(channel, func(data []byte) error {
 		var wsData WsAggTradeEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
@@ -202,7 +262,11 @@ func (c *WsMarketClient) SubscribeAggTrade(symbol string, callback func(*WsAggTr
 }
 
 func (c *WsMarketClient) SubscribeKline(symbol string, interval string, callback func(*WsKlineEvent) error) error {
-	channel := fmt.Sprintf("%s@kline_%s", symbol, interval)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@kline_%s", strings.ToLower(symbol), interval)
 	return c.Subscribe(channel, func(data []byte) error {
 		var wsData WsKlineEvent
 		if err := json.Unmarshal(data, &wsData); err != nil {
@@ -215,10 +279,14 @@ func (c *WsMarketClient) SubscribeKline(symbol string, interval string, callback
 // Unsubscribe methods
 
 func (c *WsMarketClient) UnsubscribeMarkPrice(symbol string, interval string) error {
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
 	if interval == "" {
 		interval = "1s"
 	}
-	channel := fmt.Sprintf("%s@markPrice@%s", symbol, interval)
+	channel := fmt.Sprintf("%s@markPrice@%s", strings.ToLower(symbol), interval)
 	return c.Unsubscribe(channel)
 }
 
@@ -231,26 +299,88 @@ func (c *WsMarketClient) UnsubscribeAllMarkPrice(interval string) error {
 }
 
 func (c *WsMarketClient) UnsubscribeIncrementOrderBook(symbol string, interval string) error {
-	channel := fmt.Sprintf("%s@depth@%s", symbol, interval)
-	return c.Unsubscribe(channel)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(symbol) + "@depth"
+	channel, err := perpDepthStream(prefix, 0, interval)
+	if err != nil {
+		return err
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != channel {
+		return fmt.Errorf("aster perp depth stream: active stream is %s", existing)
+	}
+	err = c.Unsubscribe(channel)
+	c.SetHandler(prefix, nil)
+	return err
 }
 
 func (c *WsMarketClient) UnsubscribeLimitOrderBook(symbol string, levels int, interval string) error {
-	channel := fmt.Sprintf("%s@depth%d@%s", symbol, levels, interval)
-	return c.Unsubscribe(channel)
+	if levels != 5 && levels != 10 && levels != 20 {
+		return fmt.Errorf("aster perp partial depth stream: unsupported levels %d", levels)
+	}
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(symbol) + "@depth"
+	channel, err := perpDepthStream(prefix, levels, interval)
+	if err != nil {
+		return err
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != channel {
+		return fmt.Errorf("aster perp depth stream: active stream is %s", existing)
+	}
+	err = c.Unsubscribe(channel)
+	c.SetHandler(prefix, nil)
+	return err
 }
 
 func (c *WsMarketClient) UnsubscribeBookTicker(symbol string) error {
-	channel := fmt.Sprintf("%s@bookTicker", symbol)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@bookTicker", strings.ToLower(symbol))
 	return c.Unsubscribe(channel)
 }
 
 func (c *WsMarketClient) UnsubscribeAggTrade(symbol string) error {
-	channel := fmt.Sprintf("%s@aggTrade", symbol)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@aggTrade", strings.ToLower(symbol))
 	return c.Unsubscribe(channel)
 }
 
 func (c *WsMarketClient) UnsubscribeKline(symbol string, interval string) error {
-	channel := fmt.Sprintf("%s@kline_%s", symbol, interval)
+	symbol, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	channel := fmt.Sprintf("%s@kline_%s", strings.ToLower(symbol), interval)
 	return c.Unsubscribe(channel)
+}
+
+func (c *WsMarketClient) normalizeSymbol(symbol string) (string, error) {
+	return astercommon.NormalizeSymbol(c.profile, symbol)
+}
+
+func perpDepthStream(prefix string, levels int, interval string) (string, error) {
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	switch interval {
+	case "", "100ms", "500ms":
+	default:
+		return "", fmt.Errorf("aster perp depth stream: unsupported interval %q", interval)
+	}
+	stream := prefix
+	if levels > 0 {
+		stream += fmt.Sprintf("%d", levels)
+	}
+	if interval != "" {
+		stream += "@" + interval
+	}
+	return stream, nil
 }

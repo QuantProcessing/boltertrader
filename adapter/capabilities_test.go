@@ -21,6 +21,29 @@ func TestAdapterCapabilityMatrixRowsAreDocumented(t *testing.T) {
 	}
 }
 
+func TestAdapterCapabilityMatrixRowsAreUniqueAndTargetsExist(t *testing.T) {
+	data, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	makefile := string(data)
+	seen := make(map[string]struct{})
+	for _, row := range CapabilityMatrix() {
+		key := row.Venue + "|" + row.Product
+		if _, exists := seen[key]; exists {
+			t.Fatalf("duplicate capability row %s", key)
+		}
+		seen[key] = struct{}{}
+		target := strings.TrimPrefix(row.DemoTarget, "make ")
+		if target == row.DemoTarget || target == "" {
+			t.Fatalf("row %s has invalid acceptance target %q", key, row.DemoTarget)
+		}
+		if !strings.Contains(makefile, "\n"+target+":") {
+			t.Fatalf("row %s references missing Make target %q", key, target)
+		}
+	}
+}
+
 func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 	data, err := os.ReadFile("../docs/adapter-capabilities.md")
 	if err != nil {
@@ -30,6 +53,10 @@ func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 		t.Fatal("docs/adapter-capabilities.md must expose the account-state snapshot capability column")
 	}
 	want := map[string]bool{
+		"ASTER|Spot cash":              true,
+		"ASTER|USDT-linear Perp":       true,
+		"NADO|Spot no-borrow":          true,
+		"NADO|Perp":                    true,
 		"BINANCE|USD-M Perp":           true,
 		"BINANCE|Spot":                 true,
 		"OKX|USDT-linear SWAP":         true,
@@ -66,4 +93,16 @@ func TestAdapterCapabilityMatrixDoesNotClaimAdapterTimestamps(t *testing.T) {
 			t.Fatalf("row %+v claims adapter timestamps before adapter recv/emit fields are populated", row)
 		}
 	}
+}
+
+func TestAdapterCapabilityMatrixDoesNotClaimNadoSpotPositionReports(t *testing.T) {
+	for _, row := range CapabilityMatrix() {
+		if row.Venue == "NADO" && row.Product == "Spot no-borrow" {
+			if row.PositionReports != "unsupported" {
+				t.Fatalf("Nado Spot position reports=%q, want unsupported", row.PositionReports)
+			}
+			return
+		}
+	}
+	t.Fatal("Nado Spot capability row is missing")
 }

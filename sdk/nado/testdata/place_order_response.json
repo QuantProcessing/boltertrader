@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "signature": "<redacted>",
+  "data": {
+    "digest": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "request_type": "execute_place_order",
+  "id": 50001
+}

@@ -8,11 +8,7 @@ import (
 
 func TestFeeRates(t *testing.T) {
 	requireFullEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 	feeRates, err := client.GetFeeRates(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -22,11 +18,7 @@ func TestFeeRates(t *testing.T) {
 
 func TestGetAccount(t *testing.T) {
 	requireFullEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 	account, err := client.GetAccount(context.Background())
 	if err != nil {
 		t.Fatal(err)

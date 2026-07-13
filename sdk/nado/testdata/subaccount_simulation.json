@@ -1,0 +1,84 @@
+{
+  "status": "success",
+  "data": {
+    "subaccount": "0x1111111111111111111111111111111111111111000000000000000000000000",
+    "exists": true,
+    "healths": [
+      {
+        "assets": "1000000000000000000000",
+        "liabilities": "250000000000000000000",
+        "health": "750000000000000000000"
+      },
+      {
+        "assets": "1000000000000000000000",
+        "liabilities": "200000000000000000000",
+        "health": "800000000000000000000"
+      },
+      {
+        "assets": "1000000000000000000000",
+        "liabilities": "150000000000000000000",
+        "health": "850000000000000000000"
+      }
+    ],
+    "health_contributions": [],
+    "spot_count": 1,
+    "perp_count": 1,
+    "spot_balances": [
+      {
+        "product_id": 0,
+        "balance": {
+          "amount": "750000000000000000000"
+        }
+      }
+    ],
+    "perp_balances": [
+      {
+        "product_id": 2,
+        "balance": {
+          "amount": "600000000000000000",
+          "v_quote_balance": "-1500000000000000000000",
+          "last_cumulative_funding_x18": "100000000000000"
+        }
+      }
+    ],
+    "pre_state": {
+      "healths": [
+        {
+          "assets": "1000000000000000000000",
+          "liabilities": "200000000000000000000",
+          "health": "800000000000000000000"
+        },
+        {
+          "assets": "1000000000000000000000",
+          "liabilities": "150000000000000000000",
+          "health": "850000000000000000000"
+        },
+        {
+          "assets": "1000000000000000000000",
+          "liabilities": "100000000000000000000",
+          "health": "900000000000000000000"
+        }
+      ],
+      "health_contributions": [],
+      "spot_balances": [
+        {
+          "product_id": 0,
+          "balance": {
+            "amount": "800000000000000000000"
+          }
+        }
+      ],
+      "perp_balances": [
+        {
+          "product_id": 2,
+          "balance": {
+            "amount": "500000000000000000",
+            "v_quote_balance": "-1250000000000000000000",
+            "last_cumulative_funding_x18": "100000000000000"
+          }
+        }
+      ]
+    }
+  },
+  "request_type": "query_subaccount_info"
+}

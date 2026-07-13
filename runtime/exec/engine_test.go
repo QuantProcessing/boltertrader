@@ -32,7 +32,7 @@ func testReq(clientID string) model.OrderRequest {
 	}
 }
 
-func testEngine(fake *runtimetest.FakeExec) (*exec.Engine, *cache.Cache, *journal.MemoryJournal) {
+func testEngine(fake contract.ExecutionClient) (*exec.Engine, *cache.Cache, *journal.MemoryJournal) {
 	c := cache.New()
 	j := journal.NewMemory()
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -300,6 +300,28 @@ func TestCancelAmbiguousRemainsPendingCancel(t *testing.T) {
 	open := e.OpenInFlight()
 	if len(open) != 1 || open[0].State != exec.InFlightPendingCancel {
 		t.Fatalf("open in-flight=%+v, want pending cancel", open)
+	}
+}
+
+func TestCancelConfirmedMarksCachedOrderCanceled(t *testing.T) {
+	fake := runtimetest.NewFakeExec()
+	e, c, _ := testEngine(fake)
+	order, err := e.Submit(context.Background(), testReq("cancel-confirmed"))
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if err := e.Cancel(context.Background(), order.Request.ClientID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	cached, ok := c.Order(order.Request.ClientID)
+	if !ok {
+		t.Fatal("cache missing canceled order")
+	}
+	if cached.Status != enums.StatusCanceled {
+		t.Fatalf("status=%s, want CANCELED", cached.Status)
+	}
+	if got := e.InFlightCount(); got != 0 {
+		t.Fatalf("in-flight=%d, want 0", got)
 	}
 }
 

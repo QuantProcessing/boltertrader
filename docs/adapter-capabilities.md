@@ -7,6 +7,10 @@ reconciliation.
 
 | Venue | Product | Market stream | Private order stream | Account stream | Account-state snapshot | Submit | Cancel | Modify | Order status reports | Fill reports | Position reports | Mass status | Single-order query | Open-only caveat | Latency timestamps | Acceptance target |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ASTER | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open-order mass status | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-spot |
+| ASTER | USDT-linear Perp | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-perp |
+| NADO | Spot no-borrow | yes | yes | yes | yes | yes | yes | no | open orders | matches | unsupported | open-order mass status | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-spot |
+| NADO | Perp | yes | yes | yes | yes | yes | yes | no | open orders | matches | account snapshot | open-order mass status | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-perp |
 | BINANCE | USD-M Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | unsupported | yes | runtime timestamps | make test-binance-demo-runtime-perp |
 | BINANCE | Spot | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | unsupported | yes | runtime timestamps | make test-binance-demo-runtime-spot |
 | OKX | USDT-linear SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | unsupported | yes | runtime timestamps | make test-okx-demo-runtime-perp |
@@ -37,6 +41,9 @@ make test-lighter-testnet-acceptance
 make test-bybit-acceptance
 make test-bitget-acceptance
 make test-gate-testnet-acceptance
+make test-aster-testnet-acceptance
+make test-nado-testnet-acceptance
+make test-aster-nado-testnet-acceptance
 make test-bybit-bitget-acceptance
 ```
 
@@ -59,6 +66,22 @@ Gate rows use Gate's official Testnet endpoint profile. The phase-one support
 surface is Spot cash plus USDT-linear futures/perps only; USDC-linear futures
 are intentionally deferred until an official non-production path is proven.
 
+Aster rows use only the official V3 Testnet profiles and API-wallet EIP-712
+credentials. Symbols whose normalized venue symbol starts with `TEST` are never
+eligible for write acceptance. Nado rows share one unified-margin account;
+Spot is funded-only/no-borrow, while Perp admission uses the venue's exact
+documented max-order-size pre-trade query. Their aggregate targets
+are noskip-gated and require all read-only plus four adapter/runtime write rows
+per venue to execute and leave no test-owned orders or Perp exposure.
+
+The Nado rows describe implemented adapter capabilities. Submit remains
+fail-closed around local checks, documented venue capacity, exact prepared
+payload ownership, one-time execution, and reconciliation. Nado enters the
+accepted support set because all four Testnet write rows pass without skips.
+For isolated-only Perp products, discovery selects isolated execution and the
+adapter transfers conservative 1x opening margin; reduce-only closes add zero
+margin.
+
 ## Derivative Reference Data
 
 Perp venues expose funding/reference data as market data. Funding rate, mark
@@ -80,6 +103,17 @@ make test-reference-data-read
 | GATE | USDT-linear Perp/SWAP | REST snapshot event | index price | REST ticker query only | make test-gate-testnet-reference-data-read |
 | HYPERLIQUID | Perp and HIP-3 Perp | REST snapshot event | oracle price | REST asset context query only | make test-hyperliquid-testnet-reference-data-read |
 | LIGHTER | Perp | WS market-stats stream | index price | REST order-book-detail query only | make test-lighter-testnet-reference-data-read |
+| ASTER | USDT-linear Perp | REST snapshot plus WS mark-price stream | index price | REST query only | make test-aster-testnet-reference-data-read |
+| NADO | Perp | REST funding/mark/index/oracle snapshot plus WS funding-rate updates | exact x18 index and oracle prices | REST `all_products` query only | make test-nado-testnet-reference-data-read |
+
+Nado's funding endpoint reports a 24-hour rate basis while settlement occurs
+hourly. The normalized snapshot preserves that native rate and advertises a
+`24h` funding interval; it does not manufacture a next-funding timestamp. Nado
+mark, index, and oracle values use the Archive V1 x18 queries and each field's
+official `update_time`. The native WS stream supplies funding updates only, so
+cached mark/index/oracle values retain their independent REST freshness.
+Nado funding history is intentionally not capability-advertised because the
+official Archive V1 contract documents current funding only.
 
 ## Deferred / Unsupported Products
 

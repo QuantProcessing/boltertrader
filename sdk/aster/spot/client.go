@@ -13,27 +13,31 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/QuantProcessing/boltertrader/internal/mbx"
-)
-
-const (
-	BaseURL = "https://sapi.asterdex.com"
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 type Client struct {
-	BaseURL    string
-	APIKey     string
-	SecretKey  string
 	HTTPClient *http.Client
 	Logger     *zap.SugaredLogger
 	Debug      bool
 
 	UsedWeight mbx.UsedWeight
 	OrderCount mbx.OrderCount
+
+	profile  astercommon.Profile
+	security *astercommon.SecurityContext
 }
 
-func NewClient(apiKey, secretKey string) *Client {
+func NewClient(profile astercommon.Profile, security *astercommon.SecurityContext) (*Client, error) {
+	if profile.Product() != astercommon.ProductSpot {
+		return nil, fmt.Errorf("aster spot client: profile product is %q", profile.Product())
+	}
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
 	httpClient := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:       15 * time.Second,
+		CheckRedirect: rejectRedirect,
 	}
 	l := zap.NewNop().Sugar().Named("aster-spot")
 
@@ -47,24 +51,29 @@ func NewClient(apiKey, secretKey string) *Client {
 				Proxy: http.ProxyURL(parsedURL),
 			}
 		} else {
-			l.Warnw("Invalid proxy URL", "url", proxyURL, "error", err)
+			l.Warn("Invalid proxy URL")
 		}
 	}
 
 	return &Client{
-		BaseURL:    BaseURL,
-		APIKey:     apiKey,
-		SecretKey:  secretKey,
 		HTTPClient: httpClient,
 		Logger:     l,
 		Debug:      os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1",
-	}
+		profile:    profile,
+		security:   security,
+	}, nil
 }
 
-func (c *Client) WithBaseURL(url string) *Client {
-	c.BaseURL = url
+func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
+	if httpClient != nil {
+		clone := *httpClient
+		clone.CheckRedirect = rejectRedirect
+		c.HTTPClient = &clone
+	}
 	return c
 }
+
+func (c *Client) Profile() astercommon.Profile { return c.profile }
 
 func (c *Client) WithDebug(debug bool) *Client {
 	c.Debug = debug
@@ -72,41 +81,50 @@ func (c *Client) WithDebug(debug bool) *Client {
 }
 
 func (c *Client) call(ctx context.Context, method, endpoint string, params map[string]interface{}, signed bool, result interface{}) error {
-	u, err := url.Parse(c.BaseURL + endpoint)
+	u, err := url.Parse(c.profile.RESTURL() + endpoint)
 	if err != nil {
 		return err
 	}
 
 	q := u.Query()
 	for k, v := range params {
+		if k == "symbol" {
+			symbol, ok := v.(string)
+			if !ok {
+				return fmt.Errorf("aster spot client: symbol must be a string")
+			}
+			normalized, err := astercommon.NormalizeSymbol(c.profile, symbol)
+			if err != nil {
+				return err
+			}
+			q.Add(k, normalized)
+			continue
+		}
 		q.Add(k, fmt.Sprintf("%v", v))
 	}
 
 	if signed {
-		q.Add("timestamp", fmt.Sprintf("%d", Timestamp()))
-		queryString := q.Encode()
-		sig := GenerateSignature(c.SecretKey, queryString)
-		u.RawQuery = queryString + "&signature=" + sig
+		signedParams, err := c.security.Sign(c.profile, q)
+		if err != nil {
+			return err
+		}
+		u.RawQuery = signedParams.Encode()
 	} else {
 		u.RawQuery = q.Encode()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), nil)
 	if err != nil {
-		return err
-	}
-
-	if c.APIKey != "" {
-		req.Header.Add("X-MBX-APIKEY", c.APIKey)
+		return astercommon.NewTransportError(method, endpoint, err)
 	}
 
 	if c.Debug {
-		c.Logger.Debugw("Request", "method", method, "url", u.String())
+		c.Logger.Debugw("Request", "method", method, "url", astercommon.RedactURL(u.String()))
 	}
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return astercommon.NewTransportError(method, endpoint, err)
 	}
 	defer resp.Body.Close()
 
@@ -119,24 +137,21 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 	}
 
 	if c.Debug {
-		c.Logger.Debugw("Response", "body", string(data))
+		c.Logger.Debugw("Response", "status", resp.StatusCode, "bytes", len(data))
 	}
 
 	if resp.StatusCode >= 400 {
-		if rlErr := mbx.MapAPIError("ASTER", resp.StatusCode, data, func(d []byte) (int, string, error) {
-			var apiErr APIError
-			if err := json.Unmarshal(d, &apiErr); err != nil {
-				return 0, "", err
-			}
-			return apiErr.Code, apiErr.Message, nil
+		var apiErr APIError
+		if err := json.Unmarshal(data, &apiErr); err != nil {
+			return astercommon.NewVenueError(resp.StatusCode, method, endpoint, 0, http.StatusText(resp.StatusCode))
+		}
+		message := astercommon.SanitizeVenueMessage(apiErr.Message)
+		if rlErr := mbx.MapAPIError("ASTER", resp.StatusCode, nil, func([]byte) (int, string, error) {
+			return apiErr.Code, message, nil
 		}); rlErr != nil {
 			return rlErr
 		}
-		var apiErr APIError
-		if err := json.Unmarshal(data, &apiErr); err != nil {
-			return fmt.Errorf("http error %d: %s", resp.StatusCode, string(data))
-		}
-		return &apiErr
+		return astercommon.NewVenueError(resp.StatusCode, method, endpoint, apiErr.Code, message)
 	}
 
 	if result != nil {
@@ -146,6 +161,10 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 	}
 
 	return nil
+}
+
+func rejectRedirect(_ *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("aster spot client: redirects are disabled")
 }
 
 func (c *Client) Get(ctx context.Context, endpoint string, params map[string]interface{}, signed bool, result interface{}) error {

@@ -16,10 +16,12 @@ type Account interface {
 	Venue() string
 	Type() model.AccountType
 	BaseCurrency() string
+	Summary() *model.AccountSummary
 	LastEvent() model.AccountState
 	Freshness() model.AccountFreshness
 	IsFresh(now time.Time) bool
 	Apply(state model.AccountState, appliedAt time.Time) error
+	ApplyBalance(balance model.AccountBalance) error
 	MarkReconciled(at time.Time)
 	Balance(currency string) (model.AccountBalance, bool)
 	Balances() []model.AccountBalance
@@ -113,6 +115,15 @@ func (a *baseAccount) BaseCurrency() string {
 	defer a.mu.RUnlock()
 	return a.baseCcy
 }
+func (a *baseAccount) Summary() *model.AccountSummary {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.last.Summary == nil {
+		return nil
+	}
+	summary := *a.last.Summary
+	return &summary
+}
 func (a *baseAccount) LastEvent() model.AccountState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -150,6 +161,9 @@ func (a *baseAccount) Apply(state model.AccountState, appliedAt time.Time) error
 	if state.BaseCurrency != a.baseCcy {
 		return fmt.Errorf("accounting: base currency changed from %s to %s", a.baseCcy, state.BaseCurrency)
 	}
+	if !a.last.TsEvent.IsZero() && state.TsEvent.Before(a.last.TsEvent) {
+		return nil
+	}
 	a.last = copyState(state)
 	a.balances = make(map[string]model.AccountBalance, len(state.Balances))
 	for _, bal := range state.Balances {
@@ -164,6 +178,42 @@ func (a *baseAccount) Apply(state model.AccountState, appliedAt time.Time) error
 		a.margins[keyForMargin(margin)] = model.CloneMarginBalance(margin)
 	}
 	a.fresh.LastAccountStateAt = appliedAt
+	return nil
+}
+
+func (a *baseAccount) ApplyBalance(balance model.AccountBalance) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	balance = balance.Normalized()
+	if balance.AccountID == "" {
+		balance.AccountID = a.id
+	}
+	if balance.AccountID != a.id {
+		return fmt.Errorf("accounting: balance account id %s does not match %s", balance.AccountID, a.id)
+	}
+	if existing, ok := a.balances[balance.Currency]; ok && !balance.UpdatedAt.IsZero() && !existing.UpdatedAt.IsZero() && balance.UpdatedAt.Before(existing.UpdatedAt) {
+		return nil
+	}
+	candidate := copyState(a.last)
+	replaced := false
+	for i := range candidate.Balances {
+		if candidate.Balances[i].Currency == balance.Currency {
+			candidate.Balances[i] = balance
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		candidate.Balances = append(candidate.Balances, balance)
+	}
+	if balance.UpdatedAt.After(candidate.TsEvent) {
+		candidate.TsEvent = balance.UpdatedAt
+	}
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+	a.last = candidate
+	a.balances[balance.Currency] = balance
 	return nil
 }
 

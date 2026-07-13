@@ -1,0 +1,46 @@
+{
+  "matches": [
+    {
+      "digest": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "order": {
+        "sender": "0x1111111111111111111111111111111111111111000000000000000000000000",
+        "priceX18": "2500000000000000000000",
+        "amount": "100000000000000000",
+        "expiration": "4294967295",
+        "nonce": "1783641600000000000",
+        "appendix": "1"
+      },
+      "base_filled": "100000000000000000",
+      "quote_filled": "250000000000000000000",
+      "fee": "50000000000000000",
+      "sequencer_fee": "0",
+      "submission_idx": "60001",
+      "timestamp": "1783641600100",
+      "pre_balance": {
+        "base": {
+          "spot": {
+            "product_id": 1,
+            "balance": {
+              "amount": "1000000000000000000"
+            }
+          }
+        }
+      },
+      "post_balance": {
+        "base": {
+          "spot": {
+            "product_id": 1,
+            "balance": {
+              "amount": "1100000000000000000"
+            }
+          }
+        }
+      },
+      "net_entry_unrealized": "0",
+      "net_entry_cumulative": "0",
+      "closed_amount": "0",
+      "realized_pnl": "0"
+    }
+  ],
+  "txs": []
+}

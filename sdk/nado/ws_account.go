@@ -21,19 +21,22 @@ const (
 // Read loop has NO timeout since account updates may be infrequent (no trading activity)
 type WsAccountClient struct {
 	url        string
-	privateKey string
+	Signer     *Signer
+	restClient *Client
 	subaccount string
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	mu              sync.Mutex
+	connectMu       sync.Mutex
 	writeMu         sync.Mutex
 	conn            *websocket.Conn
 	isConnected     bool
 	isAuthenticated bool
 
 	authWaitCh chan error
+	subWaiters map[int64]chan error
 
 	subscriptions map[string]*accountSubscription
 	stopCh        chan struct{}
@@ -50,38 +53,56 @@ type accountSubscription struct {
 	callback func([]byte)
 }
 
-func NewWsAccountClient(ctx context.Context) *WsAccountClient {
+func NewWsAccountClient(ctx context.Context, restClient *Client) (*WsAccountClient, error) {
+	if restClient == nil {
+		return nil, fmt.Errorf("nado ws account client: rest client is required")
+	}
+	profile := restClient.Profile()
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
+	if restClient.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
 	c := &WsAccountClient{
-		url:           WsSubscriptionsURL,
-		subaccount:    "default",
+		url:           profile.SubscriptionsWSURL(),
+		Signer:        restClient.Signer,
+		restClient:    restClient,
+		subaccount:    restClient.subaccount,
 		subscriptions: make(map[string]*accountSubscription),
+		subWaiters:    make(map[int64]chan error),
 		Logger:        zap.NewNop().Sugar().Named("nado-account"),
 	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
-	return c
+	return c, nil
 }
 
-func (c *WsAccountClient) WithCredentials(privateKey string) *WsAccountClient {
-	c.privateKey = privateKey
-	return c
-}
-
-func (c *WsAccountClient) SetSubaccount(subaccount string) {
+func (c *WsAccountClient) SetSubaccount(subaccount string) error {
 	if subaccount == "" {
 		subaccount = "default"
 	}
+	if len([]byte(subaccount)) > 12 {
+		return fmt.Errorf("nado ws account client: subaccount name exceeds 12 bytes")
+	}
 	c.subaccount = subaccount
+	return nil
 }
 
 func (c *WsAccountClient) Connect() error {
-	c.mu.Lock()
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 
-	// Wait for previous loops to exit
-	if c.loopsDoneCh != nil {
+	c.mu.Lock()
+	if c.isConnected && c.conn != nil {
 		c.mu.Unlock()
-		<-c.loopsDoneCh
-		c.mu.Lock()
+		return nil
 	}
+	previousLoops := c.loopsDoneCh
+	c.mu.Unlock()
+	if previousLoops != nil {
+		<-previousLoops
+	}
+	c.mu.Lock()
 
 	// Safely close old stopCh
 	if c.stopCh != nil {
@@ -134,8 +155,10 @@ func (c *WsAccountClient) Connect() error {
 	})
 
 	// Restore subscriptions (will authenticate if needed)
-	c.resubscribeAll()
-
+	if err := c.resubscribeAll(); err != nil {
+		c.disconnect()
+		return err
+	}
 	return nil
 }
 
@@ -172,9 +195,12 @@ func (c *WsAccountClient) pingLoop() {
 			c.Logger.Debug("Ping loop exiting (connection lost)")
 			return
 		case <-ticker.C:
-			if c.conn != nil {
+			c.mu.Lock()
+			conn := c.conn
+			c.mu.Unlock()
+			if conn != nil {
 				ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-				if err := c.conn.Ping(ctx); err != nil {
+				if err := conn.Ping(ctx); err != nil {
 					c.Logger.Errorw("Ping error", "error", err)
 				} else {
 					c.Logger.Debug("Ping sent successfully")
@@ -186,11 +212,17 @@ func (c *WsAccountClient) pingLoop() {
 }
 
 func (c *WsAccountClient) readLoop() {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
 	defer func() {
 		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.Close(websocket.StatusNormalClosure, "")
+		if c.conn == conn {
 			c.conn = nil
+		}
+		if conn != nil {
+			conn.Close(websocket.StatusNormalClosure, "")
 		}
 		c.isConnected = false
 		c.isAuthenticated = false
@@ -219,7 +251,7 @@ func (c *WsAccountClient) readLoop() {
 			return
 		default:
 			// Account data has NO timeout (may be idle for long periods)
-			_, msg, err := c.conn.Read(c.ctx)
+			_, msg, err := conn.Read(c.ctx)
 
 			if err != nil {
 				// Context canceled is expected during normal shutdown
@@ -231,7 +263,7 @@ func (c *WsAccountClient) readLoop() {
 				return
 			}
 
-			c.Logger.Debug("Received message", "msg", string(msg))
+			c.Logger.Debug("Received account message")
 			c.handleMessage(msg)
 		}
 	}
@@ -268,11 +300,20 @@ func (c *WsAccountClient) reconnect() {
 
 func (c *WsAccountClient) Close() {
 	c.cancel()
+	c.disconnect()
+}
+
+func (c *WsAccountClient) disconnect() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		c.conn.Close(websocket.StatusNormalClosure, "")
+	conn := c.conn
+	if conn != nil {
 		c.conn = nil
+	}
+	c.isConnected = false
+	c.isAuthenticated = false
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}
 }
 
@@ -327,18 +368,37 @@ func (c *WsAccountClient) Unsubscribe(stream StreamParams) error {
 }
 
 func (c *WsAccountClient) sendSubscribe(stream StreamParams) error {
+	id := time.Now().UnixNano()
+	waiter := make(chan error, 1)
+	c.mu.Lock()
+	c.subWaiters[id] = waiter
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.subWaiters, id)
+		c.mu.Unlock()
+	}()
 	req := SubscriptionRequest{
 		Method: "subscribe",
 		Stream: stream,
-		Id:     time.Now().UnixNano(),
+		Id:     id,
 	}
-	return c.writeJSON(req)
+	if err := c.writeJSON(req); err != nil {
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	select {
+	case err := <-waiter:
+		return err
+	case <-waitCtx.Done():
+		return fmt.Errorf("subscription %s acknowledgement timeout: %w", stream.Type, waitCtx.Err())
+	}
 }
 
 func (c *WsAccountClient) authenticate() error {
-	if c.privateKey == "" {
-		c.updateAuthState(true)
-		return nil
+	if c.Signer == nil {
+		return ErrCredentialsRequired
 	}
 
 	// Check if already authenticated
@@ -361,10 +421,7 @@ func (c *WsAccountClient) authenticate() error {
 		c.mu.Unlock()
 	}()
 
-	signer, err := NewSigner(c.privateKey)
-	if err != nil {
-		return err
-	}
+	signer := c.Signer
 
 	// Auth request with 10 second expiration
 	expiration := fmt.Sprintf("%d", time.Now().Add(10*time.Second).UnixMilli())
@@ -374,7 +431,10 @@ func (c *WsAccountClient) authenticate() error {
 		Expiration: expiration,
 	}
 
-	verifyingContract := EndpointAddress
+	verifyingContract, err := c.endpointAddress(c.ctx)
+	if err != nil {
+		return err
+	}
 	signature, err := signer.SignStreamAuthentication(txAuth, verifyingContract)
 	if err != nil {
 		return err
@@ -429,16 +489,19 @@ func (c *WsAccountClient) authRenewalLoop(stopCh <-chan struct{}) {
 }
 
 func (c *WsAccountClient) sendAuthMessage() error {
-	signer, err := NewSigner(c.privateKey)
-	if err != nil {
-		return err
+	signer := c.Signer
+	if signer == nil {
+		return ErrCredentialsRequired
 	}
 	expiration := fmt.Sprintf("%d", time.Now().Add(24*time.Hour).UnixMilli())
 	txAuth := TxStreamAuth{
 		Sender:     BuildSender(signer.GetAddress(), c.subaccount),
 		Expiration: expiration,
 	}
-	verifyingContract := EndpointAddress
+	verifyingContract, err := c.endpointAddress(c.ctx)
+	if err != nil {
+		return err
+	}
 	signature, err := signer.SignStreamAuthentication(txAuth, verifyingContract)
 	if err != nil {
 		return err
@@ -472,12 +535,12 @@ func (c *WsAccountClient) updateAuthState(auth bool) {
 	c.mu.Unlock()
 }
 
-func (c *WsAccountClient) resubscribeAll() {
+func (c *WsAccountClient) resubscribeAll() error {
 	c.mu.Lock()
 	if len(c.subscriptions) == 0 {
 		c.mu.Unlock()
 		c.Logger.Info("No account subscriptions to restore")
-		return
+		return nil
 	}
 
 	var allParams []StreamParams
@@ -499,24 +562,20 @@ func (c *WsAccountClient) resubscribeAll() {
 
 	if needAuth {
 		if err := c.authenticate(); err != nil {
-			c.Logger.Errorw("Auth failed during resubscribe", "error", err)
-			return
+			return fmt.Errorf("authenticate account subscriptions: %w", err)
 		}
 	}
 
 	// Restore all subscriptions
 	for _, p := range allParams {
 		if err := c.sendSubscribe(p); err != nil {
-			c.Logger.Errorw("Failed to restore account subscription",
-				"type", p.Type,
-				"error", err,
-			)
-		} else {
-			c.Logger.Infow("Restored account subscription", "type", p.Type)
+			return fmt.Errorf("restore account subscription %s: %w", p.Type, err)
 		}
+		c.Logger.Infow("Restored account subscription", "type", p.Type)
 	}
 
 	c.Logger.Info("Account subscription restoration completed")
+	return nil
 }
 
 func (c *WsAccountClient) writeJSON(v interface{}) error {
@@ -568,9 +627,25 @@ func (c *WsAccountClient) handleMessage(msg []byte) {
 		c.mu.Unlock()
 		return
 	}
+	if baseMsg.Id != 0 {
+		c.mu.Lock()
+		waiter := c.subWaiters[baseMsg.Id]
+		c.mu.Unlock()
+		if waiter != nil {
+			var ackErr error
+			if baseMsg.Error != nil {
+				ackErr = fmt.Errorf("subscription rejected: %s", *baseMsg.Error)
+			}
+			select {
+			case waiter <- ackErr:
+			default:
+			}
+			return
+		}
+	}
 
 	if baseMsg.Type == nil {
-		c.Logger.Debugw("Received message with no type", "msg", string(msg))
+		c.Logger.Debug("Received account message with no type")
 		return
 	}
 
@@ -592,21 +667,33 @@ func (c *WsAccountClient) handleMessage(msg []byte) {
 		return
 	}
 
-	// Call callback synchronously to preserve message order
-	sub.callback(msg)
+	callback := sub.callback
+	if callback != nil {
+		callback(msg)
+	}
+}
+
+func (c *WsAccountClient) endpointAddress(ctx context.Context) (string, error) {
+	if c.restClient == nil {
+		return "", fmt.Errorf("nado ws account client: rest client is required")
+	}
+	contract, err := c.restClient.ensureContracts(ctx)
+	if err != nil {
+		return "", fmt.Errorf("nado ws account auth contracts discovery: %w", err)
+	}
+	return contract.EndpointAddress, nil
 }
 
 // getSender helper
 func (c *WsAccountClient) getSender() string {
-	if c.privateKey == "" {
+	if c.Signer == nil {
 		return ""
 	}
-	signer, _ := NewSigner(c.privateKey)
-	return BuildSender(signer.GetAddress(), c.subaccount)
+	return BuildSender(c.Signer.GetAddress(), c.subaccount)
 }
 
 func (c *WsAccountClient) SubscribeOrders(productId *int64, callback func(*OrderUpdate)) error {
-	if c.privateKey == "" {
+	if c.Signer == nil {
 		return ErrCredentialsRequired
 	}
 	sender := c.getSender()
@@ -618,7 +705,7 @@ func (c *WsAccountClient) SubscribeOrders(productId *int64, callback func(*Order
 	return c.Subscribe(params, func(data []byte) {
 		var res OrderUpdate
 		if err := json.Unmarshal(data, &res); err != nil {
-			fmt.Printf("unmarshal order_update error: %v\n", err)
+			c.Logger.Errorw("unmarshal order_update error", "error", err)
 			return
 		}
 		if callback != nil {
@@ -628,7 +715,7 @@ func (c *WsAccountClient) SubscribeOrders(productId *int64, callback func(*Order
 }
 
 func (c *WsAccountClient) SubscribeFills(productId *int64, callback func(*Fill)) error {
-	if c.privateKey == "" {
+	if c.Signer == nil {
 		return ErrCredentialsRequired
 	}
 	sender := c.getSender()
@@ -640,7 +727,7 @@ func (c *WsAccountClient) SubscribeFills(productId *int64, callback func(*Fill))
 	return c.Subscribe(params, func(data []byte) {
 		var res Fill
 		if err := json.Unmarshal(data, &res); err != nil {
-			fmt.Printf("unmarshal fill error: %v\n", err)
+			c.Logger.Errorw("unmarshal fill error", "error", err)
 			return
 		}
 		if callback != nil {
@@ -650,7 +737,7 @@ func (c *WsAccountClient) SubscribeFills(productId *int64, callback func(*Fill))
 }
 
 func (c *WsAccountClient) SubscribePositions(productId *int64, callback func(*PositionChange)) error {
-	if c.privateKey == "" {
+	if c.Signer == nil {
 		return ErrCredentialsRequired
 	}
 	sender := c.getSender()
@@ -662,7 +749,7 @@ func (c *WsAccountClient) SubscribePositions(productId *int64, callback func(*Po
 	return c.Subscribe(params, func(data []byte) {
 		var res PositionChange
 		if err := json.Unmarshal(data, &res); err != nil {
-			fmt.Printf("unmarshal position_change error: %v\n", err)
+			c.Logger.Errorw("unmarshal position_change error", "error", err)
 			return
 		}
 		if callback != nil {

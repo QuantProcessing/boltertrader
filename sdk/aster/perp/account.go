@@ -8,55 +8,62 @@ import (
 // Account Information
 
 type AccountResponse struct {
-	FeeTier                     int    `json:"feeTier"`
-	CanTrade                    bool   `json:"canTrade"`
-	CanDeposit                  bool   `json:"canDeposit"`
-	CanWithdraw                 bool   `json:"canWithdraw"`
-	UpdateTime                  int64  `json:"updateTime"`
-	TotalInitialMargin          string `json:"totalInitialMargin"`
-	TotalMaintMargin            string `json:"totalMaintMargin"`
-	TotalWalletBalance          string `json:"totalWalletBalance"`
-	TotalUnrealizedProfit       string `json:"totalUnrealizedProfit"`
-	TotalMarginBalance          string `json:"totalMarginBalance"`
-	TotalPositionInitialMargin  string `json:"totalPositionInitialMargin"`
-	TotalOpenOrderInitialMargin string `json:"totalOpenOrderInitialMargin"`
-	MaxWithdrawAmount           string `json:"maxWithdrawAmount"`
-	Assets                      []struct {
-		Asset                  string `json:"asset"`
-		WalletBalance          string `json:"walletBalance"`
-		UnrealizedProfit       string `json:"unrealizedProfit"`
-		MarginBalance          string `json:"marginBalance"`
-		MaintMargin            string `json:"maintMargin"`
-		InitialMargin          string `json:"initialMargin"`
-		PositionInitialMargin  string `json:"positionInitialMargin"`
-		OpenOrderInitialMargin string `json:"openOrderInitialMargin"`
-		MaxWithdrawAmount      string `json:"maxWithdrawAmount"`
-		CrossWalletBalance     string `json:"crossWalletBalance"`
-		CrossUnPnl             string `json:"crossUnPnl"`
-		AvailableBalance       string `json:"availableBalance"`
-		MarginAvailable        bool   `json:"marginAvailable"`
-		UpdateTime             int64  `json:"updateTime"`
-	} `json:"assets"`
-	Positions []struct {
-		Symbol                 string `json:"symbol"`
-		InitialMargin          string `json:"initialMargin"`
-		MaintMargin            string `json:"maintMargin"`
-		UnrealizedProfit       string `json:"unrealizedProfit"`
-		PositionInitialMargin  string `json:"positionInitialMargin"`
-		OpenOrderInitialMargin string `json:"openOrderInitialMargin"`
-		Leverage               string `json:"leverage"`
-		Isolated               bool   `json:"isolated"`
-		EntryPrice             string `json:"entryPrice"`
-		MaxNotional            string `json:"maxNotional"`
-		PositionSide           string `json:"positionSide"`
-		PositionAmt            string `json:"positionAmt"`
-		UpdateTime             int64  `json:"updateTime"`
-	} `json:"positions"`
+	FeeTier                     int               `json:"feeTier"`
+	CanTrade                    bool              `json:"canTrade"`
+	CanDeposit                  bool              `json:"canDeposit"`
+	CanWithdraw                 bool              `json:"canWithdraw"`
+	UpdateTime                  int64             `json:"updateTime"`
+	TotalInitialMargin          string            `json:"totalInitialMargin"`
+	TotalMaintMargin            string            `json:"totalMaintMargin"`
+	TotalWalletBalance          string            `json:"totalWalletBalance"`
+	TotalUnrealizedProfit       string            `json:"totalUnrealizedProfit"`
+	TotalMarginBalance          string            `json:"totalMarginBalance"`
+	TotalPositionInitialMargin  string            `json:"totalPositionInitialMargin"`
+	TotalOpenOrderInitialMargin string            `json:"totalOpenOrderInitialMargin"`
+	TotalCrossWalletBalance     string            `json:"totalCrossWalletBalance"`
+	TotalCrossUnPnl             string            `json:"totalCrossUnPnl"`
+	AvailableBalance            string            `json:"availableBalance"`
+	MaxWithdrawAmount           string            `json:"maxWithdrawAmount"`
+	Assets                      []AccountAsset    `json:"assets"`
+	Positions                   []AccountPosition `json:"positions"`
+}
+
+type AccountAsset struct {
+	Asset                  string `json:"asset"`
+	WalletBalance          string `json:"walletBalance"`
+	UnrealizedProfit       string `json:"unrealizedProfit"`
+	MarginBalance          string `json:"marginBalance"`
+	MaintMargin            string `json:"maintMargin"`
+	InitialMargin          string `json:"initialMargin"`
+	PositionInitialMargin  string `json:"positionInitialMargin"`
+	OpenOrderInitialMargin string `json:"openOrderInitialMargin"`
+	MaxWithdrawAmount      string `json:"maxWithdrawAmount"`
+	CrossWalletBalance     string `json:"crossWalletBalance"`
+	CrossUnPnl             string `json:"crossUnPnl"`
+	AvailableBalance       string `json:"availableBalance"`
+	MarginAvailable        bool   `json:"marginAvailable"`
+	UpdateTime             int64  `json:"updateTime"`
+}
+
+type AccountPosition struct {
+	Symbol                 string `json:"symbol"`
+	InitialMargin          string `json:"initialMargin"`
+	MaintMargin            string `json:"maintMargin"`
+	UnrealizedProfit       string `json:"unrealizedProfit"`
+	PositionInitialMargin  string `json:"positionInitialMargin"`
+	OpenOrderInitialMargin string `json:"openOrderInitialMargin"`
+	Leverage               string `json:"leverage"`
+	Isolated               bool   `json:"isolated"`
+	EntryPrice             string `json:"entryPrice"`
+	MaxNotional            string `json:"maxNotional"`
+	PositionSide           string `json:"positionSide"`
+	PositionAmt            string `json:"positionAmt"`
+	UpdateTime             int64  `json:"updateTime"`
 }
 
 func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
 	var res AccountResponse
-	err := c.Get(ctx, "/fapi/v2/account", nil, true, &res)
+	err := c.Get(ctx, "/fapi/v3/accountWithJoinMargin", nil, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -73,11 +80,13 @@ type BalanceResponse struct {
 	CrossUnPnl         string `json:"crossUnPnl"`
 	AvailableBalance   string `json:"availableBalance"`
 	MaxWithdrawAmount  string `json:"maxWithdrawAmount"`
+	MarginAvailable    bool   `json:"marginAvailable"`
+	UpdateTime         int64  `json:"updateTime"`
 }
 
 func (c *Client) GetBalance(ctx context.Context) ([]BalanceResponse, error) {
 	var res []BalanceResponse
-	err := c.Get(ctx, "/fapi/v2/balance", nil, true, &res)
+	err := c.Get(ctx, "/fapi/v3/balance", nil, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +119,7 @@ func (c *Client) GetPositionRisk(ctx context.Context, symbol string) ([]Position
 		params["symbol"] = symbol
 	}
 	var res []PositionRiskResponse
-	err := c.Get(ctx, "/fapi/v2/positionRisk", params, true, &res)
+	err := c.Get(ctx, "/fapi/v3/positionRisk", params, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +140,7 @@ func (c *Client) ChangeLeverage(ctx context.Context, symbol string, leverage int
 		"leverage": leverage,
 	}
 	var res LeverageResponse
-	err := c.Post(ctx, "/fapi/v1/leverage", params, true, &res)
+	err := c.Post(ctx, "/fapi/v3/leverage", params, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +160,7 @@ func (c *Client) ChangeMarginType(ctx context.Context, symbol string, marginType
 		"marginType": marginType, // ISOLATED, CROSSED
 	}
 	var res MarginTypeResponse
-	err := c.Post(ctx, "/fapi/v1/marginType", params, true, &res)
+	err := c.Post(ctx, "/fapi/v3/marginType", params, true, &res)
 	if err != nil {
 		return err
 	}
@@ -166,7 +175,7 @@ type PositionModeResponse struct {
 
 func (c *Client) GetPositionMode(ctx context.Context) (*PositionModeResponse, error) {
 	var res PositionModeResponse
-	err := c.Get(ctx, "/fapi/v1/positionSide/dual", nil, true, &res)
+	err := c.Get(ctx, "/fapi/v3/positionSide/dual", nil, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +190,7 @@ func (c *Client) ChangePositionMode(ctx context.Context, dualSidePosition bool) 
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	err := c.Post(ctx, "/fapi/v1/positionSide/dual", params, true, &res)
+	err := c.Post(ctx, "/fapi/v3/positionSide/dual", params, true, &res)
 	if err != nil {
 		return err
 	}
@@ -196,7 +205,7 @@ type MultiAssetsModeResponse struct {
 
 func (c *Client) GetMultiAssetsMode(ctx context.Context) (*MultiAssetsModeResponse, error) {
 	var res MultiAssetsModeResponse
-	err := c.Get(ctx, "/fapi/v1/multiAssetsMargin", nil, true, &res)
+	err := c.Get(ctx, "/fapi/v3/multiAssetsMargin", nil, true, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +220,7 @@ func (c *Client) ChangeMultiAssetsMode(ctx context.Context, multiAssetsMargin bo
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	err := c.Post(ctx, "/fapi/v1/multiAssetsMargin", params, true, &res)
+	err := c.Post(ctx, "/fapi/v3/multiAssetsMargin", params, true, &res)
 	if err != nil {
 		return err
 	}
@@ -223,7 +232,7 @@ func (c *Client) GetFeeRate(ctx context.Context, symbol string) (*FeeRateRespons
 		"symbol": symbol,
 	}
 	var res FeeRateResponse
-	err := c.Get(ctx, "/fapi/v1/commissionRate", params, true, &res)
+	err := c.Get(ctx, "/fapi/v3/commissionRate", params, true, &res)
 	if err != nil {
 		return nil, err
 	}

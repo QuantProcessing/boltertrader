@@ -1,0 +1,56 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1783641600000,
+  "futuresType": "U_MARGINED",
+  "rateLimits": [],
+  "assets": [
+    {
+      "asset": "USDT",
+      "marginAvailable": true,
+      "autoAssetExchange": "-0.10"
+    }
+  ],
+  "symbols": [
+    {
+      "symbol": "ASTERUSDT",
+      "pair": "ASTERUSDT",
+      "contractType": "PERPETUAL",
+      "deliveryDate": 4133404800000,
+      "onboardDate": 1780963200000,
+      "status": "TRADING",
+      "maintMarginPercent": "2.5000",
+      "requiredMarginPercent": "5.0000",
+      "baseAsset": "ASTER",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 4,
+      "quantityPrecision": 2,
+      "baseAssetPrecision": 8,
+      "quotePrecision": 8,
+      "underlyingType": "COIN",
+      "underlyingSubType": [],
+      "settlePlan": 0,
+      "triggerProtect": "0.0500",
+      "OrderType": ["LIMIT", "MARKET"],
+      "timeInForce": ["GTC", "IOC", "GTX"],
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "minPrice": "0.0001",
+          "maxPrice": "1000000",
+          "tickSize": "0.0001"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "minQty": "0.01",
+          "maxQty": "1000000",
+          "stepSize": "0.01"
+        },
+        {
+          "filterType": "MIN_NOTIONAL",
+          "notional": "5"
+        }
+      ]
+    }
+  ]
+}

@@ -118,3 +118,26 @@ type AccountStateReporter interface {
 type AccountIDProvider interface {
 	AccountID() string
 }
+
+// PreTradeLease owns adapter-local prepared state created during venue-backed
+// pre-trade validation. Release must be safe to call more than once.
+type PreTradeLease interface {
+	Release()
+}
+
+// PreparedExecutionClient consumes adapter-local state produced by a successful
+// VenuePreTradeValidator call. Runtime uses this optional surface only when risk
+// returned a non-nil lease, so Submit can remain the direct-call fallback.
+type PreparedExecutionClient interface {
+	SubmitPrepared(ctx context.Context, req model.OrderRequest) (*model.Order, error)
+}
+
+// VenuePreTradeValidator performs the venue's authoritative read-only capacity
+// and payload validation after runtime-local risk checks have passed.
+type VenuePreTradeValidator interface {
+	ValidatePreTrade(
+		ctx context.Context,
+		req model.OrderRequest,
+		inst *model.Instrument,
+	) (PreTradeLease, error)
+}

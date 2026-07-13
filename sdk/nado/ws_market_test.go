@@ -13,10 +13,17 @@ func TestSubscribeBookDepth(t *testing.T) {
 
 	// Create a lifecycle context for the client
 	ctx := context.Background()
-	subscriptionClient := NewWsMarketClient(ctx)
+	profile, err := NewProfile(EnvironmentTestnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptionClient, err := NewWsMarketClient(ctx, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Connect (internal 10s timeout)
-	err := subscriptionClient.Connect()
+	err = subscriptionClient.Connect()
 	if err != nil {
 		t.Fatal(err)
 	}

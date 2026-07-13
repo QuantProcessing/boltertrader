@@ -7,25 +7,24 @@ import (
 // Account Information
 
 type AccountResponse struct {
-	MakerCommission  int64  `json:"makerCommission"`
-	TakerCommission  int64  `json:"takerCommission"`
-	BuyerCommission  int64  `json:"buyerCommission"`
-	SellerCommission int64  `json:"sellerCommission"`
-	CanTrade         bool   `json:"canTrade"`
-	CanWithdraw      bool   `json:"canWithdraw"`
-	CanDeposit       bool   `json:"canDeposit"`
-	UpdateTime       int64  `json:"updateTime"`
-	AccountType      string `json:"accountType"`
-	Balances         []struct {
-		Asset  string `json:"asset"`
-		Free   string `json:"free"`
-		Locked string `json:"locked"`
-	} `json:"balances"`
+	FeeTier      int       `json:"feeTier"`
+	CanTrade     bool      `json:"canTrade"`
+	CanDeposit   bool      `json:"canDeposit"`
+	CanWithdraw  bool      `json:"canWithdraw"`
+	CanBurnAsset bool      `json:"canBurnAsset"`
+	UpdateTime   int64     `json:"updateTime"`
+	Balances     []Balance `json:"balances"`
+}
+
+type Balance struct {
+	Asset  string `json:"asset"`
+	Free   string `json:"free"`
+	Locked string `json:"locked"`
 }
 
 func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
 	var res AccountResponse
-	err := c.Get(ctx, "/api/v1/account", nil, true, &res)
+	err := c.Get(ctx, "/api/v3/account", nil, true, &res)
 	if err != nil {
 		return nil, err
 	}

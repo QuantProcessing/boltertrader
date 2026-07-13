@@ -313,6 +313,114 @@ func TestAccountViewsAggregateEquityMarginAndExposure(t *testing.T) {
 	}
 }
 
+func TestAccountSummaryViewsUseDirectAccountLookup(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	state := model.AccountState{
+		AccountID:    "T:perp",
+		Venue:        "T",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1000"), Free: d("900")},
+		},
+		Summary: &model.AccountSummary{
+			SettlementCurrency:  "USDT",
+			Equity:              d("-10"),
+			AvailableCollateral: d("250"),
+			UpdatedAt:           now,
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:perp", now),
+		TsEvent:  now,
+		TsInit:   now,
+	}
+	if err := c.ApplyAccountStateAt(state, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	pf := New().WithAccountSource(c)
+
+	summary, ok := pf.AccountSummary("T:perp")
+	if !ok {
+		t.Fatal("account summary lookup failed")
+	}
+	if summary == nil || summary.SettlementCurrency != "USDT" || !summary.Equity.Equal(d("-10")) || !summary.AvailableCollateral.Equal(d("250")) {
+		t.Fatalf("summary=%+v, want USDT -10 250", summary)
+	}
+	summary.AvailableCollateral = d("0")
+	again, ok := pf.AccountSummaryForVenue("T")
+	if !ok {
+		t.Fatal("venue account summary lookup failed")
+	}
+	if again == nil || !again.AvailableCollateral.Equal(d("250")) {
+		t.Fatalf("mutating account summary result aliased source: %+v", again)
+	}
+
+	equity, ok := pf.Equity("T:perp")
+	if !ok {
+		t.Fatal("equity account lookup failed")
+	}
+	if got := equity["USDT"]; !got.Equal(d("1000")) {
+		t.Fatalf("portfolio equity should not fold in account summary equity, got %s", got)
+	}
+}
+
+func TestAccountSummaryForVenueRequiresUnambiguousAccount(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	for _, accountID := range []string{"T:one", "T:two"} {
+		if err := c.ApplyAccountStateAt(model.AccountState{
+			AccountID:    accountID,
+			Venue:        "T",
+			Type:         model.AccountMargin,
+			BaseCurrency: "USDT",
+			Balances: []model.AccountBalance{
+				{Currency: "USDT", Total: d("1000"), Free: d("900")},
+			},
+			Summary: &model.AccountSummary{
+				SettlementCurrency:  "USDT",
+				Equity:              d("1000"),
+				AvailableCollateral: d("900"),
+				UpdatedAt:           now,
+			},
+			Reported: true,
+			EventID:  model.AccountStateEventID("T", accountID, now),
+			TsEvent:  now,
+			TsInit:   now,
+		}, now); err != nil {
+			t.Fatalf("apply account state %s: %v", accountID, err)
+		}
+	}
+	pf := New().WithAccountSource(c)
+	if summary, ok := pf.AccountSummaryForVenue("T"); ok || summary != nil {
+		t.Fatalf("ambiguous venue summary=%+v ok=%v, want nil false", summary, ok)
+	}
+}
+
+func TestAccountSummaryNilCompatibility(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    "T:nil-summary",
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{Currency: "USDT", Total: d("1"), Free: d("1")},
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "T:nil-summary", now),
+		TsEvent:  now,
+		TsInit:   now,
+	}, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	pf := New().WithAccountSource(c)
+	if summary, ok := pf.AccountSummary("T:nil-summary"); !ok || summary != nil {
+		t.Fatalf("summary=%+v ok=%v, want nil true for an account without optional summary", summary, ok)
+	}
+}
+
 func TestAccountViewsRequireAccountIDOwnership(t *testing.T) {
 	c := cache.New()
 	now := time.Unix(100, 0)

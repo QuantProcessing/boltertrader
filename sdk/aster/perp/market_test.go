@@ -2,6 +2,7 @@ package perp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,8 +16,8 @@ import (
 func TestGetKlines(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := NewClient()
-	res, err := client.ContinousKlines(context.Background(), "BTCUSDT", "PERPETUAL", "1m", 10, 0, 0)
+	client := newTestClient(t)
+	res, err := client.Klines(context.Background(), "BTCUSDT", "1m", 10, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,21 +25,23 @@ func TestGetKlines(t *testing.T) {
 }
 
 func TestClient_DefaultHTTPTimeout(t *testing.T) {
-	client := NewClient()
+	client := newTestClient(t)
 	require.Positive(t, client.HTTPClient.Timeout)
 }
 
 func TestClient_WithHTTPClient(t *testing.T) {
 	httpClient := &http.Client{Timeout: 42 * time.Second}
-	client := NewClient().WithHTTPClient(httpClient)
-	require.Same(t, httpClient, client.HTTPClient)
+	client := newTestClient(t).WithHTTPClient(httpClient)
+	require.NotSame(t, httpClient, client.HTTPClient)
+	require.Equal(t, httpClient.Timeout, client.HTTPClient.Timeout)
+	require.NotNil(t, client.HTTPClient.CheckRedirect)
 }
 
 // TestGetFundingRate tests retrieving funding rate for a specific symbol
 func TestGetFundingRate(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := NewClient()
+	client := newTestClient(t)
 	ctx := context.Background()
 
 	// Test with BTCUSDT
@@ -66,15 +69,14 @@ func TestGetFundingRate(t *testing.T) {
 func TestGetFundingRatePreservesPremiumIndexResponse(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/fapi/v1/premiumIndex", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/fapi/v3/premiumIndex", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "BTCUSDT", r.URL.Query().Get("symbol"))
 		_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"43000.10","indexPrice":"42990.20","estimatedSettlePrice":"42995.00","lastFundingRate":"0.00040000","interestRate":"0.00010000","nextFundingTime":14400000,"time":123456789}`))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient()
-	c.BaseURL = srv.URL
+	c := newClientForServer(t, srv, nil)
 	rate, err := c.GetFundingRate(context.Background(), "BTCUSDT")
 	require.NoError(t, err)
 	require.Equal(t, "0.00040000", rate.LastFundingRate)
@@ -87,15 +89,14 @@ func TestGetFundingRatePreservesPremiumIndexResponse(t *testing.T) {
 func TestMarkPricePreservesPremiumIndexResponse(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/fapi/v1/premiumIndex", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/fapi/v3/premiumIndex", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "BTCUSDT", r.URL.Query().Get("symbol"))
 		_, _ = w.Write([]byte(`{"symbol":"BTCUSDT","markPrice":"43000.10","indexPrice":"42990.20","estimatedSettlePrice":"42995.00","lastFundingRate":"0.00040000","nextFundingTime":14400000,"time":123456789}`))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient()
-	c.BaseURL = srv.URL
+	c := newClientForServer(t, srv, nil)
 	price, err := c.MarkPrice(context.Background(), "BTCUSDT")
 	require.NoError(t, err)
 	require.Equal(t, "BTCUSDT", price.Symbol)
@@ -108,7 +109,7 @@ func TestMarkPricePreservesPremiumIndexResponse(t *testing.T) {
 func TestGetAllFundingRates(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := NewClient()
+	client := newTestClient(t)
 	ctx := context.Background()
 
 	rates, err := client.GetAllFundingRates(ctx)
@@ -135,13 +136,12 @@ func TestGetOpenInterestParses(t *testing.T) {
 	t.Parallel()
 	payload := `{"symbol":"BTCUSDT","openInterest":"12345.678","time":1700000000000}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/fapi/v1/openInterest", r.URL.Path)
+		require.Equal(t, "/fapi/v3/openInterest", r.URL.Path)
 		require.Equal(t, "BTCUSDT", r.URL.Query().Get("symbol"))
 		_, _ = w.Write([]byte(payload))
 	}))
 	defer srv.Close()
-	c := NewClient()
-	c.BaseURL = srv.URL
+	c := newClientForServer(t, srv, nil)
 	oi, err := c.GetOpenInterest(context.Background(), "BTCUSDT")
 	require.NoError(t, err)
 	require.Equal(t, "BTCUSDT", oi.Symbol)
@@ -149,17 +149,28 @@ func TestGetOpenInterestParses(t *testing.T) {
 	require.Equal(t, int64(1700000000000), oi.Time)
 }
 
+func TestSymbolFilterMultiplierDecimalAcceptsStringOrNumber(t *testing.T) {
+	for _, payload := range []string{
+		`{"filterType":"PERCENT_PRICE","multiplierDecimal":"4"}`,
+		`{"filterType":"PERCENT_PRICE","multiplierDecimal":4}`,
+	} {
+		var filter SymbolFilter
+		require.NoError(t, json.Unmarshal([]byte(payload), &filter))
+		require.NotNil(t, filter.MultiplierDecimal)
+		require.Equal(t, "4", filter.MultiplierDecimal.String())
+	}
+}
+
 func TestGetFundingRateHistoryParses(t *testing.T) {
 	t.Parallel()
 	payload := `[{"symbol":"BTCUSDT","fundingRate":"0.0001","fundingTime":1700000000000,"markPrice":"50000"}]`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/fapi/v1/fundingRate", r.URL.Path)
+		require.Equal(t, "/fapi/v3/fundingRate", r.URL.Path)
 		require.Equal(t, "BTCUSDT", r.URL.Query().Get("symbol"))
 		_, _ = w.Write([]byte(payload))
 	}))
 	defer srv.Close()
-	c := NewClient()
-	c.BaseURL = srv.URL
+	c := newClientForServer(t, srv, nil)
 	hist, err := c.GetFundingRateHistory(context.Background(), "BTCUSDT", 0, 0, 0)
 	require.NoError(t, err)
 	require.Len(t, hist, 1)

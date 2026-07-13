@@ -228,6 +228,9 @@ func (c *Cache) UpsertPosition(p model.Position) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	k := positionKey{accountID: p.AccountID, instrument: p.InstrumentID.String(), side: p.Side}
+	if existing, ok := c.positions[k]; ok && venueUpdateOlder(p.UpdatedAt, existing.UpdatedAt) {
+		return
+	}
 	if p.Quantity.IsZero() {
 		delete(c.positions, k)
 		return
@@ -275,10 +278,28 @@ func (c *Cache) Positions() []model.Position {
 // UpsertBalance inserts or replaces a per-currency balance. Called from the bus
 // goroutine.
 func (c *Cache) UpsertBalance(b model.AccountBalance) {
+	_ = c.ApplyBalance(b)
+}
+
+func (c *Cache) ApplyBalance(b model.AccountBalance) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b = b.Normalized()
-	c.balances[balanceKey{accountID: b.AccountID, currency: b.Currency}] = b
+	k := balanceKey{accountID: b.AccountID, currency: b.Currency}
+	if existing, ok := c.balances[k]; ok && venueUpdateOlder(b.UpdatedAt, existing.UpdatedAt) {
+		return nil
+	}
+	if acct, ok := c.accounts[b.AccountID]; ok {
+		if err := acct.ApplyBalance(b); err != nil {
+			return err
+		}
+	}
+	c.balances[k] = b
+	return nil
+}
+
+func venueUpdateOlder(incoming, current time.Time) bool {
+	return !incoming.IsZero() && !current.IsZero() && incoming.Before(current)
 }
 
 // Balance returns the balance for a currency.
@@ -336,6 +357,11 @@ func (c *Cache) ApplyAccountStateAt(state model.AccountState, appliedAt time.Tim
 		c.indexAccountByVenue(state.Venue, state.AccountID)
 	} else if err := acct.Apply(state, appliedAt); err != nil {
 		return err
+	}
+	for key := range c.balances {
+		if key.accountID == state.AccountID {
+			delete(c.balances, key)
+		}
 	}
 	for _, bal := range acct.Balances() {
 		bal = bal.Normalized()

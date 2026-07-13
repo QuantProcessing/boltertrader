@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // GetAccount returns the account summary (balances, positions).
 func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
 	sender := BuildSender(c.Signer.GetAddress(), c.subaccount)
 	req := map[string]interface{}{
 		"type":       "subaccount_info",
@@ -23,6 +27,56 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+func (c *Client) GetAccountSnapshot(ctx context.Context) (*AccountSnapshot, error) {
+	account, err := c.GetAccount(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.accountSnapshot(*account), nil
+}
+
+func (c *Client) GetSubaccountInfo(ctx context.Context, req SubaccountInfoRequest) (*AccountInfo, error) {
+	payload := map[string]interface{}{
+		"type":       "subaccount_info",
+		"subaccount": req.Subaccount,
+	}
+	if len(req.Txns) > 0 {
+		txns, err := json.Marshal(req.Txns)
+		if err != nil {
+			return nil, fmt.Errorf("marshal subaccount simulation: %w", err)
+		}
+		payload["txns"] = string(txns)
+	}
+	if req.PreState != nil {
+		payload["pre_state"] = fmt.Sprintf("%t", *req.PreState)
+	}
+	data, err := c.QueryGateWayV1(ctx, "POST", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp AccountInfo
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) GetSubaccountInfoSnapshot(ctx context.Context, req SubaccountInfoRequest) (*AccountSnapshot, error) {
+	account, err := c.GetSubaccountInfo(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return c.accountSnapshot(*account), nil
+}
+
+func (c *Client) accountSnapshot(account AccountInfo) *AccountSnapshot {
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	return &AccountSnapshot{Account: account, ReceivedAt: now().UTC()}
 }
 
 // GetAccountProductOrders returns open orders for a specific product and sender.
@@ -43,17 +97,17 @@ func (c *Client) GetAccountProductOrders(ctx context.Context, productID int64, s
 	return &resp, nil
 }
 
-func (c *Client) GetAccountMultiProductsOrders(ctx context.Context, productIDs []int64, sender string) (*AccountProductOrders, error) {
+func (c *Client) GetAccountMultiProductsOrders(ctx context.Context, productIDs []int64, sender string) (*GetAccountMultiProductsOrders, error) {
 	req := map[string]interface{}{
-		"type":       "orders",
-		"product_id": productIDs,
-		"sender":     sender,
+		"type":        "orders",
+		"product_ids": productIDs,
+		"sender":      sender,
 	}
 	data, err := c.QueryGateWayV1(ctx, "POST", req)
 	if err != nil {
 		return nil, err
 	}
-	var resp AccountProductOrders
+	var resp GetAccountMultiProductsOrders
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}

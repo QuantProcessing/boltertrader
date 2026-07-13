@@ -6,36 +6,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 type WsMarketClient struct {
 	*WsClient
+	profile astercommon.Profile
 }
 
-func NewWsMarketClient(ctx context.Context) *WsMarketClient {
-	// Market data is public, no auth needed usually
-	// Use Combined Stream URL for multiplexing
-	client := NewWSClient(ctx, WSBaseURL)
-	mc := &WsMarketClient{WsClient: client}
-
-	client.Handler = mc.handleMessage
-	return mc
+func NewWsMarketClient(ctx context.Context, profile astercommon.Profile) (*WsMarketClient, error) {
+	if profile.Product() != astercommon.ProductSpot {
+		return nil, fmt.Errorf("aster spot market websocket: profile product is %q", profile.Product())
+	}
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
+	transport := newWSClient(ctx, strings.TrimSuffix(profile.PublicWSURL(), "/")+"/ws")
+	client := &WsMarketClient{WsClient: transport, profile: profile}
+	transport.Handler = client.handleMessage
+	return client, nil
 }
 
 func (c *WsMarketClient) handleMessage(message []byte) {
-	c.Logger.Debugw("Received", "msg", string(message))
-
-	// trim space
 	message = bytes.TrimSpace(message)
 	if len(message) == 0 {
 		return
 	}
+	if c.Debug {
+		c.Logger.Debugw("received websocket message", "bytes", len(message))
+	}
 
+	if message[0] == '{' {
+		var combined struct {
+			Stream string          `json:"stream"`
+			Data   json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(message, &combined); err == nil && combined.Stream != "" && len(combined.Data) > 0 {
+			if combined.Data[0] == '[' {
+				c.handleArrayMessage(combined.Data)
+			} else {
+				c.handleObjectMessage(combined.Data)
+			}
+			return
+		}
+	}
 	if message[0] == '[' {
 		c.handleArrayMessage(message)
-	} else {
-		c.handleObjectMessage(message)
+		return
 	}
+	c.handleObjectMessage(message)
 }
 
 func (c *WsMarketClient) handleArrayMessage(message []byte) {
@@ -43,178 +63,249 @@ func (c *WsMarketClient) handleArrayMessage(message []byte) {
 		EventType string `json:"e"`
 		EventTime int64  `json:"E"`
 	}
-	if err := json.Unmarshal(message, &events); err != nil {
-		c.Logger.Errorw("error unmarshalling array message", "error", err)
+	if err := json.Unmarshal(message, &events); err != nil || len(events) == 0 {
 		return
 	}
-
-	if len(events) == 0 {
-		return
+	var key string
+	switch events[0].EventType {
+	case "24hrMiniTicker":
+		key = "!miniTicker@arr"
+	case "24hrTicker":
+		key = "!ticker@arr"
 	}
-
-	// use first event type
-	eventType := events[0].EventType
-	if eventType == "" {
-		c.Logger.Debug("event type not found in array message")
-		return
+	if key != "" {
+		c.CallSubscription(key, message)
 	}
-
-	key := fmt.Sprintf("!%s@arr", eventType)
-	c.CallSubscription(key, message)
 }
 
 func (c *WsMarketClient) handleObjectMessage(message []byte) {
-	var event struct {
+	var header struct {
 		EventType string `json:"e"`
 		EventTime int64  `json:"E"`
 		Symbol    string `json:"s"`
-		// kline specific
-		Kline struct {
-			Interval string `json:"i"`
-		} `json:"k"`
 	}
-	if err := json.Unmarshal(message, &event); err != nil {
-		c.Logger.Errorw("error unmarshalling object message", "error", err)
+	if err := json.Unmarshal(message, &header); err != nil || header.Symbol == "" {
 		return
 	}
-
-	// collect all potential keys
-	var keys []string
-
-	eventName, ok := SingleEventMap[event.EventType]
-	if ok {
-		stream := fmt.Sprintf("%s@%s", strings.ToLower(event.Symbol), eventName)
-		keys = append(keys, stream)
+	symbol := strings.ToLower(header.Symbol)
+	eventType := header.EventType
+	if eventType == "" {
+		var bookTicker struct {
+			UpdateID *int64 `json:"u"`
+			BidPrice string `json:"b"`
+			AskPrice string `json:"a"`
+		}
+		if err := json.Unmarshal(message, &bookTicker); err != nil || bookTicker.UpdateID == nil || bookTicker.BidPrice == "" || bookTicker.AskPrice == "" {
+			return
+		}
+		eventType = "bookTicker"
 	}
 
-	// special handle !bookTicker
-	if event.EventType == "bookTicker" {
-		keys = append(keys, "!bookTicker")
+	var key string
+	switch eventType {
+	case "bookTicker":
+		key = symbol + "@bookTicker"
+	case "depthUpdate":
+		key = symbol + "@depth"
+	case "aggTrade":
+		key = symbol + "@aggTrade"
+	case "trade":
+		key = symbol + "@trade"
+	case "kline":
+		var event struct {
+			Kline struct {
+				Interval string `json:"i"`
+			} `json:"k"`
+		}
+		if err := json.Unmarshal(message, &event); err == nil && event.Kline.Interval != "" {
+			key = symbol + "@kline_" + event.Kline.Interval
+		}
+	case "24hrTicker":
+		key = symbol + "@ticker"
+	case "24hrMiniTicker":
+		key = symbol + "@miniTicker"
 	}
-
-	// special handle kline
-	if event.EventType == "kline" && event.Symbol != "" && event.Kline.Interval != "" {
-		stream := fmt.Sprintf("%s@kline_%s", strings.ToLower(event.Symbol), event.Kline.Interval)
-		keys = append(keys, stream)
-	}
-
-	// dispatch
-	for _, key := range keys {
+	if key != "" {
 		c.CallSubscription(key, message)
-	}
-
-	if len(keys) == 0 {
-		c.Logger.Debugw("No routing keys generated for event", "msg", string(message))
 	}
 }
 
-// SubscribeBookTicker
 func (c *WsMarketClient) SubscribeBookTicker(symbol string, handler func(*BookTickerEvent) error) error {
-	stream := fmt.Sprintf("%s@bookTicker", strings.ToLower(symbol))
-
-	// Register handler for this stream/event
-	c.SetHandler("bookTicker", func(data []byte) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	stream := strings.ToLower(normalized) + "@bookTicker"
+	return c.Subscribe(stream, func(data []byte) error {
 		var event BookTickerEvent
 		if err := json.Unmarshal(data, &event); err != nil {
 			return err
 		}
-		if event.Symbol != symbol {
-			return nil // Filter if needed
+		return handler(&event)
+	})
+}
+
+func (c *WsMarketClient) SubscribeIncrementOrderBook(symbol, interval string, handler func(*WsDepthEvent) error) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	if interval != "" && interval != "100ms" {
+		return fmt.Errorf("aster spot depth stream: unsupported interval %q", interval)
+	}
+	prefix := strings.ToLower(normalized) + "@depth"
+	stream := prefix
+	if interval != "" {
+		stream += "@" + interval
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != stream {
+		return fmt.Errorf("aster spot depth stream: %s already subscribed", existing)
+	}
+	c.SetHandler(prefix, func(data []byte) error {
+		var event WsDepthEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			return err
 		}
 		return handler(&event)
 	})
-
 	return c.Subscribe(stream, nil)
 }
 
-// SubscribeIncrementOrderBook interval default 250ms, option 500ms 100ms
-// only increment depth
-func (c *WsMarketClient) SubscribeIncrementOrderBook(symbol string, interval string, callback func(*WsDepthEvent) error) error {
-	channel := fmt.Sprintf("%s@depth@%s", symbol, interval)
-	return c.Subscribe(channel, func(data []byte) error {
-		var wsData WsDepthEvent
-		if err := json.Unmarshal(data, &wsData); err != nil {
-			return err
-		}
-		return callback(&wsData)
-	})
+func (c *WsMarketClient) UnsubscribeIncrementOrderBook(symbol, interval string) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	prefix := strings.ToLower(normalized) + "@depth"
+	stream := prefix
+	if interval != "" {
+		stream += "@" + interval
+	}
+	err = c.Unsubscribe(stream)
+	c.SetHandler(prefix, nil)
+	return err
 }
 
-func (c *WsMarketClient) UnsubscribeIncrementOrderBook(symbol string, interval string) error {
-	channel := fmt.Sprintf("%s@depth@%s", symbol, interval)
-	return c.Unsubscribe(channel)
-}
-
-// SubscribeLimitOrderBook
 func (c *WsMarketClient) SubscribeLimitOrderBook(symbol string, depth int, speed string, handler func(*DepthEvent) error) error {
-	// <symbol>@depth<levels>@<speed>
-	// e.g. btcusdt@depth20@100ms
-	stream := fmt.Sprintf("%s@depth%d@%s", strings.ToLower(symbol), depth, speed)
-
-	c.SetHandler("depthUpdate", func(data []byte) error {
+	if depth != 5 && depth != 10 && depth != 20 {
+		return fmt.Errorf("aster spot partial depth stream: unsupported depth %d", depth)
+	}
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	speed = strings.ToLower(strings.TrimSpace(speed))
+	if speed != "" && speed != "100ms" {
+		return fmt.Errorf("aster spot partial depth stream: unsupported speed %q", speed)
+	}
+	prefix := strings.ToLower(normalized) + "@depth"
+	stream := fmt.Sprintf("%s%d", prefix, depth)
+	if speed != "" {
+		stream += "@" + speed
+	}
+	if existing := c.subscriptionWithPrefix(prefix); existing != "" && existing != stream {
+		return fmt.Errorf("aster spot depth stream: %s already subscribed", existing)
+	}
+	c.SetHandler(prefix, func(data []byte) error {
 		var event DepthEvent
 		if err := json.Unmarshal(data, &event); err != nil {
 			return err
 		}
-		if event.Symbol != symbol {
-			return nil
-		}
 		return handler(&event)
 	})
-
 	return c.Subscribe(stream, nil)
 }
 
-// UnsubscribeLimitOrderBook
 func (c *WsMarketClient) UnsubscribeLimitOrderBook(symbol string, depth int, speed string) error {
-	stream := fmt.Sprintf("%s@depth%d@%s", strings.ToLower(symbol), depth, speed)
-	return c.Unsubscribe(stream)
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	prefix := strings.ToLower(normalized) + "@depth"
+	stream := fmt.Sprintf("%s%d", prefix, depth)
+	if speed = strings.ToLower(strings.TrimSpace(speed)); speed != "" {
+		stream += "@" + speed
+	}
+	err = c.Unsubscribe(stream)
+	c.SetHandler(prefix, nil)
+	return err
 }
 
-// SubscribeKline
-func (c *WsMarketClient) SubscribeKline(symbol string, interval string, handler func(*KlineEvent) error) error {
-	stream := fmt.Sprintf("%s@kline_%s", strings.ToLower(symbol), interval)
-
-	c.SetHandler("kline", func(data []byte) error {
+func (c *WsMarketClient) SubscribeKline(symbol, interval string, handler func(*KlineEvent) error) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	interval = strings.TrimSpace(interval)
+	if interval == "" {
+		return fmt.Errorf("aster spot kline stream: interval is required")
+	}
+	stream := fmt.Sprintf("%s@kline_%s", strings.ToLower(normalized), interval)
+	return c.Subscribe(stream, func(data []byte) error {
 		var event KlineEvent
 		if err := json.Unmarshal(data, &event); err != nil {
 			return err
 		}
-		if event.Symbol != symbol {
-			return nil
-		}
 		return handler(&event)
 	})
-
-	return c.Subscribe(stream, nil)
 }
 
-// UnsubscribeKline
-func (c *WsMarketClient) UnsubscribeKline(symbol string, interval string) error {
-	stream := fmt.Sprintf("%s@kline_%s", strings.ToLower(symbol), interval)
-	return c.Unsubscribe(stream)
+func (c *WsMarketClient) UnsubscribeKline(symbol, interval string) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	return c.Unsubscribe(fmt.Sprintf("%s@kline_%s", strings.ToLower(normalized), strings.TrimSpace(interval)))
 }
 
-// SubscribeAggTrade
 func (c *WsMarketClient) SubscribeAggTrade(symbol string, handler func(*AggTradeEvent) error) error {
-	stream := fmt.Sprintf("%s@aggTrade", strings.ToLower(symbol))
-
-	c.SetHandler("aggTrade", func(data []byte) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	stream := strings.ToLower(normalized) + "@aggTrade"
+	return c.Subscribe(stream, func(data []byte) error {
 		var event AggTradeEvent
 		if err := json.Unmarshal(data, &event); err != nil {
 			return err
 		}
-		if event.Symbol != symbol {
-			return nil
+		return handler(&event)
+	})
+}
+
+func (c *WsMarketClient) UnsubscribeAggTrade(symbol string) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	return c.Unsubscribe(strings.ToLower(normalized) + "@aggTrade")
+}
+
+func (c *WsMarketClient) SubscribeTrade(symbol string, handler func(*TradeEvent) error) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	stream := strings.ToLower(normalized) + "@trade"
+	return c.Subscribe(stream, func(data []byte) error {
+		var event TradeEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			return err
 		}
 		return handler(&event)
 	})
-
-	return c.Subscribe(stream, nil)
 }
 
-// UnsubscribeAggTrade
-func (c *WsMarketClient) UnsubscribeAggTrade(symbol string) error {
-	stream := fmt.Sprintf("%s@aggTrade", strings.ToLower(symbol))
-	return c.Unsubscribe(stream)
+func (c *WsMarketClient) UnsubscribeTrade(symbol string) error {
+	normalized, err := c.normalizeSymbol(symbol)
+	if err != nil {
+		return err
+	}
+	return c.Unsubscribe(strings.ToLower(normalized) + "@trade")
+}
+
+func (c *WsMarketClient) normalizeSymbol(symbol string) (string, error) {
+	return astercommon.NormalizeSymbol(c.profile, symbol)
 }

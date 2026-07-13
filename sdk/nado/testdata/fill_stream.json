@@ -1,0 +1,16 @@
+{
+  "type": "fill",
+  "timestamp": "1783641600400",
+  "product_id": 2,
+  "subaccount": "0x1111111111111111111111111111111111111111000000000000000000000000",
+  "order_digest": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "filled_qty": "100000000000000000",
+  "remaining_qty": "0",
+  "original_qty": "100000000000000000",
+  "price": "2500000000000000000000",
+  "is_taker": true,
+  "is_bid": true,
+  "fee": "200000000000000",
+  "submission_idx": "42",
+  "appendix": "1"
+}

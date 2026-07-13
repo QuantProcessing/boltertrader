@@ -5,11 +5,19 @@ import (
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 func TestPublicEndpoints(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	client := NewClient("", "")
+	profile, err := astercommon.NewProfile(astercommon.EnvironmentProduction, astercommon.ProductSpot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("ServerTime", func(t *testing.T) {
 		// We don't have a direct ServerTime method exposed on Client yet,

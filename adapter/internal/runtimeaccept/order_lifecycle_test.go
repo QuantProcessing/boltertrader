@@ -2,6 +2,7 @@ package runtimeaccept
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -36,6 +37,9 @@ func TestAdapterOrderLifecyclePlacesCancelsFillsAndCloses(t *testing.T) {
 	if result.FilledQty.String() != "0.01" {
 		t.Fatalf("filled qty=%s, want 0.01", result.FilledQty)
 	}
+	if result.ClosedQty.String() != "0.01" {
+		t.Fatalf("closed qty=%s, want 0.01", result.ClosedQty)
+	}
 	if len(exec.submits) != 3 {
 		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
 	}
@@ -56,7 +60,7 @@ func TestAdapterOrderLifecyclePlacesCancelsFillsAndCloses(t *testing.T) {
 func TestAdapterOrderLifecycleUsesExplicitCloseQuantity(t *testing.T) {
 	exec := &recordingLifecycleExec{}
 	instID := model.InstrumentID{Venue: "TEST", Symbol: "ETH-USDT", Kind: enums.KindSpot}
-	_, err := RunAdapterOrderLifecycle(context.Background(), exec, OrderLifecycleSpec{
+	result, err := RunAdapterOrderLifecycle(context.Background(), exec, OrderLifecycleSpec{
 		Label:          "test spot",
 		AccountID:      "TEST:cash",
 		InstrumentID:   instID,
@@ -70,6 +74,9 @@ func TestAdapterOrderLifecycleUsesExplicitCloseQuantity(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RunAdapterOrderLifecycle: %v", err)
+	}
+	if result.ClosedQty.String() != "0.009" {
+		t.Fatalf("closed qty=%s, want 0.009", result.ClosedQty)
 	}
 	if len(exec.submits) != 3 {
 		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
@@ -172,6 +179,30 @@ func TestAdapterOrderLifecycleCanCleanExistingPosition(t *testing.T) {
 	}
 }
 
+func TestAdapterOrderLifecycleAttemptsEmergencyFlattenAfterCloseFailure(t *testing.T) {
+	exec := &closeFailureCleanupExec{}
+	id := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	_, err := RunAdapterOrderLifecycle(context.Background(), exec, OrderLifecycleSpec{
+		Label:          "close failure cleanup",
+		AccountID:      "TEST:unified",
+		InstrumentID:   id,
+		Quantity:       decimal.RequireFromString("0.01"),
+		RestingPrice:   decimal.RequireFromString("49000"),
+		FillPrice:      decimal.RequireFromString("51000"),
+		ClosePrice:     decimal.RequireFromString("50000"),
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		PollInterval:   time.Millisecond,
+		CleanupTimeout: time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced close failure") {
+		t.Fatalf("RunAdapterOrderLifecycle err=%v, want close failure", err)
+	}
+	if !exec.existing.IsZero() || exec.reduceOnlyAttempts != 2 || exec.cancelAllCalls == 0 {
+		t.Fatalf("cleanup evidence existing=%s reduceAttempts=%d cancelAll=%d", exec.existing, exec.reduceOnlyAttempts, exec.cancelAllCalls)
+	}
+}
+
 func TestAdapterOrderLifecycleRetriesSlowFillPoll(t *testing.T) {
 	exec := &slowFillLifecycleExec{}
 	instID := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindSpot}
@@ -228,6 +259,7 @@ func TestRuntimeOrderLifecycleUsesTradingNodeExecution(t *testing.T) {
 	}()
 
 	instID := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	var beforeClose atomic.Bool
 	result, err := RunRuntimeOrderLifecycle(ctx, node, exec, OrderLifecycleSpec{
 		Label:          "runtime test perp",
 		AccountID:      "TEST:unified",
@@ -239,12 +271,22 @@ func TestRuntimeOrderLifecycleUsesTradingNodeExecution(t *testing.T) {
 		PositionSide:   enums.PosNet,
 		CloseAfterFill: true,
 		PollInterval:   time.Millisecond,
+		BeforeRuntimeClose: func(_ context.Context, qty decimal.Decimal) error {
+			if !qty.Equal(decimal.RequireFromString("0.01")) {
+				return fmt.Errorf("close readiness qty=%s", qty)
+			}
+			beforeClose.Store(true)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunRuntimeOrderLifecycle: %v", err)
 	}
 	if result.FilledQty.String() != "0.01" {
 		t.Fatalf("filled qty=%s, want 0.01", result.FilledQty)
+	}
+	if !beforeClose.Load() {
+		t.Fatal("runtime close readiness hook was not called")
 	}
 	if len(exec.submits) != 3 {
 		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
@@ -306,6 +348,46 @@ func TestRuntimeOrderLifecycleWaitsForLateFillQuantity(t *testing.T) {
 	}
 	if got := exec.lateFills.Load(); got < 2 {
 		t.Fatalf("late fill events=%d, want fill and close events", got)
+	}
+}
+
+func TestRuntimeOrderLifecycleRejectsPartialCloseFill(t *testing.T) {
+	exec := newPartialCloseRuntimeLifecycleExec()
+	node := btruntime.NewNode(
+		btruntime.Clients{Execution: exec},
+		clock.NewRealClock(),
+		"runtime-partial-close",
+		btruntime.WithAccountID("TEST:unified"),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		node.Run(runCtx)
+		close(done)
+	}()
+	defer func() {
+		stop()
+		<-done
+	}()
+
+	id := model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	_, err := RunRuntimeOrderLifecycle(ctx, node, exec, OrderLifecycleSpec{
+		Label:          "runtime partial close",
+		AccountID:      "TEST:unified",
+		InstrumentID:   id,
+		Quantity:       decimal.RequireFromString("0.01"),
+		RestingPrice:   decimal.RequireFromString("49000"),
+		FillPrice:      decimal.RequireFromString("51000"),
+		ClosePrice:     decimal.RequireFromString("50000"),
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		PollInterval:   time.Millisecond,
+		CleanupTimeout: 20 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "partial fill") {
+		t.Fatalf("RunRuntimeOrderLifecycle err=%v, want partial fill failure", err)
 	}
 }
 
@@ -459,6 +541,26 @@ type lateFillRuntimeLifecycleExec struct {
 	lateFills atomic.Int32
 }
 
+type partialCloseRuntimeLifecycleExec struct {
+	runtimeLifecycleExec
+}
+
+func newPartialCloseRuntimeLifecycleExec() *partialCloseRuntimeLifecycleExec {
+	return &partialCloseRuntimeLifecycleExec{runtimeLifecycleExec: *newRuntimeLifecycleExec()}
+}
+
+func (e *partialCloseRuntimeLifecycleExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	order, err := e.runtimeLifecycleExec.Submit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if req.ReduceOnly {
+		order.Status = enums.StatusCanceled
+		order.FilledQty = req.Quantity.Div(decimal.NewFromInt(2))
+	}
+	return order, nil
+}
+
 func newLateFillRuntimeLifecycleExec() *lateFillRuntimeLifecycleExec {
 	return &lateFillRuntimeLifecycleExec{runtimeLifecycleExec: *newRuntimeLifecycleExec()}
 }
@@ -505,6 +607,45 @@ type cleanupLifecycleExec struct {
 	existing decimal.Decimal
 }
 
+type closeFailureCleanupExec struct {
+	recordingLifecycleExec
+	existing           decimal.Decimal
+	reduceOnlyAttempts int
+	cancelAllCalls     int
+}
+
+func (e *closeFailureCleanupExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if req.ReduceOnly {
+		e.reduceOnlyAttempts++
+		if e.reduceOnlyAttempts == 1 {
+			return nil, errors.New("forced close failure")
+		}
+		e.existing = decimal.Zero
+	}
+	order, err := e.recordingLifecycleExec.Submit(ctx, req)
+	if err == nil && req.TIF == enums.TifIOC && !req.ReduceOnly {
+		e.existing = req.Quantity
+	}
+	return order, err
+}
+
+func (e *closeFailureCleanupExec) CancelAll(context.Context, model.InstrumentID) error {
+	e.cancelAllCalls++
+	return nil
+}
+
+func (e *closeFailureCleanupExec) GeneratePositionReports(context.Context, model.PositionReportQuery) ([]model.PositionReport, error) {
+	if e.existing.IsZero() {
+		return nil, nil
+	}
+	return []model.PositionReport{{Position: model.Position{
+		AccountID:    "TEST:unified",
+		InstrumentID: model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		Side:         enums.PosLong,
+		Quantity:     e.existing,
+	}}}, nil
+}
+
 type slowFillLifecycleExec struct {
 	recordingLifecycleExec
 	fillReportCalls int
@@ -539,6 +680,9 @@ func (e *slowFillLifecycleExec) GenerateOrderStatusReport(_ context.Context, que
 
 func (e *slowFillLifecycleExec) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
 	e.fillReportCalls++
+	if query.VenueOrderID != "" && query.ClientID != "" {
+		return nil, errors.New("fill query must prefer venue order id over local client id")
+	}
 	if e.fillReportCalls == 1 {
 		<-ctx.Done()
 		return nil, ctx.Err()

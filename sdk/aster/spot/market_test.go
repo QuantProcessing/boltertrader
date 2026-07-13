@@ -9,7 +9,7 @@ import (
 
 func TestClient_GetTradesUsesPublicTradesEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/trades", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v3/trades", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("symbol"); got != "BTCUSDT" {
 			t.Fatalf("unexpected symbol query: %s", r.URL.RawQuery)
 		}
@@ -21,7 +21,7 @@ func TestClient_GetTradesUsesPublicTradesEndpoint(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	got, err := NewClient("", "").WithBaseURL(server.URL).GetTrades(context.Background(), "BTCUSDT", 2)
+	got, err := newClientForServer(t, server).GetTrades(context.Background(), "BTCUSDT", 2)
 	if err != nil {
 		t.Fatalf("GetTrades: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestClient_GetTradesUsesPublicTradesEndpoint(t *testing.T) {
 
 func TestClient_GetAggTradesPagedUsesPublicAggTradesEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/aggTrades", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v3/aggTrades", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("symbol"); got != "BTCUSDT" {
 			t.Fatalf("unexpected symbol query: %s", r.URL.RawQuery)
 		}
@@ -50,7 +50,7 @@ func TestClient_GetAggTradesPagedUsesPublicAggTradesEndpoint(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	got, err := NewClient("", "").WithBaseURL(server.URL).GetAggTradesPaged(context.Background(), AggTradesQuery{
+	got, err := newClientForServer(t, server).GetAggTradesPaged(context.Background(), AggTradesQuery{
 		Symbol:    "BTCUSDT",
 		StartTime: 1710000000000,
 		EndTime:   1710000180000,

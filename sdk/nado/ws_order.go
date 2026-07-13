@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"strconv"
 )
 
-// PlaceOrder executes a new order via Gateway WebSocket.
+// PlaceOrder executes the venue's raw place_order API over Gateway WebSocket.
+// It intentionally does not apply the adapter/runtime pre-trade safety envelope.
 func (c *WsApiClient) PlaceOrder(ctx context.Context, input ClientOrderInput) (*PlaceOrderResponse, error) {
-	// 1. Prepare Order Data
-	price := ToX18(input.Price)
-	amount := ToX18(input.Amount)
+	input, price, amount, err := c.prepareOrderWrite(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 
 	if input.Side == OrderSideSell {
 		amount.Neg(amount)
@@ -48,12 +50,18 @@ func (c *WsApiClient) PlaceOrder(ctx context.Context, input ClientOrderInput) (*
 		"appendix":   txOrderString.Appendix,
 	}
 
-	id := rand.Int63()
+	id := nextGatewayRequestID()
 	placeOrderReq := map[string]interface{}{
 		"product_id": input.ProductId,
 		"order":      orderMap,
 		"signature":  signature,
 		"id":         id,
+	}
+	if input.SpotLeverage != nil {
+		placeOrderReq["spot_leverage"] = *input.SpotLeverage
+	}
+	if input.BorrowMargin != nil {
+		placeOrderReq["borrow_margin"] = *input.BorrowMargin
 	}
 
 	req := map[string]interface{}{
@@ -76,6 +84,9 @@ func (c *WsApiClient) PlaceOrder(ctx context.Context, input ClientOrderInput) (*
 
 // CancelOrders cancels specific orders by their digests (IDs).
 func (c *WsApiClient) CancelOrders(ctx context.Context, input CancelOrdersInput) (*CancelOrdersResponse, error) {
+	if err := validateNadoCancelInput(input); err != nil {
+		return nil, err
+	}
 	nonceInt := GetNonce()
 	nonceStr := strconv.FormatInt(nonceInt, 10)
 
@@ -86,7 +97,10 @@ func (c *WsApiClient) CancelOrders(ctx context.Context, input CancelOrdersInput)
 		Nonce:      nonceStr,
 	}
 
-	verifyingContract := EndpointAddress
+	verifyingContract, err := c.endpointAddress(ctx)
+	if err != nil {
+		return nil, err
+	}
 	signature, err := c.Signer.SignCancelOrders(txCancel, verifyingContract)
 	if err != nil {
 		return nil, err
@@ -95,6 +109,7 @@ func (c *WsApiClient) CancelOrders(ctx context.Context, input CancelOrdersInput)
 	tx := ExecTransaction[TxCancelOrders]{
 		Tx:        txCancel,
 		Signature: signature,
+		ID:        nextGatewayRequestID(),
 	}
 
 	req := map[string]interface{}{
@@ -117,9 +132,13 @@ func (c *WsApiClient) CancelOrders(ctx context.Context, input CancelOrdersInput)
 
 // CancelAndPlace executes a cancel and place order in a single transaction via WebSocket.
 func (c *WsApiClient) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInput, placeInput ClientOrderInput) (*PlaceOrderResponse, error) {
-	// 1. Prepare Place Order
-	price := ToX18(placeInput.Price)
-	amount := ToX18(placeInput.Amount)
+	if err := validateNadoCancelInput(cancelInput); err != nil {
+		return nil, err
+	}
+	placeInput, price, amount, err := c.prepareOrderWrite(ctx, placeInput)
+	if err != nil {
+		return nil, err
+	}
 
 	if placeInput.Side == OrderSideSell {
 		amount.Neg(amount)
@@ -159,6 +178,12 @@ func (c *WsApiClient) CancelAndPlace(ctx context.Context, cancelInput CancelOrde
 		"order":      placeOrderMap,
 		"signature":  placeSignature,
 	}
+	if placeInput.SpotLeverage != nil {
+		placeOrderObj["spot_leverage"] = *placeInput.SpotLeverage
+	}
+	if placeInput.BorrowMargin != nil {
+		placeOrderObj["borrow_margin"] = *placeInput.BorrowMargin
+	}
 
 	// 2. Prepare Cancel Order
 	cancelNonce := strconv.FormatInt(GetNonce(), 10)
@@ -170,7 +195,10 @@ func (c *WsApiClient) CancelAndPlace(ctx context.Context, cancelInput CancelOrde
 		Nonce:      cancelNonce,
 	}
 
-	cancelVerifyingContract := EndpointAddress
+	cancelVerifyingContract, err := c.endpointAddress(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("discover cancel contract: %w", err)
+	}
 	cancelSignature, err := c.Signer.SignCancelOrders(txCancel, cancelVerifyingContract)
 	if err != nil {
 		return nil, fmt.Errorf("sign cancel orders: %w", err)
@@ -178,6 +206,7 @@ func (c *WsApiClient) CancelAndPlace(ctx context.Context, cancelInput CancelOrde
 
 	// 3. Construct Request
 	cancelAndPlaceReq := map[string]interface{}{
+		"id":               nextGatewayRequestID(),
 		"cancel_tx":        txCancel,
 		"cancel_signature": cancelSignature,
 		"place_order":      placeOrderObj,
@@ -202,16 +231,21 @@ func (c *WsApiClient) CancelAndPlace(ctx context.Context, cancelInput CancelOrde
 	return &placeResp, nil
 }
 
-// WsCancelProductOrders cancels orders via WS
-// Deprecated: Use CancelOrders instead.
-func (c *WsApiClient) WsCancelProductOrders(txCancel TxCancelProductOrders) (*WsResponse, error) {
-	signer, err := NewSigner(c.privateKey)
+func (c *WsApiClient) CancelProductOrders(ctx context.Context, productIDs []int64) (*CancelProductOrdersResponse, error) {
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
+	txCancel := TxCancelProductOrders{
+		Sender:     BuildSender(c.Signer.GetAddress(), c.subaccount),
+		ProductIds: productIDs,
+		Nonce:      strconv.FormatInt(GetNonce(), 10),
+	}
+
+	verifyingContract, err := c.endpointAddress(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	verifyingContract := EndpointAddress
-	signature, err := signer.SignCancelProductOrders(txCancel, verifyingContract)
+	signature, err := c.Signer.SignCancelProductOrders(txCancel, verifyingContract)
 	if err != nil {
 		return nil, err
 	}
@@ -219,11 +253,47 @@ func (c *WsApiClient) WsCancelProductOrders(txCancel TxCancelProductOrders) (*Ws
 	tx := ExecTransaction[TxCancelProductOrders]{
 		Tx:        txCancel,
 		Signature: signature,
+		ID:        nextGatewayRequestID(),
 	}
 
 	req := map[string]interface{}{
 		"cancel_product_orders": tx,
 	}
 
-	return c.Execute(c.ctx, req, nil)
+	resp, err := c.Execute(ctx, req, &signature)
+	if err != nil {
+		return nil, err
+	}
+	var cancelResp CancelProductOrdersResponse
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &cancelResp); err != nil {
+			return nil, err
+		}
+	}
+	return &cancelResp, nil
+}
+
+func (c *WsApiClient) endpointAddress(ctx context.Context) (string, error) {
+	if c.restClient == nil {
+		return "", fmt.Errorf("nado ws api client: rest client is required")
+	}
+	contract, err := c.restClient.ensureContracts(ctx)
+	if err != nil {
+		return "", fmt.Errorf("nado ws api contracts discovery: %w", err)
+	}
+	return contract.EndpointAddress, nil
+}
+
+func (c *WsApiClient) prepareOrderWrite(ctx context.Context, input ClientOrderInput) (ClientOrderInput, *big.Int, *big.Int, error) {
+	if c.restClient == nil {
+		return input, nil, nil, fmt.Errorf("nado ws api client: rest client is required")
+	}
+	if _, err := c.restClient.ensureContracts(ctx); err != nil {
+		return input, nil, nil, fmt.Errorf("nado ws api contracts discovery: %w", err)
+	}
+	product, err := c.restClient.ResolveProduct(ctx, input.ProductId)
+	if err != nil {
+		return input, nil, nil, err
+	}
+	return prepareNadoOrderInput(product, input)
 }

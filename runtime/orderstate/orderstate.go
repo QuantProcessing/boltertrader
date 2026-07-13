@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	"github.com/shopspring/decimal"
 )
 
 func IsTerminal(s enums.OrderStatus) bool {
@@ -34,11 +35,20 @@ func ApplyFill(order model.Order, fill model.Fill, fallbackTime time.Time) model
 		order.Request.Side = fill.Side
 	}
 	oldQty := order.FilledQty
-	newQty := oldQty.Add(fill.Quantity)
-	if fill.Price.IsPositive() && fill.Quantity.IsPositive() && newQty.IsPositive() {
+	appliedQty := fill.Quantity
+	if order.Request.Quantity.IsPositive() {
+		remaining := order.Request.Quantity.Sub(oldQty)
+		if !remaining.IsPositive() {
+			appliedQty = decimal.Zero
+		} else if appliedQty.GreaterThan(remaining) {
+			appliedQty = remaining
+		}
+	}
+	newQty := oldQty.Add(appliedQty)
+	if fill.Price.IsPositive() && appliedQty.IsPositive() && newQty.IsPositive() {
 		if oldQty.IsPositive() && order.AvgFillPrice.IsPositive() {
 			oldNotional := order.AvgFillPrice.Mul(oldQty)
-			newNotional := fill.Price.Mul(fill.Quantity)
+			newNotional := fill.Price.Mul(appliedQty)
 			order.AvgFillPrice = oldNotional.Add(newNotional).Div(newQty)
 		} else {
 			order.AvgFillPrice = fill.Price
@@ -58,6 +68,9 @@ func ApplyFill(order model.Order, fill model.Fill, fallbackTime time.Time) model
 }
 
 func Merge(existing, incoming model.Order) model.Order {
+	if venueUpdateOlder(incoming.UpdatedAt, existing.UpdatedAt) {
+		return promoteCompleteFill(enrichNewerOrder(existing, incoming))
+	}
 	out := incoming
 	if out.Request.ClientID == "" {
 		out.Request.ClientID = existing.Request.ClientID
@@ -107,7 +120,77 @@ func Merge(existing, incoming model.Order) model.Order {
 			out.RejectReason = existing.RejectReason
 		}
 	}
+	return promoteCompleteFill(out)
+}
+
+func promoteCompleteFill(order model.Order) model.Order {
+	if order.Request.Quantity.IsPositive() && order.FilledQty.GreaterThanOrEqual(order.Request.Quantity) {
+		order.Status = enums.StatusFilled
+	}
+	return order
+}
+
+func enrichNewerOrder(newer, older model.Order) model.Order {
+	out := newer
+	if out.Request.AccountID == "" {
+		out.Request.AccountID = older.Request.AccountID
+	}
+	if out.Request.InstrumentID.Symbol == "" {
+		out.Request.InstrumentID = older.Request.InstrumentID
+	}
+	if out.Request.ClientID == "" {
+		out.Request.ClientID = older.Request.ClientID
+	}
+	if out.Request.Side == enums.SideUnknown {
+		out.Request.Side = older.Request.Side
+	}
+	if out.Request.Type == enums.TypeUnknown {
+		out.Request.Type = older.Request.Type
+	}
+	if out.Request.TIF == enums.TifUnknown {
+		out.Request.TIF = older.Request.TIF
+	}
+	if out.Request.Quantity.IsZero() {
+		out.Request.Quantity = older.Request.Quantity
+	}
+	if out.Request.Price.IsZero() {
+		out.Request.Price = older.Request.Price
+	}
+	if out.Request.TriggerPrice.IsZero() {
+		out.Request.TriggerPrice = older.Request.TriggerPrice
+	}
+	if out.Request.ActivationPrice.IsZero() {
+		out.Request.ActivationPrice = older.Request.ActivationPrice
+	}
+	if out.Request.TrailingOffsetBps.IsZero() {
+		out.Request.TrailingOffsetBps = older.Request.TrailingOffsetBps
+	}
+	if !out.Request.ReduceOnly && older.Request.ReduceOnly {
+		out.Request.ReduceOnly = true
+	}
+	if out.Request.Venue == nil {
+		out.Request.Venue = older.Request.Venue
+	}
+	if out.VenueOrderID == "" {
+		out.VenueOrderID = older.VenueOrderID
+	}
+	if out.CreatedAt.IsZero() {
+		out.CreatedAt = older.CreatedAt
+	}
+	if older.FilledQty.GreaterThan(out.FilledQty) {
+		out.FilledQty = older.FilledQty
+		out.AvgFillPrice = older.AvgFillPrice
+	} else if out.AvgFillPrice.IsZero() {
+		out.AvgFillPrice = older.AvgFillPrice
+	}
+	if out.RejectReason == "" {
+		out.RejectReason = older.RejectReason
+	}
 	return out
+}
+
+func venueUpdateOlder(incoming, current time.Time) bool {
+	return !incoming.IsZero() && !current.IsZero() && incoming.Before(current)
 }
 
 func FillKey(fill model.Fill) string {

@@ -3,102 +3,165 @@ package spot
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 )
-
-// ListenKey Response
 
 type ListenKeyResponse struct {
 	ListenKey string `json:"listenKey"`
 }
 
-// Create ListenKey
-
 func (c *Client) CreateListenKey(ctx context.Context) (string, error) {
-	var res ListenKeyResponse
-	err := c.Post(ctx, "/api/v1/listenKey", nil, false, &res) // API key required, but no signature
-	if err != nil {
-		fmt.Printf("CreateListenKey Error: %v\n", err) // Debug log
+	var response ListenKeyResponse
+	if err := c.Post(ctx, "/api/v3/listenKey", nil, true, &response); err != nil {
 		return "", err
 	}
-	fmt.Printf("CreateListenKey Success: %s\n", res.ListenKey)
-	return res.ListenKey, nil
+	if response.ListenKey == "" {
+		return "", fmt.Errorf("aster spot user stream: empty listen key response")
+	}
+	return response.ListenKey, nil
 }
-
-// KeepAlive ListenKey
 
 func (c *Client) KeepAliveListenKey(ctx context.Context, listenKey string) error {
-	params := map[string]interface{}{
-		"listenKey": listenKey,
+	if listenKey == "" {
+		return fmt.Errorf("aster spot user stream: listen key is required")
 	}
-	return c.call(ctx, "PUT", "/api/v1/listenKey", params, false, nil)
+	return c.call(ctx, "PUT", "/api/v3/listenKey", map[string]interface{}{
+		"listenKey": listenKey,
+	}, true, nil)
 }
-
-// Close ListenKey
 
 func (c *Client) CloseListenKey(ctx context.Context, listenKey string) error {
-	params := map[string]interface{}{
-		"listenKey": listenKey,
+	if listenKey == "" {
+		return nil
 	}
-	return c.Delete(ctx, "/api/v1/listenKey", params, false, nil)
+	return c.Delete(ctx, "/api/v3/listenKey", map[string]interface{}{
+		"listenKey": listenKey,
+	}, true, nil)
 }
-
-// UserStreamManager handles the lifecycle of a ListenKey
 
 type UserStreamManager struct {
 	Client       *Client
-	ListenKey    string
-	StopCh       chan struct{}
 	KeepAliveInt time.Duration
+
+	mu        sync.Mutex
+	listenKey string
+	cancel    context.CancelFunc
+	done      chan struct{}
+	running   bool
+	onRenew   func(string)
 }
 
 func NewUserStreamManager(client *Client) *UserStreamManager {
 	return &UserStreamManager{
 		Client:       client,
-		StopCh:       make(chan struct{}),
-		KeepAliveInt: 30 * time.Minute, // Binance recommends every 30 minutes
+		KeepAliveInt: 30 * time.Minute,
 	}
 }
 
 func (m *UserStreamManager) Start(ctx context.Context) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.running {
+		return m.listenKey, nil
+	}
+	if m.Client == nil {
+		return "", fmt.Errorf("aster spot user stream: REST client is required")
+	}
 	listenKey, err := m.Client.CreateListenKey(ctx)
 	if err != nil {
 		return "", err
 	}
-	m.ListenKey = listenKey
-
-	go m.keepAliveLoop(ctx)
-
+	streamCtx, cancel := context.WithCancel(ctx)
+	m.listenKey = listenKey
+	m.cancel = cancel
+	m.done = make(chan struct{})
+	m.running = true
+	go m.keepAliveLoop(streamCtx, m.done)
 	return listenKey, nil
 }
 
 func (m *UserStreamManager) Stop(ctx context.Context) error {
-	select {
-	case <-m.StopCh:
-		// Already closed
+	m.mu.Lock()
+	if !m.running {
+		m.mu.Unlock()
 		return nil
-	default:
-		close(m.StopCh)
 	}
+	m.running = false
+	listenKey := m.listenKey
+	cancel := m.cancel
+	done := m.done
+	m.listenKey = ""
+	m.cancel = nil
+	m.done = nil
+	m.mu.Unlock()
 
-	if m.ListenKey != "" {
-		return m.Client.CloseListenKey(ctx, m.ListenKey)
+	if cancel != nil {
+		cancel()
 	}
-	return nil
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return m.Client.CloseListenKey(ctx, listenKey)
 }
 
-func (m *UserStreamManager) keepAliveLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.KeepAliveInt)
+func (m *UserStreamManager) ListenKey() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.listenKey
+}
+
+func (m *UserStreamManager) SetRenewHandler(handler func(string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onRenew = handler
+}
+
+func (m *UserStreamManager) keepAliveLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
+	interval := m.KeepAliveInt
+	if interval <= 0 {
+		interval = 30 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-m.StopCh:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := m.Client.KeepAliveListenKey(ctx, m.ListenKey); err != nil {
-				fmt.Printf("Failed to keep alive listen key: %v\n", err)
-				// Retry or handle error? For now just log.
+			listenKey := m.ListenKey()
+			if listenKey == "" {
+				return
+			}
+			if err := m.Client.KeepAliveListenKey(ctx, listenKey); err == nil {
+				continue
+			}
+			renewed, err := m.Client.CreateListenKey(ctx)
+			if err != nil {
+				m.Client.Logger.Warnw("failed to renew Aster Spot user stream", "error", err)
+				continue
+			}
+
+			m.mu.Lock()
+			if !m.running {
+				m.mu.Unlock()
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = m.Client.CloseListenKey(cleanupCtx, renewed)
+				cancel()
+				return
+			}
+			changed := renewed != m.listenKey
+			m.listenKey = renewed
+			handler := m.onRenew
+			m.mu.Unlock()
+			if changed && handler != nil {
+				handler(renewed)
 			}
 		}
 	}

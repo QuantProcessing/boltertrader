@@ -7,6 +7,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,17 @@ type Engine struct {
 // import risk (and to keep it swappable/testable).
 type RiskChecker interface {
 	Check(req model.OrderRequest, inst *model.Instrument) error
+}
+
+// ContextRiskChecker is the optional context-aware risk surface used when a
+// venue must authoritatively validate capacity or a prepared payload. Existing
+// RiskChecker implementations remain source-compatible.
+type ContextRiskChecker interface {
+	CheckContext(
+		ctx context.Context,
+		req model.OrderRequest,
+		inst *model.Instrument,
+	) (contract.PreTradeLease, error)
 }
 
 type CommandGate interface {
@@ -276,7 +288,10 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		}
 	}
 
-	// Pre-trade risk gate. A rejection never touches the venue or the cache.
+	// Pre-trade risk gate. A rejection never touches the execution venue or the
+	// cache. Context-aware risk may perform read-only venue validation and hand
+	// exec a lease for the prepared payload.
+	var preTradeLease contract.PreTradeLease
 	if e.risk != nil {
 		cmd.RiskStart = time.Now()
 		var inst *model.Instrument
@@ -285,12 +300,35 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 				inst = got
 			}
 		}
-		if err := e.risk.Check(req, inst); err != nil {
+		var err error
+		if checker, ok := e.risk.(ContextRiskChecker); ok {
+			preTradeLease, err = checker.CheckContext(ctx, req, inst)
+			if preTradeLease != nil {
+				defer preTradeLease.Release()
+			}
+		} else {
+			err = e.risk.Check(req, inst)
+		}
+		if err != nil {
 			cmd.RiskEnd = time.Now()
 			cmd.Err = err.Error()
 			return nil, err
 		}
 		cmd.RiskEnd = time.Now()
+	}
+	if err := ctx.Err(); err != nil {
+		cmd.Err = err.Error()
+		return nil, err
+	}
+	var preparedClient contract.PreparedExecutionClient
+	if preTradeLease != nil {
+		var ok bool
+		preparedClient, ok = e.client.(contract.PreparedExecutionClient)
+		if !ok {
+			err := fmt.Errorf("exec: pre-trade lease requires prepared execution client: %w", contract.ErrNotSupported)
+			cmd.Err = err.Error()
+			return nil, err
+		}
 	}
 
 	now := e.clk.Now()
@@ -300,6 +338,18 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		return nil, err
 	}
 	e.inflight.TrackIntent(intent, InFlightSubmitted)
+	if err := ctx.Err(); err != nil {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		outcome := Outcome{Class: OutcomeLocalDenied, Sent: false, Err: err}
+		if appendErr := e.appendResult(closeCtx, intent, outcome, ""); appendErr != nil {
+			joined := errors.Join(err, appendErr)
+			cmd.Err = joined.Error()
+			return nil, joined
+		}
+		cmd.Err = err.Error()
+		return nil, err
+	}
 	e.cache.UpsertOrder(model.Order{
 		Request:   req,
 		Status:    enums.StatusPendingNew,
@@ -308,9 +358,16 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	})
 
 	cmd.AdapterStart = time.Now()
-	order, err := e.client.Submit(ctx, req)
+	var order *model.Order
+	var err error
+	if preTradeLease != nil {
+		order, err = preparedClient.SubmitPrepared(ctx, req)
+	} else {
+		order, err = e.client.Submit(ctx, req)
+	}
 	cmd.AdapterEnd = time.Now()
-	outcome := ClassifySubmitResult(true, order, err)
+	sent := !errors.Is(err, contract.ErrPreparedStateUnavailable)
+	outcome := ClassifySubmitResult(sent, order, err)
 	if order != nil {
 		cmd.VenueOrderID = order.VenueOrderID
 	}
@@ -349,6 +406,18 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	case OutcomeAmbiguous:
 		cmd.Err = errorString(err)
 		return nil, err
+	case OutcomeLocalDenied, OutcomeUnsupported:
+		rejected := model.Order{
+			Request:      req,
+			Status:       enums.StatusRejected,
+			CreatedAt:    now,
+			UpdatedAt:    e.clk.Now(),
+			RejectReason: errorString(err),
+		}
+		e.cache.UpsertOrder(rejected)
+		cmd.CacheApplied = time.Now()
+		cmd.Err = errorString(err)
+		return nil, err
 	default:
 		cmd.Err = errorString(err)
 		return nil, err
@@ -379,6 +448,11 @@ func (e *Engine) Cancel(ctx context.Context, clientID string) error {
 	outcome := ClassifyCommandResult(true, err)
 	if appendErr := e.appendResult(ctx, intent, outcome, o.VenueOrderID); appendErr != nil {
 		return appendErr
+	}
+	if outcome.Class == OutcomeConfirmedAccepted {
+		o.Status = enums.StatusCanceled
+		o.UpdatedAt = e.clk.Now()
+		e.cache.UpsertOrder(o)
 	}
 	return err
 }

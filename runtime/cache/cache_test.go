@@ -270,6 +270,41 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 	}
 }
 
+func TestApplyAccountStateRemovesBalancesOmittedByNewSnapshot(t *testing.T) {
+	c := New()
+	firstAt := time.Unix(10, 0)
+	state := model.AccountState{
+		AccountID: "acct",
+		Venue:     "VENUE",
+		Type:      model.AccountMargin,
+		Balances: []model.AccountBalance{
+			{AccountID: "acct", Currency: "USDT", Total: decimal.NewFromInt(100), Free: decimal.NewFromInt(100)},
+			{AccountID: "acct", Currency: "BTC", Total: decimal.NewFromInt(1), Free: decimal.NewFromInt(1)},
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("VENUE", "acct", firstAt),
+		TsEvent:  firstAt,
+		TsInit:   firstAt,
+	}
+	if err := c.ApplyAccountStateAt(state, firstAt); err != nil {
+		t.Fatalf("apply first account state: %v", err)
+	}
+	secondAt := firstAt.Add(time.Second)
+	state.Balances = state.Balances[:1]
+	state.EventID = model.AccountStateEventID("VENUE", "acct", secondAt)
+	state.TsEvent = secondAt
+	state.TsInit = secondAt
+	if err := c.ApplyAccountStateAt(state, secondAt); err != nil {
+		t.Fatalf("apply second account state: %v", err)
+	}
+	if _, ok := c.BalanceForAccount("acct", "BTC"); ok {
+		t.Fatal("balance omitted by authoritative snapshot remained in compatibility cache")
+	}
+	if got, ok := c.BalanceForAccount("acct", "USDT"); !ok || !got.Total.Equal(decimal.NewFromInt(100)) {
+		t.Fatalf("retained USDT balance=%+v ok=%v", got, ok)
+	}
+}
+
 func TestApplyAccountStateRejectsNonTradingReadyState(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
@@ -319,5 +354,77 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 	}
 	if _, ok := c.AccountForVenue("BINANCE"); ok {
 		t.Fatal("venue fallback should be ambiguous when two accounts exist for one venue")
+	}
+}
+
+func TestBalanceAndPositionUpsertsIgnoreOlderVenueUpdates(t *testing.T) {
+	c := New()
+	newer := time.Unix(20, 0)
+	older := newer.Add(-time.Second)
+	c.UpsertBalance(model.AccountBalance{
+		AccountID: "acct",
+		Currency:  "USDT",
+		Total:     decimal.RequireFromString("100"),
+		Free:      decimal.RequireFromString("90"),
+		Locked:    decimal.RequireFromString("10"),
+		UpdatedAt: newer,
+	})
+	c.UpsertBalance(model.AccountBalance{
+		AccountID: "acct",
+		Currency:  "USDT",
+		Total:     decimal.RequireFromString("1"),
+		Free:      decimal.RequireFromString("1"),
+		UpdatedAt: older,
+	})
+	if got, ok := c.BalanceForAccount("acct", "USDT"); !ok || !got.Total.Equal(decimal.RequireFromString("100")) {
+		t.Fatalf("older balance replaced newer update: %+v ok=%v", got, ok)
+	}
+
+	id := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindPerp}
+	c.UpsertPosition(model.Position{AccountID: "acct", InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("2"), UpdatedAt: newer})
+	c.UpsertPosition(model.Position{AccountID: "acct", InstrumentID: id, Side: enums.PosNet, Quantity: decimal.Zero, UpdatedAt: older})
+	if got, ok := c.PositionForAccount("acct", id, enums.PosNet); !ok || !got.Quantity.Equal(decimal.RequireFromString("2")) {
+		t.Fatalf("older flat position deleted newer position: %+v ok=%v", got, ok)
+	}
+}
+
+func TestBalanceUpsertSynchronizesAccountWithoutRefreshingSnapshotFreshness(t *testing.T) {
+	c := New()
+	initialAt := time.Unix(20, 0)
+	state := model.AccountState{
+		AccountID:    "ASTER-001",
+		Venue:        "ASTER",
+		BaseCurrency: "USDT",
+		Type:         model.AccountCash,
+		Balances: []model.AccountBalance{
+			{AccountID: "ASTER-001", Currency: "USDT", Total: decimal.NewFromInt(100), Free: decimal.NewFromInt(100)},
+			{AccountID: "ASTER-001", Currency: "ASTER", Total: decimal.Zero, Free: decimal.Zero},
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("ASTER", "ASTER-001", initialAt),
+		TsEvent:  initialAt,
+		TsInit:   initialAt,
+	}
+	if err := c.ApplyAccountStateAt(state, initialAt); err != nil {
+		t.Fatal(err)
+	}
+	acct, ok := c.Account("ASTER-001")
+	if !ok {
+		t.Fatal("account missing after initial state")
+	}
+	freshness := acct.Freshness()
+	c.UpsertBalance(model.AccountBalance{
+		AccountID: "ASTER-001",
+		Currency:  "ASTER",
+		Total:     decimal.RequireFromString("8.18"),
+		Free:      decimal.RequireFromString("8.18"),
+		UpdatedAt: initialAt.Add(time.Second),
+	})
+	free, ok := acct.BalanceFree("ASTER")
+	if !ok || !free.Equal(decimal.RequireFromString("8.18")) {
+		t.Fatalf("account ASTER free=%s ok=%v, want 8.18 true", free, ok)
+	}
+	if got := acct.Freshness().LastAccountStateAt; !got.Equal(freshness.LastAccountStateAt) {
+		t.Fatalf("balance delta refreshed full account snapshot from %s to %s", freshness.LastAccountStateAt, got)
 	}
 }

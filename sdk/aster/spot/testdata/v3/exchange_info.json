@@ -1,0 +1,41 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1783641600000,
+  "rateLimits": [],
+  "exchangeFilters": [],
+  "symbols": [
+    {
+      "symbol": "ASTERUSDT",
+      "status": "TRADING",
+      "baseAsset": "ASTER",
+      "pricePrecision": 4,
+      "quantityPrecision": 2,
+      "baseAssetPrecision": 8,
+      "quoteAsset": "USDT",
+      "quotePrecision": 8,
+      "orderTypes": ["LIMIT", "MARKET"],
+      "timeInForce": ["GTC", "IOC", "GTX"],
+      "icebergAllowed": false,
+      "ocoAllowed": false,
+      "isSpotTradingAllowed": true,
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "minPrice": "0.0001",
+          "maxPrice": "1000000",
+          "tickSize": "0.0001"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "minQty": "0.01",
+          "maxQty": "1000000",
+          "stepSize": "0.01"
+        },
+        {
+          "filterType": "MIN_NOTIONAL",
+          "minNotional": "5"
+        }
+      ]
+    }
+  ]
+}

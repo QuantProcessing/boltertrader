@@ -368,6 +368,25 @@ func (pf *Portfolio) AccountForVenue(venue string) (accounting.Account, bool) {
 	return source.AccountForVenue(venue)
 }
 
+// AccountSummary returns the venue-reported account summary for an account.
+func (pf *Portfolio) AccountSummary(accountID string) (*model.AccountSummary, bool) {
+	acct, ok := pf.Account(accountID)
+	if !ok {
+		return nil, false
+	}
+	return acct.Summary(), true
+}
+
+// AccountSummaryForVenue returns the venue-reported account summary for an
+// unambiguous venue account.
+func (pf *Portfolio) AccountSummaryForVenue(venue string) (*model.AccountSummary, bool) {
+	acct, ok := pf.AccountForVenue(venue)
+	if !ok {
+		return nil, false
+	}
+	return acct.Summary(), true
+}
+
 // Accounts returns account snapshots from the bound account source.
 func (pf *Portfolio) Accounts() []accounting.Account {
 	source := pf.accountSource()

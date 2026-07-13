@@ -346,10 +346,39 @@ func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
 		}); ok {
 			aware.SetRuntimeCapabilities(runtimeRiskCapabilities(n.clients)...)
 		}
+		if registrar, ok := r.(interface {
+			SetVenuePreTradeValidator(contract.VenuePreTradeValidator, ...enums.InstrumentKind)
+		}); ok {
+			if validator, ok := n.clients.Execution.(contract.VenuePreTradeValidator); ok {
+				kinds := executionSubmitKinds(n.clients.Execution.Capabilities())
+				if len(kinds) > 0 {
+					registrar.SetVenuePreTradeValidator(validator, kinds...)
+				}
+			}
+		}
 		if n.Exec != nil {
 			n.Exec.WithRisk(r, provider)
 		}
 	}
+}
+
+func executionSubmitKinds(caps contract.Capabilities) []enums.InstrumentKind {
+	if !caps.Trading.Submit {
+		return nil
+	}
+	seen := make(map[enums.InstrumentKind]struct{}, len(caps.Products))
+	kinds := make([]enums.InstrumentKind, 0, len(caps.Products))
+	for _, product := range caps.Products {
+		if !product.Trading || product.Kind == enums.KindUnknown {
+			continue
+		}
+		if _, ok := seen[product.Kind]; ok {
+			continue
+		}
+		seen[product.Kind] = struct{}{}
+		kinds = append(kinds, product.Kind)
+	}
+	return kinds
 }
 
 func runtimeRiskCapabilities(clients Clients) []contract.Capabilities {
@@ -870,7 +899,10 @@ func (n *TradingNode) onAccount(env contract.AccountEnvelope) {
 	payload, meta := n.normalizedAccountPayloadAndMeta(env)
 	switch e := payload.(type) {
 	case contract.BalanceEvent:
-		n.Cache.UpsertBalance(e.Balance)
+		if err := n.Cache.ApplyBalance(e.Balance); err != nil {
+			n.life.ForceFailed(err.Error())
+			n.emitHealth("failed", err.Error())
+		}
 	case contract.PositionEvent:
 		n.Cache.UpsertPosition(e.Position)
 	case contract.AccountStateEvent:

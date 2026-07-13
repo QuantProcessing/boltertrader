@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 )
@@ -102,6 +103,7 @@ func (c *Client) GetTrades(ctx context.Context, tickerID string, limit *int, max
 
 func (c *Client) GetMarketPrice(ctx context.Context, productID int64) (*MarketPrice, error) {
 	req := map[string]interface{}{
+		"type":       "market_price",
 		"product_id": productID,
 	}
 	data, err := c.QueryGateWayV1(ctx, "POST", req)
@@ -117,21 +119,24 @@ func (c *Client) GetMarketPrice(ctx context.Context, productID int64) (*MarketPr
 
 func (c *Client) GetMarketPrices(ctx context.Context, productID []int) ([]MarketPrice, error) {
 	req := map[string]interface{}{
-		"type":        "market_price",
+		"type":        "market_prices",
 		"product_ids": productID,
 	}
 	data, err := c.QueryGateWayV1(ctx, "POST", req)
 	if err != nil {
 		return nil, err
 	}
-	var resp []MarketPrice
+	var resp MarketPricesResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
-	return resp, nil
+	return resp.MarketPrices, nil
 }
 
 func (c *Client) GetNonces(ctx context.Context) (*Nonce, error) {
+	if c.Signer == nil {
+		return nil, ErrCredentialsRequired
+	}
 	req := map[string]interface{}{
 		"type":    "nonces",
 		"address": c.address,
@@ -185,6 +190,56 @@ func (c *Client) GetSymbols(ctx context.Context, productType *string) (*SymbolsI
 	return &resp, nil
 }
 
+func (c *Client) GetAllProducts(ctx context.Context) (*AllProductsResponse, error) {
+	req := map[string]interface{}{
+		"type": "all_products",
+	}
+	data, err := c.QueryGateWayV1(ctx, http.MethodGet, req)
+	if err != nil {
+		return nil, err
+	}
+	var resp AllProductsResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) GetStatus(ctx context.Context) (SequencerStatus, error) {
+	data, err := c.QueryGateWayV1(ctx, http.MethodGet, map[string]interface{}{"type": "status"})
+	if err != nil {
+		return "", err
+	}
+	var status SequencerStatus
+	if err := json.Unmarshal(data, &status); err != nil {
+		return "", fmt.Errorf("decode sequencer status: %w", err)
+	}
+	return status, nil
+}
+
+func (c *Client) QuerySymbols(ctx context.Context, req SymbolsRequest) (*SymbolsInfo, error) {
+	payload := map[string]interface{}{
+		"type": "symbols",
+	}
+	if req.ProductType != "" {
+		payload["product_type"] = string(req.ProductType)
+	}
+	method := http.MethodGet
+	if len(req.ProductIDs) > 0 {
+		payload["product_ids"] = req.ProductIDs
+		method = http.MethodPost
+	}
+	data, err := c.QueryGateWayV1(ctx, method, payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp SymbolsInfo
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) GetContractsV1(ctx context.Context) (*ContractV1, error) {
 	req := map[string]interface{}{
 		"type": "contracts",
@@ -194,6 +249,44 @@ func (c *Client) GetContractsV1(ctx context.Context) (*ContractV1, error) {
 		return nil, err
 	}
 	var resp ContractV1
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) GetMaxOrderSize(ctx context.Context, req MaxOrderSizeRequest) (*MaxOrderSizeResponse, error) {
+	if req.Direction != OrderDirectionLong && req.Direction != OrderDirectionShort {
+		return nil, fmt.Errorf("nado max order size: invalid direction %q", req.Direction)
+	}
+	payload := map[string]interface{}{
+		"type":       "max_order_size",
+		"product_id": req.ProductID,
+		"sender":     req.Sender,
+		"price_x18":  req.PriceX18,
+		"direction":  string(req.Direction),
+	}
+	if req.AvgPriceX18 != "" {
+		payload["avg_price_x18"] = req.AvgPriceX18
+	}
+	if req.SpotLeverage != nil {
+		payload["spot_leverage"] = strconv.FormatBool(*req.SpotLeverage)
+	}
+	if req.ReduceOnly != nil {
+		payload["reduce_only"] = strconv.FormatBool(*req.ReduceOnly)
+	}
+	if req.Isolated != nil {
+		payload["isolated"] = strconv.FormatBool(*req.Isolated)
+	}
+	if req.BorrowMargin != nil {
+		payload["borrow_margin"] = strconv.FormatBool(*req.BorrowMargin)
+	}
+
+	data, err := c.QueryGateWayV1(ctx, http.MethodGet, payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp MaxOrderSizeResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}
@@ -233,6 +326,46 @@ func (c *Client) GetFundingRate(ctx context.Context, productID int64) (*FundingR
 		fundingResp.ProductID = productID
 	}
 	return &fundingResp, nil
+}
+
+// GetPerpPrice returns the archive indexer's exact mark and index prices for one
+// perpetual product. The SDK deliberately preserves the native x18 strings.
+func (c *Client) GetPerpPrice(ctx context.Context, productID int64) (*PerpPriceResponse, error) {
+	req := map[string]interface{}{
+		"price": map[string]interface{}{
+			"product_id": productID,
+		},
+	}
+	data, err := c.QueryArchiveV1(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var price PerpPriceResponse
+	if err := json.Unmarshal(data, &price); err != nil {
+		return nil, err
+	}
+	return &price, nil
+}
+
+// GetOraclePrices returns exact oracle prices and source update times for the
+// requested products.
+func (c *Client) GetOraclePrices(ctx context.Context, productIDs []int64) ([]OraclePriceResponse, error) {
+	req := map[string]interface{}{
+		"oracle_price": map[string]interface{}{
+			"product_ids": productIDs,
+		},
+	}
+	data, err := c.QueryArchiveV1(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var response oraclePricesResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, err
+	}
+	return response.Prices, nil
 }
 
 // GetAllFundingRates retrieves raw funding rates for all perp products.
@@ -285,33 +418,4 @@ func (c *Client) GetAllFundingRates(ctx context.Context) (map[string]FundingRate
 	}
 
 	return fundingMap, nil
-}
-
-// GetFundingRateHistory retrieves historical funding rates for a single product
-// from the archive indexer. startMillis / endMillis are optional epoch-millisecond
-// bounds; pass 0 to leave unbounded. limit <= 0 uses the indexer default.
-func (c *Client) GetFundingRateHistory(ctx context.Context, productID int64, startMillis, endMillis int64, limit int) ([]FundingRateArchiveEntry, error) {
-	q := FundingRateHistoryQuery{
-		ProductID: productID,
-	}
-	if startMillis > 0 {
-		q.StartTime = startMillis
-	}
-	if endMillis > 0 {
-		q.EndTime = endMillis
-	}
-	if limit > 0 {
-		q.Limit = limit
-	}
-	req := FundingRateHistoryRequest{FundingRateHistory: q}
-	data, err := c.QueryArchiveV1(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var entries []FundingRateArchiveEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, fmt.Errorf("GetFundingRateHistory: unmarshal: %w", err)
-	}
-	return entries, nil
 }

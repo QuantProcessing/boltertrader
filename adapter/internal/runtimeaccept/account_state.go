@@ -16,8 +16,17 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+var acceptanceMaxOrderNotional = decimal.NewFromInt(1_000_000)
+
 func AttachAccountRequiredRisk(node *btruntime.TradingNode, provider model.InstrumentProvider) {
 	riskEngine := risk.New(risk.Limits{}, node.Cache).RequireAccountState()
+	btruntime.WithRisk(riskEngine, provider)(node)
+}
+
+// AttachAccountRequiredRiskWithAcceptanceLimit installs the normal account
+// gate plus a deliberately high local limit used only by live acceptance probes.
+func AttachAccountRequiredRiskWithAcceptanceLimit(node *btruntime.TradingNode, provider model.InstrumentProvider) {
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: acceptanceMaxOrderNotional}, node.Cache).RequireAccountState()
 	btruntime.WithRisk(riskEngine, provider)(node)
 }
 
@@ -70,12 +79,12 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	if equity, ok := node.Portfolio.Equity(accountID); !ok || len(equity) == 0 {
 		t.Fatalf("runtime portfolio equity=%v ok=%v for account %s, want non-empty", equity, ok, accountID)
 	}
-	if typ == model.AccountMargin {
-		if initial, ok := node.Portfolio.MarginInitial(accountID); !ok || len(initial) == 0 {
-			t.Fatalf("runtime portfolio initial margin=%v ok=%v for account %s, want non-empty", initial, ok, accountID)
+	if typ == model.AccountMargin && kind != enums.KindSpot {
+		if initial, ok := node.Portfolio.MarginInitial(accountID); !ok {
+			t.Fatalf("runtime portfolio initial margin=%v ok=%v for account %s, want readable account", initial, ok, accountID)
 		}
-		if maintenance, ok := node.Portfolio.MarginMaintenance(accountID); !ok || len(maintenance) == 0 {
-			t.Fatalf("runtime portfolio maintenance margin=%v ok=%v for account %s, want non-empty", maintenance, ok, accountID)
+		if maintenance, ok := node.Portfolio.MarginMaintenance(accountID); !ok {
+			t.Fatalf("runtime portfolio maintenance margin=%v ok=%v for account %s, want readable account", maintenance, ok, accountID)
 		}
 	}
 	metrics := node.Metrics()
@@ -141,6 +150,57 @@ func AssertOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, pro
 	}
 }
 
+// AssertRuntimeOversizedOrderRejected proves rejection through the real
+// execution engine. The configured local limit fires before any venue-backed
+// validator or execution handoff, so cache and in-flight state must stay clean.
+func AssertRuntimeOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID) {
+	t.Helper()
+	if node == nil || node.Exec == nil {
+		t.Fatal("runtime oversized-order probe requires an execution engine")
+	}
+	inst, ok := provider.Instrument(id)
+	if !ok || inst == nil {
+		t.Fatalf("instrument provider missing %s", id)
+	}
+	qty := inst.MinQty
+	if !qty.IsPositive() {
+		qty = inst.SizeStep
+	}
+	if !qty.IsPositive() {
+		qty = decimal.NewFromInt(1)
+	}
+	price := acceptanceMaxOrderNotional.Mul(decimal.NewFromInt(2)).Div(qty)
+	if inst.PriceTick.IsPositive() {
+		price = price.Div(inst.PriceTick).Ceil().Mul(inst.PriceTick)
+	}
+	clientID := fmt.Sprintf("runtime-local-risk-%d", time.Now().UnixNano())
+	openBefore := len(node.Cache.OpenOrders())
+	inflightBefore := node.Exec.InFlightCount()
+	_, err := node.Exec.Submit(context.Background(), model.OrderRequest{
+		ClientID:     clientID,
+		InstrumentID: id,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     qty,
+		Price:        price,
+		PositionSide: enums.PosNet,
+	})
+	if !errors.Is(err, risk.ErrRiskRejected) {
+		t.Fatalf("runtime oversized-order probe err=%v, want ErrRiskRejected", err)
+	}
+	if _, ok := node.Cache.Order(clientID); ok {
+		t.Fatalf("runtime oversized-order probe %s reached order cache", clientID)
+	}
+	if got := len(node.Cache.OpenOrders()); got != openBefore {
+		t.Fatalf("runtime oversized-order probe changed open orders: before=%d after=%d", openBefore, got)
+	}
+	if got := node.Exec.InFlightCount(); got != inflightBefore {
+		t.Fatalf("runtime oversized-order probe changed in-flight state: before=%d after=%d", inflightBefore, got)
+	}
+	t.Logf("runtime_local_risk_rejection instrument=%s client_id=%s notional=%s limit=%s cache_order=false open_orders=%d inflight=%d", id, clientID, price.Mul(qty), acceptanceMaxOrderNotional, openBefore, inflightBefore)
+}
+
 func WaitForActive(ctx context.Context, node *btruntime.TradingNode) error {
 	var last lifecycle.Snapshot
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -149,6 +209,9 @@ func WaitForActive(ctx context.Context, node *btruntime.TradingNode) error {
 		last = node.State()
 		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
 			return nil
+		}
+		if last.Node == lifecycle.NodeFailed || last.Node == lifecycle.NodeStopped {
+			return fmt.Errorf("runtime stopped before becoming active; last=%+v", last)
 		}
 		select {
 		case <-ctx.Done():

@@ -1,13 +1,33 @@
 package nado
 
 import (
+	"fmt"
 	"math/big"
+	"strings"
 )
+
+var x18Scale = new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+
+func ParseX18(value string) (*big.Int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, fmt.Errorf("nado x18: empty decimal")
+	}
+	rational, ok := new(big.Rat).SetString(value)
+	if !ok {
+		return nil, fmt.Errorf("nado x18: invalid decimal %q", value)
+	}
+	scaled := new(big.Rat).Mul(rational, new(big.Rat).SetInt(x18Scale))
+	if !scaled.IsInt() {
+		return nil, fmt.Errorf("nado x18: %q has more than 18 decimal places", value)
+	}
+	return new(big.Int).Set(scaled.Num()), nil
+}
 
 // ToX18 converts a number to an 18-decimal fixed-point big.Int.
 // It supports int, int64, float32, and float64.
 func ToX18(v interface{}) *big.Int {
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	scale := new(big.Int).Set(x18Scale)
 
 	switch val := v.(type) {
 	case int:
@@ -32,16 +52,10 @@ func ToX18(v interface{}) *big.Int {
 		f.Int(res)
 		return res
 	case string:
-		f, _, err := new(big.Float).SetPrec(256).Parse(val, 10)
+		res, err := ParseX18(val)
 		if err != nil {
 			return big.NewInt(0)
 		}
-		s := new(big.Float).SetPrec(256).SetInt(scale)
-		f.Mul(f, s)
-		// Add 0.5 for rounding safety on string parsing ensures we snap to nearest integer
-		f.Add(f, big.NewFloat(0.5))
-		res := new(big.Int)
-		f.Int(res)
 		return res
 	default:
 		return big.NewInt(0)
@@ -52,7 +66,7 @@ func ToX18(v interface{}) *big.Int {
 // result = (x * y) / 1e18
 func MulX18(x, y *big.Int) *big.Int {
 	product := new(big.Int).Mul(x, y)
-	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	scale := new(big.Int).Set(x18Scale)
 	return product.Div(product, scale)
 }
 

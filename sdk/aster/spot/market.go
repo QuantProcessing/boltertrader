@@ -8,9 +8,11 @@ import (
 // Depth
 
 type DepthResponse struct {
-	LastUpdateID int64      `json:"lastUpdateId"`
-	Bids         [][]string `json:"bids"`
-	Asks         [][]string `json:"asks"`
+	LastUpdateID    int64      `json:"lastUpdateId"`
+	EventTime       int64      `json:"E"`
+	TransactionTime int64      `json:"T"`
+	Bids            [][]string `json:"bids"`
+	Asks            [][]string `json:"asks"`
 }
 
 func (c *Client) Depth(ctx context.Context, symbol string, limit int) (*DepthResponse, error) {
@@ -22,7 +24,7 @@ func (c *Client) Depth(ctx context.Context, symbol string, limit int) (*DepthRes
 	}
 
 	var res DepthResponse
-	err := c.Get(ctx, "/api/v1/depth", params, false, &res)
+	err := c.Get(ctx, "/api/v3/depth", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +51,7 @@ func (c *Client) Klines(ctx context.Context, symbol, interval string, limit int,
 	}
 
 	var res []KlineResponse
-	err := c.Get(ctx, "/api/v1/klines", params, false, &res)
+	err := c.Get(ctx, "/api/v3/klines", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -60,10 +62,9 @@ type PublicTrade struct {
 	ID           int64  `json:"id"`
 	Price        string `json:"price"`
 	Qty          string `json:"qty"`
-	QuoteQty     string `json:"quoteQty"`
+	BaseQty      string `json:"baseQty"`
 	Time         int64  `json:"time"`
 	IsBuyerMaker bool   `json:"isBuyerMaker"`
-	IsBestMatch  bool   `json:"isBestMatch"`
 }
 
 func (c *Client) GetTrades(ctx context.Context, symbol string, limit int) ([]PublicTrade, error) {
@@ -74,7 +75,7 @@ func (c *Client) GetTrades(ctx context.Context, symbol string, limit int) ([]Pub
 		params["limit"] = limit
 	}
 	var res []PublicTrade
-	err := c.Get(ctx, "/api/v1/trades", params, false, &res)
+	err := c.Get(ctx, "/api/v3/trades", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +118,7 @@ func (c *Client) GetAggTradesPaged(ctx context.Context, q AggTradesQuery) ([]Agg
 		params["limit"] = q.Limit
 	}
 	var res []AggTrade
-	err := c.Get(ctx, "/api/v1/aggTrades", params, false, &res)
+	err := c.Get(ctx, "/api/v3/aggTrades", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +165,7 @@ func (c *Client) Ticker(ctx context.Context, symbol string) (*TickerResponse, er
 	}
 
 	var res TickerResponse
-	err := c.Get(ctx, "/api/v1/ticker/24hr", params, false, &res)
+	err := c.Get(ctx, "/api/v3/ticker/24hr", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +193,7 @@ func (c *Client) BookTicker(ctx context.Context, symbol string) (*BookTickerResp
 	}
 
 	var res BookTickerResponse
-	err := c.Get(ctx, "/api/v1/ticker/bookTicker", params, false, &res)
+	err := c.Get(ctx, "/api/v3/ticker/bookTicker", params, false, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +204,7 @@ func (c *Client) BookTicker(ctx context.Context, symbol string) (*BookTickerResp
 
 func (c *Client) ExchangeInfo(ctx context.Context) (*ExchangeInfoResponse, error) {
 	var res ExchangeInfoResponse
-	err := c.Get(ctx, "/api/v1/exchangeInfo", nil, false, &res)
+	err := c.Get(ctx, "/api/v3/exchangeInfo", nil, false, &res)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,10 @@
+{
+  "symbol": "ASTERUSDT",
+  "markPrice": "1.2500",
+  "indexPrice": "1.2480",
+  "estimatedSettlePrice": "1.2490",
+  "lastFundingRate": "0.00010000",
+  "interestRate": "0.00010000",
+  "nextFundingTime": 1783645200000,
+  "time": 1783641600000
+}

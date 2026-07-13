@@ -1,0 +1,18 @@
+[
+  {
+    "buyer": true,
+    "commission": "0.00500000",
+    "commissionAsset": "USDT",
+    "id": 40001,
+    "maker": false,
+    "orderId": 30001,
+    "price": "1.2500",
+    "qty": "10.00",
+    "quoteQty": "12.50",
+    "realizedPnl": "0.00000000",
+    "side": "BUY",
+    "positionSide": "BOTH",
+    "symbol": "ASTERUSDT",
+    "time": 1783641600100
+  }
+]

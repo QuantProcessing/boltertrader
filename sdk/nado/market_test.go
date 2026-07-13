@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -17,18 +18,62 @@ import (
 
 func requireFullEnv(t *testing.T) {
 	t.Helper()
-	testenv.RequireLiveRead(t, "NADO_PRIVATE_KEY", "NADO_SUBACCOUNT_NAME")
+	testenv.RequireLiveRead(t, "NADO_TESTNET_PRIVATE_KEY")
 }
 
 func requireWriteEnv(t *testing.T) {
 	t.Helper()
-	testenv.RequireLiveWrite(t, "NADO_ENABLE_LIVE_WRITE_TESTS", "NADO_PRIVATE_KEY", "NADO_SUBACCOUNT_NAME")
+	testenv.RequireLiveWrite(t, "BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES", "NADO_TESTNET_PRIVATE_KEY")
 }
 
 func GetEnv() (string, string) {
-	pk := os.Getenv("NADO_PRIVATE_KEY")
-	subaccount := os.Getenv("NADO_SUBACCOUNT_NAME")
+	pk := os.Getenv("NADO_TESTNET_PRIVATE_KEY")
+	subaccount := os.Getenv("NADO_TESTNET_SUBACCOUNT_NAME")
+	if strings.TrimSpace(subaccount) == "" {
+		subaccount = "default"
+	}
 	return pk, subaccount
+}
+
+func newNadoTestnetClient(t *testing.T) *Client {
+	t.Helper()
+	profile, err := NewProfile(EnvironmentTestnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func newNadoCredentialClient(t *testing.T) *Client {
+	t.Helper()
+	privateKey, subaccount := GetEnv()
+	client, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+func newNadoClientForServer(t *testing.T, server *httptest.Server) *Client {
+	t.Helper()
+	client := newNadoTestnetClient(t)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := server.Client().Transport
+	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clone.URL.Scheme = target.Scheme
+		clone.URL.Host = target.Host
+		clone.Host = target.Host
+		return transport.RoundTrip(clone)
+	})})
+	return client
 }
 
 func retryNadoPublic[T any](t *testing.T, op string, fn func() (T, error)) T {
@@ -55,11 +100,7 @@ func retryNadoPublic[T any](t *testing.T, op string, fn func() (T, error)) T {
 
 func TestGetNonces(t *testing.T) {
 	requireFullEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 	nonces, err := client.GetNonces(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -69,11 +110,7 @@ func TestGetNonces(t *testing.T) {
 
 func TestGetCandlesticks(t *testing.T) {
 	requireFullEnv(t)
-	privateKey, subaccount := GetEnv()
-	client, err := NewClient().WithCredentials(privateKey, subaccount)
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := newNadoCredentialClient(t)
 	candlesticks := retryNadoPublic(t, "GetCandlesticks", func() ([]ArchiveCandlestick, error) {
 		return client.GetCandlesticks(context.Background(), CandlestickRequest{
 			Candlesticks: Candlesticks{
@@ -88,7 +125,7 @@ func TestGetCandlesticks(t *testing.T) {
 
 func TestGetContracts(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	client := NewClient()
+	client := newNadoTestnetClient(t)
 	contracts, err := client.GetContracts(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +135,7 @@ func TestGetContracts(t *testing.T) {
 
 func TestGetTickers(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	client := NewClient()
+	client := newNadoTestnetClient(t)
 	tickers, err := client.GetTickers(context.Background(), MarketTypePerp, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +147,7 @@ func TestGetTickers(t *testing.T) {
 func TestGetFundingRate(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := NewClient()
+	client := newNadoTestnetClient(t)
 	ctx := context.Background()
 
 	// Test with product ID 36 (commonly LIT-PERP in Nado)
@@ -140,7 +177,7 @@ func TestGetFundingRate(t *testing.T) {
 func TestGetAllFundingRates(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := NewClient()
+	client := newNadoTestnetClient(t)
 	ctx := context.Background()
 
 	rates, err := client.GetAllFundingRates(ctx)
@@ -171,56 +208,60 @@ func TestGetAllFundingRates(t *testing.T) {
 	}
 }
 
-// TestGetFundingRateHistoryParses verifies the SDK method parses the archive
-// response envelope correctly and forwards query parameters to the server.
-func TestGetFundingRateHistoryParses(t *testing.T) {
+func TestGetPerpPricePreservesX18AndSourceTime(t *testing.T) {
 	t.Parallel()
 
-	entries := []FundingRateArchiveEntry{
-		{ProductID: 1, FundingRateX18: "100000000000000000", Timestamp: 1700000000000},
-		{ProductID: 1, FundingRateX18: "200000000000000000", Timestamp: 1700003600000},
-	}
-	payload, err := json.Marshal(entries)
-	require.NoError(t, err)
-
-	var capturedBody []byte
+	var captured map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedBody, _ = io.ReadAll(r.Body)
+		require.Equal(t, http.MethodPost, r.Method)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(payload)
+		_, _ = io.WriteString(w, `{
+			"product_id": 2,
+			"index_price_x18": "31483202055051853950444",
+			"mark_price_x18": "31514830401018841708801",
+			"update_time": "1689281222"
+		}`)
 	}))
 	defer srv.Close()
 
-	c := NewClient().WithArchiveV1URL(srv.URL)
-	hist, err := c.GetFundingRateHistory(context.Background(), 1, 1700000000000, 1700007200000, 10)
+	client := newNadoClientForServer(t, srv)
+	price, err := client.GetPerpPrice(context.Background(), 2)
 	require.NoError(t, err)
-	require.Len(t, hist, 2)
-	require.Equal(t, int64(1), hist[0].ProductID)
-	require.Equal(t, "100000000000000000", hist[0].FundingRateX18)
-	require.Equal(t, int64(1700000000000), hist[0].Timestamp)
-	require.Equal(t, int64(1700003600000), hist[1].Timestamp)
-
-	// Verify the request body included our query parameters.
-	var reqBody FundingRateHistoryRequest
-	require.NoError(t, json.Unmarshal(capturedBody, &reqBody))
-	require.Equal(t, int64(1), reqBody.FundingRateHistory.ProductID)
-	require.Equal(t, int64(1700000000000), reqBody.FundingRateHistory.StartTime)
-	require.Equal(t, int64(1700007200000), reqBody.FundingRateHistory.EndTime)
-	require.Equal(t, 10, reqBody.FundingRateHistory.Limit)
+	require.Equal(t, int64(2), price.ProductID)
+	require.Equal(t, "31483202055051853950444", price.IndexPriceX18)
+	require.Equal(t, "31514830401018841708801", price.MarkPriceX18)
+	require.Equal(t, "1689281222", price.UpdateTime)
+	require.Equal(t, map[string]any{"price": map[string]any{"product_id": float64(2)}}, captured)
 }
 
-// TestGetFundingRateHistoryEmpty verifies that an empty array response is valid.
-func TestGetFundingRateHistoryEmpty(t *testing.T) {
+func TestGetOraclePricesPreservesX18AndPerProductSourceTime(t *testing.T) {
 	t.Parallel()
 
+	var captured map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("[]"))
+		_, _ = io.WriteString(w, `{
+			"prices": [
+				{"product_id": 1, "oracle_price_x18": "29464023750000000000000", "update_time": "1683315718"},
+				{"product_id": 2, "oracle_price_x18": "29430225194712740000000", "update_time": "1683315721"}
+			]
+		}`)
 	}))
 	defer srv.Close()
 
-	c := NewClient().WithArchiveV1URL(srv.URL)
-	hist, err := c.GetFundingRateHistory(context.Background(), 99, 0, 0, 0)
+	client := newNadoClientForServer(t, srv)
+	prices, err := client.GetOraclePrices(context.Background(), []int64{1, 2})
 	require.NoError(t, err)
-	require.Empty(t, hist)
+	require.Len(t, prices, 2)
+	require.Equal(t, OraclePriceResponse{
+		ProductID:      2,
+		OraclePriceX18: "29430225194712740000000",
+		UpdateTime:     "1683315721",
+	}, prices[1])
+	require.Equal(t, map[string]any{
+		"oracle_price": map[string]any{"product_ids": []any{float64(1), float64(2)}},
+	}, captured)
 }

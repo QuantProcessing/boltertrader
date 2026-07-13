@@ -7,28 +7,21 @@ import (
 	"testing"
 )
 
-func TestNewWSClientAndNewWsClientReturnCompatibleTypes(t *testing.T) {
-	modern := NewWSClient(context.Background(), "wss://example.com/ws")
-	legacy := NewWsClient(context.Background(), "wss://example.com/ws")
-	t.Cleanup(modern.Close)
-	t.Cleanup(legacy.Close)
+func TestLowLevelWSClientKeepsEndpointPrivate(t *testing.T) {
+	client := newWSClient(context.Background(), "wss://example.com/ws")
+	t.Cleanup(client.Close)
 
-	var legacyTyped *WsClient = modern
-	var modernTyped *WSClient = legacy
-
-	if legacyTyped != modern {
-		t.Fatalf("legacy alias should reference the same concrete type")
+	var legacyTyped *WsClient = client
+	if legacyTyped != client {
+		t.Fatal("legacy type alias should reference the same concrete type")
 	}
-	if modernTyped != legacy {
-		t.Fatalf("new constructor should remain assignable from the compatibility alias")
-	}
-	if modern.URL != legacy.URL {
-		t.Fatalf("constructors should initialize equivalent clients, got %q and %q", modern.URL, legacy.URL)
+	if client.endpoint != "wss://example.com/ws" {
+		t.Fatalf("endpoint = %q", client.endpoint)
 	}
 }
 
 func TestWsMarketClientKeepsLegacyEmbeddedFieldName(t *testing.T) {
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	t.Cleanup(client.Close)
 
 	if client.WsClient == nil {
@@ -41,7 +34,7 @@ func TestWsMarketClientKeepsLegacyEmbeddedFieldName(t *testing.T) {
 }
 
 func TestWsMarketClientRoutesThreeSecondMarkPriceStream(t *testing.T) {
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	t.Cleanup(client.Close)
 
 	var got *WsMarkPriceEvent
@@ -60,7 +53,7 @@ func TestWsMarketClientRoutesThreeSecondMarkPriceStream(t *testing.T) {
 }
 
 func TestWsMarketClientRoutesAllMarkPriceStream(t *testing.T) {
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	t.Cleanup(client.Close)
 
 	var got []*WsMarkPriceEvent

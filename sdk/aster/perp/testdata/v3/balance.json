@@ -1,0 +1,13 @@
+[
+  {
+    "accountAlias": "fixture",
+    "asset": "USDT",
+    "balance": "500.00000000",
+    "crossWalletBalance": "500.00000000",
+    "crossUnPnl": "5.00000000",
+    "availableBalance": "492.50000000",
+    "maxWithdrawAmount": "492.50000000",
+    "marginAvailable": true,
+    "updateTime": 1783641600000
+  }
+]

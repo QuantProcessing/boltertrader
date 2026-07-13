@@ -11,7 +11,7 @@ import (
 
 func TestClient_PlaceOrderBuildsClosePositionStopRequest(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/fapi/v1/order", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/fapi/v3/order", func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
 		q := r.URL.Query()
 		require.Equal(t, "BTCUSDT", q.Get("symbol"))
@@ -31,7 +31,7 @@ func TestClient_PlaceOrderBuildsClosePositionStopRequest(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := NewClient().WithBaseURL(server.URL).WithCredentials("key", "secret")
+	client := newClientForServer(t, server, newTestSecurity(t))
 	resp, err := client.PlaceOrder(context.Background(), PlaceOrderParams{
 		Symbol:           "BTCUSDT",
 		Side:             "SELL",

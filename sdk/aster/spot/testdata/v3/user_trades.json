@@ -1,0 +1,18 @@
+[
+  {
+    "symbol": "ASTERUSDT",
+    "id": 20001,
+    "orderId": 10001,
+    "side": "BUY",
+    "price": "1.2500",
+    "qty": "4.00",
+    "quoteQty": "5.00",
+    "commission": "0.00400000",
+    "commissionAsset": "ASTER",
+    "time": 1783641600100,
+    "counterpartyId": 7,
+    "createUpdateId": null,
+    "maker": false,
+    "buyer": true
+  }
+]

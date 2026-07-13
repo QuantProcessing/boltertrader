@@ -1,0 +1,18 @@
+{
+  "symbol": "ASTERUSDT",
+  "orderId": 10001,
+  "clientOrderId": "fixture-spot-001",
+  "updateTime": 1783641600000,
+  "price": "1.2500",
+  "avgPrice": "0.0000",
+  "origQty": "10.00",
+  "cumQty": "0.00",
+  "executedQty": "0.00",
+  "cumQuote": "0.00",
+  "status": "NEW",
+  "timeInForce": "GTC",
+  "stopPrice": "0",
+  "origType": "LIMIT",
+  "type": "LIMIT",
+  "side": "BUY"
+}

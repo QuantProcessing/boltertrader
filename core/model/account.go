@@ -17,6 +17,8 @@ const (
 	AccountIDGateDefault        = "GATE-001"
 	AccountIDLighterDefault     = "LIGHTER-001"
 	AccountIDHyperliquidDefault = "HYPERLIQUID-001"
+	AccountIDAsterDefault       = "ASTER-001"
+	AccountIDNadoDefault        = "NADO-001"
 )
 
 func DefaultAccountIDForVenue(venue string) string {
@@ -35,6 +37,10 @@ func DefaultAccountIDForVenue(venue string) string {
 		return AccountIDLighterDefault
 	case "HYPERLIQUID":
 		return AccountIDHyperliquidDefault
+	case "ASTER":
+		return AccountIDAsterDefault
+	case "NADO":
+		return AccountIDNadoDefault
 	default:
 		return ""
 	}
@@ -174,6 +180,26 @@ type MarginRequirement struct {
 	Maintenance decimal.Decimal
 }
 
+type AccountSummary struct {
+	SettlementCurrency  string
+	Equity              decimal.Decimal
+	AvailableCollateral decimal.Decimal
+	UpdatedAt           time.Time
+}
+
+func (s AccountSummary) Validate() error {
+	if s.SettlementCurrency == "" {
+		return fmt.Errorf("account summary: settlement currency required")
+	}
+	if s.AvailableCollateral.IsNegative() {
+		return fmt.Errorf("account summary %s: negative available collateral %s", s.SettlementCurrency, s.AvailableCollateral)
+	}
+	if s.UpdatedAt.IsZero() {
+		return fmt.Errorf("account summary %s: updated timestamp required", s.SettlementCurrency)
+	}
+	return nil
+}
+
 type AccountState struct {
 	AccountID    string
 	Venue        string
@@ -181,6 +207,7 @@ type AccountState struct {
 	BaseCurrency string
 	Balances     []AccountBalance
 	Margins      []MarginBalance
+	Summary      *AccountSummary
 	Reported     bool
 	EventID      EventID
 	TsEvent      time.Time
@@ -188,7 +215,7 @@ type AccountState struct {
 }
 
 func AccountStateEventID(venue, accountID string, ts time.Time) EventID {
-	return EventID(joinAccountStateEventID("account", "state", venue, accountID, ts.Format(time.RFC3339Nano)))
+	return EventID(joinAccountStateEventID("account", "state", venue, accountID, ts.UTC().Format(time.RFC3339Nano)))
 }
 
 func joinAccountStateEventID(parts ...string) string {
@@ -216,6 +243,10 @@ func CloneAccountState(s AccountState) AccountState {
 	for _, margin := range margins {
 		s.Margins = append(s.Margins, CloneMarginBalance(margin))
 	}
+	if s.Summary != nil {
+		summary := *s.Summary
+		s.Summary = &summary
+	}
 	return s
 }
 
@@ -242,6 +273,11 @@ func (s AccountState) Validate() error {
 	}
 	for _, margin := range s.Margins {
 		if err := margin.Validate(); err != nil {
+			return err
+		}
+	}
+	if s.Summary != nil {
+		if err := s.Summary.Validate(); err != nil {
 			return err
 		}
 	}

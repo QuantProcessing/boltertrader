@@ -2,12 +2,14 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 func requireRealtimeWS(t *testing.T) {
@@ -15,10 +17,51 @@ func requireRealtimeWS(t *testing.T) {
 	testenv.RequireLiveRead(t)
 }
 
+func TestPerpMarketSubscriptionsRejectNormalizedTestSymbolsBeforeRegistration(t *testing.T) {
+	client := newTestWSMarketClient(t, context.Background())
+	defer client.Close()
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "mark price", call: func() error {
+			return client.SubscribeMarkPrice(" TeStAsset ", "1s", func(*WsMarkPriceEvent) error { return nil })
+		}},
+		{name: "incremental depth", call: func() error {
+			return client.SubscribeIncrementOrderBook(" TeStAsset ", "100ms", func(*WsDepthEvent) error { return nil })
+		}},
+		{name: "partial depth", call: func() error {
+			return client.SubscribeLimitOrderBook(" TeStAsset ", 5, "100ms", func(*WsDepthEvent) error { return nil })
+		}},
+		{name: "book ticker", call: func() error {
+			return client.SubscribeBookTicker(" TeStAsset ", func(*WsBookTickerEvent) error { return nil })
+		}},
+		{name: "aggregate trade", call: func() error {
+			return client.SubscribeAggTrade(" TeStAsset ", func(*WsAggTradeEvent) error { return nil })
+		}},
+		{name: "kline", call: func() error {
+			return client.SubscribeKline(" TeStAsset ", "1m", func(*WsKlineEvent) error { return nil })
+		}},
+		{name: "unsubscribe", call: func() error { return client.UnsubscribeBookTicker(" TeStAsset ") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			var unsafe *astercommon.UnsafeSymbolError
+			if !errors.As(err, &unsafe) {
+				t.Fatalf("error = %T %v", err, err)
+			}
+			if len(client.subs) != 0 {
+				t.Fatalf("unsafe subscription registered: %+v", client.subs)
+			}
+		})
+	}
+}
+
 // TestSubscribeMarkPrice tests real subscription to Mark Price
 func TestSubscribeMarkPrice(t *testing.T) {
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	// Use default URL (Real Binance)
 	client.WsClient.Debug = true
 
@@ -60,7 +103,7 @@ func TestSubscribeAllMarkPrice(t *testing.T) {
 		t.Skip("set ASTER_REALTIME_WS=1 to run real Aster all-market mark price smoke test")
 	}
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 	rawMessages := make(chan string, 8)
 	client.Handler = func(message []byte) {
@@ -106,7 +149,7 @@ func TestSubscribeAllMarkPrice(t *testing.T) {
 // TestSubscribeDepth tests real subscription to Depth
 func TestSubscribeDepth(t *testing.T) {
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 
 	err := client.Connect()
@@ -141,7 +184,7 @@ func TestSubscribeDepth(t *testing.T) {
 // TestSubscribeBookTicker tests real subscription to Book Ticker
 func TestSubscribeBookTicker(t *testing.T) {
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 
 	err := client.Connect()
@@ -175,7 +218,7 @@ func TestSubscribeBookTicker(t *testing.T) {
 // TestReconnectAndResubscribe tests reconnection logic by forcefully closing the underlying connection
 func TestReconnectAndResubscribe(t *testing.T) {
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 	// Fast reconnect for test
 	client.ReconnectWait = 1 * time.Second
@@ -242,7 +285,7 @@ func TestReconnectAndResubscribe(t *testing.T) {
 
 func TestKline(t *testing.T) {
 	testenv.RequireSoak(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 
 	err := client.Connect()
@@ -306,7 +349,7 @@ func TestKline(t *testing.T) {
 // TestMultiSubscription tests simultaneous subscriptions to multiple streams
 func TestMultiSubscription(t *testing.T) {
 	requireRealtimeWS(t)
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	client.WsClient.Debug = true
 
 	err := client.Connect()

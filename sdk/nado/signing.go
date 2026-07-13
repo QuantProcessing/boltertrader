@@ -17,8 +17,6 @@ import (
 const (
 	EIP712DomainName    = "Nado"
 	EIP712DomainVersion = "0.0.1"
-	ChainID             = 57073
-	EndpointAddress     = "0x05ec92d78ed421f3d3ada77ffde167106565974e"
 )
 
 // TypedData structure definitions for EIP-712
@@ -56,7 +54,10 @@ type Signer struct {
 	chainId    *big.Int
 }
 
-func NewSigner(privateKeyHex string) (*Signer, error) {
+func NewSigner(privateKeyHex string, chainID int64) (*Signer, error) {
+	if chainID <= 0 {
+		return nil, fmt.Errorf("nado signer: a positive chain id is required")
+	}
 	privateKeyHex = strings.TrimPrefix(privateKeyHex, "0x")
 	pk, err := crypto.HexToECDSA(privateKeyHex)
 	if err != nil {
@@ -65,8 +66,15 @@ func NewSigner(privateKeyHex string) (*Signer, error) {
 
 	return &Signer{
 		privateKey: pk,
-		chainId:    big.NewInt(ChainID),
+		chainId:    big.NewInt(chainID),
 	}, nil
+}
+
+func (s *Signer) ChainID() int64 {
+	if s == nil || s.chainId == nil {
+		return 0
+	}
+	return s.chainId.Int64()
 }
 
 func (s *Signer) GetAddress() common.Address {
@@ -93,56 +101,36 @@ func BuildSender(address common.Address, subAccountName string) string {
 
 // SignOrder signs an order and returns signature and digest
 func (s *Signer) SignOrder(order TxOrder, verifyingContract string) (string, string, error) {
-	domain := apitypes.TypedDataDomain{
-		Name:              EIP712DomainName,
-		Version:           EIP712DomainVersion,
-		ChainId:           math.NewHexOrDecimal256(s.chainId.Int64()),
-		VerifyingContract: verifyingContract,
-	}
-
-	// Parse values
-	amount, _ := new(big.Int).SetString(order.Amount, 10)
-	priceX18, _ := new(big.Int).SetString(order.PriceX18, 10)
-	nonce, _ := new(big.Int).SetString(order.Nonce, 10)
-	expiration, _ := new(big.Int).SetString(order.Expiration, 10)
-	appendix, _ := new(big.Int).SetString(order.Appendix, 10)
-
-	// Convert sender hex string to [32]byte
-	varsenderBytes, err := hex.DecodeString(strings.TrimPrefix(order.Sender, "0x"))
+	domain, err := s.domain(verifyingContract)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid sender hex: %w", err)
+		return "", "", err
 	}
-	if len(varsenderBytes) != 32 {
-		return "", "", fmt.Errorf("sender must be 32 bytes")
+	sender32, err := decodeSender(order.Sender)
+	if err != nil {
+		return "", "", err
 	}
-	var sender32 [32]byte
-	copy(sender32[:], varsenderBytes)
+	priceX18, err := parseInteger("priceX18", order.PriceX18, true, 128)
+	if err != nil {
+		return "", "", err
+	}
+	amount, err := parseInteger("amount", order.Amount, true, 128)
+	if err != nil {
+		return "", "", err
+	}
+	expiration, err := parseInteger("expiration", order.Expiration, false, 64)
+	if err != nil {
+		return "", "", err
+	}
+	nonce, err := parseInteger("nonce", order.Nonce, false, 64)
+	if err != nil {
+		return "", "", err
+	}
+	appendix, err := parseInteger("appendix", order.Appendix, false, 128)
+	if err != nil {
+		return "", "", err
+	}
 
 	message := map[string]interface{}{
-		"sender":   sender32,
-		"priceX18": math.NewHexOrDecimal256(priceX18.Int64()), // Note: Ensure int128 fits in int64 for this wrapper or use big.Int if needed. SDK uses wrapper typically for JSON.
-		// Wait, math.NewHexOrDecimal256 takes int64. If values exceed int64, this helper is risky.
-		// Detailed check: int128 can exceed int64.
-		// Let's check how go-ethereum apitypes handles big ints. content uses math.HexOrDecimal256.
-		// Actually, standard apitypes.TypedData message values can be string, float, or big.Int directly for numbers.
-		// But in the original code it was using math.NewHexOrDecimal256.
-		// Let's stick to passing *big.Int directly if possible or check what apitypes expects.
-		// Docs for apitypes.TypedDataAndHash say: "Numeric types are parsed as big.Int".
-		// So we can pass *big.Int directly in the map.
-		"amount":     amount, // Pass *big.Int directly to be safe
-		"expiration": math.NewHexOrDecimal256(expiration.Int64()),
-		"nonce":      math.NewHexOrDecimal256(nonce.Int64()),
-		"appendix":   appendix, // Pass *big.Int directly
-	}
-
-	// Quick fix: The original code used math.NewHexOrDecimal256 which only accepts int64.
-	// However, priceX18 (1e18 scale) will definitely overflow int64 for high prices.
-	// I should use *big.Int or math.HexOrDecimal256 created from big.Int.
-	// But math.HexOrDecimal256 is an alias for big.Int with custom json marshaling.
-	// Let's just use *math.HexOrDecimal256 casting from *big.Int.
-	// Actually, looking at go-ethereum source, HexOrDecimal256 is `type HexOrDecimal256 big.Int`.
-
-	message = map[string]interface{}{
 		"sender":     sender32,
 		"priceX18":   (*math.HexOrDecimal256)(priceX18),
 		"amount":     (*math.HexOrDecimal256)(amount),
@@ -172,31 +160,31 @@ func (s *Signer) SignOrder(order TxOrder, verifyingContract string) (string, str
 
 // SignCancelProductOrders signs a batch cancel request
 func (s *Signer) SignCancelProductOrders(tx TxCancelProductOrders, verifyingContract string) (string, error) {
-	domain := apitypes.TypedDataDomain{
-		Name:              EIP712DomainName,
-		Version:           EIP712DomainVersion,
-		ChainId:           math.NewHexOrDecimal256(s.chainId.Int64()),
-		VerifyingContract: verifyingContract,
-	}
-
-	nonce, _ := new(big.Int).SetString(tx.Nonce, 10)
-
-	varsenderBytes, err := hex.DecodeString(strings.TrimPrefix(tx.Sender, "0x"))
+	domain, err := s.domain(verifyingContract)
 	if err != nil {
-		return "", fmt.Errorf("invalid sender hex: %w", err)
+		return "", err
 	}
-	var sender32 [32]byte
-	copy(sender32[:], varsenderBytes)
+	nonce, err := parseInteger("nonce", tx.Nonce, false, 64)
+	if err != nil {
+		return "", err
+	}
+	sender32, err := decodeSender(tx.Sender)
+	if err != nil {
+		return "", err
+	}
 
 	productIds := make([]*math.HexOrDecimal256, len(tx.ProductIds))
 	for i, pid := range tx.ProductIds {
+		if pid < 0 || pid > int64(^uint32(0)) {
+			return "", fmt.Errorf("nado signer: product id %d is outside uint32", pid)
+		}
 		productIds[i] = math.NewHexOrDecimal256(int64(pid))
 	}
 
 	message := map[string]interface{}{
 		"sender":     sender32,
 		"productIds": productIds,
-		"nonce":      math.NewHexOrDecimal256(nonce.Int64()),
+		"nonce":      (*math.HexOrDecimal256)(nonce),
 	}
 
 	typedData := apitypes.TypedData{
@@ -220,25 +208,22 @@ func (s *Signer) SignCancelProductOrders(tx TxCancelProductOrders, verifyingCont
 
 // SignStreamAuthentication signs a stream auth request
 func (s *Signer) SignStreamAuthentication(tx TxStreamAuth, verifyingContract string) (string, error) {
-	domain := apitypes.TypedDataDomain{
-		Name:              EIP712DomainName,
-		Version:           EIP712DomainVersion,
-		ChainId:           math.NewHexOrDecimal256(s.chainId.Int64()),
-		VerifyingContract: verifyingContract,
-	}
-
-	expiration, _ := new(big.Int).SetString(tx.Expiration, 10)
-
-	varsenderBytes, err := hex.DecodeString(strings.TrimPrefix(tx.Sender, "0x"))
+	domain, err := s.domain(verifyingContract)
 	if err != nil {
-		return "", fmt.Errorf("invalid sender hex: %w", err)
+		return "", err
 	}
-	var sender32 [32]byte
-	copy(sender32[:], varsenderBytes)
+	expiration, err := parseInteger("expiration", tx.Expiration, false, 64)
+	if err != nil {
+		return "", err
+	}
+	sender32, err := decodeSender(tx.Sender)
+	if err != nil {
+		return "", err
+	}
 
 	message := map[string]interface{}{
 		"sender":     sender32,
-		"expiration": math.NewHexOrDecimal256(expiration.Int64()),
+		"expiration": (*math.HexOrDecimal256)(expiration),
 	}
 
 	typedData := apitypes.TypedData{
@@ -261,6 +246,9 @@ func (s *Signer) SignStreamAuthentication(tx TxStreamAuth, verifyingContract str
 }
 
 func (s *Signer) signTypedData(typedData apitypes.TypedData) (string, string, error) {
+	if s == nil || s.privateKey == nil || s.chainId == nil {
+		return "", "", fmt.Errorf("nado signer: signer is not initialized")
+	}
 	hash, _, err := apitypes.TypedDataAndHash(typedData)
 	if err != nil {
 		return "", "", fmt.Errorf("hash typed data: %w", err)
@@ -282,24 +270,24 @@ func (s *Signer) signTypedData(typedData apitypes.TypedData) (string, string, er
 
 // SignCancelOrders signs a batch cancel request by digests
 func (s *Signer) SignCancelOrders(tx TxCancelOrders, verifyingContract string) (string, error) {
-	domain := apitypes.TypedDataDomain{
-		Name:              EIP712DomainName,
-		Version:           EIP712DomainVersion,
-		ChainId:           math.NewHexOrDecimal256(s.chainId.Int64()),
-		VerifyingContract: verifyingContract,
-	}
-
-	nonce, _ := new(big.Int).SetString(tx.Nonce, 10)
-
-	varsenderBytes, err := hex.DecodeString(strings.TrimPrefix(tx.Sender, "0x"))
+	domain, err := s.domain(verifyingContract)
 	if err != nil {
-		return "", fmt.Errorf("invalid sender hex: %w", err)
+		return "", err
 	}
-	var sender32 [32]byte
-	copy(sender32[:], varsenderBytes)
+	nonce, err := parseInteger("nonce", tx.Nonce, false, 64)
+	if err != nil {
+		return "", err
+	}
+	sender32, err := decodeSender(tx.Sender)
+	if err != nil {
+		return "", err
+	}
 
 	productIds := make([]*math.HexOrDecimal256, len(tx.ProductIds))
 	for i, pid := range tx.ProductIds {
+		if pid < 0 || pid > int64(^uint32(0)) {
+			return "", fmt.Errorf("nado signer: product id %d is outside uint32", pid)
+		}
 		productIds[i] = math.NewHexOrDecimal256(int64(pid))
 	}
 
@@ -319,7 +307,7 @@ func (s *Signer) SignCancelOrders(tx TxCancelOrders, verifyingContract string) (
 		"sender":     sender32,
 		"productIds": productIds,
 		"digests":    digests,
-		"nonce":      math.NewHexOrDecimal256(nonce.Int64()),
+		"nonce":      (*math.HexOrDecimal256)(nonce),
 	}
 
 	typedData := apitypes.TypedData{
@@ -339,4 +327,50 @@ func (s *Signer) SignCancelOrders(tx TxCancelOrders, verifyingContract string) (
 
 	sig, _, err := s.signTypedData(typedData)
 	return sig, err
+}
+
+func (s *Signer) domain(verifyingContract string) (apitypes.TypedDataDomain, error) {
+	if s == nil || s.chainId == nil || s.chainId.Sign() <= 0 {
+		return apitypes.TypedDataDomain{}, fmt.Errorf("nado signer: chain id is required")
+	}
+	if !common.IsHexAddress(verifyingContract) || common.HexToAddress(verifyingContract) == (common.Address{}) {
+		return apitypes.TypedDataDomain{}, fmt.Errorf("nado signer: invalid verifying contract")
+	}
+	return apitypes.TypedDataDomain{
+		Name:              EIP712DomainName,
+		Version:           EIP712DomainVersion,
+		ChainId:           (*math.HexOrDecimal256)(new(big.Int).Set(s.chainId)),
+		VerifyingContract: common.HexToAddress(verifyingContract).Hex(),
+	}, nil
+}
+
+func decodeSender(value string) ([32]byte, error) {
+	var sender [32]byte
+	decoded, err := hex.DecodeString(strings.TrimPrefix(value, "0x"))
+	if err != nil {
+		return sender, fmt.Errorf("nado signer: invalid sender hex: %w", err)
+	}
+	if len(decoded) != len(sender) {
+		return sender, fmt.Errorf("nado signer: sender must be 32 bytes")
+	}
+	copy(sender[:], decoded)
+	return sender, nil
+}
+
+func parseInteger(name, value string, signed bool, bits uint) (*big.Int, error) {
+	parsed, ok := new(big.Int).SetString(value, 10)
+	if !ok || (!signed && parsed.Sign() < 0) {
+		return nil, fmt.Errorf("nado signer: invalid %s", name)
+	}
+	if signed {
+		limit := new(big.Int).Lsh(big.NewInt(1), bits-1)
+		minimum := new(big.Int).Neg(limit)
+		maximum := new(big.Int).Sub(new(big.Int).Set(limit), big.NewInt(1))
+		if parsed.Cmp(minimum) < 0 || parsed.Cmp(maximum) > 0 {
+			return nil, fmt.Errorf("nado signer: %s is outside int%d", name, bits)
+		}
+	} else if parsed.BitLen() > int(bits) {
+		return nil, fmt.Errorf("nado signer: %s is outside uint%d", name, bits)
+	}
+	return parsed, nil
 }

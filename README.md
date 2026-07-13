@@ -41,7 +41,7 @@ core/                venue-neutral domain (decimal everywhere; no float64)
    │
 adapter/<venue>/     translate SDKs into the contract (see Status)
    │
-sdk/<venue>/         faithful official-API clients (13 venues, pre-existing)
+sdk/<venue>/         faithful official-API clients (13 venues)
 ```
 
 ## Key invariants
@@ -141,11 +141,18 @@ Adapters: **Binance USD-M perp**, **Binance Spot**, **OKX USDT-linear SWAP**,
 **OKX Spot cash**, **Bybit Spot cash**, **Bybit USDT/USDC-linear Perp**,
 **Bitget Spot cash**, **Bitget USDT/USDC-linear Perp**,
 **Gate Spot cash**, **Gate USDT-linear Perp/SWAP**,
+**Aster Spot cash**, **Aster USDT-linear Perp**,
+**Nado Spot funded-only**, **Nado USDT0-linear Perp**,
 **Hyperliquid Spot cash**, **Hyperliquid Perp**, **Hyperliquid HIP-3 Perp**,
 **Lighter Spot cash**, and **Lighter Perp** for the supported Demo/Testnet
 subset. The explicit support matrix is in
 [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md). Adding a venue
 means writing one adapter; no runtime or strategy change.
+
+Nado Spot funded-only/no-borrow and Nado Perp are implemented through runtime.
+Their pre-trade path uses the documented `max_order_size` query, local risk
+checks, exact prepared-payload matching, and one-time `place_order` submission.
+The undocumented `validate_order` query is intentionally unsupported.
 
 ## Testing
 
@@ -173,6 +180,35 @@ queries current OI directly, and asserts OI is not cached:
 ```sh
 make test-reference-data-read
 ```
+
+Aster and Nado use official Testnet profiles. Read-only probes and the full
+noskip-gated adapter/runtime acceptance matrix are explicit:
+
+```sh
+make test-aster-testnet-read
+make test-nado-testnet-read
+make test-aster-testnet-acceptance
+make test-nado-testnet-acceptance
+make test-aster-nado-testnet-acceptance
+```
+
+Aster writes require `ASTER_TESTNET_USER_ADDRESS`,
+`ASTER_TESTNET_SIGNER_PRIVATE_KEY`, and
+`BOLTER_ENABLE_ASTER_TESTNET_WRITES=1`. Nado writes require
+`NADO_TESTNET_PRIVATE_KEY` and `BOLTER_ENABLE_NADO_TESTNET_WRITES=1`;
+`NADO_TESTNET_SUBACCOUNT_NAME` defaults to `default`. Both venues default to a
+maximum `100` settlement-currency notional and allow optional product symbols.
+Nado's currently tradable Testnet products require the explicit
+`NADO_TESTNET_MAX_NOTIONAL_USDT0=110` acceptance override.
+Endpoint variables are diagnostics only and must equal the selected official
+Testnet profile; production endpoints fail before network access.
+
+Nado read-only Spot/Perp and reference/OI probes pass. All four Spot/Perp
+adapter/runtime write rows also pass through local risk, documented
+`max_order_size`, exact prepared payload ownership, one-time `place_order`,
+private fill evidence, reconciliation, and clean final state. Isolated-only
+Perp products use a conservative 1x initial-margin transfer; reduce-only closes
+add no margin.
 
 Live write tests are venue-specific and may create, modify, cancel, or close
 real exchange state:

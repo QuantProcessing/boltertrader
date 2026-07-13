@@ -150,3 +150,55 @@ func TestReferenceDataEnvelopeInfersMarketMeta(t *testing.T) {
 		t.Fatalf("source/flags not retained: %+v", env.EventMeta)
 	}
 }
+
+func TestInferredEventIDsDistinguishLifecycleProgressAndPreserveReplay(t *testing.T) {
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	ts := time.Unix(30, 0)
+	order := model.Order{
+		Request: model.OrderRequest{
+			AccountID:    "T:acct",
+			InstrumentID: id,
+			ClientID:     "client",
+			Quantity:     decimal.NewFromInt(2),
+		},
+		VenueOrderID: "venue",
+		Status:       enums.StatusPartiallyFilled,
+		FilledQty:    decimal.NewFromInt(1),
+		UpdatedAt:    ts,
+	}
+	first := NewExecEnvelope(OrderEvent{Order: order})
+	replay := NewExecEnvelope(OrderEvent{Order: order})
+	if first.EventID == "" || replay.EventID != first.EventID {
+		t.Fatalf("exact order replay ids first=%q replay=%q", first.EventID, replay.EventID)
+	}
+	order.FilledQty = decimal.RequireFromString("1.5")
+	order.UpdatedAt = ts.Add(time.Nanosecond)
+	progress := NewExecEnvelope(OrderEvent{Order: order})
+	if progress.EventID == first.EventID {
+		t.Fatalf("order lifecycle progress reused event id %q", first.EventID)
+	}
+
+	trade := model.TradeTick{InstrumentID: id, TradeID: "trade-1", Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1), Timestamp: ts}
+	tradeOne := NewMarketEnvelope(TradeEvent{Trade: trade})
+	trade.TradeID = "trade-2"
+	tradeTwo := NewMarketEnvelope(TradeEvent{Trade: trade})
+	if tradeOne.EventID == tradeTwo.EventID {
+		t.Fatalf("distinct trades reused event id %q", tradeOne.EventID)
+	}
+}
+
+func TestInferredAccountEventIDsIncludeAccountScope(t *testing.T) {
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	ts := time.Unix(40, 0)
+	leftBalance := NewAccountEnvelope(BalanceEvent{Balance: model.AccountBalance{AccountID: "T:left", Currency: "USDT", Total: decimal.NewFromInt(1), UpdatedAt: ts}})
+	rightBalance := NewAccountEnvelope(BalanceEvent{Balance: model.AccountBalance{AccountID: "T:right", Currency: "USDT", Total: decimal.NewFromInt(1), UpdatedAt: ts}})
+	if leftBalance.EventID == rightBalance.EventID {
+		t.Fatalf("balances from different accounts reused event id %q", leftBalance.EventID)
+	}
+
+	leftPosition := NewAccountEnvelope(PositionEvent{Position: model.Position{AccountID: "T:left", InstrumentID: id, Side: enums.PosNet, Quantity: decimal.NewFromInt(1), UpdatedAt: ts}})
+	rightPosition := NewAccountEnvelope(PositionEvent{Position: model.Position{AccountID: "T:right", InstrumentID: id, Side: enums.PosNet, Quantity: decimal.NewFromInt(1), UpdatedAt: ts}})
+	if leftPosition.EventID == rightPosition.EventID {
+		t.Fatalf("positions from different accounts reused event id %q", leftPosition.EventID)
+	}
+}

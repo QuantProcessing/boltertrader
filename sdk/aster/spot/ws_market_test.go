@@ -13,7 +13,7 @@ func Test_SubscribeIncrementOrderBook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	client := NewWsMarketClient(ctx)
+	client := newTestWSMarketClient(t, ctx)
 
 	// 开启 Debug 模式
 	client.Debug = true
@@ -56,7 +56,7 @@ func Test_SubscribeIncrementOrderBook(t *testing.T) {
 }
 
 func TestWsMarketClientSubscribeAndUnsubscribeIncrementOrderBookRegistersStream(t *testing.T) {
-	client := NewWsMarketClient(context.Background())
+	client := newTestWSMarketClient(t, context.Background())
 	t.Cleanup(client.Close)
 
 	const stream = "btcusdt@depth@100ms"

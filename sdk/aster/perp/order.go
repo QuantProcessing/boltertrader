@@ -2,9 +2,9 @@ package perp
 
 import (
 	"context"
+	"fmt"
+	"strings"
 )
-
-// Order Placement
 
 type OrderResponse struct {
 	ClientOrderID string `json:"clientOrderId"`
@@ -22,6 +22,7 @@ type OrderResponse struct {
 	StopPrice     string `json:"stopPrice"`
 	ClosePosition bool   `json:"closePosition"`
 	Symbol        string `json:"symbol"`
+	Time          *int64 `json:"time,omitempty"`
 	TimeInForce   string `json:"timeInForce"`
 	Type          string `json:"type"`
 	OrigType      string `json:"origType"`
@@ -35,198 +36,187 @@ type OrderResponse struct {
 type PlaceOrderParams struct {
 	Symbol           string
 	Side             string
-	PositionSide     string // Optional, for Hedge Mode
+	PositionSide     string
 	Type             OrderType
-	TimeInForce      TimeInForce // Optional
+	TimeInForce      TimeInForce
 	Quantity         string
-	Price            string // Optional
-	NewClientOrderID string // Optional
-	StopPrice        string // Optional
-	ClosePosition    bool   // Optional
-	ActivationPrice  string // Optional
-	CallbackRate     string // Optional
-	WorkingType      string // Optional
-	PriceProtect     bool   // Optional
-	ReduceOnly       bool   // Optional
+	Price            string
+	NewClientOrderID string
+	StopPrice        string
+	ClosePosition    bool
+	ActivationPrice  string
+	CallbackRate     string
+	WorkingType      string
+	PriceProtect     bool
+	ReduceOnly       bool
+	NewOrderRespType string
+	RecvWindow       *int64
 }
 
 func (c *Client) PlaceOrder(ctx context.Context, p PlaceOrderParams) (*OrderResponse, error) {
+	if p.ClosePosition && (p.Quantity != "" || p.ReduceOnly) {
+		return nil, fmt.Errorf("aster perp place order: closePosition cannot be combined with quantity or reduceOnly")
+	}
+	if p.ReduceOnly && p.PositionSide != "" && !strings.EqualFold(p.PositionSide, "BOTH") {
+		return nil, fmt.Errorf("aster perp place order: reduceOnly is not valid with hedge positionSide %q", p.PositionSide)
+	}
 	params := map[string]interface{}{
 		"symbol": p.Symbol,
 		"side":   p.Side,
 		"type":   p.Type,
 	}
-	if p.PositionSide != "" {
-		params["positionSide"] = p.PositionSide
-	}
+	addPerpStringParam(params, "positionSide", p.PositionSide)
 	if p.TimeInForce != "" {
 		params["timeInForce"] = string(p.TimeInForce)
 	}
-	if p.Quantity != "" {
-		params["quantity"] = p.Quantity
-	}
-	if p.Price != "" {
-		params["price"] = p.Price
-	}
-	if p.NewClientOrderID != "" {
-		params["newClientOrderId"] = p.NewClientOrderID
-	}
-	if p.StopPrice != "" {
-		params["stopPrice"] = p.StopPrice
-	}
+	addPerpStringParam(params, "quantity", p.Quantity)
+	addPerpStringParam(params, "price", p.Price)
+	addPerpStringParam(params, "newClientOrderId", p.NewClientOrderID)
+	addPerpStringParam(params, "stopPrice", p.StopPrice)
 	if p.ClosePosition {
 		params["closePosition"] = "true"
 	}
-	if p.ActivationPrice != "" {
-		params["activationPrice"] = p.ActivationPrice
-	}
-	if p.CallbackRate != "" {
-		params["callbackRate"] = p.CallbackRate
-	}
-	if p.WorkingType != "" {
-		params["workingType"] = p.WorkingType
-	}
+	addPerpStringParam(params, "activationPrice", p.ActivationPrice)
+	addPerpStringParam(params, "callbackRate", p.CallbackRate)
+	addPerpStringParam(params, "workingType", p.WorkingType)
 	if p.PriceProtect {
 		params["priceProtect"] = "true"
 	}
 	if p.ReduceOnly {
 		params["reduceOnly"] = "true"
 	}
+	addPerpStringParam(params, "newOrderRespType", p.NewOrderRespType)
+	addPerpInt64Param(params, "recvWindow", p.RecvWindow)
 
-	var res OrderResponse
-	err := c.Post(ctx, "/fapi/v1/order", params, true, &res)
-	if err != nil {
+	var response OrderResponse
+	if err := c.Post(ctx, "/fapi/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
-
-// Cancel Order
 
 type CancelOrderParams struct {
 	Symbol            string
-	OrderID           string
+	OrderID           *int64
 	OrigClientOrderID string
+	RecvWindow        *int64
 }
 
 func (c *Client) CancelOrder(ctx context.Context, p CancelOrderParams) (*OrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol": p.Symbol,
-	}
-	if p.OrderID != "" {
-		params["orderId"] = p.OrderID
-	}
-	if p.OrigClientOrderID != "" {
-		params["origClientOrderId"] = p.OrigClientOrderID
-	}
-
-	var res OrderResponse
-	err := c.Delete(ctx, "/fapi/v1/order", params, true, &res)
+	params, err := perpOrderIdentityParams(p.Symbol, p.OrderID, p.OrigClientOrderID, p.RecvWindow)
 	if err != nil {
+		return nil, fmt.Errorf("aster perp cancel order: %w", err)
+	}
+	var response OrderResponse
+	if err := c.Delete(ctx, "/fapi/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
 
-// Modify Order
-
 type ModifyOrderParams struct {
-	OrderID           int64
+	OrderID           *int64
 	OrigClientOrderID string
 	Symbol            string
-	Side              string // BUY or SELL
 	Quantity          string
 	Price             string
-	PriceMatch        string // NONE, OPPONENT, OPPONENT_5, OPPONENT_10, OPPONENT_20, QUEUE, QUEUE_5, QUEUE_10, QUEUE_20
+	RecvWindow        *int64
 }
 
 func (c *Client) ModifyOrder(ctx context.Context, p ModifyOrderParams) (*OrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol": p.Symbol,
-		"side":   p.Side,
-	}
-	if p.OrderID != 0 {
-		params["orderId"] = p.OrderID
-	}
-	if p.OrigClientOrderID != "" {
-		params["origClientOrderId"] = p.OrigClientOrderID
-	}
-	if p.Quantity != "" {
-		params["quantity"] = p.Quantity
-	}
-	if p.Price != "" {
-		params["price"] = p.Price
-	}
-	if p.PriceMatch != "" {
-		params["priceMatch"] = p.PriceMatch
-	}
-
-	var res OrderResponse
-	err := c.Put(ctx, "/fapi/v1/order", params, true, &res)
+	params, err := perpOrderIdentityParams(p.Symbol, p.OrderID, p.OrigClientOrderID, p.RecvWindow)
 	if err != nil {
+		return nil, fmt.Errorf("aster perp modify order: %w", err)
+	}
+	if p.Quantity == "" || p.Price == "" {
+		return nil, fmt.Errorf("aster perp modify order: quantity and price are required")
+	}
+	params["quantity"] = p.Quantity
+	params["price"] = p.Price
+	var response OrderResponse
+	if err := c.Put(ctx, "/fapi/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
-
-// Cancel All Open Orders
 
 type CancelAllOrdersParams struct {
-	Symbol string
+	Symbol     string
+	RecvWindow *int64
 }
 
-func (c *Client) CancelAllOpenOrders(ctx context.Context, p CancelAllOrdersParams) error {
-	params := map[string]interface{}{
-		"symbol": p.Symbol,
-	}
-	var res struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
-	}
-	// Note: Response might be 200 OK with msg "success" or list of orders.
-	// Binance API docs say it returns generic response or list.
-	// We'll just check for error.
-	return c.Delete(ctx, "/fapi/v1/allOpenOrders", params, true, &res)
+type CancelAllOrdersResponse struct {
+	Code StringOrNumber `json:"code"`
+	Msg  string         `json:"msg"`
 }
 
-// Get Order
-
-func (c *Client) GetOrder(ctx context.Context, symbol string, orderID int64, origClientOrderID string) (*OrderResponse, error) {
-	params := map[string]interface{}{
-		"symbol": symbol,
-	}
-	if orderID != 0 {
-		params["orderId"] = orderID
-	}
-	if origClientOrderID != "" {
-		params["origClientOrderId"] = origClientOrderID
-	}
-
-	var res OrderResponse
-	err := c.Get(ctx, "/fapi/v1/order", params, true, &res)
-	if err != nil {
+func (c *Client) CancelAllOpenOrders(ctx context.Context, p CancelAllOrdersParams) (*CancelAllOrdersResponse, error) {
+	params := map[string]interface{}{"symbol": p.Symbol}
+	addPerpInt64Param(params, "recvWindow", p.RecvWindow)
+	var response CancelAllOrdersResponse
+	if err := c.Delete(ctx, "/fapi/v3/allOpenOrders", params, true, &response); err != nil {
 		return nil, err
 	}
-	return &res, nil
+	return &response, nil
 }
 
-// Open Orders
+type OrderQuery struct {
+	Symbol            string
+	OrderID           *int64
+	OrigClientOrderID string
+	RecvWindow        *int64
+}
 
-func (c *Client) GetOpenOrders(ctx context.Context, symbol string) ([]OrderResponse, error) {
-	params := map[string]interface{}{}
-	if symbol != "" {
-		params["symbol"] = symbol
-	}
-
-	var res []OrderResponse
-	err := c.Get(ctx, "/fapi/v1/openOrders", params, true, &res)
+func (c *Client) QueryOrder(ctx context.Context, query OrderQuery) (*OrderResponse, error) {
+	params, err := perpOrderIdentityParams(query.Symbol, query.OrderID, query.OrigClientOrderID, query.RecvWindow)
 	if err != nil {
+		return nil, fmt.Errorf("aster perp query order: %w", err)
+	}
+	var response OrderResponse
+	if err := c.Get(ctx, "/fapi/v3/order", params, true, &response); err != nil {
 		return nil, err
 	}
-	return res, nil
+	return &response, nil
 }
 
-// Trade History
+type OpenOrdersQuery struct {
+	Symbol     string
+	RecvWindow *int64
+}
+
+func (c *Client) OpenOrders(ctx context.Context, query OpenOrdersQuery) ([]OrderResponse, error) {
+	params := make(map[string]interface{})
+	addPerpStringParam(params, "symbol", query.Symbol)
+	addPerpInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []OrderResponse
+	if err := c.Get(ctx, "/fapi/v3/openOrders", params, true, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+type AllOrdersQuery struct {
+	Symbol     string
+	OrderID    *int64
+	StartTime  *int64
+	EndTime    *int64
+	Limit      *int
+	RecvWindow *int64
+}
+
+func (c *Client) AllOrders(ctx context.Context, query AllOrdersQuery) ([]OrderResponse, error) {
+	params := map[string]interface{}{"symbol": query.Symbol}
+	addPerpInt64Param(params, "orderId", query.OrderID)
+	addPerpInt64Param(params, "startTime", query.StartTime)
+	addPerpInt64Param(params, "endTime", query.EndTime)
+	addPerpIntParam(params, "limit", query.Limit)
+	addPerpInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []OrderResponse
+	if err := c.Get(ctx, "/fapi/v3/allOrders", params, true, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
 
 type Trade struct {
 	Symbol          string `json:"symbol"`
@@ -238,33 +228,64 @@ type Trade struct {
 	Commission      string `json:"commission"`
 	CommissionAsset string `json:"commissionAsset"`
 	Time            int64  `json:"time"`
-	IsBuyer         bool   `json:"isBuyer"`
-	IsMaker         bool   `json:"isMaker"`
+	Buyer           bool   `json:"buyer"`
+	Maker           bool   `json:"maker"`
+	Side            string `json:"side"`
 	PositionSide    string `json:"positionSide"`
 	RealizedPnl     string `json:"realizedPnl"`
 }
 
-func (c *Client) MyTrades(ctx context.Context, symbol string, limit int, startTime, endTime int64, fromID int64) ([]Trade, error) {
-	params := map[string]interface{}{
-		"symbol": symbol,
-	}
-	if limit > 0 {
-		params["limit"] = limit
-	}
-	if startTime > 0 {
-		params["startTime"] = startTime
-	}
-	if endTime > 0 {
-		params["endTime"] = endTime
-	}
-	if fromID > 0 {
-		params["fromId"] = fromID
-	}
+type UserTradesQuery struct {
+	Symbol     string
+	StartTime  *int64
+	EndTime    *int64
+	FromID     *int64
+	Limit      *int
+	RecvWindow *int64
+}
 
-	var res []Trade
-	err := c.Get(ctx, "/fapi/v1/userTrades", params, true, &res)
-	if err != nil {
+func (c *Client) UserTrades(ctx context.Context, query UserTradesQuery) ([]Trade, error) {
+	if query.FromID != nil && (query.StartTime != nil || query.EndTime != nil) {
+		return nil, fmt.Errorf("aster perp user trades: fromId cannot be combined with startTime or endTime")
+	}
+	params := map[string]interface{}{"symbol": query.Symbol}
+	addPerpInt64Param(params, "startTime", query.StartTime)
+	addPerpInt64Param(params, "endTime", query.EndTime)
+	addPerpInt64Param(params, "fromId", query.FromID)
+	addPerpIntParam(params, "limit", query.Limit)
+	addPerpInt64Param(params, "recvWindow", query.RecvWindow)
+	var response []Trade
+	if err := c.Get(ctx, "/fapi/v3/userTrades", params, true, &response); err != nil {
 		return nil, err
 	}
-	return res, nil
+	return response, nil
+}
+
+func perpOrderIdentityParams(symbol string, orderID *int64, clientOrderID string, recvWindow *int64) (map[string]interface{}, error) {
+	if orderID == nil && clientOrderID == "" {
+		return nil, fmt.Errorf("orderId or origClientOrderId is required")
+	}
+	params := map[string]interface{}{"symbol": symbol}
+	addPerpInt64Param(params, "orderId", orderID)
+	addPerpStringParam(params, "origClientOrderId", clientOrderID)
+	addPerpInt64Param(params, "recvWindow", recvWindow)
+	return params, nil
+}
+
+func addPerpStringParam(params map[string]interface{}, key, value string) {
+	if value != "" {
+		params[key] = value
+	}
+}
+
+func addPerpInt64Param(params map[string]interface{}, key string, value *int64) {
+	if value != nil {
+		params[key] = *value
+	}
+}
+
+func addPerpIntParam(params map[string]interface{}, key string, value *int) {
+	if value != nil {
+		params[key] = *value
+	}
 }

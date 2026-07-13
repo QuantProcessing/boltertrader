@@ -21,6 +21,7 @@ type WsMarketClient struct {
 	cancel context.CancelFunc
 
 	mu          sync.Mutex
+	connectMu   sync.Mutex
 	writeMu     sync.Mutex
 	conn        *websocket.Conn
 	isConnected bool
@@ -40,25 +41,34 @@ type marketSubscription struct {
 	callback func([]byte)
 }
 
-func NewWsMarketClient(ctx context.Context) *WsMarketClient {
+func NewWsMarketClient(ctx context.Context, profile Profile) (*WsMarketClient, error) {
+	if err := profile.Validate(); err != nil {
+		return nil, err
+	}
 	c := &WsMarketClient{
-		url:           WsSubscriptionsURL,
+		url:           profile.SubscriptionsWSURL(),
 		subscriptions: make(map[string]*marketSubscription),
 		Logger:        zap.NewNop().Sugar().Named("nado-market"),
 	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
-	return c
+	return c, nil
 }
 
 func (c *WsMarketClient) Connect() error {
-	c.mu.Lock()
+	c.connectMu.Lock()
+	defer c.connectMu.Unlock()
 
-	// Wait for previous loops to exit
-	if c.loopsDoneCh != nil {
+	c.mu.Lock()
+	if c.isConnected && c.conn != nil {
 		c.mu.Unlock()
-		<-c.loopsDoneCh
-		c.mu.Lock()
+		return nil
 	}
+	previousLoops := c.loopsDoneCh
+	c.mu.Unlock()
+	if previousLoops != nil {
+		<-previousLoops
+	}
+	c.mu.Lock()
 
 	// Safely close old stopCh
 	if c.stopCh != nil {
@@ -106,8 +116,10 @@ func (c *WsMarketClient) Connect() error {
 	})
 
 	// Restore subscriptions
-	c.resubscribeAll()
-
+	if err := c.resubscribeAll(); err != nil {
+		c.disconnect()
+		return err
+	}
 	return nil
 }
 
@@ -142,9 +154,12 @@ func (c *WsMarketClient) pingLoop() {
 			c.Logger.Debug("Ping loop exiting (connection lost)")
 			return
 		case <-ticker.C:
-			if c.conn != nil {
+			c.mu.Lock()
+			conn := c.conn
+			c.mu.Unlock()
+			if conn != nil {
 				ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
-				if err := c.conn.Ping(ctx); err != nil {
+				if err := conn.Ping(ctx); err != nil {
 					c.Logger.Errorw("Ping error", "error", err)
 				} else {
 					c.Logger.Debug("Ping sent successfully")
@@ -156,11 +171,17 @@ func (c *WsMarketClient) pingLoop() {
 }
 
 func (c *WsMarketClient) readLoop() {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
 	defer func() {
 		c.mu.Lock()
-		if c.conn != nil {
-			c.conn.Close(websocket.StatusNormalClosure, "")
+		if c.conn == conn {
 			c.conn = nil
+		}
+		if conn != nil {
+			conn.Close(websocket.StatusNormalClosure, "")
 		}
 		c.isConnected = false
 
@@ -189,7 +210,7 @@ func (c *WsMarketClient) readLoop() {
 		default:
 			// Market data has 60s timeout (data streams continuously)
 			ctx, cancel := context.WithTimeout(c.ctx, ReadTimeout)
-			_, msg, err := c.conn.Read(ctx)
+			_, msg, err := conn.Read(ctx)
 			cancel()
 
 			if err != nil {
@@ -202,7 +223,7 @@ func (c *WsMarketClient) readLoop() {
 				return
 			}
 
-			c.Logger.Debug("Received message", "msg", string(msg))
+			c.Logger.Debug("Received market message")
 			c.handleMessage(msg)
 		}
 	}
@@ -239,11 +260,19 @@ func (c *WsMarketClient) reconnect() {
 
 func (c *WsMarketClient) Close() {
 	c.cancel()
+	c.disconnect()
+}
+
+func (c *WsMarketClient) disconnect() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn != nil {
-		c.conn.Close(websocket.StatusNormalClosure, "")
+	conn := c.conn
+	if conn != nil {
 		c.conn = nil
+	}
+	c.isConnected = false
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}
 }
 
@@ -259,10 +288,7 @@ func (c *WsMarketClient) Subscribe(stream StreamParams, callback func([]byte)) e
 		params:   stream,
 		callback: callback,
 	}
-	channel := stream.Type
-	if stream.ProductId != nil {
-		channel = fmt.Sprintf("%s:%d", channel, *stream.ProductId)
-	}
+	channel := marketStreamChannel(stream)
 	c.subscriptions[channel] = sub
 	isConnected := c.isConnected
 	c.mu.Unlock()
@@ -274,10 +300,7 @@ func (c *WsMarketClient) Subscribe(stream StreamParams, callback func([]byte)) e
 }
 
 func (c *WsMarketClient) Unsubscribe(stream StreamParams) error {
-	channel := stream.Type
-	if stream.ProductId != nil {
-		channel = fmt.Sprintf("%s:%d", channel, *stream.ProductId)
-	}
+	channel := marketStreamChannel(stream)
 
 	c.mu.Lock()
 	delete(c.subscriptions, channel)
@@ -300,11 +323,11 @@ func (c *WsMarketClient) sendSubscribe(stream StreamParams) error {
 	return c.writeJSON(req)
 }
 
-func (c *WsMarketClient) resubscribeAll() {
+func (c *WsMarketClient) resubscribeAll() error {
 	c.mu.Lock()
 	if len(c.subscriptions) == 0 {
 		c.mu.Unlock()
-		return
+		return nil
 	}
 
 	var allParams []StreamParams
@@ -317,16 +340,13 @@ func (c *WsMarketClient) resubscribeAll() {
 
 	for _, p := range allParams {
 		if err := c.sendSubscribe(p); err != nil {
-			c.Logger.Errorw("Failed to restore market subscription",
-				"type", p.Type,
-				"error", err,
-			)
-		} else {
-			c.Logger.Debugw("Restored market subscription", "type", p.Type)
+			return fmt.Errorf("restore market subscription %s: %w", p.Type, err)
 		}
+		c.Logger.Debugw("Restored market subscription", "type", p.Type)
 	}
 
 	c.Logger.Info("Market subscription restoration completed")
+	return nil
 }
 
 func (c *WsMarketClient) writeJSON(v interface{}) error {
@@ -348,25 +368,26 @@ func (c *WsMarketClient) writeJSON(v interface{}) error {
 
 func (c *WsMarketClient) handleMessage(msg []byte) {
 	var baseMsg struct {
-		Type      *string `json:"type,omitempty"`
-		ProductID *int64  `json:"product_id,omitempty"`
+		Type        *string `json:"type,omitempty"`
+		ProductID   *int64  `json:"product_id,omitempty"`
+		Granularity int32   `json:"granularity,omitempty"`
 	}
 	if err := json.Unmarshal(msg, &baseMsg); err != nil {
 		return
 	}
 
 	if baseMsg.Type == nil {
-		c.Logger.Debugw("Received message with no type", "msg", string(msg))
+		c.Logger.Debug("Received market message with no type")
 		return
 	}
 
-	channel := *baseMsg.Type
-	if baseMsg.ProductID != nil {
-		channel = fmt.Sprintf("%s:%d", channel, *baseMsg.ProductID)
-	}
+	channel := marketStreamChannel(StreamParams{Type: *baseMsg.Type, ProductId: baseMsg.ProductID, Granularity: baseMsg.Granularity})
 
 	c.mu.Lock()
 	sub, ok := c.subscriptions[channel]
+	if !ok && baseMsg.ProductID != nil {
+		sub, ok = c.subscriptions[*baseMsg.Type]
+	}
 	c.mu.Unlock()
 
 	if !ok {
@@ -374,8 +395,21 @@ func (c *WsMarketClient) handleMessage(msg []byte) {
 		return
 	}
 
-	// Call callback synchronously to preserve message order
-	sub.callback(msg)
+	callback := sub.callback
+	if callback != nil {
+		callback(msg)
+	}
+}
+
+func marketStreamChannel(stream StreamParams) string {
+	channel := stream.Type
+	if stream.ProductId != nil {
+		channel = fmt.Sprintf("%s:%d", channel, *stream.ProductId)
+	}
+	if stream.Granularity != 0 {
+		channel = fmt.Sprintf("%s:%d", channel, stream.Granularity)
+	}
+	return channel
 }
 
 // SubscribeOrderBook subscribes to orderbook
@@ -448,6 +482,9 @@ func (c *WsMarketClient) SubscribeLiquidation(productId *int64, callback func(*L
 }
 
 func (c *WsMarketClient) SubscribeLatestCandlestick(productId int64, granularity int32, callback func(*Candlestick)) error {
+	if granularity <= 0 {
+		return fmt.Errorf("nado candlestick granularity must be positive")
+	}
 	params := StreamParams{
 		Type:        "latest_candlestick",
 		ProductId:   &productId,

@@ -2,6 +2,7 @@ package runtimeaccept
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,6 +34,8 @@ type OrderLifecycleSpec struct {
 	PrivateStreamTopics   []string
 	PollInterval          time.Duration
 	PollRequestTimeout    time.Duration
+	CleanupTimeout        time.Duration
+	BeforeRuntimeClose    func(context.Context, decimal.Decimal) error
 	Logf                  func(format string, args ...any)
 }
 
@@ -41,9 +44,10 @@ type OrderLifecycleResult struct {
 	Filled    model.Order
 	Closed    model.Order
 	FilledQty decimal.Decimal
+	ClosedQty decimal.Decimal
 }
 
-func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) (*OrderLifecycleResult, error) {
+func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec) (result *OrderLifecycleResult, resultErr error) {
 	if err := validateOrderLifecycleSpec(spec); err != nil {
 		return nil, err
 	}
@@ -96,15 +100,25 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 	}
 	spec.logf("canceled_order label=%q client_id=%s venue_order_id=%s cleanup=no_open_orders", spec.label(), resting.Request.ClientID, resting.VenueOrderID)
 
+	cleanupPerp := spec.InstrumentID.Kind != enums.KindSpot
+	defer func() {
+		if !cleanupPerp {
+			return
+		}
+		cleanupErr := cleanupPerpOrderLifecycle(exec, spec)
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("%s emergency Perp cleanup: %w", spec.label(), cleanupErr))
+		}
+	}()
 	filled, filledQty, err := submitAndWaitFilled(ctx, exec, spec, "fill", enums.SideBuy, spec.FillPrice, false, spec.Quantity)
 	if err != nil {
 		return nil, err
 	}
-	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
+	result = &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
 
 	if spec.CloseAfterFill {
 		closeQty := spec.closeQuantity(filledQty)
-		closeOrder, _, err := submitAndWaitFilled(
+		closeOrder, closedQty, err := submitAndWaitFilled(
 			ctx,
 			exec,
 			spec,
@@ -118,6 +132,7 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 			return nil, err
 		}
 		result.Closed = *closeOrder
+		result.ClosedQty = closedQty
 		if err := waitForNoOpenOrders(ctx, exec, spec); err != nil {
 			return nil, fmt.Errorf("%s wait for no open orders after close: %w", spec.label(), err)
 		}
@@ -126,13 +141,14 @@ func RunAdapterOrderLifecycle(ctx context.Context, exec contract.ExecutionClient
 			if err := waitForFlatPosition(ctx, exec, spec); err != nil {
 				return nil, fmt.Errorf("%s wait for flat position: %w", spec.label(), err)
 			}
+			cleanupPerp = false
 			spec.logf("cleanup label=%q cleanup=flat_position", spec.label())
 		}
 	}
 	return result, nil
 }
 
-func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, venueExec contract.ExecutionClient, spec OrderLifecycleSpec) (*OrderLifecycleResult, error) {
+func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, venueExec contract.ExecutionClient, spec OrderLifecycleSpec) (result *OrderLifecycleResult, resultErr error) {
 	if node == nil || node.Exec == nil {
 		return nil, fmt.Errorf("%s runtime execution engine is required", spec.label())
 	}
@@ -194,15 +210,30 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 		spec.logf("cleanup label=%q cleanup=no_open_orders", spec.label())
 	}
 
+	cleanupPerp := spec.InstrumentID.Kind != enums.KindSpot && venueExec != nil
+	defer func() {
+		if !cleanupPerp {
+			return
+		}
+		cleanupErr := cleanupPerpOrderLifecycle(venueExec, spec)
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("%s emergency Perp cleanup: %w", spec.label(), cleanupErr))
+		}
+	}()
 	filled, filledQty, err := submitRuntimeAndWaitFilled(ctx, node, spec, "fill", enums.SideBuy, spec.FillPrice, false, spec.Quantity)
 	if err != nil {
 		return nil, err
 	}
-	result := &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
+	result = &OrderLifecycleResult{Resting: *resting, Filled: *filled, FilledQty: filledQty}
 
 	if spec.CloseAfterFill {
 		closeQty := spec.closeQuantity(filledQty)
-		closeOrder, _, err := submitRuntimeAndWaitFilled(
+		if spec.BeforeRuntimeClose != nil {
+			if err := spec.BeforeRuntimeClose(ctx, closeQty); err != nil {
+				return nil, fmt.Errorf("%s runtime close readiness: %w", spec.label(), err)
+			}
+		}
+		closeOrder, closedQty, err := submitRuntimeAndWaitFilled(
 			ctx,
 			node,
 			spec,
@@ -216,6 +247,19 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 			return nil, err
 		}
 		result.Closed = *closeOrder
+		result.ClosedQty = closedQty
+		if spec.InstrumentID.Kind != enums.KindSpot {
+			if venueExec == nil {
+				return nil, fmt.Errorf("%s venue execution client is required to prove flat Perp exposure", spec.label())
+			}
+			if err := waitForFlatPosition(ctx, venueExec, spec); err != nil {
+				return nil, fmt.Errorf("%s wait for venue flat position: %w", spec.label(), err)
+			}
+			if err := WaitForPortfolioFlat(ctx, node, spec.InstrumentID, decimal.Zero); err != nil {
+				return nil, fmt.Errorf("%s wait for runtime portfolio flat: %w", spec.label(), err)
+			}
+			cleanupPerp = false
+		}
 	}
 	if venueExec != nil {
 		if err := waitForNoOpenOrders(ctx, venueExec, spec); err != nil {
@@ -252,7 +296,7 @@ func submitRuntimeAndWaitFilled(ctx context.Context, node *btruntime.TradingNode
 	if err := ensureOrderAccount(spec, "runtime_"+idKind+"_order", order); err != nil {
 		return nil, decimal.Zero, err
 	}
-	cached, filledQty, err := waitForRuntimeFilledQty(ctx, node, spec, order.Request.ClientID)
+	cached, filledQty, err := waitForRuntimeFilledQty(ctx, node, spec, order.Request.ClientID, qty)
 	if err != nil {
 		return nil, decimal.Zero, fmt.Errorf("%s runtime wait for %s fill: %w", spec.label(), idKind, err)
 	}
@@ -330,6 +374,14 @@ func cleanExistingPosition(ctx context.Context, exec contract.ExecutionClient, s
 	}
 	spec.logf("cleanup label=%q cleanup=preclean_flat_position", spec.label())
 	return nil
+}
+
+func cleanupPerpOrderLifecycle(exec contract.ExecutionClient, spec OrderLifecycleSpec) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), spec.cleanupTimeout())
+	defer cancel()
+	cancelErr := exec.CancelAll(cleanupCtx, spec.InstrumentID)
+	flattenErr := cleanExistingPosition(cleanupCtx, exec, spec)
+	return errors.Join(cancelErr, flattenErr)
 }
 
 func validateOrderLifecycleSpec(spec OrderLifecycleSpec) error {
@@ -499,19 +551,26 @@ func waitForNoOpenOrders(ctx context.Context, exec contract.ExecutionClient, spe
 
 func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec OrderLifecycleSpec, order model.Order) (decimal.Decimal, error) {
 	interval := spec.interval()
+	clientID := order.Request.ClientID
+	if order.VenueOrderID != "" {
+		clientID = ""
+	}
 	var lastStatus enums.OrderStatus
 	var lastErr error
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
+		if order.FilledQty.GreaterThanOrEqual(order.Request.Quantity) {
 			return order.FilledQty, nil
+		}
+		if orderstate.IsTerminal(order.Status) && order.Status != enums.StatusFilled {
+			return decimal.Zero, fmt.Errorf("order reached terminal status %s with partial fill %s/%s", order.Status, order.FilledQty, order.Request.Quantity)
 		}
 		callCtx, cancel := spec.pollCallContext(ctx)
 		report, err := exec.GenerateOrderStatusReport(callCtx, model.SingleOrderStatusQuery{
 			AccountID:    spec.AccountID,
 			InstrumentID: spec.InstrumentID,
-			ClientID:     order.Request.ClientID,
+			ClientID:     clientID,
 			VenueOrderID: order.VenueOrderID,
 		})
 		cancel()
@@ -520,11 +579,11 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 				return decimal.Zero, err
 			}
 			lastStatus = report.Order.Status
-			if report.Order.Status == enums.StatusFilled || !report.Order.FilledQty.IsZero() {
+			if report.Order.FilledQty.GreaterThanOrEqual(order.Request.Quantity) {
 				return report.Order.FilledQty, nil
 			}
-			if orderstate.IsTerminal(report.Order.Status) {
-				return decimal.Zero, fmt.Errorf("order reached terminal non-filled status %s", report.Order.Status)
+			if orderstate.IsTerminal(report.Order.Status) && report.Order.Status != enums.StatusFilled {
+				return decimal.Zero, fmt.Errorf("order reached terminal status %s with partial fill %s/%s", report.Order.Status, report.Order.FilledQty, order.Request.Quantity)
 			}
 		} else if err != nil {
 			lastErr = err
@@ -533,7 +592,7 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 		fills, err := exec.GenerateFillReports(callCtx, model.FillReportQuery{
 			AccountID:    spec.AccountID,
 			InstrumentID: spec.InstrumentID,
-			ClientID:     order.Request.ClientID,
+			ClientID:     clientID,
 			VenueOrderID: order.VenueOrderID,
 		})
 		cancel()
@@ -545,7 +604,7 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 				}
 				total = total.Add(report.Fill.Quantity)
 			}
-			if !total.IsZero() {
+			if total.GreaterThanOrEqual(order.Request.Quantity) {
 				return total, nil
 			}
 		} else {
@@ -559,7 +618,7 @@ func waitForFilledQty(ctx context.Context, exec contract.ExecutionClient, spec O
 	}
 }
 
-func waitForRuntimeFilledQty(ctx context.Context, node *btruntime.TradingNode, spec OrderLifecycleSpec, clientID string) (model.Order, decimal.Decimal, error) {
+func waitForRuntimeFilledQty(ctx context.Context, node *btruntime.TradingNode, spec OrderLifecycleSpec, clientID string, expected decimal.Decimal) (model.Order, decimal.Decimal, error) {
 	interval := spec.interval()
 	var last model.Order
 	var seen bool
@@ -569,11 +628,11 @@ func waitForRuntimeFilledQty(ctx context.Context, node *btruntime.TradingNode, s
 		if order, ok := node.Cache.Order(clientID); ok {
 			last = order
 			seen = true
-			if order.FilledQty.IsPositive() {
+			if order.FilledQty.GreaterThanOrEqual(expected) {
 				return order, order.FilledQty, nil
 			}
 			if orderstate.IsTerminal(order.Status) && order.Status != enums.StatusFilled {
-				return model.Order{}, decimal.Zero, fmt.Errorf("runtime order reached terminal non-filled status %s", order.Status)
+				return model.Order{}, decimal.Zero, fmt.Errorf("runtime order reached terminal status %s with partial fill %s/%s", order.Status, order.FilledQty, expected)
 			}
 		}
 		select {
@@ -632,4 +691,11 @@ func (s OrderLifecycleSpec) pollCallContext(ctx context.Context) (context.Contex
 		timeout = 8 * time.Second
 	}
 	return context.WithTimeout(ctx, timeout)
+}
+
+func (s OrderLifecycleSpec) cleanupTimeout() time.Duration {
+	if s.CleanupTimeout > 0 {
+		return s.CleanupTimeout
+	}
+	return 45 * time.Second
 }

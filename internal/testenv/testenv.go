@@ -123,6 +123,39 @@ const (
 	LighterTestnetDefaultMaxNotionalUSDC = "100"
 	LighterTestnetDefaultSpotSymbol      = "ETH-USDC"
 	LighterTestnetDefaultPerpSymbol      = "ETH-USDC"
+
+	AsterTestnetUserAddressEnv           = "ASTER_TESTNET_USER_ADDRESS"
+	AsterTestnetSignerPrivateKeyEnv      = "ASTER_TESTNET_SIGNER_PRIVATE_KEY"
+	AsterTestnetExpectedSignerAddressEnv = "ASTER_TESTNET_EXPECTED_SIGNER_ADDRESS"
+	AsterTestnetEnableWriteEnv           = "BOLTER_ENABLE_ASTER_TESTNET_WRITES"
+	AsterTestnetMaxNotionalUSDTEnv       = "ASTER_TESTNET_MAX_NOTIONAL_USDT"
+	AsterTestnetSpotSymbolEnv            = "ASTER_TESTNET_SPOT_SYMBOL"
+	AsterTestnetPerpSymbolEnv            = "ASTER_TESTNET_PERP_SYMBOL"
+	AsterTestnetSpotRESTURLEnv           = "ASTER_TESTNET_SPOT_REST_URL"
+	AsterTestnetSpotPublicWSURLEnv       = "ASTER_TESTNET_SPOT_WS_URL"
+	AsterTestnetSpotUserWSURLEnv         = "ASTER_TESTNET_SPOT_USER_WS_URL"
+	AsterTestnetPerpRESTURLEnv           = "ASTER_TESTNET_PERP_REST_URL"
+	AsterTestnetPerpPublicWSURLEnv       = "ASTER_TESTNET_PERP_WS_URL"
+	AsterTestnetPerpUserWSURLEnv         = "ASTER_TESTNET_PERP_USER_WS_URL"
+
+	AsterTestnetDefaultMaxNotionalUSDT = "100"
+
+	NadoTestnetPrivateKeyEnv         = "NADO_TESTNET_PRIVATE_KEY"
+	NadoTestnetSubaccountNameEnv     = "NADO_TESTNET_SUBACCOUNT_NAME"
+	NadoTestnetEnableWriteEnv        = "BOLTER_ENABLE_NADO_TESTNET_WRITES"
+	NadoTestnetMaxNotionalUSDT0Env   = "NADO_TESTNET_MAX_NOTIONAL_USDT0"
+	NadoTestnetSpotSymbolEnv         = "NADO_TESTNET_SPOT_SYMBOL"
+	NadoTestnetPerpSymbolEnv         = "NADO_TESTNET_PERP_SYMBOL"
+	NadoTestnetGatewayV1URLEnv       = "NADO_TESTNET_GATEWAY_URL"
+	NadoTestnetGatewayV2URLEnv       = "NADO_TESTNET_GATEWAY_V2_URL"
+	NadoTestnetArchiveV1URLEnv       = "NADO_TESTNET_ARCHIVE_URL"
+	NadoTestnetArchiveV2URLEnv       = "NADO_TESTNET_ARCHIVE_V2_URL"
+	NadoTestnetGatewayWSURLEnv       = "NADO_TESTNET_GATEWAY_WS_URL"
+	NadoTestnetSubscriptionsWSURLEnv = "NADO_TESTNET_WS_URL"
+	NadoTestnetTriggerURLEnv         = "NADO_TESTNET_TRIGGER_URL"
+
+	NadoTestnetDefaultSubaccount       = "default"
+	NadoTestnetDefaultMaxNotionalUSDT0 = "100"
 )
 
 type OKXDemoConfig struct {
@@ -229,6 +262,46 @@ type LighterTestnetConfig struct {
 	ProxyURL        string
 }
 
+type AsterTestnetConfig struct {
+	UserAddress           string
+	SignerPrivateKey      string
+	ExpectedSignerAddress string
+	MaxNotionalUSDT       decimal.Decimal
+	SpotSymbol            string
+	PerpSymbol            string
+	SpotProfile           AsterEndpointProfile
+	PerpProfile           AsterEndpointProfile
+	ProxyURL              string
+}
+
+type AsterEndpointProfile struct {
+	RESTURL     string
+	PublicWSURL string
+	UserWSURL   string
+	ChainID     int64
+}
+
+type NadoTestnetConfig struct {
+	PrivateKey       string
+	Subaccount       string
+	MaxNotionalUSDT0 decimal.Decimal
+	SpotSymbol       string
+	PerpSymbol       string
+	Profile          NadoEndpointProfile
+	ProxyURL         string
+}
+
+type NadoEndpointProfile struct {
+	GatewayV1URL       string
+	GatewayV2URL       string
+	ArchiveV1URL       string
+	ArchiveV2URL       string
+	GatewayWSURL       string
+	SubscriptionsWSURL string
+	TriggerURL         string
+	ChainID            int64
+}
+
 func (c HyperliquidTestnetConfig) String() string {
 	return fmt.Sprintf(
 		"HyperliquidTestnetConfig{PrivateKey:%s AccountAddress:%q VaultAddress:%q MaxNotionalUSDC:%s SpotSymbol:%q PerpSymbol:%q HIP3Symbol:%q ProxyURL:%q}",
@@ -255,6 +328,38 @@ func (c LighterTestnetConfig) String() string {
 		redactURL(c.ProxyURL),
 	)
 }
+
+func (c AsterTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"AsterTestnetConfig{UserAddress:%q SignerPrivateKey:%s ExpectedSignerAddress:%q MaxNotionalUSDT:%s SpotSymbol:%q PerpSymbol:%q SpotProfile:%+v PerpProfile:%+v ProxyURL:%q}",
+		c.UserAddress,
+		redactSecret(c.SignerPrivateKey),
+		c.ExpectedSignerAddress,
+		c.MaxNotionalUSDT.String(),
+		c.SpotSymbol,
+		c.PerpSymbol,
+		c.SpotProfile,
+		c.PerpProfile,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c AsterTestnetConfig) GoString() string { return c.String() }
+
+func (c NadoTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"NadoTestnetConfig{PrivateKey:%s Subaccount:%q MaxNotionalUSDT0:%s SpotSymbol:%q PerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		redactSecret(c.PrivateKey),
+		c.Subaccount,
+		c.MaxNotionalUSDT0.String(),
+		c.SpotSymbol,
+		c.PerpSymbol,
+		c.Profile,
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c NadoTestnetConfig) GoString() string { return c.String() }
 
 func (c LighterTestnetConfig) GoString() string {
 	return c.String()
@@ -682,6 +787,198 @@ func RequireLighterTestnetWrite(t testing.TB) LighterTestnetConfig {
 		t.Fatalf("Lighter Testnet env: %v", err)
 	}
 	return cfg
+}
+
+func RequireAsterTestnetRead(t testing.TB) AsterTestnetConfig {
+	t.Helper()
+	RequireLiveRead(t, AsterTestnetUserAddressEnv, AsterTestnetSignerPrivateKeyEnv)
+	cfg, err := AsterTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Aster Testnet read env: %v", err)
+	}
+	return cfg
+}
+
+func RequireAsterTestnetPublicRead(t testing.TB) AsterTestnetConfig {
+	t.Helper()
+	RequireLiveRead(t)
+	cfg, err := AsterTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Aster Testnet public read env: %v", err)
+	}
+	return cfg
+}
+
+func RequireAsterTestnetWrite(t testing.TB) AsterTestnetConfig {
+	t.Helper()
+	RequireLiveWrite(t, AsterTestnetEnableWriteEnv, AsterTestnetUserAddressEnv, AsterTestnetSignerPrivateKeyEnv)
+	cfg, err := AsterTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Aster Testnet write env: %v", err)
+	}
+	return cfg
+}
+
+func RequireNadoTestnetRead(t testing.TB) NadoTestnetConfig {
+	t.Helper()
+	RequireLiveRead(t, NadoTestnetPrivateKeyEnv)
+	cfg, err := NadoTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Nado Testnet read env: %v", err)
+	}
+	return cfg
+}
+
+func RequireNadoTestnetPublicRead(t testing.TB) NadoTestnetConfig {
+	t.Helper()
+	RequireLiveRead(t)
+	cfg, err := NadoTestnetReadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Nado Testnet public read env: %v", err)
+	}
+	return cfg
+}
+
+func RequireNadoTestnetWrite(t testing.TB) NadoTestnetConfig {
+	t.Helper()
+	RequireLiveWrite(t, NadoTestnetEnableWriteEnv, NadoTestnetPrivateKeyEnv)
+	cfg, err := NadoTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Nado Testnet write env: %v", err)
+	}
+	return cfg
+}
+
+func AsterTestnetConfigFromEnv() (AsterTestnetConfig, error) {
+	return asterTestnetConfigFromEnv(true)
+}
+
+func AsterTestnetReadConfigFromEnv() (AsterTestnetConfig, error) {
+	return asterTestnetConfigFromEnv(false)
+}
+
+func NadoTestnetConfigFromEnv() (NadoTestnetConfig, error) {
+	return nadoTestnetConfigFromEnv(true)
+}
+
+func NadoTestnetReadConfigFromEnv() (NadoTestnetConfig, error) {
+	return nadoTestnetConfigFromEnv(false)
+}
+
+func asterTestnetConfigFromEnv(requireCredentials bool) (AsterTestnetConfig, error) {
+	if requireCredentials {
+		if missing := missingEnv(AsterTestnetUserAddressEnv, AsterTestnetSignerPrivateKeyEnv); len(missing) > 0 {
+			return AsterTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+		}
+	}
+	spotProfile := AsterEndpointProfile{
+		RESTURL:     "https://sapi.asterdex-testnet.com",
+		PublicWSURL: "wss://sstream.asterdex-testnet.com",
+		UserWSURL:   "wss://sstream.asterdex-testnet.com",
+		ChainID:     714,
+	}
+	perpProfile := AsterEndpointProfile{
+		RESTURL:     "https://fapi.asterdex-testnet.com",
+		PublicWSURL: "wss://fstream5.asterdex-testnet.com",
+		UserWSURL:   "wss://fstream.asterdex-testnet.com",
+		ChainID:     714,
+	}
+	for _, override := range []struct {
+		env      string
+		expected string
+	}{
+		{AsterTestnetSpotRESTURLEnv, spotProfile.RESTURL},
+		{AsterTestnetSpotPublicWSURLEnv, spotProfile.PublicWSURL},
+		{AsterTestnetSpotUserWSURLEnv, spotProfile.UserWSURL},
+		{AsterTestnetPerpRESTURLEnv, perpProfile.RESTURL},
+		{AsterTestnetPerpPublicWSURLEnv, perpProfile.PublicWSURL},
+		{AsterTestnetPerpUserWSURLEnv, perpProfile.UserWSURL},
+	} {
+		if err := validateEndpointOverride(override.env, override.expected); err != nil {
+			return AsterTestnetConfig{}, err
+		}
+	}
+	maxNotional, err := parsePositiveDecimalEnv(AsterTestnetMaxNotionalUSDTEnv, AsterTestnetDefaultMaxNotionalUSDT)
+	if err != nil {
+		return AsterTestnetConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return AsterTestnetConfig{}, err
+	}
+	return AsterTestnetConfig{
+		UserAddress:           strings.TrimSpace(os.Getenv(AsterTestnetUserAddressEnv)),
+		SignerPrivateKey:      strings.TrimSpace(os.Getenv(AsterTestnetSignerPrivateKeyEnv)),
+		ExpectedSignerAddress: strings.TrimSpace(os.Getenv(AsterTestnetExpectedSignerAddressEnv)),
+		MaxNotionalUSDT:       maxNotional,
+		SpotSymbol:            strings.TrimSpace(os.Getenv(AsterTestnetSpotSymbolEnv)),
+		PerpSymbol:            strings.TrimSpace(os.Getenv(AsterTestnetPerpSymbolEnv)),
+		SpotProfile:           spotProfile,
+		PerpProfile:           perpProfile,
+		ProxyURL:              proxyURL,
+	}, nil
+}
+
+func nadoTestnetConfigFromEnv(requireCredentials bool) (NadoTestnetConfig, error) {
+	if requireCredentials {
+		if missing := missingEnv(NadoTestnetPrivateKeyEnv); len(missing) > 0 {
+			return NadoTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+		}
+	}
+	profile := NadoEndpointProfile{
+		GatewayV1URL:       "https://gateway.test.nado.xyz/v1",
+		GatewayV2URL:       "https://gateway.test.nado.xyz/v2",
+		ArchiveV1URL:       "https://archive.test.nado.xyz/v1",
+		ArchiveV2URL:       "https://archive.test.nado.xyz/v2",
+		GatewayWSURL:       "wss://gateway.test.nado.xyz/v1/ws",
+		SubscriptionsWSURL: "wss://gateway.test.nado.xyz/v1/subscribe",
+		TriggerURL:         "https://trigger.test.nado.xyz/v1",
+		ChainID:            763373,
+	}
+	for _, override := range []struct {
+		env      string
+		expected string
+	}{
+		{NadoTestnetGatewayV1URLEnv, profile.GatewayV1URL},
+		{NadoTestnetGatewayV2URLEnv, profile.GatewayV2URL},
+		{NadoTestnetArchiveV1URLEnv, profile.ArchiveV1URL},
+		{NadoTestnetArchiveV2URLEnv, profile.ArchiveV2URL},
+		{NadoTestnetGatewayWSURLEnv, profile.GatewayWSURL},
+		{NadoTestnetSubscriptionsWSURLEnv, profile.SubscriptionsWSURL},
+		{NadoTestnetTriggerURLEnv, profile.TriggerURL},
+	} {
+		if err := validateEndpointOverride(override.env, override.expected); err != nil {
+			return NadoTestnetConfig{}, err
+		}
+	}
+	maxNotional, err := parsePositiveDecimalEnv(NadoTestnetMaxNotionalUSDT0Env, NadoTestnetDefaultMaxNotionalUSDT0)
+	if err != nil {
+		return NadoTestnetConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return NadoTestnetConfig{}, err
+	}
+	return NadoTestnetConfig{
+		PrivateKey:       strings.TrimSpace(os.Getenv(NadoTestnetPrivateKeyEnv)),
+		Subaccount:       envOrDefault(NadoTestnetSubaccountNameEnv, NadoTestnetDefaultSubaccount),
+		MaxNotionalUSDT0: maxNotional,
+		SpotSymbol:       strings.TrimSpace(os.Getenv(NadoTestnetSpotSymbolEnv)),
+		PerpSymbol:       strings.TrimSpace(os.Getenv(NadoTestnetPerpSymbolEnv)),
+		Profile:          profile,
+		ProxyURL:         proxyURL,
+	}, nil
+}
+
+func validateEndpointOverride(env, expected string) error {
+	rawURL := strings.TrimSpace(os.Getenv(env))
+	if rawURL == "" {
+		return nil
+	}
+	if rawURL != expected {
+		return fmt.Errorf("%s is not an official Testnet endpoint", env)
+	}
+	return nil
 }
 
 func HyperliquidTestnetConfigFromEnv() (HyperliquidTestnetConfig, error) {
@@ -1228,7 +1525,7 @@ func parseUint8Env(key string) (uint8, error) {
 func validateURL(raw, envName string, allowedSchemes ...string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s has invalid URL: %w", envName, err)
+		return fmt.Errorf("%s has invalid URL", envName)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("%s must include URL scheme and host", envName)
@@ -1248,7 +1545,7 @@ func validateGateTestnetURL(raw, envName string, allowedSchemes ...string) error
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("%s has invalid URL: %w", envName, err)
+		return fmt.Errorf("%s has invalid URL", envName)
 	}
 	host := strings.ToLower(parsed.Hostname())
 	for _, productionHost := range []string{"api.gateio.ws", "fx-ws.gateio.ws"} {
