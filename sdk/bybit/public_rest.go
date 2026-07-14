@@ -73,8 +73,9 @@ func (c *Client) GetInstruments(ctx context.Context, category string) ([]Instrum
 func (c *Client) GetInstrumentsForBase(ctx context.Context, category, baseCoin string) ([]Instrument, error) {
 	var out []Instrument
 	cursor := ""
+	seenCursors := make(map[string]struct{})
 
-	for {
+	for page := 1; ; page++ {
 		query := map[string]string{
 			"category": category,
 			"limit":    strconv.Itoa(1000),
@@ -94,10 +95,14 @@ func (c *Client) GetInstrumentsForBase(ctx context.Context, category, baseCoin s
 		}
 
 		out = append(out, resp.Result.List...)
-		if category == "spot" || resp.Result.NextPageCursor == "" {
+		nextCursor := resp.Result.NextPageCursor
+		if category == "spot" || nextCursor == "" {
 			return out, nil
 		}
-		cursor = resp.Result.NextPageCursor
+		cursor, err = nextPaginationCursor("get instruments", cursor, nextCursor, page, seenCursors)
+		if err != nil {
+			return nil, err
+		}
 	}
 }
 

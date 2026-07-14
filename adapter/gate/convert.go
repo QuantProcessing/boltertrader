@@ -335,7 +335,11 @@ func orderFromGateFuturesAction(resp *gatesdk.FuturesOrder, req model.OrderReque
 	return order
 }
 
-func orderFromGateFuturesRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string) model.Order {
+func orderFromGateFuturesRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string, positionSides ...enums.PositionSide) model.Order {
+	positionSide := positionSideFromGate(record.Size)
+	if len(positionSides) > 0 {
+		positionSide = positionSides[0]
+	}
 	req := model.OrderRequest{
 		AccountID:    accountID,
 		InstrumentID: id,
@@ -345,7 +349,7 @@ func orderFromGateFuturesRecord(record gatesdk.FuturesOrder, id model.Instrument
 		TIF:          tifFromGate(record.TIF),
 		Quantity:     decimal.NewFromInt(record.Size).Abs(),
 		Price:        dec(record.Price),
-		PositionSide: positionSideFromGate(record.Size),
+		PositionSide: positionSide,
 		ReduceOnly:   record.ReduceOnly || record.IsReduceOnly,
 	}
 	return model.Order{
@@ -392,16 +396,34 @@ func fillFromGateFuturesTrade(record gatesdk.MyFuturesTrade, id model.Instrument
 }
 
 func positionFromGate(record gatesdk.Position, resolve func(string) model.InstrumentID, accountID string, now time.Time) model.Position {
+	positionSide, quantity, ok := gateFuturesPositionSideAndQuantity(record)
+	if !ok {
+		return model.Position{}
+	}
 	return model.Position{
 		AccountID:     accountID,
 		InstrumentID:  resolve(record.Contract),
-		Side:          positionSideFromGate(record.Size),
-		Quantity:      decimal.NewFromInt(record.Size),
+		Side:          positionSide,
+		Quantity:      quantity,
 		EntryPrice:    dec(record.EntryPrice),
 		MarkPrice:     dec(record.MarkPrice),
 		UnrealizedPnL: dec(record.UnrealisedPNL),
 		Leverage:      dec(record.Leverage),
 		UpdatedAt:     firstNonZeroTime(timeFromSeconds(record.UpdateTime), now),
+	}
+}
+
+func gateFuturesPositionSideAndQuantity(record gatesdk.Position) (enums.PositionSide, decimal.Decimal, bool) {
+	quantity := decimal.NewFromInt(record.Size)
+	switch strings.ToLower(strings.TrimSpace(record.Mode)) {
+	case "single":
+		return enums.PosNet, quantity, true
+	case "dual_long":
+		return enums.PosLong, quantity.Abs(), true
+	case "dual_short":
+		return enums.PosShort, quantity.Abs().Neg(), true
+	default:
+		return enums.PosNet, decimal.Zero, false
 	}
 }
 

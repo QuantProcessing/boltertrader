@@ -1,6 +1,7 @@
 package bitget
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -9,13 +10,20 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func execEventsFromOrderMessage(msg *bitgetsdk.WSOrderMessage, resolve func(string) model.InstrumentID, accountID string) []contract.ExecEvent {
-	if msg == nil {
-		return nil
+func execEventsFromOrderMessage(msg *bitgetsdk.WSOrderMessage, resolve func(string, string) (model.InstrumentID, bool), accountID string) ([]contract.ExecEvent, error) {
+	if msg == nil || resolve == nil {
+		return nil, nil
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Data))
 	for _, record := range msg.Data {
-		order := orderFromBitgetRecord(record, resolve(record.Symbol), accountID)
+		id, ok := resolve(record.Category, record.Symbol)
+		if !ok {
+			continue
+		}
+		order, err := orderFromBitgetRecord(record, id, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("bitget: invalid private order position semantics category=%s symbol=%s: %w", record.Category, record.Symbol, err)
+		}
 		// Bitget order WS carries cumulative execution fields while the fill WS
 		// carries incremental executions. Keep order events state-only so runtime
 		// fill accounting is driven by the fill stream and does not double count.
@@ -23,16 +31,20 @@ func execEventsFromOrderMessage(msg *bitgetsdk.WSOrderMessage, resolve func(stri
 		order.AvgFillPrice = decimal.Zero
 		out = append(out, contract.OrderEvent{Order: order})
 	}
-	return out
+	return out, nil
 }
 
-func execEventsFromFillMessage(msg *bitgetsdk.WSFillMessage, resolve func(string) model.InstrumentID, accountID string) []contract.ExecEvent {
-	if msg == nil {
+func execEventsFromFillMessage(msg *bitgetsdk.WSFillMessage, resolve func(string, string) (model.InstrumentID, bool), accountID string) []contract.ExecEvent {
+	if msg == nil || resolve == nil {
 		return nil
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Data))
 	for _, record := range msg.Data {
-		fill := fillFromBitget(record, resolve(record.Symbol), accountID)
+		id, ok := resolve(record.Category, record.Symbol)
+		if !ok {
+			continue
+		}
+		fill := fillFromBitget(record, id, accountID)
 		if fill.Quantity.IsPositive() {
 			out = append(out, contract.FillEvent{Fill: fill})
 		}
@@ -40,15 +52,23 @@ func execEventsFromFillMessage(msg *bitgetsdk.WSFillMessage, resolve func(string
 	return out
 }
 
-func accountEventsFromPositionMessage(msg *bitgetsdk.WSPositionMessage, resolve func(string) model.InstrumentID, accountID string, now time.Time) []contract.AccountEvent {
-	if msg == nil {
-		return nil
+func accountEventsFromPositionMessage(msg *bitgetsdk.WSPositionMessage, resolve func(string, string) (model.InstrumentID, bool), accountID string, now time.Time) ([]contract.AccountEvent, error) {
+	if msg == nil || resolve == nil {
+		return nil, nil
 	}
 	out := make([]contract.AccountEvent, 0, len(msg.Data))
 	for _, record := range msg.Data {
-		out = append(out, contract.PositionEvent{Position: positionFromBitget(record, resolve, accountID, now)})
+		id, ok := resolve(record.Category, record.Symbol)
+		if !ok {
+			continue
+		}
+		position, err := positionFromBitget(record, func(string) model.InstrumentID { return id }, accountID, now)
+		if err != nil {
+			return nil, fmt.Errorf("bitget: invalid private position semantics category=%s symbol=%s: %w", record.Category, record.Symbol, err)
+		}
+		out = append(out, contract.PositionEvent{Position: position})
 	}
-	return out
+	return out, nil
 }
 
 func accountEventsFromAccountMessage(msg *bitgetsdk.WSAccountMessage, accountID string, now time.Time) []contract.AccountEvent {

@@ -8,6 +8,8 @@ import (
 
 	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
+	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/startgate"
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -15,6 +17,11 @@ import (
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/spot"
 	"github.com/shopspring/decimal"
+)
+
+const (
+	privateStreamID      = "hyperliquid:perp:private"
+	accountStateStreamID = "hyperliquid:perp:private:account-state"
 )
 
 type Config struct {
@@ -44,6 +51,9 @@ type Adapter struct {
 	exec     *executionClient
 	acct     *accountClient
 	clk      clock.Clock
+
+	privateGap      *streamgap.Reporter
+	accountStateGap *streamgap.Reporter
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
@@ -51,6 +61,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
+	cfg.HIP3Dexes = normalizeHIP3DexNames(cfg.HIP3Dexes)
 
 	base := sdk.NewClient().WithEnvironment(cfg.Environment)
 	if cfg.PrivateKey != "" || cfg.VaultAddress != "" {
@@ -103,7 +114,11 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		return nil, err
 	}
 	exec := newExecutionClient(rest, provider, clk, accountID)
-	acct := newAccountClient(rest, provider, clk, cfg.MarginMode, cfg.MarginModeLeverage, accountMode, accountID)
+	accountDexes := cfg.HIP3Dexes
+	if cfg.IncludeHIP3 && len(accountDexes) == 0 {
+		accountDexes = hip3DexesFromRegistry(provider)
+	}
+	acct := newAccountClient(rest, provider, clk, cfg.MarginMode, cfg.MarginModeLeverage, accountMode, accountID).withHIP3Dexes(accountDexes)
 	market := newMarketDataClient(rest, ws, provider, clk)
 
 	return &Adapter{
@@ -119,6 +134,20 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}, nil
 }
 
+func hip3DexesFromRegistry(provider *instruments.Registry) []string {
+	if provider == nil {
+		return nil
+	}
+	var dexs []string
+	for _, inst := range provider.All() {
+		dex, _, ok := strings.Cut(inst.VenueSymbol, ":")
+		if ok {
+			dexs = append(dexs, dex)
+		}
+	}
+	return normalizeHIP3DexNames(dexs)
+}
+
 func resolveAccountMode(ctx context.Context, rest *sdkperp.Client) (sdk.AccountAbstraction, error) {
 	if rest == nil || rest.AccountAddr == "" {
 		return sdk.AccountAbstractionUnknown, nil
@@ -127,7 +156,19 @@ func resolveAccountMode(ctx context.Context, rest *sdkperp.Client) (sdk.AccountA
 	if err != nil {
 		return sdk.AccountAbstractionUnknown, fmt.Errorf("hyperliquid perp: resolve account abstraction for %s: %w", rest.AccountAddr, err)
 	}
+	if err := validateResolvedAccountMode(mode); err != nil {
+		return sdk.AccountAbstractionUnknown, err
+	}
 	return mode, nil
+}
+
+func validateResolvedAccountMode(mode sdk.AccountAbstraction) error {
+	switch mode {
+	case sdk.AccountAbstractionDefault, sdk.AccountAbstractionUnifiedAccount, sdk.AccountAbstractionPortfolioMargin:
+		return nil
+	default:
+		return fmt.Errorf("hyperliquid perp: unsupported account abstraction %q", mode)
+	}
 }
 
 func buildRegistryInstruments(ctx context.Context, rest *sdkperp.Client, spotRest *sdkspot.Client, cfg Config) ([]*model.Instrument, error) {
@@ -257,35 +298,141 @@ func selectedHIP3Dexes(dexs []sdkperp.PerpDex, names []string) []sdkperp.PerpDex
 	return out
 }
 
+func spotStateSubscriptionMode(accountMode sdk.AccountAbstraction) (subscribe, ignorePortfolioMargin bool) {
+	if !accountMode.UsesSpotClearinghouseState() {
+		return false, false
+	}
+	// Testnet currently acknowledges the documented isPortfolioMargin request
+	// field as ignorePortfolioMargin. Keeping it false preserves Portfolio
+	// Margin-derived availability for both Unified and Portfolio accounts.
+	return true, false
+}
+
 func (a *Adapter) Start(ctx context.Context) error {
 	if a.ws == nil || a.ws.WebsocketClient == nil || a.ws.AccountAddr == "" {
 		return nil
 	}
+	if a.privateGap == nil {
+		a.privateGap = streamgap.New(venueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+	}
+	if a.accountStateGap == nil {
+		a.accountStateGap = streamgap.New(venueName, a.exec.accountID, accountStateStreamID, a.exec.stream.Emit)
+	}
+	var gate startgate.Gate
+	a.ws.SetReconnectHooks(func(err error) {
+		reason := "private stream disconnected"
+		if err != nil {
+			reason = err.Error()
+		}
+		gate.Handle(func() { a.privateGap.Started(reason) })
+	}, func() {
+		gate.Handle(func() { a.privateGap.Recovered("private stream subscriptions restored") })
+	})
 	if err := a.ws.Connect(); err != nil {
 		return err
 	}
 	account := a.ws.AccountAddr
-	if err := a.ws.SubscribeOrderUpdates(account, func(updates []sdk.WsOrderUpdate) {
-		for _, update := range updates {
-			for _, ev := range execEventsFromOrderUpdate(update, a.provider, a.exec.accountID) {
-				a.exec.emit(ev)
+	subscribeSpotState, ignorePortfolioMargin := spotStateSubscriptionMode(a.acct.accountMode)
+	spotWS := sdkspot.NewWebsocketClient(a.ws.WebsocketClient)
+	orderSubscribed := false
+	fillsSubscribed := false
+	accountStateSubscribedDexes := make([]string, 0, 1+len(a.acct.hip3Dexes))
+	spotStateSubscribed := false
+	rollback := func() {
+		gate.Abort()
+		// Tear down the failed startup socket first. Unsubscribe then removes
+		// only local desired state, preventing a successful early subscription
+		// from being replayed into the next explicit Start attempt.
+		a.ws.Disconnect()
+		if spotStateSubscribed {
+			_ = spotWS.UnsubscribeSpotState(account, ignorePortfolioMargin)
+		}
+		for index := len(accountStateSubscribedDexes) - 1; index >= 0; index-- {
+			_ = a.ws.UnsubscribeClearinghouseState(account, accountStateSubscribedDexes[index])
+		}
+		if fillsSubscribed {
+			_ = a.ws.UnsubscribeUserFills(account)
+		}
+		if orderSubscribed {
+			_ = a.ws.UnsubscribeOrderUpdates(account)
+		}
+	}
+	if err := a.ws.SubscribeOrderUpdatesConfirmed(account, func(updates []sdk.WsOrderUpdate) {
+		gate.Handle(func() {
+			for _, update := range updates {
+				for _, ev := range execEventsFromOrderUpdate(update, a.provider, a.exec.accountID) {
+					a.exec.emit(ev)
+				}
 			}
-		}
+		})
 	}); err != nil {
+		rollback()
 		return err
 	}
-	if err := a.ws.SubscribeUserFills(account, func(fills sdk.WsUserFills) {
-		for _, ev := range execEventsFromUserFills(fills, a.provider, a.exec.accountID) {
-			a.exec.emit(ev)
-		}
+	orderSubscribed = true
+	if err := a.ws.SubscribeUserFillsConfirmed(account, func(fills sdk.WsUserFills) {
+		gate.Handle(func() { a.emitUserFills(fills) })
 	}); err != nil {
+		rollback()
 		return err
 	}
-	return a.ws.SubscribeWebData2(account, func(pos sdkperp.PerpPosition) {
-		for _, ev := range accountEventsFromPerpPosition(&pos, a.provider, a.clk, a.acct.accountID) {
-			a.acct.emit(ev)
+	fillsSubscribed = true
+	accountStateDexes := make([]string, 0, 1+len(a.acct.hip3Dexes))
+	accountStateDexes = append(accountStateDexes, "")
+	accountStateDexes = append(accountStateDexes, a.acct.hip3Dexes...)
+	for _, configuredDex := range accountStateDexes {
+		dex := configuredDex
+		if err := a.ws.SubscribeClearinghouseStateConfirmed(account, dex, func(pos sdkperp.PerpPosition) {
+			gate.Handle(func() {
+				events, err := a.acct.eventsFromClearinghouseState(&pos, dex)
+				if err != nil {
+					a.accountStateGap.Started("invalid clearinghouseState for dex " + dex + ": " + err.Error())
+					return
+				}
+				a.accountStateGap.Recovered("valid clearinghouseState resumed for dex " + dex)
+				for _, event := range events {
+					a.acct.emit(event)
+				}
+			})
+		}); err != nil {
+			rollback()
+			return err
 		}
-	})
+		accountStateSubscribedDexes = append(accountStateSubscribedDexes, dex)
+	}
+	if subscribeSpotState {
+		if err := spotWS.SubscribeSpotStateConfirmedWithErrors(account, ignorePortfolioMargin, func(state sdk.SpotClearinghouseState) {
+			gate.Handle(func() {
+				events, err := a.acct.eventsFromSpotState(state, a.clk.Now())
+				if err != nil {
+					a.accountStateGap.Started("invalid spotState: " + err.Error())
+					return
+				}
+				a.accountStateGap.Recovered("valid spotState resumed")
+				for _, event := range events {
+					a.acct.emit(event)
+				}
+			})
+		}, func(err error) {
+			gate.Handle(func() { a.accountStateGap.Started("invalid spotState payload: " + err.Error()) })
+		}); err != nil {
+			rollback()
+			return err
+		}
+		spotStateSubscribed = true
+	}
+	gate.Commit()
+	return nil
+}
+
+func (a *Adapter) emitUserFills(fills sdk.WsUserFills) {
+	flags := contract.EventFlags(0)
+	if fills.IsSnapshot {
+		flags |= contract.EventFlagFromSnapshot
+	}
+	for _, ev := range execEventsFromUserFills(fills, a.provider, a.exec.accountID) {
+		a.exec.emitWithFlags(ev, flags)
+	}
 }
 
 func (a *Adapter) Close() error {

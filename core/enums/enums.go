@@ -97,7 +97,8 @@ func (t OrderType) String() string {
 //   - Binance: explicit field GTC / IOC / FOK / GTX.
 //   - OKX: NO separate field — folded into ordType ("limit"=GTC, "ioc"=IOC,
 //     "fok"=FOK, "post_only"=GTX). Adapter splits/merges.
-//   - Hyperliquid: Limit.Tif "Gtc" / "Ioc" / "Fok"; GTX -> "Alo".
+//   - Hyperliquid: Limit.Tif "Gtc" / "Ioc"; GTX -> "Alo". FOK is not
+//     accepted by the venue wire API and adapters return ErrNotSupported.
 //
 // An unsupported (Type, TIF) combination on a given venue must surface as
 // contract.ErrNotSupported in the adapter, never be silently coerced.

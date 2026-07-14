@@ -76,7 +76,6 @@ func runNadoTestnetAdapterAcceptance(t *testing.T, label string, cfg testenv.Nad
 	requireNoNadoAcceptancePosition(t, ctx, adapter, label, id)
 	state := requireNadoAcceptanceAccountState(t, ctx, adapter, label)
 	requireNadoLifecycleFunds(t, label, adapter, state, lifecycle)
-	defer cancelAllNadoAcceptanceOrders(t, adapter, id)
 	defer assertNoNadoPreparedAcceptanceEntries(t, label, adapter)
 	preparedExec := nadoAcceptancePreparedExecution{
 		ExecutionClient: adapter.Execution,
@@ -119,7 +118,7 @@ func runNadoTestnetRuntimeAcceptance(t *testing.T, label string, cfg testenv.Nad
 		btruntime.WithAccountStaleAfter(2*time.Minute),
 	)
 	t.Logf("%s runtime account_stale_after=%s reason=testnet_full_reconcile_latency", label, 2*time.Minute)
-	runtimeaccept.AttachAccountRequiredRiskWithAcceptanceLimit(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT0)
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, label+" private stream")
 		t.Fatalf("%s private stream: %v", label, err)
@@ -133,17 +132,15 @@ func runNadoTestnetRuntimeAcceptance(t *testing.T, label string, cfg testenv.Nad
 		close(done)
 	}()
 	defer stopNadoRuntimeNode(t, stop, done)
-	defer cancelAllNadoAcceptanceOrders(t, adapter, id)
 	defer assertNoNadoPreparedAcceptanceEntries(t, label, adapter)
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, label+" startup reconcile")
-		t.Fatalf("%s runtime active before risk probe: %v", label, err)
+		t.Fatalf("%s runtime active before lifecycle: %v", label, err)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, kind)
 	if state, ok := node.Cache.Account(AccountIDUnified); ok {
 		requireNadoLifecycleFunds(t, label, adapter, state.LastEvent(), lifecycle)
 	}
-	runtimeaccept.AssertRuntimeOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id)
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
 		t.Fatalf("%s runtime order lifecycle: %v", label, err)
 	}
@@ -219,12 +216,20 @@ func nadoAcceptanceHTTPClient(t *testing.T, proxyURL string) *http.Client {
 	if strings.TrimSpace(proxyURL) == "" {
 		return client
 	}
-	parsed, err := url.Parse(proxyURL)
+	parsed, err := parseNadoAcceptanceProxyURL(proxyURL)
 	if err != nil {
-		t.Fatalf("Nado Testnet proxy URL: %v", err)
+		t.Fatal(err)
 	}
 	client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
 	return client
+}
+
+func parseNadoAcceptanceProxyURL(proxyURL string) (*url.URL, error) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("Nado Testnet proxy URL is invalid")
+	}
+	return parsed, nil
 }
 
 func nadoSDKTestnetProfile(t *testing.T) sdk.Profile {
@@ -318,6 +323,29 @@ func requireNadoAcceptanceLifecycle(
 	}
 	candidate.lifecycle.Label = label
 	candidate.lifecycle.Logf = t.Logf
+	if kind == enums.KindSpot {
+		inst, ok := adapter.provider.Instrument(candidate.id)
+		if !ok {
+			t.Fatalf("%s selected instrument %s is unavailable", label, candidate.id)
+		}
+		step := inst.SizeStep
+		if !step.IsPositive() {
+			step = decimal.NewFromInt(1)
+		}
+		minQty := inst.MinQty
+		if !minQty.IsPositive() {
+			minQty = step
+		}
+		candidate.lifecycle = runtimeaccept.ConfigureSpotBalanceGuard(
+			candidate.lifecycle,
+			adapter.acct,
+			inst.Base,
+			step,
+			minQty,
+			inst.MinNotional,
+			candidate.lifecycle.Quantity.Sub(candidate.lifecycle.CloseQuantity),
+		)
+	}
 	t.Logf("%s selected instrument=%s venue_symbol=%s", label, candidate.id, nadoAcceptanceVenueSymbol(t, adapter, candidate.id))
 	return candidate.id, candidate.book, candidate.lifecycle
 }
@@ -595,18 +623,6 @@ func requireNoNadoAcceptancePosition(t *testing.T, ctx context.Context, adapter 
 		if pos.InstrumentID == id && !pos.Quantity.IsZero() {
 			t.Fatalf("%s has pre-existing position for %s: %+v", label, id, pos)
 		}
-	}
-}
-
-func cancelAllNadoAcceptanceOrders(t *testing.T, adapter *Adapter, id model.InstrumentID) {
-	t.Helper()
-	if adapter == nil || adapter.Execution == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := adapter.Execution.CancelAll(ctx, id); err != nil {
-		t.Logf("Nado acceptance cleanup cancel-all for %s failed: %v", id, err)
 	}
 }
 

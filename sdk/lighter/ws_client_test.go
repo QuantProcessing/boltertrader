@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,19 +174,21 @@ func TestWSClientPingLoopSendsControlPing(t *testing.T) {
 		KeepaliveInterval: 5 * time.Millisecond,
 	})
 	rec := &recordingConn{}
+	client.Mu.Lock()
 	client.conn = rec
+	client.Mu.Unlock()
 
 	go client.pingLoop()
 	time.Sleep(20 * time.Millisecond)
 	client.Close()
 
-	require.GreaterOrEqual(t, rec.pingCount, 1)
-	require.Zero(t, rec.jsonCount)
+	require.GreaterOrEqual(t, rec.pingCount.Load(), int64(1))
+	require.Zero(t, rec.jsonCount.Load())
 }
 
 type recordingConn struct {
-	pingCount int
-	jsonCount int
+	pingCount atomic.Int64
+	jsonCount atomic.Int64
 }
 
 func (c *recordingConn) ReadMessage() (int, []byte, error) {
@@ -193,13 +196,13 @@ func (c *recordingConn) ReadMessage() (int, []byte, error) {
 }
 
 func (c *recordingConn) WriteJSON(v interface{}) error {
-	c.jsonCount++
+	c.jsonCount.Add(1)
 	return nil
 }
 
 func (c *recordingConn) WriteControl(messageType int, data []byte, deadline time.Time) error {
 	if messageType == websocket.PingMessage {
-		c.pingCount++
+		c.pingCount.Add(1)
 	}
 	return nil
 }

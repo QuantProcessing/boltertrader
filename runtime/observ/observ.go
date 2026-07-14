@@ -15,9 +15,12 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// Observer receives runtime events. All methods are called on the bus goroutine,
-// so implementations must not block. Any method may be a no-op; embed Base to
-// implement only what you need.
+// Observer receives runtime events. Methods run synchronously and never overlap,
+// including lifecycle callbacks initiated outside the event goroutine.
+// Implementations must not block or re-enter TradingNode methods that emit
+// Observer callbacks. Read-only node methods such as State, Health, and Metrics
+// are safe to call. Any method may be a no-op; embed Base to implement only what
+// you need.
 type Observer interface {
 	// OnNodeStart is called once when the node starts.
 	OnNodeStart()
@@ -94,8 +97,8 @@ type Metrics struct {
 }
 
 // Counters accumulates event counts. Fields are accessed via sync/atomic by the
-// runtime (the bus goroutine adds; Metrics readers load), so reads from other
-// goroutines are race-free and eventually consistent.
+// runtime (the serialized event path adds; Metrics readers load), so reads from
+// other goroutines are race-free and eventually consistent.
 type Counters struct {
 	Orders  int64
 	Fills   int64

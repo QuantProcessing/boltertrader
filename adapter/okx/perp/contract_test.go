@@ -266,7 +266,7 @@ func TestInstrumentParsing_PopulatesIntCode(t *testing.T) {
 	code := int64(123456)
 	in := &okx.Instrument{
 		InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
-		SettleCcy: "USDT", TickSz: "0.1", LotSz: "0.01", MinSz: "0.01", InstIdCode: &code,
+		SettleCcy: "USDT", CtVal: "1", TickSz: "0.1", LotSz: "0.01", MinSz: "0.01", InstIdCode: &code,
 	}
 	inst := instrumentFromOKX(in)
 	if inst == nil {
@@ -286,6 +286,34 @@ func TestInstrumentParsing_PopulatesIntCode(t *testing.T) {
 		HasIntCode:  true,  // OKX populates VenueIntCode — the divergence
 		HasAssetIdx: false, // OKX is not asset-index keyed
 	}})
+}
+
+func TestInstrumentParsingPreservesContractValue(t *testing.T) {
+	in := &okx.Instrument{
+		InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
+		SettleCcy: "USDT", CtVal: "0.01", CtValCcy: "BTC", TickSz: "0.1", LotSz: "1", MinSz: "1",
+	}
+	inst := instrumentFromOKX(in)
+	if inst == nil {
+		t.Fatal("nil instrument")
+	}
+	if !inst.ContractMultiplier.Equal(dd("0.01")) {
+		t.Fatalf("contract multiplier=%s, want OKX ctVal 0.01", inst.ContractMultiplier)
+	}
+}
+
+func TestInstrumentParsingRejectsInvalidContractValue(t *testing.T) {
+	for _, ctVal := range []string{"", "0", "-1", "not-a-number"} {
+		t.Run(ctVal, func(t *testing.T) {
+			in := &okx.Instrument{
+				InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
+				SettleCcy: "USDT", CtVal: ctVal, TickSz: "0.1", LotSz: "1", MinSz: "1",
+			}
+			if got := instrumentFromOKX(in); got != nil {
+				t.Fatalf("instrument=%+v, invalid ctVal %q must fail closed", got, ctVal)
+			}
+		})
+	}
 }
 
 func TestNonSwapSkipped(t *testing.T) {
@@ -645,7 +673,7 @@ func testOKXLinearInstrument(t *testing.T) *model.Instrument {
 	code := int64(123456)
 	inst := instrumentFromOKX(&okx.Instrument{
 		InstId: "BTC-USDT-SWAP", InstType: "SWAP", BaseCcy: "BTC", QuoteCcy: "USDT",
-		SettleCcy: "USDT", TickSz: "0.1", LotSz: "1", MinSz: "1", InstIdCode: &code,
+		SettleCcy: "USDT", CtVal: "1", TickSz: "0.1", LotSz: "1", MinSz: "1", InstIdCode: &code,
 	})
 	if inst == nil {
 		t.Fatal("test instrument was filtered")

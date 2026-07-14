@@ -24,9 +24,15 @@ func AttachAccountRequiredRisk(node *btruntime.TradingNode, provider model.Instr
 }
 
 // AttachAccountRequiredRiskWithAcceptanceLimit installs the normal account
-// gate plus a deliberately high local limit used only by live acceptance probes.
+// gate plus a deliberately high local limit used by live acceptance orders.
 func AttachAccountRequiredRiskWithAcceptanceLimit(node *btruntime.TradingNode, provider model.InstrumentProvider) {
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: acceptanceMaxOrderNotional}, node.Cache).RequireAccountState()
+	AttachAccountRequiredRiskWithMaxNotional(node, provider, acceptanceMaxOrderNotional)
+}
+
+// AttachAccountRequiredRiskWithMaxNotional installs the normal account gate
+// plus the caller's venue-specific acceptance notional envelope.
+func AttachAccountRequiredRiskWithMaxNotional(node *btruntime.TradingNode, provider model.InstrumentProvider, maxNotional decimal.Decimal) {
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: maxNotional}, node.Cache).RequireAccountState()
 	btruntime.WithRisk(riskEngine, provider)(node)
 }
 
@@ -150,13 +156,15 @@ func AssertOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, pro
 	}
 }
 
-// AssertRuntimeOversizedOrderRejected proves rejection through the real
-// execution engine. The configured local limit fires before any venue-backed
-// validator or execution handoff, so cache and in-flight state must stay clean.
+// AssertRuntimeOversizedOrderRejected is retained for source compatibility.
+//
+// Deprecated: live acceptance must not send deliberately oversized orders
+// through a venue-backed execution engine. This compatibility helper now runs
+// the equivalent bounded risk check locally and performs no execution handoff.
 func AssertRuntimeOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID) {
 	t.Helper()
-	if node == nil || node.Exec == nil {
-		t.Fatal("runtime oversized-order probe requires an execution engine")
+	if node == nil || node.Cache == nil {
+		t.Fatal("runtime oversized-order probe requires a runtime cache")
 	}
 	inst, ok := provider.Instrument(id)
 	if !ok || inst == nil {
@@ -173,32 +181,21 @@ func AssertRuntimeOversizedOrderRejected(t testing.TB, node *btruntime.TradingNo
 	if inst.PriceTick.IsPositive() {
 		price = price.Div(inst.PriceTick).Ceil().Mul(inst.PriceTick)
 	}
-	clientID := fmt.Sprintf("runtime-local-risk-%d", time.Now().UnixNano())
-	openBefore := len(node.Cache.OpenOrders())
-	inflightBefore := node.Exec.InFlightCount()
-	_, err := node.Exec.Submit(context.Background(), model.OrderRequest{
-		ClientID:     clientID,
-		InstrumentID: id,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeLimit,
-		TIF:          enums.TifGTC,
-		Quantity:     qty,
-		Price:        price,
-		PositionSide: enums.PosNet,
-	})
+	err := risk.New(risk.Limits{MaxOrderNotional: acceptanceMaxOrderNotional}, node.Cache).
+		RequireAccountState().
+		Check(model.OrderRequest{
+			ClientID:     "runtime-local-risk-compatibility-probe",
+			InstrumentID: id,
+			Side:         enums.SideBuy,
+			Type:         enums.TypeLimit,
+			TIF:          enums.TifGTC,
+			Quantity:     qty,
+			Price:        price,
+			PositionSide: enums.PosNet,
+		}, inst)
 	if !errors.Is(err, risk.ErrRiskRejected) {
 		t.Fatalf("runtime oversized-order probe err=%v, want ErrRiskRejected", err)
 	}
-	if _, ok := node.Cache.Order(clientID); ok {
-		t.Fatalf("runtime oversized-order probe %s reached order cache", clientID)
-	}
-	if got := len(node.Cache.OpenOrders()); got != openBefore {
-		t.Fatalf("runtime oversized-order probe changed open orders: before=%d after=%d", openBefore, got)
-	}
-	if got := node.Exec.InFlightCount(); got != inflightBefore {
-		t.Fatalf("runtime oversized-order probe changed in-flight state: before=%d after=%d", inflightBefore, got)
-	}
-	t.Logf("runtime_local_risk_rejection instrument=%s client_id=%s notional=%s limit=%s cache_order=false open_orders=%d inflight=%d", id, clientID, price.Mul(qty), acceptanceMaxOrderNotional, openBefore, inflightBefore)
 }
 
 func WaitForActive(ctx context.Context, node *btruntime.TradingNode) error {

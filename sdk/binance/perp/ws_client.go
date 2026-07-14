@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -32,7 +33,9 @@ type WSClient struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	wg sync.WaitGroup
+	wg                sync.WaitGroup
+	callbacksInFlight atomic.Int64
+	dropDispatch      atomic.Bool
 
 	ReconnectWait        time.Duration
 	maxReconnectAttempts int
@@ -43,6 +46,7 @@ type WSClient struct {
 	subs map[string]Subscription
 
 	postReconnect func()
+	onDisconnect  func(error)
 	dispatcher    *wsdispatch.Dispatcher
 
 	// Message handler to be implemented/assigned by the embedding client
@@ -66,7 +70,7 @@ func NewWSClient(ctx context.Context, url string) *WSClient {
 		maxReconnectAttempts: 10,
 		pongInterval:         1 * time.Minute,
 		subs:                 make(map[string]Subscription),
-		dispatcher:           wsdispatch.NewDispatcher(),
+		dispatcher:           wsdispatch.NewBoundedDispatcher(wsdispatch.DefaultBufferLimit),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -96,9 +100,9 @@ func (c *WSClient) Connect() error {
 				Proxy:            http.ProxyURL(parsedURL),
 				HandshakeTimeout: 45 * time.Second,
 			}
-			c.Logger.Debugw("Using proxy", "url", proxyURL)
+			c.Logger.Debugw("Using configured proxy")
 		} else {
-			c.Logger.Errorw("Invalid proxy URL", "url", proxyURL, "error", err)
+			c.Logger.Errorw("Invalid proxy URL")
 		}
 	}
 
@@ -113,23 +117,15 @@ func (c *WSClient) Connect() error {
 	c.Conn = conn
 
 	c.wg.Add(3)
-	go c.setupPingHandlers()
-	go c.readLoop()
-	go c.keepAlive()
+	go c.setupPingHandlers(conn)
+	go c.readLoop(conn)
+	go c.keepAlive(conn)
 
 	return nil
 }
 
-func (c *WSClient) setupPingHandlers() {
+func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
 	defer c.wg.Done()
-
-	c.Mu.RLock()
-	conn := c.Conn
-	c.Mu.RUnlock()
-
-	if conn == nil {
-		return
-	}
 
 	conn.SetPingHandler(func(appData string) error {
 		c.Logger.Debugw("Received ping message", "data", appData)
@@ -142,7 +138,7 @@ func (c *WSClient) setupPingHandlers() {
 
 // keepAlive sends unsolicited Pongs as heartbeats if needed, or just relies on reacting to Pings?
 // The original code had a loop sending Pongs. We'll strict copy that behavior.
-func (c *WSClient) keepAlive() {
+func (c *WSClient) keepAlive(conn *websocket.Conn) {
 	defer c.wg.Done()
 
 	ticker := time.NewTicker(c.pongInterval)
@@ -153,29 +149,24 @@ func (c *WSClient) keepAlive() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			c.Mu.RLock()
-			conn := c.Conn
-			c.Mu.RUnlock()
-
-			if conn == nil {
-				return
-			}
-
 			c.WriteMu.Lock()
 			err := conn.WriteMessage(websocket.PongMessage, []byte{})
 			c.WriteMu.Unlock()
 			if err != nil {
 				c.Logger.Errorw("Failed to send pong", "error", err)
+				return
 			}
 		}
 	}
 }
 
-func (c *WSClient) readLoop() {
+func (c *WSClient) readLoop(conn *websocket.Conn) {
 	defer c.wg.Done()
 	connectedAt := time.Now()
+	var readErr error
 
 	defer func() {
+		_ = conn.Close()
 		// Only reset attempt counter if connection lived >5s (not immediately kicked)
 		if time.Since(connectedAt) > 5*time.Second {
 			c.Mu.Lock()
@@ -184,14 +175,25 @@ func (c *WSClient) readLoop() {
 		}
 
 		c.Mu.Lock()
-		c.Conn = nil
+		owned := c.Conn == conn
+		if owned {
+			c.Conn = nil
+		}
+		isClosed := c.isClosed
 		c.Mu.Unlock()
 
-		c.Mu.RLock()
-		isClosed := c.isClosed
-		c.Mu.RUnlock()
-
-		if !isClosed {
+		if owned && !isClosed {
+			if readErr == nil {
+				readErr = fmt.Errorf("binance perp websocket: connection lost")
+			}
+			c.Mu.RLock()
+			handler := c.onDisconnect
+			c.Mu.RUnlock()
+			if handler != nil && !c.runCallbackIfOpen(func() {
+				handler(readErr)
+			}) {
+				return
+			}
 			c.reconnect()
 		}
 	}()
@@ -203,16 +205,9 @@ func (c *WSClient) readLoop() {
 		default:
 		}
 
-		c.Mu.RLock()
-		conn := c.Conn
-		c.Mu.RUnlock()
-
-		if conn == nil {
-			return
-		}
-
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			readErr = err
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				c.Logger.Errorw("websocket unexpected close error", "error", err)
 			}
@@ -225,18 +220,52 @@ func (c *WSClient) readLoop() {
 			continue
 		}
 
-		c.dispatchMessage(message)
+		if err := c.dispatchMessageChecked(message); err != nil {
+			readErr = fmt.Errorf("binance perp websocket callback dispatch: %w", err)
+			c.ResetDispatch()
+			_ = conn.Close()
+			return
+		}
 	}
 }
 
 func (c *WSClient) dispatchMessage(message []byte) {
-	if c.Handler == nil {
-		return
+	_ = c.dispatchMessageChecked(message)
+}
+
+func (c *WSClient) dispatchMessageChecked(message []byte) error {
+	if c.dropDispatch.Load() {
+		return nil
+	}
+	handler := c.Handler
+	if handler == nil {
+		return nil
 	}
 	msg := append([]byte(nil), message...)
-	c.dispatcher.Dispatch(func() {
-		c.Handler(msg)
+	return c.dispatcher.DispatchChecked(func() {
+		if c.dropDispatch.Load() {
+			return
+		}
+		c.runCallbackIfOpen(func() {
+			handler(msg)
+		})
 	})
+}
+
+func (c *WSClient) runCallbackIfOpen(callback func()) bool {
+	if callback == nil {
+		return true
+	}
+	c.Mu.RLock()
+	if c.isClosed {
+		c.Mu.RUnlock()
+		return false
+	}
+	c.callbacksInFlight.Add(1)
+	c.Mu.RUnlock()
+	defer c.callbacksInFlight.Add(-1)
+	callback()
+	return true
 }
 
 func (c *WSClient) PauseDispatch() {
@@ -245,6 +274,34 @@ func (c *WSClient) PauseDispatch() {
 
 func (c *WSClient) ResumeDispatch(beforeDrain func()) {
 	c.dispatcher.Resume(beforeDrain)
+}
+
+// ResetDispatch drops callbacks buffered for a superseded connection and
+// returns dispatch to its running state. A callback already executing is
+// allowed to finish.
+func (c *WSClient) ResetDispatch() {
+	c.dispatcher.Reset()
+}
+
+// pauseSourceDispatchForRecovery closes the old generation's admission gate,
+// waits for an already accepted callback to finish, drops callbacks that were
+// queued behind it, then runs beforeRecovery. The source remains fail-closed;
+// a replacement WSClient owns a separate dispatcher and is paused before its
+// Connect call.
+func (c *WSClient) pauseSourceDispatchForRecovery(beforeRecovery func()) {
+	c.dropDispatch.Store(true)
+	c.PauseDispatch()
+	c.ResumeDispatch(func() {
+		c.ResetDispatch()
+		if beforeRecovery != nil {
+			beforeRecovery()
+		}
+	})
+}
+
+func (c *WSClient) stopSourceDispatchForRecovery() {
+	c.dropDispatch.Store(true)
+	c.PauseDispatch()
 }
 
 func (c *WSClient) reconnect() {
@@ -326,6 +383,14 @@ func (c *WSClient) SetPostReconnect(handler func()) {
 	c.postReconnect = handler
 }
 
+// SetOnDisconnect sets a callback for unexpected transport loss. Intentional
+// Close calls do not invoke it.
+func (c *WSClient) SetOnDisconnect(handler func(error)) {
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
+	c.onDisconnect = handler
+}
+
 func (c *WSClient) WriteJSON(v interface{}) error {
 	c.WriteMu.Lock()
 	defer c.WriteMu.Unlock()
@@ -360,7 +425,10 @@ func (c *WSClient) Close() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	c.wg.Wait()
+	if c.callbacksInFlight.Load() == 0 {
+		c.wg.Wait()
+	}
+	c.ResetDispatch()
 }
 
 // Subscribe sends a subscription request

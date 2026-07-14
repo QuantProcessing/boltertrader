@@ -304,8 +304,8 @@ func (c *WebsocketClient) Subscribe(channel string, authToken *string, handler f
 
 func (c *WebsocketClient) Unsubscribe(channel string) error {
 	c.Mu.Lock()
-	defer c.Mu.Unlock()
 	delete(c.Subscriptions, channel)
+	c.Mu.Unlock()
 
 	// docs do not show this action
 	return c.Send(map[string]string{
@@ -555,6 +555,8 @@ func asInt64(v interface{}) int64 {
 }
 
 func (c *WebsocketClient) activeConn() websocketConn {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
 	if c.conn != nil {
 		return c.conn
 	}

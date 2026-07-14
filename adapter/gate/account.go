@@ -16,12 +16,13 @@ import (
 )
 
 type accountClient struct {
-	rest      *gatesdk.Client
-	provider  *instrumentProvider
-	clk       clock.Clock
-	accountID string
-	scope     []enums.InstrumentKind
-	stream    *wsstream.Stream[contract.AccountEnvelope]
+	rest        *gatesdk.Client
+	provider    *instrumentProvider
+	clk         clock.Clock
+	accountID   string
+	scope       []enums.InstrumentKind
+	stream      *wsstream.Stream[contract.AccountEnvelope]
+	futuresMode *futuresPositionModeState
 }
 
 func newAccountClient(rest *gatesdk.Client, provider *instrumentProvider, clk clock.Clock, scope []enums.InstrumentKind, accountIDs ...string) *accountClient {
@@ -35,7 +36,7 @@ func newAccountClient(rest *gatesdk.Client, provider *instrumentProvider, clk cl
 	if accountID == "" {
 		accountID = AccountIDUnified
 	}
-	return &accountClient{rest: rest, provider: provider, clk: clk, accountID: accountID, scope: gateKinds(scope), stream: wsstream.New[contract.AccountEnvelope](256)}
+	return &accountClient{rest: rest, provider: provider, clk: clk, accountID: accountID, scope: gateKinds(scope), stream: wsstream.New[contract.AccountEnvelope](256), futuresMode: newFuturesPositionModeState()}
 }
 
 func (c *accountClient) AccountID() string { return c.accountID }
@@ -53,6 +54,9 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 	if hasKind(c.scope, enums.KindPerp) {
 		account, err := c.rest.GetFuturesAccount(ctx, gatesdk.SettleUSDT)
 		if err != nil {
+			return nil, err
+		}
+		if err := c.futuresMode.setAccount(account); err != nil {
 			return nil, err
 		}
 		out = append(out, balanceFromFuturesAccount(account, c.accountID, now))
@@ -98,6 +102,9 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 		baseCurrency = "USDT"
 		account, err := c.rest.GetFuturesAccount(ctx, gatesdk.SettleUSDT)
 		if err != nil {
+			return model.AccountState{}, err
+		}
+		if err := c.futuresMode.setAccount(account); err != nil {
 			return model.AccountState{}, err
 		}
 		balances = append(balances, balanceFromFuturesAccount(account, c.accountID, now))

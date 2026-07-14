@@ -7,8 +7,11 @@ package exec
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
 	"github.com/QuantProcessing/boltertrader/runtime/journal"
 	"github.com/QuantProcessing/boltertrader/runtime/latency"
+	"github.com/QuantProcessing/boltertrader/runtime/orderstate"
 	"github.com/shopspring/decimal"
 )
 
@@ -41,7 +45,13 @@ type Engine struct {
 	journal  journal.Store
 	inflight *InFlightJournal
 
+	// commandEntropy is private so callers cannot weaken command identities.
+	// Tests replace it to prove entropy failures stop before durable or venue
+	// side effects.
+	commandEntropy io.Reader
+
 	onRecoverabilityBreach func(error)
+	onTerminalOrder        func(model.Order)
 }
 
 // RiskChecker is the pre-trade gate ExecEngine consults before submitting. It is
@@ -62,6 +72,17 @@ type ContextRiskChecker interface {
 	) (contract.PreTradeLease, error)
 }
 
+// SubmissionRiskChecker atomically holds local risk exposure across the gap
+// between validation and PendingNew cache insertion. release must be safe to
+// call after any later submit outcome.
+type SubmissionRiskChecker interface {
+	CheckSubmission(
+		ctx context.Context,
+		req model.OrderRequest,
+		inst *model.Instrument,
+	) (contract.PreTradeLease, func(), error)
+}
+
 type CommandGate interface {
 	CanSubmit(model.OrderRequest) error
 	CanCancel() error
@@ -79,13 +100,14 @@ func New(client contract.ExecutionClient, c *cache.Cache, clk clock.Clock, idPre
 		idPrefix = "bt"
 	}
 	return &Engine{
-		client:    client,
-		cache:     c,
-		clk:       clk,
-		prefix:    idPrefix,
-		accountID: idPrefix,
-		journal:   journal.NewMemory(),
-		inflight:  NewInFlightJournal(),
+		client:         client,
+		cache:          c,
+		clk:            clk,
+		prefix:         idPrefix,
+		accountID:      idPrefix,
+		journal:        journal.NewMemory(),
+		inflight:       NewInFlightJournal(),
+		commandEntropy: rand.Reader,
 	}
 }
 
@@ -94,6 +116,11 @@ func New(client contract.ExecutionClient, c *cache.Cache, clk clock.Clock, idPre
 func (e *Engine) WithRisk(r RiskChecker, provider model.InstrumentProvider) *Engine {
 	e.risk = r
 	e.provider = provider
+	if aware, ok := r.(interface {
+		SetInstrumentProvider(model.InstrumentProvider)
+	}); ok {
+		aware.SetInstrumentProvider(provider)
+	}
 	return e
 }
 
@@ -107,6 +134,9 @@ func (e *Engine) WithCommandGate(gate CommandGate) *Engine {
 	return e
 }
 
+// WithJournal installs the durable command store. Store methods may read Cache,
+// but must not synchronously invoke order-mutating Cache methods or re-enter the
+// same Engine while a command result is being committed.
 func (e *Engine) WithJournal(store journal.Store) *Engine {
 	if store != nil {
 		e.journal = store
@@ -131,6 +161,13 @@ func (e *Engine) WithInFlightJournal(inflight *InFlightJournal) *Engine {
 
 func (e *Engine) WithRecoverabilityHandler(fn func(error)) *Engine {
 	e.onRecoverabilityBreach = fn
+	return e
+}
+
+// WithTerminalOrderHandler installs a synchronous notification for terminal
+// orders applied directly by command responses rather than the event bus.
+func (e *Engine) WithTerminalOrderHandler(fn func(model.Order)) *Engine {
+	e.onTerminalOrder = fn
 	return e
 }
 
@@ -162,13 +199,121 @@ func (e *Engine) ResolveInFlight(clientID, venueOrderID string, at time.Time) {
 	e.resolveEntry(entry, venueOrderID, OutcomeConfirmedAccepted, "", at)
 }
 
-func (e *Engine) ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool) {
+// ResolveOrderInFlight applies authoritative order evidence according to the
+// command that is still awaiting confirmation. An unchanged open order proves
+// submission, but it does not prove that a cancel or modify took effect.
+func (e *Engine) ResolveOrderInFlight(order model.Order, at time.Time) bool {
+	entry, ok := e.matchOrderInFlight(order)
+	if !ok {
+		return false
+	}
+	outcome, reason, conclusive := classifyOrderEvidence(entry, order)
+	if !conclusive {
+		return false
+	}
+	return e.resolveEntry(entry, order.VenueOrderID, outcome, reason, at)
+}
+
+func (e *Engine) matchOrderInFlight(order model.Order) (InFlightEntry, bool) {
 	if e.inflight == nil {
-		return fill, false
+		return InFlightEntry{}, false
+	}
+	var matched InFlightEntry
+	matchedOK := false
+	if order.Request.ClientID != "" {
+		matched, matchedOK = e.inflight.ByClientID(order.Request.ClientID)
+	}
+	if order.VenueOrderID != "" {
+		byVenue, venueOK := e.inflight.ByVenueOrderID(order.VenueOrderID)
+		if matchedOK && venueOK && byVenue.Intent.RecordID != matched.Intent.RecordID {
+			return InFlightEntry{}, false
+		}
+		if !matchedOK && venueOK {
+			matched, matchedOK = byVenue, true
+		}
+	}
+	if !matchedOK || !inFlightEntryMatchesOrder(matched, order) {
+		return InFlightEntry{}, false
+	}
+	return matched, true
+}
+
+func inFlightEntryMatchesOrder(entry InFlightEntry, order model.Order) bool {
+	intent := entry.Intent
+	req := order.Request
+	if req.AccountID != "" && intent.AccountID != "" && req.AccountID != intent.AccountID {
+		return false
+	}
+	if req.InstrumentID != (model.InstrumentID{}) && intent.InstrumentID != (model.InstrumentID{}) && req.InstrumentID != intent.InstrumentID {
+		return false
+	}
+	if req.Side != enums.SideUnknown && intent.Side != enums.SideUnknown && req.Side != intent.Side {
+		return false
+	}
+	if req.ClientID != "" && intent.ClientID != "" && req.ClientID != intent.ClientID {
+		return false
+	}
+	if order.VenueOrderID != "" && intent.VenueOrderID != "" && order.VenueOrderID != intent.VenueOrderID {
+		return false
+	}
+	return true
+}
+
+func classifyOrderEvidence(entry InFlightEntry, order model.Order) (OutcomeClass, string, bool) {
+	switch entry.Intent.Type {
+	case journal.CommandSubmit:
+		if order.Status == enums.StatusRejected || order.Status == enums.StatusExpired {
+			return OutcomeDefinitiveVenueRejected, orderEvidenceReason(entry, order), true
+		}
+		return OutcomeConfirmedAccepted, "", true
+	case journal.CommandCancel:
+		if order.Status == enums.StatusCanceled {
+			return OutcomeConfirmedAccepted, "", true
+		}
+		if orderstate.IsTerminal(order.Status) {
+			return OutcomeDefinitiveVenueRejected, orderEvidenceReason(entry, order), true
+		}
+		return "", "", false
+	case journal.CommandModify:
+		if order.Status == enums.StatusRejected || order.Status == enums.StatusExpired {
+			return OutcomeDefinitiveVenueRejected, orderEvidenceReason(entry, order), true
+		}
+		if order.Request.Price.Equal(entry.Intent.Price) && order.Request.Quantity.Equal(entry.Intent.Quantity) {
+			return OutcomeConfirmedAccepted, "", true
+		}
+		if orderstate.IsTerminal(order.Status) {
+			return OutcomeDefinitiveVenueRejected, orderEvidenceReason(entry, order), true
+		}
+		return "", "", false
+	default:
+		return "", "", false
+	}
+}
+
+func orderEvidenceReason(entry InFlightEntry, order model.Order) string {
+	return fmt.Sprintf("authoritative order status %s did not confirm pending %s", order.Status, entry.Intent.Type)
+}
+
+// MatchFillInFlight read-only matches and enriches a fill from pending command
+// identity. It never writes a command result or consumes the in-flight entry.
+func (e *Engine) MatchFillInFlight(fill model.Fill) (model.Fill, bool) {
+	fill, _, ok := e.matchFillInFlight(fill)
+	return fill, ok
+}
+
+func (e *Engine) matchFillInFlight(fill model.Fill) (model.Fill, InFlightEntry, bool) {
+	if e.inflight == nil {
+		return fill, InFlightEntry{}, false
 	}
 	entry, ok := e.inflight.MatchFill(fill)
 	if !ok {
-		return fill, false
+		return fill, InFlightEntry{}, false
+	}
+	if fill.AccountID == "" {
+		fill.AccountID = entry.Intent.AccountID
+	}
+	if fill.InstrumentID == (model.InstrumentID{}) {
+		fill.InstrumentID = entry.Intent.InstrumentID
 	}
 	if fill.ClientID == "" {
 		fill.ClientID = entry.Intent.ClientID
@@ -176,10 +321,32 @@ func (e *Engine) ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill,
 	if fill.VenueOrderID == "" {
 		fill.VenueOrderID = entry.Intent.VenueOrderID
 	}
+	if fill.Side == enums.SideUnknown {
+		fill.Side = entry.Intent.Side
+	}
+	return fill, entry, true
+}
+
+// ResolveFillInFlight preserves the original mutating API for compatibility.
+// Runtime paths use MatchFillInFlight and resolve only after identity guards.
+func (e *Engine) ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool) {
+	fill, entry, ok := e.matchFillInFlight(fill)
+	if !ok {
+		return fill, false
+	}
+	if entry.State != InFlightSubmitted || entry.Intent.Type != journal.CommandSubmit {
+		return fill, false
+	}
 	if !e.resolveEntry(entry, fill.VenueOrderID, OutcomeConfirmedAccepted, "", at) {
 		return fill, false
 	}
 	return fill, true
+}
+
+func (e *Engine) notifyTerminalOrder(order model.Order) {
+	if e.onTerminalOrder != nil && orderstate.IsTerminal(order.Status) {
+		e.onTerminalOrder(order)
+	}
 }
 
 func (e *Engine) RejectInFlight(clientID, venueOrderID, reason string, at time.Time) {
@@ -221,15 +388,22 @@ func (e *Engine) resolveEntry(entry InFlightEntry, venueOrderID string, outcome 
 		Error:          resultErr,
 		ResultAt:       at,
 	}
-	if e.journal != nil {
-		if err := e.journal.AppendCommandResult(context.Background(), result); err != nil {
-			if e.onRecoverabilityBreach != nil {
-				e.onRecoverabilityBreach(err)
-			}
-			return false
+	// Recovery callers may install an in-flight journal reconstructed from a
+	// different process before attaching the durable Store. Re-append the exact
+	// intent idempotently so every event-derived result remains self-contained
+	// and passes the journal's intent/result identity guard.
+	err := e.inflight.commitResult(result, func() error {
+		if err := e.journal.AppendCommandIntent(context.Background(), entry.Intent); err != nil {
+			return err
 		}
+		return e.journal.AppendCommandResult(context.Background(), result)
+	})
+	if err != nil {
+		if !errors.Is(err, ErrInFlightIntentAlreadyResolved) {
+			e.notifyRecoverabilityBreach(err)
+		}
+		return false
 	}
-	e.inflight.ApplyResult(result)
 	return true
 }
 
@@ -241,7 +415,37 @@ func (e *Engine) ReplayOpenIntents(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.inflight.ReplayOpenIntents(intents)
+	return e.inflight.ReplayOpenIntentsChecked(intents)
+}
+
+func (e *Engine) ensureClientIDAvailable(clientID string, includeCache bool) error {
+	if e.inflight != nil {
+		if _, exists := e.inflight.ByClientID(clientID); exists {
+			return fmt.Errorf("%w %q", ErrDuplicateClientID, clientID)
+		}
+	}
+	if includeCache && e.cache != nil {
+		if _, exists := e.cache.OrderByClientIDForAccount(e.accountID, clientID); exists {
+			return fmt.Errorf("%w %q", ErrDuplicateClientID, clientID)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) reserveAndAppendIntent(ctx context.Context, intent journal.CommandIntent, state InFlightState, rejectCachedClientID bool) error {
+	if err := e.inflight.TrackIntentChecked(intent, state); err != nil {
+		return err
+	}
+	if rejectCachedClientID && e.cache != nil {
+		if _, exists := e.cache.OrderByClientIDForAccount(e.accountID, intent.ClientID); exists {
+			e.inflight.discardIntent(intent.RecordID)
+			return fmt.Errorf("%w %q", ErrDuplicateClientID, intent.ClientID)
+		}
+	}
+	if err := e.journal.AppendCommandIntent(ctx, intent); err != nil {
+		e.inflight.discardIntent(intent.RecordID)
+		return err
+	}
 	return nil
 }
 
@@ -263,6 +467,11 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		}
 	}()
 
+	if req.AccountID != "" && req.AccountID != e.accountID {
+		err := fmt.Errorf("exec: request account %q does not match engine account %q", req.AccountID, e.accountID)
+		cmd.Err = err.Error()
+		return nil, err
+	}
 	if req.ClientID == "" {
 		req.ClientID = e.nextClientID()
 	}
@@ -270,6 +479,10 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		req.AccountID = e.accountID
 	}
 	cmd.ClientID = req.ClientID
+	if err := e.ensureClientIDAvailable(req.ClientID, true); err != nil {
+		cmd.Err = err.Error()
+		return nil, err
+	}
 
 	if e.gate != nil {
 		if err := e.gate.CanSubmit(req); err != nil {
@@ -292,6 +505,7 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	// cache. Context-aware risk may perform read-only venue validation and hand
 	// exec a lease for the prepared payload.
 	var preTradeLease contract.PreTradeLease
+	var releaseRiskReservation func()
 	if e.risk != nil {
 		cmd.RiskStart = time.Now()
 		var inst *model.Instrument
@@ -301,7 +515,15 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 			}
 		}
 		var err error
-		if checker, ok := e.risk.(ContextRiskChecker); ok {
+		if checker, ok := e.risk.(SubmissionRiskChecker); ok {
+			preTradeLease, releaseRiskReservation, err = checker.CheckSubmission(ctx, req, inst)
+			if releaseRiskReservation != nil {
+				defer releaseRiskReservation()
+			}
+			if preTradeLease != nil {
+				defer preTradeLease.Release()
+			}
+		} else if checker, ok := e.risk.(ContextRiskChecker); ok {
 			preTradeLease, err = checker.CheckContext(ctx, req, inst)
 			if preTradeLease != nil {
 				defer preTradeLease.Release()
@@ -332,12 +554,15 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	}
 
 	now := e.clk.Now()
-	intent := e.intent(journal.CommandSubmit, req, "", now)
-	if err := e.journal.AppendCommandIntent(ctx, intent); err != nil {
+	intent, intentErr := e.intent(journal.CommandSubmit, req, "", now)
+	if intentErr != nil {
+		cmd.Err = intentErr.Error()
+		return nil, intentErr
+	}
+	if err := e.reserveAndAppendIntent(ctx, intent, InFlightSubmitted, true); err != nil {
 		cmd.Err = err.Error()
 		return nil, err
 	}
-	e.inflight.TrackIntent(intent, InFlightSubmitted)
 	if err := ctx.Err(); err != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -350,12 +575,26 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		cmd.Err = err.Error()
 		return nil, err
 	}
-	e.cache.UpsertOrder(model.Order{
+	pendingOrder := model.Order{
 		Request:   req,
 		Status:    enums.StatusPendingNew,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
+	}
+	if cacheErr := e.cache.InsertPendingOrderIfAbsent(pendingOrder); cacheErr != nil {
+		err := errors.Join(
+			fmt.Errorf("%w %q", ErrDuplicateClientID, req.ClientID),
+			cacheErr,
+		)
+		outcome := Outcome{Class: OutcomeLocalDenied, Sent: false, Err: err}
+		if appendErr := e.appendVenueResult(intent, outcome, ""); appendErr != nil {
+			joined := errors.Join(err, appendErr)
+			cmd.Err = joined.Error()
+			return nil, joined
+		}
+		cmd.Err = err.Error()
+		return nil, err
+	}
 
 	cmd.AdapterStart = time.Now()
 	var order *model.Order
@@ -367,17 +606,35 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	}
 	cmd.AdapterEnd = time.Now()
 	sent := !errors.Is(err, contract.ErrPreparedStateUnavailable)
+	if order != nil {
+		normalized, identityErr := e.normalizeCommandOrder(req, *order, true)
+		if identityErr != nil {
+			identityErr = e.orderIdentityError("submit", identityErr)
+			cmd.Err = identityErr.Error()
+			return nil, identityErr
+		}
+		if normalized.CreatedAt.IsZero() {
+			normalized.CreatedAt = now
+		}
+		if normalized.UpdatedAt.IsZero() {
+			normalized.UpdatedAt = now
+		}
+		order = &normalized
+	}
 	outcome := ClassifySubmitResult(sent, order, err)
 	if order != nil {
 		cmd.VenueOrderID = order.VenueOrderID
 	}
-	if appendErr := e.appendResult(ctx, intent, outcome, cmd.VenueOrderID); appendErr != nil {
-		cmd.Err = appendErr.Error()
-		return nil, appendErr
-	}
 	switch outcome.Class {
 	case OutcomeConfirmedAccepted:
-		e.cache.UpsertOrder(*order)
+		if commitErr := e.commitOrderUpsertResult("submit", intent, outcome, cmd.VenueOrderID, *order); commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			cmd.Err = commitErr.Error()
+			return nil, commitErr
+		}
+		e.notifyTerminalOrder(*order)
 		cmd.CacheApplied = time.Now()
 		return order, nil
 	case OutcomeDefinitiveVenueRejected:
@@ -399,11 +656,35 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		if order != nil {
 			rejected.VenueOrderID = order.VenueOrderID
 		}
-		e.cache.UpsertOrder(rejected)
+		if commitErr := e.commitOrderUpsertResult("submit", intent, outcome, cmd.VenueOrderID, rejected); commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			cmd.Err = commitErr.Error()
+			return nil, commitErr
+		}
+		e.notifyTerminalOrder(rejected)
 		cmd.CacheApplied = time.Now()
 		cmd.Err = errorString(rejectErr)
 		return nil, rejectErr
 	case OutcomeAmbiguous:
+		if order != nil && order.VenueOrderID != "" {
+			alias := pendingOrder
+			alias.VenueOrderID = order.VenueOrderID
+			if commitErr := e.commitOrderUpsertResult("submit", intent, outcome, order.VenueOrderID, alias); commitErr != nil {
+				if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+					return e.resultFromCanonical(intent)
+				}
+				cmd.Err = commitErr.Error()
+				return nil, commitErr
+			}
+		} else if appendErr := e.appendVenueResult(intent, outcome, cmd.VenueOrderID); appendErr != nil {
+			if errors.Is(appendErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			cmd.Err = appendErr.Error()
+			return nil, appendErr
+		}
 		cmd.Err = errorString(err)
 		return nil, err
 	case OutcomeLocalDenied, OutcomeUnsupported:
@@ -414,11 +695,25 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 			UpdatedAt:    e.clk.Now(),
 			RejectReason: errorString(err),
 		}
-		e.cache.UpsertOrder(rejected)
+		if commitErr := e.commitOrderUpsertResult("submit", intent, outcome, cmd.VenueOrderID, rejected); commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			cmd.Err = commitErr.Error()
+			return nil, commitErr
+		}
+		e.notifyTerminalOrder(rejected)
 		cmd.CacheApplied = time.Now()
 		cmd.Err = errorString(err)
 		return nil, err
 	default:
+		if appendErr := e.appendVenueResult(intent, outcome, cmd.VenueOrderID); appendErr != nil {
+			if errors.Is(appendErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			cmd.Err = appendErr.Error()
+			return nil, appendErr
+		}
 		cmd.Err = errorString(err)
 		return nil, err
 	}
@@ -435,24 +730,63 @@ func (e *Engine) Cancel(ctx context.Context, clientID string) error {
 	if err := e.ensureSupported(journal.CommandCancel); err != nil {
 		return err
 	}
-	o, ok := e.cache.OrderForAccount(e.accountID, clientID)
+	if err := e.ensureClientIDAvailable(clientID, false); err != nil {
+		return err
+	}
+	// Re-read only after the in-flight check. A preceding result transaction may
+	// have been durably committing a replacement alias while an earlier cache
+	// read still exposed the old order incarnation.
+	o, ok := e.cache.OrderByClientIDForAccount(e.accountID, clientID)
 	if !ok {
 		return fmt.Errorf("exec: unknown order %q", clientID)
 	}
-	intent := e.intent(journal.CommandCancel, o.Request, o.VenueOrderID, e.clk.Now())
-	if err := e.journal.AppendCommandIntent(ctx, intent); err != nil {
+	intent, intentErr := e.intent(journal.CommandCancel, o.Request, o.VenueOrderID, e.clk.Now())
+	if intentErr != nil {
+		return intentErr
+	}
+	if err := e.reserveAndAppendIntent(ctx, intent, InFlightPendingCancel, false); err != nil {
 		return err
 	}
-	e.inflight.TrackIntent(intent, InFlightPendingCancel)
 	err := e.client.Cancel(ctx, o.Request.InstrumentID, o.VenueOrderID)
 	outcome := ClassifyCommandResult(true, err)
-	if appendErr := e.appendResult(ctx, intent, outcome, o.VenueOrderID); appendErr != nil {
-		return appendErr
-	}
 	if outcome.Class == OutcomeConfirmedAccepted {
-		o.Status = enums.StatusCanceled
-		o.UpdatedAt = e.clk.Now()
-		e.cache.UpsertOrder(o)
+		canonical, commitErr := e.commitOrderMutationResult(
+			"cancel",
+			intent,
+			outcome,
+			o.VenueOrderID,
+			clientID,
+			o.VenueOrderID,
+			func(current model.Order) (model.Order, error) {
+				// A terminal event that won the venue race is stronger than the
+				// synchronous cancel acknowledgement. Otherwise preserve every
+				// latest field and apply the confirmed terminal state.
+				if !orderstate.IsTerminal(current.Status) {
+					current.Status = enums.StatusCanceled
+				}
+				at := e.clk.Now()
+				if current.UpdatedAt.IsZero() || at.After(current.UpdatedAt) {
+					current.UpdatedAt = at
+				}
+				return current, nil
+			},
+		)
+		if commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				_, resolvedErr := e.resultFromCanonical(intent)
+				return resolvedErr
+			}
+			return commitErr
+		}
+		e.notifyTerminalOrder(canonical)
+		return err
+	}
+	if appendErr := e.appendVenueResult(intent, outcome, o.VenueOrderID); appendErr != nil {
+		if errors.Is(appendErr, ErrInFlightIntentAlreadyResolved) {
+			_, resolvedErr := e.resultFromCanonical(intent)
+			return resolvedErr
+		}
+		return appendErr
 	}
 	return err
 }
@@ -466,31 +800,351 @@ func (e *Engine) Modify(ctx context.Context, clientID string, newPrice, newQty d
 	if err := e.ensureSupported(journal.CommandModify); err != nil {
 		return nil, err
 	}
-	o, ok := e.cache.OrderForAccount(e.accountID, clientID)
+	if err := e.ensureClientIDAvailable(clientID, false); err != nil {
+		return nil, err
+	}
+	// Read the target only after the in-flight check for the same reason as
+	// Cancel: result/cache transactions keep the prior intent visible until the
+	// replacement alias has been applied.
+	o, ok := e.cache.OrderByClientIDForAccount(e.accountID, clientID)
 	if !ok {
 		return nil, fmt.Errorf("exec: unknown order %q", clientID)
 	}
 	req := amendRequest(o.Request, newPrice, newQty)
-	intent := e.intent(journal.CommandModify, req, o.VenueOrderID, e.clk.Now())
-	if err := e.journal.AppendCommandIntent(ctx, intent); err != nil {
+	intent, intentErr := e.intent(journal.CommandModify, req, o.VenueOrderID, e.clk.Now())
+	if intentErr != nil {
+		return nil, intentErr
+	}
+	if err := e.reserveAndAppendIntent(ctx, intent, InFlightPendingModify, false); err != nil {
 		return nil, err
 	}
-	e.inflight.TrackIntent(intent, InFlightPendingModify)
 	order, err := e.client.Modify(ctx, o.Request.InstrumentID, o.VenueOrderID, newPrice, newQty)
-	outcome := ClassifySubmitResult(true, order, err)
-	venueOrderID := o.VenueOrderID
-	if order != nil && order.VenueOrderID != "" {
-		venueOrderID = order.VenueOrderID
+	if order != nil {
+		normalized, identityErr := e.normalizeCommandOrder(req, *order, false)
+		if identityErr != nil {
+			return nil, e.orderIdentityError("modify", identityErr)
+		}
+		order = &normalized
 	}
-	if appendErr := e.appendResult(ctx, intent, outcome, venueOrderID); appendErr != nil {
-		return nil, appendErr
+	outcome := ClassifySubmitResult(true, order, err)
+	if outcome.Class == OutcomeDefinitiveVenueRejected && err == nil {
+		reason := ""
+		if order != nil {
+			reason = order.RejectReason
+		}
+		err = DefinitiveReject(reason)
+		outcome.Err = err
+	}
+	resultVenueOrderID := o.VenueOrderID
+	responseVenueOrderID := ""
+	if order != nil {
+		responseVenueOrderID = order.VenueOrderID
 	}
 	if outcome.Class == OutcomeConfirmedAccepted && order != nil {
-		merged := mergeAcceptedModifyOrder(o, req, *order, e.clk.Now())
-		e.cache.UpsertOrder(merged)
-		return &merged, nil
+		if responseVenueOrderID != "" {
+			resultVenueOrderID = responseVenueOrderID
+		}
+		var commitErr error
+		var canonical model.Order
+		if resultVenueOrderID != o.VenueOrderID {
+			merged := mergeAcceptedModifyOrder(o, req, *order, e.clk.Now())
+			commitErr = e.commitOrderVenueAliasChangeResult(
+				"modify", intent, outcome, resultVenueOrderID,
+				o.Request.ClientID, o.VenueOrderID, merged,
+			)
+			canonical = merged
+		} else {
+			canonical, commitErr = e.commitOrderMutationResult(
+				"modify",
+				intent,
+				outcome,
+				resultVenueOrderID,
+				o.Request.ClientID,
+				o.VenueOrderID,
+				func(current model.Order) (model.Order, error) {
+					return mergeAcceptedModifyOrder(current, req, *order, e.clk.Now()), nil
+				},
+			)
+		}
+		if commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			return nil, commitErr
+		}
+		if cached, found := e.cache.OrderByClientIDForAccount(e.accountID, o.Request.ClientID); found {
+			canonical = cached
+		}
+		e.notifyTerminalOrder(canonical)
+		return &canonical, nil
+	}
+	if order != nil && responseVenueOrderID != "" {
+		candidate := mergeAcceptedModifyOrder(o, req, *order, e.clk.Now())
+		var commitErr error
+		if responseVenueOrderID != o.VenueOrderID {
+			commitErr = e.validateOrderVenueAliasChangeAndCommitResult(
+				"modify", intent, outcome, resultVenueOrderID,
+				o.Request.ClientID, o.VenueOrderID, candidate,
+			)
+		} else {
+			commitErr = e.validateOrderUpsertAndCommitResult("modify", intent, outcome, resultVenueOrderID, candidate)
+		}
+		if commitErr != nil {
+			if errors.Is(commitErr, ErrInFlightIntentAlreadyResolved) {
+				return e.resultFromCanonical(intent)
+			}
+			return nil, commitErr
+		}
+	} else if appendErr := e.appendVenueResult(intent, outcome, resultVenueOrderID); appendErr != nil {
+		if errors.Is(appendErr, ErrInFlightIntentAlreadyResolved) {
+			return e.resultFromCanonical(intent)
+		}
+		return nil, appendErr
+	}
+	if outcome.Class == OutcomeDefinitiveVenueRejected {
+		return nil, err
 	}
 	return order, err
+}
+
+func (e *Engine) orderIdentityError(command string, identityErr error) error {
+	err := fmt.Errorf("exec: %s order identity conflict: %w", command, identityErr)
+	e.notifyRecoverabilityBreach(err)
+	return err
+}
+
+func (e *Engine) commitOrderUpsertResult(
+	command string,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID string,
+	order model.Order,
+) error {
+	var finalize func()
+	err := e.cache.CommitOrderUpsertChecked(order, func() error {
+		var prepareErr error
+		finalize, prepareErr = e.prepareVenueResultDeferredRecovery(intent, outcome, venueOrderID)
+		return prepareErr
+	})
+	if err = e.wrapOrderCommitError(command, err); err != nil {
+		return err
+	}
+	if finalize != nil {
+		finalize()
+	}
+	return nil
+}
+
+func (e *Engine) commitOrderMutationResult(
+	command string,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID, clientID, expectedVenueOrderID string,
+	mutate func(model.Order) (model.Order, error),
+) (model.Order, error) {
+	var finalize func()
+	canonical, err := e.cache.CommitOrderMutationByClientIDChecked(
+		e.accountID,
+		clientID,
+		expectedVenueOrderID,
+		mutate,
+		func() error {
+			var prepareErr error
+			finalize, prepareErr = e.prepareVenueResultDeferredRecovery(intent, outcome, venueOrderID)
+			return prepareErr
+		},
+	)
+	if err = e.wrapOrderCommitError(command, err); err != nil {
+		return model.Order{}, err
+	}
+	if finalize != nil {
+		finalize()
+	}
+	return canonical, nil
+}
+
+func (e *Engine) validateOrderUpsertAndCommitResult(
+	command string,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID string,
+	order model.Order,
+) error {
+	var finalize func()
+	err := e.cache.ValidateOrderUpsertAndCommit(order, func() error {
+		var prepareErr error
+		finalize, prepareErr = e.prepareVenueResultDeferredRecovery(intent, outcome, venueOrderID)
+		return prepareErr
+	})
+	if err = e.wrapOrderCommitError(command, err); err != nil {
+		return err
+	}
+	if finalize != nil {
+		finalize()
+	}
+	return nil
+}
+
+func (e *Engine) commitOrderVenueAliasChangeResult(
+	command string,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID, clientID, expectedVenueOrderID string,
+	order model.Order,
+) error {
+	var finalize func()
+	err := e.cache.CommitOrderVenueAliasChangeChecked(
+		e.accountID,
+		clientID,
+		expectedVenueOrderID,
+		order,
+		func() error {
+			var prepareErr error
+			finalize, prepareErr = e.prepareVenueResultDeferredRecovery(intent, outcome, venueOrderID)
+			return prepareErr
+		},
+	)
+	if err = e.wrapOrderCommitError(command, err); err != nil {
+		return err
+	}
+	if finalize != nil {
+		finalize()
+	}
+	return nil
+}
+
+func (e *Engine) validateOrderVenueAliasChangeAndCommitResult(
+	command string,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID, clientID, expectedVenueOrderID string,
+	order model.Order,
+) error {
+	var finalize func()
+	err := e.cache.ValidateOrderVenueAliasChangeAndCommit(
+		e.accountID,
+		clientID,
+		expectedVenueOrderID,
+		order,
+		func() error {
+			var prepareErr error
+			finalize, prepareErr = e.prepareVenueResultDeferredRecovery(intent, outcome, venueOrderID)
+			return prepareErr
+		},
+	)
+	if err = e.wrapOrderCommitError(command, err); err != nil {
+		return err
+	}
+	if finalize != nil {
+		finalize()
+	}
+	return nil
+}
+
+func (e *Engine) wrapOrderCommitError(command string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrInFlightIntentAlreadyResolved) {
+		return err
+	}
+	if !errors.Is(err, cache.ErrOrderIdentityConflict) {
+		e.notifyRecoverabilityBreach(err)
+		return err
+	}
+	return e.orderIdentityError(command, err)
+}
+
+// resultFromCanonical maps an authoritative event that already resolved an
+// intent back to the synchronous command result. It never mutates cache or
+// appends a second result: the first definitive evidence remains authoritative.
+func (e *Engine) resultFromCanonical(intent journal.CommandIntent) (*model.Order, error) {
+	canonical, ok := e.cache.OrderByClientIDForAccount(e.accountID, intent.ClientID)
+	if !ok {
+		return nil, fmt.Errorf("%w: canonical order %q is unavailable", ErrInFlightIntentAlreadyResolved, intent.ClientID)
+	}
+	switch intent.Type {
+	case journal.CommandSubmit:
+		if canonical.Status == enums.StatusRejected || canonical.Status == enums.StatusExpired {
+			return nil, DefinitiveReject(canonical.RejectReason)
+		}
+		if canonical.Status == enums.StatusPendingNew || canonical.Status == enums.StatusUnknown {
+			return nil, fmt.Errorf("%w: submit outcome is not definitive in canonical cache", ErrInFlightIntentAlreadyResolved)
+		}
+		return &canonical, nil
+	case journal.CommandCancel:
+		if canonical.Status == enums.StatusCanceled {
+			return &canonical, nil
+		}
+		if orderstate.IsTerminal(canonical.Status) {
+			return nil, DefinitiveReject(canonical.RejectReason)
+		}
+		return nil, fmt.Errorf("%w: cancel outcome is not definitive in canonical cache", ErrInFlightIntentAlreadyResolved)
+	case journal.CommandModify:
+		if canonical.Status == enums.StatusRejected || canonical.Status == enums.StatusExpired {
+			return nil, DefinitiveReject(canonical.RejectReason)
+		}
+		if canonical.Request.Price.Equal(intent.Price) && canonical.Request.Quantity.Equal(intent.Quantity) {
+			return &canonical, nil
+		}
+		if orderstate.IsTerminal(canonical.Status) {
+			return nil, DefinitiveReject(canonical.RejectReason)
+		}
+		return nil, fmt.Errorf("%w: modify outcome is not definitive in canonical cache", ErrInFlightIntentAlreadyResolved)
+	default:
+		return nil, fmt.Errorf("%w: unsupported command type %q", ErrInFlightIntentAlreadyResolved, intent.Type)
+	}
+}
+
+func (e *Engine) notifyRecoverabilityBreach(err error) {
+	if err != nil && e.onRecoverabilityBreach != nil {
+		e.onRecoverabilityBreach(err)
+	}
+}
+
+func (e *Engine) normalizeCommandOrder(expected model.OrderRequest, response model.Order, strictClientID bool) (model.Order, error) {
+	got := response.Request
+	if got.AccountID != "" && expected.AccountID != "" && got.AccountID != expected.AccountID {
+		return model.Order{}, orderResponseIdentityConflict("response account %q does not match request account %q", got.AccountID, expected.AccountID)
+	}
+	if got.ClientID != "" && got.ClientID != expected.ClientID {
+		if strictClientID {
+			return model.Order{}, orderResponseIdentityConflict("response client id %q does not match request client id %q", got.ClientID, expected.ClientID)
+		}
+		accountID := expected.AccountID
+		if accountID == "" {
+			accountID = e.accountID
+		}
+		if existing, ok := e.cache.OrderByClientIDForAccount(accountID, got.ClientID); ok && existing.Request.ClientID != expected.ClientID {
+			return model.Order{}, orderResponseIdentityConflict("response client id %q belongs to another cached order", got.ClientID)
+		}
+	}
+	if got.InstrumentID != (model.InstrumentID{}) && expected.InstrumentID != (model.InstrumentID{}) && got.InstrumentID != expected.InstrumentID {
+		return model.Order{}, orderResponseIdentityConflict("response instrument %s does not match request instrument %s", got.InstrumentID, expected.InstrumentID)
+	}
+	if got.Side != enums.SideUnknown && expected.Side != enums.SideUnknown && got.Side != expected.Side {
+		return model.Order{}, orderResponseIdentityConflict("response side %s does not match request side %s", got.Side, expected.Side)
+	}
+	if got.Type != enums.TypeUnknown && expected.Type != enums.TypeUnknown && got.Type != expected.Type {
+		return model.Order{}, orderResponseIdentityConflict("response order type %s does not match request type %s", got.Type, expected.Type)
+	}
+	if got.TIF != enums.TifUnknown && expected.TIF != enums.TifUnknown && got.TIF != expected.TIF {
+		return model.Order{}, orderResponseIdentityConflict("response time in force %s does not match request time in force %s", got.TIF, expected.TIF)
+	}
+	if got.PositionSide != enums.PosNet && got.PositionSide != expected.PositionSide {
+		return model.Order{}, orderResponseIdentityConflict("response position side %s does not match request position side %s", got.PositionSide, expected.PositionSide)
+	}
+	if got.ReduceOnly && !expected.ReduceOnly {
+		return model.Order{}, orderResponseIdentityConflict("response reduce-only flag does not match request")
+	}
+	response.Request = mergeModifyRequest(expected, got)
+	response.Request.AccountID = expected.AccountID
+	response.Request.ClientID = expected.ClientID
+	return response, nil
+}
+
+func orderResponseIdentityConflict(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", cache.ErrOrderIdentityConflict, fmt.Sprintf(format, args...))
 }
 
 func amendRequest(req model.OrderRequest, newPrice, newQty decimal.Decimal) model.OrderRequest {
@@ -504,29 +1158,59 @@ func amendRequest(req model.OrderRequest, newPrice, newQty decimal.Decimal) mode
 }
 
 func mergeAcceptedModifyOrder(cached model.Order, amendedReq model.OrderRequest, venue model.Order, fallbackUpdatedAt time.Time) model.Order {
+	if venue.VenueOrderID != "" && cached.VenueOrderID != "" && venue.VenueOrderID != cached.VenueOrderID {
+		status := venue.Status
+		if status == enums.StatusUnknown {
+			status = enums.StatusNew
+		}
+		createdAt := venue.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = fallbackUpdatedAt
+		}
+		updatedAt := venue.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = fallbackUpdatedAt
+		}
+		return model.Order{
+			Request:      mergeModifyRequest(amendedReq, venue.Request),
+			VenueOrderID: venue.VenueOrderID,
+			Status:       status,
+			FilledQty:    venue.FilledQty,
+			AvgFillPrice: venue.AvgFillPrice,
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+			RejectReason: venue.RejectReason,
+		}
+	}
 	out := cached
 	out.Request = mergeModifyRequest(amendedReq, venue.Request)
 	if venue.VenueOrderID != "" {
 		out.VenueOrderID = venue.VenueOrderID
 	}
-	if venue.Status != enums.StatusUnknown {
+	if venue.Status != enums.StatusUnknown && !orderstate.IsTerminal(cached.Status) {
 		out.Status = venue.Status
 	}
-	if !venue.FilledQty.IsZero() {
+	if venue.FilledQty.GreaterThan(cached.FilledQty) {
 		out.FilledQty = venue.FilledQty
-	}
-	if !venue.AvgFillPrice.IsZero() {
-		out.AvgFillPrice = venue.AvgFillPrice
+		if !venue.AvgFillPrice.IsZero() {
+			out.AvgFillPrice = venue.AvgFillPrice
+		}
 	}
 	if !venue.CreatedAt.IsZero() {
 		out.CreatedAt = venue.CreatedAt
 	}
-	out.UpdatedAt = venue.UpdatedAt
-	if out.UpdatedAt.IsZero() {
+	out.UpdatedAt = cached.UpdatedAt
+	if venue.UpdatedAt.After(out.UpdatedAt) {
+		out.UpdatedAt = venue.UpdatedAt
+	}
+	if fallbackUpdatedAt.After(out.UpdatedAt) {
 		out.UpdatedAt = fallbackUpdatedAt
 	}
-	if venue.RejectReason != "" {
+	if venue.RejectReason != "" && !orderstate.IsTerminal(cached.Status) {
 		out.RejectReason = venue.RejectReason
+	}
+	if out.FilledQty.IsPositive() && !orderstate.IsTerminal(out.Status) {
+		out.Status = enums.StatusPartiallyFilled
 	}
 	return out
 }
@@ -589,8 +1273,24 @@ func (e *Engine) ensureSupported(cmd journal.CommandType) error {
 	return fmt.Errorf("exec: %s unsupported by venue: %w", cmd, contract.ErrNotSupported)
 }
 
-func (e *Engine) intent(cmd journal.CommandType, req model.OrderRequest, venueOrderID string, at time.Time) journal.CommandIntent {
-	commandID := journal.NewRecordID("command", string(cmd), req.ClientID, venueOrderID, at.Format(time.RFC3339Nano))
+func (e *Engine) intent(cmd journal.CommandType, req model.OrderRequest, venueOrderID string, at time.Time) (journal.CommandIntent, error) {
+	var nonce [16]byte
+	entropy := e.commandEntropy
+	if entropy == nil {
+		entropy = rand.Reader
+	}
+	if _, err := io.ReadFull(entropy, nonce[:]); err != nil {
+		return journal.CommandIntent{}, fmt.Errorf("exec: generate command identity: %w", err)
+	}
+	commandID := journal.NewRecordID(
+		"command",
+		e.accountID,
+		string(cmd),
+		req.ClientID,
+		venueOrderID,
+		at.Format(time.RFC3339Nano),
+		hex.EncodeToString(nonce[:]),
+	)
 	return journal.CommandIntent{
 		RecordID:      journal.NewRecordID("intent", commandID),
 		CommandID:     commandID,
@@ -608,11 +1308,26 @@ func (e *Engine) intent(cmd journal.CommandType, req model.OrderRequest, venueOr
 		SubmittedAt:   at,
 		CorrelationID: commandID,
 		Attempt:       1,
-	}
+	}, nil
 }
 
 func (e *Engine) appendResult(ctx context.Context, intent journal.CommandIntent, outcome Outcome, venueOrderID string) error {
-	result := journal.CommandResult{
+	return e.appendResultWithRecovery(ctx, intent, outcome, venueOrderID, true)
+}
+
+func (e *Engine) appendResultWithRecovery(
+	ctx context.Context,
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID string,
+	notifyRecovery bool,
+) error {
+	result := e.commandResult(intent, outcome, venueOrderID)
+	return e.commitCommandResultWithRecovery(ctx, result, notifyRecovery)
+}
+
+func (e *Engine) commandResult(intent journal.CommandIntent, outcome Outcome, venueOrderID string) journal.CommandResult {
+	return journal.CommandResult{
 		RecordID:       journal.NewRecordID("result", intent.RecordID, string(outcome.Class), venueOrderID, e.clk.Now().Format(time.RFC3339Nano)),
 		IntentRecordID: intent.RecordID,
 		CommandID:      intent.CommandID,
@@ -623,14 +1338,39 @@ func (e *Engine) appendResult(ctx context.Context, intent journal.CommandIntent,
 		Error:          errorString(outcome.Err),
 		ResultAt:       e.clk.Now(),
 	}
-	if err := e.journal.AppendCommandResult(ctx, result); err != nil {
-		if e.onRecoverabilityBreach != nil {
-			e.onRecoverabilityBreach(err)
-		}
-		return err
+}
+
+func (e *Engine) commitCommandResult(ctx context.Context, result journal.CommandResult) error {
+	return e.commitCommandResultWithRecovery(ctx, result, true)
+}
+
+func (e *Engine) commitCommandResultWithRecovery(ctx context.Context, result journal.CommandResult, notifyRecovery bool) error {
+	err := e.inflight.commitResult(result, func() error {
+		return e.journal.AppendCommandResult(ctx, result)
+	})
+	if notifyRecovery && !errors.Is(err, ErrInFlightIntentAlreadyResolved) {
+		e.notifyRecoverabilityBreach(err)
 	}
-	e.inflight.ApplyResult(result)
-	return nil
+	return err
+}
+
+func (e *Engine) appendVenueResult(intent journal.CommandIntent, outcome Outcome, venueOrderID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return e.appendResult(ctx, intent, outcome, venueOrderID)
+}
+
+func (e *Engine) prepareVenueResultDeferredRecovery(
+	intent journal.CommandIntent,
+	outcome Outcome,
+	venueOrderID string,
+) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result := e.commandResult(intent, outcome, venueOrderID)
+	return e.inflight.prepareResultCommit(result, func() error {
+		return e.journal.AppendCommandResult(ctx, result)
+	})
 }
 
 func errorString(err error) string {

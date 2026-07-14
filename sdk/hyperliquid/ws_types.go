@@ -15,6 +15,9 @@ type WsSubscribeRequest struct {
 type WsSubscriptionResponse struct {
 	Method       string          `json:"method"`
 	Subscription json.RawMessage `json:"subscription"`
+	Success      *bool           `json:"success,omitempty"`
+	Status       string          `json:"status,omitempty"`
+	Error        json.RawMessage `json:"error,omitempty"`
 }
 
 type WsL2Book struct {
@@ -86,14 +89,19 @@ type WsUserEvent struct {
 }
 
 type WsOrder struct {
-	Coin      string `json:"coin"`
-	Side      string `json:"side"`
-	LimitPx   string `json:"limitPx"`
-	Sz        string `json:"sz"`
-	Oid       int64  `json:"oid"`
-	Timestamp int64  `json:"timestamp"`
-	OrigSz    string `json:"origSz"`
-	Cliod     string `json:"cloid"`
+	Coin       string `json:"coin"`
+	Side       string `json:"side"`
+	LimitPx    string `json:"limitPx"`
+	Sz         string `json:"sz"`
+	Oid        int64  `json:"oid"`
+	Timestamp  int64  `json:"timestamp"`
+	OrigSz     string `json:"origSz"`
+	Cliod      string `json:"cloid"`
+	ReduceOnly *bool  `json:"reduceOnly,omitempty"`
+	OrderType  string `json:"orderType,omitempty"`
+	Tif        string `json:"tif,omitempty"`
+	IsTrigger  bool   `json:"isTrigger,omitempty"`
+	TriggerPx  string `json:"triggerPx,omitempty"`
 }
 
 type WsOrderUpdate struct {
@@ -108,22 +116,35 @@ type WsOrderUpdate struct {
 type OrderStatusValue string
 
 const (
-	StatusOpen                    OrderStatusValue = "open"
-	StatusFilled                  OrderStatusValue = "filled"
-	StatusCanceled                OrderStatusValue = "canceled"
-	StatusTriggered               OrderStatusValue = "triggered"
-	StatusRejected                OrderStatusValue = "rejected"
-	StatusMarginCanceled          OrderStatusValue = "marginCanceled"
-	StatusVaultWithdrawalCanceled OrderStatusValue = "vaultWithdrawalCanceled"
-	StatusOpenInterestCapCanceled OrderStatusValue = "openInterestCapCanceled"
-	StatusSelfTradeCanceled       OrderStatusValue = "selfTradeCanceled"
-	StatusReduceOnlyCanceled      OrderStatusValue = "reduceOnlyCanceled"
-	StatusSiblingFilledCanceled   OrderStatusValue = "siblingFilledCanceled"
-	StatusDelistedCanceled        OrderStatusValue = "delistedCanceled"
-	StatusLiquidatedCanceled      OrderStatusValue = "liquidatedCanceled"
-	StatusScheduledCancel         OrderStatusValue = "scheduledCancel"
-	StatusTickRejected            OrderStatusValue = "tickRejected"
-	StatusMinTradeNtlRejected     OrderStatusValue = "minTradeNtlRejected"
+	StatusOpen                                      OrderStatusValue = "open"
+	StatusFilled                                    OrderStatusValue = "filled"
+	StatusCanceled                                  OrderStatusValue = "canceled"
+	StatusTriggered                                 OrderStatusValue = "triggered"
+	StatusRejected                                  OrderStatusValue = "rejected"
+	StatusMarginCanceled                            OrderStatusValue = "marginCanceled"
+	StatusVaultWithdrawalCanceled                   OrderStatusValue = "vaultWithdrawalCanceled"
+	StatusOpenInterestCapCanceled                   OrderStatusValue = "openInterestCapCanceled"
+	StatusSelfTradeCanceled                         OrderStatusValue = "selfTradeCanceled"
+	StatusReduceOnlyCanceled                        OrderStatusValue = "reduceOnlyCanceled"
+	StatusSiblingFilledCanceled                     OrderStatusValue = "siblingFilledCanceled"
+	StatusDelistedCanceled                          OrderStatusValue = "delistedCanceled"
+	StatusLiquidatedCanceled                        OrderStatusValue = "liquidatedCanceled"
+	StatusScheduledCancel                           OrderStatusValue = "scheduledCancel"
+	StatusTickRejected                              OrderStatusValue = "tickRejected"
+	StatusMinTradeNtlRejected                       OrderStatusValue = "minTradeNtlRejected"
+	StatusPerpMarginRejected                        OrderStatusValue = "perpMarginRejected"
+	StatusReduceOnlyRejected                        OrderStatusValue = "reduceOnlyRejected"
+	StatusBadAloPxRejected                          OrderStatusValue = "badAloPxRejected"
+	StatusIocCancelRejected                         OrderStatusValue = "iocCancelRejected"
+	StatusBadTriggerPxRejected                      OrderStatusValue = "badTriggerPxRejected"
+	StatusMarketOrderNoLiquidityRejected            OrderStatusValue = "marketOrderNoLiquidityRejected"
+	StatusPositionIncreaseAtOpenInterestCapRejected OrderStatusValue = "positionIncreaseAtOpenInterestCapRejected"
+	StatusPositionFlipAtOpenInterestCapRejected     OrderStatusValue = "positionFlipAtOpenInterestCapRejected"
+	StatusTooAggressiveAtOpenInterestCapRejected    OrderStatusValue = "tooAggressiveAtOpenInterestCapRejected"
+	StatusOpenInterestIncreaseRejected              OrderStatusValue = "openInterestIncreaseRejected"
+	StatusInsufficientSpotBalanceRejected           OrderStatusValue = "insufficientSpotBalanceRejected"
+	StatusOracleRejected                            OrderStatusValue = "oracleRejected"
+	StatusPerpMaxPositionRejected                   OrderStatusValue = "perpMaxPositionRejected"
 )
 
 type WsUserFunding struct {

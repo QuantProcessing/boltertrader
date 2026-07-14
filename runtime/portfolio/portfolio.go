@@ -24,6 +24,7 @@ type lotKey struct {
 type lot struct {
 	qty                decimal.Decimal // signed: + long, - short
 	avgPrice           decimal.Decimal
+	multiplier         decimal.Decimal
 	realized           decimal.Decimal // cumulative realized PnL for this lot
 	feesPaidByCurrency map[string]decimal.Decimal
 }
@@ -37,6 +38,7 @@ type Portfolio struct {
 	fees           decimal.Decimal // fees in the PnL currency only
 	feesByCurrency map[string]decimal.Decimal
 	accounts       AccountSource
+	instruments    model.InstrumentProvider
 }
 
 // AccountSource is the account/position read model Portfolio uses for
@@ -64,6 +66,15 @@ func (pf *Portfolio) WithAccountSource(source AccountSource) *Portfolio {
 	return pf
 }
 
+// WithInstrumentProvider binds reference data used to retain contract
+// multipliers when a fill first opens a lot and to scale account exposure.
+func (pf *Portfolio) WithInstrumentProvider(provider model.InstrumentProvider) *Portfolio {
+	pf.mu.Lock()
+	defer pf.mu.Unlock()
+	pf.instruments = provider
+	return pf
+}
+
 func lotKeyOf(accountID string, id model.InstrumentID, side enums.PositionSide) lotKey {
 	return lotKey{accountID: accountID, instrument: id, side: side}
 }
@@ -76,14 +87,20 @@ func lotKeyOf(accountID string, id model.InstrumentID, side enums.PositionSide) 
 // fill is in the opposite direction of the current signed quantity, the
 // overlapping amount realizes PnL at (fill price - avg cost).
 func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
+	multiplier := pf.instrumentMultiplier(f.InstrumentID)
 	pf.mu.Lock()
 	defer pf.mu.Unlock()
 
 	k := lotKeyOf(f.AccountID, f.InstrumentID, posSide)
 	l := pf.lots[k]
 	if l == nil {
-		l = &lot{feesPaidByCurrency: make(map[string]decimal.Decimal)}
+		l = &lot{multiplier: multiplier, feesPaidByCurrency: make(map[string]decimal.Decimal)}
 		pf.lots[k] = l
+	}
+	if l.qty.IsZero() {
+		// A fully closed lot has no historical exposure left. A subsequent open
+		// starts a new multiplier epoch using current instrument reference data.
+		l.multiplier = multiplier
 	}
 
 	signed := f.Quantity
@@ -120,9 +137,9 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 		// (avgPrice - fillPrice). The sign of l.qty captures this.
 		var pnl decimal.Decimal
 		if l.qty.IsPositive() {
-			pnl = fillPrice.Sub(l.avgPrice).Mul(closing)
+			pnl = fillPrice.Sub(l.avgPrice).Mul(closing).Mul(lotMultiplier(l))
 		} else {
-			pnl = l.avgPrice.Sub(fillPrice).Mul(closing)
+			pnl = l.avgPrice.Sub(fillPrice).Mul(closing).Mul(lotMultiplier(l))
 		}
 		l.realized = l.realized.Add(pnl)
 		pf.realized = pf.realized.Add(pnl)
@@ -136,6 +153,7 @@ func (pf *Portfolio) OnFill(f model.Fill, posSide enums.PositionSide) {
 		default:
 			// Flipped past flat: remaining opens at the fill price.
 			l.avgPrice = fillPrice
+			l.multiplier = multiplier
 		}
 		l.qty = newQty
 	}
@@ -345,9 +363,16 @@ func unrealizedForLot(l *lot, markPrice decimal.Decimal) decimal.Decimal {
 		return decimal.Zero
 	}
 	if l.qty.IsPositive() {
-		return markPrice.Sub(l.avgPrice).Mul(l.qty.Abs())
+		return markPrice.Sub(l.avgPrice).Mul(l.qty.Abs()).Mul(lotMultiplier(l))
 	}
-	return l.avgPrice.Sub(markPrice).Mul(l.qty.Abs())
+	return l.avgPrice.Sub(markPrice).Mul(l.qty.Abs()).Mul(lotMultiplier(l))
+}
+
+func lotMultiplier(l *lot) decimal.Decimal {
+	if l != nil && l.multiplier.IsPositive() {
+		return l.multiplier
+	}
+	return decimal.NewFromInt(1)
 }
 
 // Account returns an account snapshot from the bound account source.
@@ -453,7 +478,7 @@ func (pf *Portfolio) NetExposure(accountID string) (map[model.InstrumentID]decim
 		if price.IsZero() {
 			price = pos.EntryPrice
 		}
-		exposure := pos.Quantity
+		exposure := pos.Quantity.Mul(pf.instrumentMultiplier(pos.InstrumentID))
 		if !price.IsZero() {
 			exposure = exposure.Mul(price)
 		}
@@ -486,6 +511,18 @@ func (pf *Portfolio) accountSource() AccountSource {
 	pf.mu.RLock()
 	defer pf.mu.RUnlock()
 	return pf.accounts
+}
+
+func (pf *Portfolio) instrumentMultiplier(id model.InstrumentID) decimal.Decimal {
+	pf.mu.RLock()
+	provider := pf.instruments
+	pf.mu.RUnlock()
+	if provider != nil {
+		if instrument, ok := provider.Instrument(id); ok && instrument != nil && instrument.ContractMultiplier.IsPositive() {
+			return instrument.ContractMultiplier
+		}
+	}
+	return decimal.NewFromInt(1)
 }
 
 func accountOwnsPosition(acct accounting.Account, pos model.Position) bool {

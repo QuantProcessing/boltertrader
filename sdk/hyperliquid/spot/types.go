@@ -75,28 +75,41 @@ type CancelOrderResponse struct {
 }
 
 type Order struct {
-	Coin      string `json:"coin"`
-	Side      string `json:"side"`
-	LimitPx   string `json:"limitPx"`
-	Sz        string `json:"sz"`
-	Oid       int64  `json:"oid"`
-	Cliod     string `json:"cloid"`
-	Timestamp int64  `json:"timestamp"`
-	OrigSz    string `json:"origSz"`
+	Coin       string `json:"coin"`
+	Side       string `json:"side"`
+	LimitPx    string `json:"limitPx"`
+	Sz         string `json:"sz"`
+	Oid        int64  `json:"oid"`
+	Cliod      string `json:"cloid"`
+	Timestamp  int64  `json:"timestamp"`
+	OrigSz     string `json:"origSz"`
+	ReduceOnly bool   `json:"reduceOnly"`
+	OrderType  string `json:"orderType"`
+	Tif        string `json:"tif"`
+	IsTrigger  bool   `json:"isTrigger"`
+	TriggerPx  string `json:"triggerPx"`
 }
 
 type OrderStatusInfo struct {
-	Coin         string `json:"coin"`
-	Side         string `json:"side"`
-	LimitPx      string `json:"limitPx"`
-	Sz           string `json:"sz"`
-	Oid          int64  `json:"oid"`
-	Timestamp    int64  `json:"timestamp"`
-	OrigSz       string `json:"origSz"`
-	Status       string `json:"status"`
-	FilledSz     string `json:"filledSz"`
-	AvgPx        string `json:"avgPx"`
-	CancelReason string `json:"cancelReason"`
+	Coin            string `json:"coin"`
+	Side            string `json:"side"`
+	LimitPx         string `json:"limitPx"`
+	Sz              string `json:"sz"`
+	Oid             int64  `json:"oid"`
+	Cliod           string `json:"cloid"`
+	Timestamp       int64  `json:"timestamp"`
+	StatusTimestamp int64  `json:"statusTimestamp"`
+	OrigSz          string `json:"origSz"`
+	Status          string `json:"status"`
+	FilledSz        string `json:"filledSz"`
+	AvgPx           string `json:"avgPx"`
+	CancelReason    string `json:"cancelReason"`
+	ReduceOnly      bool   `json:"reduceOnly"`
+	HasReduceOnly   bool   `json:"-"`
+	OrderType       string `json:"orderType"`
+	Tif             string `json:"tif"`
+	IsTrigger       bool   `json:"isTrigger"`
+	TriggerPx       string `json:"triggerPx"`
 }
 
 type OrderStatusQueryResponse struct {

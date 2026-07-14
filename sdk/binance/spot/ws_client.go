@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -36,7 +37,8 @@ type WSClient struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	wg sync.WaitGroup
+	wg                sync.WaitGroup
+	callbacksInFlight atomic.Int64
 
 	ReconnectWait        time.Duration
 	maxReconnectAttempts int
@@ -70,7 +72,7 @@ func NewWSClient(ctx context.Context, url string) *WSClient {
 		maxReconnectAttempts: 10,
 		pongInterval:         3 * time.Minute, // Spot might have different requirement, but 3m is safe-ish. Perp uses 1m.
 		subs:                 make(map[string]Subscription),
-		dispatcher:           wsdispatch.NewDispatcher(),
+		dispatcher:           wsdispatch.NewBoundedDispatcher(wsdispatch.DefaultBufferLimit),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -100,9 +102,9 @@ func (c *WSClient) Connect() error {
 				Proxy:            http.ProxyURL(parsedURL),
 				HandshakeTimeout: 45 * time.Second,
 			}
-			c.Logger.Debugw("Using proxy", "url", proxyURL)
+			c.Logger.Debugw("Using configured proxy")
 		} else {
-			c.Logger.Errorw("Invalid proxy URL", "url", proxyURL, "error", err)
+			c.Logger.Errorw("Invalid proxy URL")
 		}
 	}
 
@@ -121,8 +123,8 @@ func (c *WSClient) Connect() error {
 	c.setupPingHandlers(conn)
 
 	c.wg.Add(2)
-	go c.readLoop()
-	go c.keepAlive()
+	go c.readLoop(conn)
+	go c.keepAlive(conn)
 
 	return nil
 }
@@ -144,7 +146,7 @@ func (c *WSClient) setupPingHandlers(conn *websocket.Conn) {
 	})
 }
 
-func (c *WSClient) keepAlive() {
+func (c *WSClient) keepAlive(conn *websocket.Conn) {
 	defer c.wg.Done()
 
 	ticker := time.NewTicker(c.pongInterval)
@@ -155,14 +157,6 @@ func (c *WSClient) keepAlive() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			c.Mu.RLock()
-			conn := c.Conn
-			c.Mu.RUnlock()
-
-			if conn == nil {
-				return
-			}
-
 			// Binance Spot typically expects Pong response to server Ping.
 			// But sending unsolicited Pong is also allowed as heartbeat.
 			c.WriteMu.Lock()
@@ -170,24 +164,26 @@ func (c *WSClient) keepAlive() {
 			c.WriteMu.Unlock()
 			if err != nil {
 				c.Logger.Errorw("Failed to send pong", "error", err)
+				return
 			}
 		}
 	}
 }
 
-func (c *WSClient) readLoop() {
+func (c *WSClient) readLoop(conn *websocket.Conn) {
 	defer c.wg.Done()
 
 	defer func() {
+		_ = conn.Close()
 		c.Mu.Lock()
-		c.Conn = nil
+		owned := c.Conn == conn
+		if owned {
+			c.Conn = nil
+		}
+		isClosed := c.isClosed
 		c.Mu.Unlock()
 
-		c.Mu.RLock()
-		isClosed := c.isClosed
-		c.Mu.RUnlock()
-
-		if !isClosed {
+		if owned && !isClosed {
 			c.reconnect()
 		}
 	}()
@@ -197,14 +193,6 @@ func (c *WSClient) readLoop() {
 		case <-c.ctx.Done():
 			return
 		default:
-		}
-
-		c.Mu.RLock()
-		conn := c.Conn
-		c.Mu.RUnlock()
-
-		if conn == nil {
-			return
 		}
 
 		_, message, err := conn.ReadMessage()
@@ -221,18 +209,46 @@ func (c *WSClient) readLoop() {
 			continue
 		}
 
-		c.dispatchMessage(message)
+		if err := c.dispatchMessageChecked(message); err != nil {
+			c.Logger.Errorw("websocket callback buffer overflow", "error", err)
+			c.ResetDispatch()
+			_ = conn.Close()
+			return
+		}
 	}
 }
 
 func (c *WSClient) dispatchMessage(message []byte) {
-	if c.Handler == nil {
-		return
+	_ = c.dispatchMessageChecked(message)
+}
+
+func (c *WSClient) dispatchMessageChecked(message []byte) error {
+	handler := c.Handler
+	if handler == nil {
+		return nil
 	}
 	msg := append([]byte(nil), message...)
-	c.dispatcher.Dispatch(func() {
-		c.Handler(msg)
+	return c.dispatcher.DispatchChecked(func() {
+		c.runCallbackIfOpen(func() {
+			handler(msg)
+		})
 	})
+}
+
+func (c *WSClient) runCallbackIfOpen(callback func()) bool {
+	if callback == nil {
+		return true
+	}
+	c.Mu.RLock()
+	if c.isClosed {
+		c.Mu.RUnlock()
+		return false
+	}
+	c.callbacksInFlight.Add(1)
+	c.Mu.RUnlock()
+	defer c.callbacksInFlight.Add(-1)
+	callback()
+	return true
 }
 
 func (c *WSClient) PauseDispatch() {
@@ -241,6 +257,13 @@ func (c *WSClient) PauseDispatch() {
 
 func (c *WSClient) ResumeDispatch(beforeDrain func()) {
 	c.dispatcher.Resume(beforeDrain)
+}
+
+// ResetDispatch drops callbacks buffered for a superseded connection and
+// returns dispatch to its running state. A callback already executing is
+// allowed to finish.
+func (c *WSClient) ResetDispatch() {
+	c.dispatcher.Reset()
 }
 
 func (c *WSClient) reconnect() {
@@ -350,7 +373,10 @@ func (c *WSClient) Close() {
 	if c.cancel != nil {
 		c.cancel()
 	}
-	c.wg.Wait()
+	if c.callbacksInFlight.Load() == 0 {
+		c.wg.Wait()
+	}
+	c.ResetDispatch()
 }
 
 // Subscribe sends a subscription request

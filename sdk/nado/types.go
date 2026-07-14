@@ -790,6 +790,42 @@ type ArchiveMatchesResponse struct {
 	Txs     []Tx    `json:"txs"`
 }
 
+type ArchiveOrdersRequest struct {
+	Orders OrdersByDigestsQuery `json:"orders"`
+}
+
+type OrdersByDigestsQuery struct {
+	Digests []string `json:"digests"`
+	Limit   int      `json:"limit"`
+}
+
+type ArchiveOrdersResponse struct {
+	Orders []ArchiveOrder `json:"orders"`
+}
+
+type ArchiveOrder struct {
+	Digest                string `json:"digest"`
+	Subaccount            string `json:"subaccount"`
+	ProductID             int64  `json:"product_id"`
+	SubmissionIdx         string `json:"submission_idx"`
+	LastFillSubmissionIdx string `json:"last_fill_submission_idx"`
+	Amount                string `json:"amount"`
+	PriceX18              string `json:"price_x18"`
+	BaseFilled            string `json:"base_filled"`
+	QuoteFilled           string `json:"quote_filled"`
+	Fee                   string `json:"fee"`
+	BuilderFee            string `json:"builder_fee"`
+	ClosedAmount          string `json:"closed_amount"`
+	RealizedPnL           string `json:"realized_pnl"`
+	ClosedNetEntry        string `json:"closed_net_entry"`
+	ClosedMargin          string `json:"closed_margin"`
+	FirstFillTimestamp    string `json:"first_fill_timestamp"`
+	LastFillTimestamp     string `json:"last_fill_timestamp"`
+	Expiration            string `json:"expiration"`
+	Nonce                 string `json:"nonce"`
+	Appendix              string `json:"appendix"`
+}
+
 type Match struct {
 	Digest             string            `json:"digest"`
 	Order              MatchOrder        `json:"order"`

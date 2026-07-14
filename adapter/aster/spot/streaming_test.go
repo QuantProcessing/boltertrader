@@ -2,6 +2,7 @@ package spot
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -257,6 +258,37 @@ func TestSpotStartRetriesAfterFirstConnectFailureWithoutDuplicateCallbacks(t *te
 	}
 }
 
+func TestSpotPrivateReconnectHooksEmitPairedGapEnvelope(t *testing.T) {
+	inst := mustSpotInstrument(t)
+	ws := &fakeSpotAccountWS{}
+	provider := testProvider(inst)
+	exec := newExecutionClient(nil, provider, nil, AccountIDDefault)
+	acct := newAccountClient(nil, nil, AccountIDDefault)
+	adapter := &Adapter{Execution: exec, Account: acct, provider: provider, exec: exec, acct: acct, wsAcct: ws}
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ws.reconnectStarted == nil || ws.reconnectRecovered == nil {
+		t.Fatal("Start did not register private reconnect hooks")
+	}
+
+	ws.reconnectStarted(errors.New("socket closed"))
+	assertSpotGapEvent(t, <-exec.Events(), "aster:spot:private", 1, contract.StreamGapStarted)
+	ws.reconnectRecovered()
+	assertSpotGapEvent(t, <-exec.Events(), "aster:spot:private", 1, contract.StreamGapRecovered)
+}
+
+func assertSpotGapEvent(t *testing.T, env contract.ExecEnvelope, streamID string, generation uint64, phase contract.StreamGapPhase) {
+	t.Helper()
+	event, ok := env.Payload.(contract.StreamGapEvent)
+	if !ok {
+		t.Fatalf("payload=%T, want StreamGapEvent", env.Payload)
+	}
+	if event.Venue != VenueName || event.AccountID != AccountIDDefault || event.StreamID != streamID || event.Generation != generation || event.Phase != phase {
+		t.Fatalf("gap event=%+v", event)
+	}
+}
+
 func TestSpotPrivateConversionErrorsEmitNothing(t *testing.T) {
 	inst := mustSpotInstrument(t)
 	ws := &fakeSpotAccountWS{}
@@ -309,12 +341,14 @@ func TestSpotNewRejectsInvalidConfiguredWebsockets(t *testing.T) {
 }
 
 type fakeSpotAccountWS struct {
-	connects       int
-	failConnects   int
-	execSubs       int
-	accountSubs    int
-	execHandler    func(*sdkspot.ExecutionReportEvent)
-	accountHandler func(*sdkspot.AccountPositionEvent)
+	connects           int
+	failConnects       int
+	execSubs           int
+	accountSubs        int
+	execHandler        func(*sdkspot.ExecutionReportEvent)
+	accountHandler     func(*sdkspot.AccountPositionEvent)
+	reconnectStarted   func(error)
+	reconnectRecovered func()
 }
 
 func (f *fakeSpotAccountWS) SubscribeExecutionReport(handler func(*sdkspot.ExecutionReportEvent)) {
@@ -334,6 +368,10 @@ func (f *fakeSpotAccountWS) Connect() error {
 	return nil
 }
 func (f *fakeSpotAccountWS) Close() {}
+func (f *fakeSpotAccountWS) SetReconnectHooks(started func(error), recovered func()) {
+	f.reconnectStarted = started
+	f.reconnectRecovered = recovered
+}
 
 func readAsterFixture(t *testing.T, product, name string) string {
 	t.Helper()

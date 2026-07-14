@@ -333,7 +333,7 @@ func TestGateUSDTPerpExecutionReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenOrders: %v", err)
 	}
-	if len(open) != 1 || open[0].Request.PositionSide != enums.PosShort {
+	if len(open) != 1 || open[0].Request.PositionSide != enums.PosNet {
 		t.Fatalf("unexpected open perp orders: %+v", open)
 	}
 	mass, err := exec.withScope([]enums.InstrumentKind{enums.KindPerp}).GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDUnified})
@@ -380,7 +380,7 @@ func TestGateUSDTPerpExecutionReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GeneratePositionReports: %v", err)
 	}
-	if len(positions) != 1 || positions[0].Position.Side != enums.PosLong {
+	if len(positions) != 1 || positions[0].Position.Side != enums.PosNet {
 		t.Fatalf("unexpected position reports: %+v", positions)
 	}
 }
@@ -448,12 +448,12 @@ func TestGateUSDTPerpMarketSnapshotsAndPrivateEvents(t *testing.T) {
 	if len(fillEvents) != 1 || fillEvents[0].(contract.FillEvent).Fill.Side != enums.SideSell {
 		t.Fatalf("unexpected futures fill events: %+v", fillEvents)
 	}
-	positionMsg, err := gatesdk.DecodeFuturesPositionMessage([]byte(`{"channel":"futures.positions","event":"update","result":[{"contract":"BTC_USDT","size":2,"entry_price":"50000","mark_price":"50001","unrealised_pnl":"2","leverage":"3","update_time":1700000000}]}`))
+	positionMsg, err := gatesdk.DecodeFuturesPositionMessage([]byte(`{"channel":"futures.positions","event":"update","result":[{"contract":"BTC_USDT","size":2,"mode":"single","entry_price":"50000","mark_price":"50001","unrealised_pnl":"2","leverage":"3","update_time":1700000000}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	accountEvents := accountEventsFromFuturesPositionMessage(positionMsg, resolve, AccountIDUnified, time.Now())
-	if len(accountEvents) != 1 || accountEvents[0].(contract.PositionEvent).Position.Side != enums.PosLong {
+	if len(accountEvents) != 1 || accountEvents[0].(contract.PositionEvent).Position.Side != enums.PosNet {
 		t.Fatalf("unexpected futures position events: %+v", accountEvents)
 	}
 }
@@ -577,9 +577,9 @@ func newGateSpotServer(t *testing.T) *httptest.Server {
 			}
 			writeJSON(t, w, []any{map[string]any{"contract": "BTC_USDT", "total_size": "42", "mark_price": "50001.5", "index_price": "50000.5", "funding_rate": "0.0001"}})
 		case "/futures/usdt/accounts":
-			writeJSON(t, w, map[string]any{"total": "1000", "available": "900", "currency": "USDT", "position_initial_margin": "10", "maintenance_margin": "2", "position_margin": "10", "margin_mode": "cross"})
+			writeJSON(t, w, map[string]any{"user": 42, "total": "1000", "available": "900", "currency": "USDT", "position_mode": "single", "position_initial_margin": "10", "maintenance_margin": "2", "position_margin": "10", "margin_mode": "cross"})
 		case "/futures/usdt/positions":
-			writeJSON(t, w, []any{map[string]any{"contract": "BTC_USDT", "size": 2, "entry_price": "50000", "mark_price": "50001", "unrealised_pnl": "2", "leverage": "3", "update_time": 1700000000}})
+			writeJSON(t, w, []any{map[string]any{"contract": "BTC_USDT", "size": 2, "mode": "single", "entry_price": "50000", "mark_price": "50001", "unrealised_pnl": "2", "leverage": "3", "update_time": 1700000000}})
 		case "/futures/usdt/order_book":
 			writeJSON(t, w, map[string]any{"id": 8, "current": 1783484986.964, "update": 1783484986.705, "bids": []any{map[string]any{"p": "49999", "s": 2}}, "asks": []any{map[string]any{"p": "50001", "s": 1}}})
 		case "/futures/usdt/candlesticks":

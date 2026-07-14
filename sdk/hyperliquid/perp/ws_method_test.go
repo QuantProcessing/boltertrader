@@ -188,3 +188,39 @@ func TestWebsocketClient_ModifyOrder(t *testing.T) {
 	}
 	requireDisconnectedWSError(t, err)
 }
+
+func TestWebsocketOrderMethodsHonorCanceledContextBeforeSending(t *testing.T) {
+	client := newDisconnectedWSClient().WithCredentials(strings.Repeat("01", 32), "0xabc")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	oid := int64(123)
+	order := PlaceOrderRequest{
+		AssetID: 1,
+		IsBuy:   true,
+		Price:   100,
+		Size:    1,
+		OrderType: OrderType{Limit: &OrderTypeLimit{
+			Tif: hyperliquid.TifGtc,
+		}},
+	}
+	for name, call := range map[string]func() error{
+		"place": func() error {
+			_, err := client.PlaceOrder(ctx, order)
+			return err
+		},
+		"cancel": func() error {
+			_, err := client.CancelOrder(ctx, CancelOrderRequest{AssetID: 1, OrderID: oid})
+			return err
+		},
+		"modify": func() error {
+			_, err := client.ModifyOrder(ctx, ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("error=%v, want context.Canceled", err)
+			}
+		})
+	}
+}

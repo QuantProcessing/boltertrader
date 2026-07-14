@@ -2,6 +2,7 @@ package lighter
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -82,18 +83,33 @@ func runLighterTestnetWriteAcceptance(t *testing.T, kind enums.InstrumentKind, l
 		t.Fatalf("empty Lighter %s Testnet asks for %s", label, inst.VenueSymbol)
 	}
 	price := lighterRestingBuyPrice(inst, book)
-	qty := selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	qty, err := selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	if err != nil {
+		t.Fatalf("select Lighter %s Testnet quantity: %v", label, err)
+	}
 	ensureLighterTestnetCollateral(t, ctx, adapter, label, qty, price)
 
-	var venueOrderID string
+	exposureCleaner := newLighterAcceptanceExposureCleaner(adapter.Execution, adapter.acct, adapter.Market)
+	exposureBaseline, err := exposureCleaner.CaptureBaseline(ctx, inst)
+	if err != nil {
+		t.Fatalf("capture Lighter %s Testnet exposure baseline: %v", label, err)
+	}
+	clientID := newLighterAcceptanceClientID(label)
+	cleanup := newLighterRestingOrderCleanup(adapter.Execution, inst.ID, model.AccountIDLighterDefault, clientID, qty)
 	defer func() {
-		if venueOrderID != "" {
-			_ = adapter.Execution.Cancel(context.Background(), inst.ID, venueOrderID)
+		if !cleanup.NeedsCleanup() && !cleanup.NeedsExposureCleanup() {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), lighterAcceptanceDeferredCleanupTimeout)
+		defer cleanupCancel()
+		if cleanupErr := cleanup.CancelConfirmAndRecover(cleanupCtx, exposureCleaner, inst, exposureBaseline); cleanupErr != nil {
+			t.Errorf("deferred Lighter %s Testnet cleanup: %v", label, cleanupErr)
 		}
 	}()
 	order, err := adapter.Execution.Submit(ctx, model.OrderRequest{
 		AccountID:    model.AccountIDLighterDefault,
 		InstrumentID: inst.ID,
+		ClientID:     clientID,
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifGTX,
@@ -101,17 +117,21 @@ func runLighterTestnetWriteAcceptance(t *testing.T, kind enums.InstrumentKind, l
 		Price:        price,
 		PositionSide: enums.PosNet,
 	})
+	if cleanupErr := cleanup.ObserveSubmitResult(order); cleanupErr != nil {
+		t.Fatalf("observe Lighter %s Testnet resting submit: %v", label, cleanupErr)
+	}
 	if err != nil {
 		t.Fatalf("submit Lighter %s Testnet resting order: %v", label, err)
 	}
-	venueOrderID = order.VenueOrderID
 	if order.Status == enums.StatusFilled || !order.FilledQty.IsZero() {
 		t.Fatalf("resting place/cancel order unexpectedly filled: %+v", order)
 	}
 	if err := adapter.Execution.Cancel(ctx, inst.ID, order.VenueOrderID); err != nil {
 		t.Fatalf("cancel Lighter %s Testnet order %s: %v", label, order.VenueOrderID, err)
 	}
-	venueOrderID = ""
+	if err := cleanup.CancelAndConfirm(ctx); err != nil {
+		t.Fatalf("cancel and confirm Lighter %s Testnet order %s: %v", label, order.VenueOrderID, err)
+	}
 	if err := waitForNoLighterTestnetOpenOrders(ctx, adapter, inst.ID); err != nil {
 		t.Fatalf("wait for no Lighter %s Testnet open orders: %v", label, err)
 	}
@@ -181,23 +201,39 @@ func symbolForLighterKind(cfg testenv.LighterTestnetConfig, kind enums.Instrumen
 	return cfg.PerpSymbol
 }
 
-func selectLighterTestnetQuantity(inst *model.Instrument, maxNotional, price decimal.Decimal) decimal.Decimal {
+func selectLighterTestnetQuantity(inst *model.Instrument, maxNotional, price decimal.Decimal) (decimal.Decimal, error) {
+	if inst == nil {
+		return decimal.Zero, fmt.Errorf("instrument is required")
+	}
+	if !maxNotional.IsPositive() {
+		return decimal.Zero, fmt.Errorf("max notional must be positive, got %s", maxNotional)
+	}
+	if !price.IsPositive() {
+		return decimal.Zero, fmt.Errorf("price must be positive, got %s", price)
+	}
 	step := inst.SizeStep
 	if !step.IsPositive() {
 		step = decimal.RequireFromString("0.0001")
 	}
-	target := maxNotional.Div(decimal.NewFromInt(4))
-	if !target.IsPositive() {
-		target = decimal.NewFromInt(1)
+	qty := maxNotional.Div(decimal.NewFromInt(4)).Div(price)
+	minQty := inst.MinQty
+	if !minQty.IsPositive() {
+		minQty = step
 	}
-	qty := target.Div(price).Div(step).Ceil().Mul(step)
-	if inst.MinQty.IsPositive() && qty.LessThan(inst.MinQty) {
-		qty = inst.MinQty
+	if inst.MinNotional.IsPositive() {
+		minByNotional := inst.MinNotional.Div(price)
+		if minByNotional.GreaterThan(minQty) {
+			minQty = minByNotional
+		}
 	}
-	if inst.MinNotional.IsPositive() && qty.Mul(price).LessThan(inst.MinNotional) {
-		qty = inst.MinNotional.Div(price).Div(step).Ceil().Mul(step)
+	if minQty.GreaterThan(qty) {
+		qty = minQty
 	}
-	return qty
+	qty = qty.Div(step).Ceil().Mul(step)
+	if notional := qty.Mul(price); notional.GreaterThan(maxNotional) {
+		return decimal.Zero, fmt.Errorf("minimum tradable notional %s exceeds max notional %s", notional, maxNotional)
+	}
+	return qty, nil
 }
 
 func lighterRestingBuyPrice(inst *model.Instrument, book *model.OrderBook) decimal.Decimal {
@@ -206,16 +242,25 @@ func lighterRestingBuyPrice(inst *model.Instrument, book *model.OrderBook) decim
 		tick = decimal.RequireFromString("0.01")
 	}
 	price := tick
-	offset := tick.Mul(decimal.NewFromInt(10))
 	if book != nil && len(book.Bids) > 0 {
-		price = book.Bids[0].Price.Sub(offset)
+		price = book.Bids[0].Price.Mul(decimal.RequireFromString("0.99"))
 	} else if book != nil && len(book.Asks) > 0 {
-		price = book.Asks[0].Price.Sub(offset)
+		price = book.Asks[0].Price.Mul(decimal.RequireFromString("0.98"))
 	}
 	if !price.IsPositive() {
 		price = tick
 	}
-	return price.Div(tick).Floor().Mul(tick)
+	aligned := price.Div(tick).Floor().Mul(tick)
+	if !aligned.IsPositive() && book != nil && len(book.Bids) > 0 {
+		aligned = book.Bids[0].Price.Div(tick).Floor().Mul(tick)
+	}
+	if book != nil && len(book.Asks) > 0 && !aligned.LessThan(book.Asks[0].Price) {
+		aligned = book.Asks[0].Price.Sub(tick).Div(tick).Floor().Mul(tick)
+	}
+	if !aligned.IsPositive() {
+		return decimal.Zero
+	}
+	return aligned
 }
 
 func ensureNoLighterTestnetOpenOrders(t *testing.T, ctx context.Context, adapter *Adapter, id model.InstrumentID, label string) {

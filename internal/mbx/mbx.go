@@ -14,6 +14,25 @@ import (
 	exchanges "github.com/QuantProcessing/boltertrader/internal/errs"
 )
 
+type redactedTransportCause struct {
+	cause error
+}
+
+func (e *redactedTransportCause) Error() string { return "transport failure" }
+
+func (e *redactedTransportCause) Unwrap() error { return e.cause }
+
+// TransportCause returns a safe-rendering wrapper around the complete
+// transport error tree. The fixed Error text prevents arbitrary cause strings
+// (including signed URLs) from being rendered, while Unwrap preserves the
+// original tree for errors.Is and errors.As classification.
+func TransportCause(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &redactedTransportCause{cause: err}
+}
+
 // UsedWeight tracks the cumulative request weight as reported by the
 // exchange via X-Mbx-Used-Weight and X-Mbx-Used-Weight-1m headers.
 type UsedWeight struct {

@@ -1,6 +1,7 @@
 package spot
 
 import (
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -14,11 +15,15 @@ type symbolResolver func(venueSymbol string) model.InstrumentID
 func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve symbolResolver, accountID string) []contract.ExecEvent {
 	id := resolve(ev.Symbol)
 	ts := time.UnixMilli(ev.EventTime)
+	clientID := ev.ClientOrderID
+	if strings.EqualFold(ev.ExecutionType, "CANCELED") && ev.OriginalClientOrderID != "" {
+		clientID = ev.OriginalClientOrderID
+	}
 	order := model.Order{
 		Request: model.OrderRequest{
 			AccountID:    accountID,
 			InstrumentID: id,
-			ClientID:     ev.ClientOrderID,
+			ClientID:     clientID,
 			Side:         sideFromBinance(ev.Side),
 			Type:         orderTypeFromBinance(ev.OrderType),
 			TIF:          tifFromBinance(ev.TimeInForce),
@@ -45,7 +50,7 @@ func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve sym
 			AccountID:    accountID,
 			InstrumentID: id,
 			VenueOrderID: itoa(ev.OrderID),
-			ClientID:     ev.ClientOrderID,
+			ClientID:     clientID,
 			TradeID:      itoa(ev.TradeID),
 			Side:         sideFromBinance(ev.Side),
 			Liquidity:    liq,
@@ -58,7 +63,7 @@ func execEventsFromExecutionReport(ev *sdkspot.ExecutionReportEvent, resolve sym
 		events = append(events, contract.FillEvent{Fill: fill})
 	}
 	if order.Status == enums.StatusRejected {
-		events = append(events, contract.RejectEvent{ClientID: ev.ClientOrderID, Reason: ev.RejectReason})
+		events = append(events, contract.RejectEvent{ClientID: clientID, Reason: ev.RejectReason})
 	}
 	return events
 }

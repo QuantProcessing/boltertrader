@@ -2,6 +2,7 @@ package bitget
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -50,22 +51,28 @@ func AccountIDForKind(kind enums.InstrumentKind) string {
 }
 
 type instrumentProvider struct {
-	mu       sync.RWMutex
-	byID     map[string]*model.Instrument
-	bySymbol map[string]model.InstrumentID
-	all      []*model.Instrument
+	mu               sync.RWMutex
+	byID             map[string]*model.Instrument
+	bySymbol         map[string]model.InstrumentID
+	byCategorySymbol map[string]model.InstrumentID
+	categoryScope    map[string]struct{}
+	all              []*model.Instrument
 }
 
 func newInstrumentProvider() *instrumentProvider {
 	return &instrumentProvider{
-		byID:     make(map[string]*model.Instrument),
-		bySymbol: make(map[string]model.InstrumentID),
+		byID:             make(map[string]*model.Instrument),
+		bySymbol:         make(map[string]model.InstrumentID),
+		byCategorySymbol: make(map[string]model.InstrumentID),
+		categoryScope:    make(map[string]struct{}),
 	}
 }
 
 func (p *instrumentProvider) Load(ctx context.Context, client *bitgetsdk.Client, categories ...string) error {
-	if len(categories) == 0 {
-		categories = []string{"SPOT", bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures}
+	var err error
+	categories, err = normalizeBitgetCategories(categories)
+	if err != nil {
+		return err
 	}
 	all := make([]*model.Instrument, 0)
 	for _, category := range categories {
@@ -74,33 +81,82 @@ func (p *instrumentProvider) Load(ctx context.Context, client *bitgetsdk.Client,
 			return err
 		}
 		for i := range insts {
-			insts[i].Category = firstNonEmpty(insts[i].Category, category)
+			recordCategory, ok := normalizeBitgetCategory(firstNonEmpty(insts[i].Category, category))
+			if !ok || recordCategory != category {
+				continue
+			}
+			insts[i].Category = recordCategory
 			inst := instrumentFromBitget(insts[i])
 			if inst != nil {
 				all = append(all, inst)
 			}
 		}
 	}
-	p.LoadSnapshot(all)
+	p.loadSnapshot(all, categories)
 	return nil
 }
 
 func (p *instrumentProvider) LoadSnapshot(insts []*model.Instrument) {
+	categories := make([]string, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	for _, inst := range insts {
+		category, err := categoryForInstrument(inst)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		categories = append(categories, category)
+	}
+	p.loadSnapshot(insts, categories)
+}
+
+func (p *instrumentProvider) loadSnapshot(insts []*model.Instrument, categories []string) {
 	byID := make(map[string]*model.Instrument, len(insts))
 	bySymbol := make(map[string]model.InstrumentID, len(insts))
+	byCategorySymbol := make(map[string]model.InstrumentID, len(insts))
+	categoryScope := make(map[string]struct{}, len(categories))
+	for _, category := range categories {
+		if normalized, ok := normalizeBitgetCategory(category); ok {
+			categoryScope[normalized] = struct{}{}
+		}
+	}
+	ambiguousSymbols := make(map[string]struct{})
+	ambiguousCategorySymbols := make(map[string]struct{})
 	all := make([]*model.Instrument, 0, len(insts))
 	for _, inst := range insts {
 		if inst == nil {
 			continue
 		}
 		byID[inst.ID.String()] = inst
-		if inst.VenueSymbol != "" {
-			bySymbol[inst.VenueSymbol] = inst.ID
+		venueSymbol := normalizeVenueSymbol(inst.VenueSymbol)
+		if venueSymbol != "" {
+			if _, ambiguous := ambiguousSymbols[venueSymbol]; !ambiguous {
+				if existing, found := bySymbol[venueSymbol]; found && existing != inst.ID {
+					delete(bySymbol, venueSymbol)
+					ambiguousSymbols[venueSymbol] = struct{}{}
+				} else {
+					bySymbol[venueSymbol] = inst.ID
+				}
+			}
+			if category, err := categoryForInstrument(inst); err == nil {
+				key := categorySymbolKey(category, venueSymbol)
+				if _, ambiguous := ambiguousCategorySymbols[key]; !ambiguous {
+					if existing, found := byCategorySymbol[key]; found && existing != inst.ID {
+						delete(byCategorySymbol, key)
+						ambiguousCategorySymbols[key] = struct{}{}
+					} else {
+						byCategorySymbol[key] = inst.ID
+					}
+				}
+			}
 		}
 		all = append(all, inst)
 	}
 	p.mu.Lock()
-	p.byID, p.bySymbol, p.all = byID, bySymbol, all
+	p.byID, p.bySymbol, p.byCategorySymbol, p.categoryScope, p.all = byID, bySymbol, byCategorySymbol, categoryScope, all
 	p.mu.Unlock()
 }
 
@@ -122,18 +178,53 @@ func (p *instrumentProvider) All() []*model.Instrument {
 func (p *instrumentProvider) ResolveVenueSymbol(sym string) (model.InstrumentID, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	id, ok := p.bySymbol[sym]
+	id, ok := p.bySymbol[normalizeVenueSymbol(sym)]
 	return id, ok
 }
 
+// ResolveVenueCategorySymbol resolves a private UTA record only when both its
+// normalized category and venue symbol identify an instrument loaded into the
+// adapter's configured scope. Category is mandatory because UTA can publish
+// spot and derivatives with the same venue symbol.
+func (p *instrumentProvider) ResolveVenueCategorySymbol(category, sym string) (model.InstrumentID, bool) {
+	normalizedCategory, ok := normalizeBitgetCategory(category)
+	if !ok {
+		return model.InstrumentID{}, false
+	}
+	normalizedSymbol := normalizeVenueSymbol(sym)
+	if normalizedSymbol == "" {
+		return model.InstrumentID{}, false
+	}
+	p.mu.RLock()
+	id, ok := p.byCategorySymbol[categorySymbolKey(normalizedCategory, normalizedSymbol)]
+	p.mu.RUnlock()
+	if !ok {
+		return model.InstrumentID{}, false
+	}
+	return id, true
+}
+
+func (p *instrumentProvider) CategoryInScope(category string) bool {
+	normalizedCategory, ok := normalizeBitgetCategory(category)
+	if !ok {
+		return false
+	}
+	p.mu.RLock()
+	_, ok = p.categoryScope[normalizedCategory]
+	p.mu.RUnlock()
+	return ok
+}
+
 func (p *instrumentProvider) ResolveVenueInstrument(sym string, kind enums.InstrumentKind, settle string) (model.InstrumentID, bool) {
+	normalizedSymbol := normalizeVenueSymbol(sym)
+	normalizedSettle := strings.ToUpper(strings.TrimSpace(settle))
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for _, inst := range p.all {
-		if inst == nil || inst.VenueSymbol != sym || inst.ID.Kind != kind {
+		if inst == nil || normalizeVenueSymbol(inst.VenueSymbol) != normalizedSymbol || inst.ID.Kind != kind {
 			continue
 		}
-		if settle != "" && inst.Settle != settle {
+		if normalizedSettle != "" && strings.ToUpper(strings.TrimSpace(inst.Settle)) != normalizedSettle {
 			continue
 		}
 		return inst.ID, true
@@ -143,21 +234,58 @@ func (p *instrumentProvider) ResolveVenueInstrument(sym string, kind enums.Instr
 
 func (p *instrumentProvider) resolveVenueSymbol(sym string) model.InstrumentID {
 	p.mu.RLock()
-	id, ok := p.bySymbol[sym]
+	id, ok := p.bySymbol[normalizeVenueSymbol(sym)]
 	p.mu.RUnlock()
 	if ok {
 		return id
 	}
-	return model.InstrumentID{Venue: VenueName, Symbol: sym, Kind: enums.KindPerp}
+	return model.InstrumentID{}
 }
 
 func (p *instrumentProvider) resolveReportInstrument(scoped model.InstrumentID, venueSymbol string) model.InstrumentID {
 	if scoped.Symbol != "" {
-		if inst, ok := p.Instrument(scoped); ok && inst.VenueSymbol == venueSymbol {
+		if inst, ok := p.Instrument(scoped); ok && normalizeVenueSymbol(inst.VenueSymbol) == normalizeVenueSymbol(venueSymbol) {
 			return scoped
 		}
 	}
 	return p.resolveVenueSymbol(venueSymbol)
+}
+
+func normalizeBitgetCategory(category string) (string, bool) {
+	switch normalized := strings.ToUpper(strings.TrimSpace(category)); normalized {
+	case "SPOT", bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures:
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
+func normalizeBitgetCategories(categories []string) ([]string, error) {
+	if len(categories) == 0 {
+		return []string{"SPOT", bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures}, nil
+	}
+	normalized := make([]string, 0, len(categories))
+	seen := make(map[string]struct{}, len(categories))
+	for _, category := range categories {
+		value, ok := normalizeBitgetCategory(category)
+		if !ok {
+			return nil, fmt.Errorf("bitget: unsupported category %q", category)
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
+}
+
+func normalizeVenueSymbol(symbol string) string {
+	return strings.ToUpper(strings.TrimSpace(symbol))
+}
+
+func categorySymbolKey(category, symbol string) string {
+	return category + "\x00" + symbol
 }
 
 func instrumentFromBitget(in bitgetsdk.Instrument) *model.Instrument {
@@ -220,9 +348,9 @@ func capabilityRow(product, target string) adapter.CapabilityRow {
 		Cancel:               true,
 		Modify:               true,
 		OrderStatusReports:   "open orders",
-		FillReports:          "unsupported",
+		FillReports:          "bounded 90-day trade history",
 		PositionReports:      "account snapshot",
-		MassStatus:           "open-order mass status",
+		MassStatus:           "open orders, bounded fills, positions",
 		SingleOrderQuery:     "open order filter",
 		OpenOnlyCaveat:       true,
 		LatencyTimestamps:    false,

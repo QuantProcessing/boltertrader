@@ -2,6 +2,7 @@ package gate
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -53,6 +54,11 @@ func TestGateTestnetReadAcceptance(t *testing.T) {
 	if err := state.Validate(); err != nil {
 		t.Fatalf("Gate Testnet account state invalid: %v", err)
 	}
+	futuresAccount, err := adapter.rest.GetFuturesAccount(ctx, gatesdk.SettleUSDT)
+	if err != nil {
+		t.Fatalf("Gate Testnet futures account mode: %v", err)
+	}
+	t.Logf("Gate Testnet futures_position_mode=%s in_dual_mode=%t", futuresAccount.PositionMode, futuresAccount.InDualMode)
 }
 
 func TestGateTestnetSpotAcceptance(t *testing.T) {
@@ -111,6 +117,16 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 	defer cancel()
 	adapter := newGateAcceptanceAdapter(t, ctx, cfg, products)
 	defer adapter.Close()
+	if kind == enums.KindSpot && adapter.privateSpot != nil {
+		adapter.privateSpot = &gateAcceptancePrivateStreamProbe{privateStreamClient: adapter.privateSpot, t: t}
+	} else if kind == enums.KindPerp && adapter.privateFutures != nil {
+		adapter.privateFutures = &gateAcceptancePrivateStreamProbe{privateStreamClient: adapter.privateFutures, t: t}
+		account, err := adapter.rest.GetFuturesAccount(ctx, gatesdk.SettleUSDT)
+		if err != nil {
+			t.Fatalf("%s futures account mode: %v", label, err)
+		}
+		t.Logf("%s futures_position_mode=%s in_dual_mode=%t", label, account.PositionMode, account.InDualMode)
+	}
 	id := requireGateAcceptanceInstrument(t, adapter, symbol, kind, settle)
 	book, err := adapter.Market.OrderBook(ctx, id, 5)
 	if err != nil {
@@ -127,7 +143,7 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 		AccountIDUnified,
 		btruntime.WithAccountID(AccountIDUnified),
 	)
-	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)
 	report, err := node.Resync(ctx)
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, label+" initial reconcile")
@@ -166,6 +182,70 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 		t.Fatalf("%s final account states applied=%d, want 1: %+v", label, finalReport.AccountStatesApplied, finalReport)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, accountType, kind)
+}
+
+type gateAcceptancePrivateStreamProbe struct {
+	privateStreamClient
+	t *testing.T
+}
+
+func (p *gateAcceptancePrivateStreamProbe) Subscribe(ctx context.Context, channel string, payload []string, handler func(json.RawMessage)) error {
+	return p.privateStreamClient.Subscribe(ctx, channel, payload, func(raw json.RawMessage) {
+		if p.t != nil {
+			switch channel {
+			case gatesdk.ChannelSpotOrder:
+				msg, err := gatesdk.DecodeSpotOrderMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Orders))
+				}
+			case gatesdk.ChannelSpotUserTrade:
+				msg, err := gatesdk.DecodeSpotUserTradeMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Trades))
+				}
+			case gatesdk.ChannelSpotBalance:
+				msg, err := gatesdk.DecodeSpotBalanceMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Balances))
+				}
+			case gatesdk.ChannelFuturesOrder:
+				msg, err := gatesdk.DecodeFuturesOrderMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Orders))
+				}
+			case gatesdk.ChannelFuturesUserTrade:
+				msg, err := gatesdk.DecodeFuturesUserTradeMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Trades))
+				}
+			case gatesdk.ChannelFuturesPosition:
+				msg, err := gatesdk.DecodeFuturesPositionMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Positions))
+				}
+			case gatesdk.ChannelFuturesBalance:
+				msg, err := gatesdk.DecodeFuturesBalanceMessage(raw)
+				if err != nil {
+					p.t.Logf("gate_private_event channel=%s decode_error=%v", channel, err)
+				} else {
+					p.t.Logf("gate_private_event channel=%s event=%s records=%d", channel, msg.Event, len(msg.Balances))
+				}
+			}
+		}
+		handler(raw)
+	})
 }
 
 func newGateAcceptanceAdapter(t *testing.T, ctx context.Context, cfg testenv.GateTestnetConfig, products []string) *Adapter {
@@ -229,23 +309,34 @@ func gateAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string, i
 	if id.Kind == enums.KindSpot {
 		closeQty = gateAcceptanceSpotCloseQuantity(t, label, inst, qty)
 	}
-	return runtimeaccept.OrderLifecycleSpec{
-		Label:                 label,
-		Venue:                 VenueName,
-		Environment:           "Testnet",
-		Product:               gateAcceptanceProduct(inst.ID.Kind, inst.Settle),
-		AccountID:             AccountIDUnified,
-		InstrumentID:          id,
-		Quantity:              qty,
-		CloseQuantity:         closeQty,
-		RestingPrice:          restingPrice,
-		FillPrice:             fillPrice,
-		ClosePrice:            closePrice,
-		PositionSide:          enums.PosNet,
-		CloseAfterFill:        true,
-		CleanExistingPosition: id.Kind != enums.KindSpot,
-		Logf:                  t.Logf,
+	spec := runtimeaccept.OrderLifecycleSpec{
+		Label:          label,
+		Venue:          VenueName,
+		Environment:    "Testnet",
+		Product:        gateAcceptanceProduct(inst.ID.Kind, inst.Settle),
+		AccountID:      AccountIDUnified,
+		InstrumentID:   id,
+		Quantity:       qty,
+		CloseQuantity:  closeQty,
+		RestingPrice:   restingPrice,
+		FillPrice:      fillPrice,
+		ClosePrice:     closePrice,
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		Logf:           t.Logf,
 	}
+	if id.Kind == enums.KindSpot {
+		step := inst.SizeStep
+		if !step.IsPositive() {
+			step = decimal.NewFromInt(1)
+		}
+		minQty := inst.MinQty
+		if !minQty.IsPositive() {
+			minQty = step
+		}
+		spec = runtimeaccept.ConfigureSpotBalanceGuard(spec, adapter.acct, inst.Base, step, minQty, inst.MinNotional, qty.Sub(closeQty))
+	}
+	return spec
 }
 
 func gateAcceptanceSpotCloseQuantity(t *testing.T, label string, inst *model.Instrument, qty decimal.Decimal) decimal.Decimal {
@@ -299,6 +390,12 @@ func gateAcceptanceQuantity(t *testing.T, label string, inst *model.Instrument, 
 	qty := inst.MinQty
 	if !qty.IsPositive() {
 		qty = step
+	}
+	if inst.ID.Kind == enums.KindSpot {
+		minBufferedQty := qty.Div(gateSpotCloseQuantityBuffer())
+		if minBufferedQty.GreaterThan(qty) {
+			qty = minBufferedQty
+		}
 	}
 	if inst.MinNotional.IsPositive() && minNotionalPrice.IsPositive() {
 		minByNotional := inst.MinNotional.Div(minNotionalPrice.Mul(multiplier))

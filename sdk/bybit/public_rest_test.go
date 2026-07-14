@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -25,6 +26,139 @@ func TestClient_GetInstrumentsForBase(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Fatal("expected BTC linear instruments")
+	}
+}
+
+func TestClient_GetInstrumentsForBaseConsumesEveryPage(t *testing.T) {
+	t.Parallel()
+
+	var seenCursors []string
+	client := NewClient().
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path != "/v5/market/instruments-info" {
+				return nil, fmt.Errorf("unexpected request path %q", req.URL.Path)
+			}
+			if got := req.URL.Query().Get("baseCoin"); got != "BTC" {
+				return nil, fmt.Errorf("baseCoin=%q, want BTC", got)
+			}
+			cursor := req.URL.Query().Get("cursor")
+			seenCursors = append(seenCursors, cursor)
+
+			var body string
+			switch cursor {
+			case "":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"page-2","list":[{"symbol":"BTCUSDT"}]}}`
+			case "page-2":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"page-3","list":[{"symbol":"BTCPERP"}]}}`
+			case "page-3":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","list":[{"symbol":"BTCUSD"}]}}`
+			default:
+				return nil, fmt.Errorf("unexpected cursor %q", cursor)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	instruments, err := client.GetInstrumentsForBase(context.Background(), "linear", "BTC")
+	if err != nil {
+		t.Fatalf("GetInstrumentsForBase returned error: %v", err)
+	}
+	if got := strings.Join(seenCursors, ","); got != ",page-2,page-3" {
+		t.Fatalf("cursor sequence=%q, want %q", got, ",page-2,page-3")
+	}
+	if len(instruments) != 3 || instruments[0].Symbol != "BTCUSDT" || instruments[1].Symbol != "BTCPERP" || instruments[2].Symbol != "BTCUSD" {
+		t.Fatalf("instruments=%+v, want all three pages", instruments)
+	}
+}
+
+func TestClient_GetInstrumentsForBaseRejectsRepeatedCursor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cursors []string
+	}{
+		{name: "adjacent", cursors: []string{"same", "same"}},
+		{name: "cycle", cursors: []string{"cursor-a", "cursor-b", "cursor-a"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			client := NewClient().
+				WithBaseURL("https://example.test").
+				WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls > len(tt.cursors) {
+						return nil, fmt.Errorf("pagination exceeded cursor-case transport bound")
+					}
+					body := fmt.Sprintf(
+						`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":%q,"list":[{"symbol":%q}]}}`,
+						tt.cursors[calls-1],
+						fmt.Sprintf("instrument-%d", calls),
+					)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Header:     make(http.Header),
+					}, nil
+				})})
+
+			instruments, err := client.GetInstrumentsForBase(context.Background(), "linear", "BTC")
+			if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+				t.Fatalf("error=%v, want repeated cursor error", err)
+			}
+			if instruments != nil {
+				t.Fatalf("instruments=%+v, want nil rather than accumulated partial pages", instruments)
+			}
+			if calls != len(tt.cursors) {
+				t.Fatalf("calls=%d, want %d", calls, len(tt.cursors))
+			}
+		})
+	}
+}
+
+func TestClient_GetInstrumentsForBaseHasFinitePageLimitAcrossEmptyPages(t *testing.T) {
+	t.Parallel()
+
+	const expectedMaxPages = 1000
+	calls := 0
+	client := NewClient().
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			if calls > expectedMaxPages {
+				return nil, fmt.Errorf("pagination exceeded test transport bound")
+			}
+			list := "[]"
+			if calls == 1 {
+				list = `[{"symbol":"BTCUSDT"}]`
+			}
+			body := fmt.Sprintf(
+				`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"cursor-%d","list":%s}}`,
+				calls,
+				list,
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	instruments, err := client.GetInstrumentsForBase(context.Background(), "linear", "BTC")
+	if err == nil || !strings.Contains(err.Error(), "page limit") {
+		t.Fatalf("error=%v, want page limit error", err)
+	}
+	if instruments != nil {
+		t.Fatalf("instruments=%+v, want nil rather than accumulated partial pages", instruments)
+	}
+	if calls != expectedMaxPages {
+		t.Fatalf("calls=%d, want %d", calls, expectedMaxPages)
 	}
 }
 

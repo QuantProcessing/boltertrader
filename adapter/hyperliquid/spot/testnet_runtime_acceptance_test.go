@@ -2,19 +2,17 @@ package spot
 
 import (
 	"context"
-	"errors"
-	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/accepttest"
+	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
-	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
-	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
-	"github.com/QuantProcessing/boltertrader/runtime/risk"
+	"github.com/QuantProcessing/boltertrader/runtime/observ"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	"github.com/shopspring/decimal"
 )
@@ -36,7 +34,6 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 		HTTPClient:     httpClient,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime adapter initialization")
 		t.Fatalf("new Hyperliquid Spot Testnet runtime adapter: %v", err)
 	}
 	defer adapter.Close()
@@ -45,24 +42,22 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 		t.Fatalf("adapter account ids acct=%q exec=%q, want shared canonical account id", adapter.acct.accountID, adapter.exec.accountID)
 	}
 
-	inst := selectSpotTestnetInstrument(t, adapter, cfg.SpotSymbol)
+	inst := requireSpotTestnetWriteInstrument(t, adapter, cfg.SpotSymbol)
 	if open, err := adapter.Execution.OpenOrders(ctx, inst.ID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping Hyperliquid Spot Testnet runtime acceptance: %s already has %d open order(s); clean the testnet account first", inst.VenueSymbol, len(open))
+		t.Fatalf("unsafe pre-existing state: Hyperliquid Spot Testnet %s already has %d open order(s); clean the testnet account first", inst.VenueSymbol, len(open))
 	}
 	book, err := adapter.Market.OrderBook(ctx, inst.ID, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime order book")
 		t.Fatalf("order book: %v", err)
 	}
-	if len(book.Bids) == 0 {
-		t.Fatalf("empty Hyperliquid Spot Testnet runtime bids for %s", inst.VenueSymbol)
+	if len(book.Bids) == 0 || len(book.Asks) == 0 {
+		t.Fatalf("empty Hyperliquid Spot Testnet runtime book for %s", inst.VenueSymbol)
 	}
-	price := accepttest.RestingBuyPrice(inst, book.Bids[0].Price, true)
-	qty := selectHyperliquidTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
-	ensureSpotTestnetCash(t, ctx, adapter, inst, qty, price)
+	lifecycleSpec := hyperliquidSpotTestnetLifecycleSpec(t, "Hyperliquid Spot Testnet runtime", accountID, inst, book, cfg.MaxNotionalUSDC, adapter.acct)
+	requireSpotTestnetCash(t, ctx, adapter, inst, lifecycleSpec.Quantity, lifecycleSpec.FillPrice)
+	evidence := &hyperliquidRuntimePrivateEvidence{}
 
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
@@ -70,14 +65,13 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 		"hyperliquid-spot-testnet",
 		btruntime.WithAccountID(accountID),
 		btruntime.WithAccountStaleAfter(2*time.Minute),
+		btruntime.WithObserver(evidence),
+		btruntime.WithOnExecEnvelope(evidence.OnExecEnvelope),
 	)
-	riskEngine := risk.New(risk.Limits{}, node.Cache).
-		RequireAccountState()
-	btruntime.WithRisk(riskEngine, adapter.Market.InstrumentProvider())(node)
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDC)
 
 	rep, err := node.Resync(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
 	if rep.AccountStatesApplied != 1 {
@@ -85,7 +79,6 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 	}
 	assertHyperliquidSpotRuntimeAccountReady(t, node, accountID, inst.Quote)
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime adapter start")
 		t.Fatalf("start adapter: %v", err)
 	}
 
@@ -96,46 +89,11 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 		close(nodeDone)
 	}()
 	defer stopRuntimeNode(t, stopNode, nodeDone)
-	if err := waitForHyperliquidRuntimeActive(ctx, node); err != nil {
-		t.Fatalf("runtime did not become active before Hyperliquid Spot Testnet writes: %v", err)
-	}
-	oversizedQty := hyperliquidSpotAccountBackedRejectQuantity(t, node, accountID, inst, qty, price)
-	if _, err := node.Exec.Submit(ctx, model.OrderRequest{
-		InstrumentID: inst.ID,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeLimit,
-		TIF:          enums.TifGTC,
-		Quantity:     oversizedQty,
-		Price:        price,
-		PositionSide: enums.PosNet,
-	}); !errors.Is(err, risk.ErrRiskRejected) || !strings.Contains(err.Error(), "account") {
-		t.Fatalf("account-state risk probe err=%v, want account-backed ErrRiskRejected", err)
-	}
-
-	order, err := node.Exec.Submit(ctx, model.OrderRequest{
-		InstrumentID: inst.ID,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeLimit,
-		TIF:          enums.TifGTC,
-		Quantity:     qty,
-		Price:        price,
-		PositionSide: enums.PosNet,
-	})
+	result, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycleSpec)
 	if err != nil {
-		t.Fatalf("runtime submit Hyperliquid Spot Testnet resting order: %v", err)
+		t.Fatalf("Hyperliquid Spot Testnet runtime lifecycle: %v", err)
 	}
-	if order.Request.AccountID != accountID {
-		t.Fatalf("submitted order account id=%q, want %q", order.Request.AccountID, accountID)
-	}
-	if err := node.Exec.Cancel(ctx, order.Request.ClientID); err != nil {
-		t.Fatalf("runtime cancel Hyperliquid Spot Testnet resting order: %v", err)
-	}
-	if err := waitForRuntimeOrderStatus(ctx, node, order.Request.ClientID, enums.StatusCanceled); err != nil {
-		t.Fatalf("runtime cache did not observe canceled Spot order: %v", err)
-	}
-	if err := waitForNoHyperliquidSpotOpenOrders(ctx, adapter, inst.ID); err != nil {
-		t.Fatalf("wait for no Hyperliquid Spot Testnet open orders: %v", err)
-	}
+	requireHyperliquidRuntimePrivateLifecycleEvidence(t, ctx, evidence, result)
 	finalRep, err := node.Resync(ctx)
 	if err != nil {
 		t.Fatalf("final Hyperliquid Spot Testnet runtime reconcile: %v", err)
@@ -147,8 +105,12 @@ func TestHyperliquidSpotTestnetRuntimeAcceptance(t *testing.T) {
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
 	}
-	if got := node.Portfolio.NetQty(inst.ID, enums.PosNet); !got.IsZero() {
-		t.Fatalf("spot runtime portfolio net qty=%s, want flat", got)
+	// Hyperliquid replays historical userFills snapshots at subscription time,
+	// and this cash lifecycle intentionally retains an unsellable fee buffer.
+	// The authoritative final account snapshot above, rather than an absolute
+	// fill-derived Portfolio quantity, proves Spot cleanup.
+	if got := len(node.Cache.OpenOrders()); got != 0 {
+		t.Fatalf("spot runtime cache open orders=%d, want 0 after final reconcile", got)
 	}
 }
 
@@ -180,28 +142,10 @@ func assertHyperliquidSpotRuntimeAccountReady(t *testing.T, node *btruntime.Trad
 	return free
 }
 
-func hyperliquidSpotAccountBackedRejectQuantity(t *testing.T, node *btruntime.TradingNode, accountID string, inst *model.Instrument, validQty, price decimal.Decimal) decimal.Decimal {
-	t.Helper()
-	free := assertHyperliquidSpotRuntimeAccountReady(t, node, accountID, inst.Quote)
-	denom := price.Mul(hyperliquidSpotContractMultiplier(inst))
-	if !denom.IsPositive() {
-		t.Fatalf("invalid account-backed risk denominator price=%s multiplier=%s", price, hyperliquidSpotContractMultiplier(inst))
-	}
-	return free.Div(denom).Add(validQty)
-}
-
-func hyperliquidSpotContractMultiplier(inst *model.Instrument) decimal.Decimal {
-	if inst != nil && inst.ContractMultiplier.IsPositive() {
-		return inst.ContractMultiplier
-	}
-	return decimal.NewFromInt(1)
-}
-
-func ensureSpotTestnetCash(t *testing.T, ctx context.Context, adapter *Adapter, inst *model.Instrument, qty, price decimal.Decimal) {
+func requireSpotTestnetCash(t *testing.T, ctx context.Context, adapter *Adapter, inst *model.Instrument, qty, price decimal.Decimal) {
 	t.Helper()
 	state, err := adapter.acct.AccountState(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Hyperliquid Spot Testnet runtime account state")
 		t.Fatalf("account state: %v", err)
 	}
 	required := qty.Mul(price)
@@ -209,28 +153,12 @@ func ensureSpotTestnetCash(t *testing.T, ctx context.Context, adapter *Adapter, 
 		if balance.Currency == inst.Quote {
 			free := balance.FreeOrAvailable()
 			if free.LessThan(required) {
-				t.Skipf("skipping Hyperliquid Spot Testnet acceptance: account-state free %s %s below required %s", inst.Quote, free, required)
+				t.Fatalf("insufficient Hyperliquid Spot Testnet funds: account-state free %s %s below required %s", inst.Quote, free, required)
 			}
 			return
 		}
 	}
-	t.Skipf("skipping Hyperliquid Spot Testnet acceptance: no %s balance found in account state", inst.Quote)
-}
-
-func waitForHyperliquidRuntimeActive(ctx context.Context, node *btruntime.TradingNode) error {
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		last := node.State()
-		if last.Node == lifecycle.NodeRunning && last.Trading == lifecycle.TradingActive {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	t.Fatalf("insufficient Hyperliquid Spot Testnet funds: no %s balance found in account state", inst.Quote)
 }
 
 func stopRuntimeNode(t *testing.T, stop context.CancelFunc, done <-chan struct{}) {
@@ -243,33 +171,69 @@ func stopRuntimeNode(t *testing.T, stop context.CancelFunc, done <-chan struct{}
 	}
 }
 
-func waitForRuntimeOrderStatus(ctx context.Context, node *btruntime.TradingNode, clientID string, status enums.OrderStatus) error {
+type hyperliquidRuntimePrivateEvidence struct {
+	observ.Base
+	mu     sync.RWMutex
+	orders []model.Order
+	fills  []model.Fill
+	events []contract.ExecEnvelope
+}
+
+func (e *hyperliquidRuntimePrivateEvidence) OnOrder(order model.Order) {
+	e.mu.Lock()
+	e.orders = append(e.orders, order)
+	e.mu.Unlock()
+}
+
+func (e *hyperliquidRuntimePrivateEvidence) OnFill(fill model.Fill) {
+	e.mu.Lock()
+	e.fills = append(e.fills, fill)
+	e.mu.Unlock()
+}
+
+func (e *hyperliquidRuntimePrivateEvidence) OnExecEnvelope(env contract.ExecEnvelope) {
+	e.mu.Lock()
+	e.events = append(e.events, env)
+	e.mu.Unlock()
+}
+
+func requireHyperliquidRuntimePrivateLifecycleEvidence(t *testing.T, ctx context.Context, evidence *hyperliquidRuntimePrivateEvidence, result *runtimeaccept.OrderLifecycleResult) {
+	t.Helper()
+	if evidence == nil || result == nil {
+		t.Fatal("Hyperliquid runtime private lifecycle evidence and result are required")
+	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if order, ok := node.Cache.Order(clientID); ok && order.Status == status {
-			return nil
+		if evidence.hasOrderAndFill(result.Filled) && evidence.hasOrderAndFill(result.Closed) {
+			return
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			t.Fatalf("runtime private order/fill evidence incomplete for fill=%s close=%s: %v", result.Filled.VenueOrderID, result.Closed.VenueOrderID, ctx.Err())
 		case <-ticker.C:
 		}
 	}
 }
 
-func waitForNoHyperliquidSpotOpenOrders(ctx context.Context, adapter *Adapter, id model.InstrumentID) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		open, err := adapter.Execution.OpenOrders(ctx, id)
-		if err == nil && len(open) == 0 {
-			return nil
+func (e *hyperliquidRuntimePrivateEvidence) hasOrderAndFill(target model.Order) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var orderSeen, fillSeen bool
+	for _, event := range e.events {
+		if event.Source != contract.SourceAdapterStream || !event.Flags.Has(contract.EventFlagFromStream) {
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
+		switch payload := event.Payload.(type) {
+		case contract.OrderEvent:
+			if hyperliquidLifecycleIdentityMatches(payload.Order.Request.ClientID, payload.Order.VenueOrderID, target) {
+				orderSeen = true
+			}
+		case contract.FillEvent:
+			if hyperliquidLifecycleIdentityMatches(payload.Fill.ClientID, payload.Fill.VenueOrderID, target) {
+				fillSeen = true
+			}
 		}
 	}
+	return orderSeen && fillSeen
 }

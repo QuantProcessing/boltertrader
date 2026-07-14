@@ -2,6 +2,7 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -318,6 +319,37 @@ func TestPerpStartRetriesAfterFirstConnectFailureWithoutDuplicateCallbacks(t *te
 	}
 }
 
+func TestPerpPrivateReconnectHooksEmitPairedGapEnvelope(t *testing.T) {
+	inst := mustPerpInstrument(t)
+	ws := &fakePerpAccountWS{}
+	provider := testProvider(inst)
+	exec := newExecutionClient(nil, provider, nil, AccountIDDefault)
+	acct := newAccountClient(nil, provider, nil, AccountIDDefault)
+	adapter := &Adapter{Execution: exec, Account: acct, provider: provider, exec: exec, acct: acct, wsAcct: ws}
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ws.reconnectStarted == nil || ws.reconnectRecovered == nil {
+		t.Fatal("Start did not register private reconnect hooks")
+	}
+
+	ws.reconnectStarted(errors.New("socket closed"))
+	assertPerpGapEvent(t, <-exec.Events(), "aster:perp:private", 1, contract.StreamGapStarted)
+	ws.reconnectRecovered()
+	assertPerpGapEvent(t, <-exec.Events(), "aster:perp:private", 1, contract.StreamGapRecovered)
+}
+
+func assertPerpGapEvent(t *testing.T, env contract.ExecEnvelope, streamID string, generation uint64, phase contract.StreamGapPhase) {
+	t.Helper()
+	event, ok := env.Payload.(contract.StreamGapEvent)
+	if !ok {
+		t.Fatalf("payload=%T, want StreamGapEvent", env.Payload)
+	}
+	if event.Venue != VenueName || event.AccountID != AccountIDDefault || event.StreamID != streamID || event.Generation != generation || event.Phase != phase {
+		t.Fatalf("gap event=%+v", event)
+	}
+}
+
 func TestPerpPrivateConversionErrorsEmitNothing(t *testing.T) {
 	inst := mustPerpInstrument(t)
 	ws := &fakePerpAccountWS{}
@@ -415,12 +447,14 @@ func readAsterFixture(t *testing.T, product, name string) string {
 }
 
 type fakePerpAccountWS struct {
-	connects       int
-	failConnects   int
-	orderSubs      int
-	accountSubs    int
-	orderHandler   func(*sdkperp.OrderUpdateEvent)
-	accountHandler func(*sdkperp.AccountUpdateEvent)
+	connects           int
+	failConnects       int
+	orderSubs          int
+	accountSubs        int
+	orderHandler       func(*sdkperp.OrderUpdateEvent)
+	accountHandler     func(*sdkperp.AccountUpdateEvent)
+	reconnectStarted   func(error)
+	reconnectRecovered func()
 }
 
 func (f *fakePerpAccountWS) SubscribeAccountUpdate(handler func(*sdkperp.AccountUpdateEvent)) {
@@ -440,6 +474,10 @@ func (f *fakePerpAccountWS) Connect() error {
 	return nil
 }
 func (f *fakePerpAccountWS) Close() {}
+func (f *fakePerpAccountWS) SetReconnectHooks(started func(error), recovered func()) {
+	f.reconnectStarted = started
+	f.reconnectRecovered = recovered
+}
 
 type fakePerpMarketWS struct {
 	connected    bool

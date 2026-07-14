@@ -182,6 +182,69 @@ func TestMergeAllowsUnknownToKnownTerminal(t *testing.T) {
 	}
 }
 
+func TestUnknownIsSafetyStateNotTerminal(t *testing.T) {
+	if IsTerminal(enums.StatusUnknown) {
+		t.Fatal("UNKNOWN is a reconciliation safety state, not a terminal order state")
+	}
+}
+
+func TestMergeAllowsUnknownToRecoverToAuthoritativeOpenState(t *testing.T) {
+	existing := model.Order{
+		Request:   model.OrderRequest{InstrumentID: testInstrument, ClientID: "recover-open"},
+		Status:    enums.StatusUnknown,
+		UpdatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
+	incoming := model.Order{
+		Request:   model.OrderRequest{InstrumentID: testInstrument, ClientID: "recover-open"},
+		Status:    enums.StatusNew,
+		UpdatedAt: existing.UpdatedAt.Add(time.Second),
+	}
+	got := Merge(existing, incoming)
+	if got.Status != enums.StatusNew || !got.UpdatedAt.Equal(incoming.UpdatedAt) {
+		t.Fatalf("order=%+v, want authoritative NEW recovery", got)
+	}
+}
+
+func TestFillKeySurvivesVenueOrderIdentityEnrichment(t *testing.T) {
+	clientOnly := model.Fill{
+		AccountID:    "acct",
+		InstrumentID: testInstrument,
+		ClientID:     "client-1",
+		TradeID:      "trade-1",
+	}
+	enriched := clientOnly
+	enriched.VenueOrderID = "venue-1"
+	if before, after := FillKey(clientOnly), FillKey(enriched); before == "" || before != after {
+		t.Fatalf("fill key changed after venue identity enrichment: before=%q after=%q", before, after)
+	}
+}
+
+func TestFillKeyScopesVenueTradeIDsWithoutOrderIdentity(t *testing.T) {
+	base := model.Fill{
+		AccountID:    "acct",
+		InstrumentID: testInstrument,
+		VenueOrderID: "venue-order-1",
+		TradeID:      "trade-1",
+	}
+	otherOrder := base
+	otherOrder.VenueOrderID = "venue-order-2"
+	if FillKey(base) != FillKey(otherOrder) {
+		t.Fatal("the venue trade id must remain primary across conflicting order aliases")
+	}
+
+	otherVenue := base
+	otherVenue.InstrumentID.Venue = "OTHER"
+	if FillKey(base) == FillKey(otherVenue) {
+		t.Fatal("same trade id from another venue must have an independent identity")
+	}
+
+	otherAccount := base
+	otherAccount.AccountID = "other-account"
+	if FillKey(base) == FillKey(otherAccount) {
+		t.Fatal("same trade id from another account must have an independent identity")
+	}
+}
+
 func TestMergeDoesNotRegressNewerOpenOrderFromOlderSnapshot(t *testing.T) {
 	newer := time.Date(2026, 7, 11, 0, 1, 0, 0, time.UTC)
 	older := newer.Add(-time.Minute)

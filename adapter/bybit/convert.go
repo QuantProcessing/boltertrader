@@ -131,14 +131,16 @@ func positionSideToBybit(side enums.PositionSide) int {
 	}
 }
 
-func positionSideFromBybit(side string) enums.PositionSide {
-	switch strings.ToLower(side) {
-	case "buy", "long":
-		return enums.PosLong
-	case "sell", "short":
-		return enums.PosShort
+func positionSideFromBybit(positionIdx int) (enums.PositionSide, error) {
+	switch positionIdx {
+	case 0:
+		return enums.PosNet, nil
+	case 1:
+		return enums.PosLong, nil
+	case 2:
+		return enums.PosShort, nil
 	default:
-		return enums.PosNet
+		return enums.PosNet, fmt.Errorf("bybit: unsupported positionIdx %d", positionIdx)
 	}
 }
 
@@ -202,7 +204,11 @@ func orderFromBybitAction(resp *bybitsdk.OrderActionResponse, req model.OrderReq
 	}
 }
 
-func orderFromBybitRecord(record bybitsdk.OrderRecord, id model.InstrumentID, accountID string) model.Order {
+func orderFromBybitRecord(record bybitsdk.OrderRecord, id model.InstrumentID, accountID string) (model.Order, error) {
+	positionSide, err := positionSideFromBybit(record.PositionIdx)
+	if err != nil {
+		return model.Order{}, err
+	}
 	req := model.OrderRequest{
 		AccountID:    accountID,
 		InstrumentID: id,
@@ -212,6 +218,7 @@ func orderFromBybitRecord(record bybitsdk.OrderRecord, id model.InstrumentID, ac
 		TIF:          tifFromBybit(record.TimeInForce),
 		Quantity:     dec(record.Qty),
 		Price:        dec(record.Price),
+		PositionSide: positionSide,
 		ReduceOnly:   record.ReduceOnly,
 	}
 	return model.Order{
@@ -222,7 +229,7 @@ func orderFromBybitRecord(record bybitsdk.OrderRecord, id model.InstrumentID, ac
 		AvgFillPrice: dec(record.AvgPrice),
 		CreatedAt:    timeFromMillisString(record.CreatedTime),
 		UpdatedAt:    timeFromMillisString(record.UpdatedTime),
-	}
+	}, nil
 }
 
 func fillFromBybitExecution(record bybitsdk.ExecutionRecord, id model.InstrumentID, accountID string) model.Fill {
@@ -246,7 +253,11 @@ func fillFromBybitExecution(record bybitsdk.ExecutionRecord, id model.Instrument
 	}
 }
 
-func positionFromBybit(record bybitsdk.PositionRecord, resolve func(string) model.InstrumentID, accountID string, now time.Time) model.Position {
+func positionFromBybit(record bybitsdk.PositionRecord, resolve func(string) model.InstrumentID, accountID string, now time.Time) (model.Position, error) {
+	positionSide, err := positionSideFromBybit(record.PositionIdx)
+	if err != nil {
+		return model.Position{}, err
+	}
 	updated := now
 	if updated.IsZero() {
 		updated = time.Now()
@@ -254,13 +265,13 @@ func positionFromBybit(record bybitsdk.PositionRecord, resolve func(string) mode
 	return model.Position{
 		AccountID:     accountID,
 		InstrumentID:  resolve(record.Symbol),
-		Side:          positionSideFromBybit(record.Side),
+		Side:          positionSide,
 		Quantity:      signedPositionQty(record.Side, record.Size),
 		EntryPrice:    dec(record.AvgPrice),
 		UnrealizedPnL: dec(record.UnrealisedPnl),
 		Leverage:      dec(record.Leverage),
 		UpdatedAt:     updated,
-	}
+	}, nil
 }
 
 func timeFromMillisString(value string) time.Time {

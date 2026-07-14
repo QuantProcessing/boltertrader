@@ -215,6 +215,8 @@ func (f *FakeExec) OnModify(fn func(model.InstrumentID, string, decimal.Decimal,
 func (f *FakeExec) Events() <-chan contract.ExecEnvelope { return f.events }
 func (f *FakeExec) Close() error                         { close(f.events); return nil }
 
+func (f *FakeExec) EmitEnvelope(env contract.ExecEnvelope) { f.events <- env }
+
 // EmitOrder pushes an order lifecycle event.
 func (f *FakeExec) EmitOrder(o model.Order) {
 	f.events <- contract.NewExecEnvelopeWithMeta(contract.OrderEvent{Order: o}, testEventMeta())

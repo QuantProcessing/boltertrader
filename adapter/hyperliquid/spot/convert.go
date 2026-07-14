@@ -43,9 +43,40 @@ func tifToHL(t enums.TimeInForce) (sdk.Tif, error) {
 	case enums.TifIOC:
 		return sdk.TifIoc, nil
 	case enums.TifFOK:
-		return sdk.TifFok, nil
+		return "", fmt.Errorf("hyperliquid spot: FOK is not supported by the venue wire API: %w", errs.ErrNotSupported)
+	case enums.TifGTX:
+		return sdk.TifAlo, nil
 	default:
 		return "", fmt.Errorf("hyperliquid spot: unsupported TIF %v: %w", t, errs.ErrNotSupported)
+	}
+}
+
+func statusFromHL(status string) enums.OrderStatus {
+	switch sdk.OrderStatusValue(status) {
+	case sdk.StatusOpen:
+		return enums.StatusNew
+	case sdk.StatusFilled:
+		return enums.StatusFilled
+	case sdk.StatusTriggered:
+		return enums.StatusTriggered
+	case sdk.StatusRejected, sdk.StatusTickRejected, sdk.StatusMinTradeNtlRejected,
+		sdk.StatusPerpMarginRejected, sdk.StatusReduceOnlyRejected,
+		sdk.StatusBadAloPxRejected, sdk.StatusIocCancelRejected,
+		sdk.StatusBadTriggerPxRejected, sdk.StatusMarketOrderNoLiquidityRejected,
+		sdk.StatusPositionIncreaseAtOpenInterestCapRejected,
+		sdk.StatusPositionFlipAtOpenInterestCapRejected,
+		sdk.StatusTooAggressiveAtOpenInterestCapRejected,
+		sdk.StatusOpenInterestIncreaseRejected,
+		sdk.StatusInsufficientSpotBalanceRejected, sdk.StatusOracleRejected,
+		sdk.StatusPerpMaxPositionRejected:
+		return enums.StatusRejected
+	case sdk.StatusCanceled, sdk.StatusMarginCanceled, sdk.StatusVaultWithdrawalCanceled,
+		sdk.StatusOpenInterestCapCanceled, sdk.StatusSelfTradeCanceled,
+		sdk.StatusReduceOnlyCanceled, sdk.StatusSiblingFilledCanceled,
+		sdk.StatusDelistedCanceled, sdk.StatusLiquidatedCanceled, sdk.StatusScheduledCancel:
+		return enums.StatusCanceled
+	default:
+		return enums.StatusUnknown
 	}
 }
 

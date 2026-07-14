@@ -2,6 +2,8 @@ package sdk
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -119,6 +121,149 @@ func TestClient_GetPositions(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected positions slice")
+	}
+}
+
+func TestClient_GetPositionsConsumesEveryPage(t *testing.T) {
+	t.Parallel()
+
+	var seenCursors []string
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenCursors = append(seenCursors, req.URL.Query().Get("cursor"))
+			if req.URL.Path != "/v5/position/list" {
+				return nil, errors.New("unexpected request path")
+			}
+			if req.URL.Query().Get("category") != "linear" || req.URL.Query().Get("settleCoin") != "USDT" {
+				return nil, errors.New("position filters were not preserved")
+			}
+
+			var body string
+			switch req.URL.Query().Get("cursor") {
+			case "":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"page-2","list":[{"symbol":"BTCUSDT","side":"Buy","size":"1"}]}}`
+			case "page-2":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"page-3","list":[{"symbol":"ETHUSDT","side":"Sell","size":"2"}]}}`
+			case "page-3":
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","list":[{"symbol":"SOLUSDT","side":"Buy","size":"3"}]}}`
+			default:
+				return nil, errors.New("unexpected cursor")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetPositions(context.Background(), "linear", "", "USDT")
+	if err != nil {
+		t.Fatalf("GetPositions returned error: %v", err)
+	}
+	if strings.Join(seenCursors, ",") != ",page-2,page-3" {
+		t.Fatalf("unexpected cursor sequence: %v", seenCursors)
+	}
+	if len(got) != 3 || got[0].Symbol != "BTCUSDT" || got[1].Symbol != "ETHUSDT" || got[2].Symbol != "SOLUSDT" {
+		t.Fatalf("unexpected positions: %+v", got)
+	}
+}
+
+func TestClient_GetPositionsRejectsCursorCycles(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"same-cursor","list":[{"symbol":"BTCUSDT"}]}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetPositions(context.Background(), "linear", "", "USDT")
+	if err == nil || !strings.Contains(err.Error(), "cursor cycle") {
+		t.Fatalf("expected cursor-cycle error, got positions=%+v err=%v", got, err)
+	}
+	if got != nil {
+		t.Fatalf("expected no partial positions on cursor cycle, got %+v", got)
+	}
+	if requests != 2 {
+		t.Fatalf("expected cycle detection after two requests, got %d", requests)
+	}
+}
+
+func TestClient_GetPositionsDoesNotReturnPartialResultsAfterPageError(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			requests++
+			if requests == 2 {
+				return nil, errors.New("second page unavailable")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"page-2","list":[{"symbol":"BTCUSDT"}]}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	got, err := client.GetPositions(context.Background(), "linear", "", "USDT")
+	if err == nil || !strings.Contains(err.Error(), "second page unavailable") {
+		t.Fatalf("expected second-page error, got positions=%+v err=%v", got, err)
+	}
+	if got != nil {
+		t.Fatalf("expected no partial positions after page error, got %+v", got)
+	}
+}
+
+func TestClient_GetPositionsHasFinitePageLimitAcrossEmptyPages(t *testing.T) {
+	t.Parallel()
+
+	const expectedMaxPages = 1000
+	calls := 0
+	client := NewClient().
+		WithCredentials("test-key", "test-secret").
+		WithBaseURL("https://example.test").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			if calls > expectedMaxPages {
+				return nil, errors.New("pagination exceeded test transport bound")
+			}
+			list := "[]"
+			if calls == 1 {
+				list = `[{"symbol":"BTCUSDT"}]`
+			}
+			body := fmt.Sprintf(
+				`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"cursor-%d","list":%s}}`,
+				calls,
+				list,
+			)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	positions, err := client.GetPositions(context.Background(), "linear", "", "USDT")
+	if err == nil || !strings.Contains(err.Error(), "page limit") {
+		t.Fatalf("error=%v, want page limit error", err)
+	}
+	if positions != nil {
+		t.Fatalf("positions=%+v, want nil rather than accumulated partial pages", positions)
+	}
+	if calls != expectedMaxPages {
+		t.Fatalf("calls=%d, want %d", calls, expectedMaxPages)
 	}
 }
 

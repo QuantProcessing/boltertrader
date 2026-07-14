@@ -33,6 +33,23 @@ func instrumentFill(id model.InstrumentID, side enums.OrderSide, price, qty, fee
 	}
 }
 
+type testInstrumentProvider struct {
+	instruments map[string]*model.Instrument
+}
+
+func (p *testInstrumentProvider) Instrument(id model.InstrumentID) (*model.Instrument, bool) {
+	instrument, ok := p.instruments[id.String()]
+	return instrument, ok
+}
+
+func (p *testInstrumentProvider) All() []*model.Instrument {
+	out := make([]*model.Instrument, 0, len(p.instruments))
+	for _, instrument := range p.instruments {
+		out = append(out, instrument)
+	}
+	return out
+}
+
 // TestRealizedPnL_LongRoundTrip: buy 1 @100, sell 1 @110 => +10 realized.
 func TestRealizedPnL_LongRoundTrip(t *testing.T) {
 	pf := New()
@@ -205,6 +222,71 @@ func TestUnrealized(t *testing.T) {
 	pf.OnFill(fill(enums.SideBuy, "100", "2", "0"), enums.PosNet)
 	if got := pf.UnrealizedPnL(id, enums.PosNet, d("105")); !got.Equal(d("10")) {
 		t.Fatalf("unrealized=%s, want 10", got)
+	}
+}
+
+func TestContractMultiplierScalesRealizedAndUnrealizedPnL(t *testing.T) {
+	id := model.InstrumentID{Venue: "GATE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	provider := &testInstrumentProvider{instruments: map[string]*model.Instrument{
+		id.String(): {ID: id, ContractMultiplier: d("0.0001")},
+	}}
+	pf := New().WithInstrumentProvider(provider)
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100000", "1", "0", "USDT"), enums.PosNet)
+
+	// A lot retains the multiplier that applied when it opened; later registry
+	// mutation must not change historical PnL arithmetic.
+	provider.instruments[id.String()] = &model.Instrument{ID: id, ContractMultiplier: d("1")}
+	if got := pf.UnrealizedPnL(id, enums.PosNet, d("101000")); !got.Equal(d("0.1")) {
+		t.Fatalf("unrealized=%s, want 0.1", got)
+	}
+
+	pf.OnFill(instrumentFill(id, enums.SideSell, "101000", "1", "0", "USDT"), enums.PosNet)
+	if got := pf.RealizedPnL(); !got.Equal(d("0.1")) {
+		t.Fatalf("realized=%s, want 0.1", got)
+	}
+
+	// Once the old lot is flat, a newly opened lot uses current reference data.
+	pf.OnFill(instrumentFill(id, enums.SideBuy, "100000", "1", "0", "USDT"), enums.PosNet)
+	if got := pf.UnrealizedPnL(id, enums.PosNet, d("101000")); !got.Equal(d("1000")) {
+		t.Fatalf("reopened lot unrealized=%s, want current multiplier result 1000", got)
+	}
+}
+
+func TestNetExposureUsesContractMultiplier(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	id := model.InstrumentID{Venue: "GATE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	state := model.AccountState{
+		AccountID:    "GATE:perp",
+		Venue:        "GATE",
+		Type:         model.AccountMargin,
+		BaseCurrency: "USDT",
+		Reported:     true,
+		EventID:      model.AccountStateEventID("GATE", "GATE:perp", now),
+		TsEvent:      now,
+		TsInit:       now,
+	}
+	if err := c.ApplyAccountStateAt(state, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	c.UpsertPosition(model.Position{
+		AccountID:    "GATE:perp",
+		InstrumentID: id,
+		Side:         enums.PosNet,
+		Quantity:     d("1"),
+		MarkPrice:    d("100000"),
+	})
+	provider := &testInstrumentProvider{instruments: map[string]*model.Instrument{
+		id.String(): {ID: id, ContractMultiplier: d("0.0001")},
+	}}
+	pf := New().WithAccountSource(c).WithInstrumentProvider(provider)
+
+	exposure, ok := pf.NetExposure("GATE:perp")
+	if !ok {
+		t.Fatal("net exposure account lookup failed")
+	}
+	if got := exposure[id]; !got.Equal(d("10")) {
+		t.Fatalf("net exposure=%s, want 10", got)
 	}
 }
 

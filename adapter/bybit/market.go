@@ -218,12 +218,16 @@ func (c *marketDataClient) Capabilities() contract.Capabilities {
 			CurrentOpenInterest: true,
 		}
 	}
+	products := make([]contract.ProductCapability, 0, 2)
+	if bybitProviderHasKind(c.provider, enums.KindSpot) {
+		products = append(products, contract.ProductCapability{Kind: enums.KindSpot, Market: true})
+	}
+	if bybitProviderHasKind(c.provider, enums.KindPerp) {
+		products = append(products, contract.ProductCapability{Kind: enums.KindPerp, Market: true})
+	}
 	return contract.Capabilities{
-		Venue: VenueName,
-		Products: []contract.ProductCapability{
-			{Kind: enums.KindSpot, Market: true},
-			{Kind: enums.KindPerp, Market: true},
-		},
+		Venue:         VenueName,
+		Products:      products,
 		Reports:       contract.ReportCapabilities{OpenOrders: true, OpenOnlyNotFoundAmbiguous: true},
 		Streaming:     contract.StreamCapabilities{Market: len(c.ws) > 0},
 		ReferenceData: reference,

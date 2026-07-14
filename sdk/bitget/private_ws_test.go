@@ -3,12 +3,14 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
+	"github.com/gorilla/websocket"
 )
 
 func TestPrivateWSClient_Subscribe(t *testing.T) {
@@ -57,6 +59,16 @@ func TestDecodeAccountMessage(t *testing.T) {
 	}
 }
 
+func TestDecodePositionMessagePreservesHoldMode(t *testing.T) {
+	msg, err := DecodePositionMessage([]byte(`{"arg":{"instType":"UTA","topic":"position"},"action":"snapshot","data":[{"symbol":"BTCUSDT","posSide":"short","holdMode":"one_way_mode","size":"0.01"}]}`))
+	if err != nil {
+		t.Fatalf("DecodePositionMessage: %v", err)
+	}
+	if len(msg.Data) != 1 || msg.Data[0].HoldMode != "one_way_mode" || msg.Data[0].PosSide != "short" {
+		t.Fatalf("unexpected position data: %+v", msg.Data)
+	}
+}
+
 func TestPrivateWSDebugPayloadRedactsLoginCredentials(t *testing.T) {
 	req := wsLoginRequest{
 		Op: "login",
@@ -92,6 +104,70 @@ func TestPrivateWSDebugPayloadRedactsLoginCredentials(t *testing.T) {
 	if arg.Timestamp != "1700000000" {
 		t.Fatalf("timestamp = %q, want 1700000000", arg.Timestamp)
 	}
+}
+
+func TestPrivateWSDebugReceiveLogDoesNotExposePrivatePayload(t *testing.T) {
+	const privateSentinel = "private-order-sentinel"
+	clientConn, peer := bitgetPrivateWSPair(t)
+	client := NewPrivateWSClient().WithCredentials("key", "secret", "passphrase")
+	client.debug = true
+	arg := WSArg{InstType: "UTA", Topic: "order"}
+	handled := make(chan struct{})
+	client.mu.Lock()
+	client.conn = clientConn
+	client.authenticated = true
+	client.subs[wsKey(arg)] = arg
+	client.handlers[wsKey(arg)] = func(json.RawMessage) { close(handled) }
+	client.mu.Unlock()
+
+	payload, err := json.Marshal(map[string]any{
+		"arg":    arg,
+		"action": "update",
+		"data":   []any{map[string]any{"orderId": privateSentinel}},
+	})
+	if err != nil {
+		t.Fatalf("marshal private event: %v", err)
+	}
+	output := captureBitgetStdout(t, func() {
+		go client.readLoop(clientConn, make(chan error, 1))
+		if err := peer.WriteMessage(websocket.TextMessage, payload); err != nil {
+			t.Fatalf("write private event: %v", err)
+		}
+		waitForBitgetSignal(t, handled, "private event handler")
+		if err := client.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+	if strings.Contains(output, privateSentinel) {
+		t.Fatalf("debug receive log leaked private payload: %q", output)
+	}
+	if !strings.Contains(output, "kind=data") || !strings.Contains(output, "bytes=") {
+		t.Fatalf("debug receive log = %q, want safe kind and byte count", output)
+	}
+}
+
+func captureBitgetStdout(t *testing.T, run func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = writer
+	defer func() { os.Stdout = original }()
+
+	run()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
 }
 
 func newLivePrivateWSClient(t *testing.T) *PrivateWSClient {

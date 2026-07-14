@@ -15,6 +15,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/contract/contracttest"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
+	runtimecache "github.com/QuantProcessing/boltertrader/runtime/cache"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -530,6 +531,49 @@ func TestBinanceSpotUserDataOrderUpdateTranslation(t *testing.T) {
 	}
 }
 
+func TestBinanceSpotCancelUpdateKeepsOriginalClientOrderID(t *testing.T) {
+	const golden = `{
+		"e":"executionReport","E":1700000000000,"s":"ETHUSDT","c":"auto-cancel-id","C":"original-order-id",
+		"S":"BUY","o":"LIMIT","f":"GTC","q":"0.0100","p":"3000.00","x":"CANCELED","X":"CANCELED",
+		"i":987,"l":"0","z":"0","T":1700000000000
+	}`
+	var ev sdkspot.ExecutionReportEvent
+	if err := json.Unmarshal([]byte(golden), &ev); err != nil {
+		t.Fatalf("unmarshal golden: %v", err)
+	}
+
+	events := execEventsFromExecutionReport(&ev, func(string) model.InstrumentID {
+		return model.InstrumentID{Venue: venueName, Symbol: "ETH-USDT", Kind: enums.KindSpot}
+	}, model.AccountIDBinanceDefault)
+	if len(events) != 1 {
+		t.Fatalf("events len=%d, want one order event", len(events))
+	}
+	orderEvent, ok := events[0].(contract.OrderEvent)
+	if !ok {
+		t.Fatalf("events[0]=%T, want OrderEvent", events[0])
+	}
+	if got := orderEvent.Order.Request.ClientID; got != "original-order-id" {
+		t.Fatalf("client id=%q, want stable original client id", got)
+	}
+	cache := runtimecache.New()
+	cache.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			AccountID:    model.AccountIDBinanceDefault,
+			InstrumentID: orderEvent.Order.Request.InstrumentID,
+			ClientID:     "original-order-id",
+		},
+		VenueOrderID: "987",
+		Status:       enums.StatusNew,
+	})
+	cache.UpsertOrder(orderEvent.Order)
+	if got, ok := cache.Order("original-order-id"); !ok || got.Status != enums.StatusCanceled {
+		t.Fatalf("original client id lookup=(%+v,%v), want CANCELED", got, ok)
+	}
+	if _, ok := cache.Order("auto-cancel-id"); ok {
+		t.Fatal("generated cancel id replaced the strategy order key")
+	}
+}
+
 func TestBinanceSpotUserDataBalanceUpdateTranslation(t *testing.T) {
 	ev := sdkspot.AccountPositionEvent{
 		EventTime: 1700000000000,
@@ -587,10 +631,13 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 			}},
 		},
 		Execution: contracttest.ExecutionCapabilities{
-			Submit:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Cancel:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			CancelAll:  contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
-			Modify:     contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Submit:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Cancel:    contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			CancelAll: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
+			Modify: contracttest.CapabilityProbe{Support: contracttest.Unsupported("cancel-replace requires multi-incarnation runtime identity"), Probe: func(ctx context.Context) error {
+				_, err := newExecutionClient(nil, provider, clock.NewRealClock()).Modify(ctx, inst.ID, "1", d("1"), d("1"))
+				return err
+			}},
 			OpenOrders: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 			MassStatus: contracttest.CapabilityProbe{Support: contracttest.InventorySupported("covered by adapter fixture and demo exec tests")},
 		},

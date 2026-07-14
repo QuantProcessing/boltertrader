@@ -3,26 +3,47 @@ package gate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	gatesdk "github.com/QuantProcessing/boltertrader/sdk/gate"
 )
 
+const (
+	privateSpotStreamID    = "gate:spot:private"
+	privateFuturesStreamID = "gate:futures:private"
+	gateAllSymbols         = "!all"
+)
+
+type reconnectHookSetter interface {
+	SetReconnectHooks(func(error), func())
+}
+
+type privateStreamClient interface {
+	reconnectHookSetter
+	Subscribe(context.Context, string, []string, func(json.RawMessage)) error
+	Close() error
+}
+
 type Adapter struct {
 	Market    contract.MarketDataClient
 	Execution contract.ExecutionClient
 	Account   contract.AccountClient
 
-	provider       *instrumentProvider
-	rest           *gatesdk.Client
-	privateSpot    *gatesdk.WSClient
-	privateFutures *gatesdk.WSClient
-	exec           *executionClient
-	acct           *accountClient
-	market         *marketDataClient
-	clk            clock.Clock
+	provider          *instrumentProvider
+	rest              *gatesdk.Client
+	privateSpot       privateStreamClient
+	privateFutures    privateStreamClient
+	exec              *executionClient
+	acct              *accountClient
+	market            *marketDataClient
+	clk               clock.Clock
+	privateSpotGap    *streamgap.Reporter
+	privateFuturesGap *streamgap.Reporter
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
@@ -72,46 +93,81 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	market := newMarketDataClient(rest, publicWS, futuresWS, provider, clk).withScope(kinds)
 	exec := newExecutionClient(rest, provider, clk, cfg.AccountID).withScope(kinds)
 	acct := newAccountClient(rest, provider, clk, kinds, cfg.AccountID)
+	futuresMode := newFuturesPositionModeState()
+	exec.futuresMode = futuresMode
+	acct.futuresMode = futuresMode
 	return &Adapter{Market: market, Execution: exec, Account: acct, provider: provider, rest: rest, privateSpot: privateSpot, privateFutures: privateFutures, exec: exec, acct: acct, market: market, clk: clk}, nil
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
+	a.bindPrivateGapHooks(a.privateSpot, a.privateFutures)
 	if err := a.startSpotStreams(ctx); err != nil {
 		return err
 	}
 	return a.startFuturesStreams(ctx)
 }
 
+func (a *Adapter) bindPrivateGapHooks(spot, futures reconnectHookSetter) {
+	if a.exec == nil {
+		return
+	}
+	if spot != nil {
+		if a.privateSpotGap == nil {
+			a.privateSpotGap = streamgap.New(VenueName, a.exec.accountID, privateSpotStreamID, a.exec.stream.Emit)
+		}
+		spot.SetReconnectHooks(func(err error) {
+			reason := "spot private stream disconnected"
+			if err != nil {
+				reason = err.Error()
+			}
+			a.privateSpotGap.Started(reason)
+		}, func() {
+			a.privateSpotGap.Recovered("spot private stream subscriptions restored")
+		})
+	}
+	if futures != nil {
+		if a.privateFuturesGap == nil {
+			a.privateFuturesGap = streamgap.New(VenueName, a.exec.accountID, privateFuturesStreamID, a.exec.stream.Emit)
+		}
+		futures.SetReconnectHooks(func(err error) {
+			reason := "futures private stream disconnected"
+			if err != nil {
+				reason = err.Error()
+			}
+			a.privateFuturesGap.Started(reason)
+		}, func() {
+			a.privateFuturesGap.Recovered("futures private stream subscriptions restored")
+		})
+	}
+}
+
 func (a *Adapter) startSpotStreams(ctx context.Context) error {
 	if a.privateSpot == nil {
 		return nil
 	}
-	symbols := a.spotVenueSymbols()
-	if len(symbols) == 0 {
+	if len(a.spotVenueSymbols()) == 0 {
 		return nil
 	}
-	resolve := a.provider.resolveVenueSymbol
-	for _, symbol := range symbols {
-		if err := a.privateSpot.Subscribe(ctx, gatesdk.ChannelSpotOrder, []string{symbol}, func(payload json.RawMessage) {
-			msg, err := gatesdk.DecodeSpotOrderMessage(payload)
-			if err == nil {
-				for _, event := range execEventsFromSpotOrderMessage(msg, resolve, a.exec.accountID) {
-					a.exec.emit(event)
-				}
+	resolve := a.provider.resolveSpotVenueSymbol
+	if err := a.privateSpot.Subscribe(ctx, gatesdk.ChannelSpotOrder, []string{gateAllSymbols}, func(payload json.RawMessage) {
+		msg, err := gatesdk.DecodeSpotOrderMessage(payload)
+		if err == nil {
+			for _, event := range execEventsFromSpotOrderMessage(msg, resolve, a.exec.accountID) {
+				a.exec.emit(event)
 			}
-		}); err != nil {
-			return err
 		}
-		if err := a.privateSpot.Subscribe(ctx, gatesdk.ChannelSpotUserTrade, []string{symbol}, func(payload json.RawMessage) {
-			msg, err := gatesdk.DecodeSpotUserTradeMessage(payload)
-			if err == nil {
-				for _, event := range execEventsFromSpotUserTradeMessage(msg, resolve, a.exec.accountID) {
-					a.exec.emit(event)
-				}
+	}); err != nil {
+		return err
+	}
+	if err := a.privateSpot.Subscribe(ctx, gatesdk.ChannelSpotUserTrade, []string{gateAllSymbols}, func(payload json.RawMessage) {
+		msg, err := gatesdk.DecodeSpotUserTradeMessage(payload)
+		if err == nil {
+			for _, event := range execEventsFromSpotUserTradeMessage(msg, resolve, a.exec.accountID) {
+				a.exec.emit(event)
 			}
-		}); err != nil {
-			return err
 		}
+	}); err != nil {
+		return err
 	}
 	return a.privateSpot.Subscribe(ctx, gatesdk.ChannelSpotBalance, nil, func(payload json.RawMessage) {
 		msg, err := gatesdk.DecodeSpotBalanceMessage(payload)
@@ -127,44 +183,56 @@ func (a *Adapter) startFuturesStreams(ctx context.Context) error {
 	if a.privateFutures == nil {
 		return nil
 	}
-	symbols := a.futuresVenueSymbols()
-	if len(symbols) == 0 {
+	if len(a.futuresVenueSymbols()) == 0 {
 		return nil
 	}
-	resolve := a.provider.resolveVenueSymbol
-	for _, symbol := range symbols {
-		if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesOrder, []string{symbol}, func(payload json.RawMessage) {
-			msg, err := gatesdk.DecodeFuturesOrderMessage(payload)
-			if err == nil {
-				for _, event := range execEventsFromFuturesOrderMessage(msg, resolve, a.exec.accountID) {
-					a.exec.emit(event)
-				}
-			}
-		}); err != nil {
-			return err
-		}
-		if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesUserTrade, []string{symbol}, func(payload json.RawMessage) {
-			msg, err := gatesdk.DecodeFuturesUserTradeMessage(payload)
-			if err == nil {
-				for _, event := range execEventsFromFuturesUserTradeMessage(msg, resolve, a.exec.accountID) {
-					a.exec.emit(event)
-				}
-			}
-		}); err != nil {
-			return err
-		}
-		if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesPosition, []string{symbol}, func(payload json.RawMessage) {
-			msg, err := gatesdk.DecodeFuturesPositionMessage(payload)
-			if err == nil {
-				for _, event := range accountEventsFromFuturesPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now()) {
-					a.acct.emit(event)
-				}
-			}
-		}); err != nil {
-			return err
-		}
+	if a.rest == nil {
+		return fmt.Errorf("gate: futures private stream requires REST account lookup")
 	}
-	return a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesBalance, nil, func(payload json.RawMessage) {
+	account, err := a.rest.GetFuturesAccount(ctx, gatesdk.SettleUSDT)
+	if err != nil {
+		return fmt.Errorf("gate: futures private stream account: %w", err)
+	}
+	if account == nil || account.User <= 0 {
+		return fmt.Errorf("gate: futures private stream account returned invalid user id")
+	}
+	if err := a.exec.futuresMode.setAccount(account); err != nil {
+		return err
+	}
+	userID := strconv.FormatInt(account.User, 10)
+	allContracts := []string{userID, gateAllSymbols}
+	resolve := a.provider.resolveFuturesVenueSymbol
+	if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesOrder, allContracts, func(payload json.RawMessage) {
+		msg, err := gatesdk.DecodeFuturesOrderMessage(payload)
+		if err == nil {
+			for _, event := range execEventsFromFuturesOrderMessage(msg, resolve, a.exec.accountID, a.exec.resolveFuturesOrderPositionSide) {
+				a.exec.emit(event)
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesUserTrade, allContracts, func(payload json.RawMessage) {
+		msg, err := gatesdk.DecodeFuturesUserTradeMessage(payload)
+		if err == nil {
+			for _, event := range execEventsFromFuturesUserTradeMessage(msg, resolve, a.exec.accountID) {
+				a.exec.emit(event)
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	if err := a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesPosition, allContracts, func(payload json.RawMessage) {
+		msg, err := gatesdk.DecodeFuturesPositionMessage(payload)
+		if err == nil {
+			for _, event := range accountEventsFromFuturesPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now()) {
+				a.acct.emit(event)
+			}
+		}
+	}); err != nil {
+		return err
+	}
+	return a.privateFutures.Subscribe(ctx, gatesdk.ChannelFuturesBalance, []string{userID}, func(payload json.RawMessage) {
 		msg, err := gatesdk.DecodeFuturesBalanceMessage(payload)
 		if err == nil {
 			for _, event := range accountEventsFromFuturesBalanceMessage(msg, a.acct.accountID, a.clk.Now()) {

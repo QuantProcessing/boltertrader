@@ -2,12 +2,82 @@ package mbx
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	exchanges "github.com/QuantProcessing/boltertrader/internal/errs"
 )
+
+type classifiedTransportError struct {
+	secret string
+	cause  error
+}
+
+func (e *classifiedTransportError) Error() string { return e.secret }
+
+func (e *classifiedTransportError) Unwrap() error { return e.cause }
+
+func TestTransportCauseRedactsArbitraryErrorTreesAndPreservesClassification(t *testing.T) {
+	const secret = "https://example.invalid/private?signature=SENTINEL_MBX_SIGNATURE"
+	sentinel := errors.New("sentinel transport classification")
+	leaf := &classifiedTransportError{secret: secret, cause: sentinel}
+
+	tests := []struct {
+		name  string
+		cause error
+	}{
+		{name: "fmt wrapper", cause: fmt.Errorf("wrapped transport: %w", leaf)},
+		{name: "errors.Join", cause: errors.Join(errors.New("independent failure"), leaf)},
+		{name: "multiple percent-w", cause: fmt.Errorf("two causes: %w / %w", errors.New("independent failure"), leaf)},
+		{name: "leaf url.Error", cause: &url.Error{Op: http.MethodGet, URL: secret, Err: leaf}},
+		{name: "leaf error text", cause: leaf},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TransportCause(tt.cause)
+			if got == nil {
+				t.Fatal("TransportCause returned nil")
+			}
+			if got.Error() != "transport failure" {
+				t.Fatalf("TransportCause.Error() = %q, want fixed safe text", got.Error())
+			}
+			if strings.Contains(got.Error(), secret) {
+				t.Fatalf("TransportCause leaked signed URL: %v", got)
+			}
+			if !errors.Is(got, sentinel) {
+				t.Fatalf("TransportCause lost errors.Is classification: %v", got)
+			}
+			var classified *classifiedTransportError
+			if !errors.As(got, &classified) || classified != leaf {
+				t.Fatalf("TransportCause lost errors.As classification: %v", got)
+			}
+		})
+	}
+}
+
+func TestTransportCauseNilPreservesNil(t *testing.T) {
+	if got := TransportCause(nil); got != nil {
+		t.Fatalf("TransportCause(nil) = %v, want nil", got)
+	}
+}
+
+func TestTransportCauseRedactsLeafURLErrorAndPreservesType(t *testing.T) {
+	const secret = "https://example.invalid/private?signature=SENTINEL_MBX_LEAF_URL"
+	cause := &url.Error{Op: http.MethodGet, URL: secret}
+	got := TransportCause(cause)
+	if strings.Contains(got.Error(), secret) {
+		t.Fatalf("TransportCause leaked leaf URL: %v", got)
+	}
+	var urlErr *url.Error
+	if !errors.As(got, &urlErr) || urlErr != cause {
+		t.Fatalf("TransportCause lost leaf *url.Error type: %T %v", got, got)
+	}
+}
 
 func TestUsedWeight_UpdateByHeader(t *testing.T) {
 	tests := []struct {

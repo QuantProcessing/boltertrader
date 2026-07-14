@@ -2,9 +2,11 @@ package perp
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
+	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/ordersemantics"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -19,20 +21,33 @@ func execEventsFromOrderUpdate(update sdk.WsOrderUpdate, provider *instruments.R
 	if !ok {
 		return nil
 	}
+	original, err := decimal.NewFromString(update.Order.OrigSz)
+	if err != nil || original.IsNegative() {
+		return nil
+	}
+	remaining, err := decimal.NewFromString(update.Order.Sz)
+	if err != nil || remaining.IsNegative() || remaining.GreaterThan(original) {
+		return nil
+	}
+	orderType, tif, triggerPrice := ordersemantics.FromWire(update.Order.OrderType, update.Order.Tif, update.Order.IsTrigger, update.Order.TriggerPx)
+	reduceOnly := update.Order.ReduceOnly != nil && *update.Order.ReduceOnly
 	order := model.Order{
 		Request: model.OrderRequest{
 			AccountID:    firstAccountID(accountID),
 			InstrumentID: id,
 			ClientID:     update.Order.Cliod,
 			Side:         sideFromHL(update.Order.Side),
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifGTC,
-			Quantity:     dec(update.Order.OrigSz),
+			Type:         orderType,
+			TIF:          tif,
+			Quantity:     original,
 			Price:        dec(update.Order.LimitPx),
+			TriggerPrice: triggerPrice,
 			PositionSide: enums.PosNet,
+			ReduceOnly:   reduceOnly,
 		},
 		VenueOrderID: fmt.Sprint(update.Order.Oid),
 		Status:       statusFromHL(string(update.Status)),
+		FilledQty:    original.Sub(remaining),
 		UpdatedAt:    parseMillis(update.StatusTimestamp),
 		CreatedAt:    parseMillis(update.Order.Timestamp),
 	}
@@ -59,7 +74,7 @@ func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Regist
 			Liquidity:    liq,
 			Price:        dec(fill.Px),
 			Quantity:     dec(fill.Sz),
-			Fee:          dec(fill.Fee).Abs(),
+			Fee:          dec(fill.Fee),
 			FeeCurrency:  fill.FeeToken,
 			Timestamp:    parseMillis(fill.Time),
 		}})
@@ -68,12 +83,18 @@ func execEventsFromUserFills(fills sdk.WsUserFills, provider *instruments.Regist
 }
 
 func accountEventsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, clk clock.Clock, accountID ...string) []contract.AccountEvent {
+	return accountEventsFromPerpPositionForMode(state, provider, clk, sdk.AccountAbstractionDefault, accountID...)
+}
+
+func accountEventsFromPerpPositionForMode(state *sdkperp.PerpPosition, provider *instruments.Registry, clk clock.Clock, accountMode sdk.AccountAbstraction, accountID ...string) []contract.AccountEvent {
 	if state == nil {
 		return nil
 	}
 	var out []contract.AccountEvent
-	if balance, ok := balanceFromPerpPosition(state, clk, accountID...); ok {
-		out = append(out, contract.BalanceEvent{Balance: balance})
+	if !accountMode.UsesSpotClearinghouseState() {
+		if balance, ok := balanceFromPerpPosition(state, clk, accountID...); ok {
+			out = append(out, contract.BalanceEvent{Balance: balance})
+		}
 	}
 	now := clk.Now()
 	for _, pos := range positionsFromPerpPosition(state, provider, now, accountID...) {
@@ -116,8 +137,17 @@ func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock, accou
 }
 
 func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instruments.Registry, fallbackTime time.Time, accountID ...string) []model.Position {
+	out, _ := positionsFromPerpPositionScoped(state, provider, fallbackTime, "", false, accountID...)
+	return out
+}
+
+func positionsFromPerpPositionForDex(state *sdkperp.PerpPosition, provider *instruments.Registry, fallbackTime time.Time, dex string, accountID ...string) ([]model.Position, error) {
+	return positionsFromPerpPositionScoped(state, provider, fallbackTime, dex, true, accountID...)
+}
+
+func positionsFromPerpPositionScoped(state *sdkperp.PerpPosition, provider *instruments.Registry, fallbackTime time.Time, dex string, strictDex bool, accountID ...string) ([]model.Position, error) {
 	if state == nil {
-		return nil
+		return nil, nil
 	}
 	updatedAt := parseMillis(state.Time)
 	if updatedAt.IsZero() {
@@ -129,13 +159,23 @@ func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instrument
 		if coin == "" {
 			continue
 		}
-		id, ok := provider.ResolveVenueSymbol(coin)
-		if !ok {
-			continue
-		}
 		qty := dec(raw.Position.Szi)
 		if qty.IsZero() {
 			continue
+		}
+		var id model.InstrumentID
+		var ok bool
+		if strictDex {
+			var qualified string
+			id, qualified, ok = resolveHIP3PositionInstrument(provider, coin, dex)
+			if !ok {
+				return nil, fmt.Errorf("unresolved nonzero HIP-3 position instrument %s", qualified)
+			}
+		} else {
+			id, ok = provider.ResolveVenueSymbol(coin)
+			if !ok {
+				continue
+			}
 		}
 		out = append(out, model.Position{
 			AccountID:     firstAccountID(accountID),
@@ -149,5 +189,22 @@ func positionsFromPerpPosition(state *sdkperp.PerpPosition, provider *instrument
 			UpdatedAt:     updatedAt,
 		})
 	}
-	return out
+	return out, nil
+}
+
+func resolveHIP3PositionInstrument(provider *instruments.Registry, coin, dex string) (model.InstrumentID, string, bool) {
+	coin = strings.TrimSpace(coin)
+	dex = strings.TrimSpace(dex)
+	if coin == "" || dex == "" {
+		return model.InstrumentID{}, coin, false
+	}
+	qualified := dex + ":" + coin
+	if rawDex, symbol, ok := strings.Cut(coin, ":"); ok {
+		if !strings.EqualFold(strings.TrimSpace(rawDex), dex) {
+			return model.InstrumentID{}, coin, false
+		}
+		qualified = dex + ":" + symbol
+	}
+	id, ok := provider.ResolveVenueSymbol(qualified)
+	return id, qualified, ok
 }

@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/nado"
 )
+
+const privateStreamID = "nado:account:private"
 
 type Adapter struct {
 	Market    contract.MarketDataClient
@@ -21,6 +24,8 @@ type Adapter struct {
 	acct     *accountClient
 	market   *marketDataClient
 	clk      clock.Clock
+
+	privateGap *streamgap.Reporter
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
@@ -141,6 +146,22 @@ func profileFromConfig(cfg Config) (sdk.Profile, error) {
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
+	if a.exec.accountStream != nil && a.privateGap == nil {
+		a.privateGap = streamgap.New(VenueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+		if hooks, ok := a.exec.accountStream.(interface {
+			SetReconnectHooks(func(error), func())
+		}); ok {
+			hooks.SetReconnectHooks(func(err error) {
+				reason := "private account stream disconnected"
+				if err != nil {
+					reason = err.Error()
+				}
+				a.privateGap.Started(reason)
+			}, func() {
+				a.privateGap.Recovered("private account stream authentication and subscriptions restored")
+			})
+		}
+	}
 	if err := a.market.Start(ctx); err != nil {
 		return err
 	}

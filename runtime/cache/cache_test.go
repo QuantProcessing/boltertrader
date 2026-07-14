@@ -29,6 +29,35 @@ func TestOrderUpsertAndOpenFilter(t *testing.T) {
 	}
 }
 
+func TestOpenOrdersIncludesUnknownSafetyState(t *testing.T) {
+	c := New()
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{AccountID: "acct", ClientID: "unknown"},
+		Status:  enums.StatusUnknown,
+	})
+	open := c.OpenOrders()
+	if len(open) != 1 || open[0].Request.ClientID != "unknown" {
+		t.Fatalf("open orders=%+v, want UNKNOWN order retained as unresolved open state", open)
+	}
+}
+
+func TestApplyConfirmedCancelPreservesConcurrentFill(t *testing.T) {
+	c := New()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.UpsertOrder(model.Order{
+		Request:   model.OrderRequest{AccountID: "acct", ClientID: "cancel-race"},
+		Status:    enums.StatusFilled,
+		UpdatedAt: now.Add(time.Minute),
+	})
+	if !c.ApplyConfirmedCancel("acct", "cancel-race", now) {
+		t.Fatal("confirmed cancel did not find the order")
+	}
+	got, ok := c.OrderForAccount("acct", "cancel-race")
+	if !ok || got.Status != enums.StatusFilled {
+		t.Fatalf("order=(%+v,%v), want concurrent FILLED preserved", got, ok)
+	}
+}
+
 func TestOrderUpsertRejectsStaleTerminalRegression(t *testing.T) {
 	c := New()
 	newer := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)

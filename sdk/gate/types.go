@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -198,12 +199,15 @@ type FuturesTrade struct {
 }
 
 type FuturesAccount struct {
+	User                   int64                 `json:"user"`
 	Total                  string                `json:"total"`
 	UnrealisedPNL          string                `json:"unrealised_pnl"`
 	PositionMargin         string                `json:"position_margin"`
 	OrderMargin            string                `json:"order_margin"`
 	Available              string                `json:"available"`
 	Currency               string                `json:"currency"`
+	InDualMode             bool                  `json:"in_dual_mode"`
+	PositionMode           string                `json:"position_mode"`
 	PositionInitialMargin  string                `json:"position_initial_margin"`
 	MaintenanceMargin      string                `json:"maintenance_margin"`
 	CrossOrderMargin       string                `json:"cross_order_margin"`
@@ -251,10 +255,36 @@ type Position struct {
 	UpdateID           int64      `json:"update_id"`
 }
 
+func (p *Position) UnmarshalJSON(data []byte) error {
+	normalized, err := normalizeGateWireFields(data,
+		[]string{
+			"leverage", "risk_limit", "leverage_max", "maintenance_rate", "value", "margin",
+			"entry_price", "liq_price", "mark_price", "initial_margin", "maintenance_margin",
+			"unrealised_pnl", "realised_pnl", "history_pnl", "last_close_pnl", "realised_point",
+			"history_point", "cross_leverage_limit",
+		},
+		[]string{"user", "size", "adl_ranking", "pending_orders", "update_time", "update_id"},
+	)
+	if err != nil {
+		return err
+	}
+	type wirePosition Position
+	return json.Unmarshal(normalized, (*wirePosition)(p))
+}
+
 type OrderClose struct {
 	ID    int64  `json:"id"`
 	Price string `json:"price"`
 	IsLiq bool   `json:"is_liq"`
+}
+
+func (o *OrderClose) UnmarshalJSON(data []byte) error {
+	normalized, err := normalizeGateWireFields(data, []string{"price"}, []string{"id"})
+	if err != nil {
+		return err
+	}
+	type wireOrderClose OrderClose
+	return json.Unmarshal(normalized, (*wireOrderClose)(o))
 }
 
 type FuturesOrder struct {
@@ -284,6 +314,19 @@ type FuturesOrder struct {
 	UpdateTime   NumberString `json:"update_time,omitempty"`
 }
 
+func (o *FuturesOrder) UnmarshalJSON(data []byte) error {
+	normalized, err := normalizeGateWireFields(
+		data,
+		[]string{"price", "fill_price", "mkfr", "tkfr"},
+		[]string{"id", "user", "size", "iceberg", "left", "refu", "stp_id"},
+	)
+	if err != nil {
+		return err
+	}
+	type wireFuturesOrder FuturesOrder
+	return json.Unmarshal(normalized, (*wireFuturesOrder)(o))
+}
+
 type MyFuturesTrade struct {
 	ID         int64        `json:"id"`
 	CreateTime NumberString `json:"create_time"`
@@ -297,12 +340,26 @@ type MyFuturesTrade struct {
 	Fee        string       `json:"fee"`
 }
 
+func (t *MyFuturesTrade) UnmarshalJSON(data []byte) error {
+	normalized, err := normalizeGateWireFields(
+		data,
+		[]string{"price", "fee"},
+		[]string{"id", "order_id", "size", "close_size"},
+	)
+	if err != nil {
+		return err
+	}
+	type wireMyFuturesTrade MyFuturesTrade
+	return json.Unmarshal(normalized, (*wireMyFuturesTrade)(t))
+}
+
 type WSError struct {
 	Code    int64  `json:"code"`
 	Message string `json:"message"`
 }
 
 type WSEnvelope struct {
+	ID      uint64          `json:"id"`
 	Time    int64           `json:"time"`
 	TimeMS  int64           `json:"time_ms"`
 	Channel string          `json:"channel"`
@@ -359,6 +416,33 @@ type SpotBalance struct {
 	ChangeType   string `json:"change_type"`
 }
 
+func (b *SpotBalance) UnmarshalJSON(data []byte) error {
+	type wireSpotBalance SpotBalance
+	base := wireSpotBalance(*b)
+	decoded := struct {
+		Timestamp   NumberString `json:"timestamp"`
+		TimestampMS NumberString `json:"timestamp_ms"`
+		User        NumberString `json:"user"`
+		*wireSpotBalance
+	}{wireSpotBalance: &base}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	timestamp, err := parseGateInt64(decoded.Timestamp)
+	if err != nil {
+		return err
+	}
+	user, err := parseGateInt64(decoded.User)
+	if err != nil {
+		return err
+	}
+	base.Timestamp = timestamp
+	base.TimestampMS = string(decoded.TimestampMS)
+	base.User = user
+	*b = SpotBalance(base)
+	return nil
+}
+
 type SpotUserTrade struct {
 	ID           string `json:"id"`
 	UserID       int64  `json:"user_id"`
@@ -376,6 +460,78 @@ type SpotUserTrade struct {
 	Text         string `json:"text"`
 }
 
+func (t *SpotUserTrade) UnmarshalJSON(data []byte) error {
+	type wireSpotUserTrade SpotUserTrade
+	base := wireSpotUserTrade(*t)
+	decoded := struct {
+		ID           NumberString `json:"id"`
+		CreateTime   NumberString `json:"create_time"`
+		CreateTimeMS NumberString `json:"create_time_ms"`
+		*wireSpotUserTrade
+	}{wireSpotUserTrade: &base}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	base.ID = string(decoded.ID)
+	base.CreateTime = string(decoded.CreateTime)
+	base.CreateTimeMS = string(decoded.CreateTimeMS)
+	*t = SpotUserTrade(base)
+	return nil
+}
+
+func parseGateInt64(value NumberString) (int64, error) {
+	text := strings.TrimSpace(string(value))
+	if text == "" || text == "null" {
+		return 0, nil
+	}
+	return strconv.ParseInt(text, 10, 64)
+}
+
+func normalizeGateWireFields(data []byte, stringFields, integerFields []string) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for _, name := range stringFields {
+		raw, ok := fields[name]
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(string(raw))
+		if !gateJSONNumberToken(text) {
+			continue
+		}
+		fields[name] = json.RawMessage(strconv.Quote(text))
+	}
+	for _, name := range integerFields {
+		raw, ok := fields[name]
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(string(raw))
+		if len(text) < 2 || text[0] != '"' {
+			continue
+		}
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			return nil, err
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(encoded), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		fields[name] = json.RawMessage(strconv.FormatInt(value, 10))
+	}
+	return json.Marshal(fields)
+}
+
+func gateJSONNumberToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	return value[0] == '-' || (value[0] >= '0' && value[0] <= '9')
+}
+
 type FuturesBalance struct {
 	Time     int64  `json:"time"`
 	TimeMS   int64  `json:"time_ms"`
@@ -384,4 +540,17 @@ type FuturesBalance struct {
 	Change   string `json:"change"`
 	Total    string `json:"total"`
 	Text     string `json:"text"`
+}
+
+func (b *FuturesBalance) UnmarshalJSON(data []byte) error {
+	normalized, err := normalizeGateWireFields(
+		data,
+		[]string{"change", "total"},
+		[]string{"time", "time_ms", "user"},
+	)
+	if err != nil {
+		return err
+	}
+	type wireFuturesBalance FuturesBalance
+	return json.Unmarshal(normalized, (*wireFuturesBalance)(b))
 }

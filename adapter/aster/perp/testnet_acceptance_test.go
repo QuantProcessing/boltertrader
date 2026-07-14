@@ -97,7 +97,7 @@ func TestAsterPerpTestnetRuntimeAcceptance(t *testing.T) {
 		AccountIDDefault,
 		btruntime.WithAccountID(AccountIDDefault),
 	)
-	runtimeaccept.AttachAccountRequiredRiskWithAcceptanceLimit(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)
 	report, err := node.Resync(ctx)
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Aster Perp Testnet initial reconcile")
@@ -125,9 +125,8 @@ func TestAsterPerpTestnetRuntimeAcceptance(t *testing.T) {
 	}()
 	defer stopAsterPerpRuntimeNode(t, stop, done)
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
-		t.Fatalf("Aster Perp Testnet runtime active before risk probe: %v", err)
+		t.Fatalf("Aster Perp Testnet runtime active before lifecycle: %v", err)
 	}
-	runtimeaccept.AssertRuntimeOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), inst.ID)
 
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
 		t.Fatalf("Aster Perp Testnet runtime order lifecycle: %v", err)
@@ -198,12 +197,20 @@ func asterPerpAcceptanceHTTPClient(t *testing.T, proxyURL string) *http.Client {
 	if strings.TrimSpace(proxyURL) == "" {
 		return client
 	}
-	parsed, err := url.Parse(proxyURL)
+	parsed, err := parseAsterPerpAcceptanceProxyURL(proxyURL)
 	if err != nil {
-		t.Fatalf("Aster Testnet proxy URL: %v", err)
+		t.Fatal(err)
 	}
 	client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
 	return client
+}
+
+func parseAsterPerpAcceptanceProxyURL(proxyURL string) (*url.URL, error) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("Aster Testnet proxy URL is invalid")
+	}
+	return parsed, nil
 }
 
 func requireAsterPerpAcceptanceInstrument(t *testing.T, adapter *Adapter, desired string) *model.Instrument {

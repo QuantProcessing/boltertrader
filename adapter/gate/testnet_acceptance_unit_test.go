@@ -1,12 +1,25 @@
 package gate
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/shopspring/decimal"
 )
+
+func TestGateRuntimeAcceptanceBindsConfiguredMaxNotional(t *testing.T) {
+	data, err := os.ReadFile("testnet_acceptance_test.go")
+	if err != nil {
+		t.Fatalf("read acceptance source: %v", err)
+	}
+	const want = "runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("Gate runtime acceptance must bind cfg.MaxNotionalUSDT through the runtime risk engine")
+	}
+}
 
 func TestGateAcceptanceQuantityUsesContractMultiplierForPerpNotional(t *testing.T) {
 	inst := &model.Instrument{
@@ -64,5 +77,31 @@ func TestGateAcceptanceQuantityCoversBufferedSpotCloseMinNotional(t *testing.T) 
 	}
 	if closeQty.Mul(price).LessThan(inst.MinNotional) {
 		t.Fatalf("close notional=%s below min %s", closeQty.Mul(price), inst.MinNotional)
+	}
+}
+
+func TestGatePerpAcceptanceDoesNotAutoFlattenPreExistingPositions(t *testing.T) {
+	provider := newInstrumentProvider()
+	inst := &model.Instrument{
+		ID:                 model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		Base:               "BTC",
+		Quote:              "USDT",
+		Settle:             "USDT",
+		VenueSymbol:        "BTC_USDT",
+		PriceTick:          decimal.RequireFromString("0.1"),
+		SizeStep:           decimal.NewFromInt(1),
+		MinQty:             decimal.NewFromInt(1),
+		ContractMultiplier: decimal.RequireFromString("0.0001"),
+	}
+	provider.LoadSnapshot([]*model.Instrument{inst})
+	adapter := &Adapter{provider: provider}
+	book := &model.OrderBook{
+		Bids: []model.BookLevel{{Price: decimal.NewFromInt(100000)}},
+		Asks: []model.BookLevel{{Price: decimal.NewFromInt(100010)}},
+	}
+
+	spec := gateAcceptanceLifecycleSpec(t, adapter, "Gate Testnet USDT Perp", inst.ID, book, decimal.NewFromInt(100))
+	if spec.CleanExistingPosition {
+		t.Fatal("Gate Perp acceptance must reject, not auto-flatten, pre-existing positions")
 	}
 }

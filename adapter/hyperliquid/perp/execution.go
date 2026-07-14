@@ -2,13 +2,16 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/cloid"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/instruments"
+	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/ordersemantics"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -78,6 +81,9 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}
 	status, err := c.rest.PlaceOrder(ctx, hlReq)
 	if err != nil {
+		if errors.Is(err, sdk.ErrOrderRejected) {
+			return nil, errors.Join(contract.ErrVenueRejected, err)
+		}
 		return nil, err
 	}
 	now := c.clk.Now()
@@ -206,22 +212,43 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
+	orderType, tif, triggerPrice := ordersemantics.FromWire(current.OrderType, current.Tif, current.IsTrigger, current.TriggerPx)
+	if orderType == enums.TypeUnknown || (orderType == enums.TypeLimit && (tif == enums.TifUnknown || tif == enums.TifFOK)) || !current.HasReduceOnly {
+		return nil, fmt.Errorf("hyperliquid perp: cannot safely reconstruct order semantics type=%q tif=%q reduceOnlyPresent=%v for modify: %w", current.OrderType, current.Tif, current.HasReduceOnly, errs.ErrNotSupported)
+	}
+	request := model.OrderRequest{
+		AccountID: c.accountID, InstrumentID: id,
+		Side: sideFromHL(current.Side), Type: orderType, TIF: tif,
+		Quantity: qty, Price: price, TriggerPrice: triggerPrice,
+		PositionSide: enums.PosNet, ReduceOnly: current.ReduceOnly,
+	}
+	var venueCloid *string
+	if current.Cliod != "" {
+		value := current.Cliod
+		venueCloid = &value
+		request.ClientID = c.ids.ClientID(current.Cliod, venueOrderID)
+	}
+	wireOrderType, err := orderTypeToHL(request)
+	if err != nil {
+		return nil, err
+	}
 	req := sdkperp.ModifyOrderRequest{
 		Oid: &oid,
 		Order: sdkperp.PlaceOrderRequest{
-			AssetID:    *inst.AssetIndex,
-			IsBuy:      isBuy,
-			Price:      decimalFloat64(price),
-			Size:       decimalFloat64(qty),
-			ReduceOnly: false,
-			OrderType:  sdkperp.OrderType{Limit: &sdkperp.OrderTypeLimit{Tif: sdk.TifGtc}},
+			AssetID:       *inst.AssetIndex,
+			IsBuy:         isBuy,
+			Price:         decimalFloat64(price),
+			Size:          decimalFloat64(qty),
+			ReduceOnly:    current.ReduceOnly,
+			ClientOrderID: venueCloid,
+			OrderType:     wireOrderType,
 		},
 	}
 	status, err := c.rest.ModifyOrder(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	order := &model.Order{Request: model.OrderRequest{AccountID: c.accountID, InstrumentID: id, PositionSide: enums.PosNet}, VenueOrderID: venueOrderID, UpdatedAt: c.clk.Now()}
+	order := &model.Order{Request: request, VenueOrderID: venueOrderID, UpdatedAt: c.clk.Now()}
 	applyOrderStatus(order, status)
 	*order = c.rememberOrder(*order)
 	return order, nil
@@ -232,7 +259,11 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	if err != nil {
 		return nil, err
 	}
-	orders, err := c.rest.UserOpenOrders(ctx, c.rest.AccountAddr)
+	dex := ""
+	if value, _, ok := strings.Cut(inst.VenueSymbol, ":"); ok {
+		dex = value
+	}
+	orders, err := c.rest.UserOpenOrdersForDex(ctx, c.rest.AccountAddr, dex)
 	if err != nil {
 		return nil, err
 	}
@@ -253,17 +284,20 @@ func orderFromHL(o *sdkperp.Order, provider *instruments.Registry, accountID str
 		return model.Order{}
 	}
 	id, _ := provider.ResolveVenueSymbol(o.Coin)
+	orderType, tif, triggerPrice := ordersemantics.FromWire(o.OrderType, o.Tif, o.IsTrigger, o.TriggerPx)
 	return model.Order{
 		Request: model.OrderRequest{
 			AccountID:    accountID,
 			InstrumentID: id,
 			ClientID:     o.Cliod,
 			Side:         sideFromHL(o.Side),
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifGTC,
+			Type:         orderType,
+			TIF:          tif,
 			Quantity:     dec(o.OrigSz),
 			Price:        dec(o.LimitPx),
+			TriggerPrice: triggerPrice,
 			PositionSide: enums.PosNet,
+			ReduceOnly:   o.ReduceOnly,
 		},
 		VenueOrderID: strconv.FormatInt(o.Oid, 10),
 		Status:       enums.StatusNew,
@@ -278,7 +312,7 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 		return nil, nil
 	}
 	query.AccountID = accountID
-	orders, err := c.rest.UserOpenOrders(ctx, c.rest.AccountAddr)
+	orders, err := c.openOrdersForStatusQuery(ctx, query.InstrumentID)
 	if err != nil {
 		return nil, err
 	}
@@ -298,22 +332,92 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	return out, nil
 }
 
+func (c *executionClient) openOrdersForStatusQuery(ctx context.Context, id model.InstrumentID) ([]sdkperp.Order, error) {
+	if id.Symbol != "" {
+		inst, err := c.instrument(id)
+		if err != nil {
+			return nil, err
+		}
+		dex := ""
+		if value, _, ok := strings.Cut(inst.VenueSymbol, ":"); ok {
+			dex = value
+		}
+		return c.rest.UserOpenOrdersForDex(ctx, c.rest.AccountAddr, dex)
+	}
+	dexes := append([]string{""}, hip3DexesFromRegistry(c.provider)...)
+	var out []sdkperp.Order
+	for _, dex := range dexes {
+		orders, err := c.rest.UserOpenOrdersForDex(ctx, c.rest.AccountAddr, dex)
+		if err != nil {
+			return nil, fmt.Errorf("hyperliquid perp: load open orders for dex %q: %w", dex, err)
+		}
+		out = append(out, orders...)
+	}
+	return out, nil
+}
+
 func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
 	accountID, ok := c.scopedReportAccountID(query.AccountID)
 	if !ok {
 		return nil, nil
 	}
 	query.AccountID = accountID
-	if query.VenueOrderID != "" && query.InstrumentID.Symbol != "" {
-		oid, err := parseVenueOrderID(query.VenueOrderID)
+	if query.VenueOrderID != "" || query.ClientID != "" {
+		var status *sdkperp.OrderStatusInfo
+		var err error
+		if query.VenueOrderID != "" {
+			oid, parseErr := parseVenueOrderID(query.VenueOrderID)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			status, err = c.rest.OrderStatus(ctx, c.rest.AccountAddr, oid)
+		} else {
+			venueCloid := c.ids.VenueCloidForClient(query.ClientID)
+			if venueCloid == "" {
+				venueCloid = c.ids.VenueCloid(query.ClientID)
+			}
+			status, err = c.rest.OrderStatusByCloid(ctx, c.rest.AccountAddr, venueCloid)
+		}
+		if errors.Is(err, sdk.ErrOrderNotFound) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}
-		status, err := c.rest.OrderStatus(ctx, c.rest.AccountAddr, oid)
-		if err != nil {
-			return nil, err
+		if status == nil || status.Oid <= 0 {
+			return nil, fmt.Errorf("hyperliquid perp: exact order status returned invalid oid")
 		}
-		order := orderFromStatusInfo(status, query.InstrumentID, c.accountID)
+		if query.ClientID != "" && query.VenueOrderID != "" {
+			expectedCloid := c.ids.VenueCloidForClient(query.ClientID)
+			if expectedCloid == "" {
+				expectedCloid = cloid.ForClientID(query.ClientID)
+			}
+			if status.Cliod == "" || !strings.EqualFold(status.Cliod, expectedCloid) {
+				return nil, fmt.Errorf("hyperliquid perp: exact order status client identity mismatch: client_id=%q expected_cloid=%q got_cloid=%q", query.ClientID, expectedCloid, status.Cliod)
+			}
+		}
+		id := query.InstrumentID
+		if id.Symbol == "" {
+			var resolved bool
+			id, resolved = c.provider.ResolveVenueSymbol(status.Coin)
+			if !resolved {
+				return nil, fmt.Errorf("hyperliquid perp: exact order status returned unknown coin %q", status.Coin)
+			}
+		} else {
+			inst, instrumentErr := c.instrument(id)
+			if instrumentErr != nil {
+				return nil, instrumentErr
+			}
+			if inst.VenueSymbol != status.Coin {
+				return nil, fmt.Errorf("hyperliquid perp: exact order status instrument mismatch: requested %q, got %q", inst.VenueSymbol, status.Coin)
+			}
+		}
+		clientID := query.ClientID
+		venueOrderID := strconv.FormatInt(status.Oid, 10)
+		if clientID == "" {
+			clientID = c.ids.ClientID(status.Cliod, venueOrderID)
+		}
+		order := orderFromStatusInfo(status, id, accountID, clientID)
 		order = c.rememberOrder(order)
 		report := model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: c.clk.Now()}
 		return &report, nil
@@ -330,35 +434,98 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 	return &reports[0], nil
 }
 
-func orderFromStatusInfo(status *sdkperp.OrderStatusInfo, id model.InstrumentID, accountID string) model.Order {
+func orderFromStatusInfo(status *sdkperp.OrderStatusInfo, id model.InstrumentID, accountID, clientID string) model.Order {
 	if status == nil {
-		return model.Order{Request: model.OrderRequest{AccountID: accountID, InstrumentID: id, PositionSide: enums.PosNet}}
+		return model.Order{Request: model.OrderRequest{AccountID: accountID, InstrumentID: id, ClientID: clientID, PositionSide: enums.PosNet}}
 	}
+	updatedAt := parseMillis(status.StatusTimestamp)
+	if updatedAt.IsZero() {
+		updatedAt = parseMillis(status.Timestamp)
+	}
+	orderType, tif, triggerPrice := ordersemantics.FromWire(status.OrderType, status.Tif, status.IsTrigger, status.TriggerPx)
 	return model.Order{
 		Request: model.OrderRequest{
 			AccountID:    accountID,
 			InstrumentID: id,
+			ClientID:     clientID,
 			Side:         sideFromHL(status.Side),
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifGTC,
+			Type:         orderType,
+			TIF:          tif,
 			Quantity:     dec(status.OrigSz),
 			Price:        dec(status.LimitPx),
+			TriggerPrice: triggerPrice,
 			PositionSide: enums.PosNet,
+			ReduceOnly:   status.ReduceOnly,
 		},
 		VenueOrderID: strconv.FormatInt(status.Oid, 10),
 		Status:       statusFromHL(status.Status),
 		FilledQty:    dec(status.FilledSz),
 		AvgFillPrice: dec(status.AvgPx),
 		CreatedAt:    parseMillis(status.Timestamp),
-		UpdatedAt:    parseMillis(status.Timestamp),
+		UpdatedAt:    updatedAt,
 	}
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
-	if _, ok := c.scopedReportAccountID(query.AccountID); !ok {
+	accountID, ok := c.scopedReportAccountID(query.AccountID)
+	if !ok {
 		return nil, nil
 	}
-	return nil, fmt.Errorf("hyperliquid perp: fill report history is not implemented: %w", errs.ErrNotSupported)
+	query.AccountID = accountID
+	venueOrderID := query.VenueOrderID
+	if venueOrderID == "" && query.ClientID != "" {
+		venueOrderID = c.ids.VenueOrderIDForClient(query.ClientID)
+		if venueOrderID == "" {
+			report, err := c.GenerateOrderStatusReport(ctx, model.SingleOrderStatusQuery{
+				AccountID: accountID, InstrumentID: query.InstrumentID, ClientID: query.ClientID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if report == nil {
+				return nil, nil
+			}
+			venueOrderID = report.Order.VenueOrderID
+		}
+	}
+	fills, err := c.rest.UserFills(ctx, c.rest.AccountAddr)
+	if err != nil {
+		return nil, err
+	}
+	now := c.clk.Now()
+	out := make([]model.FillReport, 0)
+	for i := range fills {
+		venueID := strconv.FormatInt(fills[i].Oid, 10)
+		if venueOrderID != "" && venueID != venueOrderID {
+			continue
+		}
+		id, resolved := c.provider.ResolveVenueSymbol(fills[i].Coin)
+		if !resolved {
+			continue
+		}
+		liquidity := enums.LiqMaker
+		if fills[i].Crossed {
+			liquidity = enums.LiqTaker
+		}
+		fill := model.Fill{
+			AccountID: accountID, InstrumentID: id, VenueOrderID: venueID,
+			ClientID: c.ids.ClientID("", venueID), TradeID: strconv.FormatInt(fills[i].Tid, 10),
+			Side: sideFromHL(fills[i].Side), Liquidity: liquidity, Price: dec(fills[i].Px),
+			Quantity: dec(fills[i].Sz), Fee: dec(fills[i].Fee), FeeCurrency: fills[i].FeeToken,
+			Timestamp: parseMillis(fills[i].Time),
+		}
+		if fill.ClientID == "" && query.ClientID != "" && venueID == venueOrderID {
+			fill.ClientID = query.ClientID
+		}
+		if !model.FillMatchesReportQuery(fill, query) || (!query.Since.IsZero() && fill.Timestamp.Before(query.Since)) || (!query.Until.IsZero() && fill.Timestamp.After(query.Until)) {
+			continue
+		}
+		out = append(out, model.FillReport{Venue: venueName, AccountID: accountID, Fill: fill, ReportedAt: now})
+		if query.Limit > 0 && len(out) >= query.Limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
@@ -394,8 +561,15 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
 
 func (c *executionClient) emit(ev contract.ExecEvent) {
+	c.emitWithFlags(ev, 0)
+}
+
+func (c *executionClient) emitWithFlags(ev contract.ExecEvent, flags contract.EventFlags) {
 	ev = c.normalizeExecEvent(ev)
-	c.stream.Emit(contract.NewExecEnvelope(ev))
+	c.stream.Emit(contract.NewExecEnvelopeWithMeta(ev, contract.EventMeta{
+		Source: contract.SourceAdapterStream,
+		Flags:  contract.EventFlagFromStream | flags,
+	}))
 }
 
 func (c *executionClient) rememberOrder(order model.Order) model.Order {
@@ -404,6 +578,9 @@ func (c *executionClient) rememberOrder(order model.Order) model.Order {
 		return order
 	}
 	c.mu.Lock()
+	if known, ok := c.orders[order.VenueOrderID]; ok {
+		order.Request = ordersemantics.MergeKnownRequest(known.Request, order.Request)
+	}
 	c.orders[order.VenueOrderID] = order
 	c.mu.Unlock()
 	return order

@@ -2,6 +2,7 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -24,6 +25,11 @@ func TestBinanceDemoExecAcceptance(t *testing.T) {
 
 const demoDefaultMaxNotionalUSDT = "100"
 
+const (
+	demoUnresolvedLookupAttempts = 4
+	demoUnresolvedLookupDelay    = 250 * time.Millisecond
+)
+
 func runBinanceDemoExecAcceptance(t *testing.T) {
 	t.Helper()
 
@@ -42,13 +48,11 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 		DemoAPISecret: apiSecret,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo adapter initialization")
 		t.Fatalf("new Binance Demo adapter: %v", err)
 	}
 	defer adapter.Close()
 
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo user-data stream")
 		t.Fatalf("start Binance Demo adapter stream: %v", err)
 	}
 
@@ -57,7 +61,6 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 
 	info, err := adapter.rest.ExchangeInfo(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
 	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
@@ -68,7 +71,6 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 
 	mark, err := adapter.rest.MarkPrice(ctx, spec.VenueSymbol)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo mark price")
 		t.Fatalf("mark price: %v", err)
 	}
 	refPrice := dec(mark.MarkPrice)
@@ -76,22 +78,24 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 	if restingPrice.LessThanOrEqual(decimal.Zero) {
 		t.Fatalf("computed non-positive resting price %s from reference %s", restingPrice, refPrice)
 	}
-	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, refPrice)
+	fillPrice := ceilDecimalToStep(refPrice.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
+	if fillPrice.LessThanOrEqual(decimal.Zero) {
+		t.Fatalf("computed non-positive IOC fill price %s from reference %s", fillPrice, refPrice)
+	}
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, fillPrice)
 	if err != nil {
 		t.Fatalf("select safe Demo order quantity: %v", err)
 	}
 
 	if open, err := adapter.Execution.OpenOrders(ctx, instID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping Binance Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Fatalf("Binance Demo acceptance requires a clean account: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo position preflight")
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
-		t.Skipf("skipping Binance Demo acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Fatalf("Binance Demo acceptance requires a flat account: %s already has exposure %s; flatten the Demo account before running", spec.VenueSymbol, exposure)
 	}
 
 	cleanup := newDemoAcceptanceCleanupState(spec.VenueSymbol, qty)
@@ -101,9 +105,8 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 		}
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelCleanup()
-		meta := cleanup.Metadata()
-		if err := cleanupBinanceDemoAcceptance(cleanupCtx, adapter, instID, &meta); err != nil {
-			t.Fatalf("%v\n%s", err, meta.Remediation())
+		if err := cleanupBinanceDemoAcceptance(cleanupCtx, adapter, instID, spec, maxNotional, &cleanup); err != nil {
+			t.Fatalf("%v\n%s", err, cleanup.Metadata().Remediation())
 		}
 	}()
 
@@ -120,40 +123,45 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("submit Demo resting order: %v", err)
+		t.Fatalf("submit Demo resting order (outcome ambiguous; only a known venue order can be canceled): %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	cleanup.RecordVenueOrderID(resting.VenueOrderID)
 	if resting.Status == enums.StatusFilled || !resting.FilledQty.IsZero() {
-		t.Fatalf("resting place/cancel order unexpectedly filled: %+v", resting)
+		cleanup.ConfirmFill(resting.FilledQty)
+		t.Fatalf("resting place/cancel order unexpectedly filled: %+v\n%s", resting, cleanup.Metadata().Remediation())
 	}
 	if err := adapter.Execution.Cancel(ctx, instID, resting.VenueOrderID); err != nil {
-		t.Fatalf("cancel Demo resting order %s: %v", resting.VenueOrderID, err)
+		t.Fatalf("cancel Demo resting order %s: %v\n%s", resting.VenueOrderID, err, cleanup.Metadata().Remediation())
 	}
-	if _, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "CANCELED"); err != nil {
-		t.Fatalf("wait for resting order cancel: %v", err)
+	restingFinal, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "CANCELED")
+	if err != nil {
+		t.Fatalf("wait for resting order cancel: %v\n%s", err, cleanup.Metadata().Remediation())
+	}
+	cleanup.MarkOrderTerminal(resting.VenueOrderID)
+	if partialQty := dec(restingFinal.ExecutedQty); partialQty.IsPositive() {
+		cleanup.ConfirmFill(partialQty)
+		t.Fatalf("resting order cancellation reported unexpected executed quantity %s\n%s", partialQty, cleanup.Metadata().Remediation())
+	}
+	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
+		t.Fatalf("resting cancellation did not produce authoritative no-open state: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 
 	fillClientID := demoClientOrderID("fill")
 	cleanup.Arm(enums.SideBuy, fillClientID)
-	filled, err := adapter.Execution.Submit(ctx, model.OrderRequest{
-		InstrumentID: instID,
-		ClientID:     fillClientID,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeMarket,
-		Quantity:     qty,
-		PositionSide: enums.PosNet,
-	})
+	filled, err := adapter.Execution.Submit(ctx, demoFillOrderRequest(instID, fillClientID, qty, fillPrice))
 	if err != nil {
-		t.Fatalf("submit Demo fill order: %v", err)
+		t.Fatalf("submit Demo fill order (outcome ambiguous; no automatic close attempted): %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	cleanup.RecordVenueOrderID(filled.VenueOrderID)
-	filledResp, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, "FILLED")
+	filledResp, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, binanceDemoTerminalStatuses...)
 	if err != nil {
-		t.Fatalf("wait for fill order: %v", err)
+		t.Fatalf("wait for authoritative fill order terminal status: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
-	filledQty := dec(filledResp.ExecutedQty)
-	if filledQty.IsZero() {
-		t.Fatalf("filled order reported zero executed quantity: %+v", filledResp)
+	filledQty, err := validateBinanceDemoFill(filledResp, maxNotional)
+	cleanup.MarkOrderTerminal(filled.VenueOrderID)
+	cleanup.ConfirmFill(filledQty)
+	if err != nil {
+		t.Fatalf("validate bounded Demo fill: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	if err := waitForDemoExecObservation(ctx, execEvents, fillClientID, filled.VenueOrderID); err != nil {
 		t.Fatalf("adapter execution stream did not observe Demo fill: %v", err)
@@ -167,9 +175,13 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 		cleanup.SetExposure(exposure)
 	}
 
-	meta := cleanup.Metadata()
-	if err := closeBinanceDemoExposure(ctx, adapter, instID, meta.Exposure); err != nil {
-		t.Fatalf("close Demo exposure: %v\n%s", err, meta.Remediation())
+	closeClientID := demoClientOrderID("close")
+	closed, err := closeBinanceDemoExposure(ctx, adapter, instID, spec, &cleanup, closeClientID)
+	if err != nil {
+		t.Fatalf("close Demo exposure (not retried because outcome may be ambiguous): %v\n%s", err, cleanup.Metadata().Remediation())
+	}
+	if closed != nil {
+		cleanup.RecordVenueOrderID(closed.VenueOrderID)
 	}
 	if err := waitForDemoFlat(ctx, adapter, instID); err != nil {
 		meta := cleanup.Metadata()
@@ -178,6 +190,9 @@ func runBinanceDemoExecAcceptance(t *testing.T) {
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
 		meta := cleanup.Metadata()
 		t.Fatalf("wait for no Demo open orders: %v\n%s", err, meta.Remediation())
+	}
+	if closed != nil {
+		cleanup.MarkOrderTerminal(closed.VenueOrderID)
 	}
 	cleanup.MarkClean()
 }
@@ -383,52 +398,231 @@ func demoCurrentExposure(ctx context.Context, adapter *Adapter, id model.Instrum
 	if err != nil {
 		return decimal.Zero, err
 	}
-	exposure := decimal.Zero
-	for _, position := range positions {
-		if position.InstrumentID == id {
-			exposure = exposure.Add(position.Quantity)
-		}
-	}
-	return exposure, nil
+	return demoExposureFromPositions(positions, id)
 }
 
-func cleanupBinanceDemoAcceptance(ctx context.Context, adapter *Adapter, id model.InstrumentID, meta *demoAcceptanceCleanupMetadata) error {
-	cancelErr := adapter.Execution.CancelAll(ctx, id)
-	exposure, err := demoCurrentExposure(ctx, adapter, id)
+func cleanupBinanceDemoAcceptance(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoAcceptanceSymbolSpec, maxNotional decimal.Decimal, state *demoAcceptanceCleanupState) error {
+	initialInspectErr := inspectRecordedDemoOrders(ctx, adapter, spec, state.ResolvedOpenOrders(), maxNotional, false, state)
+	resolveErr := resolveUnresolvedDemoOrdersWithRetry(ctx, state, maxNotional, demoUnresolvedLookupAttempts, demoUnresolvedLookupDelay, func(tracked demoAcceptanceTrackedOrder) (*sdkperp.OrderResponse, error) {
+		return lookupRecordedDemoOrder(ctx, adapter, spec, tracked)
+	})
+	remaining := state.TrackedOpenOrders()
+	cancelErr := cancelRecordedDemoOrders(
+		state,
+		func(venueOrderID string) error { return adapter.Execution.Cancel(ctx, id, venueOrderID) },
+		func() error { return waitForNoDemoOpenOrders(ctx, adapter, id) },
+	)
+	inspectErr := inspectRecordedDemoOrders(ctx, adapter, spec, remaining, maxNotional, true, state)
+	if len(state.UnresolvedClientOrders()) == 0 {
+		resolveErr = nil
+	}
+	if err := errors.Join(initialInspectErr, resolveErr, cancelErr, inspectErr); err != nil {
+		return fmt.Errorf("recorded-order cleanup failed; exposure close was not attempted: %w", err)
+	}
+	if !state.CloseAuthorized() {
+		return nil
+	}
+	exposure, err := waitForDemoExposure(ctx, adapter, id, state.CloseLimit())
+	if err != nil {
+		return fmt.Errorf("authoritative fill confirmed but exposure was not observable for bounded cleanup: %w", err)
+	}
+	state.SetExposure(exposure)
+	closeClientID := demoClientOrderID("cleanup-close")
+	closed, err := closeBinanceDemoExposure(ctx, adapter, id, spec, state, closeClientID)
 	if err != nil {
 		return err
 	}
-	meta.Exposure = exposure
-	if !exposure.IsZero() {
-		if err := closeBinanceDemoExposure(ctx, adapter, id, exposure); err != nil {
-			return err
-		}
+	if closed != nil {
+		state.RecordVenueOrderID(closed.VenueOrderID)
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, id); err != nil {
 		return err
 	}
-	if cancelErr != nil {
-		return fmt.Errorf("cancel all Demo open orders: %w", cancelErr)
+	if closed != nil {
+		state.MarkOrderTerminal(closed.VenueOrderID)
 	}
-	return waitForDemoFlat(ctx, adapter, id)
+	if err := waitForDemoFlat(ctx, adapter, id); err != nil {
+		exposure, _ := demoCurrentExposure(ctx, adapter, id)
+		state.SetExposure(exposure)
+		return err
+	}
+	state.SetExposure(decimal.Zero)
+	return nil
 }
 
-func closeBinanceDemoExposure(ctx context.Context, adapter *Adapter, id model.InstrumentID, exposure decimal.Decimal) error {
+func inspectRecordedDemoOrders(ctx context.Context, adapter *Adapter, spec demoAcceptanceSymbolSpec, orders []demoAcceptanceTrackedOrder, maxNotional decimal.Decimal, requireTerminal bool, state *demoAcceptanceCleanupState) error {
+	return inspectRecordedDemoOrdersWithLookup(orders, maxNotional, requireTerminal, state, func(tracked demoAcceptanceTrackedOrder) (*sdkperp.OrderResponse, error) {
+		return lookupRecordedDemoOrder(ctx, adapter, spec, tracked)
+	})
+}
+
+func lookupRecordedDemoOrder(ctx context.Context, adapter *Adapter, spec demoAcceptanceSymbolSpec, tracked demoAcceptanceTrackedOrder) (*sdkperp.OrderResponse, error) {
+	orderID := int64(0)
+	if tracked.VenueOrderID != "" {
+		parsed, err := strconv.ParseInt(tracked.VenueOrderID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid venue order id %s: %w", tracked.VenueOrderID, err)
+		}
+		orderID = parsed
+	}
+	if orderID == 0 && tracked.ClientID == "" {
+		return nil, fmt.Errorf("recorded Demo order has neither venue nor client id")
+	}
+	return adapter.rest.GetOrder(ctx, spec.VenueSymbol, orderID, tracked.ClientID)
+}
+
+func resolveUnresolvedDemoOrdersWithRetry(ctx context.Context, state *demoAcceptanceCleanupState, maxNotional decimal.Decimal, attempts int, retryDelay time.Duration, lookup func(demoAcceptanceTrackedOrder) (*sdkperp.OrderResponse, error)) error {
+	if attempts < 1 {
+		return fmt.Errorf("unresolved Demo order lookup attempts must be positive")
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		unresolved := state.UnresolvedClientOrders()
+		if len(unresolved) == 0 {
+			return nil
+		}
+		err := inspectRecordedDemoOrdersWithLookup(unresolved, maxNotional, false, state, lookup)
+		if err != nil {
+			lastErr = err
+		}
+		if len(state.UnresolvedClientOrders()) == 0 {
+			return err
+		} else {
+			if err == nil {
+				lastErr = fmt.Errorf("client-only Demo order lookup returned no venue identity")
+			}
+		}
+		if attempt == attempts {
+			break
+		}
+		if retryDelay > 0 {
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return fmt.Errorf("retry unresolved Demo order lookup: %w", ctx.Err())
+			case <-timer.C:
+			}
+		} else {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("retry unresolved Demo order lookup: %w", ctx.Err())
+			default:
+			}
+		}
+	}
+	return fmt.Errorf("resolve client-only Demo orders after %d attempts: %w", attempts, lastErr)
+}
+
+func inspectRecordedDemoOrdersWithLookup(orders []demoAcceptanceTrackedOrder, maxNotional decimal.Decimal, requireTerminal bool, state *demoAcceptanceCleanupState, lookup func(demoAcceptanceTrackedOrder) (*sdkperp.OrderResponse, error)) error {
+	var inspectErrs []error
+	for _, tracked := range orders {
+		resp, err := lookup(tracked)
+		if err != nil {
+			inspectErrs = append(inspectErrs, fmt.Errorf("inspect recorded Demo order venueID=%s clientID=%s: %w", tracked.VenueOrderID, tracked.ClientID, err))
+			continue
+		}
+		if resp == nil {
+			inspectErrs = append(inspectErrs, fmt.Errorf("inspect recorded Demo order venueID=%s clientID=%s returned nil response", tracked.VenueOrderID, tracked.ClientID))
+			continue
+		}
+		venueOrderID := tracked.VenueOrderID
+		if resp.OrderID != 0 {
+			resolvedVenueOrderID := strconv.FormatInt(resp.OrderID, 10)
+			if venueOrderID != "" && venueOrderID != resolvedVenueOrderID {
+				inspectErrs = append(inspectErrs, fmt.Errorf("recorded Demo order clientID=%s resolved to venue id %s, want %s", tracked.ClientID, resolvedVenueOrderID, venueOrderID))
+				continue
+			}
+			venueOrderID = resolvedVenueOrderID
+			state.ResolveClientOrder(tracked.ClientID, venueOrderID)
+		}
+		if !isBinanceDemoTerminalStatus(resp.Status) {
+			if requireTerminal {
+				inspectErrs = append(inspectErrs, fmt.Errorf("recorded Demo order venueID=%s clientID=%s remained non-terminal with status %s after no-open confirmation", venueOrderID, tracked.ClientID, resp.Status))
+			}
+			continue
+		}
+		executedQty, err := decimal.NewFromString(resp.ExecutedQty)
+		if err != nil {
+			inspectErrs = append(inspectErrs, fmt.Errorf("recorded Demo order venueID=%s clientID=%s has invalid executed quantity %q: %w", venueOrderID, tracked.ClientID, resp.ExecutedQty, err))
+			continue
+		}
+		if executedQty.IsPositive() {
+			confirmedQty, err := validateBinanceDemoFill(resp, maxNotional)
+			state.ConfirmFill(confirmedQty)
+			if err != nil {
+				inspectErrs = append(inspectErrs, fmt.Errorf("validate recorded Demo order venueID=%s clientID=%s fill: %w", venueOrderID, tracked.ClientID, err))
+				continue
+			}
+		}
+		if venueOrderID != "" {
+			state.MarkOrderTerminal(venueOrderID)
+		} else {
+			state.MarkClientOrderTerminal(tracked.ClientID)
+		}
+	}
+	return errors.Join(inspectErrs...)
+}
+
+func cancelRecordedDemoOrders(state *demoAcceptanceCleanupState, cancel func(string) error, confirmNoOpen func() error) error {
+	venueOrderIDs := state.CancellableVenueOrderIDs()
+	var cancelErrs []error
+	for _, venueOrderID := range venueOrderIDs {
+		if err := cancel(venueOrderID); err != nil {
+			cancelErrs = append(cancelErrs, fmt.Errorf("cancel recorded Demo order %s: %w", venueOrderID, err))
+		}
+	}
+	cancelErr := errors.Join(cancelErrs...)
+	if err := confirmNoOpen(); err != nil {
+		return errors.Join(cancelErr, fmt.Errorf("confirm no Demo open orders after recorded-order cancellation: %w", err))
+	}
+	for _, venueOrderID := range venueOrderIDs {
+		state.MarkOrderTerminal(venueOrderID)
+	}
+	return nil
+}
+
+func closeBinanceDemoExposure(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoAcceptanceSymbolSpec, state *demoAcceptanceCleanupState, clientID string) (*model.Order, error) {
+	maxCloseQty := state.CloseLimit()
+	if !maxCloseQty.IsPositive() {
+		return nil, fmt.Errorf("automatic close requires a positive authoritative fill quantity")
+	}
+	exposure, err := demoCurrentExposure(ctx, adapter, id)
+	if err != nil {
+		return nil, err
+	}
 	if exposure.IsZero() {
-		return nil
+		return nil, nil
 	}
-	side := enums.SideSell
 	if exposure.IsNegative() {
-		side = enums.SideBuy
+		return nil, fmt.Errorf("refusing automatic close of unexpected short exposure %s after a buy lifecycle", exposure)
 	}
-	_, err := adapter.Execution.Submit(ctx, model.OrderRequest{
+	if exposure.GreaterThan(maxCloseQty) {
+		return nil, fmt.Errorf("refusing automatic close: current exposure %s exceeds authoritative lifecycle fill %s", exposure, maxCloseQty)
+	}
+	book, err := adapter.Market.OrderBook(ctx, id, 5)
+	if err != nil {
+		return nil, err
+	}
+	if len(book.Bids) == 0 {
+		return nil, fmt.Errorf("cannot close long exposure: empty bid book")
+	}
+	price := floorDecimalToStep(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), spec.PriceTick)
+	state.Arm(enums.SideSell, clientID)
+	state.BeginCloseAttempt()
+	order, err := adapter.Execution.Submit(ctx, model.OrderRequest{
 		InstrumentID: id,
-		ClientID:     demoClientOrderID("close"),
-		Side:         side,
-		Type:         enums.TypeMarket,
-		Quantity:     exposure.Abs(),
+		ClientID:     clientID,
+		Side:         enums.SideSell,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     exposure,
+		Price:        price,
 		PositionSide: enums.PosNet,
 		ReduceOnly:   true,
 	})
-	return err
+	if err != nil {
+		return nil, fmt.Errorf("submit single bounded close (outcome ambiguous; not retried): %w", err)
+	}
+	return order, nil
 }

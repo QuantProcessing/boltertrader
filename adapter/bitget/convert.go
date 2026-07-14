@@ -138,6 +138,27 @@ func positionSideFromBitget(side string) enums.PositionSide {
 	}
 }
 
+func positionSideFromBitgetMode(kind enums.InstrumentKind, holdMode, side string) (enums.PositionSide, error) {
+	if kind == enums.KindSpot {
+		return enums.PosNet, nil
+	}
+	if kind != enums.KindPerp {
+		return enums.PosNet, fmt.Errorf("bitget: unsupported instrument kind %s for position mode: %w", kind, errs.ErrNotSupported)
+	}
+	switch strings.ToLower(strings.TrimSpace(holdMode)) {
+	case "one_way_mode", "single_hold":
+		return enums.PosNet, nil
+	case "hedge_mode", "double_hold":
+		positionSide := positionSideFromBitget(side)
+		if positionSide == enums.PosNet {
+			return enums.PosNet, fmt.Errorf("bitget: hedge position direction %q is invalid", side)
+		}
+		return positionSide, nil
+	default:
+		return enums.PosNet, fmt.Errorf("bitget: derivative hold mode %q is invalid", holdMode)
+	}
+}
+
 func orderRequestToBitget(req model.OrderRequest, inst *model.Instrument) (bitgetsdk.PlaceOrderRequest, error) {
 	category, err := categoryForInstrument(inst)
 	if err != nil {
@@ -176,26 +197,28 @@ func orderRequestToBitget(req model.OrderRequest, inst *model.Instrument) (bitge
 	if inst.ID.Kind == enums.KindPerp {
 		out.MarginMode = "crossed"
 		out.MarginCoin = inst.Settle
-		out.PosSide = bitgetPerpPosSide(req.Side, req.ReduceOnly)
-		if req.ReduceOnly {
-			out.TradeSide = "close"
+		switch req.PositionSide {
+		case enums.PosNet:
+			// One-way mode derives direction from side and uses reduceOnly for
+			// closes. Sending hedge-only fields makes the returned holdSide look
+			// authoritative even though the account is netted.
+		case enums.PosLong:
+			if req.ReduceOnly && req.Side != enums.SideSell {
+				return bitgetsdk.PlaceOrderRequest{}, fmt.Errorf("bitget: reduce-only long-leg order must sell: %w", errs.ErrNotSupported)
+			}
+			out.PosSide = "long"
 			out.ReduceOnly = ""
+		case enums.PosShort:
+			if req.ReduceOnly && req.Side != enums.SideBuy {
+				return bitgetsdk.PlaceOrderRequest{}, fmt.Errorf("bitget: reduce-only short-leg order must buy: %w", errs.ErrNotSupported)
+			}
+			out.PosSide = "short"
+			out.ReduceOnly = ""
+		default:
+			return bitgetsdk.PlaceOrderRequest{}, fmt.Errorf("bitget: unsupported position side %s: %w", req.PositionSide, errs.ErrNotSupported)
 		}
 	}
 	return out, nil
-}
-
-func bitgetPerpPosSide(side enums.OrderSide, reduceOnly bool) string {
-	switch {
-	case reduceOnly && side == enums.SideBuy:
-		return "short"
-	case reduceOnly && side == enums.SideSell:
-		return "long"
-	case side == enums.SideSell:
-		return "short"
-	default:
-		return "long"
-	}
 }
 
 func orderFromBitgetAction(resp *bitgetsdk.PlaceOrderResponse, req model.OrderRequest, now time.Time) model.Order {
@@ -208,7 +231,11 @@ func orderFromBitgetAction(resp *bitgetsdk.PlaceOrderResponse, req model.OrderRe
 	return model.Order{Request: req, VenueOrderID: resp.OrderID, Status: enums.StatusNew, CreatedAt: now, UpdatedAt: now}
 }
 
-func orderFromBitgetRecord(record bitgetsdk.OrderRecord, id model.InstrumentID, accountID string) model.Order {
+func orderFromBitgetRecord(record bitgetsdk.OrderRecord, id model.InstrumentID, accountID string) (model.Order, error) {
+	positionSide, err := positionSideFromBitgetMode(id.Kind, record.HoldMode, firstNonEmpty(record.PosSide, record.HoldSide))
+	if err != nil {
+		return model.Order{}, err
+	}
 	req := model.OrderRequest{
 		AccountID:    accountID,
 		InstrumentID: id,
@@ -219,7 +246,7 @@ func orderFromBitgetRecord(record bitgetsdk.OrderRecord, id model.InstrumentID, 
 		Quantity:     firstNonZero(dec(record.Qty), dec(record.Amount)),
 		Price:        dec(record.Price),
 		ReduceOnly:   strings.EqualFold(record.ReduceOnly, "yes"),
-		PositionSide: positionSideFromBitget(firstNonEmpty(record.PosSide, record.HoldSide)),
+		PositionSide: positionSide,
 	}
 	return model.Order{
 		Request:      req,
@@ -229,7 +256,7 @@ func orderFromBitgetRecord(record bitgetsdk.OrderRecord, id model.InstrumentID, 
 		AvgFillPrice: dec(record.AvgPrice),
 		CreatedAt:    timeFromMillisString(record.CreatedTime),
 		UpdatedAt:    timeFromMillisString(record.UpdatedTime),
-	}
+	}, nil
 }
 
 func fillFromBitget(record bitgetsdk.FillRecord, id model.InstrumentID, accountID string) model.Fill {
@@ -250,22 +277,34 @@ func fillFromBitget(record bitgetsdk.FillRecord, id model.InstrumentID, accountI
 	}
 }
 
-func positionFromBitget(record bitgetsdk.PositionRecord, resolve func(string) model.InstrumentID, accountID string, now time.Time) model.Position {
-	qty := firstNonZero(dec(record.Qty), dec(record.Total), dec(record.Size))
-	if positionSideFromBitget(firstNonEmpty(record.PosSide, record.HoldSide)) == enums.PosShort {
-		qty = qty.Neg()
+func positionFromBitget(record bitgetsdk.PositionRecord, resolve func(string) model.InstrumentID, accountID string, now time.Time) (model.Position, error) {
+	id := resolve(record.Symbol)
+	rawSide := firstNonEmpty(record.PosSide, record.HoldSide)
+	positionSide, err := positionSideFromBitgetMode(id.Kind, record.HoldMode, rawSide)
+	if err != nil {
+		return model.Position{}, err
+	}
+	qty := firstNonZero(dec(record.Qty), dec(record.Total), dec(record.Size)).Abs()
+	if id.Kind == enums.KindPerp {
+		switch positionSideFromBitget(rawSide) {
+		case enums.PosLong:
+		case enums.PosShort:
+			qty = qty.Neg()
+		default:
+			return model.Position{}, fmt.Errorf("bitget: derivative position direction %q is invalid", rawSide)
+		}
 	}
 	return model.Position{
 		AccountID:     accountID,
-		InstrumentID:  resolve(record.Symbol),
-		Side:          positionSideFromBitget(firstNonEmpty(record.PosSide, record.HoldSide)),
+		InstrumentID:  id,
+		Side:          positionSide,
 		Quantity:      qty,
 		EntryPrice:    firstNonZero(dec(record.AvgPrice), dec(record.OpenPriceAvg), dec(record.AverageOpenPrice)),
 		MarkPrice:     dec(record.MarkPrice),
 		UnrealizedPnL: dec(record.UnrealizedPL),
 		Leverage:      dec(record.Leverage),
 		UpdatedAt:     firstNonZeroTime(timeFromMillisString(record.UpdatedTime), now),
-	}
+	}, nil
 }
 
 func bitgetFee(details []bitgetsdk.FeeDetail) (decimal.Decimal, string) {

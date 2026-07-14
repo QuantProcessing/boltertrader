@@ -43,6 +43,22 @@ func TestMaxOrderNotional(t *testing.T) {
 	}
 }
 
+func TestMaxOrderNotionalUsesContractMultiplier(t *testing.T) {
+	instrument := &model.Instrument{
+		ID:                 inst,
+		ContractMultiplier: d("0.0001"),
+	}
+	req := buy("1", "100000")
+	if got := orderNotional(req, instrument); !got.Equal(d("10")) {
+		t.Fatalf("notional=%s, want 10", got)
+	}
+
+	e := New(Limits{MaxOrderNotional: d("10")}, cache.New())
+	if err := e.Check(req, instrument); err != nil {
+		t.Fatalf("true notional 10 should pass max-order-notional 10: %v", err)
+	}
+}
+
 func TestKillSwitch(t *testing.T) {
 	e := New(Limits{}, cache.New())
 	e.Trip()
@@ -84,6 +100,50 @@ func TestInstrumentMinimums(t *testing.T) {
 	}
 }
 
+func TestInstrumentMinNotionalUsesContractMultiplier(t *testing.T) {
+	instrument := &model.Instrument{
+		ID:                 inst,
+		MinNotional:        d("11"),
+		ContractMultiplier: d("0.0001"),
+	}
+	err := New(Limits{}, cache.New()).Check(buy("1", "100000"), instrument)
+	if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "notional 10") {
+		t.Fatalf("true notional 10 should be below instrument minimum 11, got %v", err)
+	}
+}
+
+func TestConfiguredNotionalChecksRejectWithoutReferencePrice(t *testing.T) {
+	req := model.OrderRequest{
+		InstrumentID: inst,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeMarket,
+		Quantity:     d("1"),
+	}
+	tests := []struct {
+		name       string
+		limits     Limits
+		instrument *model.Instrument
+	}{
+		{
+			name:       "max order notional",
+			limits:     Limits{MaxOrderNotional: d("100")},
+			instrument: &model.Instrument{ID: inst},
+		},
+		{
+			name:       "instrument min notional",
+			instrument: &model.Instrument{ID: inst, MinNotional: d("10")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := New(tt.limits, cache.New()).Check(req, tt.instrument)
+			if !errors.Is(err, ErrRiskRejected) || !strings.Contains(err.Error(), "reference price") {
+				t.Fatalf("zero-reference market order should fail closed, got %v", err)
+			}
+		})
+	}
+}
+
 func TestMaxPositionQty_UsesCache(t *testing.T) {
 	c := cache.New()
 	// Existing long of 4.
@@ -105,6 +165,63 @@ func TestMaxPositionQty_UsesCache(t *testing.T) {
 	}
 }
 
+func TestMaxPositionQtyCountsRiskBearingOrders(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    enums.OrderStatus
+		quantity  string
+		filledQty string
+	}{
+		{name: "unknown", status: enums.StatusUnknown, quantity: "4", filledQty: "0"},
+		{name: "pending new", status: enums.StatusPendingNew, quantity: "4", filledQty: "0"},
+		{name: "new", status: enums.StatusNew, quantity: "4", filledQty: "0"},
+		{name: "partially filled", status: enums.StatusPartiallyFilled, quantity: "6", filledQty: "2"},
+		{name: "triggered", status: enums.StatusTriggered, quantity: "4", filledQty: "0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := cache.New()
+			c.UpsertOrder(model.Order{
+				Request: model.OrderRequest{
+					InstrumentID: inst,
+					ClientID:     "working-order",
+					Side:         enums.SideBuy,
+					Quantity:     d(tt.quantity),
+					Price:        d("100"),
+					PositionSide: enums.PosNet,
+				},
+				Status:    tt.status,
+				FilledQty: d(tt.filledQty),
+			})
+			err := New(Limits{MaxPositionQty: d("5")}, c).Check(buy("2", "100"), nil)
+			if !errors.Is(err, ErrRiskRejected) {
+				t.Fatalf("working %s order plus request should exceed max position, got %v", tt.status, err)
+			}
+		})
+	}
+}
+
+func TestMaxPositionQtyDoesNotNetOpposingWorkingOrders(t *testing.T) {
+	c := cache.New()
+	for _, order := range []model.Order{
+		{
+			Request: model.OrderRequest{InstrumentID: inst, ClientID: "working-buy", Side: enums.SideBuy, Quantity: d("4"), Price: d("100")},
+			Status:  enums.StatusPendingNew,
+		},
+		{
+			Request: model.OrderRequest{InstrumentID: inst, ClientID: "working-sell", Side: enums.SideSell, Quantity: d("4"), Price: d("100")},
+			Status:  enums.StatusPendingNew,
+		},
+	} {
+		c.UpsertOrder(order)
+	}
+
+	err := New(Limits{MaxPositionQty: d("5")}, c).Check(buy("2", "100"), nil)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("opposing working sell must not offset worst-case buy exposure, got %v", err)
+	}
+}
+
 func TestNonPositiveQty(t *testing.T) {
 	e := New(Limits{}, cache.New())
 	if err := e.Check(buy("0", "100"), nil); !errors.Is(err, ErrRiskRejected) {
@@ -121,6 +238,66 @@ func TestSpotBuyRejectsInsufficientQuoteBalance(t *testing.T) {
 
 	if err := e.Check(req, inst); !errors.Is(err, ErrRiskRejected) {
 		t.Fatalf("spot buy should reject when quote balance is insufficient, got %v", err)
+	}
+}
+
+func TestSpotBuyReservesQuoteForWorkingOrders(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	applySpotCashAccount(t, c, now, "100", "1")
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			AccountID:    "T:spot",
+			InstrumentID: spotInst,
+			ClientID:     "working-buy",
+			Side:         enums.SideBuy,
+			Quantity:     d("0.6"),
+			Price:        d("100"),
+		},
+		Status: enums.StatusPendingNew,
+	})
+	req := model.OrderRequest{
+		AccountID:    "T:spot",
+		InstrumentID: spotInst,
+		Side:         enums.SideBuy,
+		Quantity:     d("0.5"),
+		Price:        d("100"),
+	}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := New(Limits{}, c).WithClock(func() time.Time { return now }).Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("working buy reserves 60, so another 50 must exceed quote free 100, got %v", err)
+	}
+}
+
+func TestSpotSellReservesBaseForWorkingOrders(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	applySpotCashAccount(t, c, now, "100", "1")
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			AccountID:    "T:spot",
+			InstrumentID: spotInst,
+			ClientID:     "working-sell",
+			Side:         enums.SideSell,
+			Quantity:     d("0.6"),
+			Price:        d("100"),
+		},
+		Status: enums.StatusPendingNew,
+	})
+	req := model.OrderRequest{
+		AccountID:    "T:spot",
+		InstrumentID: spotInst,
+		Side:         enums.SideSell,
+		Quantity:     d("0.5"),
+		Price:        d("100"),
+	}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := New(Limits{}, c).WithClock(func() time.Time { return now }).Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("working sell reserves 0.6, so another 0.5 must exceed base free 1, got %v", err)
 	}
 }
 
@@ -200,6 +377,102 @@ func TestSpotSellRejectsInsufficientBaseBalanceEvenWithSyntheticPosition(t *test
 
 	if err := e.Check(req, inst); !errors.Is(err, ErrRiskRejected) {
 		t.Fatalf("spot sell should reject from base balance, not synthetic position, got %v", err)
+	}
+}
+
+func TestSpotBuyReservationAggregatesQuoteAssetAcrossInstruments(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "USDT", Total: d("1000"), Free: d("1000")})
+	ethUSDT := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindSpot}
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			InstrumentID: ethUSDT,
+			ClientID:     "working-eth-buy",
+			Side:         enums.SideBuy,
+			Quantity:     d("6"),
+			Price:        d("100"),
+		},
+		Status: enums.StatusNew,
+	})
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideBuy, Quantity: d("5"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := e.Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("ETH-USDT and BTC-USDT buys must share the USDT reservation, got %v", err)
+	}
+}
+
+func TestSpotSellReservationAggregatesBaseAssetAcrossInstruments(t *testing.T) {
+	c := cache.New()
+	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("1"), Free: d("1")})
+	btcUSDC := model.InstrumentID{Venue: "T", Symbol: "BTC-USDC", Kind: enums.KindSpot}
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			InstrumentID: btcUSDC,
+			ClientID:     "working-btc-sell",
+			Side:         enums.SideSell,
+			Quantity:     d("0.6"),
+			Price:        d("100"),
+		},
+		Status: enums.StatusNew,
+	})
+	e := New(Limits{}, c).AllowLegacyBalanceFallback()
+	req := model.OrderRequest{InstrumentID: spotInst, Side: enums.SideSell, Quantity: d("0.5"), Price: d("100")}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	err := e.Check(req, spot)
+	if !errors.Is(err, ErrRiskRejected) {
+		t.Fatalf("BTC-USDC and BTC-USDT sells must share the BTC reservation, got %v", err)
+	}
+}
+
+func TestSpotAccountFreeDoesNotDoubleCountReflectedWorkingOrder(t *testing.T) {
+	c := cache.New()
+	now := time.Unix(100, 0)
+	accountID := "T:spot"
+	if err := c.ApplyAccountStateAt(model.AccountState{
+		AccountID:    accountID,
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{AccountID: accountID, Currency: "USDT", Total: d("100"), Free: d("60"), Locked: d("40"), UpdatedAt: now},
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, now),
+		TsEvent:  now,
+		TsInit:   now,
+	}, now); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	c.UpsertOrder(model.Order{
+		Request: model.OrderRequest{
+			AccountID:    accountID,
+			InstrumentID: spotInst,
+			ClientID:     "reflected-working-buy",
+			Side:         enums.SideBuy,
+			Quantity:     d("0.4"),
+			Price:        d("100"),
+		},
+		Status:    enums.StatusNew,
+		CreatedAt: now.Add(-time.Second),
+		UpdatedAt: now.Add(-time.Second),
+	})
+	e := New(Limits{}, c).WithClock(func() time.Time { return now })
+	req := model.OrderRequest{
+		AccountID:    accountID,
+		InstrumentID: spotInst,
+		ClientID:     "new-buy",
+		Side:         enums.SideBuy,
+		Quantity:     d("0.5"),
+		Price:        d("100"),
+	}
+	spot := &model.Instrument{ID: spotInst, Base: "BTC", Quote: "USDT"}
+
+	if err := e.Check(req, spot); err != nil {
+		t.Fatalf("free 60 already excludes locked 40, so a new 50 buy should pass: %v", err)
 	}
 }
 
@@ -479,5 +752,27 @@ func applyUnifiedMarginAccount(t *testing.T, c *cache.Cache, accountID string, e
 	}
 	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
 		t.Fatalf("apply unified margin account: %v", err)
+	}
+}
+
+func applySpotCashAccount(t *testing.T, c *cache.Cache, eventTime time.Time, quoteFree, baseFree string) {
+	t.Helper()
+	accountID := "T:spot"
+	state := model.AccountState{
+		AccountID:    accountID,
+		Venue:        "T",
+		Type:         model.AccountCash,
+		BaseCurrency: "USDT",
+		Balances: []model.AccountBalance{
+			{AccountID: accountID, Currency: "USDT", Total: d(quoteFree), Free: d(quoteFree)},
+			{AccountID: accountID, Currency: "BTC", Total: d(baseFree), Free: d(baseFree)},
+		},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, eventTime),
+		TsEvent:  eventTime,
+		TsInit:   eventTime,
+	}
+	if err := c.ApplyAccountStateAt(state, eventTime); err != nil {
+		t.Fatalf("apply spot account: %v", err)
 	}
 }

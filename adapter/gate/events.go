@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	gatesdk "github.com/QuantProcessing/boltertrader/sdk/gate"
 	"github.com/shopspring/decimal"
@@ -15,7 +16,11 @@ func execEventsFromSpotOrderMessage(msg *gatesdk.SpotOrderMessage, resolve func(
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Orders))
 	for _, record := range msg.Orders {
-		order := orderFromGateSpotRecord(record, resolve(record.CurrencyPair), accountID)
+		id := resolve(record.CurrencyPair)
+		if id.Symbol == "" {
+			continue
+		}
+		order := orderFromGateSpotRecord(record, id, accountID)
 		order.FilledQty = decimal.Zero
 		order.AvgFillPrice = decimal.Zero
 		out = append(out, contract.OrderEvent{Order: order})
@@ -29,7 +34,11 @@ func execEventsFromSpotUserTradeMessage(msg *gatesdk.SpotUserTradeMessage, resol
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Trades))
 	for _, record := range msg.Trades {
-		fill := fillFromGateSpotTrade(record, resolve(record.CurrencyPair), accountID)
+		id := resolve(record.CurrencyPair)
+		if id.Symbol == "" {
+			continue
+		}
+		fill := fillFromGateSpotTrade(record, id, accountID)
 		if fill.Quantity.IsPositive() {
 			out = append(out, contract.FillEvent{Fill: fill})
 		}
@@ -51,13 +60,25 @@ func accountEventsFromSpotBalanceMessage(msg *gatesdk.SpotBalanceMessage, accoun
 	return out
 }
 
-func execEventsFromFuturesOrderMessage(msg *gatesdk.FuturesOrderMessage, resolve func(string) model.InstrumentID, accountID string) []contract.ExecEvent {
+func execEventsFromFuturesOrderMessage(msg *gatesdk.FuturesOrderMessage, resolve func(string) model.InstrumentID, accountID string, positionSideResolvers ...func(gatesdk.FuturesOrder) (enums.PositionSide, bool)) []contract.ExecEvent {
 	if msg == nil {
 		return nil
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Orders))
 	for _, record := range msg.Orders {
-		order := orderFromGateFuturesRecord(record, resolve(record.Contract), accountID)
+		id := resolve(record.Contract)
+		if id.Symbol == "" {
+			continue
+		}
+		positionSide := positionSideFromGate(record.Size)
+		if len(positionSideResolvers) > 0 && positionSideResolvers[0] != nil {
+			var ok bool
+			positionSide, ok = positionSideResolvers[0](record)
+			if !ok {
+				continue
+			}
+		}
+		order := orderFromGateFuturesRecord(record, id, accountID, positionSide)
 		order.FilledQty = decimal.Zero
 		order.AvgFillPrice = decimal.Zero
 		out = append(out, contract.OrderEvent{Order: order})
@@ -71,7 +92,11 @@ func execEventsFromFuturesUserTradeMessage(msg *gatesdk.FuturesUserTradeMessage,
 	}
 	out := make([]contract.ExecEvent, 0, len(msg.Trades))
 	for _, record := range msg.Trades {
-		fill := fillFromGateFuturesTrade(record, resolve(record.Contract), accountID)
+		id := resolve(record.Contract)
+		if id.Symbol == "" {
+			continue
+		}
+		fill := fillFromGateFuturesTrade(record, id, accountID)
 		if fill.Quantity.IsPositive() {
 			out = append(out, contract.FillEvent{Fill: fill})
 		}

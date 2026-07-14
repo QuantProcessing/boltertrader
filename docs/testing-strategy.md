@@ -154,6 +154,8 @@ and exchange state are available.
   Testnet Perp execution through `runtime.TradingNode`.
 - `make test-hyperliquid-testnet-hip3`: read-only Hyperliquid HIP-3 Testnet
   discovery for a configured `dex:coin`.
+- `make test-hyperliquid-testnet-hip3-write`: adapter-level bounded Hyperliquid
+  HIP-3 fill and reduce-only close for a configured `dex:coin`.
 - `make test-hyperliquid-testnet-runtime-hip3`: runtime-level Hyperliquid HIP-3
   Testnet execution through `runtime.TradingNode`.
 - `make test-hyperliquid-testnet-acceptance`: complete Hyperliquid Testnet
@@ -286,12 +288,14 @@ add product-qualified targets while reusing `BINANCE_DEMO_*` credentials when
 Binance supports them. The command shape is:
 
 ```sh
+BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 \
 BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
 BINANCE_DEMO_ORDER_QTY=0.001 \
 go test -run TestBinanceDemoExecAcceptance ./adapter/binance/perp/ -count=1 -timeout=3m
 
+BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 \
 BINANCE_DEMO_API_KEY=... \
 BINANCE_DEMO_API_SECRET=... \
 BINANCE_DEMO_SYMBOL=ETH-USDT \
@@ -300,6 +304,10 @@ go test -run TestBinanceSpotDemoExecAcceptance ./adapter/binance/spot/ -count=1 
 ```
 
 `BINANCE_DEMO_MAX_NOTIONAL_USDT` is optional and defaults to `100`.
+Direct `go test` write invocations require
+`BOLTER_ENABLE_BINANCE_DEMO_WRITES=1`; the credentialed Make leaves set this
+flag command-locally. Credentials alone never activate writes during the
+ordinary Go suite.
 
 `make test-binance-demo-perp` runs the same USD-M perp adapter-level target.
 `make test-binance-demo-runtime-perp` runs the runtime-level Demo target through
@@ -369,6 +377,13 @@ OKX_DEMO_API_PASSPHRASE=... \
 make test-okx-demo-acceptance
 ```
 
+Direct `go test` write invocations require `BOLTER_ENABLE_OKX_DEMO_WRITES=1`;
+the Make leaves set it command-locally. Official `global` and `eea` profiles do
+not accept endpoint overrides for writes. A `custom` write profile additionally
+requires `BOLTER_ALLOW_OKX_DEMO_CUSTOM_WRITES=1`, TLS endpoints, and a
+non-production WebSocket host; REST requests still enforce
+`x-simulated-trading: 1`.
+
 The adapter-level tests load Demo data, place/cancel a resting post-only order,
 fill a bounded IOC order, and clean up residual Spot base deltas or Perp
 exposure. Runtime-level tests construct `runtime.TradingNode`, call
@@ -376,9 +391,10 @@ exposure. Runtime-level tests construct `runtime.TradingNode`, call
 cache/portfolio/metrics observations. Runtime Demo checks also assert
 `node.Health()` reaches `running`, command/reconciliation latency metrics are
 present, no open orders remain, and final reconciliation is flat. Tests skip
-cleanly when Demo credentials are absent and classify funding, existing open
-orders/exposure, network/proxy, venue rejection, implementation, and cleanup
-failures separately in their failure messages.
+only while the explicit write flag is absent (or under `-short`). Once enabled,
+missing credentials, funding, existing open orders/exposure, network/proxy,
+venue rejection, implementation, and cleanup
+failures are reported separately in their failure messages.
 
 The shared `adapter/internal/runtimeaccept` harness treats account-id
 consistency as acceptance evidence: account state, balances, cache mirrors,
@@ -417,6 +433,10 @@ BYBIT_DEMO_API_SECRET=... \
 make test-bybit-acceptance
 ```
 
+Direct `go test` write invocations require `BOLTER_ENABLE_BYBIT_DEMO_WRITES=1`;
+the Make leaves set it command-locally. Credentials alone never activate Demo
+writes during the ordinary Go suite.
+
 `BYBIT_DEMO_API_KEY` and `BYBIT_DEMO_API_SECRET` must be created after
 switching a mainnet Bybit account into Demo Trading. Keys created for Bybit
 Testnet or Testnet demo are rejected by `https://api-demo.bybit.com`.
@@ -427,13 +447,21 @@ lifecycle checks. That preflight requires a non-read-only unified-account key
 Position` for every row because unified account-state reconciliation reads
 linear positions even when validating the Spot lifecycle.
 
+The SDK keeps Bybit's default private-REST receive window at 5000 ms. Demo
+acceptance uses an internal 15000 ms override for both API-key preflight and
+adapter REST traffic because the configured non-production proxy path has
+exceeded five seconds. The overridden value is included identically in the
+signature payload and `X-BAPI-RECV-WINDOW`; normal SDK and production adapter
+construction retain the narrower default.
+
 Bybit Make acceptance targets fail when a selected test skips. The current
-G010 evidence accepted the adapter/runtime entrypoints after they verified live
-market data, authoritative unified account-state snapshots, runtime
-reconciliation into cache/portfolio, risk fail-closed behavior, private stream
-startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder.
-Future reruns remain NT-style noskip gates and require real Demo Trading
-credentials, sufficient USDT/USDC demo balance, and clean venue state.
+2026-07-14 run passed Spot adapter/runtime and USDT Perp adapter. The USDT Perp
+runtime row first exposed an expired 5000 ms request window; after the scoped
+repair, both proxy and direct retries timed out before TCP connect, so USDT
+runtime and USDC rows still require fresh post-fix evidence. No request reached
+the venue during the blocked retry. Future reruns remain no-skip gates and
+require real Demo Trading credentials, sufficient USDT/USDC demo balance, and
+clean venue state.
 
 ## Bitget Demo Acceptance
 
@@ -470,6 +498,14 @@ BITGET_DEMO_SECRET_KEY=... \
 BITGET_DEMO_PASSPHRASE=... \
 make test-bitget-acceptance
 ```
+
+Direct `go test` write invocations require
+`BOLTER_ENABLE_BITGET_DEMO_WRITES=1`; the Make leaves set it command-locally.
+Credentials alone never activate paper-trading writes during the ordinary Go
+suite. Credentialed writes use the official PAP endpoint set by default;
+custom write endpoints additionally require
+`BOLTER_ALLOW_BITGET_DEMO_CUSTOM_WRITES=1` and TLS for REST and both WebSocket
+connections.
 
 `BITGET_TESTNET_*` variables remain accepted as legacy aliases for existing
 local `.env` files, but new configuration should use `BITGET_DEMO_*`. Bitget
@@ -517,8 +553,10 @@ make test-gate-testnet-acceptance
 The Makefile sets `BOLTER_ENABLE_GATE_TESTNET_WRITES=1` command-locally and
 wraps each target with noskip validation. `GATE_TESTNET_REST_BASE_URL`,
 `GATE_TESTNET_SPOT_WS_URL`, and `GATE_TESTNET_USDT_FUTURES_WS_URL` may be
-overridden independently for non-production hosts; known Gate production hosts
-are rejected before writes. Adapter-level tests load Testnet
+overridden for read diagnostics, but credentialed writes are enabled only when
+the complete resolved profile matches the known official Testnet host set.
+Unknown custom and known production hosts fail closed before writes.
+Adapter-level tests load Testnet
 instruments, verify order books and account-state snapshots, then run the
 resting-cancel plus IOC fill/close lifecycle. Runtime-level tests construct
 `runtime.TradingNode`, reconcile before and after writes, require
@@ -565,16 +603,26 @@ selected acceptance test skips. A skipped write/runtime test means the venue
 account, symbol, or funding preflight did not satisfy the spec and the NT-style
 acceptance evidence is incomplete.
 
-The adapter-level tests place and cancel a conservative resting order. Runtime
-tests construct `runtime.TradingNode` with the adapter's canonical account id,
-call `node.Resync` before and after the write flow, require a verified
-`AccountStateReporter` snapshot in cache/portfolio/health/metrics, attach
-`risk.RequireAccountState()`, prove an account-state-backed oversized order is
-rejected before the venue boundary, submit through `node.Exec`, observe cancel
-state through the runtime cache, assert no REST open orders remain, and require a
-flat final cache/portfolio. Perp and HIP-3 runtime tests skip when the testnet
-account is not flat before the run; the Make acceptance gate reports that skip
-as a failed acceptance run.
+Spot acceptance performs resting submit/cancel, a bounded IOC fill, and a sell
+back toward the authoritative pre-test balance while allowing only the planned
+fee reserve or non-sellable dust. Unified and Portfolio margin balances come
+from the private `spotState` stream; clearinghouse state contributes its
+authoritative positions only. Missing currencies produce zero-balance
+tombstones, malformed snapshots create a stream gap, and unknown future account
+abstraction modes fail closed.
+
+Standard Perp and HIP-3 adapter/runtime rows perform bounded fills followed by
+reduce-only closes, require every final venue position report to be flat, and
+leave no test-created open order. Runtime rows construct `runtime.TradingNode`,
+reconcile before and after writes, require account-state-backed risk, and prove
+oversized requests are rejected before venue handoff. Spot cleanup is judged by
+authoritative balance delta and dust rules; it does not require the
+fill-derived `Portfolio.NetQty` to be exactly zero.
+
+The 2026-07-14 aggregate passed its first eight leaves. The final HIP-3 runtime
+leaf stopped before submit because the configured real-time book was empty;
+that same leaf had passed standalone earlier. This is an external liquidity
+blocker, not permission to substitute a different symbol or weaken preflight.
 
 ## Lighter Testnet Writes
 
@@ -617,6 +665,10 @@ and after the write flow, require explicit account-id risk, submit through
 `node.Exec`, observe cancel state through the runtime cache, assert no REST open
 orders remain, and require a flat final cache/portfolio.
 
+The complete five-leaf Lighter Testnet aggregate passed on 2026-07-14. This is
+still deliberately resting submit/cancel coverage and must not be reported as a
+fill/close proof.
+
 ## Aster And Nado Testnet
 
 Aster acceptance uses only the official V3 Testnet profiles. Authenticated rows
@@ -635,7 +687,7 @@ funded-only/no-borrow. Perp and Spot submissions must consume the exact payload
 prepared after the documented max-order-size pre-trade check. Set
 `BOLTER_ENABLE_NADO_TESTNET_WRITES=1` only for write rows.
 
-Current live status (2026-07-13): read-only Spot/Perp and reference/OI gates
+Current live status (2026-07-14): read-only Spot/Perp and reference/OI gates
 pass. All four Aster adapter/runtime write rows also pass with private events,
 runtime-local rejection before venue handoff, bounded Spot balance deltas, no
 open orders, and flat Perp positions. Nado's current Testnet products require
@@ -646,6 +698,12 @@ documented API surfaces: local checks, `max_order_size`, exact signed
 preparation, one-time `place_order`, private lifecycle evidence, and bounded
 cleanup. The undocumented `validate_order` query is not part of the SDK,
 adapter, runtime, fixtures, or acceptance criteria.
+
+An earlier Aster Spot run, before the full-fill close-quantity rounding bug was
+repaired, left a known bounded test-asset residual. Successful post-fix rows
+cleaned their own deltas. Do not sell the historical residual unless its
+original balance baseline, current free balance, minimum notional, absence of
+unrelated orders, and exact IOC reconciliation are all proven.
 
 Nado Testnet acknowledges `order_update` subscriptions but did not emit order
 events during the accepted write matrix. The gate therefore requires private

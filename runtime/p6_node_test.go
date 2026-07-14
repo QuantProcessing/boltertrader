@@ -68,8 +68,9 @@ func (r *reconnAccount) Positions(ctx context.Context) ([]model.Position, error)
 	return r.positions, nil
 }
 
-// TestReconnectTriggersResync verifies node.Reconnect calls the adapter's
-// Reconnect and then reconciles the cache from the snapshot.
+// TestReconnectTriggersResync verifies node.Reconnect calls the adapter and
+// treats a position snapshot as safety evidence rather than directly mutating
+// only the cache projection.
 func TestReconnectTriggersResync(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	acct := &reconnAccount{
@@ -87,11 +88,11 @@ func TestReconnectTriggersResync(t *testing.T) {
 	if acct.reconnects != 1 {
 		t.Fatalf("reconnects=%d, want 1", acct.reconnects)
 	}
-	if rep.PositionsUpdated != 1 {
-		t.Fatalf("report=%+v, want PositionsUpdated=1", rep)
+	if rep.PositionsUpdated != 0 || rep.ActivationVerdict().Safe {
+		t.Fatalf("report=%+v, want no direct position update and unsafe mismatch verdict", rep)
 	}
-	if p, ok := node.Cache.Position(inst, enums.PosNet); !ok || !p.Quantity.Equal(decimal.RequireFromString("1.5")) {
-		t.Fatalf("position not synced from reconnect: ok=%v", ok)
+	if p, ok := node.Cache.Position(inst, enums.PosNet); ok {
+		t.Fatalf("position was directly installed from reconciliation evidence: %+v", p)
 	}
 }
 

@@ -43,9 +43,7 @@ func NewClient() *Client {
 	proxyEnv := os.Getenv("PROXY")
 	if proxyEnv != "" {
 		proxyURL, err := url.Parse(proxyEnv)
-		if err != nil {
-			fmt.Printf("Invalid PROXY URL: %s, error: %v\n", proxyEnv, err)
-		} else {
+		if err == nil {
 			transport := &http.Transport{
 				Proxy: http.ProxyURL(proxyURL),
 			}

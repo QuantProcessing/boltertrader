@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -16,6 +17,7 @@ import (
 const (
 	VenueName        = "ASTER"
 	AccountIDDefault = model.AccountIDAsterDefault
+	privateStreamID  = "aster:perp:private"
 )
 
 type Config struct {
@@ -131,6 +133,20 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 	a.startMu.Lock()
 	if !a.registered {
+		if hooks, ok := a.wsAcct.(interface {
+			SetReconnectHooks(func(error), func())
+		}); ok {
+			reporter := streamgap.New(VenueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+			hooks.SetReconnectHooks(func(err error) {
+				reason := "private stream disconnected"
+				if err != nil {
+					reason = err.Error()
+				}
+				reporter.Started(reason)
+			}, func() {
+				reporter.Recovered("private stream subscriptions restored")
+			})
+		}
 		resolve := a.provider.resolveKnownVenueSymbol
 		a.wsAcct.SubscribeOrderUpdate(func(ev *sdkperp.OrderUpdateEvent) {
 			envelopes, err := execEnvelopesFromOrderUpdate(ev, resolve, a.exec.accountID)

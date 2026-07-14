@@ -1,7 +1,7 @@
 // Package strategy defines the callback-style interface a trading strategy
-// implements. The runtime invokes these methods on the bus goroutine, so a
-// strategy sees a single-threaded event order. Strategies act through the
-// Context, never by holding an adapter or SDK reference.
+// implements. The runtime serializes live and recovered event callbacks, so a
+// strategy sees one ordered callback path. Strategies act through the Context,
+// never by holding an adapter or SDK reference.
 package strategy
 
 import (
@@ -84,7 +84,8 @@ func order(id model.InstrumentID, qty, price decimal.Decimal, buy bool) model.Or
 
 // Strategy is the callback interface a strategy implements. All methods are
 // optional via the embedded Base; override only what you need. Every callback
-// runs on the runtime's single bus goroutine.
+// runs on the runtime's serialized event/reconciliation path. Startup-recovered
+// fills are applied before OnStart and delivered as OnFill immediately after it.
 type Strategy interface {
 	// OnStart is called once before any event is delivered.
 	OnStart(c *Context)

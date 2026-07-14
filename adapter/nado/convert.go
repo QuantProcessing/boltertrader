@@ -208,6 +208,109 @@ func orderFromNadoRecord(record sdk.Order, id model.InstrumentID, accountID stri
 	}, nil
 }
 
+func archiveOrderFromNadoRecord(record sdk.ArchiveOrder, id model.InstrumentID, accountID string, submitted *model.OrderRequest, knownTerminal enums.OrderStatus) (model.Order, error) {
+	amount, err := parseX18Required(record.Amount, "archive order amount")
+	if err != nil {
+		return model.Order{}, err
+	}
+	qty := amount.Abs()
+	if !qty.IsPositive() {
+		return model.Order{}, fmt.Errorf("nado: archive order quantity must be positive")
+	}
+	filled, err := parseX18Required(record.BaseFilled, "archive order base filled")
+	if err != nil {
+		return model.Order{}, err
+	}
+	filled = filled.Abs()
+	if !filled.IsPositive() {
+		return model.Order{}, fmt.Errorf("nado: archive order must contain a positive matched quantity")
+	}
+	if filled.GreaterThan(qty) {
+		return model.Order{}, fmt.Errorf("nado: archive order filled quantity %s exceeds quantity %s", filled, qty)
+	}
+	price, err := parseX18Required(record.PriceX18, "archive order price")
+	if err != nil {
+		return model.Order{}, err
+	}
+	if !price.IsPositive() {
+		return model.Order{}, fmt.Errorf("nado: archive order price must be positive")
+	}
+	quoteFilled, err := parseX18Required(record.QuoteFilled, "archive order quote filled")
+	if err != nil {
+		return model.Order{}, err
+	}
+	side := enums.SideBuy
+	if amount.IsNegative() {
+		side = enums.SideSell
+	}
+	reduceOnly, err := appendixReduceOnly(record.Appendix)
+	if err != nil {
+		return model.Order{}, err
+	}
+	request := model.OrderRequest{
+		AccountID:    accountID,
+		InstrumentID: id,
+		Side:         side,
+		Type:         enums.TypeUnknown,
+		TIF:          enums.TifUnknown,
+		Quantity:     qty,
+		Price:        price,
+		PositionSide: enums.PosNet,
+		ReduceOnly:   reduceOnly,
+	}
+	if submitted != nil {
+		request = *submitted
+		if request.AccountID != "" && request.AccountID != accountID {
+			return model.Order{}, fmt.Errorf("nado: archive order account does not match submitted order")
+		}
+		if request.InstrumentID != id {
+			return model.Order{}, fmt.Errorf("nado: archive order instrument does not match submitted order")
+		}
+		if request.Side != side {
+			return model.Order{}, fmt.Errorf("nado: archive order side does not match submitted order")
+		}
+		if request.Quantity.IsPositive() && !request.Quantity.Equal(qty) {
+			return model.Order{}, fmt.Errorf("nado: archive order quantity %s does not match submitted quantity %s", qty, request.Quantity)
+		}
+	}
+	status := nadoArchiveOrderStatus(filled, qty, request.TIF, knownTerminal)
+	createdAt := timeFromString(record.FirstFillTimestamp)
+	updatedAt := timeFromString(record.LastFillTimestamp)
+	if updatedAt.IsZero() {
+		return model.Order{}, fmt.Errorf("nado: archive order last fill timestamp %q is invalid", record.LastFillTimestamp)
+	}
+	if createdAt.IsZero() {
+		createdAt = updatedAt
+	}
+	if updatedAt.Before(createdAt) {
+		return model.Order{}, fmt.Errorf("nado: archive order last fill timestamp precedes first fill timestamp")
+	}
+	return model.Order{
+		Request:      request,
+		VenueOrderID: strings.TrimSpace(record.Digest),
+		Status:       status,
+		FilledQty:    filled,
+		AvgFillPrice: quoteFilled.Abs().Div(filled),
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}, nil
+}
+
+func nadoArchiveOrderStatus(filled, quantity decimal.Decimal, tif enums.TimeInForce, knownTerminal enums.OrderStatus) enums.OrderStatus {
+	if filled.Equal(quantity) {
+		return enums.StatusFilled
+	}
+	if tif == enums.TifIOC || tif == enums.TifFOK {
+		return enums.StatusCanceled
+	}
+	switch knownTerminal {
+	case enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
+		return knownTerminal
+	default:
+		return enums.StatusUnknown
+	}
+}
+
 func fillFromNado(fill sdk.Fill, id model.InstrumentID, accountID, feeCurrency string) (model.Fill, error) {
 	if strings.TrimSpace(fill.OrderDigest) == "" {
 		return model.Fill{}, fmt.Errorf("nado: fill order digest is required")

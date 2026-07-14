@@ -151,7 +151,7 @@ func (c *Client) Post(ctx context.Context, path string, payload any) ([]byte, er
 
 	req.Header.Set("Content-Type", "application/json")
 
-	c.Logger.Debugw("request", "method", req.Method, "url", req.URL, "body", string(jsonData))
+	c.Logger.Debugw("request", "method", req.Method, "path", req.URL.Path, "body_bytes", len(jsonData))
 
 	resp, err := c.Http.Do(req)
 	if err != nil {

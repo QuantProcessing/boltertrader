@@ -23,7 +23,11 @@ func sign(secret, payload string) string {
 
 func (c *Client) signHeaders(req *http.Request, queryString, body string) {
 	timestamp := buildTimestamp()
-	payload := timestamp + c.apiKey + defaultRecvWindow
+	recvWindow := c.recvWindow
+	if recvWindow == "" {
+		recvWindow = defaultRecvWindow
+	}
+	payload := timestamp + c.apiKey + recvWindow
 	if req.Method == http.MethodGet {
 		payload += queryString
 	} else {
@@ -32,6 +36,6 @@ func (c *Client) signHeaders(req *http.Request, queryString, body string) {
 
 	req.Header.Set("X-BAPI-API-KEY", c.apiKey)
 	req.Header.Set("X-BAPI-TIMESTAMP", timestamp)
-	req.Header.Set("X-BAPI-RECV-WINDOW", defaultRecvWindow)
+	req.Header.Set("X-BAPI-RECV-WINDOW", recvWindow)
 	req.Header.Set("X-BAPI-SIGN", sign(c.secretKey, payload))
 }

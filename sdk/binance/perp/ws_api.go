@@ -80,7 +80,7 @@ func (c *WsAPIClient) Connect() error {
 				HandshakeTimeout: 45 * time.Second,
 			}
 		} else {
-			c.Logger.Warnw("Invalid proxy URL", "url", proxyURL, "error", err)
+			c.Logger.Warnw("Invalid proxy URL")
 		}
 	}
 
@@ -164,7 +164,7 @@ func (c *WsAPIClient) reconnect() {
 
 func (c *WsAPIClient) handleMessage(message []byte) {
 	if c.Debug {
-		c.Logger.Debugw("Received", "msg", string(message))
+		c.Logger.Debugw("Received", "bytes", len(message))
 	}
 
 	var resp struct {
@@ -217,11 +217,14 @@ func (c *WsAPIClient) writeJSON(v interface{}) error {
 	}
 
 	if c.Debug {
-		reqBytes, _ := json.Marshal(v)
-		c.Logger.Debugw("Sending", "msg", string(reqBytes))
+		c.Logger.Debugw("Sending", "request_type", wsDebugRequestSummary(v))
 	}
 
 	return conn.WriteJSON(v)
+}
+
+func wsDebugRequestSummary(v interface{}) string {
+	return fmt.Sprintf("%T", v)
 }
 
 func (c *WsAPIClient) Close() {

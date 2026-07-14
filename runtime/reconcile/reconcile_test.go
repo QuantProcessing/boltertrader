@@ -29,6 +29,7 @@ type snapshotAccount struct {
 	positionErr       error
 	accountState      model.AccountState
 	hasAccountState   bool
+	positionReports   bool
 	balanceCalls      int
 	accountStateCalls int
 }
@@ -38,6 +39,7 @@ func (s *snapshotAccount) Capabilities() contract.Capabilities {
 	if s.hasAccountState {
 		caps.Reports.AccountStateSnapshots = true
 	}
+	caps.Reports.PositionReports = s.positionReports
 	return caps
 }
 func (s *snapshotAccount) Balances(context.Context) ([]model.AccountBalance, error) {
@@ -66,13 +68,24 @@ func (s *snapshotAccount) Close() error                            { return nil 
 // snapshotExec is a minimal ExecutionClient returning a canned venue-wide
 // open-order snapshot for reconciliation.
 type snapshotExec struct {
-	reports []model.Order
-	mass    *model.ExecutionMassStatus
-	massErr error
-	queries []model.MassStatusQuery
+	reports     []model.Order
+	mass        *model.ExecutionMassStatus
+	massFn      func(model.MassStatusQuery) *model.ExecutionMassStatus
+	massErr     error
+	queries     []model.MassStatusQuery
+	fillHistory bool
+	positions   bool
 }
 
-func (s *snapshotExec) Capabilities() contract.Capabilities { return contract.Capabilities{Venue: "T"} }
+func (s *snapshotExec) Capabilities() contract.Capabilities {
+	caps := contract.Capabilities{Venue: "T"}
+	caps.Reports.FillHistory = s.fillHistory
+	caps.Reports.PositionReports = s.positions
+	if s.positions {
+		caps.Products = []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true, Account: true}}
+	}
+	return caps
+}
 func (s *snapshotExec) Submit(context.Context, model.OrderRequest) (*model.Order, error) {
 	return nil, nil
 }
@@ -112,6 +125,9 @@ func (s *snapshotExec) GenerateExecutionMassStatus(_ context.Context, query mode
 	s.queries = append(s.queries, query)
 	if s.massErr != nil {
 		return nil, s.massErr
+	}
+	if s.massFn != nil {
+		return s.massFn(query), nil
 	}
 	if s.mass != nil {
 		mass := s.mass.Clone()
@@ -173,11 +189,16 @@ func TestReconcileOrders(t *testing.T) {
 	if o, ok := c.Order("b"); !ok || o.Status != enums.StatusUnknown {
 		t.Fatalf("order b not closed unknown: ok=%v status=%v", ok, o.Status)
 	}
-	// And "b" must no longer appear among open orders.
+	// Unknown is intentionally non-terminal: the unresolved order remains in the
+	// restricted working set until stronger history proves its terminal reason.
+	foundUnknown := false
 	for _, o := range c.OpenOrders() {
 		if o.Request.ClientID == "b" {
-			t.Fatal("order b still open after reconcile")
+			foundUnknown = o.Status == enums.StatusUnknown
 		}
+	}
+	if !foundUnknown {
+		t.Fatal("order b missing from unresolved open-order working set")
 	}
 }
 
@@ -286,17 +307,17 @@ func TestReconcileOrdersNilExec(t *testing.T) {
 	}
 }
 
-// TestReconcileCorrectsCache: cache holds a stale BTC long and a stale ETH long;
-// the venue snapshot reports a different BTC long and no ETH. After Run, BTC is
-// corrected and ETH is cleared.
-func TestReconcileCorrectsCache(t *testing.T) {
+// Position snapshots are evidence, not permission to mutate only one of the
+// runtime's cache/portfolio/callback projections.
+func TestReconcileAccountPositionMismatchDoesNotOverwriteOrClear(t *testing.T) {
 	c := cache.New()
 	// Stale local state.
 	c.UpsertPosition(model.Position{InstrumentID: btc, Side: enums.PosNet, Quantity: d("1")})
 	c.UpsertPosition(model.Position{InstrumentID: eth, Side: enums.PosNet, Quantity: d("3")})
 
 	acct := &snapshotAccount{
-		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Available: d("900")}},
+		balances:        []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Available: d("900")}},
+		positionReports: true,
 		positions: []model.Position{
 			{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2.5"), EntryPrice: d("60000")},
 		},
@@ -307,17 +328,17 @@ func TestReconcileCorrectsCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 || rep.PositionsCleared != 1 {
-		t.Fatalf("report=%+v, want balances=1 positions=1 cleared=1", rep)
+	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 0 || rep.PositionsCleared != 0 || rep.PositionOverwrites != 0 {
+		t.Fatalf("report=%+v, want balance applied without direct position mutation", rep)
 	}
-
-	// BTC corrected to 2.5.
-	if p, ok := c.Position(btc, enums.PosNet); !ok || !p.Quantity.Equal(d("2.5")) {
-		t.Fatalf("BTC position not corrected: ok=%v qty=%s", ok, p.Quantity)
+	if p, ok := c.Position(btc, enums.PosNet); !ok || !p.Quantity.Equal(d("1")) {
+		t.Fatalf("BTC position=%+v ok=%v, want original quantity 1", p, ok)
 	}
-	// ETH cleared.
-	if _, ok := c.Position(eth, enums.PosNet); ok {
-		t.Fatal("stale ETH position should be cleared")
+	if p, ok := c.Position(eth, enums.PosNet); !ok || !p.Quantity.Equal(d("3")) {
+		t.Fatalf("ETH position=%+v ok=%v, want original quantity 3", p, ok)
+	}
+	if !hasFindingCode(rep.Findings, "POSITION_MISMATCH") || rep.ActivationVerdict().Safe {
+		t.Fatalf("report=%+v, want blocking position mismatch", rep)
 	}
 	// Balance applied.
 	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(d("1000")) {
@@ -332,7 +353,8 @@ func TestReconcileAccountSnapshotsAreScopedByAccountID(t *testing.T) {
 	c.UpsertPosition(model.Position{AccountID: "acct-b", InstrumentID: eth, Side: enums.PosNet, Quantity: d("7")})
 
 	acct := &snapshotAccount{
-		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}},
+		balances:        []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}},
+		positionReports: true,
 		positions: []model.Position{
 			{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2.5"), EntryPrice: d("60000")},
 		},
@@ -343,20 +365,23 @@ func TestReconcileAccountSnapshotsAreScopedByAccountID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 || rep.PositionsCleared != 1 {
-		t.Fatalf("report=%+v, want balances=1 positions=1 cleared=1", rep)
+	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 0 || rep.PositionsCleared != 0 || rep.PositionOverwrites != 0 {
+		t.Fatalf("report=%+v, want balance applied without direct position mutation", rep)
 	}
-	if p, ok := c.PositionForAccount("acct-a", btc, enums.PosNet); !ok || !p.Quantity.Equal(d("2.5")) {
-		t.Fatalf("acct-a BTC position=%+v ok=%v, want qty 2.5", p, ok)
+	if p, ok := c.PositionForAccount("acct-a", btc, enums.PosNet); !ok || !p.Quantity.Equal(d("1")) {
+		t.Fatalf("acct-a BTC position=%+v ok=%v, want original qty 1", p, ok)
 	}
-	if _, ok := c.PositionForAccount("acct-a", eth, enums.PosNet); ok {
-		t.Fatal("acct-a stale ETH position should be cleared")
+	if p, ok := c.PositionForAccount("acct-a", eth, enums.PosNet); !ok || !p.Quantity.Equal(d("3")) {
+		t.Fatalf("acct-a ETH position=%+v ok=%v, want original qty 3", p, ok)
 	}
 	if p, ok := c.PositionForAccount("acct-b", eth, enums.PosNet); !ok || !p.Quantity.Equal(d("7")) {
 		t.Fatalf("acct-b ETH position=%+v ok=%v, want untouched qty 7", p, ok)
 	}
 	if b, ok := c.BalanceForAccount("acct-a", "USDT"); !ok || !b.Free.Equal(d("900")) {
 		t.Fatalf("acct-a balance=%+v ok=%v, want free 900", b, ok)
+	}
+	if !hasFindingCode(rep.Findings, "POSITION_MISMATCH") || rep.ActivationVerdict().Safe {
+		t.Fatalf("report=%+v, want scoped blocking position mismatch", rep)
 	}
 }
 
@@ -489,6 +514,7 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 	positionErr := errors.New("positions unavailable")
 	acct := &snapshotAccount{
 		hasAccountState: true,
+		positionReports: true,
 		positionErr:     positionErr,
 		accountState: model.AccountState{
 			AccountID: model.AccountIDBinanceDefault,
@@ -526,6 +552,7 @@ func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t
 	c.UpsertPosition(model.Position{InstrumentID: spotBTC, Side: enums.PosNet, Quantity: d("1")})
 
 	acct := &snapshotAccount{
+		positionReports: true,
 		balances: []model.AccountBalance{
 			{Currency: "BTC", Total: d("2"), Available: d("2")},
 			{Currency: "USDT", Total: d("800"), Available: d("800")},
@@ -538,8 +565,8 @@ func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if rep.BalancesUpdated != 2 || rep.PositionsUpdated != 0 || rep.PositionsCleared != 1 {
-		t.Fatalf("report=%+v, want balances=2 positionsUpdated=0 positionsCleared=1", rep)
+	if rep.BalancesUpdated != 2 || rep.PositionsUpdated != 0 || rep.PositionsCleared != 0 {
+		t.Fatalf("report=%+v, want balances=2 and no direct position mutation", rep)
 	}
 	if b, ok := c.Balance("BTC"); !ok || !b.Total.Equal(d("2")) || !b.Available.Equal(d("2")) {
 		t.Fatalf("BTC balance not reconciled: ok=%v balance=%+v", ok, b)
@@ -547,7 +574,10 @@ func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t
 	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(d("800")) || !b.Available.Equal(d("800")) {
 		t.Fatalf("USDT balance not reconciled: ok=%v balance=%+v", ok, b)
 	}
-	if _, ok := c.Position(spotBTC, enums.PosNet); ok {
-		t.Fatal("spot inventory must remain balance-sourced; reconcile should not retain synthetic spot position")
+	if p, ok := c.Position(spotBTC, enums.PosNet); !ok || !p.Quantity.Equal(d("1")) {
+		t.Fatalf("legacy spot position=%+v ok=%v, mismatch path must not clear it directly", p, ok)
+	}
+	if !hasFindingCode(rep.Findings, "POSITION_MISMATCH") || rep.ActivationVerdict().Safe {
+		t.Fatalf("report=%+v, legacy spot-position mismatch must fail closed", rep)
 	}
 }

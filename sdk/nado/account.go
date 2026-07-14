@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
+
+const maxArchiveOrderDigests = 500
 
 // GetAccount returns the account summary (balances, positions).
 func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
@@ -188,6 +191,34 @@ func (c *Client) GetMatches(ctx context.Context, subaccount string, productIDs [
 	}
 
 	var resp ArchiveMatchesResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetOrdersByDigests queries matched historical orders from the archive
+// indexer. Gateway GetOrder only reads the live orderbook and is not a
+// terminal-order source.
+func (c *Client) GetOrdersByDigests(ctx context.Context, digests []string) (*ArchiveOrdersResponse, error) {
+	if len(digests) == 0 || len(digests) > maxArchiveOrderDigests {
+		return nil, fmt.Errorf("nado archive orders: digest count must be between 1 and %d", maxArchiveOrderDigests)
+	}
+	normalized := make([]string, len(digests))
+	for i, digest := range digests {
+		normalized[i] = strings.TrimSpace(digest)
+		if normalized[i] == "" {
+			return nil, fmt.Errorf("nado archive orders: digest at index %d is empty", i)
+		}
+	}
+	data, err := c.QueryArchiveV1(ctx, ArchiveOrdersRequest{Orders: OrdersByDigestsQuery{
+		Digests: normalized,
+		Limit:   len(normalized),
+	}})
+	if err != nil {
+		return nil, err
+	}
+	var resp ArchiveOrdersResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, err
 	}

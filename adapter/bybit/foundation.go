@@ -2,6 +2,7 @@ package bybit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -38,6 +39,26 @@ func DefaultConfig(environment bybitsdk.EnvironmentProfile) Config {
 	}
 }
 
+func normalizeBybitCategories(categories []string) ([]string, error) {
+	if len(categories) == 0 {
+		return []string{"spot", "linear"}, nil
+	}
+	seen := make(map[string]struct{}, len(categories))
+	normalized := make([]string, 0, len(categories))
+	for _, raw := range categories {
+		category := strings.ToLower(strings.TrimSpace(raw))
+		if category != "spot" && category != "linear" {
+			return nil, fmt.Errorf("bybit: unsupported category %q", raw)
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		normalized = append(normalized, category)
+	}
+	return normalized, nil
+}
+
 func AccountIDForKind(kind enums.InstrumentKind) string {
 	switch kind {
 	case enums.KindSpot, enums.KindPerp:
@@ -47,17 +68,37 @@ func AccountIDForKind(kind enums.InstrumentKind) string {
 	}
 }
 
+func instrumentKindsForCategories(categories []string) []enums.InstrumentKind {
+	kinds := make([]enums.InstrumentKind, 0, len(categories))
+	for _, category := range categories {
+		switch strings.ToLower(strings.TrimSpace(category)) {
+		case "spot":
+			kinds = append(kinds, enums.KindSpot)
+		case "linear":
+			kinds = append(kinds, enums.KindPerp)
+		}
+	}
+	return normalizedBybitScope(kinds)
+}
+
 type instrumentProvider struct {
 	mu       sync.RWMutex
 	byID     map[string]*model.Instrument
 	bySymbol map[string]model.InstrumentID
+	deferred map[deferredInstrumentKey]struct{}
 	all      []*model.Instrument
+}
+
+type deferredInstrumentKey struct {
+	category string
+	symbol   string
 }
 
 func newInstrumentProvider() *instrumentProvider {
 	return &instrumentProvider{
 		byID:     make(map[string]*model.Instrument),
 		bySymbol: make(map[string]model.InstrumentID),
+		deferred: make(map[deferredInstrumentKey]struct{}),
 	}
 }
 
@@ -66,25 +107,37 @@ func (p *instrumentProvider) Load(ctx context.Context, client *bybitsdk.Client, 
 		categories = []string{"spot", "linear"}
 	}
 	all := make([]*model.Instrument, 0)
+	deferred := make(map[deferredInstrumentKey]struct{})
 	for _, category := range categories {
+		category = strings.ToLower(strings.TrimSpace(category))
 		insts, err := client.GetInstruments(ctx, category)
 		if err != nil {
 			return err
 		}
 		for i := range insts {
+			if category == "linear" && isBybitDatedLinearInstrument(insts[i]) {
+				deferred[deferredInstrumentKey{category: category, symbol: insts[i].Symbol}] = struct{}{}
+			}
 			inst := instrumentFromBybit(category, insts[i])
 			if inst != nil {
 				all = append(all, inst)
 			}
 		}
 	}
-	p.LoadSnapshot(all)
+	p.loadSnapshot(all, deferred)
 	return nil
 }
 
 func (p *instrumentProvider) LoadSnapshot(insts []*model.Instrument) {
+	p.loadSnapshot(insts, nil)
+}
+
+func (p *instrumentProvider) loadSnapshot(insts []*model.Instrument, deferred map[deferredInstrumentKey]struct{}) {
 	byID := make(map[string]*model.Instrument, len(insts))
 	bySymbol := make(map[string]model.InstrumentID, len(insts))
+	if deferred == nil {
+		deferred = make(map[deferredInstrumentKey]struct{})
+	}
 	all := make([]*model.Instrument, 0, len(insts))
 	for _, inst := range insts {
 		if inst == nil {
@@ -97,8 +150,30 @@ func (p *instrumentProvider) LoadSnapshot(insts []*model.Instrument) {
 		all = append(all, inst)
 	}
 	p.mu.Lock()
-	p.byID, p.bySymbol, p.all = byID, bySymbol, all
+	p.byID, p.bySymbol, p.deferred, p.all = byID, bySymbol, deferred, all
 	p.mu.Unlock()
+}
+
+func (p *instrumentProvider) markDeferred(category, symbol string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.deferred == nil {
+		p.deferred = make(map[deferredInstrumentKey]struct{})
+	}
+	p.deferred[deferredInstrumentKey{
+		category: strings.ToLower(strings.TrimSpace(category)),
+		symbol:   strings.TrimSpace(symbol),
+	}] = struct{}{}
+}
+
+func (p *instrumentProvider) isDeferred(category, symbol string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	_, ok := p.deferred[deferredInstrumentKey{
+		category: strings.ToLower(strings.TrimSpace(category)),
+		symbol:   strings.TrimSpace(symbol),
+	}]
+	return ok
 }
 
 func (p *instrumentProvider) Instrument(id model.InstrumentID) (*model.Instrument, bool) {
@@ -136,25 +211,6 @@ func (p *instrumentProvider) ResolveVenueInstrument(sym string, kind enums.Instr
 		return inst.ID, true
 	}
 	return model.InstrumentID{}, false
-}
-
-func (p *instrumentProvider) resolveVenueSymbol(sym string) model.InstrumentID {
-	p.mu.RLock()
-	id, ok := p.bySymbol[sym]
-	p.mu.RUnlock()
-	if ok {
-		return id
-	}
-	return model.InstrumentID{Venue: VenueName, Symbol: sym, Kind: enums.KindPerp}
-}
-
-func (p *instrumentProvider) resolveReportInstrument(scoped model.InstrumentID, venueSymbol string) model.InstrumentID {
-	if scoped.Symbol != "" {
-		if inst, ok := p.Instrument(scoped); ok && inst.VenueSymbol == venueSymbol {
-			return scoped
-		}
-	}
-	return p.resolveVenueSymbol(venueSymbol)
 }
 
 func instrumentFromBybit(category string, in bybitsdk.Instrument) *model.Instrument {
@@ -206,18 +262,42 @@ func instrumentFromBybit(category string, in bybitsdk.Instrument) *model.Instrum
 
 func isBybitDatedLinearInstrument(in bybitsdk.Instrument) bool {
 	deliveryTime := strings.TrimSpace(in.DeliveryTime)
-	return deliveryTime != "" && deliveryTime != "0"
+	return (deliveryTime != "" && deliveryTime != "0") || isBybitDatedLinearSymbol(in.Symbol)
+}
+
+func isBybitDatedLinearSymbol(symbol string) bool {
+	symbol = strings.TrimSpace(symbol)
+	separator := strings.LastIndexByte(symbol, '-')
+	if separator <= 0 || separator+8 != len(symbol) {
+		return false
+	}
+	expiry := strings.ToUpper(symbol[separator+1:])
+	day := expiry[:2]
+	year := expiry[5:]
+	if day < "01" || day > "31" || year[0] < '0' || year[0] > '9' || year[1] < '0' || year[1] > '9' {
+		return false
+	}
+	switch expiry[2:5] {
+	case "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC":
+		return true
+	default:
+		return false
+	}
 }
 
 func CapabilityRows() []adapter.CapabilityRow {
 	return []adapter.CapabilityRow{
-		capabilityRow("Spot cash", "make test-bybit-spot-acceptance"),
-		capabilityRow("USDT-linear Perp/SWAP", "make test-bybit-usdt-perp-acceptance"),
-		capabilityRow("USDC-linear Perp/SWAP", "make test-bybit-usdc-perp-acceptance"),
+		capabilityRow("Spot cash", "make test-bybit-spot-acceptance", false),
+		capabilityRow("USDT-linear Perp/SWAP", "make test-bybit-usdt-perp-acceptance", true),
+		capabilityRow("USDC-linear Perp/SWAP", "make test-bybit-usdc-perp-acceptance", true),
 	}
 }
 
-func capabilityRow(product, target string) adapter.CapabilityRow {
+func capabilityRow(product, target string, positionReports bool) adapter.CapabilityRow {
+	positionReportsLabel := "unsupported"
+	if positionReports {
+		positionReportsLabel = "account snapshot"
+	}
 	return adapter.CapabilityRow{
 		Venue:                VenueName,
 		Product:              product,
@@ -230,7 +310,7 @@ func capabilityRow(product, target string) adapter.CapabilityRow {
 		Modify:               true,
 		OrderStatusReports:   "open orders",
 		FillReports:          "unsupported",
-		PositionReports:      "account snapshot",
+		PositionReports:      positionReportsLabel,
 		MassStatus:           "open-order mass status",
 		SingleOrderQuery:     "open order filter",
 		OpenOnlyCaveat:       true,

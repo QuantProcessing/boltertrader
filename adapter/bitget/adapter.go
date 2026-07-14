@@ -3,25 +3,38 @@ package bitget
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	bitgetsdk "github.com/QuantProcessing/boltertrader/sdk/bitget"
 )
+
+const privateStreamID = "bitget:uta:private"
+
+type reconnectHookSetter interface {
+	SetReconnectHooks(func(error), func())
+}
 
 type Adapter struct {
 	Market    contract.MarketDataClient
 	Execution contract.ExecutionClient
 	Account   contract.AccountClient
 
-	provider *instrumentProvider
-	rest     *bitgetsdk.Client
-	private  *bitgetsdk.PrivateWSClient
-	exec     *executionClient
-	acct     *accountClient
-	market   *marketDataClient
-	clk      clock.Clock
+	provider         *instrumentProvider
+	rest             *bitgetsdk.Client
+	private          *bitgetsdk.PrivateWSClient
+	exec             *executionClient
+	acct             *accountClient
+	market           *marketDataClient
+	clk              clock.Clock
+	privateGapMu     sync.Mutex
+	privateGap       *streamgap.Reporter
+	privateGapActive bool
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
@@ -36,9 +49,11 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.AccountID == "" {
 		cfg.AccountID = AccountIDUnified
 	}
-	if len(cfg.Categories) == 0 {
-		cfg.Categories = []string{"SPOT", bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures}
+	categories, err := normalizeBitgetCategories(cfg.Categories)
+	if err != nil {
+		return nil, err
 	}
+	cfg.Categories = categories
 	rest := bitgetsdk.NewClient().WithEnvironmentProfile(profile).WithCredentials(cfg.APIKey, cfg.APISecret, cfg.Passphrase)
 	if cfg.HTTPClient != nil {
 		rest.WithHTTPClient(cfg.HTTPClient)
@@ -58,7 +73,8 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if a.private == nil {
 		return nil
 	}
-	resolve := a.provider.resolveVenueSymbol
+	a.bindPrivateGapHooks(a.private)
+	resolve := a.resolvePrivateInstrument
 	subs := []struct {
 		arg     bitgetsdk.WSArg
 		handler func(json.RawMessage)
@@ -66,7 +82,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "order"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodeOrderMessage(payload)
 			if err == nil {
-				for _, event := range execEventsFromOrderMessage(msg, resolve, a.exec.accountID) {
+				events, conversionErr := execEventsFromOrderMessage(msg, resolve, a.exec.accountID)
+				if conversionErr != nil {
+					a.emitPrivateGapPair(conversionErr.Error())
+					return
+				}
+				for _, event := range events {
 					a.exec.emit(event)
 				}
 			}
@@ -82,7 +103,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 		{bitgetsdk.WSArg{InstType: "UTA", Topic: "position"}, func(payload json.RawMessage) {
 			msg, err := bitgetsdk.DecodePositionMessage(payload)
 			if err == nil {
-				for _, event := range accountEventsFromPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now()) {
+				events, conversionErr := accountEventsFromPositionMessage(msg, resolve, a.acct.accountID, a.clk.Now())
+				if conversionErr != nil {
+					a.emitPrivateGapPair(conversionErr.Error())
+					return
+				}
+				for _, event := range events {
 					a.acct.emit(event)
 				}
 			}
@@ -102,6 +128,86 @@ func (a *Adapter) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (a *Adapter) resolvePrivateInstrument(category, symbol string) (model.InstrumentID, bool) {
+	if a == nil || a.provider == nil {
+		return model.InstrumentID{}, false
+	}
+	if id, ok := a.provider.ResolveVenueCategorySymbol(category, symbol); ok {
+		return id, true
+	}
+	if _, supported := normalizeBitgetCategory(category); !supported {
+		switch normalizeVenueSymbol(category) {
+		case "MARGIN", "COIN-FUTURES":
+			return model.InstrumentID{}, false
+		default:
+			normalizedCategory := normalizeVenueSymbol(category)
+			if normalizedCategory == "" {
+				normalizedCategory = "<EMPTY>"
+			}
+			a.emitPrivateGapPair(fmt.Sprintf("unresolved private category=%s symbol=%s", normalizedCategory, normalizeVenueSymbol(symbol)))
+			return model.InstrumentID{}, false
+		}
+	}
+	if !a.provider.CategoryInScope(category) {
+		return model.InstrumentID{}, false
+	}
+	normalizedCategory, _ := normalizeBitgetCategory(category)
+	reason := fmt.Sprintf("unresolved private instrument category=%s symbol=%s", normalizedCategory, normalizeVenueSymbol(symbol))
+	a.emitPrivateGapPair(reason)
+	return model.InstrumentID{}, false
+}
+
+func (a *Adapter) bindPrivateGapHooks(hooks reconnectHookSetter) {
+	if hooks == nil || a.exec == nil {
+		return
+	}
+	a.privateGapMu.Lock()
+	if a.privateGap == nil {
+		a.privateGap = streamgap.New(VenueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+	}
+	a.privateGapMu.Unlock()
+	hooks.SetReconnectHooks(func(err error) {
+		reason := "private stream disconnected"
+		if err != nil {
+			reason = err.Error()
+		}
+		a.startPrivateGap(reason)
+	}, func() {
+		a.recoverPrivateGap("private stream subscriptions restored")
+	})
+}
+
+func (a *Adapter) startPrivateGap(reason string) {
+	a.privateGapMu.Lock()
+	defer a.privateGapMu.Unlock()
+	if a.privateGap != nil && a.privateGap.Started(reason) {
+		a.privateGapActive = true
+	}
+}
+
+func (a *Adapter) recoverPrivateGap(reason string) {
+	a.privateGapMu.Lock()
+	defer a.privateGapMu.Unlock()
+	if a.privateGap != nil && a.privateGap.Recovered(reason) {
+		a.privateGapActive = false
+	}
+}
+
+func (a *Adapter) emitPrivateGapPair(reason string) {
+	a.privateGapMu.Lock()
+	defer a.privateGapMu.Unlock()
+	if a.privateGap == nil || a.privateGapActive {
+		return
+	}
+	if !a.privateGap.Started(reason) {
+		return
+	}
+	a.privateGapActive = true
+	if a.privateGap.Recovered(reason) {
+		a.privateGapActive = false
+	}
 }
 
 func (a *Adapter) Close() error {

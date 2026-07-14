@@ -1,13 +1,15 @@
 // Package runtime wires the venue-neutral building blocks — the event bus,
 // authoritative cache, portfolio, and execution engine — into a single
 // TradingNode. The node depends only on core/contract + core/clock and consumes
-// live-style client streams through one bus goroutine.
+// live-style client streams through one bus goroutine while serializing direct
+// reconciliation work against that event path.
 package runtime
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/portfolio"
 	"github.com/QuantProcessing/boltertrader/runtime/reconcile"
 	"github.com/QuantProcessing/boltertrader/runtime/strategy"
+	"github.com/shopspring/decimal"
 )
 
 // Clients bundles the venue-neutral clients a node drives. Any may be nil for a
@@ -38,9 +41,14 @@ type Clients struct {
 	Account   contract.AccountClient
 }
 
+type pendingStrategyFill struct {
+	fill model.Fill
+	meta contract.EventMeta
+}
+
 // TradingNode hosts the runtime state machine. Cache, Portfolio, and Exec are
-// exported for strategy/reporting access; all event-driven mutation happens on
-// the single bus goroutine.
+// exported for strategy/reporting access; event-driven and recovered mutation
+// is serialized through eventMu.
 type TradingNode struct {
 	Cache     *cache.Cache
 	Portfolio *portfolio.Portfolio
@@ -56,13 +64,17 @@ type TradingNode struct {
 	adapterBackedAccountID  bool
 	legacyAccountIDFallback string
 
-	// onFill is an optional raw hook invoked (on the bus goroutine) after each
-	// fill is applied to cache and portfolio. Used by tests and simple wiring.
-	onFill func(model.Fill)
+	// onFill is an optional raw hook invoked on the serialized runtime event path
+	// after each fill is applied to cache and portfolio.
+	onFill         func(model.Fill)
+	onExecEnvelope func(contract.ExecEnvelope)
 
 	// strat is the optional strategy and its prebuilt callback context.
-	strat    strategy.Strategy
-	stratCtx *strategy.Context
+	strat                strategy.Strategy
+	stratCtx             *strategy.Context
+	pendingStrategyFills []pendingStrategyFill
+	pendingObserverFills []model.Fill
+	observerStarted      bool
 
 	// aggregators build bars from trades, keyed by InstrumentID.String().
 	aggregators map[string]*data.BarAggregator
@@ -71,12 +83,25 @@ type TradingNode struct {
 	// account client.
 	reconciler *reconcile.Reconciler
 
-	// obs receives observability callbacks; nil if none registered.
-	obs      observ.Observer
-	counters observ.Counters
-	latency  latency.Recorder
-	life     *lifecycle.Machine
-	fills    *exec.FillBuffer
+	// obs receives observability callbacks; nil if none registered. observerMu
+	// serializes every callback and is acquired after eventMu when both apply.
+	obs        observ.Observer
+	observerMu sync.Mutex
+	counters   observ.Counters
+	latency    latency.Recorder
+	life       *lifecycle.Machine
+	fills      *exec.FillBuffer
+
+	// eventMu preserves the single-callback guarantee when a caller-triggered
+	// reconciliation applies recovered fills concurrently with the event bus.
+	eventMu sync.Mutex
+	// reconcileMu serializes startup/manual/automatic reconciliation and guards
+	// automatic stream-gap generation state.
+	reconcileMu         sync.Mutex
+	activeStreamGaps    map[string]uint64
+	lastStreamGaps      map[string]uint64
+	gapRestore          lifecycle.Snapshot
+	fillRecoveryBlocked bool
 }
 
 // Option configures a TradingNode.
@@ -87,9 +112,16 @@ func WithOnFill(fn func(model.Fill)) Option {
 	return func(n *TradingNode) { n.onFill = fn }
 }
 
+// WithOnExecEnvelope observes the original execution envelope before the
+// runtime mutates cache or portfolio state. It is useful for proving adapter
+// source/flag provenance without weakening the model-only Observer API.
+func WithOnExecEnvelope(fn func(contract.ExecEnvelope)) Option {
+	return func(n *TradingNode) { n.onExecEnvelope = fn }
+}
+
 // WithStrategy registers a callback-style strategy. Its callbacks run on the
-// bus goroutine with a Context wired to this node's cache, portfolio, clock,
-// and execution engine.
+// serialized runtime event path with a Context wired to this node's cache,
+// portfolio, clock, and execution engine.
 func WithStrategy(s strategy.Strategy) Option {
 	return func(n *TradingNode) { n.strat = s }
 }
@@ -167,6 +199,7 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	var accountCh <-chan contract.AccountEnvelope
 	if clients.Market != nil {
 		marketCh = clients.Market.Events()
+		pf.WithInstrumentProvider(clients.Market.InstrumentProvider())
 	}
 	if clients.Execution != nil {
 		execCh = clients.Execution.Events()
@@ -187,6 +220,8 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 		latency:                 latency.NewRecorder(4096),
 		life:                    lifecycle.New(),
 		fills:                   exec.NewFillBuffer(),
+		activeStreamGaps:        make(map[string]uint64),
+		lastStreamGaps:          make(map[string]uint64),
 	}
 	if clients.Execution != nil {
 		n.Exec = exec.New(clients.Execution, c, clk, idPrefix)
@@ -195,12 +230,19 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 		n.Exec.WithRecoverabilityHandler(func(err error) {
 			n.Halt("exec journal recoverability breach: " + err.Error())
 		})
+		n.Exec.WithTerminalOrderHandler(func(order model.Order) {
+			if err := n.fills.MarkOrderTerminal(order); err != nil {
+				n.Halt("fill order identity conflict: " + err.Error())
+			}
+		})
 	}
 	// Reconcile whatever authoritative sources exist: balances/positions from the
 	// account client, open orders from the execution client. Either may be nil.
 	if clients.Account != nil || clients.Execution != nil {
 		n.reconciler = reconcile.New(clients.Account, clients.Execution, c)
 		n.reconciler.WithLatencyRecorder(n.latency)
+		n.reconciler.WithFillApplier(n.applyRecoveredFill)
+		n.reconciler.WithFillSeeder(func(fill model.Fill) { n.fills.MarkApplied(fill) })
 		if n.Exec != nil {
 			n.reconciler.WithInFlightResolver(n.Exec)
 		}
@@ -341,6 +383,9 @@ func (n *TradingNode) accountIDReady() error {
 // minimums; it may be nil. No-op if the node has no execution client.
 func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
 	return func(n *TradingNode) {
+		if provider == nil && n.clients.Market != nil {
+			provider = n.clients.Market.InstrumentProvider()
+		}
 		if aware, ok := r.(interface {
 			SetRuntimeCapabilities(...contract.Capabilities)
 		}); ok {
@@ -358,6 +403,9 @@ func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
 		}
 		if n.Exec != nil {
 			n.Exec.WithRisk(r, provider)
+		}
+		if provider != nil {
+			n.Portfolio.WithInstrumentProvider(provider)
 		}
 	}
 }
@@ -397,7 +445,8 @@ func (n *TradingNode) RuntimeCapabilities() []contract.Capabilities {
 }
 
 // WithObserver registers an observability sink that receives lifecycle, order,
-// fill, and reject callbacks on the runtime goroutine.
+// fill, and reject callbacks synchronously on the node's serialized observer
+// path.
 func WithObserver(o observ.Observer) Option {
 	return func(n *TradingNode) { n.obs = o }
 }
@@ -520,6 +569,8 @@ func maxAccountStateAge(accounts []accounting.Account, now time.Time) int64 {
 // and after a reconnect. It is a no-op (nil report, nil error) if the node has
 // no account client.
 func (n *TradingNode) Resync(ctx context.Context) (reconcile.Report, error) {
+	n.reconcileMu.Lock()
+	defer n.reconcileMu.Unlock()
 	return n.resync(ctx, "resync", true)
 }
 
@@ -538,15 +589,22 @@ func (n *TradingNode) resync(ctx context.Context, reason string, restoreRunning 
 	}
 	n.emitHealth("reconciling", reason)
 	start := time.Now()
-	rep, err := n.reconciler.Run(ctx)
-	n.life.SetLastReconciliationError(err)
-	if n.obs != nil {
+	var rep reconcile.Report
+	var err error
+	func() {
+		n.eventMu.Lock()
+		defer n.eventMu.Unlock()
+		rep, err = n.reconciler.Run(ctx)
+		if syncErr := n.syncFillTerminalOrders(); err == nil && syncErr != nil {
+			err = syncErr
+		}
+		n.life.SetLastReconciliationError(err)
 		rec := observ.Reconciliation{Reason: "resync", DurationNs: time.Since(start).Nanoseconds()}
 		if err != nil {
 			rec.Error = err.Error()
 		}
-		n.obs.OnReconciliation(rec)
-	}
+		n.notifyObserver(func(observer observ.Observer) { observer.OnReconciliation(rec) })
+	}()
 	if err != nil {
 		n.life.ForceFailed(err.Error())
 		n.emitHealth("failed", err.Error())
@@ -555,10 +613,9 @@ func (n *TradingNode) resync(ctx context.Context, reason string, restoreRunning 
 	if restoreRunning {
 		switch prev.Node {
 		case lifecycle.NodeRunning:
-			if err := n.life.Transition(lifecycle.NodeRunning, lifecycle.TradingActive, reason+" complete"); err != nil {
+			if err := n.finishReconciliation(prev, rep, reason+" complete", false); err != nil {
 				return rep, err
 			}
-			n.emitHealth("running", reason+" complete")
 		case lifecycle.NodeCreated:
 			if err := n.life.Transition(lifecycle.NodeCreated, lifecycle.TradingDisabled, reason+" complete"); err != nil {
 				return rep, err
@@ -573,9 +630,12 @@ func (n *TradingNode) resync(ctx context.Context, reason string, restoreRunning 
 // (contract.Reconnectable), then reconciles. Clients that auto-reconnect
 // internally are skipped. Returns the reconciliation report.
 func (n *TradingNode) Reconnect(ctx context.Context) (reconcile.Report, error) {
+	n.reconcileMu.Lock()
+	defer n.reconcileMu.Unlock()
 	if err := n.accountIDReady(); err != nil {
 		return reconcile.Report{}, err
 	}
+	prev := n.life.Snapshot()
 	if err := n.life.Transition(lifecycle.NodeReconnecting, lifecycle.TradingReconciling, "reconnect"); err != nil {
 		return reconcile.Report{}, err
 	}
@@ -589,15 +649,79 @@ func (n *TradingNode) Reconnect(ctx context.Context) (reconcile.Report, error) {
 			}
 		}
 	}
-	rep, err := n.resync(ctx, "reconnect reconciliation", false)
+	var rep reconcile.Report
+	var err error
+	if n.reconciler != nil {
+		rep, err = n.resync(ctx, "reconnect reconciliation", false)
+	} else {
+		err = n.life.Transition(lifecycle.NodeReconciling, lifecycle.TradingReconciling, "reconnect reconciliation")
+	}
 	if err != nil {
 		return rep, err
 	}
-	if err := n.life.Transition(lifecycle.NodeRunning, lifecycle.TradingActive, "reconnect complete"); err != nil {
+	if err := n.finishReconciliation(prev, rep, "reconnect complete", true); err != nil {
 		return rep, err
 	}
-	n.emitHealth("running", "reconnect complete")
 	return rep, nil
+}
+
+func (n *TradingNode) finishReconciliation(previous lifecycle.Snapshot, rep reconcile.Report, reason string, requireFillHistory bool) error {
+	current := n.life.Snapshot()
+	verdict := rep.ActivationVerdict()
+	cannotRecoverFills := n.executionStreamCannotRecoverFills()
+	if requireFillHistory && cannotRecoverFills {
+		n.fillRecoveryBlocked = true
+	} else if n.fillRecoveryBlocked && !cannotRecoverFills && verdict.Safe {
+		n.fillRecoveryBlocked = false
+	}
+	trading, restrictionReason, restricted := strongestTradingRestriction(previous, current)
+	if !restricted {
+		if !verdict.Safe {
+			trading = lifecycle.TradingReconciling
+			restrictionReason = verdict.Reason
+			restricted = true
+		}
+	}
+	if !restricted && n.fillRecoveryBlocked {
+		trading = lifecycle.TradingReconciling
+		restrictionReason = "private execution stream recovered without authoritative fill history"
+		restricted = true
+	}
+	if !restricted {
+		trading = lifecycle.TradingActive
+		restrictionReason = reason
+	}
+	if err := n.life.Transition(lifecycle.NodeRunning, trading, restrictionReason); err != nil {
+		return err
+	}
+	status := "running"
+	if trading != lifecycle.TradingActive {
+		status = string(trading)
+	}
+	n.emitHealth(status, restrictionReason)
+	return nil
+}
+
+func strongestTradingRestriction(snapshots ...lifecycle.Snapshot) (lifecycle.TradingState, string, bool) {
+	for _, snapshot := range snapshots {
+		if snapshot.Trading == lifecycle.TradingHalted {
+			return lifecycle.TradingHalted, snapshot.Reason, true
+		}
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Trading == lifecycle.TradingReducing {
+			return lifecycle.TradingReducing, snapshot.Reason, true
+		}
+	}
+	return "", "", false
+}
+
+func (n *TradingNode) executionStreamCannotRecoverFills() bool {
+	if n.clients.Execution == nil {
+		return false
+	}
+	caps := n.clients.Execution.Capabilities()
+	return caps.Streaming.Execution && !caps.Reports.FillHistory
 }
 
 // OpenInterest queries current venue open interest through the optional market
@@ -630,17 +754,22 @@ func (n *TradingNode) Run(ctx context.Context) {
 			return
 		}
 	}
+	startupState := n.life.Snapshot()
+	var startupReport reconcile.Report
+	var err error
+	n.reconcileMu.Lock()
 	if n.reconciler != nil {
-		if _, err := n.resync(ctx, "startup reconciliation", false); err != nil {
-			return
-		}
+		startupReport, err = n.resync(ctx, "startup reconciliation", false)
 	}
-	if err := n.life.Transition(lifecycle.NodeRunning, lifecycle.TradingActive, "startup complete"); err != nil {
+	if err == nil {
+		err = n.finishReconciliation(startupState, startupReport, "startup complete", false)
+	}
+	n.reconcileMu.Unlock()
+	if err != nil {
 		n.life.ForceFailed(err.Error())
 		n.emitHealth("failed", err.Error())
 		return
 	}
-	n.emitHealth("running", "startup complete")
 	n.Start(ctx)
 	defer func() {
 		_ = n.life.Transition(lifecycle.NodeStopping, lifecycle.TradingDisabled, "stopping")
@@ -649,16 +778,25 @@ func (n *TradingNode) Run(ctx context.Context) {
 		n.emitHealth("stopped", "stopped")
 	}()
 	n.bus.Run(ctx, bus.Handlers{
-		OnExec:    n.onExec,
+		OnExec:    func(env contract.ExecEnvelope) { n.onExecContext(ctx, env) },
 		OnAccount: n.onAccount,
 		OnMarket:  n.onMarket,
 	})
 }
 
 func (n *TradingNode) emitHealth(status, detail string) {
-	if n.obs != nil {
-		n.obs.OnHealth(observ.Health{Component: "runtime", Status: status, Detail: detail})
+	n.notifyObserver(func(observer observ.Observer) {
+		observer.OnHealth(observ.Health{Component: "runtime", Status: status, Detail: detail})
+	})
+}
+
+func (n *TradingNode) notifyObserver(notify func(observ.Observer)) {
+	if n.obs == nil {
+		return
 	}
+	n.observerMu.Lock()
+	defer n.observerMu.Unlock()
+	notify(n.obs)
 }
 
 // Start builds the strategy context and fires OnStart. It is called by Run; it
@@ -668,11 +806,14 @@ func (n *TradingNode) Start(ctx context.Context) {
 	if err := n.accountIDReady(); err != nil {
 		return
 	}
+	n.eventMu.Lock()
+	defer n.eventMu.Unlock()
 	if n.obs != nil {
-		n.obs.OnNodeStart()
+		n.notifyObserver(func(observer observ.Observer) { observer.OnNodeStart() })
+		n.observerStarted = true
 	}
 	if n.strat != nil {
-		n.stratCtx = &strategy.Context{
+		stratCtx := &strategy.Context{
 			Ctx:                ctx,
 			Clock:              n.clk,
 			Cache:              n.Cache,
@@ -680,7 +821,21 @@ func (n *TradingNode) Start(ctx context.Context) {
 			Orders:             n.Exec,
 			OpenInterestClient: openInterestClient(n.clients.Market),
 		}
-		n.strat.OnStart(n.stratCtx)
+		n.strat.OnStart(stratCtx)
+
+		n.stratCtx = stratCtx
+		for _, recovered := range n.pendingStrategyFills {
+			stratCtx.SetCurrentEventMeta(recovered.meta)
+			n.strat.OnFill(stratCtx, recovered.fill)
+		}
+		n.pendingStrategyFills = nil
+	}
+	if n.obs != nil {
+		for _, fill := range n.pendingObserverFills {
+			notifyFill := fill
+			n.notifyObserver(func(observer observ.Observer) { observer.OnFill(notifyFill) })
+		}
+		n.pendingObserverFills = nil
 	}
 }
 
@@ -696,33 +851,47 @@ func (n *TradingNode) Stop() {
 	if n.strat != nil && n.stratCtx != nil {
 		n.strat.OnStop(n.stratCtx)
 	}
-	if n.obs != nil {
-		n.obs.OnNodeStop()
-	}
+	n.notifyObserver(func(observer observ.Observer) { observer.OnNodeStop() })
 }
 
-// onExec applies an execution event to cache and portfolio. Runs on the bus
-// goroutine.
+// onExec applies an execution event to cache and portfolio. Tests that invoke
+// it directly use a background context; the bus supplies its run context.
 func (n *TradingNode) onExec(env contract.ExecEnvelope) {
+	n.onExecContext(context.Background(), env)
+}
+
+func (n *TradingNode) onExecContext(ctx context.Context, env contract.ExecEnvelope) {
 	applied := time.Now()
+	if n.onExecEnvelope != nil {
+		n.onExecEnvelope(env)
+	}
+	if gap, ok := env.Payload.(contract.StreamGapEvent); ok {
+		n.onStreamGap(ctx, gap)
+		n.recordEventLatency(latency.ChainExecution, env.Meta(), applied, time.Now())
+		return
+	}
+	n.eventMu.Lock()
+	defer n.eventMu.Unlock()
 	switch e := env.Payload.(type) {
 	case contract.OrderEvent:
-		n.Cache.UpsertOrder(e.Order)
+		if err := n.Cache.UpsertOrderChecked(e.Order); err != nil {
+			n.Halt("order identity conflict: " + err.Error())
+			n.recordEventLatency(latency.ChainExecution, env.Meta(), applied, time.Now())
+			return
+		}
+		canonical := n.canonicalOrder(e.Order)
+		if err := n.syncFillOrderTerminal(canonical); err != nil {
+			n.Halt(err.Error())
+		}
 		if n.Exec != nil {
-			if e.Order.Status == enums.StatusRejected || e.Order.Status == enums.StatusExpired {
-				reason := e.Order.RejectReason
-				if reason == "" {
-					reason = e.Order.Status.String()
-				}
-				n.Exec.RejectInFlight(e.Order.Request.ClientID, e.Order.VenueOrderID, reason, n.clk.Now())
-			} else {
-				n.Exec.ResolveInFlight(e.Order.Request.ClientID, e.Order.VenueOrderID, n.clk.Now())
+			resolvedAt := canonical.UpdatedAt
+			if resolvedAt.IsZero() {
+				resolvedAt = n.clk.Now()
 			}
+			n.Exec.ResolveOrderInFlight(canonical, resolvedAt)
 		}
 		atomic.AddInt64(&n.counters.Orders, 1)
-		if n.obs != nil {
-			n.obs.OnOrder(e.Order)
-		}
+		n.notifyObserver(func(observer observ.Observer) { observer.OnOrder(e.Order) })
 		for _, fill := range n.fills.DrainBuffered(e.Order) {
 			fillEnv := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill.Fill}, fill.Meta)
 			if !n.applyFill(fill.Fill, fillEnv) {
@@ -736,40 +905,128 @@ func (n *TradingNode) onExec(env contract.ExecEnvelope) {
 	case contract.RejectEvent:
 		atomic.AddInt64(&n.counters.Rejects, 1)
 		venueOrderID := ""
-		if o, ok := n.Cache.OrderForAccount(n.accountID, e.ClientID); ok {
+		if o, ok := n.Cache.OrderByClientIDForAccount(n.accountID, e.ClientID); ok {
 			o.Status = enums.StatusRejected
 			o.RejectReason = e.Reason
 			o.UpdatedAt = n.clk.Now()
-			n.Cache.UpsertOrder(o)
+			if err := n.Cache.UpsertOrderChecked(o); err != nil {
+				n.Halt("order identity conflict: " + err.Error())
+				break
+			}
+			if err := n.fills.MarkOrderTerminal(o); err != nil {
+				n.Halt(err.Error())
+			}
 			venueOrderID = o.VenueOrderID
 		}
 		if n.Exec != nil {
 			n.Exec.RejectInFlight(e.ClientID, venueOrderID, e.Reason, n.clk.Now())
 		}
-		if n.obs != nil {
-			n.obs.OnReject(e.ClientID, e.Reason)
-		}
+		n.notifyObserver(func(observer observ.Observer) { observer.OnReject(e.ClientID, e.Reason) })
 	}
 	n.recordEventLatency(latency.ChainExecution, env.Meta(), applied, time.Now())
 }
 
+func (n *TradingNode) onStreamGap(ctx context.Context, gap contract.StreamGapEvent) {
+	if err := n.validateStreamGap(gap); err != nil {
+		n.Halt(err.Error())
+		return
+	}
+
+	n.reconcileMu.Lock()
+	defer n.reconcileMu.Unlock()
+	key := strings.TrimSpace(gap.StreamID)
+	switch gap.Phase {
+	case contract.StreamGapStarted:
+		if gap.Generation <= n.lastStreamGaps[key] {
+			return
+		}
+		if len(n.activeStreamGaps) == 0 {
+			n.gapRestore = n.life.Snapshot()
+		}
+		n.activeStreamGaps[key] = gap.Generation
+		n.lastStreamGaps[key] = gap.Generation
+		if len(n.activeStreamGaps) > 1 {
+			return
+		}
+		reason := "private stream gap: " + key
+		if detail := strings.TrimSpace(gap.Reason); detail != "" {
+			reason += ": " + detail
+		}
+		if err := n.life.Transition(lifecycle.NodeReconnecting, lifecycle.TradingReconciling, reason); err != nil {
+			n.life.ForceFailed(err.Error())
+			n.emitHealth("failed", err.Error())
+			return
+		}
+		n.emitHealth("reconnecting", reason)
+	case contract.StreamGapRecovered:
+		generation, active := n.activeStreamGaps[key]
+		if !active || generation != gap.Generation {
+			return
+		}
+		delete(n.activeStreamGaps, key)
+		if len(n.activeStreamGaps) != 0 {
+			return
+		}
+		previous := n.gapRestore
+		if trading, reason, restricted := strongestTradingRestriction(previous, n.life.Snapshot()); restricted {
+			previous.Trading = trading
+			previous.Reason = reason
+		}
+		rep, err := n.resync(ctx, "private stream recovery", false)
+		if err != nil {
+			return
+		}
+		if err := n.finishReconciliation(previous, rep, "private stream recovery complete", true); err != nil {
+			n.life.ForceFailed(err.Error())
+			n.emitHealth("failed", err.Error())
+		}
+		n.gapRestore = lifecycle.Snapshot{}
+	}
+}
+
+func (n *TradingNode) validateStreamGap(gap contract.StreamGapEvent) error {
+	if err := gap.Validate(); err != nil {
+		return err
+	}
+	if accountID := strings.TrimSpace(gap.AccountID); accountID != "" && accountID != n.accountID {
+		return fmt.Errorf("stream gap account id %q does not match runtime account id %q", accountID, n.accountID)
+	}
+	if n.clients.Execution != nil {
+		wantVenue := strings.TrimSpace(n.clients.Execution.Capabilities().Venue)
+		if venue := strings.TrimSpace(gap.Venue); venue != "" && wantVenue != "" && !strings.EqualFold(venue, wantVenue) {
+			return fmt.Errorf("stream gap venue %q does not match execution venue %q", venue, wantVenue)
+		}
+	}
+	return nil
+}
+
 func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool {
+	return n.applyFillResult(fill, env) != reconcile.FillApplyUnmatched
+}
+
+func (n *TradingNode) applyFillResult(fill model.Fill, env contract.ExecEnvelope) reconcile.FillApplyResult {
 	resolvedFromInFlight := false
-	if fill.ClientID == "" && n.Exec != nil {
-		if resolvedFill, ok := n.Exec.ResolveFillInFlight(fill, fill.Timestamp); ok {
+	if n.Exec != nil {
+		if resolvedFill, ok := n.Exec.MatchFillInFlight(fill); ok {
 			fill = resolvedFill
 			resolvedFromInFlight = true
 		}
 	}
-	o, ok := n.orderForFill(fill)
+	o, ok, identityErr := n.orderForFill(fill)
+	if identityErr != nil {
+		n.Halt("fill order identity conflict: " + identityErr.Error())
+		return reconcile.FillApplyConflict
+	}
+	materialized := false
 	if !ok {
-		if materialized, materializedOK := n.materializeExternalOrder(fill, resolvedFromInFlight); materializedOK {
-			o = materialized
+		if external, materializedOK := n.materializeExternalOrder(fill, resolvedFromInFlight); materializedOK {
+			o = external
 			ok = true
+			materialized = true
 		}
 	}
 	if !ok {
-		return false
+		return reconcile.FillApplyUnmatched
 	}
 	if fill.AccountID == "" {
 		fill.AccountID = o.Request.AccountID
@@ -780,18 +1037,55 @@ func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool
 	if o.Request.AccountID == "" {
 		o.Request.AccountID = fill.AccountID
 	}
-	if !n.fills.MarkApplied(fill) {
-		return true
+	if fill.ClientID == "" {
+		fill.ClientID = o.Request.ClientID
 	}
-	o = orderstate.ApplyFill(o, fill, n.clk.Now())
-	n.Cache.UpsertOrder(o)
-	if n.Exec != nil {
-		resolvedAt := fill.Timestamp
-		if resolvedAt.IsZero() {
-			resolvedAt = n.clk.Now()
+	if fill.VenueOrderID == "" {
+		fill.VenueOrderID = o.VenueOrderID
+	}
+	if fill.InstrumentID == (model.InstrumentID{}) {
+		fill.InstrumentID = o.Request.InstrumentID
+	}
+	if fill.Side == enums.SideUnknown {
+		fill.Side = o.Request.Side
+	}
+	applied, _, identityErr := n.fills.AcceptAppliedWithCoverageChecked(fill, func(willApply bool, prior decimal.Decimal) error {
+		var materializedOrder *model.Order
+		if materialized {
+			materializedOrder = &o
 		}
-		n.Exec.ResolveInFlight(fill.ClientID, fill.VenueOrderID, resolvedAt)
+		committed, committedOK, commitErr := n.Cache.CommitAcceptedFill(
+			n.accountID,
+			fill,
+			materializedOrder,
+			willApply,
+			prior,
+			n.clk.Now(),
+		)
+		if commitErr != nil {
+			return commitErr
+		}
+		if !committedOK {
+			return cache.ErrFillOrderIdentityConflict
+		}
+		o = committed
+		return nil
+	})
+	if identityErr != nil {
+		n.Halt("fill order identity conflict: " + identityErr.Error())
+		return reconcile.FillApplyConflict
 	}
+	if !applied {
+		n.resolveOrderInFlight(o, fill.Timestamp)
+		return reconcile.FillApplyDuplicate
+	}
+	if orderstate.IsTerminal(o.Status) {
+		if err := n.fills.MarkOrderTerminal(o); err != nil {
+			n.Halt("fill order identity conflict: " + err.Error())
+			return reconcile.FillApplyConflict
+		}
+	}
+	n.resolveOrderInFlight(o, fill.Timestamp)
 	posSide := o.Request.PositionSide
 	n.Portfolio.OnFill(fill, posSide)
 	atomic.AddInt64(&n.counters.Fills, 1)
@@ -799,59 +1093,92 @@ func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool
 		n.onFill(fill)
 	}
 	if n.strat != nil {
-		n.stratCtx.SetCurrentEventMeta(env.Meta())
-		n.strat.OnFill(n.stratCtx, fill)
+		if n.stratCtx == nil {
+			n.pendingStrategyFills = append(n.pendingStrategyFills, pendingStrategyFill{fill: fill, meta: env.Meta()})
+		} else {
+			n.stratCtx.SetCurrentEventMeta(env.Meta())
+			n.strat.OnFill(n.stratCtx, fill)
+		}
 	}
 	if n.obs != nil {
-		n.obs.OnFill(fill)
+		if n.observerStarted {
+			n.notifyObserver(func(observer observ.Observer) { observer.OnFill(fill) })
+		} else {
+			n.pendingObserverFills = append(n.pendingObserverFills, fill)
+		}
 	}
-	return true
+	return reconcile.FillApplyApplied
 }
 
-func (n *TradingNode) orderForFill(fill model.Fill) (model.Order, bool) {
-	accountID := strings.TrimSpace(fill.AccountID)
+func (n *TradingNode) resolveOrderInFlight(order model.Order, at time.Time) {
+	if n.Exec == nil {
+		return
+	}
+	if at.IsZero() {
+		at = order.UpdatedAt
+	}
+	if at.IsZero() {
+		at = n.clk.Now()
+	}
+	n.Exec.ResolveOrderInFlight(order, at)
+}
+
+func (n *TradingNode) canonicalOrder(hint model.Order) model.Order {
+	accountID := hint.Request.AccountID
 	if accountID == "" {
 		accountID = n.accountID
 	}
-	if fill.ClientID != "" {
-		if o, ok := n.Cache.OrderForAccount(accountID, fill.ClientID); ok {
-			if orderMatchesFillAccount(o, fill) {
-				return o, true
-			}
+	if hint.Request.ClientID != "" {
+		if order, ok := n.Cache.OrderByClientIDForAccount(accountID, hint.Request.ClientID); ok {
+			return order
 		}
 	}
-	if fill.VenueOrderID != "" {
-		if o, ok := n.Cache.OrderForAccount(accountID, fill.VenueOrderID); ok {
-			if orderMatchesFillAccount(o, fill) {
-				return o, true
-			}
-		}
-		for _, o := range n.Cache.Orders() {
-			if o.VenueOrderID == fill.VenueOrderID && orderMatchesAccountID(o, accountID) && orderMatchesFillAccount(o, fill) {
-				return o, true
-			}
+	if hint.VenueOrderID != "" {
+		if order, ok := n.Cache.OrderByVenueOrderIDForAccount(accountID, hint.VenueOrderID); ok {
+			return order
 		}
 	}
-	return model.Order{}, false
+	return hint
 }
 
-func orderMatchesAccountID(o model.Order, accountID string) bool {
-	if accountID == "" || o.Request.AccountID == "" {
-		return true
-	}
-	return o.Request.AccountID == accountID
+func (n *TradingNode) applyRecoveredFill(fill model.Fill, meta contract.EventMeta) reconcile.FillApplyResult {
+	env := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, meta)
+	return n.applyFillResult(fill, env)
 }
 
-func orderMatchesFillAccount(o model.Order, fill model.Fill) bool {
-	if fill.AccountID == "" || o.Request.AccountID == "" {
-		return true
+func (n *TradingNode) orderForFill(fill model.Fill) (model.Order, bool, error) {
+	return n.Cache.ResolveOrderForFill(n.accountID, fill)
+}
+
+func (n *TradingNode) syncFillOrderTerminal(hint model.Order) error {
+	lookup := model.Fill{AccountID: hint.Request.AccountID}
+	if hint.Request.ClientID != "" {
+		lookup.ClientID = hint.Request.ClientID
+	} else {
+		lookup.VenueOrderID = hint.VenueOrderID
 	}
-	return o.Request.AccountID == fill.AccountID
+	canonical, ok, err := n.Cache.ResolveOrderForFill(n.accountID, lookup)
+	if err != nil || !ok || !orderstate.IsTerminal(canonical.Status) {
+		return err
+	}
+	return n.fills.MarkOrderTerminal(canonical)
+}
+
+func (n *TradingNode) syncFillTerminalOrders() error {
+	for _, order := range n.Cache.Orders() {
+		if !orderstate.IsTerminal(order.Status) {
+			continue
+		}
+		if err := n.fills.MarkOrderTerminal(order); err != nil {
+			return fmt.Errorf("fill order identity conflict: %w", err)
+		}
+	}
+	return nil
 }
 
 func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient bool) (model.Order, bool) {
 	if fill.VenueOrderID == "" || fill.InstrumentID.Symbol == "" ||
-		fill.Quantity.IsZero() || fill.Price.IsZero() {
+		fill.Quantity.IsZero() {
 		return model.Order{}, false
 	}
 	if fill.ClientID != "" && !allowKnownClient {
@@ -888,13 +1215,14 @@ func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}
-	n.Cache.UpsertOrder(order)
 	return order, true
 }
 
 // onAccount applies a balance/position event to the cache. Runs on the bus
 // goroutine.
 func (n *TradingNode) onAccount(env contract.AccountEnvelope) {
+	n.eventMu.Lock()
+	defer n.eventMu.Unlock()
 	applied := time.Now()
 	payload, meta := n.normalizedAccountPayloadAndMeta(env)
 	switch e := payload.(type) {
@@ -949,6 +1277,8 @@ func (n *TradingNode) normalizedAccountPayloadAndMeta(env contract.AccountEnvelo
 // onMarket is the DataEngine: it writes the latest market snapshot to the cache
 // and dispatches to the strategy. Runs on the bus goroutine.
 func (n *TradingNode) onMarket(env contract.MarketEnvelope) {
+	n.eventMu.Lock()
+	defer n.eventMu.Unlock()
 	applied := time.Now()
 	switch e := env.Payload.(type) {
 	case contract.QuoteEvent:
@@ -989,7 +1319,5 @@ func (n *TradingNode) recordEventLatency(chain latency.Chain, meta contract.Even
 	}
 	lat := latency.EventFromMeta(chain, meta, applied, callbackDone)
 	n.latency.RecordEventLatency(lat)
-	if n.obs != nil {
-		n.obs.OnLatency(lat)
-	}
+	n.notifyObserver(func(observer observ.Observer) { observer.OnLatency(lat) })
 }

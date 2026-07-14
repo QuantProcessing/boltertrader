@@ -232,13 +232,12 @@ func (c *WsAccountClient) readLoop() {
 }
 
 func (c *WsAccountClient) handleMessage(message []byte) {
-	c.Logger.Debugw("Received", "msg", string(message))
-
 	var msgStruct WSMessage
 	if err := json.Unmarshal(message, &msgStruct); err != nil {
 		c.Logger.Errorw("Failed to unmarshal message structure", "error", err)
 		return
 	}
+	c.Logger.Debugw("Received account WS message", "type", msgStruct.Type, "bytes", len(message))
 
 	switch msgStruct.Type {
 	case "trade-event":
@@ -250,7 +249,7 @@ func (c *WsAccountClient) handleMessage(message []byte) {
 	case "error":
 		var errContent map[string]interface{}
 		if err := json.Unmarshal(msgStruct.Content, &errContent); err == nil {
-			c.Logger.Errorw("Server error", "error", errContent)
+			c.Logger.Errorw("Server error", "type", msgStruct.Type)
 		}
 	case "connected":
 		c.Logger.Debugw("Connected")
@@ -266,7 +265,7 @@ func (c *WsAccountClient) handleTradeEvent(rawContent json.RawMessage) {
 		return
 	}
 
-	c.Logger.Debugw("Received trade event", "content", content)
+	c.Logger.Debugw("Received trade event", "event", content.Event, "version", content.Version)
 
 	// update internal state
 	c.updateState(&content)

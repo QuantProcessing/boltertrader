@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	sdkcore "github.com/QuantProcessing/boltertrader/sdk"
@@ -20,15 +21,27 @@ type Client struct {
 	httpClient *http.Client
 	apiKey     string
 	secretKey  string
+	recvWindow string
 }
 
 func NewClient() *Client {
 	return &Client{
-		baseURL: defaultBaseURL,
+		baseURL:    defaultBaseURL,
+		recvWindow: defaultRecvWindow,
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
 	}
+}
+
+// WithRecvWindowMillis configures the validity window signed into private REST
+// requests. Non-positive values leave the current setting unchanged; a new
+// client starts with Bybit's 5000 ms default.
+func (c *Client) WithRecvWindowMillis(millis int64) *Client {
+	if millis > 0 {
+		c.recvWindow = strconv.FormatInt(millis, 10)
+	}
+	return c
 }
 
 func (c *Client) WithCredentials(apiKey, secretKey string) *Client {

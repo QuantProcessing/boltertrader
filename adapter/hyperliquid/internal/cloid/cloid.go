@@ -99,6 +99,15 @@ func (m *Mapper) VenueCloidForClient(clientID string) string {
 	return m.cloidByClient[clientID]
 }
 
+func (m *Mapper) VenueOrderIDForClient(clientID string) string {
+	if m == nil || clientID == "" {
+		return ""
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.orderByClient[clientID]
+}
+
 func normalizeCloid(value string) string {
 	if isValidCloid(value) {
 		return strings.ToLower(value)

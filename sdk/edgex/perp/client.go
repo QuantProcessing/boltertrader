@@ -109,14 +109,15 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		req.Header.Set("X-edgeX-Api-Signature", sig)
 	}
 
-	c.Logger.Debugw("Request", "method", method, "url", u.String())
-	if bodyString != "" {
-		c.Logger.Debugw("Body", "content", bodyString)
-	}
+	c.Logger.Debugw("HTTP request",
+		"method", method,
+		"path", u.EscapedPath(),
+		"request_bytes", len(bodyString),
+	)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("edgex %s %s transport failed: %w", method, u.EscapedPath(), edgexTransportCause(err))
 	}
 	defer resp.Body.Close()
 
@@ -125,13 +126,18 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		return err
 	}
 
-	c.Logger.Debugw("Response", "body", string(data))
+	c.Logger.Debugw("HTTP response",
+		"method", method,
+		"path", u.EscapedPath(),
+		"status", resp.StatusCode,
+		"response_bytes", len(data),
+	)
 
 	if resp.StatusCode >= 400 {
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return sdkcore.NewExchangeError("EDGEX", "429", strings.TrimSpace(string(data)), sdkcore.ErrRateLimited)
+			return sdkcore.NewExchangeError("EDGEX", "429", "request rate limited", sdkcore.ErrRateLimited)
 		}
-		return fmt.Errorf("http error %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("http error %d", resp.StatusCode)
 	}
 
 	if result != nil {
@@ -146,9 +152,9 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 
 		if apiResp.Code != "0" && apiResp.Code != "SUCCESS" && apiResp.Code != "" {
 			if isRateLimitResponse(apiResp.Code, apiResp.Message) {
-				return sdkcore.NewExchangeError("EDGEX", apiResp.Code, apiResp.Message, sdkcore.ErrRateLimited)
+				return sdkcore.NewExchangeError("EDGEX", apiResp.Code, "request rate limited", sdkcore.ErrRateLimited)
 			}
-			return fmt.Errorf("api error %s: %s", apiResp.Code, apiResp.Message)
+			return fmt.Errorf("api error %s", apiResp.Code)
 		}
 
 		if len(apiResp.Data) > 0 {
@@ -162,6 +168,21 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 	}
 
 	return nil
+}
+
+type redactedEdgeXTransportCause struct {
+	cause error
+}
+
+func (e *redactedEdgeXTransportCause) Error() string { return "transport failure" }
+
+func (e *redactedEdgeXTransportCause) Unwrap() error { return e.cause }
+
+func edgexTransportCause(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &redactedEdgeXTransportCause{cause: err}
 }
 
 func isRateLimitResponse(code, message string) bool {

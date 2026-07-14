@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
@@ -83,11 +84,24 @@ func TestVerticalSlice(t *testing.T) {
 		t.Fatalf("unrealized@110=%s, want 20", got)
 	}
 
-	// 3. Venue pushes a closing sell fill at 110 => +20 realized, minus fees.
+	// 3. Submit and fill a distinct closing sell order at 110 => +20 realized,
+	// minus fees. A fill's side is part of its order identity, so an opposite-side
+	// execution must not reuse the opening order's IDs.
+	closingOrder, err := node.Exec.Submit(ctx, model.OrderRequest{
+		InstrumentID: inst,
+		Side:         enums.SideSell,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("2"),
+		Price:        d("110"),
+	})
+	if err != nil {
+		t.Fatalf("submit closing order: %v", err)
+	}
 	fexec.EmitFill(model.Fill{
 		InstrumentID: inst,
-		VenueOrderID: order.VenueOrderID,
-		ClientID:     order.Request.ClientID,
+		VenueOrderID: closingOrder.VenueOrderID,
+		ClientID:     closingOrder.Request.ClientID,
 		Side:         enums.SideSell,
 		Liquidity:    enums.LiqTaker,
 		Price:        d("110"),
@@ -116,6 +130,38 @@ func TestVerticalSlice(t *testing.T) {
 
 	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Total.Equal(d("10019.8")) {
 		t.Fatalf("cache balance not updated: ok=%v", ok)
+	}
+}
+
+func TestOnExecEnvelopeReceivesOriginalSourceAndFlags(t *testing.T) {
+	fexec := runtimetest.NewFakeExec()
+	seen := make(chan contract.ExecEnvelope, 1)
+	node := runtime.NewNode(
+		runtime.Clients{Execution: fexec},
+		clock.NewRealClock(),
+		"exec-envelope-hook",
+		runtime.WithOnExecEnvelope(func(env contract.ExecEnvelope) { seen <- env }),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go node.Run(ctx)
+	waitNodeRunning(t, node)
+
+	want := contract.NewExecEnvelopeWithMeta(contract.OrderEvent{Order: model.Order{
+		Request:      model.OrderRequest{InstrumentID: inst, ClientID: "hook-order"},
+		VenueOrderID: "hook-venue", Status: enums.StatusNew,
+	}}, contract.EventMeta{
+		Source: contract.SourceAdapterStream,
+		Flags:  contract.EventFlagFromStream | contract.EventFlagFromSnapshot,
+	})
+	fexec.EmitEnvelope(want)
+	select {
+	case got := <-seen:
+		if got.EventID != want.EventID || got.Source != contract.SourceAdapterStream || !got.Flags.Has(contract.EventFlagFromStream) || !got.Flags.Has(contract.EventFlagFromSnapshot) {
+			t.Fatalf("hook envelope=%+v, want original metadata %+v", got.Meta(), want.Meta())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for execution envelope hook")
 	}
 }
 

@@ -55,9 +55,12 @@ func (c *Client) CancelSpotOrder(ctx context.Context, orderID, currencyPair stri
 }
 
 func (c *Client) ListSpotMyTrades(ctx context.Context, currencyPair, orderID string, limit int) ([]SpotUserTrade, error) {
-	query := map[string]string{
-		"currency_pair": currencyPair,
-		"order_id":      orderID,
+	query := map[string]string{}
+	if currencyPair != "" {
+		query["currency_pair"] = currencyPair
+	}
+	if orderID != "" {
+		query["order_id"] = orderID
 	}
 	if limit > 0 {
 		query["limit"] = strconv.Itoa(limit)
@@ -112,7 +115,10 @@ func (c *Client) CancelFuturesOrder(ctx context.Context, settle string, orderID 
 }
 
 func (c *Client) ListMyFuturesTrades(ctx context.Context, settle, contract string, limit int) ([]MyFuturesTrade, error) {
-	query := map[string]string{"contract": contract}
+	query := map[string]string{}
+	if contract != "" {
+		query["contract"] = contract
+	}
 	if limit > 0 {
 		query["limit"] = strconv.Itoa(limit)
 	}

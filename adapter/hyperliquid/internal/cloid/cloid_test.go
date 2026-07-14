@@ -42,4 +42,7 @@ func TestMapperRestoresOriginalClientIDFromVenueCloidAndOrderID(t *testing.T) {
 	if got := mapper.ClientID("0x00000000000000000000000000000000", "999"); got != "0x00000000000000000000000000000000" {
 		t.Fatalf("unknown mapping=%q, want venue cloid passthrough", got)
 	}
+	if got := mapper.VenueOrderIDForClient(original); got != "555" {
+		t.Fatalf("VenueOrderIDForClient(%q)=%q, want 555", original, got)
+	}
 }

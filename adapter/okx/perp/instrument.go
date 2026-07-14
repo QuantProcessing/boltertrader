@@ -85,6 +85,10 @@ func instrumentFromOKX(in *okx.Instrument) *model.Instrument {
 	if !isSupportedUSDTLinearSwap(okxInstrumentShapeFromInstrument(in)) {
 		return nil
 	}
+	multiplier, err := decimal.NewFromString(in.CtVal)
+	if err != nil || !multiplier.IsPositive() {
+		return nil
+	}
 	neutral := instIDToNeutral(in.InstId)
 	id := model.InstrumentID{Venue: venueName, Symbol: neutral, Kind: enums.KindPerp}
 
@@ -95,19 +99,20 @@ func instrumentFromOKX(in *okx.Instrument) *model.Instrument {
 
 	tick := dec(in.TickSz)
 	return &model.Instrument{
-		ID:             id,
-		Base:           in.BaseCcy,
-		Quote:          in.QuoteCcy,
-		Settle:         settle,
-		VenueSymbol:    in.InstId,     // "BTC-USDT-SWAP"
-		VenueIntCode:   in.InstIdCode, // OKX integer code (nil-safe)
-		AssetIndex:     nil,           // OKX is not asset-index keyed
-		PriceTick:      tick,
-		SizeStep:       dec(in.LotSz),
-		MinQty:         dec(in.MinSz),
-		MinNotional:    decimal.Zero, // OKX has no explicit min-notional filter
-		PricePrecision: int(tick.Exponent() * -1),
-		PositionMode:   model.HedgeCapable, // OKX supports net or long/short mode
+		ID:                 id,
+		Base:               in.BaseCcy,
+		Quote:              in.QuoteCcy,
+		Settle:             settle,
+		VenueSymbol:        in.InstId,     // "BTC-USDT-SWAP"
+		VenueIntCode:       in.InstIdCode, // OKX integer code (nil-safe)
+		AssetIndex:         nil,           // OKX is not asset-index keyed
+		PriceTick:          tick,
+		SizeStep:           dec(in.LotSz),
+		MinQty:             dec(in.MinSz),
+		MinNotional:        decimal.Zero, // OKX has no explicit min-notional filter
+		PricePrecision:     int(tick.Exponent() * -1),
+		ContractMultiplier: multiplier,
+		PositionMode:       model.HedgeCapable, // OKX supports net or long/short mode
 	}
 }
 

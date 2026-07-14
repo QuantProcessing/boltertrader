@@ -4,28 +4,43 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/enums"
 	bybitsdk "github.com/QuantProcessing/boltertrader/sdk/bybit"
 )
+
+const (
+	privateStreamID         = "bybit:unified:private"
+	privateMaterialStreamID = "bybit:unified:private:material-execution"
+)
+
+type reconnectHookSetter interface {
+	SetReconnectHooks(func(error), func())
+}
 
 type Adapter struct {
 	Market    contract.MarketDataClient
 	Execution contract.ExecutionClient
 	Account   contract.AccountClient
 
-	provider *instrumentProvider
-	rest     *bybitsdk.Client
-	private  *bybitsdk.PrivateWSClient
-	exec     *executionClient
-	acct     *accountClient
-	market   *marketDataClient
-	clk      clock.Clock
-	cfg      Config
+	provider    *instrumentProvider
+	rest        *bybitsdk.Client
+	private     *bybitsdk.PrivateWSClient
+	exec        *executionClient
+	acct        *accountClient
+	market      *marketDataClient
+	clk         clock.Clock
+	cfg         Config
+	privateGap  *streamgap.Reporter
+	materialGap *streamgap.Reporter
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
+	return newWithRESTRecvWindow(ctx, cfg, 0)
+}
+
+func newWithRESTRecvWindow(ctx context.Context, cfg Config, recvWindowMillis int64) (*Adapter, error) {
 	clk := cfg.Clock
 	if clk == nil {
 		clk = clock.NewRealClock()
@@ -37,11 +52,16 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	if cfg.AccountID == "" {
 		cfg.AccountID = AccountIDUnified
 	}
-	if len(cfg.Categories) == 0 {
-		cfg.Categories = []string{"spot", "linear"}
+	categories, err := normalizeBybitCategories(cfg.Categories)
+	if err != nil {
+		return nil, err
 	}
+	cfg.Categories = categories
 
-	rest := bybitsdk.NewClient().WithEnvironmentProfile(profile).WithCredentials(cfg.APIKey, cfg.APISecret)
+	rest := bybitsdk.NewClient().
+		WithEnvironmentProfile(profile).
+		WithCredentials(cfg.APIKey, cfg.APISecret).
+		WithRecvWindowMillis(recvWindowMillis)
 	if cfg.HTTPClient != nil {
 		rest.WithHTTPClient(cfg.HTTPClient)
 	}
@@ -55,21 +75,23 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		wsByCategory[category] = bybitsdk.NewPublicWSClientWithProfile(profile, category)
 	}
 	market := newMarketDataClient(rest, wsByCategory, provider, clk)
-	exec := newExecutionClient(rest, provider, clk, cfg.AccountID)
-	acct := newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}, cfg.AccountID)
+	exec := newExecutionClient(rest, provider, clk, cfg.AccountID).withCategories(cfg.Categories...)
+	acct := newAccountClient(rest, provider, clk, instrumentKindsForCategories(cfg.Categories), cfg.AccountID)
+	materialGap := streamgap.New(VenueName, exec.accountID, privateMaterialStreamID, exec.stream.Emit)
 
 	return &Adapter{
-		Market:    market,
-		Execution: exec,
-		Account:   acct,
-		provider:  provider,
-		rest:      rest,
-		private:   bybitsdk.NewPrivateWSClientWithProfile(profile).WithCredentials(cfg.APIKey, cfg.APISecret),
-		exec:      exec,
-		acct:      acct,
-		market:    market,
-		clk:       clk,
-		cfg:       cfg,
+		Market:      market,
+		Execution:   exec,
+		Account:     acct,
+		provider:    provider,
+		rest:        rest,
+		private:     bybitsdk.NewPrivateWSClientWithProfile(profile).WithCredentials(cfg.APIKey, cfg.APISecret),
+		exec:        exec,
+		acct:        acct,
+		market:      market,
+		clk:         clk,
+		cfg:         cfg,
+		materialGap: materialGap,
 	}, nil
 }
 
@@ -77,7 +99,8 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if a.private == nil {
 		return nil
 	}
-	resolve := a.provider.resolveVenueSymbol
+	a.bindPrivateGapHooks(a.private)
+	resolve := a.provider.resolvePrivateRecord
 	if err := a.private.Subscribe(ctx, "order", func(payload json.RawMessage) {
 		msg, err := bybitsdk.DecodeOrderMessage(payload)
 		if err != nil {
@@ -94,8 +117,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		for _, event := range execEventsFromExecutionMessage(msg, resolve, a.exec.accountID) {
+		events, materialErr := execEventsFromExecutionMessage(msg, resolve, a.exec.accountID)
+		for _, event := range events {
 			a.exec.emit(event)
+		}
+		if materialErr != nil {
+			a.reportMaterialPrivateExecution(materialErr.Error())
 		}
 	}); err != nil {
 		return err
@@ -123,6 +150,36 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (a *Adapter) reportMaterialPrivateExecution(reason string) {
+	if a == nil || a.exec == nil {
+		return
+	}
+	if a.materialGap == nil {
+		a.materialGap = streamgap.New(VenueName, a.exec.accountID, privateMaterialStreamID, a.exec.stream.Emit)
+	}
+	if a.materialGap.Started(reason) {
+		a.materialGap.Recovered("material private execution requires authoritative reconciliation")
+	}
+}
+
+func (a *Adapter) bindPrivateGapHooks(hooks reconnectHookSetter) {
+	if hooks == nil || a.exec == nil {
+		return
+	}
+	if a.privateGap == nil {
+		a.privateGap = streamgap.New(VenueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+	}
+	hooks.SetReconnectHooks(func(err error) {
+		reason := "private stream disconnected"
+		if err != nil {
+			reason = err.Error()
+		}
+		a.privateGap.Started(reason)
+	}, func() {
+		a.privateGap.Recovered("private stream subscriptions restored")
+	})
 }
 
 func (a *Adapter) Close() error {

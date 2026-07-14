@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,5 +25,9 @@ func websocketProxyFromEnvironment(req *http.Request) (*url.URL, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	return url.Parse(raw)
+	proxyURL, err = url.Parse(raw)
+	if err != nil {
+		return nil, errors.New("invalid websocket proxy configuration")
+	}
+	return proxyURL, nil
 }

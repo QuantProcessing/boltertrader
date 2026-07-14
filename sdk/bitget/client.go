@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -102,13 +103,13 @@ func (c *Client) getInternal(ctx context.Context, path string, query map[string]
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return newTransportError(http.MethodGet, u.Path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("bitget sdk: GET %s returned %s: %s", path, resp.Status, string(bodyBytes))
+		return newHTTPStatusError(http.MethodGet, u.EscapedPath(), resp.StatusCode, len(bodyBytes))
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
@@ -133,13 +134,13 @@ func (c *Client) postPrivate(ctx context.Context, path string, body any, out any
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return newTransportError(http.MethodPost, req.URL.Path, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("bitget sdk: POST %s returned %s: %s (request=%s)", path, resp.Status, string(bodyBytes), string(payload))
+		return newHTTPStatusError(http.MethodPost, req.URL.EscapedPath(), resp.StatusCode, len(bodyBytes))
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
@@ -157,6 +158,33 @@ func (c *Client) GetPrivateRaw(ctx context.Context, path string, query map[strin
 // introduced.
 func (c *Client) PostPrivateRaw(ctx context.Context, path string, body any, out any) error {
 	return c.postPrivate(ctx, path, body, out)
+}
+
+func newHTTPStatusError(method, path string, statusCode, responseBytes int) error {
+	message := fmt.Sprintf("bitget sdk: %s %s returned %d (response_bytes=%d)", method, path, statusCode, responseBytes)
+	if statusCode == http.StatusTooManyRequests {
+		return fmt.Errorf("%s: %w", message, sdkcore.ErrRateLimited)
+	}
+	return errors.New(message)
+}
+
+func newTransportError(method, path string, err error) error {
+	return fmt.Errorf("bitget sdk: %s %s transport failed: %w", method, path, transportCause(err))
+}
+
+type redactedTransportCause struct {
+	cause error
+}
+
+func (e *redactedTransportCause) Error() string { return "transport failure" }
+
+func (e *redactedTransportCause) Unwrap() error { return e.cause }
+
+func transportCause(err error) error {
+	if err == nil {
+		return errors.New("transport failure")
+	}
+	return &redactedTransportCause{cause: err}
 }
 
 func applySDKRequestOptsString(params map[string]string, opts sdkcore.RequestOpts) {

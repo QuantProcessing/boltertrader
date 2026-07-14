@@ -2,6 +2,7 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -26,6 +27,9 @@ type executionClient struct {
 	stream    *wsstream.Stream[contract.ExecEnvelope]
 	streaming bool
 }
+
+// Aster account trade history documents a maximum page size of 1000 records.
+const executionMassStatusFillLimit = 1000
 
 func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk clock.Clock, accountID string) *executionClient {
 	if clk == nil {
@@ -173,19 +177,18 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 }
 
 func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{InstrumentID: query.InstrumentID, AccountID: query.AccountID, ClientID: query.ClientID, VenueOrderID: query.VenueOrderID, OpenOnly: true})
-	if err != nil || len(reports) == 0 {
-		return nil, err
-	}
-	return &reports[0], nil
-}
-
-func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
 		return nil, nil
 	}
+	if query.ClientID == "" && query.VenueOrderID == "" {
+		reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{InstrumentID: query.InstrumentID, AccountID: query.AccountID, OpenOnly: true})
+		if err != nil || len(reports) == 0 {
+			return nil, err
+		}
+		return &reports[0], nil
+	}
 	if query.InstrumentID == (model.InstrumentID{}) {
-		return nil, fmt.Errorf("aster perp: instrument is required for fill reports: %w", errs.ErrNotSupported)
+		return nil, fmt.Errorf("aster perp: instrument is required for order status report: %w", errs.ErrNotSupported)
 	}
 	inst, err := c.provider.instrument(query.InstrumentID)
 	if err != nil {
@@ -193,6 +196,80 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 	}
 	if c.rest == nil {
 		return nil, fmt.Errorf("aster perp: rest client not configured: %w", errs.ErrNotSupported)
+	}
+
+	venueQuery := sdkperp.OrderQuery{Symbol: inst.VenueSymbol}
+	if query.VenueOrderID != "" {
+		orderID, err := strconv.ParseInt(query.VenueOrderID, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("aster perp: order status venue order id %q: %w", query.VenueOrderID, err)
+		}
+		venueQuery.OrderID = &orderID
+	} else {
+		venueQuery.OrigClientOrderID = query.ClientID
+	}
+	response, err := c.rest.QueryOrder(ctx, venueQuery)
+	if err != nil {
+		mapped := mapAsterError(err)
+		if errors.Is(mapped, errs.ErrOrderNotFound) {
+			return nil, nil
+		}
+		return nil, mapped
+	}
+	if response == nil {
+		return nil, fmt.Errorf("aster perp: order status response is required")
+	}
+	if response.Symbol != inst.VenueSymbol {
+		return nil, fmt.Errorf("aster perp: order status symbol mismatch %q for %q", response.Symbol, inst.VenueSymbol)
+	}
+	if response.OrderID <= 0 {
+		return nil, fmt.Errorf("aster perp: order status response has invalid order id %d", response.OrderID)
+	}
+	if query.VenueOrderID != "" && strconv.FormatInt(response.OrderID, 10) != query.VenueOrderID {
+		return nil, fmt.Errorf("aster perp: order status venue order id mismatch %d for %q", response.OrderID, query.VenueOrderID)
+	}
+	if query.ClientID != "" && response.ClientOrderID != query.ClientID {
+		return nil, fmt.Errorf("aster perp: order status client id mismatch %q for %q", response.ClientOrderID, query.ClientID)
+	}
+	if err := validateOrderResponseDecimals(response); err != nil {
+		return nil, err
+	}
+	order := orderFromResponse(response, model.OrderRequest{
+		InstrumentID: query.InstrumentID,
+		AccountID:    c.accountID,
+		ClientID:     query.ClientID,
+	}, c.accountID)
+	report := model.OrderStatusReport{
+		ReportID:   orderReportID(order),
+		Venue:      VenueName,
+		AccountID:  c.accountID,
+		Order:      order,
+		ReportedAt: c.clk.Now(),
+	}
+	if err := report.Validate(); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	reports, _, err := c.generateFillReports(ctx, query)
+	return reports, err
+}
+
+func (c *executionClient) generateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, bool, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, false, nil
+	}
+	if query.InstrumentID == (model.InstrumentID{}) {
+		return nil, false, fmt.Errorf("aster perp: instrument is required for fill reports: %w", errs.ErrNotSupported)
+	}
+	inst, err := c.provider.instrument(query.InstrumentID)
+	if err != nil {
+		return nil, false, err
+	}
+	if c.rest == nil {
+		return nil, false, fmt.Errorf("aster perp: rest client not configured: %w", errs.ErrNotSupported)
 	}
 	limit := query.Limit
 	trades, err := c.rest.UserTrades(ctx, sdkperp.UserTradesQuery{
@@ -202,16 +279,17 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 		Limit:     limitPtr(limit),
 	})
 	if err != nil {
-		return nil, mapAsterError(err)
+		return nil, false, mapAsterError(err)
 	}
+	limitReached := limit > 0 && len(trades) >= limit
 	now := c.clk.Now()
 	out := make([]model.FillReport, 0, len(trades))
 	for _, trade := range trades {
 		if trade.Symbol != inst.VenueSymbol {
-			return nil, fmt.Errorf("aster perp: fill report symbol mismatch %q for %q", trade.Symbol, inst.VenueSymbol)
+			return nil, false, fmt.Errorf("aster perp: fill report symbol mismatch %q for %q", trade.Symbol, inst.VenueSymbol)
 		}
 		if err := validateTradeDecimals(trade); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		clientID := ""
 		if query.VenueOrderID != "" && strconv.FormatInt(trade.OrderID, 10) == query.VenueOrderID {
@@ -226,11 +304,11 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 		}
 		report := model.FillReport{ReportID: fillReportID(fill), Venue: VenueName, AccountID: c.accountID, Fill: fill, ReportedAt: now}
 		if err := report.Validate(); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, report)
 	}
-	return out, nil
+	return out, limitReached, nil
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
@@ -298,6 +376,7 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ONLY", Message: "mass status contains authoritative open orders; missing cached orders are no longer open, but terminal reason is unknown"})
+	fillLimitReached := false
 	for _, inst := range sortedInstruments(c.provider) {
 		orderReports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
 			InstrumentID: inst.ID,
@@ -316,22 +395,31 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 			}
 		}
 		if query.IncludeFills {
-			fillReports, err := c.GenerateFillReports(ctx, model.FillReportQuery{
+			fillReports, limitReached, err := c.generateFillReports(ctx, model.FillReportQuery{
 				InstrumentID: inst.ID,
 				AccountID:    c.accountID,
 				ClientID:     query.ClientID,
 				Since:        query.Since,
 				Until:        query.Until,
+				Limit:        executionMassStatusFillLimit,
 			})
 			if err != nil {
 				return nil, err
 			}
+			fillLimitReached = fillLimitReached || limitReached
 			for _, report := range fillReports {
 				if err := mass.AddFillReport(report); err != nil {
 					return nil, err
 				}
 			}
 		}
+	}
+	if fillLimitReached {
+		mass.Partial = true
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{
+			Code:    "FILL_REPORTS_LIMIT_REACHED",
+			Message: "one or more Aster Perp account-trade queries reached the 1000-record API limit; recovered fills may be incomplete",
+		})
 	}
 	if query.IncludePositions {
 		positionReports, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID, Since: query.Since, Until: query.Until})

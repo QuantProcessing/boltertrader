@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -21,9 +22,17 @@ type WsAccountClient struct {
 	secretKey string
 
 	mu                       sync.Mutex
+	recoveryMu               sync.Mutex
+	recoveryHookMu           sync.Mutex
 	executionReportCallbacks []func(*ExecutionReportEvent)
 	accountPositionCallbacks []func(*AccountPositionEvent)
 	subscribed               bool
+	subscribedConnEpoch      uint64
+	recovering               bool
+	recoveryEpoch            uint64
+	onReconnectStarted       func(error)
+	onReconnectRecovered     func()
+	beforeRecoveryComplete   func()
 
 	Logger *zap.SugaredLogger
 }
@@ -40,7 +49,20 @@ func NewWsAccountClient(wsAPI *WsAPIClient, apiKey, apiSecret string) *WsAccount
 }
 
 func (c *WsAccountClient) IsConnected() bool {
-	return c.wsAPI.IsConnected() && c.subscribed
+	c.mu.Lock()
+	subscribed := c.subscribed
+	connEpoch := c.subscribedConnEpoch
+	c.mu.Unlock()
+	return subscribed && c.wsAPI.connectionEpochCurrent(connEpoch)
+}
+
+// SetReconnectHooks registers private-stream lifecycle callbacks. Recovered is
+// invoked only after userDataStream.subscribe.signature succeeds again.
+func (c *WsAccountClient) SetReconnectHooks(started func(error), recovered func()) {
+	c.mu.Lock()
+	c.onReconnectStarted = started
+	c.onReconnectRecovered = recovered
+	c.mu.Unlock()
 }
 
 func (c *WsAccountClient) SubscribeExecutionReport(callback func(*ExecutionReportEvent)) {
@@ -60,6 +82,8 @@ func (c *WsAccountClient) SubscribeAccountPosition(callback func(*AccountPositio
 func (c *WsAccountClient) Connect() error {
 	// Register event handler for pushed user data events
 	c.wsAPI.SetEventHandler(c.handlePushedEvent)
+	c.wsAPI.SetOnDisconnect(c.handleDisconnect)
+	c.wsAPI.SetPostReconnect(c.restoreSubscription)
 
 	// Ensure WsAPI is connected
 	if !c.wsAPI.IsConnected() {
@@ -68,6 +92,21 @@ func (c *WsAccountClient) Connect() error {
 		}
 	}
 
+	return c.subscribeUserData()
+}
+
+func (c *WsAccountClient) subscribeUserData() error {
+	c.mu.Lock()
+	recoveryEpoch := c.recoveryEpoch
+	c.mu.Unlock()
+	return c.subscribeUserDataAt(recoveryEpoch)
+}
+
+func (c *WsAccountClient) subscribeUserDataAt(recoveryEpoch uint64) error {
+	connectionEpoch, connected := c.wsAPI.connectionEpochSnapshot()
+	if !connected {
+		return fmt.Errorf("userDataStream.subscribe.signature failed: websocket is not connected")
+	}
 	// Subscribe using userDataStream.subscribe.signature (supports HMAC-SHA256)
 	ts := Timestamp()
 	params := map[string]interface{}{
@@ -105,9 +144,119 @@ func (c *WsAccountClient) Connect() error {
 		return fmt.Errorf("subscribe error: code=%d, msg=%s", subResp.Error.Code, subResp.Error.Msg)
 	}
 
+	c.mu.Lock()
+	if c.recoveryEpoch != recoveryEpoch || !c.wsAPI.connectionEpochCurrent(connectionEpoch) {
+		c.mu.Unlock()
+		return fmt.Errorf("userDataStream.subscribe.signature superseded by a newer connection generation")
+	}
 	c.subscribed = true
+	c.subscribedConnEpoch = connectionEpoch
+	c.mu.Unlock()
 	c.Logger.Info("Subscribed to user data stream via WS-API (signature mode)")
 	return nil
+}
+
+func (c *WsAccountClient) handleDisconnect(err error) {
+	c.recoveryHookMu.Lock()
+	defer c.recoveryHookMu.Unlock()
+
+	// A transport failure supersedes every pushed event buffered by the failed
+	// replacement. Keep the next generation paused until its Recovered hook has
+	// completed synchronously.
+	c.wsAPI.resetPushedEvents()
+	c.wsAPI.pausePushedEvents()
+
+	c.mu.Lock()
+	c.recoveryEpoch++
+	c.subscribed = false
+	c.subscribedConnEpoch = 0
+	if c.recovering {
+		c.mu.Unlock()
+		return
+	}
+	c.recovering = true
+	handler := c.onReconnectStarted
+	c.mu.Unlock()
+	if handler != nil {
+		handler(err)
+	}
+}
+
+func (c *WsAccountClient) restoreSubscription() {
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+
+	for {
+		c.mu.Lock()
+		recovering := c.recovering
+		attemptEpoch := c.recoveryEpoch
+		c.mu.Unlock()
+		if !recovering || !c.wsAPI.IsConnected() {
+			return
+		}
+		if err := c.subscribeUserDataAt(attemptEpoch); err != nil {
+			c.Logger.Errorw("Failed to restore user data subscription", "error", err)
+			c.mu.Lock()
+			current := c.recovering && c.recoveryEpoch == attemptEpoch
+			c.mu.Unlock()
+			if !current {
+				return
+			}
+			select {
+			case <-c.wsAPI.ctx.Done():
+				return
+			case <-time.After(c.wsAPI.ReconnectWait):
+			}
+			continue
+		}
+		if c.beforeRecoveryComplete != nil {
+			c.beforeRecoveryComplete()
+		}
+		if !c.completeReconnect(attemptEpoch) {
+			return
+		}
+		return
+	}
+}
+
+func (c *WsAccountClient) completeReconnect(epoch uint64) bool {
+	c.recoveryHookMu.Lock()
+	defer c.recoveryHookMu.Unlock()
+
+	// A stale completion must not touch the dispatch barrier owned by a newer
+	// active recovery generation.
+	c.mu.Lock()
+	activeAttempt := c.recovering && c.recoveryEpoch == epoch
+	c.mu.Unlock()
+	if !activeAttempt {
+		return false
+	}
+
+	// Establish the dispatch barrier before validating the generation. Close can
+	// invalidate this attempt without taking recoveryHookMu; its dispatcher Reset
+	// then prevents a stale hook or buffered callback from starting.
+	c.wsAPI.pausePushedEvents()
+	c.mu.Lock()
+	if !c.recovering || c.recoveryEpoch != epoch || !c.subscribed || !c.wsAPI.connectionEpochCurrent(c.subscribedConnEpoch) {
+		recoveryStillActive := c.recovering
+		c.mu.Unlock()
+		if !recoveryStillActive {
+			c.wsAPI.resetPushedEvents()
+		}
+		return false
+	}
+	c.recovering = false
+	handler := c.onReconnectRecovered
+	c.mu.Unlock()
+	c.wsAPI.resumePushedEvents(func() {
+		c.mu.Lock()
+		current := c.recoveryEpoch == epoch && !c.recovering && c.subscribed
+		c.mu.Unlock()
+		if current && handler != nil {
+			handler()
+		}
+	})
+	return true
 }
 
 // handlePushedEvent handles user data events pushed by the server.
@@ -156,8 +305,9 @@ func (c *WsAccountClient) handleExecutionReport(data []byte) {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cb := range c.executionReportCallbacks {
+	callbacks := append([]func(*ExecutionReportEvent){}, c.executionReportCallbacks...)
+	c.mu.Unlock()
+	for _, cb := range callbacks {
 		cb(&event)
 	}
 }
@@ -169,12 +319,20 @@ func (c *WsAccountClient) handleAccountPosition(data []byte) {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, cb := range c.accountPositionCallbacks {
+	callbacks := append([]func(*AccountPositionEvent){}, c.accountPositionCallbacks...)
+	c.mu.Unlock()
+	for _, cb := range callbacks {
 		cb(&event)
 	}
 }
 
 func (c *WsAccountClient) Close() {
 	// Don't close the shared wsAPI — that's managed by the adapter
+	c.mu.Lock()
+	c.recoveryEpoch++
+	c.recovering = false
+	c.subscribed = false
+	c.subscribedConnEpoch = 0
+	c.mu.Unlock()
+	c.wsAPI.resetPushedEvents()
 }

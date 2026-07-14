@@ -80,14 +80,15 @@ func (c *WSClient) PlaceOrderWS(req *OrderRequest) (*OrderId, error) {
 		Args: []interface{}{wsReq},
 	}
 
+	conn := c.currentConnection()
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return nil, err
+	}
 	// Create channel for response
-	successCh, errorCh := c.AddPendingRequest(idInt)
+	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	c.WriteMu.Lock()
-	err := c.Conn.WriteJSON(op)
-	c.WriteMu.Unlock()
-	if err != nil {
+	if err := c.writeReadyJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 
@@ -147,14 +148,15 @@ func (c *WSClient) CancelOrderWS(instIdCode int64, ordId, clOrdId *string) (*Ord
 		Args: []interface{}{req},
 	}
 
+	conn := c.currentConnection()
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return nil, err
+	}
 	// Create channel for response
-	successCh, errorCh := c.AddPendingRequest(idInt)
+	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	c.WriteMu.Lock()
-	err := c.Conn.WriteJSON(op)
-	c.WriteMu.Unlock()
-	if err != nil {
+	if err := c.writeReadyJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 
@@ -223,14 +225,15 @@ func (c *WSClient) ModifyOrderWS(req *ModifyOrderRequest) (*OrderId, error) {
 		Args: []interface{}{wsReq},
 	}
 
+	conn := c.currentConnection()
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return nil, err
+	}
 	// Create channel for response
-	successCh, errorCh := c.AddPendingRequest(idInt)
+	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	c.WriteMu.Lock()
-	err := c.Conn.WriteJSON(op)
-	c.WriteMu.Unlock()
-	if err != nil {
+	if err := c.writeReadyJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 
@@ -294,14 +297,15 @@ func (c *WSClient) CancelOrdersWS(reqs []CancelOrderRequest) ([]OrderId, error) 
 		Args: wsReqs,
 	}
 
+	conn := c.currentConnection()
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return nil, err
+	}
 	// Create channel for response
-	successCh, errorCh := c.AddPendingRequest(idInt)
+	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	c.WriteMu.Lock()
-	err := c.Conn.WriteJSON(op)
-	c.WriteMu.Unlock()
-	if err != nil {
+	if err := c.writeReadyJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 

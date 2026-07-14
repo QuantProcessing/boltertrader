@@ -141,14 +141,8 @@ func TestBitgetOrderAndFillConversion(t *testing.T) {
 	if venue.Category != bitgetsdk.ProductTypeUSDTFutures || venue.Symbol != "BTCUSDT" || venue.TimeInForce != "post_only" {
 		t.Fatalf("unexpected venue order: %+v", venue)
 	}
-	if venue.PosSide != "short" {
-		t.Fatalf("reduce-only buy posSide=%q, want short", venue.PosSide)
-	}
-	if venue.TradeSide != "close" {
-		t.Fatalf("reduce-only buy tradeSide=%q, want close", venue.TradeSide)
-	}
-	if venue.ReduceOnly != "" {
-		t.Fatalf("hybrid UTA close reduceOnly=%q, want omitted", venue.ReduceOnly)
+	if venue.PosSide != "" || venue.TradeSide != "" || venue.ReduceOnly != "yes" {
+		t.Fatalf("one-way reduce-only buy fields are invalid: %+v", venue)
 	}
 	closeLongReq := req
 	closeLongReq.Side = enums.SideSell
@@ -157,14 +151,8 @@ func TestBitgetOrderAndFillConversion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("close long orderRequestToBitget: %v", err)
 	}
-	if closeLongVenue.PosSide != "long" {
-		t.Fatalf("reduce-only sell posSide=%q, want long", closeLongVenue.PosSide)
-	}
-	if closeLongVenue.TradeSide != "close" {
-		t.Fatalf("reduce-only sell tradeSide=%q, want close", closeLongVenue.TradeSide)
-	}
-	if closeLongVenue.ReduceOnly != "" {
-		t.Fatalf("hybrid UTA close reduceOnly=%q, want omitted", closeLongVenue.ReduceOnly)
+	if closeLongVenue.PosSide != "" || closeLongVenue.TradeSide != "" || closeLongVenue.ReduceOnly != "yes" {
+		t.Fatalf("one-way reduce-only sell fields are invalid: %+v", closeLongVenue)
 	}
 	openReq := req
 	openReq.ReduceOnly = false
@@ -175,13 +163,17 @@ func TestBitgetOrderAndFillConversion(t *testing.T) {
 	if openVenue.TradeSide != "" {
 		t.Fatalf("UTA opening perp tradeSide=%q, want omitted", openVenue.TradeSide)
 	}
-	if openVenue.PosSide != "long" {
-		t.Fatalf("opening buy posSide=%q, want long", openVenue.PosSide)
+	if openVenue.PosSide != "" {
+		t.Fatalf("one-way opening buy posSide=%q, want omitted", openVenue.PosSide)
 	}
-	order := orderFromBitgetRecord(bitgetsdk.OrderRecord{
+	order, err := orderFromBitgetRecord(bitgetsdk.OrderRecord{
 		OrderID: "42", ClientOID: "client-1", Symbol: "BTCUSDT", Category: bitgetsdk.ProductTypeUSDTFutures, Side: "buy", OrderType: "limit",
 		TimeInForce: "post_only", Qty: "0.01", Price: "50000", FilledQty: "0.005", AvgPrice: "50001", OrderStatus: "partially_filled",
+		HoldMode: "one_way_mode", HoldSide: "long",
 	}, inst.ID, AccountIDUnified)
+	if err != nil {
+		t.Fatalf("orderFromBitgetRecord: %v", err)
+	}
 	if order.Status != enums.StatusPartiallyFilled || !order.FilledQty.Equal(decimal.RequireFromString("0.005")) {
 		t.Fatalf("unexpected order: %+v", order)
 	}
@@ -192,6 +184,128 @@ func TestBitgetOrderAndFillConversion(t *testing.T) {
 	}, inst.ID, AccountIDUnified)
 	if fill.AccountID != AccountIDUnified || fill.FeeCurrency != "USDT" || fill.Timestamp.IsZero() {
 		t.Fatalf("unexpected fill: %+v", fill)
+	}
+}
+
+func TestBitgetOneWayPerpRequestUsesReduceOnlyWithoutHedgeFields(t *testing.T) {
+	inst := bitgetTestProvider().All()[1]
+	req := model.OrderRequest{
+		AccountID:    AccountIDUnified,
+		InstrumentID: inst.ID,
+		ClientID:     "one-way-close",
+		Side:         enums.SideSell,
+		Type:         enums.TypeMarket,
+		TIF:          enums.TifIOC,
+		Quantity:     decimal.RequireFromString("0.01"),
+		PositionSide: enums.PosNet,
+		ReduceOnly:   true,
+	}
+
+	venue, err := orderRequestToBitget(req, inst)
+	if err != nil {
+		t.Fatalf("orderRequestToBitget: %v", err)
+	}
+	if venue.PosSide != "" || venue.TradeSide != "" {
+		t.Fatalf("one-way close leaked hedge fields: %+v", venue)
+	}
+	if venue.ReduceOnly != "yes" {
+		t.Fatalf("one-way close reduceOnly=%q, want yes", venue.ReduceOnly)
+	}
+}
+
+func TestBitgetHedgePerpRequestUsesExplicitLegWithoutTradeSide(t *testing.T) {
+	inst := bitgetTestProvider().All()[1]
+	req := model.OrderRequest{
+		AccountID:    AccountIDUnified,
+		InstrumentID: inst.ID,
+		ClientID:     "hedge-close",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeMarket,
+		TIF:          enums.TifIOC,
+		Quantity:     decimal.RequireFromString("0.01"),
+		PositionSide: enums.PosShort,
+		ReduceOnly:   true,
+	}
+
+	venue, err := orderRequestToBitget(req, inst)
+	if err != nil {
+		t.Fatalf("orderRequestToBitget: %v", err)
+	}
+	if venue.PosSide != "short" || venue.TradeSide != "" {
+		t.Fatalf("hedge close fields=%+v, want posSide=short without legacy tradeSide", venue)
+	}
+	if venue.ReduceOnly != "" {
+		t.Fatalf("hedge close reduceOnly=%q, want omitted because side+posSide is intrinsically closing", venue.ReduceOnly)
+	}
+
+	req.Side = enums.SideSell
+	if _, err := orderRequestToBitget(req, inst); err == nil {
+		t.Fatal("reduce-only request that opens the short hedge leg must be rejected")
+	}
+}
+
+func TestBitgetOrderRecordUsesHoldModeToClassifyPositionSide(t *testing.T) {
+	id := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	base := bitgetsdk.OrderRecord{
+		OrderID: "order-1", ClientOID: "client-1", Category: bitgetsdk.ProductTypeUSDTFutures,
+		Symbol: "BTCUSDT", Side: "buy", OrderType: "market", Qty: "0.01", HoldSide: "long",
+	}
+
+	oneWay := base
+	oneWay.HoldMode = "one_way_mode"
+	oneWayOrder, err := orderFromBitgetRecord(oneWay, id, AccountIDUnified)
+	if err != nil {
+		t.Fatalf("one-way order conversion: %v", err)
+	}
+	if got := oneWayOrder.Request.PositionSide; got != enums.PosNet {
+		t.Fatalf("one-way order position side=%s, want NET", got)
+	}
+
+	hedge := base
+	hedge.HoldMode = "hedge_mode"
+	hedgeOrder, err := orderFromBitgetRecord(hedge, id, AccountIDUnified)
+	if err != nil {
+		t.Fatalf("hedge order conversion: %v", err)
+	}
+	if got := hedgeOrder.Request.PositionSide; got != enums.PosLong {
+		t.Fatalf("hedge order position side=%s, want LONG", got)
+	}
+
+	unknown := base
+	unknown.HoldMode = ""
+	if _, err := orderFromBitgetRecord(unknown, id, AccountIDUnified); err == nil {
+		t.Fatal("derivative order without hold mode must fail closed")
+	}
+}
+
+func TestBitgetPositionRecordUsesHoldModeToClassifyPositionSideAndSign(t *testing.T) {
+	id := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	resolve := func(string) model.InstrumentID { return id }
+
+	oneWay, err := positionFromBitget(bitgetsdk.PositionRecord{
+		Symbol: "BTCUSDT", HoldMode: "one_way_mode", PosSide: "short", Total: "0.01",
+	}, resolve, AccountIDUnified, time.Unix(1, 0))
+	if err != nil {
+		t.Fatalf("one-way position conversion: %v", err)
+	}
+	if oneWay.Side != enums.PosNet || !oneWay.Quantity.Equal(decimal.RequireFromString("-0.01")) {
+		t.Fatalf("one-way position=%+v, want NET quantity -0.01", oneWay)
+	}
+
+	hedge, err := positionFromBitget(bitgetsdk.PositionRecord{
+		Symbol: "BTCUSDT", HoldMode: "hedge_mode", PosSide: "short", Total: "0.01",
+	}, resolve, AccountIDUnified, time.Unix(1, 0))
+	if err != nil {
+		t.Fatalf("hedge position conversion: %v", err)
+	}
+	if hedge.Side != enums.PosShort || !hedge.Quantity.Equal(decimal.RequireFromString("-0.01")) {
+		t.Fatalf("hedge position=%+v, want SHORT quantity -0.01", hedge)
+	}
+
+	if _, err := positionFromBitget(bitgetsdk.PositionRecord{
+		Symbol: "BTCUSDT", PosSide: "long", Total: "0.01",
+	}, resolve, AccountIDUnified, time.Unix(1, 0)); err == nil {
+		t.Fatal("derivative position without hold mode must fail closed")
 	}
 }
 
@@ -445,9 +559,11 @@ func newBitgetAccountServer(t *testing.T, fixture bitgetAccountFixture) *httptes
 				},
 			}})
 		case "/api/v3/position/current-position":
-			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
-				map[string]any{"symbol": "BTCUSDT", "category": bitgetsdk.ProductTypeUSDTFutures, "posSide": "long", "qty": "0.01", "avgPrice": "50000", "markPrice": "50001", "leverage": "2", "unrealizedPL": "1", "updatedTime": "1783299600000"},
-			}}})
+			positions := []any{}
+			if r.URL.Query().Get("category") == bitgetsdk.ProductTypeUSDTFutures {
+				positions = append(positions, map[string]any{"symbol": "BTCUSDT", "category": bitgetsdk.ProductTypeUSDTFutures, "posSide": "long", "holdMode": "one_way_mode", "qty": "0.01", "avgPrice": "50000", "markPrice": "50001", "leverage": "2", "unrealizedPL": "1", "updatedTime": "1783299600000"})
+			}
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": positions}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}

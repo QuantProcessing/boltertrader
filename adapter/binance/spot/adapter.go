@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -14,7 +15,19 @@ const (
 	demoRESTBaseURL  = sdkspot.DemoBaseURL
 	demoWSBaseURL    = sdkspot.DemoWSBaseURL
 	demoWSAPIBaseURL = sdkspot.DemoWSAPIBaseURL
+	privateStreamID  = "binance:spot:private"
 )
+
+type spotAccountWebsocket interface {
+	SubscribeExecutionReport(func(*sdkspot.ExecutionReportEvent))
+	SubscribeAccountPosition(func(*sdkspot.AccountPositionEvent))
+	Connect() error
+	Close()
+}
+
+type spotAdapterTestHooks struct {
+	accountWSFactory func() spotAccountWebsocket
+}
 
 type Config struct {
 	APIKey    string
@@ -42,12 +55,14 @@ type Adapter struct {
 	acct     *accountClient
 	clk      clock.Clock
 
-	wsMarket  *sdkspot.WsMarketClient
-	wsAPI     *sdkspot.WsAPIClient
-	wsAccount *sdkspot.WsAccountClient
-	apiKey    string
-	apiSecret string
-	demo      bool
+	wsMarket   *sdkspot.WsMarketClient
+	wsAPI      *sdkspot.WsAPIClient
+	wsAccount  spotAccountWebsocket
+	testHooks  *spotAdapterTestHooks
+	privateGap *streamgap.Reporter
+	apiKey     string
+	apiSecret  string
+	demo       bool
 }
 
 func New(ctx context.Context, cfg Config) (*Adapter, error) {
@@ -110,8 +125,27 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
-	ws := a.newWsAccountClient()
+	var ws spotAccountWebsocket = a.newWsAccountClient()
+	if a.testHooks != nil && a.testHooks.accountWSFactory != nil {
+		ws = a.testHooks.accountWSFactory()
+	}
 	resolve := a.provider.resolveVenueSymbol
+	if a.privateGap == nil {
+		a.privateGap = streamgap.New(venueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+	}
+	if hooks, ok := ws.(interface {
+		SetReconnectHooks(func(error), func())
+	}); ok {
+		hooks.SetReconnectHooks(func(err error) {
+			reason := "private stream disconnected"
+			if err != nil {
+				reason = err.Error()
+			}
+			a.privateGap.Started(reason)
+		}, func() {
+			a.privateGap.Recovered("private stream subscription restored")
+		})
+	}
 
 	ws.SubscribeExecutionReport(func(ev *sdkspot.ExecutionReportEvent) {
 		for _, e := range execEventsFromExecutionReport(ev, resolve, a.exec.accountID) {

@@ -9,12 +9,11 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
-	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
 	"github.com/shopspring/decimal"
 )
 
-func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (*Adapter, demoAcceptanceSymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
+func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (*Adapter, demoAcceptanceSymbolSpec, model.InstrumentID, decimal.Decimal, decimal.Decimal, decimal.Decimal, decimal.Decimal) {
 	t.Helper()
 
 	adapter, err := New(ctx, Config{
@@ -23,7 +22,6 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 		DemoAPISecret: os.Getenv("BINANCE_DEMO_API_SECRET"),
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime adapter initialization")
 		t.Fatalf("new Binance Demo runtime adapter: %v", err)
 	}
 
@@ -34,7 +32,6 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 	info, err := adapter.rest.ExchangeInfo(ctx)
 	if err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
 	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
@@ -47,7 +44,6 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 	mark, err := adapter.rest.MarkPrice(ctx, spec.VenueSymbol)
 	if err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime mark price")
 		t.Fatalf("mark price: %v", err)
 	}
 	refPrice := dec(mark.MarkPrice)
@@ -69,22 +65,20 @@ func newBinanceDemoRuntimeAcceptanceFixture(t *testing.T, ctx context.Context) (
 
 	if open, err := adapter.Execution.OpenOrders(ctx, instID); err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
 		_ = adapter.Close()
-		t.Skipf("skipping Binance Demo runtime acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Fatalf("Binance Demo runtime acceptance requires a clean account: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
 		_ = adapter.Close()
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Demo runtime position preflight")
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
 		_ = adapter.Close()
-		t.Skipf("skipping Binance Demo runtime acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Fatalf("Binance Demo runtime acceptance requires a flat account: %s already has exposure %s; flatten the Demo account before running", spec.VenueSymbol, exposure)
 	}
 
-	return adapter, spec, instID, qty, restingPrice, fillPrice
+	return adapter, spec, instID, qty, restingPrice, fillPrice, maxNotional
 }
 
 func waitForDemoRuntimePosition(ctx context.Context, node *btruntime.TradingNode, id model.InstrumentID, minAbs decimal.Decimal) error {

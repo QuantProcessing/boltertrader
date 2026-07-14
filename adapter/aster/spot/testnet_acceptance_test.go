@@ -54,7 +54,7 @@ func TestAsterSpotTestnetAdapterAcceptance(t *testing.T) {
 	inst := requireAsterSpotAcceptanceInstrument(t, adapter, cfg.SpotSymbol)
 	ensureNoAsterSpotTestnetOpenOrders(t, ctx, adapter, inst.ID, "Aster Spot Testnet adapter")
 	book := requireAsterSpotAcceptanceBook(t, ctx, adapter, inst.ID, "Aster Spot Testnet adapter")
-	lifecycle := asterSpotAcceptanceLifecycleSpec(t, "Aster Spot Testnet adapter", inst, book, cfg.MaxNotionalUSDT)
+	lifecycle := asterSpotAcceptanceLifecycleSpec(t, adapter, "Aster Spot Testnet adapter", inst, book, cfg.MaxNotionalUSDT)
 	state := requireAsterSpotAcceptanceAccountState(t, ctx, adapter, "Aster Spot Testnet adapter")
 	ensureAsterSpotAcceptanceFunds(t, "Aster Spot Testnet adapter", state, lifecycle)
 	initialBaseTotal := requireAsterSpotAcceptanceBalanceTotal(t, "Aster Spot Testnet adapter preflight", state, inst.Base)
@@ -91,7 +91,7 @@ func TestAsterSpotTestnetRuntimeAcceptance(t *testing.T) {
 	inst := requireAsterSpotAcceptanceInstrument(t, adapter, cfg.SpotSymbol)
 	ensureNoAsterSpotTestnetOpenOrders(t, ctx, adapter, inst.ID, "Aster Spot Testnet runtime")
 	book := requireAsterSpotAcceptanceBook(t, ctx, adapter, inst.ID, "Aster Spot Testnet runtime")
-	lifecycle := asterSpotAcceptanceLifecycleSpec(t, "Aster Spot Testnet runtime", inst, book, cfg.MaxNotionalUSDT)
+	lifecycle := asterSpotAcceptanceLifecycleSpec(t, adapter, "Aster Spot Testnet runtime", inst, book, cfg.MaxNotionalUSDT)
 
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
@@ -99,7 +99,7 @@ func TestAsterSpotTestnetRuntimeAcceptance(t *testing.T) {
 		AccountIDDefault,
 		btruntime.WithAccountID(AccountIDDefault),
 	)
-	runtimeaccept.AttachAccountRequiredRiskWithAcceptanceLimit(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)
 	report, err := node.Resync(ctx)
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Aster Spot Testnet initial reconcile")
@@ -131,9 +131,8 @@ func TestAsterSpotTestnetRuntimeAcceptance(t *testing.T) {
 	}()
 	defer stopAsterSpotRuntimeNode(t, stop, done)
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
-		t.Fatalf("Aster Spot Testnet runtime active before risk probe: %v", err)
+		t.Fatalf("Aster Spot Testnet runtime active before lifecycle: %v", err)
 	}
-	runtimeaccept.AssertRuntimeOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), inst.ID)
 
 	result, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle)
 	if err != nil {
@@ -249,12 +248,20 @@ func asterSpotAcceptanceHTTPClient(t *testing.T, proxyURL string) *http.Client {
 	if strings.TrimSpace(proxyURL) == "" {
 		return client
 	}
-	parsed, err := url.Parse(proxyURL)
+	parsed, err := parseAsterSpotAcceptanceProxyURL(proxyURL)
 	if err != nil {
-		t.Fatalf("Aster Testnet proxy URL: %v", err)
+		t.Fatal(err)
 	}
 	client.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
 	return client
+}
+
+func parseAsterSpotAcceptanceProxyURL(proxyURL string) (*url.URL, error) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("Aster Testnet proxy URL is invalid")
+	}
+	return parsed, nil
 }
 
 func requireAsterSpotAcceptanceInstrument(t *testing.T, adapter *Adapter, desired string) *model.Instrument {
@@ -350,7 +357,7 @@ func ensureNoAsterSpotTestnetOpenOrders(t *testing.T, ctx context.Context, adapt
 	}
 }
 
-func asterSpotAcceptanceLifecycleSpec(t *testing.T, label string, inst *model.Instrument, book *model.OrderBook, maxNotional decimal.Decimal) runtimeaccept.OrderLifecycleSpec {
+func asterSpotAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string, inst *model.Instrument, book *model.OrderBook, maxNotional decimal.Decimal) runtimeaccept.OrderLifecycleSpec {
 	t.Helper()
 	if inst == nil {
 		t.Fatalf("%s instrument is required", label)
@@ -360,7 +367,7 @@ func asterSpotAcceptanceLifecycleSpec(t *testing.T, label string, inst *model.In
 	closePrice := floorAsterSpotAcceptanceDecimal(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), inst.PriceTick)
 	qty := asterSpotAcceptanceQuantity(t, label, inst, maxNotional, minAsterSpotPositiveDecimal(restingPrice, fillPrice, closePrice), maxAsterSpotPositiveDecimal(restingPrice, fillPrice, closePrice))
 	closeQty := asterSpotAcceptanceCloseQuantity(t, label, inst, qty)
-	return runtimeaccept.OrderLifecycleSpec{
+	spec := runtimeaccept.OrderLifecycleSpec{
 		Label:          label,
 		Venue:          VenueName,
 		Environment:    string(astercommon.EnvironmentTestnet),
@@ -376,6 +383,18 @@ func asterSpotAcceptanceLifecycleSpec(t *testing.T, label string, inst *model.In
 		CloseAfterFill: true,
 		Logf:           t.Logf,
 	}
+	step := inst.SizeStep
+	if !step.IsPositive() {
+		step = decimal.NewFromInt(1)
+	}
+	minQty := inst.MinQty
+	if !minQty.IsPositive() {
+		minQty = step
+	}
+	if adapter == nil {
+		return runtimeaccept.ConfigureSpotBalanceGuard(spec, nil, inst.Base, step, minQty, inst.MinNotional, qty.Sub(closeQty))
+	}
+	return runtimeaccept.ConfigureSpotBalanceGuard(spec, adapter.acct, inst.Base, step, minQty, inst.MinNotional, qty.Sub(closeQty))
 }
 
 func asterSpotAcceptanceQuantity(t *testing.T, label string, inst *model.Instrument, maxNotional, minNotionalPrice, maxNotionalPrice decimal.Decimal) decimal.Decimal {
@@ -401,6 +420,10 @@ func selectAsterSpotAcceptanceQuantity(inst *model.Instrument, maxNotional, minN
 	qty := inst.MinQty
 	if !qty.IsPositive() {
 		qty = step
+	}
+	minBufferedQty := qty.Div(asterSpotAcceptanceCloseBuffer())
+	if minBufferedQty.GreaterThan(qty) {
+		qty = minBufferedQty
 	}
 	if inst.MinNotional.IsPositive() && minNotionalPrice.IsPositive() {
 		minByNotional := inst.MinNotional.Div(minNotionalPrice)

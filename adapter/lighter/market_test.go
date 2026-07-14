@@ -74,3 +74,18 @@ func TestLighterMarketReferenceSnapshotOpenInterestAndStatsPayload(t *testing.T)
 		t.Fatalf("unexpected stream values: %+v", streamRef)
 	}
 }
+
+func TestAggregateLighterBookLevelsDropsMalformedAndNonPositivePrices(t *testing.T) {
+	levels := aggregateLighterBookLevels([]sdk.Bid{
+		{Price: "0", RemainingBaseAmount: "1"},
+		{Price: "-1", RemainingBaseAmount: "1"},
+		{Price: "bad", RemainingBaseAmount: "1"},
+		{Price: "10", RemainingBaseAmount: "2"},
+		{Price: "10", RemainingBaseAmount: "3"},
+		{Price: "9", RemainingBaseAmount: "bad"},
+	}, true, 5)
+
+	if len(levels) != 1 || !levels[0].Price.Equal(decimal.NewFromInt(10)) || !levels[0].Quantity.Equal(decimal.NewFromInt(5)) {
+		t.Fatalf("levels=%+v, want one aggregated positive 10@5 level", levels)
+	}
+}

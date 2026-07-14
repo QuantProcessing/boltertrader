@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -79,7 +82,7 @@ func TestNadoRuntimeUsesVenuePreTradeWithoutFabricatedFreeBalance(t *testing.T) 
 	now := time.Now().UTC()
 	clk := clock.NewSimulatedClock(now)
 	provider := nadoTestProvider()
-	execution := newExecutionClient(nil, provider, clk, enums.KindSpot, AccountIDUnified)
+	execution := newNadoRuntimeExecution(t, provider, clk)
 	pretrade := newRecordingPreTradeDeps()
 	execution.pretrade = pretrade
 	account := &nadoRuntimeAccount{state: model.AccountState{
@@ -163,7 +166,7 @@ func TestNadoRuntimeJournalFailureReleasesPreparedPayloadBeforeVenueWrite(t *tes
 	now := time.Now().UTC()
 	clk := clock.NewSimulatedClock(now)
 	provider := nadoTestProvider()
-	execution := newExecutionClient(nil, provider, clk, enums.KindSpot, AccountIDUnified)
+	execution := newNadoRuntimeExecution(t, provider, clk)
 	pretrade := newRecordingPreTradeDeps()
 	execution.pretrade = pretrade
 	account := &nadoRuntimeAccount{state: model.AccountState{
@@ -240,7 +243,7 @@ func TestNadoRuntimeExpiredPreparedPayloadClosesLocalDeniedWithoutRevalidation(t
 	now := time.Now().UTC()
 	clk := clock.NewSimulatedClock(now)
 	provider := nadoTestProvider()
-	execution := newExecutionClient(nil, provider, clk, enums.KindSpot, AccountIDUnified)
+	execution := newNadoRuntimeExecution(t, provider, clk)
 	execution.prepared = newPreparedOrderCache(8, time.Second)
 	pretrade := newRecordingPreTradeDeps()
 	execution.pretrade = pretrade
@@ -346,6 +349,68 @@ func TestNadoRuntimeExpiredPreparedPayloadClosesLocalDeniedWithoutRevalidation(t
 	case <-time.After(time.Second):
 		t.Fatal("node did not stop")
 	}
+}
+
+func TestNadoRuntimeWithoutOpenOrderBackendStaysRestricted(t *testing.T) {
+	execution := newExecutionClient(nil, nadoTestProvider(), clock.NewRealClock(), enums.KindSpot, AccountIDUnified)
+	execution.pretrade = newRecordingPreTradeDeps()
+	node := runtime.NewNode(
+		runtime.Clients{Execution: execution},
+		nil,
+		"nado-runtime-incomplete",
+		runtime.WithAccountID(AccountIDUnified),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go node.Run(ctx)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		state := node.State()
+		if state.Node == lifecycle.NodeRunning && state.Trading == lifecycle.TradingReconciling {
+			if state.Reason != "open-order status requires a configured REST client" {
+				t.Fatalf("restricted reason=%q", state.Reason)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("node did not fail closed without open-order evidence: %+v", node.State())
+}
+
+func newNadoRuntimeExecution(t *testing.T, provider *instrumentProvider, clk clock.Clock) *executionClient {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if request["type"] == "subaccount_orders" {
+			sender, _ := request["sender"].(string)
+			productID, _ := request["product_id"].(float64)
+			_, _ = fmt.Fprintf(w, `{"status":"success","data":{"sender":%q,"product_id":%s,"orders":[]}}`, sender, decimal.NewFromFloat(productID).String())
+			return
+		}
+		if _, ok := request["matches"]; ok {
+			_, _ = w.Write([]byte(`{"matches":[],"txs":[]}`))
+			return
+		}
+		http.Error(w, "unexpected Nado runtime fixture request", http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+
+	rest := nadoTestRESTClient(t, server)
+	var err error
+	rest, err = rest.WithCredentials("1111111111111111111111111111111111111111111111111111111111111111", "runtime")
+	if err != nil {
+		t.Fatalf("runtime REST credentials: %v", err)
+	}
+	execution := newExecutionClient(rest, provider, clk, enums.KindSpot, AccountIDUnified)
+	if execution.reports == nil {
+		t.Fatal("runtime execution fixture has no authoritative report backend")
+	}
+	return execution
 }
 
 func waitNadoNodeRunning(t *testing.T, node *runtime.TradingNode) {

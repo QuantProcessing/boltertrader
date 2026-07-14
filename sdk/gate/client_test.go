@@ -142,14 +142,14 @@ func TestClientFuturesPathsUseSettleSegment(t *testing.T) {
 		if req.URL.Path != "/api/v4/futures/usdt/accounts" {
 			t.Fatalf("unexpected path %s", req.URL.Path)
 		}
-		return http.StatusOK, `{"total":"100","available":"90","currency":"USDT","margin_mode":1}`
+		return http.StatusOK, `{"user":42,"total":"100","available":"90","currency":"USDT","margin_mode":1,"in_dual_mode":false,"position_mode":"single"}`
 	}))
 
 	account, err := client.GetFuturesAccount(context.Background(), SettleUSDT)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if account.Available != "90" || account.Currency != "USDT" || account.MarginMode != "1" {
+	if account.User != 42 || account.Available != "90" || account.Currency != "USDT" || account.MarginMode != "1" || account.InDualMode || account.PositionMode != "single" {
 		t.Fatalf("unexpected futures account: %+v", account)
 	}
 }

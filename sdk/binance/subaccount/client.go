@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/mbx"
 )
 
 const (
@@ -92,7 +94,7 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("binance subaccount %s %s transport failed: %w", method, u.Path, mbx.TransportCause(err))
 	}
 	defer resp.Body.Close()
 

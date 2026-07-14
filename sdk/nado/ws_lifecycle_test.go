@@ -266,6 +266,7 @@ func TestWsAccountConnectFailsWhenSubscriptionIsRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	var upgrade websocket.Upgrader
+	rejectionWritten := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrade.Upgrade(w, r, nil)
 		require.NoError(t, err)
@@ -278,6 +279,7 @@ func TestWsAccountConnectFailsWhenSubscriptionIsRejected(t *testing.T) {
 				require.NoError(t, conn.WriteJSON(map[string]any{"id": float64(AuthRequestID)}))
 			case "subscribe":
 				require.NoError(t, conn.WriteJSON(map[string]any{"id": request["id"], "error": "invalid wildcard stream"}))
+				close(rejectionWritten)
 			}
 		}
 	}))
@@ -287,6 +289,30 @@ func TestWsAccountConnectFailsWhenSubscriptionIsRejected(t *testing.T) {
 	require.NoError(t, err)
 	client.url = wsURLFromHTTP(server.URL)
 	defer client.Close()
+	client.afterWrite = func(value interface{}) {
+		request, ok := value.(SubscriptionRequest)
+		if !ok || request.Method != "subscribe" {
+			return
+		}
+		select {
+		case <-rejectionWritten:
+		case <-time.After(time.Second):
+			t.Fatal("server did not write the subscription rejection")
+		}
+		deadline := time.Now().Add(time.Second)
+		for {
+			client.mu.Lock()
+			connected := client.conn != nil
+			client.mu.Unlock()
+			if !connected {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("server close did not clear the rejected connection")
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
 	require.NoError(t, client.SubscribeOrders(nil, nil))
 	err = client.Connect()
 	require.ErrorContains(t, err, "invalid wildcard stream")

@@ -241,6 +241,12 @@ func TestWsAccountClientReconnectsWithRenewedListenKey(t *testing.T) {
 	client.userStreamURL = func(key string) string {
 		return websocketURL(wsServer.URL) + "/" + key
 	}
+	reconnectPhases := make(chan string, 2)
+	client.SetReconnectHooks(func(error) {
+		reconnectPhases <- "started"
+	}, func() {
+		reconnectPhases <- "recovered"
+	})
 
 	received := make(chan int64, 2)
 	client.SubscribeAccountPosition(func(event *AccountPositionEvent) { received <- event.EventTime })
@@ -263,5 +269,15 @@ func TestWsAccountClientReconnectsWithRenewedListenKey(t *testing.T) {
 	second := <-paths
 	if first != "/ws/key-1" || second != "/ws/key-2" {
 		t.Fatalf("user stream paths = %q, %q", first, second)
+	}
+	for _, expected := range []string{"started", "recovered"} {
+		select {
+		case got := <-reconnectPhases:
+			if got != expected {
+				t.Fatalf("reconnect phase = %q, want %q", got, expected)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for reconnect phase %q", expected)
+		}
 	}
 }

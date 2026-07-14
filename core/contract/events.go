@@ -241,6 +241,13 @@ func inferExecMeta(payload ExecEvent) EventMeta {
 	case RejectEvent:
 		meta.ClientID = p.ClientID
 		meta.EventID = model.EventID(joinEventID("exec", "reject", p.ClientID, p.Reason))
+	case StreamGapEvent:
+		meta.Venue = p.Venue
+		meta.AccountID = p.AccountID
+		meta.EventID = model.EventID(joinEventID(
+			"exec", "stream-gap", p.Venue, p.AccountID, p.StreamID,
+			fmt.Sprint(p.Generation), string(p.Phase),
+		))
 	}
 	if meta.EventID == "" {
 		meta.EventID = model.EventID(joinEventID("exec", fmt.Sprintf("%T", payload), eventTimeKey(time.Now())))
@@ -317,9 +324,45 @@ type RejectEvent struct {
 	Reason   string
 }
 
-func (OrderEvent) isExecEvent()  {}
-func (FillEvent) isExecEvent()   {}
-func (RejectEvent) isExecEvent() {}
+// StreamGapPhase identifies whether an unexpected private-state stream gap has
+// begun or has fully recovered authentication and subscriptions.
+type StreamGapPhase string
+
+const (
+	StreamGapStarted   StreamGapPhase = "started"
+	StreamGapRecovered StreamGapPhase = "recovered"
+)
+
+// StreamGapEvent makes an SDK-managed private websocket gap visible to the
+// runtime through the existing serialized execution event stream.
+type StreamGapEvent struct {
+	Venue      string
+	AccountID  string
+	StreamID   string
+	Generation uint64
+	Phase      StreamGapPhase
+	Reason     string
+}
+
+func (e StreamGapEvent) Validate() error {
+	if strings.TrimSpace(e.StreamID) == "" {
+		return fmt.Errorf("stream gap: stream id required")
+	}
+	if e.Generation == 0 {
+		return fmt.Errorf("stream gap: positive generation required")
+	}
+	switch e.Phase {
+	case StreamGapStarted, StreamGapRecovered:
+		return nil
+	default:
+		return fmt.Errorf("stream gap: unsupported phase %q", e.Phase)
+	}
+}
+
+func (OrderEvent) isExecEvent()     {}
+func (FillEvent) isExecEvent()      {}
+func (RejectEvent) isExecEvent()    {}
+func (StreamGapEvent) isExecEvent() {}
 
 // AccountEvent is the sum of account-stream push events.
 type AccountEvent interface{ isAccountEvent() }

@@ -54,12 +54,12 @@ func TestNadoPreTradeSafetyReviewedBlockers(t *testing.T) {
 		if deps.prepareCalls != callsBefore {
 			t.Fatalf("duplicate performed venue prepare: before=%d after=%d", callsBefore, deps.prepareCalls)
 		}
-		deps.executed = &sdk.PlaceOrderResponse{Digest: "original"}
+		deps.executed = &sdk.PlaceOrderResponse{Digest: "digest-safe"}
 		order, err := exec.Submit(context.Background(), req)
 		if err != nil {
 			t.Fatalf("Submit after duplicate: %v", err)
 		}
-		if order.VenueOrderID != "original" || first.Signature != "" {
+		if order.VenueOrderID != "digest-safe" || first.Signature != "" {
 			t.Fatalf("original lease not consumed/redacted correctly order=%+v original=%+v", order, first)
 		}
 	})
@@ -76,7 +76,7 @@ func TestNadoPreTradeSafetyReviewedBlockers(t *testing.T) {
 		if _, err := exec.ValidatePreTrade(context.Background(), second, mustNadoInstrument(t, exec, second.InstrumentID)); err == nil || !strings.Contains(err.Error(), "capacity") {
 			t.Fatalf("capacity-full err=%v", err)
 		}
-		deps.executed = &sdk.PlaceOrderResponse{Digest: "first"}
+		deps.executed = &sdk.PlaceOrderResponse{Digest: "digest-safe"}
 		if _, err := exec.Submit(context.Background(), req); err != nil {
 			t.Fatalf("first active lease was evicted: %v", err)
 		}

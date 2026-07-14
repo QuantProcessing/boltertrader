@@ -126,7 +126,7 @@ func CapabilityMatrix() []CapabilityRow {
 			AccountStateSnapshot: true,
 			Submit:               true,
 			Cancel:               true,
-			Modify:               true,
+			Modify:               false,
 			OrderStatusReports:   "open orders",
 			FillReports:          "unsupported",
 			PositionReports:      "unsupported",

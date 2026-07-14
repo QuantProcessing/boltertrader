@@ -21,6 +21,9 @@ func buildPlaceOrderAction(orders ...PlaceOrderRequest) (hyperliquid.CreateOrder
 		}
 		orderType := hyperliquid.OrderTypeWire{}
 		if order.OrderType.Limit != nil {
+			if err := validateLimitTIF(order.OrderType.Limit.Tif); err != nil {
+				return hyperliquid.CreateOrderAction{}, err
+			}
 			orderType.Limit = &hyperliquid.OrderTypeWireLimit{
 				Tif: order.OrderType.Limit.Tif,
 			}
@@ -80,6 +83,8 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		return hyperliquid.ModifyOrderAction{}, fmt.Errorf("modify request must specify only one of Oid or Cloid")
 	case req.Oid != nil:
 		wireOid = *req.Oid
+	case req.Cloid != nil:
+		wireOid = *req.Cloid
 	default:
 		return hyperliquid.ModifyOrderAction{}, fmt.Errorf("modify request must specify either Oid or Cloid")
 	}
@@ -96,6 +101,9 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 
 	orderType := hyperliquid.OrderTypeWire{}
 	if req.Order.OrderType.Limit != nil {
+		if err := validateLimitTIF(req.Order.OrderType.Limit.Tif); err != nil {
+			return hyperliquid.ModifyOrderAction{}, err
+		}
 		orderType.Limit = &hyperliquid.OrderTypeWireLimit{
 			Tif: req.Order.OrderType.Limit.Tif,
 		}
@@ -119,6 +127,7 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		Size:       sizeWire,
 		ReduceOnly: req.Order.ReduceOnly,
 		OrderType:  orderType,
+		Cloid:      req.Order.ClientOrderID,
 	}
 
 	return hyperliquid.ModifyOrderAction{
@@ -126,4 +135,13 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		Oid:   wireOid,
 		Order: order,
 	}, nil
+}
+
+func validateLimitTIF(tif hyperliquid.Tif) error {
+	switch tif {
+	case hyperliquid.TifGtc, hyperliquid.TifIoc, hyperliquid.TifAlo:
+		return nil
+	default:
+		return fmt.Errorf("unsupported limit TIF %q: Hyperliquid accepts only Gtc, Ioc, or Alo", tif)
+	}
 }

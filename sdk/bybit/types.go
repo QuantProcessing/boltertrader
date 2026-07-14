@@ -250,6 +250,8 @@ type PositionsResult struct {
 }
 
 type PositionRecord struct {
+	Category       string `json:"category"`
+	PositionIdx    int    `json:"positionIdx"`
 	Symbol         string `json:"symbol"`
 	Side           string `json:"side"`
 	Size           string `json:"size"`
@@ -446,6 +448,8 @@ type OrdersResult struct {
 }
 
 type OrderRecord struct {
+	Category           string `json:"category"`
+	PositionIdx        int    `json:"positionIdx"`
 	OrderID            string `json:"orderId"`
 	OrderLinkID        string `json:"orderLinkId"`
 	Symbol             string `json:"symbol"`
@@ -467,6 +471,8 @@ type OrderRecord struct {
 }
 
 type ExecutionRecord struct {
+	Category    string `json:"category"`
+	ExecType    string `json:"execType"`
 	ExecID      string `json:"execId"`
 	OrderID     string `json:"orderId"`
 	OrderLinkID string `json:"orderLinkId"`

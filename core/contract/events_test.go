@@ -202,3 +202,39 @@ func TestInferredAccountEventIDsIncludeAccountScope(t *testing.T) {
 		t.Fatalf("positions from different accounts reused event id %q", leftPosition.EventID)
 	}
 }
+
+func TestStreamGapEnvelopeInfersStableMetadata(t *testing.T) {
+	event := StreamGapEvent{
+		Venue:      "GATE",
+		AccountID:  "GATE:unified",
+		StreamID:   "gate:private:spot",
+		Generation: 7,
+		Phase:      StreamGapStarted,
+		Reason:     "unexpected websocket close",
+	}
+	first := NewExecEnvelope(event)
+	second := NewExecEnvelope(event)
+
+	if first.EventID == "" || first.EventID != second.EventID {
+		t.Fatalf("gap event ids first=%q second=%q, want stable non-empty id", first.EventID, second.EventID)
+	}
+	if first.Venue != event.Venue || first.AccountID != event.AccountID {
+		t.Fatalf("gap metadata=%+v, want venue/account from event", first.Meta())
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("valid gap: %v", err)
+	}
+}
+
+func TestStreamGapEventValidation(t *testing.T) {
+	tests := []StreamGapEvent{
+		{Generation: 1, Phase: StreamGapStarted},
+		{StreamID: "private", Phase: StreamGapStarted},
+		{StreamID: "private", Generation: 1, Phase: "unknown"},
+	}
+	for _, event := range tests {
+		if err := event.Validate(); err == nil {
+			t.Fatalf("invalid gap event accepted: %+v", event)
+		}
+	}
+}

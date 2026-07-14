@@ -11,7 +11,7 @@ import (
 
 func IsTerminal(s enums.OrderStatus) bool {
 	switch s {
-	case enums.StatusUnknown, enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
+	case enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
 		return true
 	default:
 		return false
@@ -193,6 +193,10 @@ func venueUpdateOlder(incoming, current time.Time) bool {
 	return !incoming.IsZero() && !current.IsZero() && incoming.Before(current)
 }
 
+// FillKey returns the venue-scoped idempotency identity for a reported trade.
+// Order aliases are deliberately excluded because they can be learned after
+// the first observation; conflicting aliases for one venue trade must not make
+// that trade apply twice.
 func FillKey(fill model.Fill) string {
 	if fill.TradeID == "" {
 		return ""
@@ -200,10 +204,76 @@ func FillKey(fill model.Fill) string {
 	return strings.Join([]string{
 		fill.AccountID,
 		fill.InstrumentID.String(),
-		fill.ClientID,
-		fill.VenueOrderID,
 		fill.TradeID,
 	}, "\x00")
+}
+
+// MergeSnapshot applies a venue snapshot observed at observedAt. Identity and
+// sparse request fields are enriched from the existing order, while cumulative
+// fill quantity and status come from the snapshot unless the cache already has
+// an event newer than the snapshot's observation time.
+func MergeSnapshot(existing, incoming model.Order, observedAt time.Time) model.Order {
+	if observedAt.IsZero() && !incoming.FilledQty.IsPositive() {
+		out := Merge(existing, incoming)
+		if existing.FilledQty.GreaterThan(incoming.FilledQty) {
+			out.Status = existing.Status
+			out.UpdatedAt = existing.UpdatedAt
+		}
+		return promoteCompleteFill(out)
+	}
+	if !observedAt.IsZero() && !existing.UpdatedAt.IsZero() && existing.UpdatedAt.After(observedAt) {
+		return promoteCompleteFill(enrichNewerOrder(existing, incoming))
+	}
+	out := incoming
+	if out.Request.ClientID == "" {
+		out.Request.ClientID = existing.Request.ClientID
+	}
+	if out.Request.AccountID == "" {
+		out.Request.AccountID = existing.Request.AccountID
+	}
+	if out.Request.InstrumentID.Symbol == "" {
+		out.Request.InstrumentID = existing.Request.InstrumentID
+	}
+	if out.Request.Side == enums.SideUnknown {
+		out.Request.Side = existing.Request.Side
+	}
+	if out.Request.Type == enums.TypeUnknown {
+		out.Request.Type = existing.Request.Type
+	}
+	if out.Request.TIF == enums.TifUnknown {
+		out.Request.TIF = existing.Request.TIF
+	}
+	if out.Request.Quantity.IsZero() {
+		out.Request.Quantity = existing.Request.Quantity
+	}
+	if out.Request.Price.IsZero() {
+		out.Request.Price = existing.Request.Price
+	}
+	if out.Request.TriggerPrice.IsZero() {
+		out.Request.TriggerPrice = existing.Request.TriggerPrice
+	}
+	if out.Request.ActivationPrice.IsZero() {
+		out.Request.ActivationPrice = existing.Request.ActivationPrice
+	}
+	if out.Request.TrailingOffsetBps.IsZero() {
+		out.Request.TrailingOffsetBps = existing.Request.TrailingOffsetBps
+	}
+	if !out.Request.ReduceOnly && existing.Request.ReduceOnly {
+		out.Request.ReduceOnly = true
+	}
+	if out.Request.Venue == nil {
+		out.Request.Venue = existing.Request.Venue
+	}
+	if out.VenueOrderID == "" {
+		out.VenueOrderID = existing.VenueOrderID
+	}
+	if out.CreatedAt.IsZero() {
+		out.CreatedAt = existing.CreatedAt
+	}
+	if out.UpdatedAt.IsZero() {
+		out.UpdatedAt = existing.UpdatedAt
+	}
+	return promoteCompleteFill(out)
 }
 
 func preserveStatus(existing, incoming model.Order) bool {

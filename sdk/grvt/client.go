@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -62,22 +63,23 @@ func (c *Client) Login(ctx context.Context) error {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.EdgeURL+"/auth/api_key/login", bytes.NewBuffer(data))
 	if err != nil {
-		return err
+		return newGRVTRedactedError("build login request failed", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HttpClient.Do(req)
 	if err != nil {
-		return err
+		return newGRVTRedactedError("login request transport failed", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		message := fmt.Sprintf("login failed: %s (response bytes: %d)", grvtHTTPStatus(resp.StatusCode), len(body))
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return sdkcore.NewExchangeError("GRVT", "429", string(body), sdkcore.ErrRateLimited)
+			return sdkcore.NewExchangeError("GRVT", "429", message, sdkcore.ErrRateLimited)
 		}
-		return fmt.Errorf("login failed: %s %s", resp.Status, string(body))
+		return errors.New(message)
 	}
 
 	// Extract Cookie
@@ -126,7 +128,7 @@ func (c *Client) Post(ctx context.Context, url string, payload interface{}, sign
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(data))
 	if err != nil {
-		return nil, err
+		return nil, newGRVTRedactedError("build request failed", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -143,7 +145,7 @@ func (c *Client) Post(ctx context.Context, url string, payload interface{}, sign
 
 	resp, err := c.HttpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, newGRVTRedactedError("request transport failed", err)
 	}
 	defer resp.Body.Close()
 
@@ -153,18 +155,44 @@ func (c *Client) Post(ctx context.Context, url string, payload interface{}, sign
 	}
 
 	if resp.StatusCode != 200 {
+		message := fmt.Sprintf("request rejected: %s (response bytes: %d)", grvtHTTPStatus(resp.StatusCode), len(body))
 		var grvtErr GrvtError
 		if err := json.Unmarshal(body, &grvtErr); err == nil && grvtErr.Code != 0 {
 			if resp.StatusCode == http.StatusTooManyRequests || grvtErr.Code == 1006 {
-				return nil, sdkcore.NewExchangeError("GRVT", fmt.Sprintf("%d", grvtErr.Code), grvtErr.Message, sdkcore.ErrRateLimited)
+				return nil, sdkcore.NewExchangeError("GRVT", fmt.Sprintf("%d", grvtErr.Code), message, sdkcore.ErrRateLimited)
 			}
+			grvtErr.Message = message
 			return nil, &grvtErr
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
-			return nil, sdkcore.NewExchangeError("GRVT", "429", string(body), sdkcore.ErrRateLimited)
+			return nil, sdkcore.NewExchangeError("GRVT", "429", message, sdkcore.ErrRateLimited)
 		}
-		return nil, fmt.Errorf("request failed: %s %s", resp.Status, string(body))
+		return nil, errors.New(message)
 	}
 
 	return body, nil
+}
+
+func grvtHTTPStatus(statusCode int) string {
+	if statusText := http.StatusText(statusCode); statusText != "" {
+		return fmt.Sprintf("%d %s", statusCode, statusText)
+	}
+	return fmt.Sprintf("%d", statusCode)
+}
+
+type grvtRedactedError struct {
+	message string
+	cause   error
+}
+
+func (e *grvtRedactedError) Error() string {
+	return e.message
+}
+
+func (e *grvtRedactedError) Unwrap() error {
+	return e.cause
+}
+
+func newGRVTRedactedError(message string, cause error) error {
+	return &grvtRedactedError{message: message, cause: cause}
 }

@@ -18,6 +18,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Demo traffic may traverse an explicitly configured proxy. Keep the normal
+// SDK default narrow while allowing this live acceptance path to tolerate the
+// measured proxy round-trip time.
+const bybitAcceptanceRecvWindowMillis int64 = 15000
+
 func TestBybitDemoSpotAcceptance(t *testing.T) {
 	cfg := testenv.RequireBybitDemoWrite(t)
 	runBybitAcceptance(t, "Bybit Demo Spot", cfg.APIKey, cfg.APISecret, cfg.Profile, cfg.SpotSymbol, enums.KindSpot, "", cfg.MaxNotionalUSDT)
@@ -131,7 +136,6 @@ func runBybitAcceptance(t *testing.T, label, apiKey, apiSecret string, profile t
 	id := requireBybitAcceptanceInstrument(t, adapter, symbol, kind, settle)
 	book, err := adapter.Market.OrderBook(ctx, id, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" order book")
 		t.Fatalf("%s order book: %v", label, err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
@@ -140,7 +144,6 @@ func runBybitAcceptance(t *testing.T, label, apiKey, apiSecret string, profile t
 	lifecycle := bybitAcceptanceLifecycleSpec(t, adapter, label, id, book, maxNotional)
 	state, err := adapter.acct.AccountState(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" account state")
 		t.Fatalf("%s account state: %v", label, err)
 	}
 	if state.AccountID != AccountIDUnified {
@@ -167,7 +170,6 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 	id := requireBybitAcceptanceInstrument(t, adapter, symbol, kind, settle)
 	book, err := adapter.Market.OrderBook(ctx, id, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" order book")
 		t.Fatalf("%s order book: %v", label, err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
@@ -181,10 +183,9 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 		AccountIDUnified,
 		btruntime.WithAccountID(AccountIDUnified),
 	)
-	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), maxNotional)
 	report, err := node.Resync(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" initial reconcile")
 		t.Fatalf("%s initial reconcile: %v", label, err)
 	}
 	if report.AccountStatesApplied != 1 {
@@ -196,7 +197,6 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, kind)
 	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id)
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" private stream")
 		t.Fatalf("%s private stream: %v", label, err)
 	}
 	lifecycle.PrivateStreamTopics = bybitPrivateStreamTopics()
@@ -213,7 +213,6 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 	}
 	finalReport, err := node.Resync(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" final reconcile")
 		t.Fatalf("%s final reconcile: %v", label, err)
 	}
 	if finalReport.AccountStatesApplied != 1 {
@@ -229,15 +228,18 @@ func newBybitAcceptanceAdapter(t *testing.T, ctx context.Context, label, apiKey,
 		t.Fatalf("Bybit HTTP client: %v", err)
 	}
 	requireBybitAcceptanceAPIKey(t, ctx, label, apiKey, apiSecret, profile, httpClient, kind)
-	adapter, err := New(ctx, Config{
+	categories := []string{"linear"}
+	if kind == enums.KindSpot {
+		categories = []string{"spot"}
+	}
+	adapter, err := newWithRESTRecvWindow(ctx, Config{
 		APIKey:      apiKey,
 		APISecret:   apiSecret,
 		Environment: bybitSDKProfile(profile),
 		HTTPClient:  httpClient,
-		Categories:  []string{"spot", "linear"},
-	})
+		Categories:  categories,
+	}, bybitAcceptanceRecvWindowMillis)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Bybit adapter initialization")
 		t.Fatalf("new Bybit adapter: %v", err)
 	}
 	return adapter
@@ -249,9 +251,9 @@ func requireBybitAcceptanceAPIKey(t *testing.T, ctx context.Context, label, apiK
 		WithCredentials(apiKey, apiSecret).
 		WithEnvironmentProfile(bybitSDKProfile(profile)).
 		WithHTTPClient(httpClient).
+		WithRecvWindowMillis(bybitAcceptanceRecvWindowMillis).
 		GetAPIKeyInfo(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" API key preflight")
 		t.Fatal(formatBybitAcceptanceAPIKeyPreflightError(label, err))
 	}
 	if info == nil {
@@ -336,28 +338,73 @@ func bybitAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string, 
 	fillPrice := ceilBybitAcceptanceDecimal(book.Asks[0].Price.Mul(fillMultiplier), inst.PriceTick)
 	closePrice := floorBybitAcceptanceDecimal(book.Bids[0].Price.Mul(closeMultiplier), inst.PriceTick)
 	qty := bybitAcceptanceQuantity(t, label, inst, maxNotional, minPositiveBybitDecimal(restingPrice, fillPrice, closePrice), maxPositiveBybitDecimal(restingPrice, fillPrice, closePrice))
-	return runtimeaccept.OrderLifecycleSpec{
-		Label:                 label,
-		Venue:                 VenueName,
-		Environment:           acceptanceEnvironment(label),
-		Product:               acceptanceProduct(inst.ID.Kind, inst.Settle),
-		AccountID:             AccountIDUnified,
-		InstrumentID:          id,
-		Quantity:              qty,
-		RestingPrice:          restingPrice,
-		FillPrice:             fillPrice,
-		ClosePrice:            closePrice,
-		PositionSide:          enums.PosNet,
-		CloseAfterFill:        true,
-		CleanExistingPosition: id.Kind != enums.KindSpot,
-		Logf:                  t.Logf,
+	closeQty := decimal.Zero
+	if inst.ID.Kind == enums.KindSpot {
+		closeQty = bybitAcceptanceSpotCloseQuantity(t, label, inst, qty, closePrice)
 	}
+	spec := runtimeaccept.OrderLifecycleSpec{
+		Label:          label,
+		Venue:          VenueName,
+		Environment:    acceptanceEnvironment(label),
+		Product:        acceptanceProduct(inst.ID.Kind, inst.Settle),
+		AccountID:      AccountIDUnified,
+		InstrumentID:   id,
+		Quantity:       qty,
+		CloseQuantity:  closeQty,
+		RestingPrice:   restingPrice,
+		FillPrice:      fillPrice,
+		ClosePrice:     closePrice,
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		Logf:           t.Logf,
+	}
+	if inst.ID.Kind == enums.KindSpot {
+		step, minQty := bybitAcceptanceSpotQuantityRules(inst)
+		spec = runtimeaccept.ConfigureSpotBalanceGuard(spec, adapter.acct, inst.Base, step, minQty, inst.MinNotional, qty.Sub(closeQty))
+	} else {
+		// Bybit Perp accounts default to lpaPerp=false, which clamps an
+		// out-of-band limit to the nearest allowed price. The lifecycle still
+		// rejects any change that worsens the caller's limit.
+		spec.AllowVenuePriceImprovement = true
+	}
+	return spec
+}
+
+func bybitAcceptanceSpotCloseQuantity(t *testing.T, label string, inst *model.Instrument, qty, closePrice decimal.Decimal) decimal.Decimal {
+	t.Helper()
+	step, minQty := bybitAcceptanceSpotQuantityRules(inst)
+	closeQty := floorBybitAcceptanceDecimal(qty.Mul(bybitSpotCloseQuantityBuffer()), step)
+	if closeQty.LessThan(minQty) {
+		t.Fatalf("%s: spot close quantity %s is below min quantity %s after fee buffer", label, closeQty, minQty)
+	}
+	if inst.MinNotional.IsPositive() && closeQty.Mul(closePrice).LessThan(inst.MinNotional) {
+		t.Fatalf("%s: spot close notional %s is below min notional %s after fee buffer", label, closeQty.Mul(closePrice), inst.MinNotional)
+	}
+	return closeQty
+}
+
+func bybitAcceptanceSpotQuantityRules(inst *model.Instrument) (decimal.Decimal, decimal.Decimal) {
+	step := inst.SizeStep
+	if !step.IsPositive() {
+		step = decimal.NewFromInt(1)
+	}
+	minQty := inst.MinQty
+	if !minQty.IsPositive() {
+		minQty = step
+	}
+	return step, minQty
+}
+
+func bybitSpotCloseQuantityBuffer() decimal.Decimal {
+	return decimal.RequireFromString("0.995")
 }
 
 func acceptanceEnvironment(label string) string {
 	switch {
 	case strings.Contains(label, "Testnet"):
 		return "Testnet"
+	case strings.Contains(label, "Demo"):
+		return "Demo"
 	default:
 		return ""
 	}
@@ -394,15 +441,28 @@ func bybitAcceptanceQuantity(t *testing.T, label string, inst *model.Instrument,
 	if !qty.IsPositive() {
 		qty = step
 	}
+	if inst.ID.Kind == enums.KindSpot {
+		minBufferedQty := qty.Div(bybitSpotCloseQuantityBuffer())
+		if minBufferedQty.GreaterThan(qty) {
+			qty = minBufferedQty
+		}
+	}
 	if inst.MinNotional.IsPositive() && minNotionalPrice.IsPositive() {
 		minByNotional := inst.MinNotional.Div(minNotionalPrice)
 		if minByNotional.GreaterThan(qty) {
 			qty = minByNotional
 		}
+		if inst.ID.Kind == enums.KindSpot {
+			minCloseQty := ceilBybitAcceptanceDecimal(minByNotional, step)
+			minBufferedQty := minCloseQty.Div(bybitSpotCloseQuantityBuffer())
+			if minBufferedQty.GreaterThan(qty) {
+				qty = minBufferedQty
+			}
+		}
 	}
 	qty = ceilBybitAcceptanceDecimal(qty, step)
 	if maxNotionalPrice.IsPositive() && qty.Mul(maxNotionalPrice).GreaterThan(maxNotional) {
-		t.Skipf("skipping %s: min lifecycle quantity %s notional %s exceeds max notional %s", label, qty, qty.Mul(maxNotionalPrice), maxNotional)
+		t.Fatalf("%s: min lifecycle quantity %s notional %s exceeds max notional %s", label, qty, qty.Mul(maxNotionalPrice), maxNotional)
 	}
 	return qty
 }
@@ -428,7 +488,7 @@ func ensureBybitLifecycleFunds(t *testing.T, label string, adapter *Adapter, sta
 	if available.GreaterThanOrEqual(required) {
 		return
 	}
-	t.Skipf("skipping %s: %s available %s below required %s for lifecycle", label, currency, available, required)
+	t.Fatalf("%s: %s available %s below required %s for lifecycle", label, currency, available, required)
 }
 
 func bybitAvailableBalance(state model.AccountState, currency string) decimal.Decimal {

@@ -21,6 +21,7 @@ type accountClient struct {
 	provider  *instrumentProvider
 	clk       clock.Clock
 	accountID string
+	scope     []enums.InstrumentKind
 	stream    *wsstream.Stream[contract.AccountEnvelope]
 }
 
@@ -35,13 +36,43 @@ func newAccountClient(rest *bybitsdk.Client, provider *instrumentProvider, clk c
 	if accountID == "" {
 		accountID = AccountIDUnified
 	}
+	scope = normalizedBybitScope(scope)
 	return &accountClient{
 		rest:      rest,
 		provider:  provider,
 		clk:       clk,
 		accountID: accountID,
+		scope:     scope,
 		stream:    wsstream.New[contract.AccountEnvelope](256),
 	}
+}
+
+func normalizedBybitScope(scope []enums.InstrumentKind) []enums.InstrumentKind {
+	seen := make(map[enums.InstrumentKind]struct{}, len(scope))
+	out := make([]enums.InstrumentKind, 0, len(scope))
+	for _, kind := range scope {
+		if kind != enums.KindSpot && kind != enums.KindPerp {
+			continue
+		}
+		if _, ok := seen[kind]; ok {
+			continue
+		}
+		seen[kind] = struct{}{}
+		out = append(out, kind)
+	}
+	if len(out) == 0 {
+		return []enums.InstrumentKind{enums.KindSpot, enums.KindPerp}
+	}
+	return out
+}
+
+func (c *accountClient) supportsKind(kind enums.InstrumentKind) bool {
+	for _, supported := range c.scope {
+		if supported == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *accountClient) AccountID() string { return c.accountID }
@@ -94,6 +125,9 @@ func (c *accountClient) AccountState(ctx context.Context) (model.AccountState, e
 }
 
 func (c *accountClient) positions(ctx context.Context) ([]model.Position, error) {
+	if !c.supportsKind(enums.KindPerp) {
+		return nil, nil
+	}
 	now := c.clk.Now()
 	out := make([]model.Position, 0)
 	for _, settle := range []string{bybitsdk.SettleCoinUSDT, bybitsdk.SettleCoinUSDC} {
@@ -102,7 +136,14 @@ func (c *accountClient) positions(ctx context.Context) ([]model.Position, error)
 			return nil, err
 		}
 		for _, record := range records {
-			pos := positionFromBybit(record, c.provider.resolveVenueSymbol, c.accountID, now)
+			id, ok := c.provider.ResolveVenueInstrument(record.Symbol, enums.KindPerp, settle)
+			if !ok {
+				return nil, fmt.Errorf("bybit: unknown account position instrument settle=%s symbol=%s", settle, record.Symbol)
+			}
+			pos, err := positionFromBybit(record, func(string) model.InstrumentID { return id }, c.accountID, now)
+			if err != nil {
+				return nil, err
+			}
 			if pos.InstrumentID.Symbol == "" {
 				continue
 			}
@@ -223,13 +264,14 @@ func (c *accountClient) SetMarginMode(ctx context.Context, id model.InstrumentID
 }
 
 func (c *accountClient) Capabilities() contract.Capabilities {
+	products := make([]contract.ProductCapability, 0, len(c.scope))
+	for _, kind := range c.scope {
+		products = append(products, contract.ProductCapability{Kind: kind, Account: true})
+	}
 	return contract.Capabilities{
-		Venue: VenueName,
-		Products: []contract.ProductCapability{
-			{Kind: enums.KindSpot, Account: true},
-			{Kind: enums.KindPerp, Account: true},
-		},
-		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Venue:     VenueName,
+		Products:  products,
+		Reports:   contract.ReportCapabilities{PositionReports: c.supportsKind(enums.KindPerp), AccountBalanceSnapshots: true, AccountStateSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: true, AccountState: true},
 	}
 }

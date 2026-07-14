@@ -173,6 +173,22 @@ func (p *instrumentProvider) resolveVenueSymbol(sym string) model.InstrumentID {
 	return model.InstrumentID{Venue: VenueName, Symbol: strings.ReplaceAll(sym, "_", "-"), Kind: enums.KindPerp}
 }
 
+func (p *instrumentProvider) resolveSpotVenueSymbol(sym string) model.InstrumentID {
+	id, ok := p.ResolveVenueInstrument(sym, enums.KindSpot, "")
+	if !ok {
+		return model.InstrumentID{}
+	}
+	return id
+}
+
+func (p *instrumentProvider) resolveFuturesVenueSymbol(sym string) model.InstrumentID {
+	id, ok := p.ResolveVenueInstrument(sym, enums.KindPerp, "USDT")
+	if !ok {
+		return model.InstrumentID{}
+	}
+	return id
+}
+
 func (p *instrumentProvider) resolveReportInstrument(scoped model.InstrumentID, venueSymbol string) model.InstrumentID {
 	if scoped.Symbol != "" {
 		if inst, ok := p.Instrument(scoped); ok && inst.VenueSymbol == venueSymbol {

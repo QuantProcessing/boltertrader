@@ -468,6 +468,7 @@ type recordingPreTradeDeps struct {
 	maxSizeX18   string
 	prepared     *sdk.PreparedOrder
 	executed     *sdk.PlaceOrderResponse
+	executeErr   error
 	prepareCalls int
 	onPrepare    func()
 	blockPrepare chan struct{}
@@ -561,7 +562,7 @@ func (d *recordingPreTradeDeps) ExecutePreparedOrder(ctx context.Context, order 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.calls = append(d.calls, "execute")
-	return d.executed, nil
+	return d.executed, d.executeErr
 }
 
 func nadoTestOrderRequest(kind enums.InstrumentKind, side enums.OrderSide) model.OrderRequest {

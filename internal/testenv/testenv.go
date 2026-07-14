@@ -19,12 +19,15 @@ import (
 )
 
 const (
-	BinanceDemoAPIKeyEnv    = "BINANCE_DEMO_API_KEY"
-	BinanceDemoAPISecretEnv = "BINANCE_DEMO_API_SECRET"
+	BinanceDemoAPIKeyEnv      = "BINANCE_DEMO_API_KEY"
+	BinanceDemoAPISecretEnv   = "BINANCE_DEMO_API_SECRET"
+	BinanceDemoEnableWriteEnv = "BOLTER_ENABLE_BINANCE_DEMO_WRITES"
 
-	OKXDemoAPIKeyEnv        = "OKX_DEMO_API_KEY"
-	OKXDemoAPISecretEnv     = "OKX_DEMO_API_SECRET"
-	OKXDemoAPIPassphraseEnv = "OKX_DEMO_API_PASSPHRASE"
+	OKXDemoAPIKeyEnv           = "OKX_DEMO_API_KEY"
+	OKXDemoAPISecretEnv        = "OKX_DEMO_API_SECRET"
+	OKXDemoAPIPassphraseEnv    = "OKX_DEMO_API_PASSPHRASE"
+	OKXDemoEnableWriteEnv      = "BOLTER_ENABLE_OKX_DEMO_WRITES"
+	OKXDemoAllowCustomWriteEnv = "BOLTER_ALLOW_OKX_DEMO_CUSTOM_WRITES"
 
 	OKXDemoMaxNotionalUSDTEnv = "OKX_DEMO_MAX_NOTIONAL_USDT"
 	OKXDemoSpotSymbolEnv      = "OKX_DEMO_SPOT_SYMBOL"
@@ -43,6 +46,7 @@ const (
 
 	BybitDemoAPIKeyEnv          = "BYBIT_DEMO_API_KEY"
 	BybitDemoAPISecretEnv       = "BYBIT_DEMO_API_SECRET"
+	BybitDemoEnableWriteEnv     = "BOLTER_ENABLE_BYBIT_DEMO_WRITES"
 	BybitDemoSpotSymbolEnv      = "BYBIT_DEMO_SYMBOL"
 	BybitDemoUSDTPerpSymbolEnv  = "BYBIT_DEMO_USDT_PERP_SYMBOL"
 	BybitDemoUSDCPerpSymbolEnv  = "BYBIT_DEMO_USDC_PERP_SYMBOL"
@@ -55,17 +59,19 @@ const (
 	BybitDefaultUSDTPerpSymbol  = "BTCUSDT"
 	BybitDefaultUSDCPerpSymbol  = "BTCPERP"
 
-	BitgetDemoAPIKeyEnv          = "BITGET_DEMO_API_KEY"
-	BitgetDemoAPISecretEnv       = "BITGET_DEMO_SECRET_KEY"
-	BitgetDemoPassphraseEnv      = "BITGET_DEMO_PASSPHRASE"
-	BitgetDemoSpotSymbolEnv      = "BITGET_DEMO_SYMBOL"
-	BitgetDemoUSDTPerpSymbolEnv  = "BITGET_DEMO_USDT_PERP_SYMBOL"
-	BitgetDemoUSDCPerpSymbolEnv  = "BITGET_DEMO_USDC_PERP_SYMBOL"
-	BitgetDemoMaxNotionalUSDTEnv = "BITGET_DEMO_MAX_NOTIONAL_USDT"
-	BitgetDemoMaxNotionalUSDCEnv = "BITGET_DEMO_MAX_NOTIONAL_USDC"
-	BitgetDemoRESTBaseURLEnv     = "BITGET_DEMO_REST_BASE_URL"
-	BitgetDemoPublicWSURLEnv     = "BITGET_DEMO_PUBLIC_WS_URL"
-	BitgetDemoPrivateWSURLEnv    = "BITGET_DEMO_PRIVATE_WS_URL"
+	BitgetDemoAPIKeyEnv           = "BITGET_DEMO_API_KEY"
+	BitgetDemoAPISecretEnv        = "BITGET_DEMO_SECRET_KEY"
+	BitgetDemoPassphraseEnv       = "BITGET_DEMO_PASSPHRASE"
+	BitgetDemoEnableWriteEnv      = "BOLTER_ENABLE_BITGET_DEMO_WRITES"
+	BitgetDemoAllowCustomWriteEnv = "BOLTER_ALLOW_BITGET_DEMO_CUSTOM_WRITES"
+	BitgetDemoSpotSymbolEnv       = "BITGET_DEMO_SYMBOL"
+	BitgetDemoUSDTPerpSymbolEnv   = "BITGET_DEMO_USDT_PERP_SYMBOL"
+	BitgetDemoUSDCPerpSymbolEnv   = "BITGET_DEMO_USDC_PERP_SYMBOL"
+	BitgetDemoMaxNotionalUSDTEnv  = "BITGET_DEMO_MAX_NOTIONAL_USDT"
+	BitgetDemoMaxNotionalUSDCEnv  = "BITGET_DEMO_MAX_NOTIONAL_USDC"
+	BitgetDemoRESTBaseURLEnv      = "BITGET_DEMO_REST_BASE_URL"
+	BitgetDemoPublicWSURLEnv      = "BITGET_DEMO_PUBLIC_WS_URL"
+	BitgetDemoPrivateWSURLEnv     = "BITGET_DEMO_PRIVATE_WS_URL"
 
 	// Deprecated: use the matching BITGET_DEMO_* environment variables.
 	BitgetLegacyTestnetAPIKeyEnv          = "BITGET_TESTNET_API_KEY"
@@ -338,8 +344,8 @@ func (c AsterTestnetConfig) String() string {
 		c.MaxNotionalUSDT.String(),
 		c.SpotSymbol,
 		c.PerpSymbol,
-		c.SpotProfile,
-		c.PerpProfile,
+		redactAsterEndpointProfile(c.SpotProfile),
+		redactAsterEndpointProfile(c.PerpProfile),
 		redactURL(c.ProxyURL),
 	)
 }
@@ -354,7 +360,7 @@ func (c NadoTestnetConfig) String() string {
 		c.MaxNotionalUSDT0.String(),
 		c.SpotSymbol,
 		c.PerpSymbol,
-		c.Profile,
+		redactNadoEndpointProfile(c.Profile),
 		redactURL(c.ProxyURL),
 	)
 }
@@ -379,8 +385,8 @@ func (c OKXDemoConfig) String() string {
 		c.SpotSymbol,
 		c.PerpSymbol,
 		c.HostProfile,
-		c.RESTBaseURL,
-		c.WSBaseURL,
+		redactURL(c.RESTBaseURL),
+		redactURL(c.WSBaseURL),
 		redactURL(c.ProxyURL),
 	)
 }
@@ -399,7 +405,7 @@ func (c BybitDemoConfig) String() string {
 		c.SpotSymbol,
 		c.USDTPerpSymbol,
 		c.USDCPerpSymbol,
-		c.Profile,
+		redactBybitEndpointProfile(c.Profile),
 		redactURL(c.ProxyURL),
 	)
 }
@@ -419,7 +425,7 @@ func (c BitgetDemoConfig) String() string {
 		c.SpotSymbol,
 		c.USDTPerpSymbol,
 		c.USDCPerpSymbol,
-		c.Profile,
+		redactBitgetEndpointProfile(c.Profile),
 		redactURL(c.ProxyURL),
 	)
 }
@@ -436,13 +442,54 @@ func (c GateTestnetConfig) String() string {
 		c.MaxNotionalUSDT.String(),
 		c.SpotSymbol,
 		c.USDTPerpSymbol,
-		c.Profile,
+		redactGateEndpointProfile(c.Profile),
 		redactURL(c.ProxyURL),
 	)
 }
 
 func (c GateTestnetConfig) GoString() string {
 	return c.String()
+}
+
+func redactBybitEndpointProfile(profile BybitEndpointProfile) BybitEndpointProfile {
+	profile.RESTBaseURL = redactURL(profile.RESTBaseURL)
+	profile.PublicSpotWSURL = redactURL(profile.PublicSpotWSURL)
+	profile.PublicLinearWSURL = redactURL(profile.PublicLinearWSURL)
+	profile.PrivateWSURL = redactURL(profile.PrivateWSURL)
+	profile.TradeWSURL = redactURL(profile.TradeWSURL)
+	return profile
+}
+
+func redactBitgetEndpointProfile(profile BitgetEndpointProfile) BitgetEndpointProfile {
+	profile.RESTBaseURL = redactURL(profile.RESTBaseURL)
+	profile.PublicWSURL = redactURL(profile.PublicWSURL)
+	profile.PrivateWSURL = redactURL(profile.PrivateWSURL)
+	return profile
+}
+
+func redactGateEndpointProfile(profile GateEndpointProfile) GateEndpointProfile {
+	profile.RESTBaseURL = redactURL(profile.RESTBaseURL)
+	profile.SpotWSURL = redactURL(profile.SpotWSURL)
+	profile.FuturesUSDTWSURL = redactURL(profile.FuturesUSDTWSURL)
+	return profile
+}
+
+func redactAsterEndpointProfile(profile AsterEndpointProfile) AsterEndpointProfile {
+	profile.RESTURL = redactURL(profile.RESTURL)
+	profile.PublicWSURL = redactURL(profile.PublicWSURL)
+	profile.UserWSURL = redactURL(profile.UserWSURL)
+	return profile
+}
+
+func redactNadoEndpointProfile(profile NadoEndpointProfile) NadoEndpointProfile {
+	profile.GatewayV1URL = redactURL(profile.GatewayV1URL)
+	profile.GatewayV2URL = redactURL(profile.GatewayV2URL)
+	profile.ArchiveV1URL = redactURL(profile.ArchiveV1URL)
+	profile.ArchiveV2URL = redactURL(profile.ArchiveV2URL)
+	profile.GatewayWSURL = redactURL(profile.GatewayWSURL)
+	profile.SubscriptionsWSURL = redactURL(profile.SubscriptionsWSURL)
+	profile.TriggerURL = redactURL(profile.TriggerURL)
+	return profile
 }
 
 func (e *BlockedReleaseError) Error() string {
@@ -462,7 +509,9 @@ func IsBlockedRelease(err error) bool {
 }
 
 // LoadRepoEnv loads the repo-root .env into the current process without
-// overriding shell-exported environment variables.
+// overriding shell-exported environment variables. Execution gates are never
+// imported from the file: live reads, writes, unsafe overrides, and extended
+// test modes must be enabled explicitly in the process environment.
 func LoadRepoEnv() error {
 	root, err := findRepoRoot()
 	if err != nil {
@@ -478,6 +527,9 @@ func LoadRepoEnv() error {
 	}
 
 	for key, value := range values {
+		if isRepoEnvExecutionGate(key) {
+			continue
+		}
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
@@ -489,6 +541,15 @@ func LoadRepoEnv() error {
 	applyLegacyAliases()
 
 	return nil
+}
+
+func isRepoEnvExecutionGate(key string) bool {
+	key = strings.ToUpper(strings.TrimSpace(key))
+	if strings.HasPrefix(key, "RUN_") || strings.HasSuffix(key, "_REALTIME_WS") {
+		return true
+	}
+	return strings.HasPrefix(key, "ENABLE_") || strings.Contains(key, "_ENABLE_") ||
+		strings.HasPrefix(key, "ALLOW_") || strings.Contains(key, "_ALLOW_")
 }
 
 func RequireEnv(t testing.TB, vars ...string) {
@@ -524,11 +585,11 @@ func RequireLiveRead(t testing.TB, vars ...string) {
 	if testing.Short() {
 		t.Skip("skipping: live read test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
 		t.Skip("skipping live read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real exchange read execution")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	RequireEnv(t, vars...)
 }
@@ -539,13 +600,15 @@ func RequireLiveWrite(t testing.TB, enableVar string, vars ...string) {
 	if testing.Short() {
 		t.Skip("skipping: live write test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv(enableVar) != "1" {
 		t.Skipf("skipping live write test: set %s=1 to enable real exchange write execution", enableVar)
 	}
-	RequireEnv(t, vars...)
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	if missing := missingEnv(vars...); len(missing) > 0 {
+		t.Fatalf("live write gate %s enabled but required env is missing: %s", enableVar, strings.Join(missing, ", "))
+	}
 }
 
 func RequireBinanceDemoWrite(t testing.TB) {
@@ -553,10 +616,15 @@ func RequireBinanceDemoWrite(t testing.TB) {
 	if testing.Short() {
 		t.Skip("skipping: Binance Demo write test excluded by -short")
 	}
+	if os.Getenv(BinanceDemoEnableWriteEnv) != "1" {
+		t.Skipf("skipping Binance Demo write test: set %s=1 to enable real Demo writes", BinanceDemoEnableWriteEnv)
+	}
 	if err := LoadRepoEnv(); err != nil {
 		t.Fatalf("load repo .env: %v", err)
 	}
-	RequireEnv(t, BinanceDemoAPIKeyEnv, BinanceDemoAPISecretEnv)
+	if missing := missingEnv(BinanceDemoAPIKeyEnv, BinanceDemoAPISecretEnv); len(missing) > 0 {
+		t.Fatalf("Binance Demo write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
+	}
 }
 
 func RequireBinanceDemoRead(t testing.TB) {
@@ -585,15 +653,21 @@ func RequireOKXDemoWrite(t testing.TB) OKXDemoConfig {
 	if testing.Short() {
 		t.Skip("skipping: OKX Demo write test excluded by -short")
 	}
+	if os.Getenv(OKXDemoEnableWriteEnv) != "1" {
+		t.Skipf("skipping OKX Demo write test: set %s=1 to enable real Demo writes", OKXDemoEnableWriteEnv)
+	}
 	if err := LoadRepoEnv(); err != nil {
 		t.Fatalf("load repo .env: %v", err)
 	}
 	if missing := missingEnv(OKXDemoAPIKeyEnv, OKXDemoAPISecretEnv, OKXDemoAPIPassphraseEnv); len(missing) > 0 {
-		t.Skipf("skipping OKX Demo write test: missing required env %s", strings.Join(missing, ", "))
+		t.Fatalf("OKX Demo write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
 	}
 	cfg, err := OKXDemoConfigFromEnv()
 	if err != nil {
 		t.Fatalf("OKX Demo env: %v", err)
+	}
+	if err := validateOKXDemoWriteProfile(cfg); err != nil {
+		t.Fatalf("OKX Demo write safety: %v", err)
 	}
 	return cfg
 }
@@ -616,12 +690,15 @@ func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
 	if testing.Short() {
 		t.Skip("skipping: Bybit Demo write test excluded by -short")
 	}
+	if os.Getenv(BybitDemoEnableWriteEnv) != "1" {
+		t.Skipf("skipping Bybit Demo write test: set %s=1 to enable real Demo writes", BybitDemoEnableWriteEnv)
+	}
 	if err := LoadRepoEnv(); err != nil {
 		t.Fatalf("load repo .env: %v", err)
 	}
 	cfg, err := BybitDemoConfigFromEnv()
 	if err != nil {
-		t.Skipf("skipping Bybit Demo write test: %v", err)
+		t.Fatalf("Bybit Demo write gate enabled but environment is invalid: %v", err)
 	}
 	return cfg
 }
@@ -647,18 +724,21 @@ func RequireBitgetDemoWrite(t testing.TB) BitgetDemoConfig {
 	if testing.Short() {
 		t.Skip("skipping: Bitget Demo write test excluded by -short")
 	}
+	if os.Getenv(BitgetDemoEnableWriteEnv) != "1" {
+		t.Skipf("skipping Bitget Demo write test: set %s=1 to enable real Demo writes", BitgetDemoEnableWriteEnv)
+	}
 	if err := LoadRepoEnv(); err != nil {
 		t.Fatalf("load repo .env: %v", err)
 	}
 	if missing := missingEnv(BitgetDemoAPIKeyEnv, BitgetDemoAPISecretEnv, BitgetDemoPassphraseEnv); len(missing) > 0 {
-		t.Skipf("skipping Bitget Demo write test: missing required env %s", strings.Join(missing, ", "))
+		t.Fatalf("Bitget Demo write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
 	}
 	cfg, err := BitgetDemoConfigFromEnv()
 	if err != nil {
-		if IsBlockedRelease(err) {
-			t.Skip(err.Error())
-		}
 		t.Fatalf("Bitget Demo env: %v", err)
+	}
+	if err := validateBitgetDemoWriteProfile(cfg.Profile); err != nil {
+		t.Fatalf("Bitget Demo write safety: %v", err)
 	}
 	return cfg
 }
@@ -674,18 +754,21 @@ func RequireGateTestnetWrite(t testing.TB) GateTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Gate Testnet write test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv(GateTestnetEnableWriteEnv) != "1" {
 		t.Skipf("skipping Gate Testnet write test: set %s=1 to enable real testnet writes", GateTestnetEnableWriteEnv)
 	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
 	if missing := missingEnv(GateTestnetAPIKeyEnv, GateTestnetAPISecretEnv); len(missing) > 0 {
-		t.Skipf("skipping Gate Testnet write test: missing required env %s", strings.Join(missing, ", "))
+		t.Fatalf("Gate Testnet write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
 	}
 	cfg, err := GateTestnetConfigFromEnv()
 	if err != nil {
 		t.Fatalf("Gate Testnet env: %v", err)
+	}
+	if err := validateGateTestnetWriteProfile(cfg.Profile); err != nil {
+		t.Fatalf("Gate Testnet write safety: %v", err)
 	}
 	return cfg
 }
@@ -695,11 +778,11 @@ func RequireGateTestnetRead(t testing.TB) GateTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Gate Testnet read test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
 		t.Skip("skipping Gate Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	if missing := missingEnv(GateTestnetAPIKeyEnv, GateTestnetAPISecretEnv); len(missing) > 0 {
 		t.Skipf("skipping Gate Testnet read test: missing required env %s", strings.Join(missing, ", "))
@@ -716,14 +799,14 @@ func RequireHyperliquidTestnetWrite(t testing.TB) HyperliquidTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Hyperliquid Testnet write test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv(HyperliquidTestnetEnableWriteEnv) != "1" {
 		t.Skipf("skipping Hyperliquid Testnet write test: set %s=1 to enable real testnet writes", HyperliquidTestnetEnableWriteEnv)
 	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
 	if missing := missingEnv(HyperliquidTestnetPrivateKeyEnv); len(missing) > 0 {
-		t.Skipf("skipping Hyperliquid Testnet write test: missing required env %s", strings.Join(missing, ", "))
+		t.Fatalf("Hyperliquid Testnet write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
 	}
 	cfg, err := HyperliquidTestnetConfigFromEnv()
 	if err != nil {
@@ -737,11 +820,11 @@ func RequireHyperliquidTestnetRead(t testing.TB) HyperliquidTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Hyperliquid Testnet read test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
 		t.Skip("skipping Hyperliquid Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	cfg, err := HyperliquidTestnetReadConfigFromEnv()
 	if err != nil {
@@ -755,11 +838,11 @@ func RequireLighterTestnetRead(t testing.TB) LighterTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Lighter Testnet read test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("BOLTER_ENABLE_LIVE_READ_TESTS") != "1" {
 		t.Skip("skipping Lighter Testnet read test: set BOLTER_ENABLE_LIVE_READ_TESTS=1 to enable real testnet reads")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	cfg, err := LighterTestnetReadConfigFromEnv()
 	if err != nil {
@@ -773,14 +856,14 @@ func RequireLighterTestnetWrite(t testing.TB) LighterTestnetConfig {
 	if testing.Short() {
 		t.Skip("skipping: Lighter Testnet write test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv(LighterTestnetEnableWriteEnv) != "1" {
 		t.Skipf("skipping Lighter Testnet write test: set %s=1 to enable real testnet writes", LighterTestnetEnableWriteEnv)
 	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
 	if missing := missingEnv(LighterTestnetPrivateKeyEnv, LighterTestnetAccountIndexEnv, LighterTestnetAPIKeyIndexEnv); len(missing) > 0 {
-		t.Skipf("skipping Lighter Testnet write test: missing required env %s", strings.Join(missing, ", "))
+		t.Fatalf("Lighter Testnet write gate enabled but required env is missing: %s", strings.Join(missing, ", "))
 	}
 	cfg, err := LighterTestnetConfigFromEnv()
 	if err != nil {
@@ -1052,10 +1135,10 @@ func BitgetDemoConfigFromEnv() (BitgetDemoConfig, error) {
 	if err := validateURL(restBaseURL, BitgetDemoRESTBaseURLEnv, "http", "https"); err != nil {
 		return BitgetDemoConfig{}, err
 	}
-	if err := validateURL(publicWSURL, BitgetDemoPublicWSURLEnv, "ws", "wss"); err != nil {
+	if err := validateBitgetDemoWSURL(publicWSURL, BitgetDemoPublicWSURLEnv); err != nil {
 		return BitgetDemoConfig{}, err
 	}
-	if err := validateURL(privateWSURL, BitgetDemoPrivateWSURLEnv, "ws", "wss"); err != nil {
+	if err := validateBitgetDemoWSURL(privateWSURL, BitgetDemoPrivateWSURLEnv); err != nil {
 		return BitgetDemoConfig{}, err
 	}
 	maxUSDT, err := parsePositiveDecimalEnv(BitgetDemoMaxNotionalUSDTEnv, BitgetDefaultMaxNotionalUSDT)
@@ -1083,7 +1166,7 @@ func BitgetDemoConfigFromEnv() (BitgetDemoConfig, error) {
 			RESTBaseURL:  restBaseURL,
 			PublicWSURL:  publicWSURL,
 			PrivateWSURL: privateWSURL,
-			PAPTrading:   restBaseURL == "https://api.bitget.com" && strings.Contains(publicWSURL, "wspap.bitget.com") && strings.Contains(privateWSURL, "wspap.bitget.com"),
+			PAPTrading:   true,
 		},
 		ProxyURL: proxyURL,
 	}, nil
@@ -1128,10 +1211,23 @@ func GateTestnetConfigFromEnv() (GateTestnetConfig, error) {
 			RESTBaseURL:      restBaseURL,
 			SpotWSURL:        spotWSURL,
 			FuturesUSDTWSURL: futuresUSDTWSURL,
-			OfficialTestnet:  true,
+			OfficialTestnet:  isKnownGateTestnetProfile(restBaseURL, spotWSURL, futuresUSDTWSURL),
 		},
 		ProxyURL: proxyURL,
 	}, nil
+}
+
+func isKnownGateTestnetProfile(restBaseURL, spotWSURL, futuresUSDTWSURL string) bool {
+	return strings.TrimRight(restBaseURL, "/") == "https://api-testnet.gateapi.io/api/v4" &&
+		strings.TrimRight(spotWSURL, "/") == "wss://ws-testnet.gate.com/v4/ws/spot" &&
+		strings.TrimRight(futuresUSDTWSURL, "/") == "wss://ws-testnet.gate.com/v4/ws/futures/usdt"
+}
+
+func validateGateTestnetWriteProfile(profile GateEndpointProfile) error {
+	if !profile.OfficialTestnet || !isKnownGateTestnetProfile(profile.RESTBaseURL, profile.SpotWSURL, profile.FuturesUSDTWSURL) {
+		return fmt.Errorf("Gate Testnet writes require the known official REST, Spot WS, and USDT Futures WS endpoints")
+	}
+	return nil
 }
 
 func lighterTestnetConfigFromEnv(requirePrivateKey bool) (LighterTestnetConfig, error) {
@@ -1238,7 +1334,7 @@ func proxiedHTTPClient(timeout time.Duration) (*http.Client, error) {
 	if proxy := strings.TrimSpace(os.Getenv("PROXY")); proxy != "" {
 		proxyURL, err := url.Parse(proxy)
 		if err != nil {
-			return nil, fmt.Errorf("invalid PROXY: %w", err)
+			return nil, fmt.Errorf("invalid PROXY configuration")
 		}
 		if err := validateURL(proxy, "PROXY", "http", "https", "socks5"); err != nil {
 			return nil, err
@@ -1310,6 +1406,49 @@ func OKXDemoConfigFromEnv() (OKXDemoConfig, error) {
 	}, nil
 }
 
+func validateOKXDemoWriteProfile(cfg OKXDemoConfig) error {
+	profile := strings.ToLower(strings.TrimSpace(cfg.HostProfile))
+	if profile == "" {
+		profile = OKXDemoHostProfileGlobal
+	}
+	switch profile {
+	case OKXDemoHostProfileGlobal, OKXDemoHostProfileEEA:
+		if strings.TrimSpace(cfg.RESTBaseURL) != "" || strings.TrimSpace(cfg.WSBaseURL) != "" {
+			return fmt.Errorf("official OKX Demo host profile %q does not permit endpoint overrides for credentialed writes", profile)
+		}
+		return nil
+	case OKXDemoHostProfileCustom:
+		if os.Getenv(OKXDemoAllowCustomWriteEnv) != "1" {
+			return fmt.Errorf("custom OKX Demo write endpoints require explicit %s=1 opt-in", OKXDemoAllowCustomWriteEnv)
+		}
+	default:
+		return fmt.Errorf("unknown OKX Demo host profile %q", cfg.HostProfile)
+	}
+
+	rest := strings.TrimSpace(cfg.RESTBaseURL)
+	ws := strings.TrimSpace(cfg.WSBaseURL)
+	if rest == "" || ws == "" {
+		return fmt.Errorf("custom OKX Demo writes require both REST and WebSocket endpoint overrides")
+	}
+	if err := validateURL(rest, OKXDemoRESTBaseURLEnv, "https"); err != nil {
+		return err
+	}
+	if err := validateURL(ws, OKXDemoWSBaseURLEnv, "wss"); err != nil {
+		return err
+	}
+
+	restURL, _ := url.Parse(rest)
+	if strings.EqualFold(strings.TrimSuffix(restURL.Hostname(), "."), "www.okx.com") {
+		return fmt.Errorf("%s must not point credentialed Demo writes at the OKX website host", OKXDemoRESTBaseURLEnv)
+	}
+	wsURL, _ := url.Parse(ws)
+	wsHost := strings.ToLower(strings.TrimSuffix(wsURL.Hostname(), "."))
+	if strings.HasSuffix(wsHost, ".okx.com") && strings.HasPrefix(wsHost, "ws") && !strings.Contains(wsHost, "pap") {
+		return fmt.Errorf("%s must not point credentialed Demo writes at production WebSocket host %s", OKXDemoWSBaseURLEnv, wsHost)
+	}
+	return nil
+}
+
 func OKXDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
@@ -1369,11 +1508,11 @@ func RequireFull(t testing.TB, vars ...string) {
 	if testing.Short() {
 		t.Skip("skipping: full verification test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("RUN_FULL") != "1" {
 		t.Skip("skipping: set RUN_FULL=1 to run full verification tests")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	RequireEnv(t, vars...)
 }
@@ -1384,11 +1523,11 @@ func RequireSoak(t testing.TB, vars ...string) {
 	if testing.Short() {
 		t.Skip("skipping: soak verification test excluded by -short")
 	}
-	if err := LoadRepoEnv(); err != nil {
-		t.Fatalf("load repo .env: %v", err)
-	}
 	if os.Getenv("RUN_SOAK") != "1" {
 		t.Skip("skipping: set RUN_SOAK=1 to run soak verification tests")
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
 	}
 	RequireEnv(t, vars...)
 }
@@ -1429,7 +1568,7 @@ func applyLegacyAliases() {
 		BitgetLegacyTestnetPublicWSURLEnv:     BitgetDemoPublicWSURLEnv,
 		BitgetLegacyTestnetPrivateWSURLEnv:    BitgetDemoPrivateWSURLEnv,
 	} {
-		if strings.TrimSpace(os.Getenv(canonical)) != "" {
+		if _, exists := os.LookupEnv(canonical); exists {
 			continue
 		}
 		if value, exists := os.LookupEnv(legacy); exists {
@@ -1539,6 +1678,52 @@ func validateURL(raw, envName string, allowedSchemes ...string) error {
 	return fmt.Errorf("%s must use one of schemes: %s", envName, strings.Join(allowedSchemes, ", "))
 }
 
+func validateBitgetDemoWSURL(raw, envName string) error {
+	if err := validateURL(raw, envName, "ws", "wss"); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s has invalid URL", envName)
+	}
+	if strings.EqualFold(strings.TrimSuffix(parsed.Hostname(), "."), "ws.bitget.com") {
+		return fmt.Errorf("%s must not point Bitget Demo acceptance at production host %s", envName, parsed.Hostname())
+	}
+	return nil
+}
+
+func validateBitgetDemoWriteProfile(profile BitgetEndpointProfile) error {
+	if !profile.PAPTrading {
+		return fmt.Errorf("Bitget Demo credentialed writes require paptrading mode")
+	}
+	if isKnownBitgetDemoProfile(profile) {
+		return nil
+	}
+	if os.Getenv(BitgetDemoAllowCustomWriteEnv) != "1" {
+		return fmt.Errorf("custom Bitget Demo write endpoints require explicit %s=1 opt-in", BitgetDemoAllowCustomWriteEnv)
+	}
+	if err := validateURL(profile.RESTBaseURL, BitgetDemoRESTBaseURLEnv, "https"); err != nil {
+		return err
+	}
+	if err := validateURL(profile.PublicWSURL, BitgetDemoPublicWSURLEnv, "wss"); err != nil {
+		return err
+	}
+	if err := validateURL(profile.PrivateWSURL, BitgetDemoPrivateWSURLEnv, "wss"); err != nil {
+		return err
+	}
+	if err := validateBitgetDemoWSURL(profile.PublicWSURL, BitgetDemoPublicWSURLEnv); err != nil {
+		return err
+	}
+	return validateBitgetDemoWSURL(profile.PrivateWSURL, BitgetDemoPrivateWSURLEnv)
+}
+
+func isKnownBitgetDemoProfile(profile BitgetEndpointProfile) bool {
+	return profile.PAPTrading &&
+		profile.RESTBaseURL == "https://api.bitget.com" &&
+		profile.PublicWSURL == "wss://wspap.bitget.com/v3/ws/public" &&
+		profile.PrivateWSURL == "wss://wspap.bitget.com/v3/ws/private"
+}
+
 func validateGateTestnetURL(raw, envName string, allowedSchemes ...string) error {
 	if err := validateURL(raw, envName, allowedSchemes...); err != nil {
 		return err
@@ -1571,16 +1756,13 @@ func redactURL(raw string) string {
 		return ""
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil {
-		return redactSecret(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<redacted-url>"
 	}
-	if parsed.User != nil {
-		username := parsed.User.Username()
-		if username == "" {
-			parsed.User = url.UserPassword("****", "****")
-		} else {
-			parsed.User = url.UserPassword(redactSecret(username), "****")
-		}
-	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	return parsed.String()
 }

@@ -90,17 +90,16 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if res.Code != 0 && res.Code != 200 {
 		return &model.Order{Request: req, Status: enums.StatusRejected, RejectReason: res.Message, UpdatedAt: c.clk.Now()}, fmt.Errorf("lighter: place order rejected code=%d message=%s", res.Code, res.Message)
 	}
+	var order *model.Order
 	if wire.TimeInForce == sdk.OrderTimeInForceImmediateOrCancel {
-		order, err := c.waitForInactiveOrder(ctx, req, wire.MarketId, clientIndex)
-		if err != nil {
-			return nil, err
-		}
-		return order, nil
+		order, err = c.waitForInactiveOrder(ctx, req, wire.MarketId, clientIndex)
+	} else {
+		order, err = c.waitForOpenOrder(ctx, req, wire.MarketId, clientIndex)
 	}
-	order, err := c.waitForOpenOrder(ctx, req, wire.MarketId, clientIndex)
 	if err != nil {
 		return nil, err
 	}
+	c.emitSubmitFill(*order)
 	return order, nil
 }
 
@@ -653,6 +652,46 @@ func (c *executionClient) emitCanceled(id model.InstrumentID, venueOrderID strin
 	order.UpdatedAt = c.clk.Now()
 	order = c.rememberOrder(order)
 	c.stream.Emit(contract.NewExecEnvelopeWithMeta(contract.OrderEvent{Order: order}, contract.EventMeta{
+		Source: contract.SourceAdapterREST,
+		Flags:  contract.EventFlagSynthetic,
+	}))
+}
+
+// Lighter private order/fill streaming is not wired into this adapter and fill
+// history is unsupported. A submit response that already contains executions
+// is therefore the sole fill source and must enter the normal event path once.
+func (c *executionClient) emitSubmitFill(order model.Order) {
+	if !order.FilledQty.IsPositive() || !order.AvgFillPrice.IsPositive() {
+		return
+	}
+	timestamp := order.UpdatedAt
+	if timestamp.IsZero() {
+		timestamp = order.CreatedAt
+	}
+	if timestamp.IsZero() {
+		timestamp = c.clk.Now()
+	}
+	fill := model.Fill{
+		AccountID:    order.Request.AccountID,
+		InstrumentID: order.Request.InstrumentID,
+		VenueOrderID: order.VenueOrderID,
+		ClientID:     order.Request.ClientID,
+		TradeID: fmt.Sprintf(
+			"inferred-submit:%s:%s:%s:%s:%s:%s:%s",
+			venueName,
+			order.Request.AccountID,
+			order.Request.InstrumentID.String(),
+			order.Request.ClientID,
+			order.VenueOrderID,
+			order.FilledQty.String(),
+			order.AvgFillPrice.String(),
+		),
+		Side:      order.Request.Side,
+		Price:     order.AvgFillPrice,
+		Quantity:  order.FilledQty,
+		Timestamp: timestamp,
+	}
+	c.stream.Emit(contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, contract.EventMeta{
 		Source: contract.SourceAdapterREST,
 		Flags:  contract.EventFlagSynthetic,
 	}))

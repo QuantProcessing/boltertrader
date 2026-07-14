@@ -3,7 +3,16 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"strconv"
 )
+
+const privatePaginationMaxPages = 1000
+
+type openOrdersPage struct {
+	List   []OrderRecord `json:"list"`
+	EndID  string        `json:"endId"`
+	Cursor string        `json:"cursor"`
+}
 
 func (c *Client) PlaceOrder(ctx context.Context, req *PlaceOrderRequest) (*PlaceOrderResponse, error) {
 	var out responseEnvelope[PlaceOrderResponse]
@@ -107,10 +116,51 @@ func (c *Client) GetOrder(ctx context.Context, category, symbol, orderID, client
 }
 
 func (c *Client) GetOpenOrders(ctx context.Context, category, symbol string) ([]OrderRecord, error) {
-	var out responseEnvelope[OrderList]
+	const (
+		pageLimit    = 100
+		overallLimit = 1000
+	)
+	var records []OrderRecord
+	cursor := ""
+	seenCursors := make(map[string]struct{})
+	pageCount := 0
+	for {
+		pageCount++
+		if pageCount > privatePaginationMaxPages {
+			return nil, fmt.Errorf("bitget sdk: get open orders exceeded %d-page safety limit", privatePaginationMaxPages)
+		}
+		page, err := c.getOpenOrdersPage(ctx, category, symbol, strconv.Itoa(pageLimit), cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(records)+len(page.List) > overallLimit {
+			return nil, fmt.Errorf("bitget sdk: get open orders exceeded %d-record safety limit", overallLimit)
+		}
+		records = append(records, page.List...)
+		if page.Cursor == "" {
+			return records, nil
+		}
+		if len(page.List) == 0 {
+			return nil, fmt.Errorf("bitget sdk: get open orders returned empty page with non-terminal cursor %q", page.Cursor)
+		}
+		if page.Cursor == cursor {
+			return nil, fmt.Errorf("bitget sdk: get open orders repeated cursor %q", page.Cursor)
+		}
+		if _, duplicate := seenCursors[page.Cursor]; duplicate {
+			return nil, fmt.Errorf("bitget sdk: get open orders repeated cursor %q", page.Cursor)
+		}
+		seenCursors[page.Cursor] = struct{}{}
+		cursor = page.Cursor
+	}
+}
+
+func (c *Client) getOpenOrdersPage(ctx context.Context, category, symbol, limit, cursor string) (*openOrdersPage, error) {
+	var out responseEnvelope[openOrdersPage]
 	err := c.getPrivate(ctx, "/api/v3/trade/unfilled-orders", map[string]string{
 		"category": category,
 		"symbol":   symbol,
+		"limit":    limit,
+		"cursor":   cursor,
 	}, &out)
 	if err != nil {
 		return nil, err
@@ -118,7 +168,7 @@ func (c *Client) GetOpenOrders(ctx context.Context, category, symbol string) ([]
 	if out.Code != "00000" {
 		return nil, fmt.Errorf("bitget sdk: get open orders failed: %s %s", out.Code, out.Msg)
 	}
-	return out.Data.List, nil
+	return &out.Data, nil
 }
 
 func (c *Client) GetOrderHistory(ctx context.Context, category, symbol string) ([]OrderRecord, error) {
@@ -137,6 +187,78 @@ func (c *Client) GetOrderHistory(ctx context.Context, category, symbol string) (
 }
 
 func (c *Client) GetFills(ctx context.Context, req GetFillsRequest) ([]FillRecord, error) {
+	page, err := c.getFillsPage(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return page.List, nil
+}
+
+// GetFillsBounded follows cursor pages up to the overall row limit encoded in
+// req.Limit. The boolean reports that venue rows remain beyond that hard cap.
+func (c *Client) GetFillsBounded(ctx context.Context, req GetFillsRequest) ([]FillRecord, bool, error) {
+	overallLimit := 100
+	if req.Limit != "" {
+		parsed, err := strconv.Atoi(req.Limit)
+		if err != nil || parsed <= 0 {
+			return nil, false, fmt.Errorf("bitget sdk: invalid fills limit %q", req.Limit)
+		}
+		overallLimit = parsed
+	}
+	pageLimit := overallLimit
+	if pageLimit > 100 {
+		pageLimit = 100
+	}
+	cursor := req.Cursor
+	seenCursors := make(map[string]struct{})
+	if cursor != "" {
+		seenCursors[cursor] = struct{}{}
+	}
+	var records []FillRecord
+	pageCount := 0
+	for {
+		pageCount++
+		if pageCount > privatePaginationMaxPages {
+			return nil, false, fmt.Errorf("bitget sdk: get fills exceeded %d-page safety limit", privatePaginationMaxPages)
+		}
+		pageReq := req
+		pageReq.Limit = strconv.Itoa(pageLimit)
+		pageReq.Cursor = cursor
+		page, err := c.getFillsPage(ctx, pageReq)
+		if err != nil {
+			return nil, false, err
+		}
+		pageRecords := page.List
+		if len(records)+len(pageRecords) > overallLimit {
+			pageRecords = pageRecords[:overallLimit-len(records)]
+		}
+		records = append(records, pageRecords...)
+		if len(records) >= overallLimit {
+			return records, page.Cursor != "" || len(page.List) > len(pageRecords), nil
+		}
+		if page.Cursor == "" {
+			return records, false, nil
+		}
+		if len(page.List) == 0 {
+			return nil, false, fmt.Errorf("bitget sdk: get fills returned empty page with non-terminal cursor %q", page.Cursor)
+		}
+		if page.Cursor == cursor {
+			return nil, false, fmt.Errorf("bitget sdk: get fills repeated cursor %q", page.Cursor)
+		}
+		if _, duplicate := seenCursors[page.Cursor]; duplicate {
+			return nil, false, fmt.Errorf("bitget sdk: get fills repeated cursor %q", page.Cursor)
+		}
+		seenCursors[page.Cursor] = struct{}{}
+		cursor = page.Cursor
+		remaining := overallLimit - len(records)
+		pageLimit = remaining
+		if pageLimit > 100 {
+			pageLimit = 100
+		}
+	}
+}
+
+func (c *Client) getFillsPage(ctx context.Context, req GetFillsRequest) (*FillList, error) {
 	var out responseEnvelope[FillList]
 	err := c.getPrivate(ctx, "/api/v3/trade/fills", map[string]string{
 		"category":  req.Category,
@@ -152,7 +274,7 @@ func (c *Client) GetFills(ctx context.Context, req GetFillsRequest) ([]FillRecor
 	if out.Code != "00000" {
 		return nil, fmt.Errorf("bitget sdk: get fills failed: %s %s", out.Code, out.Msg)
 	}
-	return out.Data.List, nil
+	return &out.Data, nil
 }
 
 func (c *Client) GetAccountAssets(ctx context.Context) (*AccountAssets, error) {

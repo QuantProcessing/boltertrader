@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -125,6 +126,150 @@ func TestSubmitRejectsMalformedRequiredOrderResponseDecimal(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("Submit accepted malformed required response decimal")
+	}
+}
+
+func TestPerpGenerateOrderStatusReportRecoversClientOnlyTerminalOrders(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		executed   string
+		cumQuote   string
+		wantStatus enums.OrderStatus
+	}{
+		{name: "fully filled", status: "FILLED", executed: "1", cumQuote: "10", wantStatus: enums.StatusFilled},
+		{name: "partially filled IOC expired", status: "EXPIRED", executed: "0.4", cumQuote: "4", wantStatus: enums.StatusExpired},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			client := perpClientNoNetwork(t)
+			client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				called = true
+				if request.Method != http.MethodGet || request.URL.Path != "/fapi/v3/order" {
+					t.Fatalf("unexpected REST call: %s %s", request.Method, request.URL.String())
+				}
+				query := request.URL.Query()
+				if got := query.Get("symbol"); got != "ASTERUSDT" {
+					t.Fatalf("symbol=%q, want ASTERUSDT", got)
+				}
+				if got := query.Get("origClientOrderId"); got != "ambiguous-ioc" {
+					t.Fatalf("origClientOrderId=%q, want ambiguous-ioc", got)
+				}
+				if got := query.Get("orderId"); got != "" {
+					t.Fatalf("orderId=%q, want omitted for client-only query", got)
+				}
+				body := fmt.Sprintf(`{"symbol":"ASTERUSDT","orderId":42,"clientOrderId":"ambiguous-ioc","status":%q,"type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"IOC","origQty":"1","price":"10","executedQty":%q,"cumQty":%q,"cumQuote":%q,"avgPrice":"10","reduceOnly":true,"updateTime":1700000000000}`, tc.status, tc.executed, tc.executed, tc.cumQuote)
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+			})})
+
+			inst := mustPerpInstrument(t)
+			exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+			report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
+				InstrumentID: inst.ID,
+				AccountID:    AccountIDDefault,
+				ClientID:     "ambiguous-ioc",
+			})
+			if err != nil {
+				t.Fatalf("GenerateOrderStatusReport: %v", err)
+			}
+			if !called {
+				t.Fatal("GenerateOrderStatusReport did not query the exact order")
+			}
+			if report == nil {
+				t.Fatal("GenerateOrderStatusReport returned nil for terminal order")
+			}
+			if report.Order.Status != tc.wantStatus || !report.Order.FilledQty.Equal(d(tc.executed)) {
+				t.Fatalf("order status/filled=%s/%s, want %s/%s", report.Order.Status, report.Order.FilledQty, tc.wantStatus, tc.executed)
+			}
+			if report.Order.Request.ClientID != "ambiguous-ioc" || report.Order.VenueOrderID != "42" {
+				t.Fatalf("order identity=%q/%q, want ambiguous-ioc/42", report.Order.Request.ClientID, report.Order.VenueOrderID)
+			}
+		})
+	}
+}
+
+func TestPerpGenerateOrderStatusReportPrefersVenueOrderID(t *testing.T) {
+	client := perpClientNoNetwork(t)
+	client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/fapi/v3/order" {
+			t.Fatalf("unexpected REST call: %s %s", request.Method, request.URL.String())
+		}
+		query := request.URL.Query()
+		if got := query.Get("orderId"); got != "42" {
+			t.Fatalf("orderId=%q, want 42", got)
+		}
+		if got := query.Get("origClientOrderId"); got != "" {
+			t.Fatalf("origClientOrderId=%q, want omitted when venue order id is available", got)
+		}
+		body := `{"symbol":"ASTERUSDT","orderId":42,"clientOrderId":"caller-client","status":"FILLED","type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"IOC","origQty":"1","price":"10","executedQty":"1","cumQty":"1","cumQuote":"10","avgPrice":"10","reduceOnly":true,"updateTime":1700000000000}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+	})})
+
+	inst := mustPerpInstrument(t)
+	exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
+		InstrumentID: inst.ID,
+		AccountID:    AccountIDDefault,
+		ClientID:     "caller-client",
+		VenueOrderID: "42",
+	})
+	if err != nil {
+		t.Fatalf("GenerateOrderStatusReport: %v", err)
+	}
+	if report == nil || report.Order.VenueOrderID != "42" || report.Order.Request.ClientID != "caller-client" {
+		t.Fatalf("report=%+v, want exact venue/client identity", report)
+	}
+}
+
+func TestPerpGenerateOrderStatusReportRejectsMismatchedResponseIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		query model.SingleOrderStatusQuery
+		body  string
+	}{
+		{name: "symbol", query: model.SingleOrderStatusQuery{ClientID: "caller-client"}, body: `{"symbol":"OTHERUSDT","orderId":42,"clientOrderId":"caller-client","status":"NEW","type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"GTC","origQty":"1","price":"10","executedQty":"0","updateTime":1700000000000}`},
+		{name: "client id", query: model.SingleOrderStatusQuery{ClientID: "caller-client"}, body: `{"symbol":"ASTERUSDT","orderId":42,"clientOrderId":"unrelated-client","status":"NEW","type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"GTC","origQty":"1","price":"10","executedQty":"0","updateTime":1700000000000}`},
+		{name: "venue order id", query: model.SingleOrderStatusQuery{VenueOrderID: "42"}, body: `{"symbol":"ASTERUSDT","orderId":99,"clientOrderId":"caller-client","status":"NEW","type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"GTC","origQty":"1","price":"10","executedQty":"0","updateTime":1700000000000}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := perpClientResponse(t, tc.body)
+			inst := mustPerpInstrument(t)
+			tc.query.InstrumentID = inst.ID
+			tc.query.AccountID = AccountIDDefault
+			exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+			if report, err := exec.GenerateOrderStatusReport(context.Background(), tc.query); err == nil {
+				t.Fatalf("GenerateOrderStatusReport returned report=%+v for mismatched %s", report, tc.name)
+			}
+		})
+	}
+}
+
+func TestPerpGenerateOrderStatusReportHandlesNotFoundAndAccountMismatch(t *testing.T) {
+	called := false
+	client := perpClientNoNetwork(t)
+	client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader(`{"code":-2013,"msg":"Order does not exist"}`)), Header: make(http.Header), Request: request}, nil
+	})})
+	inst := mustPerpInstrument(t)
+	exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{InstrumentID: inst.ID, AccountID: AccountIDDefault, ClientID: "missing"})
+	if err != nil || report != nil {
+		t.Fatalf("not-found report/error=%+v/%v, want nil/nil", report, err)
+	}
+	if !called {
+		t.Fatal("not-found path did not query the exact order")
+	}
+
+	called = false
+	report, err = exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{InstrumentID: inst.ID, AccountID: "OTHER", ClientID: "missing"})
+	if err != nil || report != nil {
+		t.Fatalf("account-mismatch report/error=%+v/%v, want nil/nil", report, err)
+	}
+	if called {
+		t.Fatal("account mismatch reached REST")
 	}
 }
 
@@ -363,6 +508,82 @@ func TestPerpExecutionMassStatusResyncsOpenOrdersFillsAndPositions(t *testing.T)
 	if len(mass.PositionReports) != 1 {
 		t.Fatalf("position reports=%#v", mass.PositionReports)
 	}
+}
+
+func TestPerpExecutionMassStatusBoundsFillHistoryAndWarnsOnSaturation(t *testing.T) {
+	const fillLimit = 1000
+	since := time.UnixMilli(1_700_000_000_000)
+	until := since.Add(10 * time.Minute)
+	trades := make([]sdkperp.Trade, fillLimit)
+	for i := range trades {
+		trades[i] = sdkperp.Trade{
+			Symbol:          "ASTERUSDT",
+			ID:              int64(i + 1),
+			OrderID:         42,
+			Side:            "SELL",
+			PositionSide:    "BOTH",
+			Price:           "10",
+			Qty:             "0.1",
+			QuoteQty:        "1",
+			Commission:      "0.001",
+			CommissionAsset: "USDT",
+			Time:            since.Add(time.Duration(i) * time.Millisecond).UnixMilli(),
+		}
+	}
+	tradeBody, err := json.Marshal(trades)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := perpClientNoNetwork(t)
+	client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := "[]"
+		switch request.URL.Path {
+		case "/fapi/v3/openOrders":
+		case "/fapi/v3/userTrades":
+			query := request.URL.Query()
+			if got := query.Get("startTime"); got != fmt.Sprint(since.UnixMilli()) {
+				t.Errorf("userTrades startTime=%q, want %d", got, since.UnixMilli())
+			}
+			if got := query.Get("endTime"); got != fmt.Sprint(until.UnixMilli()) {
+				t.Errorf("userTrades endTime=%q, want %d", got, until.UnixMilli())
+			}
+			if got := query.Get("limit"); got != fmt.Sprint(fillLimit) {
+				t.Errorf("userTrades limit=%q, want %d", got, fillLimit)
+			}
+			body = string(tradeBody)
+		default:
+			t.Fatalf("unexpected REST call: %s %s", request.Method, request.URL.String())
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+	})})
+
+	inst := mustPerpInstrument(t)
+	exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
+		AccountID:    AccountIDDefault,
+		Since:        since,
+		Until:        until,
+		IncludeFills: true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	totalFills := 0
+	for _, reports := range mass.FillReports {
+		totalFills += len(reports)
+	}
+	if totalFills != fillLimit {
+		t.Fatalf("fill reports=%d, want bounded page of %d", totalFills, fillLimit)
+	}
+	if !mass.Partial {
+		t.Fatal("saturated fill history was reported as complete")
+	}
+	for _, warning := range mass.Warnings {
+		if warning.Code == "FILL_REPORTS_LIMIT_REACHED" {
+			return
+		}
+	}
+	t.Fatalf("warnings=%+v, want FILL_REPORTS_LIMIT_REACHED", mass.Warnings)
 }
 
 func TestPerpDiscoveryFailsClosedForUnsupportedSettlementAndMalformedRows(t *testing.T) {

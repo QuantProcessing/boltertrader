@@ -156,6 +156,34 @@ func TestClient_WithEnvironmentProfileAddsPAPTradingHeader(t *testing.T) {
 	}
 }
 
+func TestClient_WithEnvironmentProfileAddsPAPTradingHeaderToSignedPOST(t *testing.T) {
+	var seenHeader string
+	var seenMethod string
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithEnvironmentProfile(DemoEnvironmentProfile()).
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenMethod = req.Method
+			seenHeader = req.Header.Get("paptrading")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	var out responseEnvelope[map[string]any]
+	if err := client.PostPrivateRaw(context.Background(), "/api/v3/trade/place-order", map[string]string{"symbol": "BTCUSDT"}, &out); err != nil {
+		t.Fatalf("PostPrivateRaw: %v", err)
+	}
+	if seenMethod != http.MethodPost {
+		t.Fatalf("method=%q, want POST", seenMethod)
+	}
+	if seenHeader != "1" {
+		t.Fatalf("paptrading header=%q, want 1", seenHeader)
+	}
+}
+
 func TestWSClientsUseEnvironmentProfiles(t *testing.T) {
 	demo := DemoEnvironmentProfile()
 

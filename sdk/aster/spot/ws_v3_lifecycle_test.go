@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -223,6 +224,193 @@ func TestWsMarketReconnectResubscribesExactlyOnce(t *testing.T) {
 	mu.Unlock()
 	if first != 1 || second != 1 {
 		t.Fatalf("subscribe counts = first:%d second:%d", first, second)
+	}
+}
+
+func TestWsReconnectRecoveryRejectsStaleSocket(t *testing.T) {
+	serverConnections := make(chan *websocket.Conn, 2)
+	server := newSpotWSServer(t, func(_ int, conn *websocket.Conn) {
+		serverConnections <- conn
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	stale, _, err := websocket.DefaultDialer.Dial(websocketURL(server.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	current, _, err := websocket.DefaultDialer.Dial(websocketURL(server.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer current.Close()
+	<-serverConnections
+	<-serverConnections
+
+	client := newWSClient(context.Background(), websocketURL(server.URL))
+	defer client.Close()
+	client.Mu.Lock()
+	client.Conn = current
+	client.recovering = true
+	client.subs["asterusdt@bookTicker"] = Subscription{id: 1}
+	client.Mu.Unlock()
+	var recovered atomic.Int64
+	client.SetReconnectHooks(nil, func() { recovered.Add(1) })
+
+	if err := client.resubscribe(stale); err == nil {
+		t.Fatal("stale replacement socket unexpectedly restored subscriptions")
+	}
+	client.completeReconnect(stale)
+
+	client.Mu.RLock()
+	subscription := client.subs["asterusdt@bookTicker"]
+	recovering := client.recovering
+	client.Mu.RUnlock()
+	if subscription.sent {
+		t.Fatal("stale replacement socket marked subscription as restored")
+	}
+	if !recovering || recovered.Load() != 0 {
+		t.Fatalf("stale replacement socket completed recovery: recovering=%t callbacks=%d", recovering, recovered.Load())
+	}
+}
+
+func TestWsReconnectRecoveredHookCanSubscribe(t *testing.T) {
+	server := newSpotWSServer(t, func(_ int, conn *websocket.Conn) {
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURL(server.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newWSClient(context.Background(), websocketURL(server.URL))
+	defer client.Close()
+	client.Mu.Lock()
+	client.Conn = conn
+	client.recovering = true
+	client.recoveryGeneration = 1
+	client.Mu.Unlock()
+	client.callbackDispatcher.beginGap(1, nil)
+	client.callbackDispatcher.activateConnection(1, conn, true)
+	hookDone := make(chan error, 1)
+	client.SetReconnectHooks(nil, func() {
+		hookDone <- client.Subscribe("asterusdt@bookTicker", nil)
+	})
+	restoreDone := make(chan error, 1)
+	go func() { restoreDone <- client.restoreConnection(conn) }()
+
+	select {
+	case err := <-hookDone:
+		if err != nil {
+			t.Fatalf("subscribe from recovered hook: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered hook deadlocked while subscribing")
+	}
+	select {
+	case err := <-restoreDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscription restoration did not return after recovered hook")
+	}
+}
+
+func TestWsReconnectCallbacksRemainGenerationOrdered(t *testing.T) {
+	server := newSpotWSServer(t, func(_ int, conn *websocket.Conn) {
+		defer conn.Close()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer server.Close()
+
+	conn, _, err := websocket.DefaultDialer.Dial(websocketURL(server.URL), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newWSClient(context.Background(), websocketURL(server.URL))
+	defer client.Close()
+	client.Mu.Lock()
+	client.Conn = conn
+	client.recovering = true
+	client.recoveryGeneration = 1
+	client.Mu.Unlock()
+	client.callbackDispatcher.beginGap(1, nil)
+	client.callbackDispatcher.activateConnection(1, conn, true)
+
+	events := make(chan string, 2)
+	recoveredEntered := make(chan struct{})
+	releaseRecovered := make(chan struct{})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(releaseRecovered) }) })
+	client.SetReconnectHooks(func(error) {
+		events <- "started"
+	}, func() {
+		close(recoveredEntered)
+		<-releaseRecovered
+		events <- "recovered"
+	})
+	completeDone := make(chan bool, 1)
+	go func() { completeDone <- client.completeReconnect(conn) }()
+	select {
+	case <-recoveredEntered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for recovered callback entry")
+	}
+	startedDone := make(chan struct{})
+	go func() {
+		client.beginReconnect(errors.New("new disconnect during recovered callback"))
+		close(startedDone)
+	}()
+	select {
+	case event := <-events:
+		t.Fatalf("new generation callback overtook blocked recovered callback: %q", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+	release.Do(func() { close(releaseRecovered) })
+	for _, want := range []string{"recovered", "started"} {
+		select {
+		case got := <-events:
+			if got != want {
+				t.Fatalf("callback order = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %q callback", want)
+		}
+	}
+	select {
+	case completed := <-completeDone:
+		if !completed {
+			t.Fatal("current connection did not complete old recovery")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old recovery completion did not return")
+	}
+	select {
+	case <-startedDone:
+	case <-time.After(time.Second):
+		t.Fatal("new recovery start did not return")
+	}
+	client.Mu.RLock()
+	recovering := client.recovering
+	client.Mu.RUnlock()
+	if !recovering {
+		t.Fatal("new recovery generation was cleared by the old recovered callback")
 	}
 }
 

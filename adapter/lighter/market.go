@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -208,7 +209,16 @@ func aggregateLighterBookLevels[T interface{ sdk.Ask | sdk.Bid }](orders []T, bi
 		if price == "" || size == "" {
 			continue
 		}
-		levels[price] = levels[price].Add(dec(size))
+		parsedPrice, err := decimal.NewFromString(strings.TrimSpace(price))
+		if err != nil || !parsedPrice.IsPositive() {
+			continue
+		}
+		parsedSize, err := decimal.NewFromString(strings.TrimSpace(size))
+		if err != nil || !parsedSize.IsPositive() {
+			continue
+		}
+		key := parsedPrice.String()
+		levels[key] = levels[key].Add(parsedSize)
 	}
 	out := make([]model.BookLevel, 0, len(levels))
 	for price, size := range levels {

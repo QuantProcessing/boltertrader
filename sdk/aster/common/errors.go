@@ -18,7 +18,7 @@ func NewVenueError(statusCode int, method, path string, code int, message string
 	return &VenueError{
 		statusCode: statusCode,
 		method:     method,
-		path:       path,
+		path:       sanitizePath(path),
 		code:       code,
 		message:    sanitizeAuthMaterial(message),
 	}
@@ -41,17 +41,11 @@ type TransportError struct {
 }
 
 func NewTransportError(method, path string, cause error) error {
-	if urlError, ok := cause.(*url.Error); ok && urlError.Err != nil {
-		cause = urlError.Err
-	}
-	return &TransportError{method: method, path: path, cause: cause}
+	return &TransportError{method: method, path: sanitizePath(path), cause: cause}
 }
 
 func (e *TransportError) Error() string {
-	if e.cause == nil {
-		return fmt.Sprintf("aster sdk: %s %s transport failed", e.method, e.path)
-	}
-	return fmt.Sprintf("aster sdk: %s %s transport failed: %s", e.method, e.path, sanitizeAuthMaterial(e.cause.Error()))
+	return fmt.Sprintf("aster sdk: %s %s transport failed", e.method, e.path)
 }
 
 func (e *TransportError) Unwrap() error { return e.cause }
@@ -76,12 +70,28 @@ func SanitizeVenueMessage(message string) string {
 	return sanitizeAuthMaterial(message)
 }
 
+func sanitizePath(path string) string {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return "<redacted-path>"
+	}
+	safe := parsed.EscapedPath()
+	if safe == "" {
+		return "<redacted-path>"
+	}
+	return safe
+}
+
 func sanitizeAuthMaterial(message string) string {
 	lower := strings.ToLower(message)
-	for key := range reservedAuthFields {
-		if strings.Contains(lower, key+"=") {
-			return "<redacted>"
-		}
+	switch {
+	case strings.Contains(lower, "request weight"):
+		return "request weight limit exceeded"
+	case strings.Contains(lower, "too many requests"):
+		return "too many requests"
+	case strings.Contains(lower, "banned until"):
+		return "request banned until rate limit reset"
+	default:
+		return "<redacted>"
 	}
-	return message
 }

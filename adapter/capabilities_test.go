@@ -106,3 +106,38 @@ func TestAdapterCapabilityMatrixDoesNotClaimNadoSpotPositionReports(t *testing.T
 	}
 	t.Fatal("Nado Spot capability row is missing")
 }
+
+func TestAdapterCapabilityMatrixDoesNotClaimBinanceSpotModify(t *testing.T) {
+	found := false
+	for _, row := range CapabilityMatrix() {
+		if row.Venue != "BINANCE" || row.Product != "Spot" {
+			continue
+		}
+		found = true
+		if row.Modify {
+			t.Fatal("Binance Spot capability inventory claims Modify even though the adapter returns ErrNotSupported")
+		}
+	}
+	if !found {
+		t.Fatal("Binance Spot capability row is missing")
+	}
+
+	data, err := os.ReadFile("../docs/adapter-capabilities.md")
+	if err != nil {
+		t.Fatalf("read docs matrix: %v", err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "| BINANCE | Spot |") {
+			continue
+		}
+		columns := strings.Split(strings.Trim(line, "|"), "|")
+		if len(columns) < 9 {
+			t.Fatalf("Binance Spot documentation row has %d columns, want at least 9: %q", len(columns), line)
+		}
+		if got := strings.TrimSpace(columns[8]); got != "no" {
+			t.Fatalf("Binance Spot documented Modify=%q, want no", got)
+		}
+		return
+	}
+	t.Fatal("docs/adapter-capabilities.md is missing the Binance Spot row")
+}

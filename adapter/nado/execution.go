@@ -16,6 +16,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const (
+	nadoArchiveMatchesDefaultLimit = 100
+	nadoArchiveMatchesMaxLimit     = 500
+	nadoOrderCorrelationLimit      = 100_000
+	nadoOrderCorrelationRetention  = 15 * time.Minute
+)
+
 type executionClient struct {
 	rest          *sdk.Client
 	provider      *instrumentProvider
@@ -29,6 +36,7 @@ type executionClient struct {
 	startMu       sync.Mutex
 	started       bool
 	prepared      preparedOrderCache
+	correlations  nadoOrderCorrelationCache
 }
 
 func newExecutionClient(rest *sdk.Client, provider *instrumentProvider, clk clock.Clock, kind enums.InstrumentKind, accountIDs ...string) *executionClient {
@@ -47,6 +55,10 @@ func newExecutionClient(rest *sdk.Client, provider *instrumentProvider, clk cloc
 		accountID:   accountID,
 		stream:      wsstream.New[contract.ExecEnvelope](256),
 		prepared:    newPreparedOrderCache(128, 30*time.Second),
+		correlations: newNadoOrderCorrelationCache(
+			nadoOrderCorrelationLimit,
+			nadoOrderCorrelationRetention,
+		),
 	}
 	if rest != nil && rest.Signer != nil {
 		c.reports = nadoSDKExecutionReportBackend{rest: rest}
@@ -101,7 +113,7 @@ func (c *executionClient) ValidatePreTrade(ctx context.Context, req model.OrderR
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if req.ClientID == "" {
+	if strings.TrimSpace(req.ClientID) == "" {
 		return nil, fmt.Errorf("nado: client id is required for prepared pre-trade validation")
 	}
 	if err := c.validateOrderRequest(req); err != nil {
@@ -223,7 +235,7 @@ func (c *executionClient) submit(ctx context.Context, req model.OrderRequest, al
 	if c.pretrade == nil {
 		return nil, fmt.Errorf("nado: submit requires prepared pre-trade backend: %w", contract.ErrNotSupported)
 	}
-	if req.ClientID == "" {
+	if strings.TrimSpace(req.ClientID) == "" {
 		return nil, fmt.Errorf("nado: client id is required for prepared submit")
 	}
 	entry, ok := c.prepared.consume(req.ClientID, req, c.clk.Now())
@@ -248,14 +260,30 @@ func (c *executionClient) submit(ctx context.Context, req model.OrderRequest, al
 		redactPreparedOrder(entry.order)
 		return nil, err
 	}
+	digest := strings.TrimSpace(entry.order.Digest)
+	if digest == "" {
+		redactPreparedOrder(entry.order)
+		return nil, fmt.Errorf("nado: prepared order digest is required")
+	}
+	if err := c.correlations.remember(nadoOrderCorrelation{
+		accountID:    c.accountID,
+		instrumentID: req.InstrumentID,
+		clientID:     req.ClientID,
+		venueOrderID: digest,
+		request:      req,
+	}, c.clk.Now()); err != nil {
+		redactPreparedOrder(entry.order)
+		return nil, err
+	}
 	resp, err := c.pretrade.ExecutePreparedOrder(ctx, entry.order)
 	if err != nil {
 		redactPreparedOrder(entry.order)
 		return nil, fmt.Errorf("nado execute prepared order: %w", err)
 	}
-	digest := entry.order.Digest
-	if resp != nil && resp.Digest != "" {
-		digest = resp.Digest
+	if resp != nil && strings.TrimSpace(resp.Digest) != "" && !strings.EqualFold(strings.TrimSpace(resp.Digest), digest) {
+		foreignDigest := strings.TrimSpace(resp.Digest)
+		redactPreparedOrder(entry.order)
+		return nil, fmt.Errorf("nado execute prepared order: response digest mismatch: signed=%s response=%s", digest, foreignDigest)
 	}
 	redactPreparedOrder(entry.order)
 	return &model.Order{
@@ -276,6 +304,9 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 		return fmt.Errorf("nado: rest client not configured: %w", contract.ErrNotSupported)
 	}
 	_, err = c.rest.CancelOrders(ctx, sdk.CancelOrdersInput{ProductIds: []int64{productID}, Digests: []string{venueOrderID}})
+	if err == nil {
+		c.correlations.markTerminalByVenueOrderID(c.accountID, id, venueOrderID, enums.StatusCanceled, c.clk.Now())
+	}
 	return err
 }
 
@@ -317,6 +348,9 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 		if err != nil {
 			return nil, err
 		}
+		if correlation, ok := c.correlations.byVenueOrderID(c.accountID, inst.ID, converted.VenueOrderID, c.clk.Now()); ok {
+			converted.Request.ClientID = correlation.clientID
+		}
 		out = append(out, converted)
 	}
 	return out, nil
@@ -352,45 +386,163 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 }
 
 func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
-		InstrumentID: query.InstrumentID,
-		AccountID:    query.AccountID,
-		ClientID:     query.ClientID,
-		VenueOrderID: query.VenueOrderID,
-		OpenOnly:     true,
-	})
-	if err != nil || len(reports) == 0 {
-		return nil, err
-	}
-	return &reports[0], nil
-}
-
-func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
 		return nil, nil
 	}
+	instrumentID := query.InstrumentID
+	venueOrderID := strings.TrimSpace(query.VenueOrderID)
+	clientID := query.ClientID
+	var correlation *nadoOrderCorrelation
+	if strings.TrimSpace(clientID) != "" {
+		found, ok := c.correlations.byClientID(c.accountID, instrumentID, clientID, c.clk.Now())
+		if !ok {
+			return nil, nil
+		}
+		if venueOrderID != "" && !strings.EqualFold(venueOrderID, found.venueOrderID) {
+			return nil, fmt.Errorf("nado: order query client id %s maps to digest %s, not %s", clientID, found.venueOrderID, venueOrderID)
+		}
+		instrumentID = found.instrumentID
+		venueOrderID = found.venueOrderID
+		correlationCopy := found
+		correlation = &correlationCopy
+	}
+	if venueOrderID == "" {
+		reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
+			InstrumentID: instrumentID,
+			AccountID:    query.AccountID,
+			OpenOnly:     true,
+		})
+		if err != nil || len(reports) == 0 {
+			return nil, err
+		}
+		return &reports[0], nil
+	}
+	inst, productID, err := c.instrument(instrumentID)
+	if err != nil {
+		return nil, err
+	}
+	if c.rest == nil {
+		return nil, fmt.Errorf("nado: exact order status requires REST client: %w", contract.ErrNotSupported)
+	}
+	if correlation == nil {
+		if recovered, ok := c.correlations.byVenueOrderID(c.accountID, inst.ID, venueOrderID, c.clk.Now()); ok {
+			correlationCopy := recovered
+			correlation = &correlationCopy
+			clientID = recovered.clientID
+		}
+	}
+	openOrders, err := c.OpenOrders(ctx, inst.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, order := range openOrders {
+		if !strings.EqualFold(strings.TrimSpace(order.VenueOrderID), venueOrderID) {
+			continue
+		}
+		if clientID != "" {
+			order.Request.ClientID = clientID
+		}
+		return c.orderStatusReport(order)
+	}
+	archive, err := c.rest.GetOrdersByDigests(ctx, []string{venueOrderID})
+	if err != nil {
+		return nil, err
+	}
+	if archive == nil {
+		return nil, fmt.Errorf("nado: exact archive order response is required")
+	}
+	if len(archive.Orders) == 0 {
+		return nil, nil
+	}
+	if len(archive.Orders) != 1 {
+		return nil, fmt.Errorf("nado: exact archive order query returned %d records for one digest", len(archive.Orders))
+	}
+	record := archive.Orders[0]
+	if record.ProductID != productID {
+		return nil, fmt.Errorf("nado: exact archive order product mismatch: got %d want %d", record.ProductID, productID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.Digest), venueOrderID) {
+		return nil, fmt.Errorf("nado: exact archive order digest mismatch: got %s want %s", record.Digest, venueOrderID)
+	}
+	expectedSender, err := c.rest.Sender()
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(record.Subaccount), strings.TrimSpace(expectedSender)) {
+		return nil, fmt.Errorf("nado: exact archive order subaccount mismatch")
+	}
+	var request *model.OrderRequest
+	knownTerminal := enums.StatusUnknown
+	if correlation != nil {
+		requestCopy := correlation.request
+		request = &requestCopy
+		knownTerminal = correlation.terminalStatus
+	}
+	order, err := archiveOrderFromNadoRecord(record, inst.ID, c.accountID, request, knownTerminal)
+	if err != nil {
+		return nil, err
+	}
+	return c.orderStatusReport(order)
+}
+
+func (c *executionClient) orderStatusReport(order model.Order) (*model.OrderStatusReport, error) {
+	report := &model.OrderStatusReport{
+		ReportID:   model.ReportID(fmt.Sprintf("%s:%s:order:%s", VenueName, c.accountID, order.VenueOrderID)),
+		Venue:      VenueName,
+		AccountID:  c.accountID,
+		Order:      order,
+		ReportedAt: c.clk.Now(),
+	}
+	if err := report.Validate(); err != nil {
+		return nil, err
+	}
+	if isNadoTerminalOrderStatus(order.Status) {
+		c.correlations.markTerminalByVenueOrderID(c.accountID, order.Request.InstrumentID, order.VenueOrderID, order.Status, c.clk.Now())
+	}
+	return report, nil
+}
+
+func isNadoTerminalOrderStatus(status enums.OrderStatus) bool {
+	switch status {
+	case enums.StatusFilled, enums.StatusCanceled, enums.StatusRejected, enums.StatusExpired:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	reports, _, err := c.generateFillReports(ctx, query)
+	return reports, err
+}
+
+func (c *executionClient) generateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, bool, error) {
+	if query.AccountID != "" && query.AccountID != c.accountID {
+		return nil, false, nil
+	}
 	if c.reports == nil {
-		return nil, fmt.Errorf("nado: fill reports require report backend: %w", contract.ErrNotSupported)
+		return nil, false, fmt.Errorf("nado: fill reports require report backend: %w", contract.ErrNotSupported)
 	}
 	productIDs, instByProduct, err := c.reportProducts(query.InstrumentID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sender, err := c.reports.Sender()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	limit := query.Limit
 	if limit <= 0 {
-		limit = 100
+		limit = nadoArchiveMatchesDefaultLimit
 	}
 	matches, err := c.reports.GetMatches(ctx, sender, productIDs, limit)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if matches == nil {
-		return nil, fmt.Errorf("nado: archive matches response is required")
+		return nil, false, fmt.Errorf("nado: archive matches response is required")
 	}
+	limitReached := len(matches.Matches) >= limit
 	txProducts := matchTxProducts(matches.Txs)
 	txTimestamps := matchTxTimestamps(matches.Txs)
 	now := c.clk.Now()
@@ -401,26 +553,29 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 		}
 		productID, ok := productIDForMatch(match, txProducts)
 		if !ok {
-			return nil, fmt.Errorf("nado: archive match %s has ambiguous product identity", match.Digest)
+			return nil, limitReached, fmt.Errorf("nado: archive match %s has ambiguous product identity", match.Digest)
 		}
 		inst, ok := instByProduct[productID]
 		if !ok {
-			return nil, fmt.Errorf("nado: archive match %s product %d outside report scope", match.Digest, productID)
+			return nil, limitReached, fmt.Errorf("nado: archive match %s product %d outside report scope", match.Digest, productID)
 		}
 		fill, err := fillFromNadoMatch(match, inst.ID, c.accountID, inst.Settle)
 		if err != nil {
-			return nil, err
+			return nil, limitReached, err
+		}
+		if correlation, ok := c.correlations.byVenueOrderID(c.accountID, inst.ID, fill.VenueOrderID, c.clk.Now()); ok {
+			fill.ClientID = correlation.clientID
 		}
 		if !fillInTimeRange(fill.Timestamp, query.Since, query.Until) || !model.FillMatchesReportQuery(fill, query) {
 			continue
 		}
 		report := model.FillReport{ReportID: model.ReportID(fmt.Sprintf("%s:%s:%s", VenueName, c.accountID, fill.TradeID)), Venue: VenueName, AccountID: c.accountID, Fill: fill, ReportedAt: now}
 		if err := report.Validate(); err != nil {
-			return nil, err
+			return nil, limitReached, err
 		}
 		out = append(out, report)
 	}
-	return out, nil
+	return out, limitReached, nil
 }
 
 func (c *executionClient) GeneratePositionReports(ctx context.Context, query model.PositionReportQuery) ([]model.PositionReport, error) {
@@ -465,6 +620,7 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	}
 	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
 	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
 	if c.rest == nil {
 		mass.Partial = true
@@ -491,7 +647,13 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		}
 	}
 	if query.IncludeFills {
-		fills, err := c.GenerateFillReports(ctx, model.FillReportQuery{AccountID: c.accountID, ClientID: query.ClientID, Since: query.Since, Until: query.Until})
+		fills, limitReached, err := c.generateFillReports(ctx, model.FillReportQuery{
+			AccountID: c.accountID,
+			ClientID:  query.ClientID,
+			Since:     query.Since,
+			Until:     query.Until,
+			Limit:     nadoArchiveMatchesMaxLimit,
+		})
 		if err != nil {
 			mass.Partial = true
 			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_PARTIAL", Message: err.Error()})
@@ -500,6 +662,13 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				if err := mass.AddFillReport(report); err != nil {
 					return nil, err
 				}
+			}
+			if limitReached {
+				mass.Partial = true
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{
+					Code:    "FILL_REPORTS_LIMIT_REACHED",
+					Message: "fill-history query reached the 500-record archive limit; recovered fills may be incomplete",
+				})
 			}
 		}
 	}
@@ -630,6 +799,9 @@ func (c *executionClient) handleOrderUpdate(update *sdk.OrderUpdate) {
 		Status:       status,
 		UpdatedAt:    ts,
 	}
+	if isNadoTerminalOrderStatus(status) {
+		c.correlations.markTerminalByVenueOrderID(c.accountID, id, update.Digest, status, c.clk.Now())
+	}
 	c.stream.Emit(contract.NewExecEnvelopeWithMeta(contract.OrderEvent{Order: order}, nadoEventMeta("exec", "order", c.accountID, fmt.Sprint(update.ProductId), update.Digest, update.Timestamp, string(update.Reason))))
 }
 
@@ -733,6 +905,124 @@ func (b nadoSDKPreTradeBackend) PrepareOrder(ctx context.Context, input sdk.Clie
 
 func (b nadoSDKPreTradeBackend) ExecutePreparedOrder(ctx context.Context, order *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error) {
 	return b.api.ExecutePreparedOrder(ctx, order)
+}
+
+type nadoOrderCorrelation struct {
+	accountID      string
+	instrumentID   model.InstrumentID
+	clientID       string
+	venueOrderID   string
+	request        model.OrderRequest
+	terminalStatus enums.OrderStatus
+	expires        time.Time
+}
+
+type nadoOrderCorrelationCache struct {
+	mu       sync.Mutex
+	byClient map[string]nadoOrderCorrelation
+	byVenue  map[string]string
+	limit    int
+	ttl      time.Duration
+}
+
+func newNadoOrderCorrelationCache(limit int, ttl time.Duration) nadoOrderCorrelationCache {
+	return nadoOrderCorrelationCache{
+		byClient: make(map[string]nadoOrderCorrelation),
+		byVenue:  make(map[string]string),
+		limit:    limit,
+		ttl:      ttl,
+	}
+}
+
+func (c *nadoOrderCorrelationCache) remember(correlation nadoOrderCorrelation, now time.Time) error {
+	correlation.venueOrderID = strings.TrimSpace(correlation.venueOrderID)
+	if correlation.accountID == "" || correlation.instrumentID.Symbol == "" || strings.TrimSpace(correlation.clientID) == "" || correlation.venueOrderID == "" {
+		return fmt.Errorf("nado: complete order correlation identity is required")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictExpiredLocked(now)
+	if existing, ok := c.byClient[correlation.clientID]; ok {
+		if existing.accountID != correlation.accountID || existing.instrumentID != correlation.instrumentID || !strings.EqualFold(existing.venueOrderID, correlation.venueOrderID) {
+			return fmt.Errorf("nado: client id %s already maps to a different signed order", correlation.clientID)
+		}
+	}
+	venueKey := strings.ToLower(correlation.venueOrderID)
+	if existingClientID, ok := c.byVenue[venueKey]; ok && existingClientID != correlation.clientID {
+		return fmt.Errorf("nado: signed order digest %s already maps to client id %s", correlation.venueOrderID, existingClientID)
+	}
+	if c.limit > 0 {
+		if _, replacing := c.byClient[correlation.clientID]; !replacing && len(c.byClient) >= c.limit {
+			return fmt.Errorf("nado: order correlation capacity %d reached", c.limit)
+		}
+	}
+	// Active Nado orders must retain this mapping indefinitely: the venue does
+	// not echo the local client ID, so expiring it would destroy the only stable
+	// client↔digest identity for long-lived GTC/GTX orders. A bounded terminal
+	// retention window starts only after authoritative terminal evidence.
+	correlation.expires = time.Time{}
+	c.byClient[correlation.clientID] = correlation
+	c.byVenue[venueKey] = correlation.clientID
+	return nil
+}
+
+func (c *nadoOrderCorrelationCache) markTerminalByVenueOrderID(accountID string, instrumentID model.InstrumentID, venueOrderID string, status enums.OrderStatus, now time.Time) {
+	if !isNadoTerminalOrderStatus(status) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictExpiredLocked(now)
+	venueKey := strings.ToLower(strings.TrimSpace(venueOrderID))
+	clientID, ok := c.byVenue[venueKey]
+	if !ok {
+		return
+	}
+	correlation, ok := c.byClient[clientID]
+	if !ok || (accountID != "" && correlation.accountID != accountID) || (instrumentID.Symbol != "" && correlation.instrumentID != instrumentID) {
+		return
+	}
+	correlation.terminalStatus = status
+	correlation.expires = now.Add(c.ttl)
+	c.byClient[clientID] = correlation
+}
+
+func (c *nadoOrderCorrelationCache) byClientID(accountID string, instrumentID model.InstrumentID, clientID string, now time.Time) (nadoOrderCorrelation, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictExpiredLocked(now)
+	correlation, ok := c.byClient[clientID]
+	if !ok || (accountID != "" && correlation.accountID != accountID) || (instrumentID.Symbol != "" && correlation.instrumentID != instrumentID) {
+		return nadoOrderCorrelation{}, false
+	}
+	return correlation, true
+}
+
+func (c *nadoOrderCorrelationCache) byVenueOrderID(accountID string, instrumentID model.InstrumentID, venueOrderID string, now time.Time) (nadoOrderCorrelation, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.evictExpiredLocked(now)
+	clientID, ok := c.byVenue[strings.ToLower(strings.TrimSpace(venueOrderID))]
+	if !ok {
+		return nadoOrderCorrelation{}, false
+	}
+	correlation, ok := c.byClient[clientID]
+	if !ok || (accountID != "" && correlation.accountID != accountID) || (instrumentID.Symbol != "" && correlation.instrumentID != instrumentID) {
+		return nadoOrderCorrelation{}, false
+	}
+	return correlation, true
+}
+
+func (c *nadoOrderCorrelationCache) evictExpiredLocked(now time.Time) {
+	for clientID, correlation := range c.byClient {
+		if !correlation.expires.IsZero() && !correlation.expires.After(now) {
+			delete(c.byClient, clientID)
+			venueKey := strings.ToLower(correlation.venueOrderID)
+			if mappedClientID, ok := c.byVenue[venueKey]; ok && mappedClientID == clientID {
+				delete(c.byVenue, venueKey)
+			}
+		}
+	}
 }
 
 type preparedOrderCache struct {

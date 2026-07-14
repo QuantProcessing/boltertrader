@@ -8,6 +8,11 @@ import (
 
 // PlaceOrder via WS
 func (c *WebsocketClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (chan hyperliquid.PostResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	action, err := buildPlaceOrderAction(req)
 	if err != nil {
 		return nil, err
@@ -19,11 +24,16 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest)
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }
 
 // CancelOrder via WS
 func (c *WebsocketClient) CancelOrder(ctx context.Context, req CancelOrderRequest) (chan hyperliquid.PostResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	action, err := buildCancelOrderAction(req)
 	if err != nil {
 		return nil, err
@@ -35,11 +45,16 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, req CancelOrderReques
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }
 
 // ModifyOrder via WS
 func (c *WebsocketClient) ModifyOrder(ctx context.Context, req ModifyOrderRequest) (chan hyperliquid.PostResult, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	action, err := buildModifyOrderAction(req)
 	if err != nil {
 		return nil, err
@@ -51,5 +66,5 @@ func (c *WebsocketClient) ModifyOrder(ctx context.Context, req ModifyOrderReques
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }

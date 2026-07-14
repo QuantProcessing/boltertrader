@@ -63,20 +63,40 @@ func (c *Client) GetFeeRates(ctx context.Context, category, symbol string) ([]Fe
 }
 
 func (c *Client) GetPositions(ctx context.Context, category, symbol, settleCoin string) ([]PositionRecord, error) {
-	query := map[string]string{
-		"category":   category,
-		"symbol":     symbol,
-		"settleCoin": settleCoin,
+	var out []PositionRecord
+	cursor := ""
+	seenCursors := make(map[string]struct{})
+
+	for page := 1; ; page++ {
+		query := map[string]string{
+			"category":   category,
+			"symbol":     symbol,
+			"settleCoin": settleCoin,
+			"cursor":     cursor,
+		}
+		var resp responseEnvelope[PositionsResult]
+		err := c.getPrivate(ctx, "/v5/position/list", query, &resp)
+		if err != nil {
+			return nil, err
+		}
+		if resp.RetCode != 0 {
+			return nil, fmt.Errorf("bybit sdk: get positions failed: %d %s", resp.RetCode, resp.RetMsg)
+		}
+
+		out = append(out, resp.Result.List...)
+		nextCursor := resp.Result.NextPageCursor
+		if nextCursor == "" {
+			return out, nil
+		}
+		if _, exists := seenCursors[nextCursor]; exists {
+			return nil, fmt.Errorf("bybit sdk: get positions cursor cycle detected at %q", nextCursor)
+		}
+		if page >= maxPaginationPages {
+			return nil, fmt.Errorf("bybit sdk: get positions page limit %d exceeded", maxPaginationPages)
+		}
+		seenCursors[nextCursor] = struct{}{}
+		cursor = nextCursor
 	}
-	var resp responseEnvelope[PositionsResult]
-	err := c.getPrivate(ctx, "/v5/position/list", query, &resp)
-	if err != nil {
-		return nil, err
-	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: get positions failed: %d %s", resp.RetCode, resp.RetMsg)
-	}
-	return resp.Result.List, nil
 }
 
 func (c *Client) SetLeverage(ctx context.Context, req SetLeverageRequest) error {

@@ -14,6 +14,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/QuantProcessing/boltertrader/internal/mbx"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -89,7 +91,7 @@ func (c *Client) Connect() error {
 				HandshakeTimeout: 10 * time.Second,
 			}
 		} else {
-			c.logger.Warnw("Invalid proxy URL", "url", proxyURL, "error", err)
+			c.logger.Warnw("Invalid proxy URL")
 		}
 	}
 
@@ -99,7 +101,7 @@ func (c *Client) Connect() error {
 	c.logger.Infow("Connecting to Binance CMS API", "url", BaseURL, "topic", topic)
 	conn, _, err := dialer.Dial(fullURL, headers)
 	if err != nil {
-		return fmt.Errorf("failed to dial: %w", err)
+		return binanceNewsDialError(err)
 	}
 
 	c.conn = conn
@@ -131,6 +133,10 @@ func (c *Client) Unsubscribe(topic string) error {
 	delete(c.handlers, topic)
 	c.mu.Unlock()
 	return nil
+}
+
+func binanceNewsDialError(err error) error {
+	return fmt.Errorf("failed to dial Binance CMS API: %w", mbx.TransportCause(err))
 }
 
 func (c *Client) readLoop() {

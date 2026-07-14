@@ -2,6 +2,8 @@ package nado
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,41 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/shopspring/decimal"
 )
+
+func TestNadoAcceptanceProxyErrorRedactsCredentials(t *testing.T) {
+	const secret = "proxy-super-secret"
+	_, err := parseNadoAcceptanceProxyURL("http://user:" + secret + "@%gh")
+	if err == nil {
+		t.Fatal("expected malformed proxy URL to fail")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("proxy credential leaked in error: %v", err)
+	}
+}
+
+func TestNadoAcceptanceDoesNotInstallAccountWideCancelAllCleanup(t *testing.T) {
+	data, err := os.ReadFile("testnet_acceptance_test.go")
+	if err != nil {
+		t.Fatalf("read acceptance source: %v", err)
+	}
+	source := string(data)
+	for _, forbidden := range []string{"cancelAllNadoAcceptanceOrders", "Execution.CancelAll("} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("Nado acceptance must rely on lifecycle-owned order cleanup; found %q", forbidden)
+		}
+	}
+}
+
+func TestNadoRuntimeAcceptanceBindsConfiguredMaxNotional(t *testing.T) {
+	data, err := os.ReadFile("testnet_acceptance_test.go")
+	if err != nil {
+		t.Fatalf("read acceptance source: %v", err)
+	}
+	const want = "runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT0)"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("Nado runtime acceptance must bind cfg.MaxNotionalUSDT0 through the runtime risk engine")
+	}
+}
 
 func TestNadoAcceptanceSelectsConfiguredSymbolAndProductKind(t *testing.T) {
 	provider := nadoTestProvider()

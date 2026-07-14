@@ -3,6 +3,8 @@ package bybit
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -14,12 +16,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const executionMassStatusFillLimit = 1000
+
 type executionClient struct {
-	rest      *bybitsdk.Client
-	provider  *instrumentProvider
-	clk       clock.Clock
-	accountID string
-	stream    *wsstream.Stream[contract.ExecEnvelope]
+	rest       *bybitsdk.Client
+	provider   *instrumentProvider
+	clk        clock.Clock
+	accountID  string
+	categories []string
+	stream     *wsstream.Stream[contract.ExecEnvelope]
 }
 
 func newExecutionClient(rest *bybitsdk.Client, provider *instrumentProvider, clk clock.Clock, accountIDs ...string) *executionClient {
@@ -34,12 +39,43 @@ func newExecutionClient(rest *bybitsdk.Client, provider *instrumentProvider, clk
 		accountID = AccountIDUnified
 	}
 	return &executionClient{
-		rest:      rest,
-		provider:  provider,
-		clk:       clk,
-		accountID: accountID,
-		stream:    wsstream.New[contract.ExecEnvelope](256),
+		rest:       rest,
+		provider:   provider,
+		clk:        clk,
+		accountID:  accountID,
+		categories: []string{"spot", "linear"},
+		stream:     wsstream.New[contract.ExecEnvelope](256),
 	}
+}
+
+func (c *executionClient) withCategories(categories ...string) *executionClient {
+	seen := make(map[string]struct{}, len(categories))
+	normalized := make([]string, 0, len(categories))
+	for _, category := range categories {
+		category = strings.ToLower(strings.TrimSpace(category))
+		if category != "spot" && category != "linear" {
+			continue
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		normalized = append(normalized, category)
+	}
+	if len(normalized) == 0 {
+		normalized = []string{"spot", "linear"}
+	}
+	c.categories = normalized
+	return c
+}
+
+func (c *executionClient) supportsCategory(category string) bool {
+	for _, supported := range c.categories {
+		if supported == category {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *executionClient) AccountID() string { return c.accountID }
@@ -50,6 +86,15 @@ func (c *executionClient) instrument(id model.InstrumentID) (*model.Instrument, 
 		return nil, fmt.Errorf("bybit: unknown instrument %s: %w", id, errs.ErrSymbolNotFound)
 	}
 	return inst, nil
+}
+
+func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
+	inst, err := c.instrument(req.InstrumentID)
+	if err != nil {
+		return err
+	}
+	_, err = orderRequestToBybit(req, inst)
+	return err
 }
 
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
@@ -136,7 +181,11 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	}
 	out := make([]model.Order, 0, len(records))
 	for _, record := range records {
-		out = append(out, orderFromBybitRecord(record, id, c.accountID))
+		order, err := orderFromBybitRecord(record, id, c.accountID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, order)
 	}
 	return out, nil
 }
@@ -145,19 +194,31 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	if query.AccountID != "" && query.AccountID != c.accountID {
 		return nil, nil
 	}
-	records, err := c.orderRecords(ctx, query)
+	targets, err := c.orderReportTargets(query)
 	if err != nil {
 		return nil, err
 	}
 	now := c.clk.Now()
-	out := make([]model.OrderStatusReport, 0, len(records))
-	for _, record := range records {
-		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-		order := orderFromBybitRecord(record, id, c.accountID)
-		if !model.OrderMatchesStatusQuery(order, query) {
-			continue
+	var out []model.OrderStatusReport
+	for _, target := range targets {
+		records, err := c.orderRecords(ctx, target, query)
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
+		for _, record := range records {
+			id, ok := c.resolveOrderInstrument(target, query.InstrumentID, record.Symbol)
+			if !ok {
+				return nil, fmt.Errorf("bybit: unknown order-report instrument category=%s settle=%s symbol=%s", target.category, target.settle, record.Symbol)
+			}
+			order, err := orderFromBybitRecord(record, id, c.accountID)
+			if err != nil {
+				return nil, err
+			}
+			if !model.OrderMatchesStatusQuery(order, query) {
+				continue
+			}
+			out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
+		}
 	}
 	return out, nil
 }
@@ -176,23 +237,116 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 }
 
 func (c *executionClient) GenerateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, error) {
+	reports, _, err := c.generateFillReports(ctx, query)
+	return reports, err
+}
+
+func (c *executionClient) generateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, bool, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return nil, nil
+		return nil, false, nil
 	}
-	category, symbol, err := c.categoryAndSymbol(query.InstrumentID)
+	categories, symbol, err := c.reportTargets(query.InstrumentID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	records, err := c.rest.GetExecutions(ctx, category, symbol, query.VenueOrderID, query.ClientID)
-	if err != nil {
-		return nil, err
+	var out []model.FillReport
+	limitReached := false
+	for _, category := range categories {
+		reports, reached, err := c.generateFillReportsForCategory(ctx, category, symbol, query)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, reports...)
+		limitReached = limitReached || reached
 	}
+	if len(categories) > 1 {
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].Fill.Timestamp.After(out[j].Fill.Timestamp)
+		})
+		if query.Limit > 0 && len(out) > query.Limit {
+			out = out[:query.Limit]
+			limitReached = true
+		}
+	}
+	return out, limitReached, nil
+}
+
+func (c *executionClient) generateFillReportsForCategory(ctx context.Context, category, symbol string, query model.FillReportQuery) ([]model.FillReport, bool, error) {
+	if query.Limit <= 0 {
+		records, err := c.rest.GetExecutions(ctx, category, symbol, query.VenueOrderID, query.ClientID)
+		if err != nil {
+			return nil, false, err
+		}
+		reports, err := c.fillReportsFromBybitRecords(records, category, query)
+		return reports, false, err
+	}
+
+	request := bybitsdk.GetExecutionsRequest{
+		Category:    category,
+		Symbol:      symbol,
+		OrderID:     query.VenueOrderID,
+		OrderLinkID: query.ClientID,
+		Limit:       query.Limit,
+	}
+	if !query.Since.IsZero() {
+		request.StartMillis = query.Since.UnixMilli()
+	}
+	if !query.Until.IsZero() {
+		request.EndMillis = query.Until.UnixMilli()
+	}
+	rawLimit := query.Limit
+	for {
+		request.Limit = rawLimit
+		records, moreRawRecords, err := c.rest.GetExecutionsBounded(ctx, request)
+		if err != nil {
+			return nil, false, err
+		}
+		reports, err := c.fillReportsFromBybitRecords(records, category, query)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(reports) >= query.Limit {
+			hadExtraReports := len(reports) > query.Limit
+			return reports[:query.Limit], moreRawRecords || hadExtraReports, nil
+		}
+		if !moreRawRecords {
+			return reports, false, nil
+		}
+		maxInt := int(^uint(0) >> 1)
+		if rawLimit > maxInt/2 {
+			return nil, false, fmt.Errorf("bybit: execution history limit overflow while filtering non-trade records")
+		}
+		rawLimit *= 2
+	}
+}
+
+func (c *executionClient) fillReportsFromBybitRecords(records []bybitsdk.ExecutionRecord, category string, query model.FillReportQuery) ([]model.FillReport, error) {
 	now := c.clk.Now()
 	out := make([]model.FillReport, 0, len(records))
 	for _, record := range records {
-		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
+		switch strings.ToLower(strings.TrimSpace(record.ExecType)) {
+		case "trade":
+		case "funding":
+			continue
+		default:
+			return nil, fmt.Errorf("bybit: unsupported execution type %q for category=%s symbol=%s", record.ExecType, category, record.Symbol)
+		}
+		id, ok := c.resolveFillInstrument(category, query.InstrumentID, record.Symbol)
+		if !ok {
+			if query.InstrumentID.Symbol == "" && (c.provider.isDeferred(category, record.Symbol) ||
+				(category == "linear" && isBybitDatedLinearSymbol(record.Symbol))) {
+				continue
+			}
+			return nil, fmt.Errorf("bybit: unknown fill instrument category=%s symbol=%s", category, record.Symbol)
+		}
 		fill := fillFromBybitExecution(record, id, c.accountID)
 		if !model.FillMatchesReportQuery(fill, query) {
+			continue
+		}
+		if !query.Since.IsZero() && (fill.Timestamp.IsZero() || fill.Timestamp.Before(query.Since)) {
+			continue
+		}
+		if !query.Until.IsZero() && (fill.Timestamp.IsZero() || fill.Timestamp.After(query.Until)) {
 			continue
 		}
 		out = append(out, model.FillReport{Venue: VenueName, AccountID: c.accountID, Fill: fill, ReportedAt: now})
@@ -204,11 +358,23 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 	if query.AccountID != "" && query.AccountID != c.accountID {
 		return nil, nil
 	}
+	if !c.supportsCategory("linear") {
+		return nil, nil
+	}
 	settles := []string{bybitsdk.SettleCoinUSDT, bybitsdk.SettleCoinUSDC}
 	if query.InstrumentID.Symbol != "" {
-		if inst, ok := c.provider.Instrument(query.InstrumentID); ok && inst.Settle != "" {
-			settles = []string{inst.Settle}
+		inst, ok := c.provider.Instrument(query.InstrumentID)
+		if !ok {
+			return nil, fmt.Errorf("bybit: unknown position-report instrument %s", query.InstrumentID)
 		}
+		category, err := categoryForInstrument(inst)
+		if err != nil {
+			return nil, err
+		}
+		if category != "linear" {
+			return nil, nil
+		}
+		settles = []string{inst.Settle}
 	}
 	now := c.clk.Now()
 	out := make([]model.PositionReport, 0)
@@ -218,8 +384,14 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 			return nil, err
 		}
 		for _, record := range records {
-			id := c.provider.resolveReportInstrument(query.InstrumentID, record.Symbol)
-			pos := positionFromBybit(record, func(string) model.InstrumentID { return id }, c.accountID, now)
+			id, ok := c.provider.ResolveVenueInstrument(record.Symbol, enums.KindPerp, settle)
+			if !ok {
+				return nil, fmt.Errorf("bybit: unknown position-report instrument settle=%s symbol=%s", settle, record.Symbol)
+			}
+			pos, err := positionFromBybit(record, func(string) model.InstrumentID { return id }, c.accountID, now)
+			if err != nil {
+				return nil, err
+			}
 			if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
 				continue
 			}
@@ -236,15 +408,24 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	mass.Partial = true
-	for _, settle := range []string{bybitsdk.SettleCoinUSDT, bybitsdk.SettleCoinUSDC} {
-		records, err := c.rest.GetRealtimeOrders(ctx, "linear", "", settle, "", query.ClientID, 0)
+	orderTargets, err := c.orderReportTargets(model.OrderStatusReportQuery{ClientID: query.ClientID})
+	if err != nil {
+		return nil, err
+	}
+	for _, target := range orderTargets {
+		records, err := c.rest.GetRealtimeOrders(ctx, target.category, target.symbol, target.settle, "", query.ClientID, 0)
 		if err != nil {
 			return nil, err
 		}
 		for _, record := range records {
-			id := c.provider.resolveVenueSymbol(record.Symbol)
-			order := orderFromBybitRecord(record, id, c.accountID)
+			id, ok := c.resolveOrderInstrument(target, model.InstrumentID{}, record.Symbol)
+			if !ok {
+				return nil, fmt.Errorf("bybit: unknown open-order instrument category=%s settle=%s symbol=%s", target.category, target.settle, record.Symbol)
+			}
+			order, err := orderFromBybitRecord(record, id, c.accountID)
+			if err != nil {
+				return nil, err
+			}
 			if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true}) {
 				continue
 			}
@@ -253,19 +434,32 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 			}
 		}
 	}
-	mass.Warnings = append(mass.Warnings, model.ReportWarning{
-		Code:    "bybit_spot_mass_status_symbol_scoped",
-		Message: "Bybit V5 spot realtime-orders requires symbol/baseCoin; venue-wide mass status is linear-settlement scoped and spot orders remain covered by instrument-scoped OpenOrders.",
-	})
 	if query.IncludeFills {
-		fills, err := c.GenerateFillReports(ctx, model.FillReportQuery{AccountID: c.accountID, ClientID: query.ClientID})
-		if err != nil {
-			return nil, err
-		}
-		for _, report := range fills {
-			if err := mass.AddFillReport(report); err != nil {
+		limitReached := false
+		for _, category := range c.categories {
+			fills, reached, err := c.generateFillReportsForCategory(ctx, category, "", model.FillReportQuery{
+				AccountID: c.accountID,
+				ClientID:  query.ClientID,
+				Since:     query.Since,
+				Until:     query.Until,
+				Limit:     executionMassStatusFillLimit,
+			})
+			if err != nil {
 				return nil, err
 			}
+			limitReached = limitReached || reached
+			for _, report := range fills {
+				if err := mass.AddFillReport(report); err != nil {
+					return nil, err
+				}
+			}
+		}
+		if limitReached {
+			mass.Partial = true
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{
+				Code:    "FILL_REPORTS_LIMIT_REACHED",
+				Message: fmt.Sprintf("the Bybit execution-history query reached the %d-record limit; recovered fills may be incomplete", executionMassStatusFillLimit),
+			})
 		}
 	}
 	if query.IncludePositions {
@@ -282,48 +476,134 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	return mass, nil
 }
 
-func (c *executionClient) orderRecords(ctx context.Context, query model.OrderStatusReportQuery) ([]bybitsdk.OrderRecord, error) {
-	category, symbol, err := c.categoryAndSymbol(query.InstrumentID)
-	if err != nil {
-		return nil, err
+func (c *executionClient) resolveFillInstrument(category string, scoped model.InstrumentID, venueSymbol string) (model.InstrumentID, bool) {
+	if scoped.Symbol != "" {
+		inst, ok := c.provider.Instrument(scoped)
+		if !ok || inst.VenueSymbol != venueSymbol {
+			return model.InstrumentID{}, false
+		}
+		return scoped, true
 	}
+	switch category {
+	case "spot":
+		return c.provider.ResolveVenueInstrument(venueSymbol, enums.KindSpot, "")
+	case "linear":
+		return c.provider.ResolveVenueInstrument(venueSymbol, enums.KindPerp, "")
+	default:
+		return model.InstrumentID{}, false
+	}
+}
+
+type orderReportTarget struct {
+	category string
+	symbol   string
+	settle   string
+}
+
+func (c *executionClient) orderRecords(ctx context.Context, target orderReportTarget, query model.OrderStatusReportQuery) ([]bybitsdk.OrderRecord, error) {
 	if query.VenueOrderID != "" || query.ClientID != "" {
-		records, err := c.rest.GetRealtimeOrders(ctx, category, symbol, "", query.VenueOrderID, query.ClientID, 0)
+		records, err := c.rest.GetRealtimeOrders(ctx, target.category, target.symbol, target.settle, query.VenueOrderID, query.ClientID, 0)
 		if err != nil || len(records) != 0 {
 			return records, err
 		}
-		return c.rest.GetOrderHistoryFiltered(ctx, category, symbol, query.VenueOrderID, query.ClientID)
+		return c.rest.GetOrderHistoryFilteredScoped(ctx, target.category, target.symbol, target.settle, query.VenueOrderID, query.ClientID)
 	}
-	return c.rest.GetRealtimeOrders(ctx, category, symbol, "", "", "", 0)
+	return c.rest.GetRealtimeOrders(ctx, target.category, target.symbol, target.settle, "", "", 0)
 }
 
-func (c *executionClient) categoryAndSymbol(id model.InstrumentID) (string, string, error) {
+func (c *executionClient) orderReportTargets(query model.OrderStatusReportQuery) ([]orderReportTarget, error) {
+	id := query.InstrumentID
 	if id.Symbol == "" {
-		return "linear", "", nil
+		exactIdentity := query.VenueOrderID != "" || query.ClientID != ""
+		var targets []orderReportTarget
+		for _, category := range c.categories {
+			switch category {
+			case "spot":
+				targets = append(targets, orderReportTarget{category: category})
+			case "linear":
+				if exactIdentity {
+					targets = append(targets, orderReportTarget{category: category})
+				} else {
+					targets = append(targets,
+						orderReportTarget{category: category, settle: bybitsdk.SettleCoinUSDT},
+						orderReportTarget{category: category, settle: bybitsdk.SettleCoinUSDC},
+					)
+				}
+			}
+		}
+		return targets, nil
 	}
 	inst, err := c.instrument(id)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	category, err := categoryForInstrument(inst)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
-	return category, inst.VenueSymbol, nil
+	if !c.supportsCategory(category) {
+		return nil, fmt.Errorf("bybit: instrument category %s is outside the configured scope", category)
+	}
+	settle := ""
+	if category == "linear" {
+		settle = inst.Settle
+	}
+	return []orderReportTarget{{category: category, symbol: inst.VenueSymbol, settle: settle}}, nil
+}
+
+func (c *executionClient) resolveOrderInstrument(target orderReportTarget, scoped model.InstrumentID, venueSymbol string) (model.InstrumentID, bool) {
+	if scoped.Symbol != "" {
+		inst, ok := c.provider.Instrument(scoped)
+		if !ok || inst.VenueSymbol != venueSymbol {
+			return model.InstrumentID{}, false
+		}
+		return scoped, true
+	}
+	if target.category == "spot" {
+		return c.provider.ResolveVenueInstrument(venueSymbol, enums.KindSpot, "")
+	}
+	if target.category == "linear" {
+		return c.provider.ResolveVenueInstrument(venueSymbol, enums.KindPerp, target.settle)
+	}
+	return model.InstrumentID{}, false
+}
+
+func (c *executionClient) reportTargets(id model.InstrumentID) ([]string, string, error) {
+	if id.Symbol == "" {
+		return append([]string(nil), c.categories...), "", nil
+	}
+	inst, err := c.instrument(id)
+	if err != nil {
+		return nil, "", err
+	}
+	category, err := categoryForInstrument(inst)
+	if err != nil {
+		return nil, "", err
+	}
+	if !c.supportsCategory(category) {
+		return nil, "", fmt.Errorf("bybit: instrument category %s is outside the configured scope", category)
+	}
+	return []string{category}, inst.VenueSymbol, nil
 }
 
 func (c *executionClient) Capabilities() contract.Capabilities {
+	products := make([]contract.ProductCapability, 0, len(c.categories))
+	for _, category := range c.categories {
+		switch category {
+		case "spot":
+			products = append(products, contract.ProductCapability{Kind: enums.KindSpot, Trading: true})
+		case "linear":
+			products = append(products, contract.ProductCapability{Kind: enums.KindPerp, Trading: true})
+		}
+	}
 	return contract.Capabilities{
-		Venue: VenueName,
-		Products: []contract.ProductCapability{
-			{Kind: enums.KindSpot, Trading: true},
-			{Kind: enums.KindPerp, Trading: true},
-		},
+		Venue:    VenueName,
+		Products: products,
 		Reports: contract.ReportCapabilities{
 			OpenOrders:                true,
 			OrderHistory:              true,
 			FillHistory:               true,
-			PositionReports:           true,
+			PositionReports:           c.supportsCategory("linear"),
 			OpenOnlyNotFoundAmbiguous: true,
 		},
 		Streaming: contract.StreamCapabilities{Execution: true},

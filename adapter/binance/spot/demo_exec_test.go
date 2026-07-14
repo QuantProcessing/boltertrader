@@ -40,13 +40,11 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 		HTTPClient:    httpClient,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo adapter initialization")
 		t.Fatalf("new Binance Spot Demo adapter: %v", err)
 	}
 	defer adapter.Close()
 
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo user-data stream")
 		t.Fatalf("start Binance Spot Demo adapter stream: %v", err)
 	}
 	execEvents := collectDemoExecEvents(adapter.Execution.Events())
@@ -54,7 +52,6 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 
 	info, err := adapter.rest.ExchangeInfo(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo exchangeInfo")
 		t.Fatalf("exchange info: %v", err)
 	}
 	spec, err := demoAcceptanceSymbolSpecFromExchangeInfo(info, symbolInput)
@@ -65,7 +62,6 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 
 	ticker, err := adapter.rest.BookTicker(ctx, spec.VenueSymbol)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo bookTicker")
 		t.Fatalf("bookTicker: %v", err)
 	}
 	bid := dec(ticker.BidPrice)
@@ -77,29 +73,31 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 	if restingPrice.LessThanOrEqual(decimal.Zero) {
 		t.Fatalf("computed non-positive resting price %s from bid %s", restingPrice, bid)
 	}
-	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, ask)
+	fillPrice := ceilDecimalToStep(ask.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
+	if fillPrice.LessThanOrEqual(decimal.Zero) {
+		t.Fatalf("computed non-positive IOC fill price %s from ask %s", fillPrice, ask)
+	}
+	qty, err := selectDemoAcceptanceOrderQuantityForPriceBand(spec, configuredQty, maxNotional, restingPrice, fillPrice)
 	if err != nil {
 		t.Fatalf("select safe Spot Demo order quantity: %v", err)
 	}
 
 	if open, err := adapter.Execution.OpenOrders(ctx, instID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping Binance Spot Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Fatalf("Binance Spot Demo acceptance requires a clean account: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 
 	startBalances, err := demoSpotBalances(ctx, adapter)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Binance Spot Demo balance preflight")
 		t.Fatalf("balance preflight: %v", err)
 	}
 	startBaseAvailable := startBalances[spec.BaseCurrency].Available
 	startBaseTotal := startBalances[spec.BaseCurrency].Total
 	quoteAvailable := startBalances[spec.QuoteCurrency].Available
-	requiredQuote := qty.Mul(ask).Mul(decimal.RequireFromString("1.05"))
+	requiredQuote := qty.Mul(fillPrice).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
-		t.Skipf("skipping Binance Spot Demo acceptance: %s available %s below required %s for %s quantity %s at ask %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, ask)
+		t.Fatalf("Binance Spot Demo acceptance has insufficient funds: %s available %s below required %s for %s quantity %s at bounded fill price %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, fillPrice)
 	}
 
 	cleanup := newDemoAcceptanceCleanupState(spec, qty)
@@ -109,9 +107,8 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 		}
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancelCleanup()
-		meta := cleanup.Metadata()
-		if err := cleanupBinanceSpotDemoAcceptance(cleanupCtx, adapter, instID, spec, startBaseAvailable, &meta); err != nil {
-			t.Fatalf("%v\n%s", err, meta.Remediation())
+		if err := cleanupBinanceSpotDemoAcceptance(cleanupCtx, adapter, instID, spec, startBaseAvailable, startBaseTotal, maxNotional, &cleanup); err != nil {
+			t.Fatalf("%v\n%s", err, cleanup.Metadata().Remediation())
 		}
 	}()
 
@@ -128,62 +125,75 @@ func runBinanceSpotDemoExecAcceptance(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("submit Spot Demo resting order: %v", err)
+		t.Fatalf("submit Spot Demo resting order (outcome ambiguous; only a known venue order can be canceled): %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	cleanup.RecordVenueOrderID(resting.VenueOrderID)
 	if resting.Status == enums.StatusFilled || !resting.FilledQty.IsZero() {
-		t.Fatalf("resting place/cancel order unexpectedly filled: %+v", resting)
+		cleanup.ConfirmFill(resting.FilledQty)
+		t.Fatalf("resting place/cancel order unexpectedly filled: %+v\n%s", resting, cleanup.Metadata().Remediation())
 	}
 	if err := adapter.Execution.Cancel(ctx, instID, resting.VenueOrderID); err != nil {
-		t.Fatalf("cancel Spot Demo resting order %s: %v", resting.VenueOrderID, err)
+		t.Fatalf("cancel Spot Demo resting order %s: %v\n%s", resting.VenueOrderID, err, cleanup.Metadata().Remediation())
 	}
-	if _, err := waitForDemoSpotOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "CANCELED"); err != nil {
-		t.Fatalf("wait for resting order cancel: %v", err)
+	restingFinal, err := waitForDemoSpotOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "CANCELED")
+	if err != nil {
+		t.Fatalf("wait for resting order cancel: %v\n%s", err, cleanup.Metadata().Remediation())
+	}
+	cleanup.MarkOrderTerminal(resting.VenueOrderID)
+	if partialQty := dec(restingFinal.ExecutedQty); partialQty.IsPositive() {
+		cleanup.ConfirmFill(partialQty)
+		t.Fatalf("resting order cancellation reported unexpected executed quantity %s\n%s", partialQty, cleanup.Metadata().Remediation())
+	}
+	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
+		t.Fatalf("resting cancellation did not produce authoritative no-open state: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 
 	fillClientID := demoClientOrderID("fill")
 	cleanup.Arm(enums.SideBuy, fillClientID)
-	filled, err := adapter.Execution.Submit(ctx, model.OrderRequest{
-		InstrumentID: instID,
-		ClientID:     fillClientID,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeMarket,
-		Quantity:     qty,
-		PositionSide: enums.PosNet,
-	})
+	filled, err := adapter.Execution.Submit(ctx, demoFillOrderRequest(instID, fillClientID, qty, fillPrice))
 	if err != nil {
-		t.Fatalf("submit Spot Demo fill order: %v", err)
+		t.Fatalf("submit Spot Demo fill order (outcome ambiguous; no automatic close attempted): %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	cleanup.RecordVenueOrderID(filled.VenueOrderID)
-	filledResp, err := waitForDemoSpotOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, "FILLED")
+	filledResp, err := waitForDemoSpotOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, binanceSpotDemoTerminalStatuses...)
 	if err != nil {
-		t.Fatalf("wait for fill order: %v", err)
+		t.Fatalf("wait for authoritative fill order terminal status: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
-	filledQty := dec(filledResp.ExecutedQty)
-	if filledQty.IsZero() {
-		t.Fatalf("filled order reported zero executed quantity: %+v", filledResp)
+	filledQty, err := validateBinanceSpotDemoFill(filledResp, maxNotional)
+	cleanup.MarkOrderTerminal(filled.VenueOrderID)
+	cleanup.ConfirmFill(filledQty)
+	if err != nil {
+		t.Fatalf("validate bounded Spot Demo fill: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	if err := waitForDemoExecObservation(ctx, execEvents, fillClientID, filled.VenueOrderID); err != nil {
 		t.Fatalf("adapter execution stream did not observe Spot Demo fill: %v", err)
 	}
-	if err := waitForDemoSpotBalanceObservation(ctx, accountEvents, spec.BaseCurrency, startBaseTotal, spec.SizeStep); err != nil {
+	observationThreshold := demoSpotFillObservationThreshold(filledQty, spec.SizeStep)
+	if err := waitForDemoSpotBalanceObservation(ctx, accountEvents, spec.BaseCurrency, startBaseTotal, observationThreshold); err != nil {
 		t.Fatalf("adapter account stream did not observe Spot Demo base balance update: %v", err)
 	}
-	baseDelta, err := waitForDemoSpotBalanceDelta(ctx, adapter, spec.BaseCurrency, startBaseTotal, spec.SizeStep)
+	baseDelta, err := waitForDemoSpotBalanceDelta(ctx, adapter, spec.BaseCurrency, startBaseTotal, observationThreshold)
 	if err != nil {
 		t.Fatalf("wait for opened Spot Demo base balance: %v", err)
 	}
 	cleanup.SetBaseDelta(baseDelta)
 
-	meta := cleanup.Metadata()
-	if err := closeBinanceSpotDemoBaseDelta(ctx, adapter, instID, spec, startBaseAvailable); err != nil {
-		t.Fatalf("close Spot Demo base delta: %v\n%s", err, meta.Remediation())
+	closeClientID := demoClientOrderID("close")
+	closed, err := closeBinanceSpotDemoBaseDelta(ctx, adapter, instID, spec, startBaseAvailable, &cleanup, closeClientID)
+	if err != nil {
+		t.Fatalf("close Spot Demo base delta (not retried because outcome may be ambiguous): %v\n%s", err, cleanup.Metadata().Remediation())
+	}
+	if closed != nil {
+		cleanup.RecordVenueOrderID(closed.VenueOrderID)
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
-		t.Fatalf("wait for no Spot Demo open orders: %v\n%s", err, meta.Remediation())
+		t.Fatalf("wait for no Spot Demo open orders: %v\n%s", err, cleanup.Metadata().Remediation())
 	}
 	if err := waitForDemoSpotBaseDeltaBelowStep(ctx, adapter, spec, startBaseAvailable); err != nil {
-		t.Fatalf("wait for Spot Demo base delta cleanup: %v\n%s", err, meta.Remediation())
+		t.Fatalf("wait for Spot Demo base delta cleanup: %v\n%s", err, cleanup.Metadata().Remediation())
+	}
+	if closed != nil {
+		cleanup.MarkOrderTerminal(closed.VenueOrderID)
 	}
 	cleanup.MarkClean()
 }

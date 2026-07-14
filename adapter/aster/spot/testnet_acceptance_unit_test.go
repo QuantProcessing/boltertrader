@@ -1,6 +1,7 @@
 package spot
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,28 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/shopspring/decimal"
 )
+
+func TestAsterSpotAcceptanceProxyErrorRedactsCredentials(t *testing.T) {
+	const secret = "proxy-super-secret"
+	_, err := parseAsterSpotAcceptanceProxyURL("http://user:" + secret + "@%gh")
+	if err == nil {
+		t.Fatal("expected malformed proxy URL to fail")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("proxy credential leaked in error: %v", err)
+	}
+}
+
+func TestAsterSpotRuntimeAcceptanceBindsConfiguredMaxNotional(t *testing.T) {
+	data, err := os.ReadFile("testnet_acceptance_test.go")
+	if err != nil {
+		t.Fatalf("read acceptance source: %v", err)
+	}
+	const want = "runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("Aster Spot runtime acceptance must bind cfg.MaxNotionalUSDT through the runtime risk engine")
+	}
+}
 
 func TestAsterSpotAcceptanceSelectInstrumentRejectsTestSymbols(t *testing.T) {
 	provider := newInstrumentProvider()
@@ -73,7 +96,7 @@ func TestAsterSpotAcceptanceLifecycleUsesNearBookRestingPriceAndFeeBufferedClose
 		Asks:         []model.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(1)}},
 		Timestamp:    time.Now(),
 	}
-	spec := asterSpotAcceptanceLifecycleSpec(t, "Aster unit", inst, book, decimal.NewFromInt(100))
+	spec := asterSpotAcceptanceLifecycleSpec(t, nil, "Aster unit", inst, book, decimal.NewFromInt(100))
 	if !spec.RestingPrice.Equal(decimal.NewFromInt(99)) {
 		t.Fatalf("resting price=%s, want 99", spec.RestingPrice)
 	}

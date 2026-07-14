@@ -102,7 +102,7 @@ func TestPreRunResyncLeavesNodeStartable(t *testing.T) {
 
 func TestReconnectPausesAndReconcilesBeforeRunning(t *testing.T) {
 	fmarket := runtimetest.NewFakeMarket()
-	fexec := runtimetest.NewFakeExec()
+	fexec := newGapAwareExec(true)
 	node := runtime.NewNode(runtime.Clients{Market: fmarket, Execution: fexec}, nil, "life")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

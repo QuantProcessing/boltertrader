@@ -2,10 +2,15 @@ package lighter
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/lighter"
@@ -155,6 +160,88 @@ func TestPlaceOrderRequestQuantizesTicksAndAccountID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected account id mismatch")
+	}
+}
+
+func TestLighterFilledSubmitEmitsDeterministicLocalFill(t *testing.T) {
+	inst := &model.Instrument{
+		ID:           model.InstrumentID{Venue: venueName, Symbol: "ETH-USDC", Kind: enums.KindPerp},
+		VenueSymbol:  "ETH",
+		AssetIndex:   intPtr(0),
+		PriceTick:    decimal.RequireFromString("0.01"),
+		SizeStep:     decimal.RequireFromString("0.0001"),
+		PositionMode: model.NetOnly,
+	}
+	req := model.OrderRequest{
+		AccountID:    model.AccountIDLighterDefault,
+		InstrumentID: inst.ID,
+		ClientID:     "lighter-filled-submit",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     decimal.RequireFromString("0.01"),
+		Price:        decimal.RequireFromString("100"),
+		PositionSide: enums.PosNet,
+	}
+	clientIndex := clientOrderIndex(req.ClientID)
+	at := time.Date(2026, 7, 13, 5, 0, 0, 0, time.UTC)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/nextNonce":
+			_, _ = w.Write([]byte(`{"code":200,"nonce":123}`))
+		case "/api/v1/sendTx":
+			_, _ = w.Write([]byte(`{"code":200,"message":"ok","tx_hash":"tx-filled"}`))
+		case "/api/v1/accountInactiveOrders":
+			_, _ = fmt.Fprintf(w, `{"code":200,"orders":[{"order_index":9001,"client_order_index":%d,"market_index":0,"initial_base_amount":"0.01","price":"100","filled_base_amount":"0.01","filled_quote_amount":"1","side":"buy","status":"filled","created_at":%d,"updated_at":%d}]}`,
+				clientIndex, at.UnixMilli(), at.UnixMilli())
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	rest := sdk.NewClient().
+		WithEnvironment(sdk.EnvironmentTestnet).
+		WithCredentials(strings.Repeat("01", 40), 66, 7)
+	rest.BaseURL = server.URL
+	exec := newExecutionClient(rest, newRegistry([]*model.Instrument{inst}), clock.NewSimulatedClock(at), 66)
+
+	var fills []model.Fill
+	for i := 0; i < 2; i++ {
+		order, err := exec.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatalf("Submit %d: %v", i+1, err)
+		}
+		if order.Status != enums.StatusFilled || !order.FilledQty.Equal(req.Quantity) || !order.AvgFillPrice.Equal(req.Price) {
+			t.Fatalf("order=%+v, want synchronously filled", order)
+		}
+		select {
+		case env := <-exec.Events():
+			event, ok := env.Payload.(contract.FillEvent)
+			if !ok {
+				t.Fatalf("event payload=%T, want FillEvent", env.Payload)
+			}
+			if env.Source != contract.SourceAdapterREST || !env.Flags.Has(contract.EventFlagSynthetic) {
+				t.Fatalf("event meta=%+v, want synthetic adapter REST source", env.Meta())
+			}
+			fills = append(fills, event.Fill)
+		case <-time.After(time.Second):
+			t.Fatal("filled Submit emitted no local fill event")
+		}
+	}
+
+	for _, fill := range fills {
+		if fill.AccountID != req.AccountID || fill.InstrumentID != req.InstrumentID || fill.ClientID != req.ClientID ||
+			fill.VenueOrderID != "9001" || fill.Side != req.Side || !fill.Price.Equal(req.Price) ||
+			!fill.Quantity.Equal(req.Quantity) || !fill.Fee.IsZero() || fill.FeeCurrency != "" ||
+			!fill.Timestamp.Equal(at) || fill.TradeID == "" {
+			t.Fatalf("fill=%+v, want deterministic fee-free inferred fill", fill)
+		}
+	}
+	if fills[0].TradeID != fills[1].TradeID {
+		t.Fatalf("trade ids differ for same acknowledgement: %q != %q", fills[0].TradeID, fills[1].TradeID)
 	}
 }
 

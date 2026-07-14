@@ -2,7 +2,9 @@ package perp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -203,7 +205,7 @@ func collectDemoExecEvents(events <-chan contract.ExecEnvelope) chan contract.Ex
 	return out
 }
 
-func waitForDemoOrderStatus(ctx context.Context, rest *okx.Client, instID, clientID string, statuses ...string) (*okx.Order, error) {
+func waitForDemoOrderStatus(ctx context.Context, rest *okx.Client, instID, venueOrderID, clientID string, statuses ...string) (*okx.Order, error) {
 	want := make(map[string]struct{}, len(statuses))
 	for _, status := range statuses {
 		want[strings.ToLower(status)] = struct{}{}
@@ -213,7 +215,7 @@ func waitForDemoOrderStatus(ctx context.Context, rest *okx.Client, instID, clien
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		orders, err := rest.GetOrder(ctx, instID, "", clientID)
+		orders, err := rest.GetOrder(ctx, instID, venueOrderID, clientID)
 		if err == nil && len(orders) > 0 {
 			order := orders[0]
 			lastStatus = string(order.State)
@@ -226,6 +228,27 @@ func waitForDemoOrderStatus(ctx context.Context, rest *okx.Client, instID, clien
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("timed out waiting for %s to reach %v; lastStatus=%q lastErr=%v: %w", clientID, statuses, lastStatus, lastErr, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForDemoOrderDiscovery(ctx context.Context, rest *okx.Client, instID, venueOrderID, clientID string) (*okx.Order, error) {
+	var lastErr error
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		orders, err := rest.GetOrder(ctx, instID, venueOrderID, clientID)
+		if err == nil && len(orders) > 0 {
+			order := orders[0]
+			return &order, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("timed out discovering venueOrderID=%q clientOrderID=%q; lastErr=%v: %w", venueOrderID, clientID, lastErr, ctx.Err())
 		case <-ticker.C:
 		}
 	}
@@ -263,12 +286,23 @@ func demoCurrentExposure(ctx context.Context, adapter *Adapter, id model.Instrum
 	if err != nil {
 		return decimal.Zero, err
 	}
+	return demoExposureFromPositions(positions, id)
+}
+
+func demoExposureFromPositions(positions []model.Position, id model.InstrumentID) (decimal.Decimal, error) {
+	var exposure decimal.Decimal
+	nonZero := make([]string, 0, 2)
 	for _, position := range positions {
-		if position.InstrumentID == id {
-			return position.Quantity, nil
+		if position.InstrumentID != id || position.Quantity.IsZero() {
+			continue
 		}
+		exposure = position.Quantity
+		nonZero = append(nonZero, fmt.Sprintf("%s:%s", position.Side, position.Quantity))
 	}
-	return decimal.Zero, nil
+	if len(nonZero) > 1 {
+		return decimal.Zero, fmt.Errorf("%s has multiple non-zero position legs (%s); refusing automatic cleanup", id, strings.Join(nonZero, ", "))
+	}
+	return exposure, nil
 }
 
 func waitForDemoExposure(ctx context.Context, adapter *Adapter, id model.InstrumentID, minAbs decimal.Decimal) (decimal.Decimal, error) {
@@ -297,17 +331,19 @@ func waitForDemoExposure(ctx context.Context, adapter *Adapter, id model.Instrum
 func waitForDemoFlat(ctx context.Context, adapter *Adapter, id model.InstrumentID) error {
 	var lastErr error
 	var last decimal.Decimal
+	stable := newDemoStableReads(2)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		exposure, err := demoCurrentExposure(ctx, adapter, id)
 		if err == nil {
 			last = exposure
-			if exposure.IsZero() {
+			if stable.Observe(exposure.IsZero()) {
 				return nil
 			}
 		} else {
 			lastErr = err
+			stable.Observe(false)
 		}
 		select {
 		case <-ctx.Done():
@@ -317,6 +353,38 @@ func waitForDemoFlat(ctx context.Context, adapter *Adapter, id model.InstrumentI
 	}
 }
 
+type demoOrderRole uint8
+
+const (
+	demoOrderRoleResting demoOrderRole = iota + 1
+	demoOrderRoleOpening
+	demoOrderRoleClose
+)
+
+func (r demoOrderRole) String() string {
+	switch r {
+	case demoOrderRoleResting:
+		return "resting"
+	case demoOrderRoleOpening:
+		return "opening"
+	case demoOrderRoleClose:
+		return "close"
+	default:
+		return fmt.Sprintf("role(%d)", r)
+	}
+}
+
+type demoTrackedOrder struct {
+	Role             demoOrderRole
+	ClientOrderID    string
+	VenueOrderID     string
+	ProcessedFillQty decimal.Decimal
+	Terminal         bool
+}
+
+type demoOrderLookup func(context.Context, string, string) (*okx.Order, error)
+type demoOrderCancel func(context.Context, string) error
+
 type demoPerpCleanupState struct {
 	needed         bool
 	spec           demoPerpSpec
@@ -324,30 +392,197 @@ type demoPerpCleanupState struct {
 	exposure       decimal.Decimal
 	venueOrderIDs  []string
 	clientOrderIDs []string
+	orders         map[string]*demoTrackedOrder
+	confirmedFill  decimal.Decimal
+	restingFill    decimal.Decimal
+	exposureSeen   bool
+	closeAttempted bool
 }
 
 func newDemoPerpCleanupState(spec demoPerpSpec, qty decimal.Decimal) demoPerpCleanupState {
-	return demoPerpCleanupState{spec: spec, qty: qty}
+	return demoPerpCleanupState{
+		spec:   spec,
+		qty:    qty,
+		orders: make(map[string]*demoTrackedOrder),
+	}
 }
 
-func (s *demoPerpCleanupState) Arm(clientID string) {
+func (s *demoPerpCleanupState) TrackOrder(role demoOrderRole, clientID string) {
 	s.needed = true
-	if clientID != "" {
-		s.clientOrderIDs = append(s.clientOrderIDs, clientID)
+	if clientID == "" {
+		return
 	}
+	if existing, ok := s.orders[clientID]; ok {
+		if existing.Role == role {
+			return
+		}
+		return
+	}
+	s.clientOrderIDs = append(s.clientOrderIDs, clientID)
+	s.orders[clientID] = &demoTrackedOrder{Role: role, ClientOrderID: clientID}
 }
 
-func (s *demoPerpCleanupState) RecordVenueOrderID(id string) {
-	if id != "" {
-		s.venueOrderIDs = append(s.venueOrderIDs, id)
+func (s *demoPerpCleanupState) RecordVenueOrderID(clientID, venueOrderID string) {
+	if venueOrderID == "" {
+		return
 	}
+	tracked, ok := s.orders[clientID]
+	if !ok {
+		return
+	}
+	if tracked.VenueOrderID == venueOrderID {
+		return
+	}
+	if tracked.VenueOrderID != "" {
+		return
+	}
+	tracked.VenueOrderID = venueOrderID
+	s.venueOrderIDs = append(s.venueOrderIDs, venueOrderID)
 }
 
-func (s *demoPerpCleanupState) SetExposure(exposure decimal.Decimal) { s.exposure = exposure }
+func (s *demoPerpCleanupState) ObserveOrder(clientID string, order *okx.Order) error {
+	if order == nil {
+		return fmt.Errorf("missing authoritative order observation for %q", clientID)
+	}
+	if clientID == "" {
+		clientID = order.ClOrdId
+	}
+	tracked, ok := s.orders[clientID]
+	if !ok {
+		return fmt.Errorf("refusing untracked OKX Demo order observation clientOrderID=%q venueOrderID=%q", clientID, order.OrdId)
+	}
+	if order.ClOrdId != "" && order.ClOrdId != clientID {
+		return fmt.Errorf("order client identity mismatch: tracked=%q observed=%q", clientID, order.ClOrdId)
+	}
+	if tracked.VenueOrderID != "" && order.OrdId != "" && tracked.VenueOrderID != order.OrdId {
+		return fmt.Errorf("order venue identity mismatch: tracked=%q observed=%q", tracked.VenueOrderID, order.OrdId)
+	}
+	s.RecordVenueOrderID(clientID, order.OrdId)
+	fillQty := decimal.Zero
+	if order.AccFillSz != "" {
+		parsed, err := decimal.NewFromString(order.AccFillSz)
+		if err != nil || parsed.IsNegative() {
+			return fmt.Errorf("invalid accumulated fill quantity %q for %s", order.AccFillSz, clientID)
+		}
+		fillQty = parsed
+	}
+	if fillQty.LessThan(tracked.ProcessedFillQty) {
+		return fmt.Errorf("accumulated fill regressed for %s: observed=%s processed=%s", clientID, fillQty, tracked.ProcessedFillQty)
+	}
+	delta := fillQty.Sub(tracked.ProcessedFillQty)
+	if delta.IsPositive() && tracked.Role != demoOrderRoleClose {
+		s.confirmedFill = s.confirmedFill.Add(delta)
+		if tracked.Role == demoOrderRoleResting {
+			s.restingFill = s.restingFill.Add(delta)
+		}
+	}
+	tracked.ProcessedFillQty = fillQty
+	tracked.Terminal = isDemoOrderTerminal(order.State)
+	return nil
+}
+
+func isDemoOrderTerminal(status okx.OrderStatus) bool {
+	return status == okx.OrderStatusFilled || status == okx.OrderStatusCanceled || status == okx.OrderStatusMmpCanceled
+}
+
+func (s demoPerpCleanupState) TrackedOrder(clientID string) (demoTrackedOrder, bool) {
+	tracked, ok := s.orders[clientID]
+	if !ok {
+		return demoTrackedOrder{}, false
+	}
+	return *tracked, true
+}
+
+func (s demoPerpCleanupState) PendingOrders() []demoTrackedOrder {
+	orders := make([]demoTrackedOrder, 0, len(s.orders))
+	for _, tracked := range s.orders {
+		if !tracked.Terminal {
+			orders = append(orders, *tracked)
+		}
+	}
+	sort.Slice(orders, func(i, j int) bool { return orders[i].ClientOrderID < orders[j].ClientOrderID })
+	return orders
+}
+
+func (s demoPerpCleanupState) RestingFillQuantity() decimal.Decimal { return s.restingFill }
+
+func (s demoPerpCleanupState) OpeningAllowed() bool {
+	found := false
+	for _, tracked := range s.orders {
+		if tracked.Role != demoOrderRoleResting {
+			continue
+		}
+		found = true
+		if !tracked.Terminal || tracked.ProcessedFillQty.IsPositive() {
+			return false
+		}
+	}
+	return found
+}
+
+func (s demoPerpCleanupState) CloseAuthorized() bool {
+	return s.confirmedFill.IsPositive() && s.exposureSeen && !s.closeAttempted
+}
+
+func (s demoPerpCleanupState) CloseLimit() decimal.Decimal { return s.confirmedFill }
+
+func (s *demoPerpCleanupState) MarkCloseAttempted() {
+	s.closeAttempted = true
+}
+
+func recoverAmbiguousTrackedDemoOrder(ctx context.Context, state *demoPerpCleanupState, clientID string, lookup demoOrderLookup) error {
+	tracked, ok := state.TrackedOrder(clientID)
+	if !ok {
+		return fmt.Errorf("cannot recover untracked client order %q", clientID)
+	}
+	order, err := lookup(ctx, tracked.VenueOrderID, tracked.ClientOrderID)
+	if err != nil {
+		return err
+	}
+	return state.ObserveOrder(clientID, order)
+}
+
+func cancelAndConfirmTrackedDemoOrder(ctx context.Context, state *demoPerpCleanupState, clientID string, cancelOrder demoOrderCancel, lookupTerminal demoOrderLookup) error {
+	tracked, ok := state.TrackedOrder(clientID)
+	if !ok {
+		return fmt.Errorf("cannot cancel untracked client order %q", clientID)
+	}
+	if tracked.Terminal {
+		return nil
+	}
+	if tracked.VenueOrderID == "" {
+		return fmt.Errorf("cannot cancel %s before venue identity is confirmed", clientID)
+	}
+	cancelErr := cancelOrder(ctx, tracked.VenueOrderID)
+	order, lookupErr := lookupTerminal(ctx, tracked.VenueOrderID, tracked.ClientOrderID)
+	if lookupErr != nil {
+		return errors.Join(cancelErr, lookupErr)
+	}
+	if err := state.ObserveOrder(clientID, order); err != nil {
+		return errors.Join(cancelErr, err)
+	}
+	confirmed, _ := state.TrackedOrder(clientID)
+	if !confirmed.Terminal {
+		return errors.Join(cancelErr, fmt.Errorf("order %s did not reach an authoritative terminal state", clientID))
+	}
+	return nil
+}
+
+func (s *demoPerpCleanupState) SetExposure(exposure decimal.Decimal) {
+	s.exposure = exposure
+	if !exposure.IsZero() {
+		s.exposureSeen = true
+	}
+}
 
 func (s *demoPerpCleanupState) MarkClean() {
 	s.needed = false
 	s.exposure = decimal.Zero
+	s.confirmedFill = decimal.Zero
+	s.restingFill = decimal.Zero
+	s.exposureSeen = false
+	s.closeAttempted = false
+	clear(s.orders)
 }
 
 func (s demoPerpCleanupState) Remediation() string {
@@ -361,16 +596,85 @@ func (s demoPerpCleanupState) Remediation() string {
 	)
 }
 
+func recoverAmbiguousOKXPerpDemoOrder(ctx context.Context, adapter *Adapter, spec demoPerpSpec, state *demoPerpCleanupState, clientID string) error {
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return recoverAmbiguousTrackedDemoOrder(recoveryCtx, state, clientID, func(callCtx context.Context, venueOrderID, clientOrderID string) (*okx.Order, error) {
+		return waitForDemoOrderDiscovery(callCtx, adapter.rest, spec.VenueSymbol, venueOrderID, clientOrderID)
+	})
+}
+
+func cancelAndConfirmOKXPerpDemoOrder(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoPerpSpec, state *demoPerpCleanupState, clientID string) error {
+	return cancelAndConfirmTrackedDemoOrder(
+		ctx,
+		state,
+		clientID,
+		func(callCtx context.Context, venueOrderID string) error {
+			return adapter.Execution.Cancel(callCtx, id, venueOrderID)
+		},
+		func(callCtx context.Context, venueOrderID, clientOrderID string) (*okx.Order, error) {
+			return waitForDemoOrderStatus(callCtx, adapter.rest, spec.VenueSymbol, venueOrderID, clientOrderID, "filled", "canceled", "mmp_canceled")
+		},
+	)
+}
+
+func confirmOKXPerpDemoOrderTerminal(ctx context.Context, adapter *Adapter, spec demoPerpSpec, state *demoPerpCleanupState, clientID string) (*okx.Order, error) {
+	tracked, ok := state.TrackedOrder(clientID)
+	if !ok {
+		return nil, fmt.Errorf("cannot confirm untracked order %q", clientID)
+	}
+	order, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, tracked.VenueOrderID, tracked.ClientOrderID, "filled", "canceled", "mmp_canceled")
+	if err != nil {
+		return nil, err
+	}
+	if err := state.ObserveOrder(clientID, order); err != nil {
+		return nil, err
+	}
+	return order, nil
+}
+
+func reconcilePendingOKXPerpDemoOrders(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoPerpSpec, state *demoPerpCleanupState) error {
+	for _, tracked := range state.PendingOrders() {
+		if tracked.VenueOrderID != "" {
+			continue
+		}
+		if err := recoverAmbiguousOKXPerpDemoOrder(ctx, adapter, spec, state, tracked.ClientOrderID); err != nil {
+			return fmt.Errorf("recover ambiguous %s order %s: %w", tracked.Role, tracked.ClientOrderID, err)
+		}
+	}
+	for _, tracked := range state.PendingOrders() {
+		if err := cancelAndConfirmOKXPerpDemoOrder(ctx, adapter, id, spec, state, tracked.ClientOrderID); err != nil {
+			return fmt.Errorf("cancel and confirm lifecycle order %s: %w", tracked.ClientOrderID, err)
+		}
+	}
+	return nil
+}
+
 func cleanupOKXPerpDemo(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoPerpSpec, state *demoPerpCleanupState) error {
-	cancelErr := adapter.Execution.CancelAll(ctx, id)
-	if err := closeOKXPerpDemoExposure(ctx, adapter, id, spec); err != nil {
+	if err := reconcilePendingOKXPerpDemoOrders(ctx, adapter, id, spec, state); err != nil {
+		return fmt.Errorf("recorded-order cleanup failed; exposure close was not attempted: %w", err)
+	}
+	if state.confirmedFill.IsPositive() && !state.exposureSeen && !state.closeAttempted {
+		exposure, err := waitForDemoExposure(ctx, adapter, id, state.confirmedFill)
+		if err != nil {
+			return fmt.Errorf("authoritative fill confirmed but exposure was not observable; automatic close was not attempted: %w", err)
+		}
+		state.SetExposure(exposure)
+	}
+	closed, err := closeOKXPerpDemoExposure(ctx, adapter, id, spec, state)
+	if err != nil {
 		return err
+	}
+	if closed != nil {
+		if _, err := confirmOKXPerpDemoOrderTerminal(ctx, adapter, spec, state, closed.Request.ClientID); err != nil {
+			return err
+		}
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, id); err != nil {
 		return err
 	}
-	if cancelErr != nil {
-		return fmt.Errorf("cancel all OKX Perp Demo open orders: %w", cancelErr)
+	if !state.confirmedFill.IsPositive() {
+		return nil
 	}
 	if err := waitForDemoFlat(ctx, adapter, id); err != nil {
 		exposure, _ := demoCurrentExposure(ctx, adapter, id)
@@ -381,68 +685,113 @@ func cleanupOKXPerpDemo(ctx context.Context, adapter *Adapter, id model.Instrume
 	return nil
 }
 
-func closeOKXPerpDemoExposure(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoPerpSpec) error {
-	for attempt := 0; attempt < 3; attempt++ {
-		exposure, err := demoCurrentExposure(ctx, adapter, id)
-		if err != nil {
-			return err
-		}
-		if exposure.IsZero() {
-			return nil
-		}
-		book, err := adapter.Market.OrderBook(ctx, id, 5)
-		if err != nil {
-			return err
-		}
-		side := enums.SideSell
-		price := decimal.Zero
-		if exposure.IsPositive() {
-			if len(book.Bids) == 0 {
-				return fmt.Errorf("cannot close long exposure: empty bid book")
-			}
-			price = floorDecimalToStep(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), spec.PriceTick)
-		} else {
-			side = enums.SideBuy
-			if len(book.Asks) == 0 {
-				return fmt.Errorf("cannot close short exposure: empty ask book")
-			}
-			price = ceilDecimalToStep(book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
-		}
-		_, err = adapter.Execution.Submit(ctx, model.OrderRequest{
-			InstrumentID: id,
-			ClientID:     demoClientOrderID("close"),
-			Side:         side,
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifIOC,
-			Quantity:     exposure.Abs(),
-			Price:        price,
-			PositionSide: enums.PosNet,
-			ReduceOnly:   true,
-		})
-		if err != nil {
-			return err
-		}
-		if err := waitForDemoFlat(ctx, adapter, id); err == nil {
-			return nil
-		}
+func closeOKXPerpDemoExposure(ctx context.Context, adapter *Adapter, id model.InstrumentID, spec demoPerpSpec, state *demoPerpCleanupState) (*model.Order, error) {
+	if !state.CloseAuthorized() {
+		return nil, nil
 	}
-	return waitForDemoFlat(ctx, adapter, id)
+	maxCloseQty := state.CloseLimit()
+	exposure, err := demoCurrentExposure(ctx, adapter, id)
+	if err != nil {
+		return nil, err
+	}
+	closeQty, err := demoPerpCloseQuantity(exposure, maxCloseQty)
+	if err != nil {
+		return nil, err
+	}
+	if closeQty.IsZero() {
+		return nil, nil
+	}
+	book, err := adapter.Market.OrderBook(ctx, id, 5)
+	if err != nil {
+		return nil, err
+	}
+	if len(book.Bids) == 0 {
+		return nil, fmt.Errorf("cannot close long exposure: empty bid book")
+	}
+	price := floorDecimalToStep(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), spec.PriceTick)
+	clientID := demoClientOrderID("close")
+	state.TrackOrder(demoOrderRoleClose, clientID)
+	state.MarkCloseAttempted()
+	order, err := adapter.Execution.Submit(ctx, model.OrderRequest{
+		InstrumentID: id,
+		ClientID:     clientID,
+		Side:         enums.SideSell,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     closeQty,
+		Price:        price,
+		PositionSide: enums.PosNet,
+		ReduceOnly:   true,
+	})
+	if err != nil {
+		recoveryErr := recoverAmbiguousOKXPerpDemoOrder(ctx, adapter, spec, state, clientID)
+		if recoveryErr != nil {
+			return nil, fmt.Errorf("submit single bounded close (outcome ambiguous; not retried): %w; client-ID recovery failed: %v", err, recoveryErr)
+		}
+		return nil, fmt.Errorf("submit single bounded close returned an error after the lifecycle order was recovered; not retried: %w", err)
+	}
+	state.RecordVenueOrderID(clientID, order.VenueOrderID)
+	return order, nil
+}
+
+func demoPerpCloseQuantity(exposure, maxCloseQty decimal.Decimal) (decimal.Decimal, error) {
+	if !maxCloseQty.IsPositive() {
+		return decimal.Zero, fmt.Errorf("automatic close requires a positive authoritative fill quantity")
+	}
+	if exposure.IsZero() {
+		return decimal.Zero, nil
+	}
+	if exposure.IsNegative() {
+		return decimal.Zero, fmt.Errorf("refusing automatic close of unexpected short exposure %s after a buy lifecycle", exposure)
+	}
+	if exposure.GreaterThan(maxCloseQty) {
+		return decimal.Zero, fmt.Errorf("refusing automatic close: current exposure %s exceeds authoritative lifecycle fill %s", exposure, maxCloseQty)
+	}
+	return exposure, nil
+}
+
+func validateOKXPerpDemoFill(resp *okx.Order, spec demoPerpSpec, maxNotional decimal.Decimal) (decimal.Decimal, error) {
+	if resp == nil {
+		return decimal.Zero, fmt.Errorf("missing OKX Perp Demo fill response")
+	}
+	if !maxNotional.IsPositive() {
+		return decimal.Zero, fmt.Errorf("max notional must be positive")
+	}
+	qty, err := decimal.NewFromString(resp.AccFillSz)
+	if err != nil || !qty.IsPositive() {
+		return decimal.Zero, fmt.Errorf("invalid accumulated fill quantity %q", resp.AccFillSz)
+	}
+	priceText := resp.AvgPx
+	if priceText == "" {
+		priceText = resp.FillPx
+	}
+	price, err := decimal.NewFromString(priceText)
+	if err != nil || !price.IsPositive() {
+		return qty, fmt.Errorf("invalid average fill price %q", priceText)
+	}
+	notional := qty.Mul(demoPerpNotionalPerContract(spec, price))
+	if notional.GreaterThan(maxNotional) {
+		return qty, fmt.Errorf("actual filled notional %s exceeds configured OKX Demo cap %s", notional, maxNotional)
+	}
+	return qty, nil
 }
 
 func waitForNoDemoOpenOrders(ctx context.Context, adapter *Adapter, id model.InstrumentID) error {
 	var lastErr error
 	var lastOpen int
+	stable := newDemoStableReads(2)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		open, err := adapter.Execution.OpenOrders(ctx, id)
-		if err == nil && len(open) == 0 {
-			return nil
-		}
 		if err != nil {
 			lastErr = err
+			stable.Observe(false)
 		} else {
 			lastOpen = len(open)
+			if stable.Observe(len(open) == 0) {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -450,4 +799,25 @@ func waitForNoDemoOpenOrders(ctx context.Context, adapter *Adapter, id model.Ins
 		case <-ticker.C:
 		}
 	}
+}
+
+type demoStableReads struct {
+	required    int
+	consecutive int
+}
+
+func newDemoStableReads(required int) *demoStableReads {
+	if required < 1 {
+		required = 1
+	}
+	return &demoStableReads{required: required}
+}
+
+func (s *demoStableReads) Observe(stable bool) bool {
+	if !stable {
+		s.consecutive = 0
+		return false
+	}
+	s.consecutive++
+	return s.consecutive >= s.required
 }

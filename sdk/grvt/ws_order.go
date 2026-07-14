@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -114,7 +115,7 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, req *OrderRequest) (*C
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("rpc error %d: %s (%s)", resp.Error.Code, resp.Error.Message, resp.Error.Data)
+		return nil, formatWSRPCError(resp.Error)
 	}
 
 	// 5. Parse Result
@@ -138,7 +139,7 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, req *CancelOrderReque
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("rpc error %d: %s (%s)", resp.Error.Code, resp.Error.Message, resp.Error.Data)
+		return nil, formatWSRPCError(resp.Error)
 	}
 
 	var result CancelOrderResponse
@@ -161,7 +162,7 @@ func (c *WebsocketClient) CancelAllOrders(ctx context.Context, req *CancelAllOrd
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("rpc error %d: %s (%s)", resp.Error.Code, resp.Error.Message, resp.Error.Data)
+		return nil, formatWSRPCError(resp.Error)
 	}
 
 	var result CancelAllOrderResponse
@@ -170,4 +171,12 @@ func (c *WebsocketClient) CancelAllOrders(ctx context.Context, req *CancelAllOrd
 	}
 
 	return &result, nil
+}
+
+func formatWSRPCError(rpcErr *WsRpcError) error {
+	const signatureMismatch = "signature does not match payload"
+	if strings.Contains(strings.ToLower(rpcErr.Message), signatureMismatch) {
+		return fmt.Errorf("rpc request rejected with code %d: %s", rpcErr.Code, signatureMismatch)
+	}
+	return fmt.Errorf("rpc request rejected with code %d", rpcErr.Code)
 }

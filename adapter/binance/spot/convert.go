@@ -106,6 +106,8 @@ func tifFromBinance(s string) enums.TimeInForce {
 
 func statusFromBinance(s string) enums.OrderStatus {
 	switch strings.ToUpper(s) {
+	case "PENDING_NEW":
+		return enums.StatusPendingNew
 	case "NEW":
 		return enums.StatusNew
 	case "PARTIALLY_FILLED":

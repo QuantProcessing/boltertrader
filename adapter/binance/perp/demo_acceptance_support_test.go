@@ -2,12 +2,25 @@ package perp
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
+	"github.com/QuantProcessing/boltertrader/core/model"
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 	"github.com/shopspring/decimal"
 )
+
+var binanceDemoTerminalStatuses = []string{"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"}
+
+func isBinanceDemoTerminalStatus(status string) bool {
+	switch strings.ToUpper(status) {
+	case "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED":
+		return true
+	default:
+		return false
+	}
+}
 
 type demoAcceptanceSymbolSpec struct {
 	VenueSymbol string
@@ -132,8 +145,19 @@ func (m demoAcceptanceCleanupMetadata) Remediation() string {
 }
 
 type demoAcceptanceCleanupState struct {
-	needed bool
-	meta   demoAcceptanceCleanupMetadata
+	needed                 bool
+	meta                   demoAcceptanceCleanupMetadata
+	openVenueOrders        map[string]struct{}
+	clientIDByVenueOrderID map[string]string
+	unresolvedClientIDs    map[string]struct{}
+	armedClientID          string
+	confirmedFill          decimal.Decimal
+	closeAttempted         bool
+}
+
+type demoAcceptanceTrackedOrder struct {
+	VenueOrderID string
+	ClientID     string
 }
 
 func newDemoAcceptanceCleanupState(symbol string, qty decimal.Decimal) demoAcceptanceCleanupState {
@@ -142,6 +166,9 @@ func newDemoAcceptanceCleanupState(symbol string, qty decimal.Decimal) demoAccep
 			Symbol:   symbol,
 			Quantity: qty,
 		},
+		openVenueOrders:        make(map[string]struct{}),
+		clientIDByVenueOrderID: make(map[string]string),
+		unresolvedClientIDs:    make(map[string]struct{}),
 	}
 }
 
@@ -150,13 +177,95 @@ func (s *demoAcceptanceCleanupState) Arm(side enums.OrderSide, clientID string) 
 	s.meta.Side = side.String()
 	if clientID != "" {
 		s.meta.ClientOrderIDs = append(s.meta.ClientOrderIDs, clientID)
+		s.armedClientID = clientID
+		s.unresolvedClientIDs[clientID] = struct{}{}
 	}
 }
 
 func (s *demoAcceptanceCleanupState) RecordVenueOrderID(venueOrderID string) {
-	if venueOrderID != "" {
+	s.ResolveClientOrder(s.armedClientID, venueOrderID)
+}
+
+func (s *demoAcceptanceCleanupState) ResolveClientOrder(clientID, venueOrderID string) {
+	if venueOrderID == "" {
+		return
+	}
+	if _, exists := s.clientIDByVenueOrderID[venueOrderID]; !exists {
 		s.meta.VenueOrderIDs = append(s.meta.VenueOrderIDs, venueOrderID)
 	}
+	s.openVenueOrders[venueOrderID] = struct{}{}
+	s.clientIDByVenueOrderID[venueOrderID] = clientID
+	delete(s.unresolvedClientIDs, clientID)
+}
+
+func (s *demoAcceptanceCleanupState) MarkOrderTerminal(venueOrderID string) {
+	delete(s.unresolvedClientIDs, s.clientIDByVenueOrderID[venueOrderID])
+	delete(s.openVenueOrders, venueOrderID)
+}
+
+func (s *demoAcceptanceCleanupState) MarkClientOrderTerminal(clientID string) {
+	delete(s.unresolvedClientIDs, clientID)
+}
+
+func (s *demoAcceptanceCleanupState) ConfirmFill(qty decimal.Decimal) {
+	if qty.IsPositive() {
+		if qty.GreaterThan(s.confirmedFill) {
+			s.confirmedFill = qty
+		}
+		s.needed = true
+	}
+}
+
+func (s demoAcceptanceCleanupState) CloseAuthorized() bool {
+	return s.confirmedFill.IsPositive() && !s.closeAttempted
+}
+
+func (s demoAcceptanceCleanupState) CloseLimit() decimal.Decimal {
+	return s.confirmedFill
+}
+
+func (s *demoAcceptanceCleanupState) BeginCloseAttempt() {
+	s.closeAttempted = true
+}
+
+func (s demoAcceptanceCleanupState) CancellableVenueOrderIDs() []string {
+	ids := make([]string, 0, len(s.openVenueOrders))
+	for id := range s.openVenueOrders {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (s demoAcceptanceCleanupState) TrackedOpenOrders() []demoAcceptanceTrackedOrder {
+	orders := s.ResolvedOpenOrders()
+	orders = append(orders, s.UnresolvedClientOrders()...)
+	return orders
+}
+
+func (s demoAcceptanceCleanupState) ResolvedOpenOrders() []demoAcceptanceTrackedOrder {
+	venueOrderIDs := s.CancellableVenueOrderIDs()
+	orders := make([]demoAcceptanceTrackedOrder, 0, len(venueOrderIDs))
+	for _, venueOrderID := range venueOrderIDs {
+		orders = append(orders, demoAcceptanceTrackedOrder{
+			VenueOrderID: venueOrderID,
+			ClientID:     s.clientIDByVenueOrderID[venueOrderID],
+		})
+	}
+	return orders
+}
+
+func (s demoAcceptanceCleanupState) UnresolvedClientOrders() []demoAcceptanceTrackedOrder {
+	clientIDs := make([]string, 0, len(s.unresolvedClientIDs))
+	for clientID := range s.unresolvedClientIDs {
+		clientIDs = append(clientIDs, clientID)
+	}
+	sort.Strings(clientIDs)
+	orders := make([]demoAcceptanceTrackedOrder, 0, len(clientIDs))
+	for _, clientID := range clientIDs {
+		orders = append(orders, demoAcceptanceTrackedOrder{ClientID: clientID})
+	}
+	return orders
 }
 
 func (s *demoAcceptanceCleanupState) SetExposure(exposure decimal.Decimal) {
@@ -166,6 +275,12 @@ func (s *demoAcceptanceCleanupState) SetExposure(exposure decimal.Decimal) {
 func (s *demoAcceptanceCleanupState) MarkClean() {
 	s.needed = false
 	s.meta.Exposure = decimal.Zero
+	s.confirmedFill = decimal.Zero
+	s.closeAttempted = false
+	s.armedClientID = ""
+	clear(s.openVenueOrders)
+	clear(s.clientIDByVenueOrderID)
+	clear(s.unresolvedClientIDs)
 }
 
 func (s demoAcceptanceCleanupState) Needed() bool {
@@ -174,4 +289,56 @@ func (s demoAcceptanceCleanupState) Needed() bool {
 
 func (s demoAcceptanceCleanupState) Metadata() demoAcceptanceCleanupMetadata {
 	return s.meta
+}
+
+func demoExposureFromPositions(positions []model.Position, id model.InstrumentID) (decimal.Decimal, error) {
+	var exposure decimal.Decimal
+	nonZero := 0
+	var reports []string
+	for _, position := range positions {
+		if position.InstrumentID != id || position.Quantity.IsZero() {
+			continue
+		}
+		nonZero++
+		exposure = position.Quantity
+		reports = append(reports, fmt.Sprintf("side=%s qty=%s", position.Side, position.Quantity))
+	}
+	if nonZero > 1 {
+		return decimal.Zero, fmt.Errorf("%s has %d non-zero position reports (%s); offsetting hedge legs are not flat", id, nonZero, strings.Join(reports, ", "))
+	}
+	return exposure, nil
+}
+
+func validateBinanceDemoFill(resp *sdkperp.OrderResponse, maxNotional decimal.Decimal) (decimal.Decimal, error) {
+	if resp == nil {
+		return decimal.Zero, fmt.Errorf("missing Binance Demo fill response")
+	}
+	if maxNotional.LessThanOrEqual(decimal.Zero) {
+		return decimal.Zero, fmt.Errorf("max notional must be positive")
+	}
+	qty, err := decimal.NewFromString(resp.ExecutedQty)
+	if err != nil || !qty.IsPositive() {
+		return decimal.Zero, fmt.Errorf("invalid executed quantity %q", resp.ExecutedQty)
+	}
+	cumQuote, err := decimal.NewFromString(resp.CumQuote)
+	if err != nil || !cumQuote.IsPositive() {
+		return qty, fmt.Errorf("invalid cumulative quote %q", resp.CumQuote)
+	}
+	if cumQuote.GreaterThan(maxNotional) {
+		return qty, fmt.Errorf("executed cumulative quote %s exceeds configured Demo cap %s", cumQuote, maxNotional)
+	}
+	return qty, nil
+}
+
+func demoFillOrderRequest(id model.InstrumentID, clientID string, qty, maxPrice decimal.Decimal) model.OrderRequest {
+	return model.OrderRequest{
+		InstrumentID: id,
+		ClientID:     clientID,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifIOC,
+		Quantity:     qty,
+		Price:        maxPrice,
+		PositionSide: enums.PosNet,
+	}
 }

@@ -48,9 +48,9 @@ func NewClient() *Client {
 			httpClient.Transport = &http.Transport{
 				Proxy: http.ProxyURL(parsedURL),
 			}
-			l.Debugw("Using proxy", "url", proxyURL)
+			l.Debugw("Using configured proxy")
 		} else {
-			l.Errorw("Invalid proxy URL", "url", proxyURL, "error", err)
+			l.Errorw("Invalid proxy URL")
 		}
 	}
 
@@ -179,11 +179,11 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		req.Header.Add("X-MBX-APIKEY", c.APIKey)
 	}
 
-	c.Logger.Debugw("Request", "method", method, "url", u.String())
+	c.Logger.Debugw("Request", "method", method, "path", u.Path)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("binance perp %s %s transport failed: %w", method, u.Path, mbx.TransportCause(err))
 	}
 	defer resp.Body.Close()
 
@@ -195,7 +195,7 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		return err
 	}
 
-	c.Logger.Debugw("Response", "body", string(data))
+	c.Logger.Debugw("Response", "status", resp.StatusCode, "bytes", len(data))
 
 	if resp.StatusCode >= 400 {
 		if rlErr := mbx.MapAPIError("BINANCE", resp.StatusCode, data, func(d []byte) (int, string, error) {

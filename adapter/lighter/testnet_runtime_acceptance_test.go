@@ -2,7 +2,6 @@ package lighter
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
 	btruntime "github.com/QuantProcessing/boltertrader/runtime"
 	"github.com/QuantProcessing/boltertrader/runtime/risk"
-	"github.com/shopspring/decimal"
 )
 
 func TestLighterTestnetPerpRuntimeAcceptance(t *testing.T) {
@@ -47,7 +45,10 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 		t.Fatalf("empty Lighter %s Testnet runtime asks for %s", label, inst.VenueSymbol)
 	}
 	price := lighterRestingBuyPrice(inst, book)
-	qty := selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	qty, err := selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	if err != nil {
+		t.Fatalf("select Lighter %s Testnet runtime quantity: %v", label, err)
+	}
 	ensureLighterTestnetCollateral(t, ctx, adapter, "runtime "+label, qty, price)
 
 	accountID := model.AccountIDLighterDefault
@@ -84,18 +85,6 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime did not become active before Lighter %s Testnet writes: %v", label, err)
 	}
-	if _, err := node.Exec.Submit(ctx, model.OrderRequest{
-		InstrumentID: inst.ID,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeLimit,
-		TIF:          enums.TifGTX,
-		Quantity:     qty,
-		Price:        price.Mul(decimal.NewFromInt(10)),
-		PositionSide: enums.PosNet,
-	}); !errors.Is(err, risk.ErrRiskRejected) {
-		t.Fatalf("risk probe err=%v, want ErrRiskRejected", err)
-	}
-
 	book, err = adapter.Market.OrderBook(ctx, inst.ID, 5)
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter "+label+" Testnet runtime refreshed order book")
@@ -105,17 +94,32 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 		t.Fatalf("empty refreshed Lighter %s Testnet runtime asks for %s", label, inst.VenueSymbol)
 	}
 	price = lighterRestingBuyPrice(inst, book)
-	qty = selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	qty, err = selectLighterTestnetQuantity(inst, cfg.MaxNotionalUSDC, price)
+	if err != nil {
+		t.Fatalf("select refreshed Lighter %s Testnet runtime quantity: %v", label, err)
+	}
 	ensureLighterTestnetCollateral(t, ctx, adapter, "runtime "+label, qty, price)
 
-	var venueOrderID string
+	exposureCleaner := newLighterAcceptanceExposureCleaner(adapter.Execution, adapter.acct, adapter.Market)
+	exposureBaseline, err := exposureCleaner.CaptureBaseline(ctx, inst)
+	if err != nil {
+		t.Fatalf("capture runtime Lighter %s Testnet exposure baseline: %v", label, err)
+	}
+	clientID := newLighterAcceptanceClientID("runtime-" + label)
+	cleanup := newLighterRestingOrderCleanup(adapter.Execution, inst.ID, accountID, clientID, qty)
 	defer func() {
-		if venueOrderID != "" {
-			_ = adapter.Execution.Cancel(context.Background(), inst.ID, venueOrderID)
+		if !cleanup.NeedsCleanup() && !cleanup.NeedsExposureCleanup() {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), lighterAcceptanceDeferredCleanupTimeout)
+		defer cleanupCancel()
+		if cleanupErr := cleanup.CancelConfirmAndRecover(cleanupCtx, exposureCleaner, inst, exposureBaseline); cleanupErr != nil {
+			t.Errorf("deferred Lighter %s Testnet runtime cleanup: %v", label, cleanupErr)
 		}
 	}()
 	order, err := node.Exec.Submit(ctx, model.OrderRequest{
 		InstrumentID: inst.ID,
+		ClientID:     clientID,
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifGTX,
@@ -123,10 +127,12 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 		Price:        price,
 		PositionSide: enums.PosNet,
 	})
+	if cleanupErr := cleanup.ObserveSubmitResult(order); cleanupErr != nil {
+		t.Fatalf("observe runtime Lighter %s Testnet resting submit: %v", label, cleanupErr)
+	}
 	if err != nil {
 		t.Fatalf("runtime submit Lighter %s Testnet resting order: %v", label, err)
 	}
-	venueOrderID = order.VenueOrderID
 	if order.Request.AccountID != accountID {
 		t.Fatalf("runtime order account id=%q, want %q", order.Request.AccountID, accountID)
 	}
@@ -136,7 +142,9 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 	if err := node.Exec.Cancel(ctx, order.Request.ClientID); err != nil {
 		t.Fatalf("runtime cancel Lighter %s Testnet resting order: %v", label, err)
 	}
-	venueOrderID = ""
+	if err := cleanup.CancelAndConfirm(ctx); err != nil {
+		t.Fatalf("runtime cancel and confirm Lighter %s Testnet resting order: %v", label, err)
+	}
 	if err := waitForLighterRuntimeOrderStatus(ctx, node, order.Request.ClientID, enums.StatusCanceled); err != nil {
 		t.Fatalf("runtime cache did not observe canceled Lighter %s order: %v", label, err)
 	}

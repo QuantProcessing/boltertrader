@@ -149,16 +149,20 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resync: %v", err)
 	}
-	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 || rep.OrdersClosedUnknown != 1 || rep.OrdersCleared != 0 {
-		t.Fatalf("reconcile report=%+v, want balances=1 positions=1 closedUnknown=1 cleared=0", rep)
+	if rep.BalancesUpdated != 1 || rep.PositionsUpdated != 0 || rep.OrdersClosedUnknown != 1 || rep.OrdersCleared != 0 {
+		t.Fatalf("reconcile report=%+v, want balances=1 directPositions=0 closedUnknown=1 cleared=0", rep)
 	}
 	if o, ok := node.Cache.Order("gap-1"); !ok || o.Status != enums.StatusUnknown {
 		t.Fatalf("gap order status=%v ok=%v, want unknown closed", o.Status, ok)
 	}
+	foundUnknown := false
 	for _, o := range node.Cache.OpenOrders() {
 		if o.Request.ClientID == "gap-1" {
-			t.Fatal("gap order still appears in open orders")
+			foundUnknown = o.Status == enums.StatusUnknown
 		}
+	}
+	if !foundUnknown {
+		t.Fatal("unknown gap order must remain in the unresolved working-order set")
 	}
 	after := node.Metrics()
 	if after.FillsSeen != before.FillsSeen || !after.RealizedPnL.Equal(before.RealizedPnL) || !after.Fees.Equal(before.Fees) {
@@ -231,13 +235,26 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 		"account-state",
 		runtime.WithAccountStaleAfter(10*time.Second),
 	)
+	// Position reconciliation is evidence-only: seed the stream-derived cache
+	// projection so the authoritative report can confirm it without bypassing
+	// the cache/portfolio/event path.
+	node.Cache.UpsertPosition(model.Position{
+		AccountID:     accountID,
+		InstrumentID:  inst,
+		Side:          enums.PosNet,
+		Quantity:      d("1"),
+		EntryPrice:    d("100"),
+		MarkPrice:     d("110"),
+		UnrealizedPnL: d("10"),
+		UpdatedAt:     start,
+	})
 
 	rep, err := node.Resync(context.Background())
 	if err != nil {
 		t.Fatalf("resync account state: %v", err)
 	}
-	if rep.AccountStatesApplied != 1 || rep.BalancesUpdated != 1 || rep.PositionsUpdated != 1 {
-		t.Fatalf("reconcile report=%+v, want account=1 balances=1 positions=1", rep)
+	if rep.AccountStatesApplied != 1 || rep.BalancesUpdated != 1 || rep.PositionsUpdated != 0 || !rep.ActivationVerdict().Safe {
+		t.Fatalf("reconcile report=%+v, want account=1 balances=1 directPositions=0 safe", rep)
 	}
 
 	acct, ok := node.Cache.Account(accountID)

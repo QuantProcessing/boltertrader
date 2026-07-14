@@ -154,45 +154,7 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 }
 
 func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
-	symbol, err := c.venueSymbol(id)
-	if err != nil {
-		return nil, err
-	}
-	orderID, err := strconv.ParseInt(venueOrderID, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("binance spot: invalid venue order id %q: %w", venueOrderID, err)
-	}
-	existing, err := c.rest.GetOrder(ctx, symbol, orderID, "")
-	if err != nil {
-		return nil, err
-	}
-	qty := newQty
-	if qty.IsZero() {
-		qty = dec(existing.OrigQty)
-	}
-	price := newPrice
-	if price.IsZero() {
-		price = dec(existing.Price)
-	}
-	resp, err := c.rest.ModifyOrder(ctx, sdkspot.CancelReplaceOrderParams{
-		Symbol:            symbol,
-		Side:              existing.Side,
-		Type:              existing.Type,
-		CancelReplaceMode: "STOP_ON_FAILURE",
-		TimeInForce:       existing.TimeInForce,
-		Quantity:          qty.String(),
-		Price:             price.String(),
-		CancelOrderID:     orderID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if resp.NewOrderResponse == nil {
-		return nil, fmt.Errorf("binance spot: cancelReplace response missing new order response")
-	}
-	order := orderFromResponse(resp.NewOrderResponse, model.OrderRequest{AccountID: c.accountID, InstrumentID: id})
-	order.UpdatedAt = c.clk.Now()
-	return &order, nil
+	return nil, fmt.Errorf("binance spot: modify uses cancel-replace order incarnations: %w", contract.ErrNotSupported)
 }
 
 func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {

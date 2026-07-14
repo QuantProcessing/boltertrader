@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/QuantProcessing/boltertrader/internal/mbx"
 )
 
 // Client is the REST client for Binance European Options (eapi.binance.com).
@@ -34,7 +36,7 @@ func NewClient() *Client {
 	if proxyURL := os.Getenv("PROXY"); proxyURL != "" {
 		if parsed, err := url.Parse(proxyURL); err == nil {
 			httpClient.Transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
-			logger.Debugw("Using proxy", "url", proxyURL)
+			logger.Debugw("Using configured proxy")
 		}
 	}
 	return &Client{
@@ -85,11 +87,11 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		req.Header.Set("X-MBX-APIKEY", c.APIKey)
 	}
 
-	c.Logger.Debugw("eapi request", "method", method, "url", u.String())
+	c.Logger.Debugw("eapi request", "method", method, "path", u.Path)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("binance option %s %s transport failed: %w", method, u.Path, mbx.TransportCause(err))
 	}
 	defer resp.Body.Close()
 

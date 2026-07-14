@@ -4,11 +4,14 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
+
+const privateStreamID = "okx:perp:private"
 
 // Config configures a live OKX perpetual (SWAP) adapter.
 type Config struct {
@@ -48,9 +51,10 @@ type Adapter struct {
 	profile      okx.DemoHostProfile
 	wsPrivateURL string
 
-	wsCtx     context.Context
-	cancel    context.CancelFunc
-	wsPrivate *okx.WSClient
+	wsCtx      context.Context
+	cancel     context.CancelFunc
+	wsPrivate  *okx.WSClient
+	privateGap *streamgap.Reporter
 }
 
 // New constructs a live OKX perp adapter, loading the SWAP instrument registry.
@@ -129,6 +133,18 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if a.wsPrivateURL != "" {
 		ws.WithURL(a.wsPrivateURL)
 	}
+	if a.privateGap == nil {
+		a.privateGap = streamgap.New(venueName, a.exec.accountID, privateStreamID, a.exec.stream.Emit)
+	}
+	ws.SetReconnectHooks(func(err error) {
+		reason := "private stream disconnected"
+		if err != nil {
+			reason = err.Error()
+		}
+		a.privateGap.Started(reason)
+	}, func() {
+		a.privateGap.Recovered("private stream login and subscriptions restored")
+	})
 	if err := ws.Connect(); err != nil { // Connect logs in private clients
 		return err
 	}

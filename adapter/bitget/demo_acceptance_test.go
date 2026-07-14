@@ -2,12 +2,15 @@ package bitget
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
@@ -50,21 +53,20 @@ func runBitgetAcceptance(t *testing.T, label, apiKey, apiSecret, passphrase stri
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	adapter := newBitgetAcceptanceAdapter(t, ctx, apiKey, apiSecret, passphrase, profile)
+	adapter := newBitgetAcceptanceAdapter(t, ctx, apiKey, apiSecret, passphrase, profile, kind, settle)
 	defer adapter.Close()
 	id := requireBitgetAcceptanceInstrument(t, adapter, symbol, kind, settle)
 	book, err := adapter.Market.OrderBook(ctx, id, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" order book")
 		t.Fatalf("%s order book: %v", label, err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		t.Fatalf("%s empty book for %s: %+v", label, symbol, book)
 	}
 	lifecycle := bitgetAcceptanceLifecycleSpec(t, adapter, label, id, book, maxNotional)
+	lifecycle.PositionSide = requireBitgetAcceptancePositionSide(t, ctx, adapter, kind)
 	state, err := adapter.acct.AccountState(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" account state")
 		t.Fatalf("%s account state: %v", label, err)
 	}
 	if state.AccountID != AccountIDUnified {
@@ -80,28 +82,39 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	adapter := newBitgetAcceptanceAdapter(t, ctx, apiKey, apiSecret, passphrase, profile)
+	adapter := newBitgetAcceptanceAdapter(t, ctx, apiKey, apiSecret, passphrase, profile, kind, settle)
 	defer adapter.Close()
 	id := requireBitgetAcceptanceInstrument(t, adapter, symbol, kind, settle)
 	book, err := adapter.Market.OrderBook(ctx, id, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" order book")
 		t.Fatalf("%s order book: %v", label, err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		t.Fatalf("%s empty book for %s: %+v", label, symbol, book)
 	}
 	lifecycle := bitgetAcceptanceLifecycleSpec(t, adapter, label, id, book, maxNotional)
+	lifecycle.PositionSide = requireBitgetAcceptancePositionSide(t, ctx, adapter, kind)
+	var orderEnvelopes atomic.Int64
+	var fillEnvelopes atomic.Int64
+	var appliedFills atomic.Int64
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
 		clock.NewRealClock(),
 		AccountIDUnified,
 		btruntime.WithAccountID(AccountIDUnified),
+		btruntime.WithOnExecEnvelope(func(envelope contract.ExecEnvelope) {
+			switch envelope.Payload.(type) {
+			case contract.OrderEvent:
+				orderEnvelopes.Add(1)
+			case contract.FillEvent:
+				fillEnvelopes.Add(1)
+			}
+		}),
+		btruntime.WithOnFill(func(model.Fill) { appliedFills.Add(1) }),
 	)
-	runtimeaccept.AttachAccountRequiredRisk(node, adapter.Market.InstrumentProvider())
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), maxNotional)
 	report, err := node.Resync(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" initial reconcile")
 		t.Fatalf("%s initial reconcile: %v", label, err)
 	}
 	if report.AccountStatesApplied != 1 {
@@ -113,7 +126,6 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 		ensureBitgetLifecycleFunds(t, label, adapter, state.LastEvent(), lifecycle)
 	}
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" private stream")
 		t.Fatalf("%s private stream: %v", label, err)
 	}
 	lifecycle.PrivateStreamTopics = bitgetPrivateStreamTopics()
@@ -126,11 +138,11 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 	}()
 	defer stopBitgetRuntimeNode(t, stop, done)
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
-		t.Fatalf("%s runtime order lifecycle: %v", label, err)
+		metrics := node.Metrics()
+		t.Fatalf("%s runtime order lifecycle: %v (order_envelopes=%d fill_envelopes=%d applied_fills=%d pending_fills=%d)", label, err, orderEnvelopes.Load(), fillEnvelopes.Load(), appliedFills.Load(), metrics.PendingFills)
 	}
 	finalReport, err := node.Resync(ctx)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, label+" final reconcile")
 		t.Fatalf("%s final reconcile: %v", label, err)
 	}
 	if finalReport.AccountStatesApplied != 1 {
@@ -139,8 +151,12 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, kind)
 }
 
-func newBitgetAcceptanceAdapter(t *testing.T, ctx context.Context, apiKey, apiSecret, passphrase string, profile testenv.BitgetEndpointProfile) *Adapter {
+func newBitgetAcceptanceAdapter(t *testing.T, ctx context.Context, apiKey, apiSecret, passphrase string, profile testenv.BitgetEndpointProfile, kind enums.InstrumentKind, settle string) *Adapter {
 	t.Helper()
+	categories := bitgetAcceptanceCategories(kind, settle)
+	if len(categories) == 0 {
+		t.Fatalf("unsupported Bitget acceptance product kind=%s settle=%q", kind, settle)
+	}
 	httpClient, err := testenv.BitgetDemoHTTPClient(45 * time.Second)
 	if err != nil {
 		t.Fatalf("Bitget HTTP client: %v", err)
@@ -157,13 +173,59 @@ func newBitgetAcceptanceAdapter(t *testing.T, ctx context.Context, apiKey, apiSe
 			OfficialTestnet: profile.OfficialTestnet,
 		},
 		HTTPClient: httpClient,
-		Categories: []string{"SPOT", bitgetsdk.ProductTypeUSDTFutures, bitgetsdk.ProductTypeUSDCFutures},
+		Categories: categories,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "Bitget adapter initialization")
 		t.Fatalf("new Bitget adapter: %v", err)
 	}
 	return adapter
+}
+
+func bitgetAcceptanceCategories(kind enums.InstrumentKind, settle string) []string {
+	switch kind {
+	case enums.KindSpot:
+		return []string{"SPOT"}
+	case enums.KindPerp:
+		switch strings.ToUpper(strings.TrimSpace(settle)) {
+		case "USDT":
+			return []string{bitgetsdk.ProductTypeUSDTFutures}
+		case "USDC":
+			return []string{bitgetsdk.ProductTypeUSDCFutures}
+		}
+	}
+	return nil
+}
+
+func requireBitgetAcceptancePositionSide(t *testing.T, ctx context.Context, adapter *Adapter, kind enums.InstrumentKind) enums.PositionSide {
+	t.Helper()
+	if kind == enums.KindSpot {
+		return enums.PosNet
+	}
+	settings, err := adapter.rest.GetAccountSettings(ctx)
+	if err != nil {
+		t.Fatalf("Bitget acceptance account settings: %v", err)
+	}
+	positionSide, err := bitgetAcceptancePositionSideForHoldMode(kind, settings.HoldMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return positionSide
+}
+
+func bitgetAcceptancePositionSideForHoldMode(kind enums.InstrumentKind, holdMode string) (enums.PositionSide, error) {
+	if kind == enums.KindSpot {
+		return enums.PosNet, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(holdMode)) {
+	case "one_way_mode", "single_hold":
+		return enums.PosNet, nil
+	case "hedge_mode", "double_hold":
+		// The lifecycle opens with a buy and closes with a sell, so the long
+		// hedge leg is the only semantics-preserving choice.
+		return enums.PosLong, nil
+	default:
+		return enums.PosNet, fmt.Errorf("Bitget acceptance unsupported hold mode %q", holdMode)
+	}
 }
 
 func requireBitgetAcceptanceInstrument(t *testing.T, adapter *Adapter, venueSymbol string, kind enums.InstrumentKind, settle string) model.InstrumentID {
@@ -198,22 +260,60 @@ func bitgetAcceptanceLifecycleSpec(t *testing.T, adapter *Adapter, label string,
 	fillPrice := ceilBitgetAcceptanceDecimal(book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), inst.PriceTick)
 	closePrice := floorBitgetAcceptanceDecimal(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), inst.PriceTick)
 	qty := bitgetAcceptanceQuantity(t, label, inst, maxNotional, minPositiveDecimal(restingPrice, fillPrice, closePrice), maxPositiveDecimal(restingPrice, fillPrice, closePrice))
-	return runtimeaccept.OrderLifecycleSpec{
-		Label:                 label,
-		Venue:                 VenueName,
-		Environment:           acceptanceEnvironment(label),
-		Product:               acceptanceProduct(inst.ID.Kind, inst.Settle),
-		AccountID:             AccountIDUnified,
-		InstrumentID:          id,
-		Quantity:              qty,
-		RestingPrice:          restingPrice,
-		FillPrice:             fillPrice,
-		ClosePrice:            closePrice,
-		PositionSide:          enums.PosNet,
-		CloseAfterFill:        true,
-		CleanExistingPosition: id.Kind != enums.KindSpot,
-		Logf:                  t.Logf,
+	closeQty := decimal.Zero
+	if inst.ID.Kind == enums.KindSpot {
+		closeQty = bitgetAcceptanceSpotCloseQuantity(t, label, inst, qty, closePrice)
 	}
+	spec := runtimeaccept.OrderLifecycleSpec{
+		Label:          label,
+		Venue:          VenueName,
+		Environment:    acceptanceEnvironment(label),
+		Product:        acceptanceProduct(inst.ID.Kind, inst.Settle),
+		AccountID:      AccountIDUnified,
+		InstrumentID:   id,
+		Quantity:       qty,
+		CloseQuantity:  closeQty,
+		RestingPrice:   restingPrice,
+		FillPrice:      fillPrice,
+		ClosePrice:     closePrice,
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		Logf:           t.Logf,
+	}
+	if inst.ID.Kind == enums.KindSpot {
+		step, minQty := bitgetAcceptanceSpotQuantityRules(inst)
+		spec = runtimeaccept.ConfigureSpotBalanceGuard(spec, adapter.acct, inst.Base, step, minQty, inst.MinNotional, qty.Sub(closeQty))
+	}
+	return spec
+}
+
+func bitgetAcceptanceSpotCloseQuantity(t *testing.T, label string, inst *model.Instrument, qty, closePrice decimal.Decimal) decimal.Decimal {
+	t.Helper()
+	step, minQty := bitgetAcceptanceSpotQuantityRules(inst)
+	closeQty := floorBitgetAcceptanceDecimal(qty.Mul(bitgetSpotCloseQuantityBuffer()), step)
+	if closeQty.LessThan(minQty) {
+		t.Fatalf("%s: spot close quantity %s is below min quantity %s after fee buffer", label, closeQty, minQty)
+	}
+	if inst.MinNotional.IsPositive() && closeQty.Mul(closePrice).LessThan(inst.MinNotional) {
+		t.Fatalf("%s: spot close notional %s is below min notional %s after fee buffer", label, closeQty.Mul(closePrice), inst.MinNotional)
+	}
+	return closeQty
+}
+
+func bitgetAcceptanceSpotQuantityRules(inst *model.Instrument) (decimal.Decimal, decimal.Decimal) {
+	step := inst.SizeStep
+	if !step.IsPositive() {
+		step = decimal.NewFromInt(1)
+	}
+	minQty := inst.MinQty
+	if !minQty.IsPositive() {
+		minQty = step
+	}
+	return step, minQty
+}
+
+func bitgetSpotCloseQuantityBuffer() decimal.Decimal {
+	return decimal.RequireFromString("0.995")
 }
 
 func acceptanceEnvironment(label string) string {
@@ -256,15 +356,28 @@ func bitgetAcceptanceQuantity(t *testing.T, label string, inst *model.Instrument
 	if !qty.IsPositive() {
 		qty = step
 	}
+	if inst.ID.Kind == enums.KindSpot {
+		minBufferedQty := qty.Div(bitgetSpotCloseQuantityBuffer())
+		if minBufferedQty.GreaterThan(qty) {
+			qty = minBufferedQty
+		}
+	}
 	if inst.MinNotional.IsPositive() && minNotionalPrice.IsPositive() {
 		minByNotional := inst.MinNotional.Div(minNotionalPrice)
 		if minByNotional.GreaterThan(qty) {
 			qty = minByNotional
 		}
+		if inst.ID.Kind == enums.KindSpot {
+			minCloseQty := ceilBitgetAcceptanceDecimal(minByNotional, step)
+			minBufferedQty := minCloseQty.Div(bitgetSpotCloseQuantityBuffer())
+			if minBufferedQty.GreaterThan(qty) {
+				qty = minBufferedQty
+			}
+		}
 	}
 	qty = ceilBitgetAcceptanceDecimal(qty, step)
 	if qty.Mul(maxNotionalPrice).GreaterThan(maxNotional) {
-		t.Skipf("skipping %s: min lifecycle quantity %s notional %s exceeds max notional %s", label, qty, qty.Mul(maxNotionalPrice), maxNotional)
+		t.Fatalf("%s: min lifecycle quantity %s notional %s exceeds max notional %s", label, qty, qty.Mul(maxNotionalPrice), maxNotional)
 	}
 	return qty
 }
@@ -308,7 +421,7 @@ func ensureBitgetLifecycleFunds(t *testing.T, label string, adapter *Adapter, st
 			return
 		}
 	}
-	t.Skipf("skipping %s: no %s balance with available >= %s for lifecycle", label, currency, required)
+	t.Fatalf("%s: no %s balance with available >= %s for lifecycle", label, currency, required)
 }
 
 func ceilBitgetAcceptanceDecimal(value, step decimal.Decimal) decimal.Decimal {

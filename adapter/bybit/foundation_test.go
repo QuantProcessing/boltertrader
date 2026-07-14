@@ -1,6 +1,10 @@
 package bybit
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -14,6 +18,70 @@ func TestAccountIDIsCanonicalUnifiedPool(t *testing.T) {
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDUnified || AccountIDForKind(enums.KindPerp) != AccountIDUnified {
 		t.Fatalf("Bybit unified account id must be shared across spot/perp")
+	}
+}
+
+func TestNormalizeBybitCategories(t *testing.T) {
+	got, err := normalizeBybitCategories(nil)
+	if err != nil || !reflect.DeepEqual(got, []string{"spot", "linear"}) {
+		t.Fatalf("default categories=%v err=%v", got, err)
+	}
+
+	got, err = normalizeBybitCategories([]string{" SPOT ", "linear", "spot"})
+	if err != nil || !reflect.DeepEqual(got, []string{"spot", "linear"}) {
+		t.Fatalf("normalized categories=%v err=%v", got, err)
+	}
+
+	for _, categories := range [][]string{{"inverse"}, {"option"}, {""}} {
+		if got, err := normalizeBybitCategories(categories); err == nil {
+			t.Fatalf("categories=%q normalized to %v, want explicit rejection", categories, got)
+		}
+	}
+}
+
+func TestAdapterConfigPropagatesRESTRecvWindow(t *testing.T) {
+	var gotRecvWindow string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v5/market/instruments-info":
+			writeJSON(t, w, map[string]any{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result": map[string]any{
+					"category":       "spot",
+					"list":           []any{},
+					"nextPageCursor": "",
+				},
+			})
+		case "/v5/user/query-api":
+			gotRecvWindow = r.Header.Get("X-BAPI-RECV-WINDOW")
+			writeJSON(t, w, map[string]any{
+				"retCode": 0,
+				"retMsg":  "OK",
+				"result":  map[string]any{},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := newWithRESTRecvWindow(context.Background(), Config{
+		APIKey:      "key",
+		APISecret:   "secret",
+		Environment: bybitsdk.EnvironmentProfile{RESTBaseURL: server.URL},
+		Categories:  []string{"spot"},
+		HTTPClient:  server.Client(),
+	}, 15000)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer adapter.Close()
+	if _, err := adapter.rest.GetAPIKeyInfo(context.Background()); err != nil {
+		t.Fatalf("GetAPIKeyInfo: %v", err)
+	}
+	if gotRecvWindow != "15000" {
+		t.Fatalf("recv window=%q, want 15000", gotRecvWindow)
 	}
 }
 
@@ -70,6 +138,38 @@ func TestInstrumentFromBybitRejectsDatedLinearFutures(t *testing.T) {
 	}
 }
 
+func TestInstrumentProviderLoadTracksDatedLinearFutureAsDeferred(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"retCode": 0,
+			"retMsg":  "OK",
+			"result": map[string]any{
+				"category": "linear",
+				"list": []any{
+					map[string]any{"symbol": "BTCUSDT", "baseCoin": "BTC", "quoteCoin": "USDT", "settleCoin": "USDT", "status": "Trading", "deliveryTime": "0"},
+					map[string]any{"symbol": "BTCUSDT-31JUL26", "baseCoin": "BTC", "quoteCoin": "USDT", "settleCoin": "USDT", "status": "Trading", "deliveryTime": "1785456000000"},
+				},
+				"nextPageCursor": "",
+			},
+		})
+	}))
+	defer server.Close()
+
+	provider := newInstrumentProvider()
+	if err := provider.Load(context.Background(), bybitsdk.NewClient().WithBaseURL(server.URL).WithHTTPClient(server.Client()), "linear"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !provider.isDeferred("linear", "BTCUSDT-31JUL26") {
+		t.Fatal("dated linear future was not retained as explicitly deferred")
+	}
+	if _, ok := provider.ResolveVenueInstrument("BTCUSDT-31JUL26", enums.KindPerp, bybitsdk.SettleCoinUSDT); ok {
+		t.Fatal("dated linear future must not enter supported perpetual registry")
+	}
+	if _, ok := provider.ResolveVenueInstrument("BTCUSDT", enums.KindPerp, bybitsdk.SettleCoinUSDT); !ok {
+		t.Fatal("supported perpetual instrument was not loaded")
+	}
+}
+
 func TestInstrumentProviderIndexesNeutralAndVenueSymbols(t *testing.T) {
 	provider := newInstrumentProvider()
 	provider.LoadSnapshot([]*model.Instrument{
@@ -115,18 +215,23 @@ func TestInstrumentProviderResolvesVenueSymbolByKindAndSettlement(t *testing.T) 
 
 func TestCapabilityRowsSplitSettlementCategories(t *testing.T) {
 	rows := CapabilityRows()
-	want := map[string]bool{"Spot cash": false, "USDT-linear Perp/SWAP": false, "USDC-linear Perp/SWAP": false}
+	want := map[string]string{
+		"Spot cash":             "unsupported",
+		"USDT-linear Perp/SWAP": "account snapshot",
+		"USDC-linear Perp/SWAP": "account snapshot",
+	}
 	for _, row := range rows {
 		if row.Venue != VenueName || !row.AccountStateSnapshot {
 			t.Fatalf("unexpected row: %+v", row)
 		}
-		if _, ok := want[row.Product]; ok {
-			want[row.Product] = true
+		if positionReports, ok := want[row.Product]; ok {
+			if row.PositionReports != positionReports {
+				t.Fatalf("product=%s position reports=%q, want %q", row.Product, row.PositionReports, positionReports)
+			}
+			delete(want, row.Product)
 		}
 	}
-	for product, seen := range want {
-		if !seen {
-			t.Fatalf("missing capability row for %s", product)
-		}
+	for product := range want {
+		t.Fatalf("missing capability row for %s", product)
 	}
 }

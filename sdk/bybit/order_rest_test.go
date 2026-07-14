@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -324,6 +325,132 @@ func TestClient_GetRealtimeOrders(t *testing.T) {
 	}
 }
 
+func TestClient_OrderPaginationRejectsRepeatedCursor(t *testing.T) {
+	operations := []struct {
+		name string
+		path string
+		call func(*Client) ([]OrderRecord, error)
+	}{
+		{
+			name: "history",
+			path: "/v5/order/history",
+			call: func(client *Client) ([]OrderRecord, error) {
+				return client.GetOrderHistoryFilteredScoped(context.Background(), "linear", "BTCUSDT", "", "", "")
+			},
+		},
+		{
+			name: "realtime",
+			path: "/v5/order/realtime",
+			call: func(client *Client) ([]OrderRecord, error) {
+				return client.GetRealtimeOrders(context.Background(), "linear", "BTCUSDT", "", "", "", 0)
+			},
+		},
+	}
+	cursorCases := []struct {
+		name    string
+		cursors []string
+	}{
+		{name: "adjacent", cursors: []string{"same", "same"}},
+		{name: "cycle", cursors: []string{"cursor-a", "cursor-b", "cursor-a"}},
+	}
+
+	for _, operation := range operations {
+		for _, cursorCase := range cursorCases {
+			t.Run(operation.name+"/"+cursorCase.name, func(t *testing.T) {
+				calls := 0
+				client := NewClient().
+					WithCredentials("key", "secret").
+					WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+						calls++
+						if req.URL.Path != operation.path {
+							t.Fatalf("path=%q, want %q", req.URL.Path, operation.path)
+						}
+						if calls > len(cursorCase.cursors) {
+							return nil, fmt.Errorf("pagination did not stop after repeated cursor")
+						}
+						body := fmt.Sprintf(
+							`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":%q,"list":[{"orderId":%q}]}}`,
+							cursorCase.cursors[calls-1],
+							fmt.Sprintf("order-%d", calls),
+						)
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Body:       io.NopCloser(strings.NewReader(body)),
+							Header:     make(http.Header),
+						}, nil
+					})})
+
+				records, err := operation.call(client)
+				if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+					t.Fatalf("error=%v, want repeated cursor error", err)
+				}
+				if records != nil {
+					t.Fatalf("records=%+v, want nil rather than accumulated partial pages", records)
+				}
+				if calls != len(cursorCase.cursors) {
+					t.Fatalf("calls=%d, want %d", calls, len(cursorCase.cursors))
+				}
+			})
+		}
+	}
+}
+
+func TestClient_OrderPaginationHasFinitePageLimit(t *testing.T) {
+	const expectedMaxPages = 1000
+	tests := []struct {
+		name string
+		call func(*Client) ([]OrderRecord, error)
+	}{
+		{
+			name: "history",
+			call: func(client *Client) ([]OrderRecord, error) {
+				return client.GetOrderHistoryFilteredScoped(context.Background(), "linear", "BTCUSDT", "", "", "")
+			},
+		},
+		{
+			name: "realtime",
+			call: func(client *Client) ([]OrderRecord, error) {
+				return client.GetRealtimeOrders(context.Background(), "linear", "BTCUSDT", "", "", "", 0)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			client := NewClient().
+				WithCredentials("key", "secret").
+				WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls > expectedMaxPages {
+						return nil, fmt.Errorf("pagination exceeded test transport bound")
+					}
+					body := fmt.Sprintf(
+						`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"cursor-%d","list":[{"orderId":"order-%d"}]}}`,
+						calls,
+						calls,
+					)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Header:     make(http.Header),
+					}, nil
+				})})
+
+			records, err := tt.call(client)
+			if err == nil || !strings.Contains(err.Error(), "page limit") {
+				t.Fatalf("error=%v, want page limit error", err)
+			}
+			if records != nil {
+				t.Fatalf("records=%+v, want nil rather than accumulated partial pages", records)
+			}
+			if calls != expectedMaxPages {
+				t.Fatalf("calls=%d, want %d", calls, expectedMaxPages)
+			}
+		})
+	}
+}
+
 func TestClient_GetExecutionsBuildsPrivateQuery(t *testing.T) {
 	t.Parallel()
 
@@ -357,5 +484,163 @@ func TestClient_GetExecutionsBuildsPrivateQuery(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ExecID != "exec-1" || got[0].OrderLinkID != "client-1" {
 		t.Fatalf("unexpected executions: %+v", got)
+	}
+}
+
+func TestClient_GetExecutionsBoundedConsumesCursorWithinOverallLimit(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"next","list":[{"execId":"exec-1","symbol":"BTCUSDT"}]}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","list":[{"execId":"exec-2","symbol":"BTCUSDT"}]}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetExecutionsBounded(context.Background(), GetExecutionsRequest{Category: "linear", Limit: 150})
+	if err != nil {
+		t.Fatalf("GetExecutionsBounded: %v", err)
+	}
+	if saturated {
+		t.Fatal("two-page result below the overall limit must be complete")
+	}
+	if len(records) != 2 || records[0].ExecID != "exec-1" || records[1].ExecID != "exec-2" {
+		t.Fatalf("records=%+v, want both pages", records)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want 2", calls)
+	}
+}
+
+func TestClient_GetExecutionsBoundedConsumesCursorWithOrderLinkFilter(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if got := req.URL.Query().Get("orderLinkId"); got != "client-1" {
+				t.Fatalf("orderLinkId=%q, want client-1", got)
+			}
+			body := `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"next","list":[{"execId":"exec-1","symbol":"BTCUSDT"}]}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","list":[{"execId":"exec-2","symbol":"BTCUSDT"}]}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetExecutionsBounded(context.Background(), GetExecutionsRequest{
+		Category:    "linear",
+		OrderLinkID: "client-1",
+		Limit:       150,
+	})
+	if err != nil {
+		t.Fatalf("GetExecutionsBounded: %v", err)
+	}
+	if saturated {
+		t.Fatal("filtered two-page result below the overall limit must be complete")
+	}
+	if len(records) != 2 || records[0].ExecID != "exec-1" || records[1].ExecID != "exec-2" {
+		t.Fatalf("records=%+v, want both filtered pages", records)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want 2", calls)
+	}
+}
+
+func TestClient_GetExecutionsBoundedStopsAtOverallLimit(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"more","list":[{"execId":"exec-1"},{"execId":"exec-2"}]}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	records, saturated, err := client.GetExecutionsBounded(context.Background(), GetExecutionsRequest{Category: "linear", Limit: 2})
+	if err != nil {
+		t.Fatalf("GetExecutionsBounded: %v", err)
+	}
+	if !saturated || len(records) != 2 {
+		t.Fatalf("records=%+v saturated=%v, want two records and saturation", records, saturated)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want one bounded request", calls)
+	}
+}
+
+func TestClient_ExecutionPaginationHasFinitePageLimitAcrossEmptyPages(t *testing.T) {
+	const expectedMaxPages = 1000
+	tests := []struct {
+		name string
+		call func(*Client) ([]ExecutionRecord, bool, error)
+	}{
+		{
+			name: "unbounded",
+			call: func(client *Client) ([]ExecutionRecord, bool, error) {
+				records, err := client.GetExecutions(context.Background(), "linear", "BTCUSDT", "", "")
+				return records, false, err
+			},
+		},
+		{
+			name: "bounded",
+			call: func(client *Client) ([]ExecutionRecord, bool, error) {
+				return client.GetExecutionsBounded(context.Background(), GetExecutionsRequest{
+					Category: "linear",
+					Symbol:   "BTCUSDT",
+					Limit:    2,
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			client := NewClient().
+				WithCredentials("key", "secret").
+				WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					if calls > expectedMaxPages {
+						return nil, fmt.Errorf("pagination exceeded test transport bound")
+					}
+					list := "[]"
+					if calls == 1 {
+						list = `[{"execId":"exec-1","symbol":"BTCUSDT"}]`
+					}
+					body := fmt.Sprintf(
+						`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"cursor-%d","list":%s}}`,
+						calls,
+						list,
+					)
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(body)),
+						Header:     make(http.Header),
+					}, nil
+				})})
+
+			records, saturated, err := tt.call(client)
+			if err == nil || !strings.Contains(err.Error(), "page limit") {
+				t.Fatalf("error=%v, want page limit error", err)
+			}
+			if records != nil {
+				t.Fatalf("records=%+v, want nil rather than accumulated partial pages", records)
+			}
+			if saturated {
+				t.Fatal("failed traversal must not report a successful bounded saturation")
+			}
+			if calls != expectedMaxPages {
+				t.Fatalf("calls=%d, want %d", calls, expectedMaxPages)
+			}
+		})
 	}
 }

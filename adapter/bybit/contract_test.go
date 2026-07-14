@@ -139,10 +139,13 @@ func TestBybitOrderAndFillConversion(t *testing.T) {
 		t.Fatalf("unexpected venue order: %+v", venue)
 	}
 
-	order := orderFromBybitRecord(bybitsdk.OrderRecord{
+	order, err := orderFromBybitRecord(bybitsdk.OrderRecord{
 		OrderID: "42", OrderLinkID: "client-1", Symbol: "BTCUSDT", Side: "Buy", OrderType: "Limit",
 		TimeInForce: "PostOnly", Qty: "0.01", Price: "50000", CumExecQty: "0.005", AvgPrice: "50001", OrderStatus: "PartiallyFilled",
 	}, inst.ID, AccountIDUnified)
+	if err != nil {
+		t.Fatalf("orderFromBybitRecord: %v", err)
+	}
 	if order.Status != enums.StatusPartiallyFilled || !order.FilledQty.Equal(decimal.RequireFromString("0.005")) {
 		t.Fatalf("unexpected order: %+v", order)
 	}
@@ -241,20 +244,21 @@ func TestBybitReferenceSnapshotOpenInterestAndTickerPayload(t *testing.T) {
 	}
 }
 
-func TestBybitMassStatusQueriesLinearSettlementScopes(t *testing.T) {
-	var settles []string
+func TestBybitMassStatusQueriesVenueWideSpotAndLinearScopes(t *testing.T) {
+	var scopes []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v5/order/realtime" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("category"); got != "linear" {
-			t.Fatalf("category=%q, want linear", got)
-		}
+		category := r.URL.Query().Get("category")
 		settle := r.URL.Query().Get("settleCoin")
-		if settle == "" {
+		if category == "linear" && settle == "" {
 			t.Fatalf("settleCoin query is required: %s", r.URL.RawQuery)
 		}
-		settles = append(settles, settle)
+		if category == "spot" && settle != "" {
+			t.Fatalf("spot query must not include settleCoin: %s", r.URL.RawQuery)
+		}
+		scopes = append(scopes, category+":"+settle)
 		writeJSON(t, w, map[string]any{
 			"retCode": 0,
 			"retMsg":  "OK",
@@ -273,11 +277,20 @@ func TestBybitMassStatusQueriesLinearSettlementScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if len(settles) != 2 || settles[0] != bybitsdk.SettleCoinUSDT || settles[1] != bybitsdk.SettleCoinUSDC {
-		t.Fatalf("settle queries=%v", settles)
+	wantScopes := map[string]int{"linear:" + bybitsdk.SettleCoinUSDT: 1, "linear:" + bybitsdk.SettleCoinUSDC: 1, "spot:": 1}
+	if len(scopes) != len(wantScopes) {
+		t.Fatalf("order scopes=%v, want %v", scopes, wantScopes)
 	}
-	if !mass.Partial || len(mass.Warnings) == 0 || mass.Warnings[0].Code != "bybit_spot_mass_status_symbol_scoped" {
-		t.Fatalf("expected partial spot warning: %+v", mass)
+	for _, scope := range scopes {
+		wantScopes[scope]--
+	}
+	for scope, remaining := range wantScopes {
+		if remaining != 0 {
+			t.Fatalf("order scopes=%v, scope %s count mismatch", scopes, scope)
+		}
+	}
+	if mass.Partial || len(mass.Warnings) != 0 {
+		t.Fatalf("venue-wide spot and linear open-order snapshot must be complete: %+v", mass)
 	}
 }
 
@@ -397,6 +410,7 @@ func TestBybitScopedReportsPreserveSpotInstrumentForAmbiguousVenueSymbol(t *test
 				"retMsg":  "OK",
 				"result": map[string]any{"list": []any{
 					map[string]any{
+						"execType":    "Trade",
 						"execId":      "spot-fill",
 						"orderId":     "spot-order",
 						"orderLinkId": "spot-client",
@@ -490,6 +504,35 @@ func TestBybitReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) {
 	}
 }
 
+func TestBybitSpotPositionReportDoesNotQueryLinearPositions(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	exec := newExecutionClient(
+		bybitsdk.NewClient().WithCredentials("key", "secret").WithBaseURL(server.URL).WithHTTPClient(server.Client()),
+		bybitTestProvider(),
+		clock.NewRealClock(),
+	)
+	spotID := model.InstrumentID{Venue: VenueName, Symbol: "ETH-USDT", Kind: enums.KindSpot}
+	reports, err := exec.GeneratePositionReports(context.Background(), model.PositionReportQuery{
+		AccountID:    AccountIDUnified,
+		InstrumentID: spotID,
+	})
+	if err != nil {
+		t.Fatalf("GeneratePositionReports: %v", err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("spot position reports=%+v, want empty", reports)
+	}
+	if called {
+		t.Fatal("spot position report crossed into linear position API")
+	}
+}
+
 type bybitAccountFixture struct {
 	UnifiedMarginStatus bybitsdk.UnifiedMarginStatus
 }
@@ -527,13 +570,17 @@ func newBybitAccountServer(t *testing.T, fixture bybitAccountFixture) *httptest.
 				}}},
 			})
 		case "/v5/position/list":
+			positions := []any{}
+			switch r.URL.Query().Get("settleCoin") {
+			case bybitsdk.SettleCoinUSDT:
+				positions = append(positions, map[string]any{"symbol": "BTCUSDT", "side": "Buy", "size": "0.01", "avgPrice": "50000", "leverage": "2", "unrealisedPnl": "1"})
+			case bybitsdk.SettleCoinUSDC:
+				positions = append(positions, map[string]any{"symbol": "BTCPERP", "side": "None", "size": "0", "avgPrice": "0", "leverage": "1", "unrealisedPnl": "0"})
+			}
 			writeJSON(t, w, map[string]any{
 				"retCode": 0,
 				"retMsg":  "OK",
-				"result": map[string]any{"list": []any{
-					map[string]any{"symbol": "BTCUSDT", "side": "Buy", "size": "0.01", "avgPrice": "50000", "leverage": "2", "unrealisedPnl": "1"},
-					map[string]any{"symbol": "BTCPERP", "side": "None", "size": "0", "avgPrice": "0", "leverage": "1", "unrealisedPnl": "0"},
-				}},
+				"result":  map[string]any{"list": positions},
 			})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)

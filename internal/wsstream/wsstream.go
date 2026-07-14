@@ -10,9 +10,12 @@ import "sync"
 // Stream is a typed, closable event channel with backpressure. The zero value
 // is not usable; call New.
 type Stream[T any] struct {
-	ch   chan T
-	done chan struct{}
-	once sync.Once
+	ch       chan T
+	done     chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
+	closing  bool
+	emitters sync.WaitGroup
 }
 
 // New returns a Stream with the given buffer size.
@@ -30,6 +33,15 @@ func (s *Stream[T]) C() <-chan T { return s.ch }
 // stream is closed. It NEVER drops ev silently and never panics after Close.
 // Returns false if the stream was already closed (ev not delivered).
 func (s *Stream[T]) Emit(ev T) bool {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return false
+	}
+	s.emitters.Add(1)
+	s.mu.Unlock()
+	defer s.emitters.Done()
+
 	select {
 	case s.ch <- ev:
 		return true
@@ -38,12 +50,19 @@ func (s *Stream[T]) Emit(ev T) bool {
 	}
 }
 
-// Close stops the stream: pending and future Emit calls unblock and return
-// false. Idempotent. The underlying channel is intentionally not closed (so a
-// concurrent Emit can never send on a closed channel); consumers should select
-// on a context/done of their own, or stop reading after Close.
+// Close stops the stream: blocked and future Emit calls unblock and return
+// false. It waits for emitters that registered before shutdown, then closes the
+// receive channel. Registration and shutdown are serialized so no sender can
+// race with closing ch. Close is idempotent and concurrent-safe.
 func (s *Stream[T]) Close() {
-	s.once.Do(func() { close(s.done) })
+	s.once.Do(func() {
+		s.mu.Lock()
+		s.closing = true
+		close(s.done)
+		s.mu.Unlock()
+		s.emitters.Wait()
+		close(s.ch)
+	})
 }
 
 // Done reports the channel that is closed when the stream closes, for consumers

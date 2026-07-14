@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -62,6 +63,258 @@ func TestJournalStateStoreCommitsAndLoadsCursor(t *testing.T) {
 	if got.LastReportID != cursor.LastReportID || got.LookbackFloor != cursor.LookbackFloor {
 		t.Fatalf("cursor=%+v, want %+v", got, cursor)
 	}
+}
+
+func TestReconcilerRequestsFillsFromStoredCursorWindow(t *testing.T) {
+	ctx := context.Background()
+	journalStore := journal.NewMemory()
+	store := NewJournalStateStore(journalStore)
+	scope := ScopeKey{Venue: "T", AccountID: "acct-1"}
+	from := time.Date(2026, 7, 13, 1, 2, 3, 0, time.UTC)
+	if err := store.CommitCursor(ctx, Cursor{
+		Scope:              scope,
+		Stream:             StreamOrders,
+		LastSuccessfulPass: PassID(scope, from),
+		LastVenueTime:      from,
+		LastLocalApplyTime: from,
+	}); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	exec := &snapshotExec{
+		mass:        model.NewExecutionMassStatus("T", "acct-1", from.Add(time.Minute)),
+		fillHistory: true,
+	}
+	startedAt := time.Now()
+	if _, err := New(nil, exec, cache.New()).
+		WithAccountID("acct-1").
+		WithStateStore(store).
+		Run(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	finishedAt := time.Now()
+
+	if len(exec.queries) != 1 {
+		t.Fatalf("queries=%+v, want one mass-status query", exec.queries)
+	}
+	query := exec.queries[0]
+	if !query.IncludeFills {
+		t.Fatal("mass-status query IncludeFills=false, want true")
+	}
+	wantSince := from.Add(-defaultCursorOverlap)
+	if !query.Since.Equal(wantSince) {
+		t.Fatalf("mass-status query since=%s, want cursor overlap start %s", query.Since, wantSince)
+	}
+	if query.Until.Before(startedAt) || query.Until.After(finishedAt) {
+		t.Fatalf("mass-status query until=%s, want bounded by run [%s,%s]", query.Until, startedAt, finishedAt)
+	}
+}
+
+func TestReconcilerDoesNotRequestUnsupportedFillHistory(t *testing.T) {
+	exec := &snapshotExec{mass: model.NewExecutionMassStatus("T", "acct-1", time.Now())}
+
+	if _, err := New(nil, exec, cache.New()).WithAccountID("acct-1").Run(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(exec.queries) != 1 {
+		t.Fatalf("queries=%+v, want one mass-status query", exec.queries)
+	}
+	if exec.queries[0].IncludeFills {
+		t.Fatal("mass-status query IncludeFills=true for execution client without fill-history capability")
+	}
+}
+
+func TestFillPartialWarningKeepsNextQueryAtSafeCursorFloor(t *testing.T) {
+	for _, warningCode := range []string{"FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED"} {
+		t.Run(warningCode, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewJournalStateStore(journal.NewMemory())
+			scope := ScopeKey{Venue: "T", AccountID: "acct"}
+			from := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+			if err := store.CommitCursor(ctx, Cursor{
+				Scope:              scope,
+				Stream:             StreamOrders,
+				LastSuccessfulPass: PassID(scope, from),
+				LastVenueTime:      from,
+				LastLocalApplyTime: from,
+				LookbackFloor:      from,
+			}); err != nil {
+				t.Fatalf("seed cursor: %v", err)
+			}
+
+			partialAt := from.Add(time.Hour)
+			partial := model.NewExecutionMassStatus("T", "acct", partialAt)
+			partial.Warnings = append(partial.Warnings, model.ReportWarning{
+				Code:    warningCode,
+				Message: "fill history did not cover the full requested window",
+			})
+			exec := &snapshotExec{mass: partial}
+			r := New(nil, exec, cache.New()).
+				WithAccountID("acct").
+				WithStateStore(store)
+			report, err := r.Run(ctx)
+			if err != nil {
+				t.Fatalf("partial run: %v", err)
+			}
+			if !report.FillsPartial {
+				t.Fatalf("partial report=%+v, want explicit fills-partial state", report)
+			}
+			cursor, err := store.LoadCursor(ctx, scope, StreamOrders)
+			if err != nil {
+				t.Fatalf("load partial cursor: %v", err)
+			}
+			if !cursor.FillsPartial {
+				t.Fatalf("cursor=%+v, want explicit fills-partial state", cursor)
+			}
+
+			exec.mass = model.NewExecutionMassStatus("T", "acct", partialAt.Add(30*time.Minute))
+			if _, err := r.Run(ctx); err != nil {
+				t.Fatalf("retry run: %v", err)
+			}
+			if len(exec.queries) != 2 {
+				t.Fatalf("queries=%+v, want two mass-status queries", exec.queries)
+			}
+			if got := exec.queries[1].Since; !got.Equal(from) {
+				t.Fatalf("retry query since=%s, want prior safe fill floor %s", got, from)
+			}
+		})
+	}
+}
+
+func TestRecoveredFillJournaledBeforeDependentCursorCommit(t *testing.T) {
+	ctx := context.Background()
+	c := cache.New()
+	known := order("journal-fill", btc, "1", enums.StatusNew)
+	known.Request.AccountID = "acct"
+	c.UpsertOrder(known)
+
+	generatedAt := time.Date(2026, 7, 13, 2, 0, 0, 0, time.UTC)
+	mass := model.NewExecutionMassStatus("T", "acct", generatedAt)
+	fill := model.Fill{
+		AccountID:    "acct",
+		InstrumentID: btc,
+		ClientID:     known.Request.ClientID,
+		VenueOrderID: known.VenueOrderID,
+		TradeID:      "journal-fill-trade",
+		Side:         enums.SideBuy,
+		Price:        d("100"),
+		Quantity:     d("1"),
+		Timestamp:    generatedAt,
+	}
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: generatedAt}); err != nil {
+		t.Fatalf("add fill: %v", err)
+	}
+
+	j := journal.NewMemory()
+	if _, err := New(nil, &snapshotExec{mass: mass}, c).
+		WithAccountID("acct").
+		WithStateStore(NewJournalStateStore(j)).
+		Run(ctx); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	records := j.Records()
+	appliedIndex, cursorIndex := -1, -1
+	var appliedRecordID string
+	var committed journal.ReconciliationCursor
+	for i, record := range records {
+		switch record.Type {
+		case journal.RecordAppliedEvent:
+			appliedIndex = i
+			appliedRecordID = record.RecordID
+		case journal.RecordReconciliationCursor:
+			cursorIndex = i
+			if err := json.Unmarshal(record.Payload, &committed); err != nil {
+				t.Fatalf("decode cursor record: %v", err)
+			}
+		}
+	}
+	if appliedIndex < 0 {
+		t.Fatalf("journal records=%+v, want applied-event record", records)
+	}
+	if cursorIndex < 0 || appliedIndex >= cursorIndex {
+		t.Fatalf("record ordering applied=%d cursor=%d, want applied before cursor", appliedIndex, cursorIndex)
+	}
+	if len(committed.AppliedEventRecordIDs) != 1 || committed.AppliedEventRecordIDs[0] != appliedRecordID {
+		t.Fatalf("cursor dependencies=%v, want [%s]", committed.AppliedEventRecordIDs, appliedRecordID)
+	}
+}
+
+func TestCursorCommitRetryRetainsAppliedEventDependency(t *testing.T) {
+	ctx := context.Background()
+	c := cache.New()
+	known := order("retry-fill", btc, "1", enums.StatusNew)
+	known.Request.AccountID = "acct"
+	c.UpsertOrder(known)
+
+	generatedAt := time.Date(2026, 7, 13, 2, 30, 0, 0, time.UTC)
+	mass := model.NewExecutionMassStatus("T", "acct", generatedAt)
+	fill := model.Fill{
+		AccountID:    "acct",
+		InstrumentID: btc,
+		ClientID:     known.Request.ClientID,
+		VenueOrderID: known.VenueOrderID,
+		TradeID:      "retry-fill-trade",
+		Side:         enums.SideBuy,
+		Price:        d("100"),
+		Quantity:     d("1"),
+		Timestamp:    generatedAt,
+	}
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: generatedAt}); err != nil {
+		t.Fatalf("add fill: %v", err)
+	}
+
+	j := journal.NewMemory()
+	store := &failOnceCursorStore{
+		JournalStateStore: NewJournalStateStore(j),
+		err:               errors.New("cursor commit failed once"),
+	}
+	r := New(nil, &snapshotExec{mass: mass}, c).
+		WithAccountID("acct").
+		WithStateStore(store)
+	if _, err := r.Run(ctx); !errors.Is(err, store.err) {
+		t.Fatalf("first run err=%v, want %v", err, store.err)
+	}
+	report, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("retry run: %v", err)
+	}
+	if report.FillsApplied != 0 || report.FillsDuplicate != 1 {
+		t.Fatalf("retry report=%+v, want prior application treated as duplicate", report)
+	}
+
+	var appliedRecordID string
+	var committed journal.ReconciliationCursor
+	for _, record := range j.Records() {
+		switch record.Type {
+		case journal.RecordAppliedEvent:
+			appliedRecordID = record.RecordID
+		case journal.RecordReconciliationCursor:
+			if err := json.Unmarshal(record.Payload, &committed); err != nil {
+				t.Fatalf("decode cursor: %v", err)
+			}
+		}
+	}
+	if appliedRecordID == "" {
+		t.Fatal("applied-event record missing after retry")
+	}
+	if len(committed.AppliedEventRecordIDs) != 1 || committed.AppliedEventRecordIDs[0] != appliedRecordID {
+		t.Fatalf("retry cursor dependencies=%v, want [%s]", committed.AppliedEventRecordIDs, appliedRecordID)
+	}
+}
+
+type failOnceCursorStore struct {
+	*JournalStateStore
+	err    error
+	failed bool
+}
+
+func (s *failOnceCursorStore) CommitCursor(ctx context.Context, cursor Cursor) error {
+	if !s.failed {
+		s.failed = true
+		return s.err
+	}
+	return s.JournalStateStore.CommitCursor(ctx, cursor)
 }
 
 func TestJournalStateStoreReplaysOpenFindingsFromJournal(t *testing.T) {
@@ -162,6 +415,94 @@ func TestAmbiguousSubmitResolvedByMassStatus(t *testing.T) {
 	}
 	if got, ok := c.Order(req.ClientID); !ok || got.Status != enums.StatusNew {
 		t.Fatalf("cache order ok=%v order=%+v, want NEW", ok, got)
+	}
+}
+
+func TestMassStatusOrderEvidenceMustMatchPendingCommand(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      exec.InFlightState
+		command    journal.CommandType
+		intentReq  func(model.OrderRequest) model.OrderRequest
+		confirming func(model.Order) model.Order
+	}{
+		{
+			name:    "cancel",
+			state:   exec.InFlightPendingCancel,
+			command: journal.CommandCancel,
+			intentReq: func(req model.OrderRequest) model.OrderRequest {
+				return req
+			},
+			confirming: func(order model.Order) model.Order {
+				order.Status = enums.StatusCanceled
+				return order
+			},
+		},
+		{
+			name:    "modify",
+			state:   exec.InFlightPendingModify,
+			command: journal.CommandModify,
+			intentReq: func(req model.OrderRequest) model.OrderRequest {
+				req.Price = d("101")
+				req.Quantity = d("2")
+				return req
+			},
+			confirming: func(order model.Order) model.Order {
+				order.Request.Price = d("101")
+				order.Request.Quantity = d("2")
+				return order
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := cache.New()
+			fake := runtimetest.NewFakeExec()
+			clk := clock.NewSimulatedClock(time.Unix(100, 0))
+			engine := exec.New(fake, c, clk, "acct").WithAccountID("acct")
+			order := model.Order{
+				Request: model.OrderRequest{
+					AccountID: "acct", InstrumentID: btc, ClientID: "mass-" + tt.name,
+					Side: enums.SideBuy, Type: enums.TypeLimit, TIF: enums.TifGTC,
+					Price: d("100"), Quantity: d("1"),
+				},
+				VenueOrderID: "venue-mass-" + tt.name,
+				Status:       enums.StatusNew,
+				UpdatedAt:    time.Unix(100, 0),
+			}
+			c.UpsertOrder(order)
+			intentReq := tt.intentReq(order.Request)
+			inflight := exec.NewInFlightJournal()
+			inflight.TrackIntent(journal.CommandIntent{
+				RecordID: "mass-intent-" + tt.name, CommandID: "mass-command-" + tt.name, Type: tt.command,
+				ClientID: intentReq.ClientID, VenueOrderID: order.VenueOrderID, AccountID: intentReq.AccountID,
+				InstrumentID: intentReq.InstrumentID, Side: intentReq.Side, Price: intentReq.Price, Quantity: intentReq.Quantity,
+			}, tt.state)
+			engine.WithInFlightJournal(inflight)
+			r := New(nil, fake, c).WithAccountID("acct").WithInFlightResolver(engine)
+
+			unchanged := order
+			unchanged.UpdatedAt = time.Unix(101, 0)
+			fake.SetOrderStatusReports(unchanged)
+			if _, err := r.Run(ctx); err != nil {
+				t.Fatalf("unchanged run: %v", err)
+			}
+			if got := engine.InFlightCount(); got != 1 {
+				t.Fatalf("in-flight=%d after unchanged mass-status order, want pending %s", got, tt.name)
+			}
+
+			confirmed := tt.confirming(order)
+			confirmed.UpdatedAt = time.Unix(102, 0)
+			fake.SetOrderStatusReports(confirmed)
+			if _, err := r.Run(ctx); err != nil {
+				t.Fatalf("confirming run: %v", err)
+			}
+			if got := engine.InFlightCount(); got != 0 {
+				t.Fatalf("in-flight=%d after confirming mass-status order, want resolved", got)
+			}
+		})
 	}
 }
 
@@ -338,6 +679,68 @@ func TestVenueOnlyFillAfterReplayMaterializesOriginalClientOrder(t *testing.T) {
 	}
 }
 
+func TestDurableDuplicateFillResolvesReplayedInFlightIntent(t *testing.T) {
+	ctx := context.Background()
+	generatedAt := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
+	fill := model.Fill{
+		AccountID:    "acct",
+		InstrumentID: btc,
+		ClientID:     "durable-duplicate",
+		VenueOrderID: "venue-durable-duplicate",
+		TradeID:      "durable-duplicate-trade",
+		Side:         enums.SideBuy,
+		Price:        d("100"),
+		Quantity:     d("1"),
+		Timestamp:    generatedAt,
+	}
+	mass := model.NewExecutionMassStatus("T", "acct", generatedAt)
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: generatedAt}); err != nil {
+		t.Fatalf("add fill: %v", err)
+	}
+	source := &snapshotExec{mass: mass, fillHistory: true}
+	state := NewJournalStateStore(journal.NewMemory())
+	seedOrder := model.Order{
+		Request: model.OrderRequest{
+			AccountID: "acct", InstrumentID: btc, ClientID: fill.ClientID, Side: fill.Side,
+			Type: enums.TypeLimit, TIF: enums.TifGTC, Quantity: fill.Quantity, Price: fill.Price,
+		},
+		VenueOrderID: fill.VenueOrderID,
+		Status:       enums.StatusNew,
+	}
+	firstCache := cache.New()
+	firstCache.UpsertOrder(seedOrder)
+	firstReport, err := New(nil, source, firstCache).
+		WithAccountID("acct").
+		WithStateStore(state).
+		Run(ctx)
+	if err != nil || firstReport.FillsApplied != 1 {
+		t.Fatalf("first run report=%+v err=%v, want durable applied fill", firstReport, err)
+	}
+
+	replayCache := cache.New()
+	replayCache.UpsertOrder(seedOrder)
+	inflight := exec.NewInFlightJournal()
+	inflight.TrackIntent(journal.CommandIntent{
+		RecordID: "replayed-intent", CommandID: "replayed-command", Type: journal.CommandSubmit,
+		ClientID: fill.ClientID, VenueOrderID: fill.VenueOrderID, AccountID: fill.AccountID,
+		InstrumentID: fill.InstrumentID, Side: fill.Side, Quantity: fill.Quantity,
+	}, exec.InFlightSubmitted)
+	engine := exec.New(runtimetest.NewFakeExec(), replayCache, clock.NewSimulatedClock(generatedAt), "acct").
+		WithAccountID("acct").
+		WithInFlightJournal(inflight)
+	secondReport, err := New(nil, source, replayCache).
+		WithAccountID("acct").
+		WithStateStore(state).
+		WithInFlightResolver(engine).
+		Run(ctx)
+	if err != nil {
+		t.Fatalf("replay run: %v", err)
+	}
+	if secondReport.FillsDuplicate != 1 || engine.InFlightCount() != 0 {
+		t.Fatalf("replay report=%+v in-flight=%d, want durable duplicate to resolve replayed intent", secondReport, engine.InFlightCount())
+	}
+}
+
 func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	c := cache.New()
 	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -438,7 +841,7 @@ func TestDuplicateTradeIDIgnored(t *testing.T) {
 	}
 }
 
-func TestSameTradeIDOnDifferentOrdersIsNotDeduped(t *testing.T) {
+func TestSameTradeIDOnDifferentOrdersWarnsAndSkipsConflictingDuplicate(t *testing.T) {
 	c := cache.New()
 	c.UpsertOrder(order("known-a", btc, "1", enums.StatusNew))
 	c.UpsertOrder(order("known-b", btc, "1", enums.StatusNew))
@@ -457,14 +860,22 @@ func TestSameTradeIDOnDifferentOrdersIsNotDeduped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if rep.FillsApplied != 2 || rep.FillsDuplicate != 0 {
-		t.Fatalf("report=%+v, want both fills applied", rep)
+	if rep.FillsApplied != 1 || rep.FillsDuplicate != 1 {
+		t.Fatalf("report=%+v, want one fill applied and conflicting identity skipped", rep)
 	}
-	for _, clientID := range []string{"known-a", "known-b"} {
-		got, _ := c.Order(clientID)
-		if got.Status != enums.StatusFilled || !got.FilledQty.Equal(d("1")) {
-			t.Fatalf("%s order=%+v, want filled qty 1", clientID, got)
-		}
+	if !hasFindingCode(rep.Findings, "FILL_TRADE_IDENTITY_CONFLICT") {
+		t.Fatalf("findings=%+v, want observable trade identity conflict", rep.Findings)
+	}
+	if len(rep.Warnings) != 1 || rep.Warnings[0].Code != "FILL_TRADE_IDENTITY_CONFLICT" {
+		t.Fatalf("warnings=%+v, want one trade identity conflict warning", rep.Warnings)
+	}
+	first, _ := c.Order("known-a")
+	if first.Status != enums.StatusFilled || !first.FilledQty.Equal(d("1")) {
+		t.Fatalf("first order=%+v, want filled qty 1", first)
+	}
+	second, _ := c.Order("known-b")
+	if second.Status == enums.StatusFilled || !second.FilledQty.IsZero() {
+		t.Fatalf("conflicting second order=%+v, must not receive duplicate venue trade", second)
 	}
 }
 
@@ -531,6 +942,48 @@ func TestFillReportWinsOverSamePassOrderReport(t *testing.T) {
 	}
 }
 
+func TestCumulativeSnapshotProgressUsesCanonicalOrderIdentity(t *testing.T) {
+	c := cache.New()
+	generatedAt := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	existing := order("canonical-progress", btc, "2", enums.StatusNew)
+	existing.Request.AccountID = "acct"
+	c.UpsertOrder(existing)
+
+	snapshot := existing
+	snapshot.VenueOrderID = ""
+	snapshot.Status = enums.StatusPartiallyFilled
+	snapshot.FilledQty = d("1")
+	mass := model.NewExecutionMassStatus("T", "acct", generatedAt)
+	if err := mass.AddOrderReport(model.OrderStatusReport{
+		Venue: "T", AccountID: "acct", Order: snapshot, ReportedAt: generatedAt,
+	}); err != nil {
+		t.Fatalf("add order: %v", err)
+	}
+	fill := model.Fill{
+		AccountID: "acct", InstrumentID: btc, ClientID: existing.Request.ClientID,
+		VenueOrderID: existing.VenueOrderID, TradeID: "canonical-progress-trade",
+		Side: enums.SideBuy, Price: d("100"), Quantity: d("1"), Timestamp: generatedAt,
+	}
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: generatedAt}); err != nil {
+		t.Fatalf("add fill: %v", err)
+	}
+
+	rep, err := New(nil, &snapshotExec{mass: mass}, c).WithAccountID("acct").Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if rep.FillsApplied != 1 {
+		t.Fatalf("report=%+v, want one applied fill", rep)
+	}
+	got, ok := c.Order(existing.Request.ClientID)
+	if !ok {
+		t.Fatal("order missing")
+	}
+	if got.Status != enums.StatusPartiallyFilled || !got.FilledQty.Equal(d("1")) {
+		t.Fatalf("order=%+v, cumulative snapshot and same fill must produce PARTIALLY_FILLED qty 1", got)
+	}
+}
+
 func TestPartialScopeFailureKeepsMissingOrderOpenAndCommitsPartialCursor(t *testing.T) {
 	c := cache.New()
 	c.UpsertOrder(order("missing", btc, "1", enums.StatusNew))
@@ -543,7 +996,7 @@ func TestPartialScopeFailureKeepsMissingOrderOpenAndCommitsPartialCursor(t *test
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if !rep.Partial || len(rep.Findings) == 0 || rep.CursorsCommitted != 1 {
+	if !rep.Partial || rep.FillsPartial || len(rep.Findings) == 0 || rep.CursorsCommitted != 1 {
 		t.Fatalf("report=%+v, want partial finding and committed partial cursor", rep)
 	}
 	if got, ok := c.Order("missing"); !ok || got.Status != enums.StatusNew {
@@ -555,6 +1008,9 @@ func TestPartialScopeFailureKeepsMissingOrderOpenAndCommitsPartialCursor(t *test
 	}
 	if !cursor.Partial {
 		t.Fatalf("cursor=%+v, want partial", cursor)
+	}
+	if cursor.FillsPartial {
+		t.Fatalf("cursor=%+v, order ambiguity must not imply partial fill history", cursor)
 	}
 }
 
@@ -568,16 +1024,25 @@ func TestCursorCommitFailureReturnsError(t *testing.T) {
 	}
 }
 
-func TestPositionOverwriteIsAudited(t *testing.T) {
+func TestAccountPositionMismatchIsAuditedWithoutOverwrite(t *testing.T) {
 	c := cache.New()
 	c.UpsertPosition(model.Position{InstrumentID: btc, Side: enums.PosNet, Quantity: d("1")})
-	acct := &snapshotAccount{positions: []model.Position{{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2")}}}
+	acct := &snapshotAccount{
+		positionReports: true,
+		positions:       []model.Position{{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2")}},
+	}
 	rep, err := New(acct, nil, c).Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if rep.PositionOverwrites != 1 {
-		t.Fatalf("report=%+v, want one audited overwrite", rep)
+	if rep.PositionOverwrites != 0 || !hasFindingCode(rep.Findings, "POSITION_MISMATCH") {
+		t.Fatalf("report=%+v, want audited mismatch without overwrite", rep)
+	}
+	if got, ok := c.Position(btc, enums.PosNet); !ok || !got.Quantity.Equal(d("1")) {
+		t.Fatalf("cache position=%+v ok=%v, want original quantity 1", got, ok)
+	}
+	if rep.ActivationVerdict().Safe {
+		t.Fatalf("report=%+v, position mismatch must block activation", rep)
 	}
 }
 

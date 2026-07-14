@@ -135,23 +135,29 @@ func TestBinanceDemoEnvContractConstants(t *testing.T) {
 	if BinanceDemoAPISecretEnv != "BINANCE_DEMO_API_SECRET" {
 		t.Fatalf("BinanceDemoAPISecretEnv=%q", BinanceDemoAPISecretEnv)
 	}
+	if BinanceDemoEnableWriteEnv != "BOLTER_ENABLE_BINANCE_DEMO_WRITES" {
+		t.Fatalf("BinanceDemoEnableWriteEnv=%q", BinanceDemoEnableWriteEnv)
+	}
 }
 
-func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+func TestRequireBinanceDemoWriteSkipsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
 	if testing.Short() {
-		t.Skip("live-write gate allow-path test excluded by -short")
+		t.Skip("live-write gate skip-path test excluded by -short")
 	}
-	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv(BinanceDemoEnableWriteEnv, "")
 	t.Setenv("BINANCE_DEMO_API_KEY", "demo-key")
 	t.Setenv("BINANCE_DEMO_API_SECRET", "demo-secret")
 
-	completed := false
-	t.Run("allow", func(t *testing.T) {
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
 		RequireBinanceDemoWrite(t)
-		completed = true
+		t.Fatal("expected Binance Demo writes to require an explicit enable flag")
 	})
-	if !completed {
-		t.Fatalf("expected RequireBinanceDemoWrite to allow Demo credentials without BINANCE_ENABLE_DEMO_WRITE_TESTS")
+	if !skipped {
+		t.Fatal("expected RequireBinanceDemoWrite to skip without its explicit enable flag")
 	}
 }
 
@@ -255,7 +261,7 @@ func TestRequireBinanceDemoWriteDoesNotAcceptLegacyPerpTestnetCredentials(t *tes
 }
 
 func TestRequireBinanceDemoWriteAllowsCanonicalDemoCredentials(t *testing.T) {
-	t.Setenv("BINANCE_ENABLE_DEMO_WRITE_TESTS", "")
+	t.Setenv(BinanceDemoEnableWriteEnv, "1")
 	t.Setenv("BINANCE_DEMO_API_KEY", "demo-key")
 	t.Setenv("BINANCE_DEMO_API_SECRET", "demo-secret")
 
@@ -269,6 +275,31 @@ func TestBybitDemoEnvContractConstants(t *testing.T) {
 	if BybitDemoAPISecretEnv != "BYBIT_DEMO_API_SECRET" {
 		t.Fatalf("BybitDemoAPISecretEnv=%q", BybitDemoAPISecretEnv)
 	}
+	if BybitDemoEnableWriteEnv != "BOLTER_ENABLE_BYBIT_DEMO_WRITES" {
+		t.Fatalf("BybitDemoEnableWriteEnv=%q", BybitDemoEnableWriteEnv)
+	}
+}
+
+func TestRequireBybitDemoWriteRequiresExplicitEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate test excluded by -short")
+	}
+	setBybitDemoCredentials(t)
+	clearBybitDemoOptionalEnv(t)
+	t.Setenv(BybitDemoEnableWriteEnv, "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() { skipped = t.Skipped() }()
+		_ = RequireBybitDemoWrite(t)
+		t.Fatal("expected Bybit Demo writes to require an explicit enable flag")
+	})
+	if !skipped {
+		t.Fatal("expected RequireBybitDemoWrite to skip without its explicit enable flag")
+	}
+
+	t.Setenv(BybitDemoEnableWriteEnv, "1")
+	_ = RequireBybitDemoWrite(t)
 }
 
 func TestBybitDemoConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
@@ -312,6 +343,74 @@ func TestRequireBybitDemoWriteRejectsProductionCredentials(t *testing.T) {
 	})
 	if !skipped {
 		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestBitgetDemoWriteEnvContractAndExplicitEnableFlag(t *testing.T) {
+	if BitgetDemoEnableWriteEnv != "BOLTER_ENABLE_BITGET_DEMO_WRITES" {
+		t.Fatalf("BitgetDemoEnableWriteEnv=%q", BitgetDemoEnableWriteEnv)
+	}
+	if BitgetDemoAllowCustomWriteEnv != "BOLTER_ALLOW_BITGET_DEMO_CUSTOM_WRITES" {
+		t.Fatalf("BitgetDemoAllowCustomWriteEnv=%q", BitgetDemoAllowCustomWriteEnv)
+	}
+	if testing.Short() {
+		t.Skip("live-write gate test excluded by -short")
+	}
+	setBitgetDemoCredentials(t)
+	clearBitgetDemoOptionalEnv(t)
+	t.Setenv(BitgetDemoEnableWriteEnv, "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() { skipped = t.Skipped() }()
+		_ = RequireBitgetDemoWrite(t)
+		t.Fatal("expected Bitget Demo writes to require an explicit enable flag")
+	})
+	if !skipped {
+		t.Fatal("expected RequireBitgetDemoWrite to skip without its explicit enable flag")
+	}
+
+	t.Setenv(BitgetDemoEnableWriteEnv, "1")
+	_ = RequireBitgetDemoWrite(t)
+}
+
+func TestBitgetDemoWriteProfileRequiresOfficialDefaultsOrExplicitTLSCustomOptIn(t *testing.T) {
+	t.Setenv(BitgetDemoAllowCustomWriteEnv, "")
+	official := BitgetEndpointProfile{
+		RESTBaseURL:  "https://api.bitget.com",
+		PublicWSURL:  "wss://wspap.bitget.com/v3/ws/public",
+		PrivateWSURL: "wss://wspap.bitget.com/v3/ws/private",
+		PAPTrading:   true,
+	}
+	if err := validateBitgetDemoWriteProfile(official); err != nil {
+		t.Fatalf("official Bitget PAP profile rejected: %v", err)
+	}
+
+	custom := BitgetEndpointProfile{
+		RESTBaseURL:  "https://demo-api.bitget.example",
+		PublicWSURL:  "wss://demo-ws.bitget.example/v3/ws/public",
+		PrivateWSURL: "wss://demo-ws.bitget.example/v3/ws/private",
+		PAPTrading:   true,
+	}
+	if err := validateBitgetDemoWriteProfile(custom); err == nil {
+		t.Fatal("custom Bitget credentialed write profile accepted without explicit opt-in")
+	}
+
+	t.Setenv(BitgetDemoAllowCustomWriteEnv, "1")
+	if err := validateBitgetDemoWriteProfile(custom); err != nil {
+		t.Fatalf("explicitly approved TLS custom profile rejected: %v", err)
+	}
+
+	unsafe := []BitgetEndpointProfile{
+		{RESTBaseURL: "http://demo-api.bitget.example", PublicWSURL: custom.PublicWSURL, PrivateWSURL: custom.PrivateWSURL, PAPTrading: true},
+		{RESTBaseURL: custom.RESTBaseURL, PublicWSURL: "ws://demo-ws.bitget.example/v3/ws/public", PrivateWSURL: custom.PrivateWSURL, PAPTrading: true},
+		{RESTBaseURL: custom.RESTBaseURL, PublicWSURL: custom.PublicWSURL, PrivateWSURL: "wss://ws.bitget.com/v2/ws/private", PAPTrading: true},
+		{RESTBaseURL: custom.RESTBaseURL, PublicWSURL: custom.PublicWSURL, PrivateWSURL: custom.PrivateWSURL, PAPTrading: false},
+	}
+	for _, profile := range unsafe {
+		if err := validateBitgetDemoWriteProfile(profile); err == nil {
+			t.Fatalf("unsafe Bitget credentialed write profile accepted: %+v", profile)
+		}
 	}
 }
 
@@ -384,16 +483,53 @@ func TestBitgetDemoConfigAcceptsExplicitDemoEndpointProfile(t *testing.T) {
 	if cfg.Profile.RESTBaseURL != "https://demo-api.bitget.example" {
 		t.Fatalf("demo rest=%q", cfg.Profile.RESTBaseURL)
 	}
-	if cfg.Profile.PAPTrading {
-		t.Fatalf("Bitget Demo must not silently use paptrading profile when custom endpoints are set")
+	if !cfg.Profile.PAPTrading {
+		t.Fatalf("Bitget Demo custom endpoints must retain paptrading mode: %+v", cfg.Profile)
+	}
+}
+
+func TestBitgetDemoConfigRejectsKnownProductionWebSocketHosts(t *testing.T) {
+	setBitgetDemoCredentials(t)
+
+	for _, tc := range []struct {
+		name       string
+		publicURL  string
+		privateURL string
+	}{
+		{
+			name:       "production public websocket",
+			publicURL:  "wss://ws.bitget.com/v2/ws/public",
+			privateURL: "wss://wspap.bitget.com/v3/ws/private",
+		},
+		{
+			name:       "production private websocket",
+			publicURL:  "wss://wspap.bitget.com/v3/ws/public",
+			privateURL: "wss://ws.bitget.com/v3/ws/private",
+		},
+		{
+			name:       "production websocket fqdn",
+			publicURL:  "wss://ws.bitget.com./v2/ws/public",
+			privateURL: "wss://wspap.bitget.com/v3/ws/private",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearBitgetDemoOptionalEnv(t)
+			t.Setenv(BitgetDemoRESTBaseURLEnv, "https://api.bitget.com")
+			t.Setenv(BitgetDemoPublicWSURLEnv, tc.publicURL)
+			t.Setenv(BitgetDemoPrivateWSURLEnv, tc.privateURL)
+
+			if _, err := BitgetDemoConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "production host") {
+				t.Fatalf("BitgetDemoConfigFromEnv err=%v, want production-host rejection", err)
+			}
+		})
 	}
 }
 
 func TestBitgetDemoConfigAcceptsLegacyTestnetEnvAliases(t *testing.T) {
 	clearBitgetDemoOptionalEnv(t)
-	t.Setenv(BitgetDemoAPIKeyEnv, "")
-	t.Setenv(BitgetDemoAPISecretEnv, "")
-	t.Setenv(BitgetDemoPassphraseEnv, "")
+	unsetEnvForTest(t, BitgetDemoAPIKeyEnv)
+	unsetEnvForTest(t, BitgetDemoAPISecretEnv)
+	unsetEnvForTest(t, BitgetDemoPassphraseEnv)
 	setBitgetLegacyTestnetCredentials(t)
 
 	cfg, err := BitgetDemoConfigFromEnv()
@@ -474,6 +610,9 @@ func TestGateTestnetConfigFromEnvAcceptsOverrides(t *testing.T) {
 	if cfg.Profile.RESTBaseURL != "https://gate-testnet.example/api/v4" {
 		t.Fatalf("rest override=%q", cfg.Profile.RESTBaseURL)
 	}
+	if cfg.Profile.OfficialTestnet {
+		t.Fatalf("unverified custom endpoint profile must not be marked official Testnet: %+v", cfg.Profile)
+	}
 }
 
 func TestGateTestnetConfigFromEnvAcceptsPartialEndpointOverrides(t *testing.T) {
@@ -490,6 +629,27 @@ func TestGateTestnetConfigFromEnvAcceptsPartialEndpointOverrides(t *testing.T) {
 	}
 	if cfg.Profile.SpotWSURL != "wss://ws-testnet.gate.com/v4/ws/spot" {
 		t.Fatalf("spot ws default=%q", cfg.Profile.SpotWSURL)
+	}
+	if cfg.Profile.OfficialTestnet {
+		t.Fatalf("partially overridden endpoint profile must not be marked official Testnet: %+v", cfg.Profile)
+	}
+}
+
+func TestGateTestnetWriteProfileAcceptsOnlyKnownOfficialEndpoints(t *testing.T) {
+	profile := GateEndpointProfile{
+		RESTBaseURL:      "https://api-testnet.gateapi.io/api/v4",
+		SpotWSURL:        "wss://ws-testnet.gate.com/v4/ws/spot",
+		FuturesUSDTWSURL: "wss://ws-testnet.gate.com/v4/ws/futures/usdt",
+		OfficialTestnet:  true,
+	}
+	if err := validateGateTestnetWriteProfile(profile); err != nil {
+		t.Fatalf("known official profile rejected: %v", err)
+	}
+
+	profile.FuturesUSDTWSURL = "wss://unverified.example/ws/futures/usdt"
+	profile.OfficialTestnet = false
+	if err := validateGateTestnetWriteProfile(profile); err == nil {
+		t.Fatal("unverified Gate endpoint profile accepted for credentialed writes")
 	}
 }
 
@@ -580,23 +740,44 @@ func TestOKXDemoEnvContractConstants(t *testing.T) {
 	if OKXDemoAPIPassphraseEnv != "OKX_DEMO_API_PASSPHRASE" {
 		t.Fatalf("OKXDemoAPIPassphraseEnv=%q", OKXDemoAPIPassphraseEnv)
 	}
+	if OKXDemoEnableWriteEnv != "BOLTER_ENABLE_OKX_DEMO_WRITES" {
+		t.Fatalf("OKXDemoEnableWriteEnv=%q", OKXDemoEnableWriteEnv)
+	}
+	if OKXDemoAllowCustomWriteEnv != "BOLTER_ALLOW_OKX_DEMO_CUSTOM_WRITES" {
+		t.Fatalf("OKXDemoAllowCustomWriteEnv=%q", OKXDemoAllowCustomWriteEnv)
+	}
 }
 
-func TestRequireOKXDemoWriteAllowsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+func TestRequireOKXDemoWriteSkipsCanonicalDemoCredentialsWithoutEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate skip-path test excluded by -short")
+	}
+	setOKXDemoCredentials(t)
+	clearOKXDemoOptionalEnv(t)
+	t.Setenv(OKXDemoEnableWriteEnv, "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() {
+			skipped = t.Skipped()
+		}()
+		_ = RequireOKXDemoWrite(t)
+		t.Fatal("expected OKX Demo writes to require an explicit enable flag")
+	})
+	if !skipped {
+		t.Fatal("expected RequireOKXDemoWrite to skip without its explicit enable flag")
+	}
+}
+
+func TestRequireOKXDemoWriteAllowsCanonicalDemoCredentialsWithEnableFlag(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-write gate allow-path test excluded by -short")
 	}
 	setOKXDemoCredentials(t)
 	clearOKXDemoOptionalEnv(t)
+	t.Setenv(OKXDemoEnableWriteEnv, "1")
 
-	completed := false
-	t.Run("allow", func(t *testing.T) {
-		_ = RequireOKXDemoWrite(t)
-		completed = true
-	})
-	if !completed {
-		t.Fatalf("expected RequireOKXDemoWrite to allow Demo credentials without an enable flag")
-	}
+	_ = RequireOKXDemoWrite(t)
 }
 
 func TestRequireOKXDemoWriteSkipsWithoutDemoCredentials(t *testing.T) {
@@ -700,6 +881,52 @@ func TestOKXDemoConfigFromEnvRejectsInvalidURLs(t *testing.T) {
 	}
 }
 
+func TestOKXDemoWriteProfileAcceptsOnlyOfficialDefaultsWithoutCustomOptIn(t *testing.T) {
+	for _, profile := range []string{OKXDemoHostProfileGlobal, OKXDemoHostProfileEEA} {
+		t.Run(profile, func(t *testing.T) {
+			cfg := OKXDemoConfig{HostProfile: profile}
+			if err := validateOKXDemoWriteProfile(cfg); err != nil {
+				t.Fatalf("official %s profile rejected: %v", profile, err)
+			}
+		})
+	}
+
+	for _, cfg := range []OKXDemoConfig{
+		{HostProfile: OKXDemoHostProfileGlobal, RESTBaseURL: "https://www.okx.com"},
+		{HostProfile: OKXDemoHostProfileEEA, WSBaseURL: "wss://ws.okx.com:8443"},
+		{HostProfile: OKXDemoHostProfileCustom, RESTBaseURL: "https://openapi.okx.com", WSBaseURL: "wss://wspap.okx.com:8443"},
+	} {
+		if err := validateOKXDemoWriteProfile(cfg); err == nil {
+			t.Fatalf("unapproved endpoint override accepted for credentialed writes: %+v", cfg)
+		}
+	}
+}
+
+func TestOKXDemoWriteProfileCustomOptInRequiresTLSAndRejectsProductionWebSocket(t *testing.T) {
+	t.Setenv(OKXDemoAllowCustomWriteEnv, "1")
+
+	valid := OKXDemoConfig{
+		HostProfile: OKXDemoHostProfileCustom,
+		RESTBaseURL: "https://openapi.okx.com",
+		WSBaseURL:   "wss://wspap.okx.com:8443",
+	}
+	if err := validateOKXDemoWriteProfile(valid); err != nil {
+		t.Fatalf("explicitly approved TLS Demo custom profile rejected: %v", err)
+	}
+
+	tests := []OKXDemoConfig{
+		{HostProfile: OKXDemoHostProfileCustom, RESTBaseURL: "http://openapi.okx.com", WSBaseURL: "wss://wspap.okx.com:8443"},
+		{HostProfile: OKXDemoHostProfileCustom, RESTBaseURL: "https://openapi.okx.com", WSBaseURL: "ws://wspap.okx.com:8443"},
+		{HostProfile: OKXDemoHostProfileCustom, RESTBaseURL: "https://openapi.okx.com", WSBaseURL: "wss://ws.okx.com:8443"},
+		{HostProfile: OKXDemoHostProfileCustom, RESTBaseURL: "https://eea.okx.com", WSBaseURL: "wss://wseea.okx.com:8443"},
+	}
+	for _, cfg := range tests {
+		if err := validateOKXDemoWriteProfile(cfg); err == nil {
+			t.Fatalf("unsafe custom OKX Demo write profile accepted: %+v", cfg)
+		}
+	}
+}
+
 func TestOKXDemoConfigStringRedactsSecrets(t *testing.T) {
 	setOKXDemoCredentials(t)
 	clearOKXDemoOptionalEnv(t)
@@ -722,6 +949,145 @@ func TestOKXDemoHTTPClientRejectsInvalidProxy(t *testing.T) {
 
 	if _, err := OKXDemoHTTPClient(time.Second); err == nil {
 		t.Fatalf("expected invalid PROXY to fail")
+	}
+}
+
+func TestProxiedHTTPClientRedactsInvalidProxyCredentials(t *testing.T) {
+	const secret = "proxy-super-secret"
+	t.Setenv("PROXY", "http://user:"+secret+"@%gh")
+
+	_, err := HyperliquidTestnetHTTPClient(time.Second)
+	if err == nil {
+		t.Fatal("expected malformed PROXY to fail")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("proxy credential leaked in error: %v", err)
+	}
+}
+
+func TestConfigStringsRedactEndpointAndProxyURLCredentials(t *testing.T) {
+	const (
+		username = "url-credential-user"
+		secret   = "sentinel-url-credential"
+		fragment = "sentinel-url-fragment"
+	)
+	credentialURL := func(scheme, host, path string) string {
+		return fmt.Sprintf("%s://%s:%s@%s%s?token=%s#%s", scheme, username, secret, host, path, secret, fragment)
+	}
+
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "okx", value: OKXDemoConfig{
+			RESTBaseURL: credentialURL("https", "okx.example.test", "/api"),
+			WSBaseURL:   credentialURL("wss", "okx-ws.example.test", "/ws"),
+			ProxyURL:    credentialURL("socks5", "proxy.example.test", ""),
+		}},
+		{name: "bybit", value: BybitDemoConfig{
+			Profile: BybitEndpointProfile{
+				RESTBaseURL:       credentialURL("https", "bybit.example.test", "/api"),
+				PublicSpotWSURL:   credentialURL("wss", "bybit-spot.example.test", "/ws"),
+				PublicLinearWSURL: credentialURL("wss", "bybit-linear.example.test", "/ws"),
+				PrivateWSURL:      credentialURL("wss", "bybit-private.example.test", "/ws"),
+				TradeWSURL:        credentialURL("wss", "bybit-trade.example.test", "/ws"),
+			},
+			ProxyURL: credentialURL("https", "proxy.example.test", ""),
+		}},
+		{name: "bitget", value: BitgetDemoConfig{
+			Profile: BitgetEndpointProfile{
+				RESTBaseURL:  credentialURL("https", "bitget.example.test", "/api"),
+				PublicWSURL:  credentialURL("wss", "bitget-public.example.test", "/ws"),
+				PrivateWSURL: credentialURL("wss", "bitget-private.example.test", "/ws"),
+			},
+			ProxyURL: credentialURL("https", "proxy.example.test", ""),
+		}},
+		{name: "gate", value: GateTestnetConfig{
+			Profile: GateEndpointProfile{
+				RESTBaseURL:      credentialURL("https", "gate.example.test", "/api"),
+				SpotWSURL:        credentialURL("wss", "gate-spot.example.test", "/ws"),
+				FuturesUSDTWSURL: credentialURL("wss", "gate-futures.example.test", "/ws"),
+			},
+			ProxyURL: credentialURL("https", "proxy.example.test", ""),
+		}},
+		{name: "aster", value: AsterTestnetConfig{
+			SpotProfile: AsterEndpointProfile{
+				RESTURL:     credentialURL("https", "aster-spot.example.test", "/api"),
+				PublicWSURL: credentialURL("wss", "aster-spot-public.example.test", "/ws"),
+				UserWSURL:   credentialURL("wss", "aster-spot-user.example.test", "/ws"),
+			},
+			PerpProfile: AsterEndpointProfile{
+				RESTURL:     credentialURL("https", "aster-perp.example.test", "/api"),
+				PublicWSURL: credentialURL("wss", "aster-perp-public.example.test", "/ws"),
+				UserWSURL:   credentialURL("wss", "aster-perp-user.example.test", "/ws"),
+			},
+			ProxyURL: credentialURL("https", "proxy.example.test", ""),
+		}},
+		{name: "nado", value: NadoTestnetConfig{
+			Profile: NadoEndpointProfile{
+				GatewayV1URL:       credentialURL("https", "nado-gateway-v1.example.test", "/api"),
+				GatewayV2URL:       credentialURL("https", "nado-gateway-v2.example.test", "/api"),
+				ArchiveV1URL:       credentialURL("https", "nado-archive-v1.example.test", "/api"),
+				ArchiveV2URL:       credentialURL("https", "nado-archive-v2.example.test", "/api"),
+				GatewayWSURL:       credentialURL("wss", "nado-gateway.example.test", "/ws"),
+				SubscriptionsWSURL: credentialURL("wss", "nado-subscriptions.example.test", "/ws"),
+				TriggerURL:         credentialURL("https", "nado-trigger.example.test", "/api"),
+			},
+			ProxyURL: credentialURL("https", "proxy.example.test", ""),
+		}},
+		{name: "hyperliquid", value: HyperliquidTestnetConfig{ProxyURL: credentialURL("https", "proxy.example.test", "")}},
+		{name: "lighter", value: LighterTestnetConfig{ProxyURL: credentialURL("https", "proxy.example.test", "")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered := fmt.Sprintf("%v %#v", tt.value, tt.value)
+			for _, sensitive := range []string{username, secret, fragment, "token="} {
+				if strings.Contains(rendered, sensitive) {
+					t.Fatalf("rendered config leaked URL credential %q: %s", sensitive, rendered)
+				}
+			}
+			if !strings.Contains(rendered, "example.test") {
+				t.Fatalf("rendered config removed all endpoint identity: %s", rendered)
+			}
+		})
+	}
+}
+
+func TestCredentialedURLValidationErrorsDoNotEchoRawURLs(t *testing.T) {
+	const secret = "sentinel-validation-url-secret"
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "malformed generic URL",
+			err:  validateURL("https://user:"+secret+"@%gh/path?token="+secret+"#"+secret, "TEST_URL", "https"),
+		},
+		{
+			name: "Bitget production websocket",
+			err: validateBitgetDemoWSURL(
+				"wss://user:"+secret+"@ws.bitget.com/v3/ws/private?token="+secret+"#"+secret,
+				BitgetDemoPrivateWSURLEnv,
+			),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err == nil {
+				t.Fatal("credentialed unsafe URL unexpectedly validated")
+			}
+			if strings.Contains(tt.err.Error(), secret) {
+				t.Fatalf("validation error leaked URL credentials: %v", tt.err)
+			}
+		})
+	}
+
+	t.Setenv(AsterTestnetSpotRESTURLEnv, "https://user:"+secret+"@sapi.asterdex.com/private?token="+secret+"#"+secret)
+	if err := validateEndpointOverride(AsterTestnetSpotRESTURLEnv, "https://sapi.asterdex-testnet.com"); err == nil {
+		t.Fatal("unsafe Aster endpoint override unexpectedly validated")
+	} else if strings.Contains(err.Error(), secret) {
+		t.Fatalf("Aster endpoint validation leaked URL credentials: %v", err)
 	}
 }
 
@@ -1122,6 +1488,159 @@ func TestLoadRepoEnvDoesNotOverrideExistingEnv(t *testing.T) {
 	}
 }
 
+func TestLoadRepoEnvLegacyAliasDoesNotOverrideExplicitEmptyCanonical(t *testing.T) {
+	tmp := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origWD)
+	})
+
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module testenv\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(tmp, ".env"),
+		[]byte(BitgetLegacyTestnetAPIKeyEnv+"=legacy-demo-key\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.Chdir(filepath.Join(tmp, "nested")); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+
+	unsetEnvForTest(t, BitgetLegacyTestnetAPIKeyEnv)
+	t.Setenv(BitgetDemoAPIKeyEnv, "")
+
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("LoadRepoEnv: %v", err)
+	}
+	if got := os.Getenv(BitgetDemoAPIKeyEnv); got != "" {
+		t.Fatalf("legacy alias overrode explicit empty canonical value with %q", got)
+	}
+	if got := os.Getenv(BitgetLegacyTestnetAPIKeyEnv); got != "legacy-demo-key" {
+		t.Fatalf("legacy source was not loaded from repo env: %q", got)
+	}
+}
+
+func TestLoadRepoEnvDoesNotImportExecutionGates(t *testing.T) {
+	tmp := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origWD)
+	})
+
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module testenv\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	const ordinaryKey = "TESTENV_FROM_FILE_WITH_GATES"
+	gates := []string{
+		"BOLTER_ENABLE_LIVE_READ_TESTS",
+		BinanceDemoEnableWriteEnv,
+		OKXDemoAllowCustomWriteEnv,
+		"BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES",
+		"BINANCE_ENABLE_LIVE_WRITE_TESTS",
+		"BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS",
+		"BYBIT_ENABLE_LIVE_WRITE_TESTS",
+		"TESTENV_ENABLE_LIVE_WRITE",
+		"ASTER_REALTIME_WS",
+		"BINANCE_REALTIME_WS",
+		"RUN_FULL",
+		"RUN_SOAK",
+	}
+	contents := ordinaryKey + "=present\n"
+	for _, key := range gates {
+		contents += key + "=1\n"
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte(contents), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.Chdir(filepath.Join(tmp, "nested")); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+
+	unsetEnvForTest(t, ordinaryKey)
+	for _, key := range gates {
+		unsetEnvForTest(t, key)
+	}
+
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("LoadRepoEnv: %v", err)
+	}
+	if got := os.Getenv(ordinaryKey); got != "present" {
+		t.Fatalf("ordinary repo env=%q, want present", got)
+	}
+	for _, key := range gates {
+		if value, exists := os.LookupEnv(key); exists {
+			t.Fatalf("execution gate %s was imported from .env with value %q", key, value)
+		}
+	}
+}
+
+func TestRequireLiveWriteDoesNotImportEnableFlagFromRepoEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate import regression excluded by -short")
+	}
+	tmp := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(origWD)
+	})
+
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module testenv\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmp, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	const (
+		gate       = "TESTENV_ENABLE_LIVE_WRITE"
+		credential = "TESTENV_LIVE_WRITE_CREDENTIAL"
+	)
+	if err := os.WriteFile(
+		filepath.Join(tmp, ".env"),
+		[]byte(gate+"=1\n"+credential+"=present\n"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.Chdir(filepath.Join(tmp, "nested")); err != nil {
+		t.Fatalf("chdir nested: %v", err)
+	}
+	unsetEnvForTest(t, gate)
+	unsetEnvForTest(t, credential)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		skipped := false
+		t.Run(fmt.Sprintf("attempt-%d", attempt), func(t *testing.T) {
+			defer func() { skipped = t.Skipped() }()
+			RequireLiveWrite(t, gate, credential)
+			t.Fatal("repo .env activated a live-write test")
+		})
+		if !skipped {
+			t.Fatalf("attempt %d did not skip without a process-local gate", attempt)
+		}
+		if value, exists := os.LookupEnv(gate); exists {
+			t.Fatalf("attempt %d imported gate %s=%q from .env", attempt, gate, value)
+		}
+	}
+}
+
 func TestLoadRepoEnvAppliesLegacyAliases(t *testing.T) {
 	tmp := t.TempDir()
 	origWD, err := os.Getwd()
@@ -1169,6 +1688,21 @@ func TestLoadRepoEnvAppliesLegacyAliases(t *testing.T) {
 	}
 }
 
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	value, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(key, value)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
 func setOKXDemoCredentials(t *testing.T) {
 	t.Helper()
 	t.Setenv(OKXDemoAPIKeyEnv, "demo-key")
@@ -1191,6 +1725,7 @@ func clearOKXDemoOptionalEnv(t *testing.T) {
 	t.Setenv(OKXDemoHostProfileEnv, "")
 	t.Setenv(OKXDemoRESTBaseURLEnv, "")
 	t.Setenv(OKXDemoWSBaseURLEnv, "")
+	t.Setenv(OKXDemoAllowCustomWriteEnv, "")
 	t.Setenv("PROXY", "")
 }
 
@@ -1250,6 +1785,7 @@ func clearBitgetDemoOptionalEnv(t *testing.T) {
 	} {
 		t.Setenv(env, "")
 	}
+	t.Setenv(BitgetDemoAllowCustomWriteEnv, "")
 	t.Setenv("PROXY", "")
 }
 

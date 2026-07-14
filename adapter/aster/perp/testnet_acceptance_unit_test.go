@@ -1,6 +1,7 @@
 package perp
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -8,6 +9,28 @@ import (
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/shopspring/decimal"
 )
+
+func TestAsterPerpAcceptanceProxyErrorRedactsCredentials(t *testing.T) {
+	const secret = "proxy-super-secret"
+	_, err := parseAsterPerpAcceptanceProxyURL("http://user:" + secret + "@%gh")
+	if err == nil {
+		t.Fatal("expected malformed proxy URL to fail")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("proxy credential leaked in error: %v", err)
+	}
+}
+
+func TestAsterPerpRuntimeAcceptanceBindsConfiguredMaxNotional(t *testing.T) {
+	data, err := os.ReadFile("testnet_acceptance_test.go")
+	if err != nil {
+		t.Fatalf("read acceptance source: %v", err)
+	}
+	const want = "runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, adapter.Market.InstrumentProvider(), cfg.MaxNotionalUSDT)"
+	if !strings.Contains(string(data), want) {
+		t.Fatalf("Aster Perp runtime acceptance must bind cfg.MaxNotionalUSDT through the runtime risk engine")
+	}
+}
 
 func TestAsterPerpAcceptanceSelectInstrumentRejectsTestSymbols(t *testing.T) {
 	provider := newInstrumentProvider()

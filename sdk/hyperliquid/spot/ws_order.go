@@ -12,6 +12,11 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest)
 	if c.PrivateKey == nil {
 		return nil, hyperliquid.ErrCredentialsRequired
 	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	action, err := buildPlaceOrderAction(req)
 	if err != nil {
 		return nil, err
@@ -23,13 +28,18 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest)
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }
 
 // CancelOrder via WS
 func (c *WebsocketClient) CancelOrder(ctx context.Context, req CancelOrderRequest) (chan hyperliquid.PostResult, error) {
 	if c.PrivateKey == nil {
 		return nil, hyperliquid.ErrCredentialsRequired
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 	}
 	action, err := buildCancelOrderAction(req)
 	if err != nil {
@@ -42,7 +52,7 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, req CancelOrderReques
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }
 
 // Helpers (Duplicated from perp/action_helpers.go for now to avoid dependency on perp types)
@@ -60,6 +70,9 @@ func buildPlaceOrderAction(orders ...PlaceOrderRequest) (hyperliquid.CreateOrder
 		}
 		orderType := hyperliquid.OrderTypeWire{}
 		if order.OrderType.Limit != nil {
+			if err := validateLimitTIF(order.OrderType.Limit.Tif); err != nil {
+				return hyperliquid.CreateOrderAction{}, err
+			}
 			orderType.Limit = &hyperliquid.OrderTypeWireLimit{
 				Tif: order.OrderType.Limit.Tif,
 			}
@@ -99,6 +112,11 @@ func (c *WebsocketClient) ModifyOrder(ctx context.Context, req ModifyOrderReques
 	if c.PrivateKey == nil {
 		return nil, hyperliquid.ErrCredentialsRequired
 	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	action, err := buildModifyOrderAction(req)
 	if err != nil {
 		return nil, err
@@ -110,7 +128,7 @@ func (c *WebsocketClient) ModifyOrder(ctx context.Context, req ModifyOrderReques
 		return nil, err
 	}
 
-	return c.PostAction(action, sig, nonce)
+	return c.PostActionContext(ctx, action, sig, nonce)
 }
 
 func buildCancelOrderAction(req CancelOrderRequest) (hyperliquid.CancelOrderAction, error) {
@@ -138,6 +156,8 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		return hyperliquid.ModifyOrderAction{}, fmt.Errorf("modify request must specify only one of Oid or Cloid")
 	case req.Oid != nil:
 		wireOid = *req.Oid
+	case req.Cloid != nil:
+		wireOid = *req.Cloid
 	default:
 		return hyperliquid.ModifyOrderAction{}, fmt.Errorf("modify request must specify either Oid or Cloid")
 	}
@@ -154,6 +174,9 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 
 	orderType := hyperliquid.OrderTypeWire{}
 	if req.Order.OrderType.Limit != nil {
+		if err := validateLimitTIF(req.Order.OrderType.Limit.Tif); err != nil {
+			return hyperliquid.ModifyOrderAction{}, err
+		}
 		orderType.Limit = &hyperliquid.OrderTypeWireLimit{
 			Tif: req.Order.OrderType.Limit.Tif,
 		}
@@ -177,6 +200,7 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		Size:       sizeWire,
 		ReduceOnly: false, // Spot doesn't have ReduceOnly
 		OrderType:  orderType,
+		Cloid:      req.Order.ClientOrderID,
 	}
 
 	return hyperliquid.ModifyOrderAction{
@@ -184,4 +208,13 @@ func buildModifyOrderAction(req ModifyOrderRequest) (hyperliquid.ModifyOrderActi
 		Oid:   wireOid,
 		Order: order,
 	}, nil
+}
+
+func validateLimitTIF(tif hyperliquid.Tif) error {
+	switch tif {
+	case hyperliquid.TifGtc, hyperliquid.TifIoc, hyperliquid.TifAlo:
+		return nil
+	default:
+		return fmt.Errorf("unsupported limit TIF %q: Hyperliquid accepts only Gtc, Ioc, or Alo", tif)
+	}
 }

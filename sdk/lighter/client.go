@@ -114,7 +114,7 @@ func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) 
 			return nil, fmt.Errorf("failed to marshal payload: %w", err)
 		}
 		body = bytes.NewBuffer(jsonData)
-		c.Logger.Debugw("Request Body", "body", string(jsonData))
+		c.Logger.Debugw("Request Body", "bytes", len(jsonData))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, body)
@@ -133,7 +133,7 @@ func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) 
 		req.Header.Set("Authorization", token)
 	}
 
-	c.Logger.Debugw("Request", "method", req.Method, "url", req.URL)
+	c.Logger.Debugw("Request", "method", req.Method, "path", req.URL.Path)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -146,7 +146,7 @@ func (c *Client) Post(ctx context.Context, path string, payload any, auth bool) 
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	c.Logger.Debugw("Response", "status", resp.Status, "body", string(data))
+	c.Logger.Debugw("Response", "status", resp.Status, "bytes", len(data))
 
 	if resp.StatusCode >= 400 {
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -197,7 +197,7 @@ func (c *Client) PostForm(ctx context.Context, path string, params map[string]st
 		req.Header.Set("Authorization", token)
 	}
 
-	c.Logger.Debugw("Request", "method", req.Method, "url", req.URL)
+	c.Logger.Debugw("Request", "method", req.Method, "path", req.URL.Path)
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -210,7 +210,7 @@ func (c *Client) PostForm(ctx context.Context, path string, params map[string]st
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	c.Logger.Debugw("Response", "status", resp.Status, "body", string(data))
+	c.Logger.Debugw("Response", "status", resp.Status, "bytes", len(data))
 
 	if resp.StatusCode >= 400 {
 		var apiErr APIError

@@ -256,6 +256,7 @@ type PositionRecord struct {
 	Category         string `json:"category"`
 	PosSide          string `json:"posSide"`
 	HoldSide         string `json:"holdSide"`
+	HoldMode         string `json:"holdMode"`
 	Qty              string `json:"qty"`
 	Total            string `json:"total"`
 	Size             string `json:"size"`

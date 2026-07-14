@@ -3,9 +3,11 @@ package grvt
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,18 +132,28 @@ func (c *WebsocketClient) Connect() error {
 	}
 
 	// Connect (unlock during dial to avoid blocking)
-	c.Logger.Infow("Connecting...", "url", c.URL)
+	c.Logger.Infow("Connecting...", "endpoint", grvtWebsocketLogEndpoint(c.URL))
 	// Use internal 10 second timeout
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, c.URL, header)
 	if err != nil {
 		if resp != nil {
-			body, _ := io.ReadAll(resp.Body)
-			c.Logger.Errorw("Handshake failed", "status", resp.Status, "body", string(body), "headers", resp.Header)
-			return fmt.Errorf("failed to connect to websocket: %w. Status: %s, Body: %s", err, resp.Status, string(body))
+			bodyBytes := 0
+			if resp.Body != nil {
+				body, _ := io.ReadAll(resp.Body)
+				bodyBytes = len(body)
+				_ = resp.Body.Close()
+			}
+			c.Logger.Errorw("Handshake failed", "status", resp.StatusCode, "response_bytes", bodyBytes)
+			return fmt.Errorf(
+				"failed to connect to websocket: %w (status: %s, response bytes: %d)",
+				newGRVTRedactedError("websocket handshake rejected", err),
+				grvtHTTPStatus(resp.StatusCode),
+				bodyBytes,
+			)
 		}
-		return fmt.Errorf("failed to connect to websocket: %w", err)
+		return fmt.Errorf("failed to connect to websocket: %w", newGRVTRedactedError("websocket transport failed", err))
 	}
 
 	// Another goroutine might have connected while we were dialing
@@ -199,11 +211,12 @@ func (c *WebsocketClient) readLoop() {
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			fields := grvtWebsocketReadErrorFields(err)
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.Logger.Errorw("websocket unexpected close error", "error", err)
+				c.Logger.Errorw("websocket unexpected close error", fields...)
 			} else if !c.isStopped() {
 				// Log other errors if not manually stopped
-				c.Logger.Errorw("websocket read error", "error", err)
+				c.Logger.Errorw("websocket read error", fields...)
 			}
 			return
 		}
@@ -232,13 +245,21 @@ func (c *WebsocketClient) handleRPCResponse(message []byte) {
 	if ok {
 		ch <- &resp
 	} else {
-		c.Logger.Warnw("received rpc response with no pending handler", "id", resp.Id, "resp", resp)
+		fields := []any{
+			"id", resp.Id,
+			"result_bytes", len(resp.Result),
+			"has_error", resp.Error != nil,
+		}
+		if resp.Error != nil {
+			fields = append(fields, "error_code", resp.Error.Code)
+		}
+		c.Logger.Warnw("received rpc response with no pending handler", fields...)
 	}
 }
 
 // override handleMessage to route RPC responses
 func (c *WebsocketClient) handleMessage(message []byte) {
-	c.Logger.Debugw("Received message", "msg", string(message))
+	c.Logger.Debugw("Received message", "bytes", len(message))
 
 	// Try to detect if it's an RPC response (id field present, result/error present, jsonrpc="2.0")
 	// Or standard subscription update.
@@ -292,7 +313,15 @@ func (c *WebsocketClient) handleMessage(message []byte) {
 
 	// skip subscribe response (Lite)
 	if msgStruct.Jsonrpc != nil {
-		c.Logger.Debugw("Received subscribe response", "msg", string(message))
+		method := ""
+		if msgStruct.Method != nil {
+			method = *msgStruct.Method
+		}
+		id := 0
+		if msgStruct.Id != nil {
+			id = *msgStruct.Id
+		}
+		c.Logger.Debugw("Received subscribe response", "method", method, "id", id, "bytes", len(message))
 		return
 	}
 
@@ -308,12 +337,12 @@ func (c *WebsocketClient) handleMessage(message []byte) {
 
 	if !ok {
 		// try to find partial match for wildcards if needed, or just log
-		c.Logger.Debugw("no callback for channel", "channel", channel)
+		c.Logger.Debugw("no callback for stream", "stream", *msgStruct.Stream)
 		return
 	}
 	go func() {
 		if err := callback(message); err != nil {
-			c.Logger.Errorw("callback failed", "error", err)
+			c.Logger.Errorw("callback failed", "error_type", fmt.Sprintf("%T", err))
 		}
 	}()
 }
@@ -349,7 +378,7 @@ func (c *WebsocketClient) SendRPC(method string, params interface{}) (*WsRpcResp
 		return nil, fmt.Errorf("websocket not connected")
 	}
 	bytes, _ := json.Marshal(req)
-	c.Logger.Infow("Sending RPC", "req", string(bytes))
+	c.Logger.Infow("Sending RPC", "method", method, "id", id, "request_bytes", len(bytes))
 	if err := c.Conn.WriteMessage(websocket.TextMessage, bytes); err != nil {
 		c.WriteMu.Unlock()
 		return nil, fmt.Errorf("write json failed: %w", err)
@@ -402,7 +431,7 @@ func (c *WebsocketClient) sendSubscribe(stream, selector string) error {
 		return fmt.Errorf("websocket not connected")
 	}
 
-	c.Logger.Debugw("Sending subscribe request", "req", req)
+	c.Logger.Debugw("Sending subscribe request", "method", req.Method, "id", req.Id, "stream", stream)
 	return c.Conn.WriteJSON(req)
 }
 
@@ -472,13 +501,30 @@ func (c *WebsocketClient) reconnect() {
 				selector := parts[len(parts)-1]
 				stream := strings.Join(parts[:len(parts)-1], ".")
 				if err := c.sendSubscribe(stream, selector); err != nil {
-					c.Logger.Errorw("Failed to resubscribe", "channel", ch, "error", err)
+					c.Logger.Errorw("Failed to resubscribe", "stream", stream, "error", err)
 				}
 			}
 		}
 
 		return
 	}
+}
+
+func grvtWebsocketLogEndpoint(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "configured"
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func grvtWebsocketReadErrorFields(err error) []any {
+	fields := []any{"error_type", fmt.Sprintf("%T", err)}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		fields = append(fields, "close_code", closeErr.Code)
+	}
+	return fields
 }
 
 func (c *WebsocketClient) Close() {

@@ -7,6 +7,10 @@ package reconcile
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -15,15 +19,16 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
 	"github.com/QuantProcessing/boltertrader/runtime/latency"
 	"github.com/QuantProcessing/boltertrader/runtime/orderstate"
+	"github.com/shopspring/decimal"
 )
 
 // Report summarizes what a reconciliation pass changed.
 type Report struct {
 	AccountStatesApplied int
 	BalancesUpdated      int
-	PositionsUpdated     int
-	PositionsCleared     int // positions in cache not present in the snapshot
-	PositionOverwrites   int
+	PositionsUpdated     int // deprecated: position reports no longer mutate cache directly
+	PositionsCleared     int // deprecated: position reports no longer clear cache directly
+	PositionOverwrites   int // deprecated: mismatches are emitted as blocking findings
 
 	OrdersUpdated       int // open orders in both cache and venue, refreshed to venue truth
 	OrdersExternal      int // open orders the venue reports that the cache had never seen
@@ -36,32 +41,184 @@ type Report struct {
 	FillsInferred  int
 
 	Partial          bool
+	FillsPartial     bool
 	CursorsCommitted int
 	Warnings         []model.ReportWarning
 	Findings         []Finding
 }
 
-// Reconciler pulls authoritative snapshots and corrects the cache. The account
-// client (balances/positions) and the execution client (open orders) are each
-// optional; whichever is supplied is reconciled.
-type Reconciler struct {
-	account   contract.AccountClient
-	orders    contract.ExecutionClient
-	cache     *cache.Cache
-	latency   latency.Recorder
-	state     StateStore
-	fills     map[string]struct{}
-	accountID string
-	resolver  interface {
-		ResolveInFlight(clientID, venueOrderID string, at time.Time)
-		ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool)
-	}
+// ActivationVerdict is the runtime-facing safety decision produced from a
+// reconciliation report. Safe is false only when the report contains evidence
+// that can hide fills, open orders, or another explicitly blocking condition;
+// Partial alone is not enough because several venues intentionally return an
+// authoritative open-orders-only snapshot.
+type ActivationVerdict struct {
+	Safe   bool
+	Reason string
 }
 
-// New builds a Reconciler. account drives balance/position reconciliation and
-// orders drives open-order reconciliation; either may be nil to skip that part.
+// ActivationVerdict returns whether trading may be activated after this pass.
+// The method is additive so existing Report consumers remain source-compatible.
+func (r Report) ActivationVerdict() ActivationVerdict {
+	if r.FillsPartial {
+		return ActivationVerdict{Reason: "reconciliation fill history is incomplete"}
+	}
+	for _, finding := range r.Findings {
+		if finding.Blocking || finding.Severity == FindingBlocking {
+			reason := strings.TrimSpace(finding.Message)
+			if reason == "" {
+				reason = strings.TrimSpace(finding.Code)
+			}
+			if reason == "" {
+				reason = "reconciliation has an unresolved blocking finding"
+			}
+			return ActivationVerdict{Reason: reason}
+		}
+	}
+	for _, warning := range r.Warnings {
+		switch strings.ToUpper(strings.TrimSpace(warning.Code)) {
+		case "FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED":
+			return ActivationVerdict{Reason: "reconciliation fill history is incomplete"}
+		case "OPEN_ORDERS_UNAVAILABLE", "OPEN_ORDERS_PARTIAL", "BYBIT_SPOT_MASS_STATUS_SYMBOL_SCOPED":
+			reason := strings.TrimSpace(warning.Message)
+			if reason == "" {
+				reason = "reconciliation open-order evidence is incomplete"
+			}
+			return ActivationVerdict{Reason: reason}
+		}
+	}
+	return ActivationVerdict{Safe: true}
+}
+
+// Reconciler pulls authoritative snapshots and reconciles local state. The
+// account client supplies balances and optional position evidence; the
+// execution client supplies order/fill/position reports. Position evidence is
+// compared without a cache-only overwrite.
+type Reconciler struct {
+	account contract.AccountClient
+	orders  contract.ExecutionClient
+	cache   *cache.Cache
+	latency latency.Recorder
+	state   StateStore
+	fills   map[string]string
+	// fillIdentities retains the order aliases first observed for a venue trade
+	// identity. A venue trade ID reused for a different order is a data conflict,
+	// not a second fill.
+	fillIdentities map[string]fillOrderIdentity
+	fillOrder      []string
+	fillLimit      int
+	passFills      map[string]string
+	// overlapFills retains every successfully applied or recognized fill from
+	// the immediately preceding venue report. It makes the deliberate cursor
+	// overlap safe even when one report contains more identities than the
+	// bounded long-lived fill index can retain.
+	overlapFills map[string]string
+	// observedFills is nil until a valid mass-status fill report starts being
+	// processed. A complete, cursor-committed pass may replace overlapFills;
+	// incomplete outcomes merge into the prior overlap so unprocessed identities
+	// cannot be forgotten.
+	observedFills          map[string]string
+	overlapLimit           int
+	observedNewFills       int
+	replaceOverlapOnFinish bool
+	pending                map[string]pendingAppliedFill
+	accountID              string
+	resolver               interface {
+		ResolveInFlight(clientID, venueOrderID string, at time.Time)
+	}
+	orderResolver interface {
+		ResolveOrderInFlight(order model.Order, at time.Time) bool
+	}
+	fillResolver interface {
+		ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool)
+	}
+	fillMatcher interface {
+		MatchFillInFlight(fill model.Fill) (model.Fill, bool)
+	}
+	fillApplier func(model.Fill, contract.EventMeta) FillApplyResult
+	fillSeeder  func(model.Fill)
+}
+
+// defaultFillRetentionLimit is the completed-fill idempotency horizon. Pending
+// fills whose durable record has not yet been written live outside this window
+// and are never evicted.
+const defaultFillRetentionLimit = 100_000
+
+// defaultFillOverlapLimit independently bounds the exact, pass-to-pass
+// overlap set. If incomplete coverage would require retaining more identities,
+// reconciliation fails closed before applying the identity it cannot retain.
+const defaultFillOverlapLimit = 100_000
+
+// defaultCursorOverlap deliberately re-queries a short portion of the last
+// successful fill window. Venue timestamps and REST visibility are not an
+// atomic watermark: a fill may become visible just after a pass while carrying
+// a timestamp just before that pass's Until. Fill-key deduplication makes this
+// bounded overlap safe.
+const defaultCursorOverlap = time.Minute
+
+// FillApplyResult lets the node-owned fill path distinguish a new application
+// from a previously applied live/recovered fill and from an unmatched fill.
+type FillApplyResult uint8
+
+const (
+	FillApplyUnmatched FillApplyResult = iota
+	FillApplyApplied
+	FillApplyDuplicate
+	FillApplyConflict
+)
+
+type pendingAppliedFill struct {
+	pass      PassHeader
+	meta      contract.EventMeta
+	fill      model.Fill
+	appliedAt time.Time
+}
+
+type fillOrderIdentity struct {
+	clientID     string
+	venueOrderID string
+}
+
+type orderReportSnapshot struct {
+	order          model.Order
+	baseline       model.Order
+	baselineFilled decimal.Decimal
+}
+
+type orderIdentityKey struct {
+	accountID  string
+	instrument string
+	namespace  string
+	id         string
+}
+
+type recognizedFillSet map[orderIdentityKey]map[string]model.Fill
+
+type fillPresenceKey struct {
+	accountID     string
+	anyAccount    bool
+	instrument    model.InstrumentID
+	anyInstrument bool
+	namespace     string
+	id            string
+}
+
+type fillPresenceIndex map[fillPresenceKey]struct{}
+
+// New builds a Reconciler. account drives balance and fallback position-report
+// reconciliation; orders drives mass-status reconciliation. Either may be nil.
 func New(account contract.AccountClient, orders contract.ExecutionClient, c *cache.Cache) *Reconciler {
-	return &Reconciler{account: account, orders: orders, cache: c, state: noopStateStore{}, fills: make(map[string]struct{})}
+	return &Reconciler{
+		account:        account,
+		orders:         orders,
+		cache:          c,
+		state:          noopStateStore{},
+		fills:          make(map[string]string),
+		fillIdentities: make(map[string]fillOrderIdentity),
+		fillLimit:      defaultFillRetentionLimit,
+		overlapLimit:   defaultFillOverlapLimit,
+		pending:        make(map[string]pendingAppliedFill),
+	}
 }
 
 func (r *Reconciler) WithLatencyRecorder(rec latency.Recorder) *Reconciler {
@@ -83,15 +240,218 @@ func (r *Reconciler) WithAccountID(accountID string) *Reconciler {
 
 func (r *Reconciler) WithInFlightResolver(resolver interface {
 	ResolveInFlight(clientID, venueOrderID string, at time.Time)
-	ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool)
 }) *Reconciler {
 	r.resolver = resolver
+	if orderResolver, ok := resolver.(interface {
+		ResolveOrderInFlight(order model.Order, at time.Time) bool
+	}); ok {
+		r.orderResolver = orderResolver
+	} else {
+		r.orderResolver = nil
+	}
+	if fillResolver, ok := resolver.(interface {
+		ResolveFillInFlight(fill model.Fill, at time.Time) (model.Fill, bool)
+	}); ok {
+		r.fillResolver = fillResolver
+	} else {
+		r.fillResolver = nil
+	}
+	if matcher, ok := resolver.(interface {
+		MatchFillInFlight(fill model.Fill) (model.Fill, bool)
+	}); ok {
+		r.fillMatcher = matcher
+	} else {
+		r.fillMatcher = nil
+	}
 	return r
 }
 
-// Run performs one reconciliation pass, overwriting the cache with venue truth:
-// balances and positions (clearing cached positions the venue considers flat),
-// then open orders (adopting orders the venue reports but the cache never saw,
+// WithFillApplier routes recovered fills through the runtime's canonical fill
+// application path. Standalone reconciler users may omit it and retain the
+// cache-only behavior used by lower-level reconciliation tests.
+func (r *Reconciler) WithFillApplier(apply func(model.Fill, contract.EventMeta) FillApplyResult) *Reconciler {
+	r.fillApplier = apply
+	return r
+}
+
+// WithFillSeeder installs the node-owned idempotency-index hook used during
+// journal replay. Seeding never applies business state or emits callbacks.
+func (r *Reconciler) WithFillSeeder(seed func(model.Fill)) *Reconciler {
+	r.fillSeeder = seed
+	return r
+}
+
+// WithFillRetentionLimit bounds the long-lived completed-fill index to the
+// most recent limit distinct fill keys. The exact immediately-overlapping
+// report set has its own fixed safety cap, and pending durability work is never
+// evicted. A non-positive limit leaves the current conservative limit unchanged.
+func (r *Reconciler) WithFillRetentionLimit(limit int) *Reconciler {
+	if limit <= 0 {
+		return r
+	}
+	r.fillLimit = limit
+	r.trimAppliedFills()
+	r.pruneFillIdentities()
+	return r
+}
+
+func (r *Reconciler) rememberAppliedFill(fillKey, recordID string) {
+	if r.passFills != nil {
+		if previous, exists := r.passFills[fillKey]; !exists || recordID != "" || previous == "" {
+			r.passFills[fillKey] = recordID
+		}
+	}
+	if _, exists := r.fills[fillKey]; exists {
+		r.fills[fillKey] = recordID
+		return
+	}
+	r.fills[fillKey] = recordID
+	r.fillOrder = append(r.fillOrder, fillKey)
+	r.trimAppliedFills()
+}
+
+func (r *Reconciler) trimAppliedFills() {
+	for len(r.fills) > r.fillLimit && len(r.fillOrder) > 0 {
+		oldest := r.fillOrder[0]
+		r.fillOrder = r.fillOrder[1:]
+		delete(r.fills, oldest)
+	}
+}
+
+func (r *Reconciler) pruneFillIdentities() {
+	for fillKey := range r.fillIdentities {
+		if _, retained := r.fills[fillKey]; retained {
+			continue
+		}
+		if _, retained := r.overlapFills[fillKey]; retained {
+			continue
+		}
+		if _, retained := r.passFills[fillKey]; retained {
+			continue
+		}
+		if _, retained := r.observedFills[fillKey]; retained {
+			continue
+		}
+		if _, retained := r.pending[fillKey]; retained {
+			continue
+		}
+		delete(r.fillIdentities, fillKey)
+	}
+}
+
+func (r *Reconciler) beginFillPass() {
+	r.passFills = make(map[string]string, len(r.fills)+len(r.overlapFills))
+	for fillKey, recordID := range r.fills {
+		r.passFills[fillKey] = recordID
+	}
+	for fillKey, recordID := range r.overlapFills {
+		if previous, exists := r.passFills[fillKey]; !exists || recordID != "" || previous == "" {
+			r.passFills[fillKey] = recordID
+		}
+	}
+	r.observedFills = nil
+	r.observedNewFills = 0
+	r.replaceOverlapOnFinish = false
+}
+
+func (r *Reconciler) finishFillPass() {
+	if r.observedFills != nil {
+		if r.replaceOverlapOnFinish {
+			r.overlapFills = r.observedFills
+		} else {
+			if r.overlapFills == nil {
+				r.overlapFills = make(map[string]string, len(r.observedFills))
+			}
+			for fillKey, recordID := range r.observedFills {
+				if previous, exists := r.overlapFills[fillKey]; !exists || recordID != "" || previous == "" {
+					r.overlapFills[fillKey] = recordID
+				}
+			}
+		}
+	}
+	r.passFills = nil
+	r.observedFills = nil
+	r.observedNewFills = 0
+	r.replaceOverlapOnFinish = false
+	r.pruneFillIdentities()
+}
+
+func (r *Reconciler) rememberObservedFill(fillKey, recordID string) error {
+	if r.observedFills == nil {
+		return nil
+	}
+	if previous, exists := r.observedFills[fillKey]; exists {
+		if recordID != "" || previous == "" {
+			r.observedFills[fillKey] = recordID
+		}
+		return nil
+	}
+	if err := r.ensureObservedFillCapacity(fillKey); err != nil {
+		return err
+	}
+	if _, retained := r.overlapFills[fillKey]; !retained {
+		r.observedNewFills++
+	}
+	r.observedFills[fillKey] = recordID
+	return nil
+}
+
+func (r *Reconciler) ensureObservedFillCapacity(fillKey string) error {
+	if r.observedFills == nil {
+		return nil
+	}
+	if _, observed := r.observedFills[fillKey]; observed {
+		return nil
+	}
+	if _, retained := r.overlapFills[fillKey]; retained {
+		return nil
+	}
+	if len(r.overlapFills)+r.observedNewFills >= r.overlapLimit {
+		return fmt.Errorf("reconcile: fill overlap retention capacity %d exhausted", r.overlapLimit)
+	}
+	return nil
+}
+
+func (r *Reconciler) ensurePassFillCapacity(fillKey string) error {
+	if r.passFills == nil {
+		return nil
+	}
+	if _, retained := r.passFills[fillKey]; retained {
+		return nil
+	}
+	maxInt := int(^uint(0) >> 1)
+	limit := maxInt
+	if r.fillLimit <= maxInt-r.overlapLimit {
+		limit = r.fillLimit + r.overlapLimit
+	}
+	if len(r.passFills) >= limit {
+		return fmt.Errorf("reconcile: fill pass retention capacity %d exhausted", limit)
+	}
+	return nil
+}
+
+func (r *Reconciler) rememberOverlapFill(fillKey, recordID string) error {
+	if previous, exists := r.overlapFills[fillKey]; exists {
+		if recordID != "" || previous == "" {
+			r.overlapFills[fillKey] = recordID
+		}
+		return nil
+	}
+	if len(r.overlapFills) >= r.overlapLimit {
+		return fmt.Errorf("reconcile: fill overlap retention capacity %d exhausted", r.overlapLimit)
+	}
+	if r.overlapFills == nil {
+		r.overlapFills = make(map[string]string)
+	}
+	r.overlapFills[fillKey] = recordID
+	return nil
+}
+
+// Run performs one reconciliation pass. Balance snapshots and order reports are
+// applied to their canonical local paths; position reports are compared without
+// silently mutating cache state. Position mismatches remain blocking until a
+// fill/account event can explain and apply the difference. Open orders are
+// adopted when the venue reports an order the cache never saw,
 // refreshing known ones, and marking cache-open orders missing from the venue
 // open snapshot as closed with unknown reason). Intended to be called at startup
 // and after every reconnect.
@@ -167,53 +527,35 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		}
 	}
 
-	positions, err := r.account.Positions(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Build the set of instrument/side keys the venue reports, so we can clear
-	// stale cached positions the venue considers flat.
-	seen := make(map[positionKey]struct{}, len(positions))
-	for _, p := range positions {
-		if p.AccountID == "" {
-			p.AccountID = scopeAccountID
+	// Position reconciliation is report/event based. When there is no execution
+	// client to provide a mass-status position report, normalize the account
+	// snapshot into the same comparison path. Never overwrite or clear the cache
+	// here: doing so would leave the node-owned portfolio/PnL/callback state
+	// behind the cache.
+	if r.orders == nil && caps.Reports.PositionReports {
+		positions, err := r.account.Positions(ctx)
+		if err != nil {
+			return err
 		}
-		if p.UpdatedAt.IsZero() && !accountSnapshotAt.IsZero() {
-			p.UpdatedAt = accountSnapshotAt
+		reports := positionReportsFromSnapshot(caps.Venue, scopeAccountID, accountSnapshotAt, positions)
+		stableAt := latestPositionReportAt(reports)
+		pass := positionPass(caps.Venue, scopeAccountID, stableAt)
+		openFindings, err := r.state.LoadOpenFindings(ctx, pass.Scope)
+		if err != nil {
+			return err
 		}
-		var cp model.Position
-		var ok bool
-		if p.AccountID != "" {
-			cp, ok = r.cache.PositionForAccount(p.AccountID, p.InstrumentID, p.Side)
-		} else {
-			cp, ok = r.cache.Position(p.InstrumentID, p.Side)
+		for _, finding := range openFindings {
+			appendFindingUnique(rep, finding)
 		}
-		if ok && !cp.Quantity.Equal(p.Quantity) {
-			rep.PositionOverwrites++
+		if err := r.state.BeginPass(ctx, pass); err != nil {
+			return err
 		}
-		r.cache.UpsertPosition(p)
-		rep.PositionsUpdated++
-		seen[positionKey{p.AccountID, p.InstrumentID.String(), p.Side}] = struct{}{}
-	}
-
-	for _, cp := range r.cache.Positions() {
-		if scopeAccountID != "" && cp.AccountID != scopeAccountID {
-			continue
+		unresolved, err := r.reconcilePositionReports(ctx, pass, reports, caps, rep)
+		if err != nil {
+			return err
 		}
-		k := positionKey{cp.AccountID, cp.InstrumentID.String(), cp.Side}
-		if _, ok := seen[k]; !ok {
-			// Venue no longer reports this position: force it flat. A
-			// zero-quantity upsert removes it from the cache.
-			r.cache.UpsertPosition(model.Position{
-				AccountID:    cp.AccountID,
-				InstrumentID: cp.InstrumentID,
-				Side:         cp.Side,
-				UpdatedAt:    accountSnapshotAt,
-			})
-			if _, stillPresent := r.cache.PositionForAccount(cp.AccountID, cp.InstrumentID, cp.Side); !stillPresent {
-				rep.PositionsCleared++
-			}
+		if err := r.resolvePositionFindings(ctx, rep, openFindings, pass, unresolved); err != nil {
+			return err
 		}
 	}
 	if accountStateID != "" {
@@ -229,41 +571,98 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 // is no longer resting, but this bounded pass must not claim a cancel or a fill
 // until trade reconciliation can prove that terminal reason.
 func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
-	mass, err := r.orders.GenerateExecutionMassStatus(ctx, model.MassStatusQuery{AccountID: r.accountID})
+	r.beginFillPass()
+	defer r.finishFillPass()
+	appliedEventRecordIDs, err := r.flushPendingAppliedFills(ctx)
 	if err != nil {
 		return err
+	}
+	query, err := r.massStatusQuery(ctx)
+	if err != nil {
+		return err
+	}
+	mass, err := r.orders.GenerateExecutionMassStatus(ctx, query)
+	if err != nil {
+		return err
+	}
+	if mass == nil {
+		return fmt.Errorf("reconcile: execution mass status is nil")
 	}
 	if mass.AccountID == "" {
 		mass.AccountID = r.accountID
 	}
+	if query.IncludePositions && len(mass.PositionReports) == 0 && r.account != nil && r.account.Capabilities().Reports.PositionReports {
+		positions, err := r.account.Positions(ctx)
+		if err != nil {
+			return err
+		}
+		venue := mass.Venue
+		if venue == "" {
+			venue = r.account.Capabilities().Venue
+		}
+		for _, report := range positionReportsFromSnapshot(venue, mass.AccountID, mass.GeneratedAt, positions) {
+			if err := mass.AddPositionReport(report); err != nil {
+				return err
+			}
+		}
+	}
 	if err := mass.Validate(); err != nil {
 		return err
 	}
-	stableEventAt := mass.GeneratedAt
-	if stableEventAt.IsZero() {
-		stableEventAt = time.Now()
+	stableEventAt := massStableEventAt(mass)
+	coverageAt := query.Until
+	if coverageAt.IsZero() {
+		coverageAt = stableEventAt
 	}
 	scope := ScopeKey{Venue: mass.Venue, AccountID: mass.AccountID}
+	queryFrom := query.Since
+	if queryFrom.IsZero() && !stableEventAt.IsZero() {
+		queryFrom = stableEventAt.Add(-mass.Lookback)
+	}
+	if queryFrom.After(coverageAt) {
+		queryFrom = coverageAt
+	}
+	fillLookbackFloor := query.Since
+	if fillLookbackFloor.IsZero() && mass.Lookback > 0 && !stableEventAt.IsZero() {
+		fillLookbackFloor = stableEventAt.Add(-mass.Lookback)
+	}
+	if fillLookbackFloor.After(coverageAt) {
+		fillLookbackFloor = coverageAt
+	}
 	pass := PassHeader{
 		PassID:        PassID(scope, stableEventAt),
 		Scope:         scope,
 		StartedAt:     time.Now(),
 		StableEventAt: stableEventAt,
-		QueryFrom:     stableEventAt.Add(-mass.Lookback),
-		QueryTo:       stableEventAt,
+		QueryFrom:     queryFrom,
+		QueryTo:       coverageAt,
 	}
 	openFindings, err := r.state.LoadOpenFindings(ctx, scope)
 	if err != nil {
 		return err
 	}
 	rep.Findings = append(rep.Findings, openFindings...)
+	var autoResolutions []FindingResolution
 	if err := r.state.BeginPass(ctx, pass); err != nil {
 		return err
 	}
 	rep.Partial = rep.Partial || mass.Partial
+	fillsPartial := fillReportsPartial(mass.Warnings)
+	rep.FillsPartial = rep.FillsPartial || fillsPartial
 	rep.Warnings = append(rep.Warnings, mass.Warnings...)
+	if query.IncludePositions {
+		unresolved, err := r.reconcilePositionReports(ctx, pass, sortedPositionReports(mass.PositionReports), r.orders.Capabilities(), rep)
+		if err != nil {
+			return err
+		}
+		if !mass.Partial && !positionReportsPartial(mass.Warnings) {
+			autoResolutions = append(autoResolutions, r.positionResolutionCandidates(openFindings, pass, unresolved)...)
+		}
+	}
 
-	venueKeys := make(map[string]struct{}, len(mass.OrderReports))
+	venueKeys := make(map[orderIdentityKey]struct{}, len(mass.OrderReports)*2)
+	orderSnapshots := make([]orderReportSnapshot, 0, len(mass.OrderReports))
+	orderIdentityConflict := false
 	for _, report := range mass.OrderReports {
 		o := report.Order
 		accountID := report.AccountID
@@ -273,37 +672,132 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 		if o.Request.AccountID == "" {
 			o.Request.AccountID = accountID
 		}
-		k := orderKeyOf(o)
-		venueKeys[k] = struct{}{}
-		if o.VenueOrderID != "" {
-			venueKeys[o.VenueOrderID] = struct{}{}
+		baseline := model.Order{}
+		baselineFilled := decimal.Zero
+		existing, known, identityErr := resolveCachedOrderByTypedIdentity(r.cache, accountID, o)
+		if identityErr != nil {
+			orderIdentityConflict = true
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamOrders,
+				FindingBlocking,
+				"ORDER_IDENTITY_CONFLICT",
+				"order report conflicts with cached typed identity: "+identityErr.Error(),
+				true,
+			)); err != nil {
+				return err
+			}
+			continue
 		}
-		if _, known := r.cache.OrderForAccount(accountID, k); known {
+		if known {
+			baseline = existing
+			baselineFilled = existing.FilledQty
+		}
+		if identityErr := r.cache.UpsertOrderChecked(o); identityErr != nil {
+			orderIdentityConflict = true
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamOrders,
+				FindingBlocking,
+				"ORDER_IDENTITY_CONFLICT",
+				"order report could not be committed: "+identityErr.Error(),
+				true,
+			)); err != nil {
+				return err
+			}
+			continue
+		}
+		if known {
 			rep.OrdersUpdated++
 		} else {
 			rep.OrdersExternal++
 		}
-		r.cache.UpsertOrder(o)
-		if r.resolver != nil {
-			r.resolver.ResolveInFlight(o.Request.ClientID, o.VenueOrderID, stableEventAt)
+		canonical := o
+		if merged, ok, err := resolveCachedOrderByTypedIdentity(r.cache, accountID, o); err != nil {
+			orderIdentityConflict = true
+			if recordErr := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamOrders,
+				FindingBlocking,
+				"ORDER_IDENTITY_CONFLICT",
+				"committed order report has conflicting typed identity: "+err.Error(),
+				true,
+			)); recordErr != nil {
+				return recordErr
+			}
+			continue
+		} else if ok {
+			canonical = merged
+		}
+		for _, key := range orderIdentityKeysForOrder(canonical, accountID) {
+			venueKeys[key] = struct{}{}
+		}
+		orderSnapshots = append(orderSnapshots, orderReportSnapshot{order: canonical, baseline: baseline, baselineFilled: baselineFilled})
+		if r.orderResolver != nil {
+			r.orderResolver.ResolveOrderInFlight(canonical, stableEventAt)
+		} else if r.resolver != nil {
+			r.resolver.ResolveInFlight(canonical.Request.ClientID, canonical.VenueOrderID, stableEventAt)
 		}
 	}
-
-	if err := r.applyFillReports(ctx, pass, mass, rep); err != nil {
+	if err := r.inferMissingSnapshotFills(pass, mass, orderSnapshots); err != nil {
 		return err
+	}
+
+	appliedFills := make(map[orderIdentityKey][]model.Fill)
+	recognizedFills := make(recognizedFillSet)
+	fillDependencies, err := r.applyFillReports(ctx, pass, mass, rep, appliedFills, recognizedFills)
+	if err != nil {
+		return err
+	}
+	for _, recordID := range fillDependencies {
+		appliedEventRecordIDs = appendAppliedEventDependency(appliedEventRecordIDs, recordID)
+	}
+	if fillsPartial {
+		appliedEventRecordIDs = retainedAppliedEventDependencies(
+			appliedEventRecordIDs,
+			r.overlapFills,
+			r.observedFills,
+		)
+	}
+
+	unresolvedOrderProgress := make(map[orderIdentityKey]struct{})
+	for _, snapshot := range orderSnapshots {
+		fills := appliedFills[orderProgressKey(snapshot.order)]
+		if uncovered := r.reconcileOrderSnapshotProgress(snapshot, fills); uncovered.IsPositive() {
+			condition := orderProgressKey(snapshot.order)
+			unresolvedOrderProgress[condition] = struct{}{}
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamFills,
+				FindingBlocking,
+				"ORDER_PROGRESS_WITHOUT_FILL",
+				fmt.Sprintf("order %s cumulative filled quantity advanced by %s without %s of recoverable fill reports", encodeOrderProgressCondition(condition), snapshot.order.FilledQty.Sub(snapshot.baselineFilled), uncovered),
+				true,
+			)); err != nil {
+				return err
+			}
+		}
+	}
+	if query.IncludeFills && !mass.Partial && !fillsPartial {
+		autoResolutions = append(autoResolutions, r.orderProgressResolutionCandidates(openFindings, pass, unresolvedOrderProgress, recognizedFills)...)
 	}
 
 	for _, co := range r.cache.OpenOrders() {
 		if !orderInAccountScope(co, mass.AccountID) {
 			continue
 		}
-		if _, ok := venueKeys[orderKeyOf(co)]; ok {
-			continue
-		}
-		if co.VenueOrderID != "" {
-			if _, ok := venueKeys[co.VenueOrderID]; ok {
+		matched := false
+		for _, key := range orderIdentityKeysForOrder(co, mass.AccountID) {
+			if _, ok := venueKeys[key]; ok {
+				matched = true
 				continue
 			}
+		}
+		if matched {
+			continue
+		}
+		if orderIdentityConflict {
+			continue
 		}
 		if mass.Partial {
 			finding := r.finding(pass, StreamOrders, FindingWarning, "PARTIAL_ORDER_REPORT", "partial mass-status report cannot prove missing open order terminal state", false)
@@ -319,132 +813,1299 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	}
 
 	cursor := Cursor{
-		Scope:              scope,
-		Stream:             StreamOrders,
-		LastSuccessfulPass: pass.PassID,
-		LastReportID:       mass.ReportID,
-		LastVenueTime:      stableEventAt,
-		LastLocalApplyTime: time.Now(),
-		LookbackFloor:      pass.QueryFrom,
-		Partial:            mass.Partial,
+		Scope:                 scope,
+		Stream:                StreamOrders,
+		LastSuccessfulPass:    pass.PassID,
+		LastReportID:          mass.ReportID,
+		LastVenueTime:         coverageAt,
+		LastLocalApplyTime:    time.Now(),
+		LookbackFloor:         fillLookbackFloor,
+		Partial:               mass.Partial,
+		FillsPartial:          fillsPartial,
+		AppliedEventRecordIDs: appliedEventRecordIDs,
+	}
+	if hasBlockingFindingExcept(rep.Findings, autoResolutions) {
+		return nil
 	}
 	if err := r.state.CommitCursor(ctx, cursor); err != nil {
 		return err
 	}
 	rep.CursorsCommitted++
+	if err := r.applyFindingResolutions(ctx, autoResolutions); err != nil {
+		return err
+	}
+	if err := r.refreshResolvedFindings(ctx, rep, scope, autoResolutions); err != nil {
+		return err
+	}
+	if !fillsPartial {
+		if _, nonPersistent := r.state.(noopStateStore); !nonPersistent {
+			r.replaceOverlapOnFinish = true
+		}
+	}
 	return nil
 }
 
-func (r *Reconciler) applyFillReports(ctx context.Context, pass PassHeader, mass *model.ExecutionMassStatus, rep *Report) error {
+func (r *Reconciler) massStatusQuery(ctx context.Context) (model.MassStatusQuery, error) {
+	caps := r.orders.Capabilities()
+	includePositions := caps.Reports.PositionReports
+	if r.account != nil && r.account.Capabilities().Reports.PositionReports {
+		includePositions = true
+	}
+	query := model.MassStatusQuery{
+		AccountID:        r.accountID,
+		IncludeFills:     caps.Reports.FillHistory,
+		IncludePositions: includePositions,
+		Until:            time.Now(),
+	}
+	scope := ScopeKey{Venue: caps.Venue, AccountID: r.accountID}
+	cursor, err := r.state.LoadCursor(ctx, scope, StreamOrders)
+	if err != nil {
+		return model.MassStatusQuery{}, err
+	}
+	if err := r.seedAppliedFillDependencies(ctx, scope, cursor); err != nil {
+		return model.MassStatusQuery{}, err
+	}
+	if cursor.FillsPartial {
+		query.Since = cursor.LookbackFloor
+	} else {
+		query.Since = cursor.LastVenueTime
+		if query.IncludeFills && !query.Since.IsZero() {
+			query.Since = query.Since.Add(-defaultCursorOverlap)
+			if !cursor.LookbackFloor.IsZero() && query.Since.Before(cursor.LookbackFloor) {
+				query.Since = cursor.LookbackFloor
+			}
+		}
+		if query.Since.IsZero() {
+			query.Since = cursor.LookbackFloor
+		}
+	}
+	if query.Since.After(query.Until) {
+		query.Since = query.Until
+	}
+	if !query.Since.IsZero() {
+		query.Lookback = query.Until.Sub(query.Since)
+	}
+	return query, nil
+}
+
+func fillReportsPartial(warnings []model.ReportWarning) bool {
+	for _, warning := range warnings {
+		switch warning.Code {
+		case "FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED":
+			return true
+		}
+	}
+	return false
+}
+
+func positionReportsPartial(warnings []model.ReportWarning) bool {
+	for _, warning := range warnings {
+		code := strings.ToUpper(strings.TrimSpace(warning.Code))
+		if !strings.Contains(code, "POSITION") {
+			continue
+		}
+		if strings.Contains(code, "PARTIAL") || strings.Contains(code, "UNAVAILABLE") || strings.Contains(code, "LIMIT") {
+			return true
+		}
+	}
+	return false
+}
+
+func massStableEventAt(mass *model.ExecutionMassStatus) time.Time {
+	if mass == nil {
+		return time.Time{}
+	}
+	if !mass.GeneratedAt.IsZero() {
+		return mass.GeneratedAt
+	}
+	var latest time.Time
+	consider := func(at time.Time) {
+		if !at.IsZero() && (latest.IsZero() || at.After(latest)) {
+			latest = at
+		}
+	}
+	for _, report := range mass.OrderReports {
+		consider(report.ReportedAt)
+		consider(report.Order.UpdatedAt)
+	}
 	for _, reports := range mass.FillReports {
 		for _, report := range reports {
-			accountID := report.AccountID
-			if accountID == "" {
-				accountID = mass.AccountID
+			consider(report.ReportedAt)
+			consider(report.Fill.Timestamp)
+		}
+	}
+	for _, reports := range mass.PositionReports {
+		for _, report := range reports {
+			consider(report.ReportedAt)
+			consider(report.Position.UpdatedAt)
+		}
+	}
+	return latest
+}
+
+func positionReportsFromSnapshot(venue, accountID string, reportedAt time.Time, positions []model.Position) []model.PositionReport {
+	reports := make([]model.PositionReport, 0, len(positions))
+	for _, position := range positions {
+		if position.AccountID == "" {
+			position.AccountID = accountID
+		}
+		at := position.UpdatedAt
+		if at.IsZero() {
+			at = reportedAt
+		}
+		reports = append(reports, model.PositionReport{
+			Venue:      venue,
+			AccountID:  position.AccountID,
+			Position:   position,
+			ReportedAt: at,
+		})
+	}
+	return reports
+}
+
+func latestPositionReportAt(reports []model.PositionReport) time.Time {
+	var latest time.Time
+	for _, report := range reports {
+		at := report.ReportedAt
+		if !report.Position.UpdatedAt.IsZero() {
+			at = report.Position.UpdatedAt
+		}
+		if !at.IsZero() && (latest.IsZero() || at.After(latest)) {
+			latest = at
+		}
+	}
+	return latest
+}
+
+func positionPass(venue, accountID string, stableAt time.Time) PassHeader {
+	scope := ScopeKey{Venue: venue, AccountID: accountID}
+	return PassHeader{
+		PassID:        PassID(scope, stableAt),
+		Scope:         scope,
+		StartedAt:     time.Now(),
+		StableEventAt: stableAt,
+		QueryFrom:     stableAt,
+		QueryTo:       stableAt,
+	}
+}
+
+func sortedPositionReports(groups map[string][]model.PositionReport) []model.PositionReport {
+	var reports []model.PositionReport
+	for _, group := range groups {
+		reports = append(reports, group...)
+	}
+	sort.SliceStable(reports, func(i, j int) bool {
+		left, right := reports[i], reports[j]
+		leftAt, rightAt := left.ReportedAt, right.ReportedAt
+		if !left.Position.UpdatedAt.IsZero() {
+			leftAt = left.Position.UpdatedAt
+		}
+		if !right.Position.UpdatedAt.IsZero() {
+			rightAt = right.Position.UpdatedAt
+		}
+		if !leftAt.Equal(rightAt) {
+			if leftAt.IsZero() {
+				return false
 			}
-			fill := report.Fill
-			if fill.AccountID == "" {
-				fill.AccountID = accountID
+			if rightAt.IsZero() {
+				return true
 			}
-			if fill.ClientID == "" && r.resolver != nil {
-				if resolvedFill, resolved := r.resolver.ResolveFillInFlight(fill, fillResolvedAt(fill, pass)); resolved {
-					fill = resolvedFill
+			return leftAt.Before(rightAt)
+		}
+		return left.Key() < right.Key()
+	})
+	return reports
+}
+
+func (r *Reconciler) reconcilePositionReports(
+	ctx context.Context,
+	pass PassHeader,
+	reports []model.PositionReport,
+	caps contract.Capabilities,
+	rep *Report,
+) (map[string]struct{}, error) {
+	unresolved := make(map[string]struct{})
+	authoritative := make(map[positionKey]model.Position, len(reports))
+	lastReported := make(map[positionKey]model.Position, len(reports))
+	authoritativeAt := make(map[positionKey]time.Time, len(reports))
+	ambiguous := make(map[positionKey]struct{})
+	for _, report := range reports {
+		position := report.Position
+		if position.AccountID == "" {
+			position.AccountID = report.AccountID
+		}
+		if position.AccountID == "" {
+			position.AccountID = pass.Scope.AccountID
+		}
+		if !positionInReportScope(position, pass.Scope, caps.Products) {
+			continue
+		}
+		key := positionKey{position.AccountID, position.InstrumentID.String(), position.Side}
+		at := report.ReportedAt
+		if !position.UpdatedAt.IsZero() {
+			at = position.UpdatedAt
+		}
+		if prior, exists := lastReported[key]; exists && !prior.Quantity.Equal(position.Quantity) {
+			priorAt := authoritativeAt[key]
+			if at.IsZero() || priorAt.IsZero() || !at.After(priorAt) {
+				ambiguous[key] = struct{}{}
+			}
+		}
+		if position.Quantity.IsZero() {
+			delete(authoritative, key)
+		} else {
+			authoritative[key] = position
+		}
+		lastReported[key] = position
+		authoritativeAt[key] = at
+	}
+
+	local := make(map[positionKey]model.Position)
+	for _, position := range r.cache.Positions() {
+		if position.AccountID == "" {
+			position.AccountID = pass.Scope.AccountID
+		}
+		if !positionInReportScope(position, pass.Scope, caps.Products) {
+			continue
+		}
+		local[positionKey{position.AccountID, position.InstrumentID.String(), position.Side}] = position
+	}
+
+	keys := make(map[positionKey]struct{}, len(authoritative)+len(local)+len(ambiguous))
+	for key := range authoritative {
+		keys[key] = struct{}{}
+	}
+	for key := range local {
+		keys[key] = struct{}{}
+	}
+	for key := range ambiguous {
+		keys[key] = struct{}{}
+	}
+	ordered := make([]positionKey, 0, len(keys))
+	for key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return positionKeyString(ordered[i]) < positionKeyString(ordered[j]) })
+
+	for _, key := range ordered {
+		if _, conflict := ambiguous[key]; conflict {
+			unresolved[positionKeyString(key)] = struct{}{}
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamPositions,
+				FindingBlocking,
+				"POSITION_REPORT_AMBIGUOUS",
+				fmt.Sprintf("position report %s contains conflicting quantities without one unambiguous snapshot", positionKeyString(key)),
+				true,
+			)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		localPosition := local[key]
+		authoritativePosition := authoritative[key]
+		if localPosition.Quantity.Equal(authoritativePosition.Quantity) {
+			continue
+		}
+		unresolved[positionKeyString(key)] = struct{}{}
+		if err := r.recordFinding(ctx, rep, r.finding(
+			pass,
+			StreamPositions,
+			FindingBlocking,
+			"POSITION_MISMATCH",
+			fmt.Sprintf("position %s local quantity %s differs from authoritative quantity %s", positionKeyString(key), localPosition.Quantity, authoritativePosition.Quantity),
+			true,
+		)); err != nil {
+			return nil, err
+		}
+	}
+	return unresolved, nil
+}
+
+func positionInReportScope(position model.Position, scope ScopeKey, products []contract.ProductCapability) bool {
+	if scope.AccountID != "" && position.AccountID != "" && position.AccountID != scope.AccountID {
+		return false
+	}
+	if scope.Venue != "" && position.InstrumentID.Venue != "" && !strings.EqualFold(position.InstrumentID.Venue, scope.Venue) {
+		return false
+	}
+	if len(products) == 0 {
+		return true
+	}
+	for _, product := range products {
+		if product.Kind == position.InstrumentID.Kind {
+			return true
+		}
+	}
+	return false
+}
+
+func positionKeyString(key positionKey) string {
+	return strings.Join([]string{key.accountID, key.instrument, key.side.String()}, "|")
+}
+
+func (r *Reconciler) recordFinding(ctx context.Context, rep *Report, finding Finding) error {
+	appendFindingUnique(rep, finding)
+	return r.state.RecordFinding(ctx, finding)
+}
+
+func appendFindingUnique(rep *Report, finding Finding) {
+	for _, existing := range rep.Findings {
+		if existing.ID == finding.ID {
+			return
+		}
+	}
+	rep.Findings = append(rep.Findings, finding)
+}
+
+func (r *Reconciler) resolvePositionFindings(
+	ctx context.Context,
+	rep *Report,
+	open []Finding,
+	pass PassHeader,
+	unresolved map[string]struct{},
+) error {
+	resolutions := r.positionResolutionCandidates(open, pass, unresolved)
+	if err := r.applyFindingResolutions(ctx, resolutions); err != nil {
+		return err
+	}
+	return r.refreshResolvedFindings(ctx, rep, pass.Scope, resolutions)
+}
+
+func (r *Reconciler) positionResolutionCandidates(
+	open []Finding,
+	pass PassHeader,
+	unresolved map[string]struct{},
+) []FindingResolution {
+	if _, ok := r.state.(FindingResolver); !ok {
+		return nil
+	}
+	var resolutions []FindingResolution
+	for _, finding := range open {
+		if finding.Scope != pass.Scope || finding.Stream != StreamPositions {
+			continue
+		}
+		condition, known := positionFindingCondition(finding)
+		if !known {
+			continue
+		}
+		if _, stillUnresolved := unresolved[condition]; stillUnresolved {
+			continue
+		}
+		resolutions = append(resolutions, FindingResolution{
+			FindingID:  finding.ID,
+			PassID:     pass.PassID,
+			ResolvedAt: resolutionTime(pass),
+			Reason:     "complete authoritative position report no longer reproduces the condition",
+		})
+	}
+	return resolutions
+}
+
+func positionFindingCondition(finding Finding) (string, bool) {
+	switch finding.Code {
+	case "POSITION_MISMATCH":
+		const prefix = "position "
+		const suffix = " local quantity "
+		if !strings.HasPrefix(finding.Message, prefix) {
+			return "", false
+		}
+		end := strings.Index(finding.Message[len(prefix):], suffix)
+		if end < 0 {
+			return "", false
+		}
+		return finding.Message[len(prefix) : len(prefix)+end], true
+	case "POSITION_REPORT_AMBIGUOUS":
+		const prefix = "position report "
+		const suffix = " contains conflicting quantities"
+		if !strings.HasPrefix(finding.Message, prefix) {
+			return "", false
+		}
+		end := strings.Index(finding.Message[len(prefix):], suffix)
+		if end < 0 {
+			return "", false
+		}
+		return finding.Message[len(prefix) : len(prefix)+end], true
+	default:
+		return "", false
+	}
+}
+
+func resolutionTime(pass PassHeader) time.Time {
+	if !pass.StableEventAt.IsZero() {
+		return pass.StableEventAt
+	}
+	if !pass.StartedAt.IsZero() {
+		return pass.StartedAt
+	}
+	return time.Now()
+}
+
+func (r *Reconciler) applyFindingResolutions(ctx context.Context, resolutions []FindingResolution) error {
+	if len(resolutions) == 0 {
+		return nil
+	}
+	resolver, ok := r.state.(FindingResolver)
+	if !ok {
+		return fmt.Errorf("reconcile: state store cannot resolve findings")
+	}
+	resolved := make(map[string]struct{}, len(resolutions))
+	unique := make([]FindingResolution, 0, len(resolutions))
+	for _, resolution := range resolutions {
+		if _, duplicate := resolved[resolution.FindingID]; duplicate {
+			continue
+		}
+		resolved[resolution.FindingID] = struct{}{}
+		unique = append(unique, resolution)
+	}
+	if batch, ok := r.state.(findingBatchResolver); ok {
+		return batch.resolveFindings(ctx, unique)
+	}
+	for _, resolution := range unique {
+		if err := resolver.ResolveFinding(ctx, resolution); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeResolvedFindings(rep *Report, resolutions []FindingResolution) {
+	if len(resolutions) == 0 {
+		return
+	}
+	resolved := make(map[string]struct{}, len(resolutions))
+	for _, resolution := range resolutions {
+		resolved[resolution.FindingID] = struct{}{}
+	}
+	out := rep.Findings[:0]
+	for _, finding := range rep.Findings {
+		if _, ok := resolved[finding.ID]; !ok {
+			out = append(out, finding)
+		}
+	}
+	rep.Findings = out
+}
+
+func (r *Reconciler) refreshResolvedFindings(ctx context.Context, rep *Report, scope ScopeKey, resolutions []FindingResolution) error {
+	if len(resolutions) == 0 {
+		return nil
+	}
+	removeResolvedFindings(rep, resolutions)
+	open, err := r.state.LoadOpenFindings(ctx, scope)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]int, len(rep.Findings)+len(open))
+	for i, finding := range rep.Findings {
+		byID[finding.ID] = i
+	}
+	for _, finding := range open {
+		if index, exists := byID[finding.ID]; exists {
+			rep.Findings[index] = finding
+			continue
+		}
+		byID[finding.ID] = len(rep.Findings)
+		rep.Findings = append(rep.Findings, finding)
+	}
+	return nil
+}
+
+func rememberRecognizedFill(recognized recognizedFillSet, fillKey string, fill model.Fill) {
+	if fillKey == "" {
+		return
+	}
+	for _, orderKey := range orderIdentityKeysForFill(fill) {
+		if recognized[orderKey] == nil {
+			recognized[orderKey] = make(map[string]model.Fill)
+		}
+		recognized[orderKey][fillKey] = fill
+	}
+}
+
+func (r *Reconciler) orderProgressResolutionCandidates(
+	open []Finding,
+	pass PassHeader,
+	unresolved map[orderIdentityKey]struct{},
+	recognized recognizedFillSet,
+) []FindingResolution {
+	if _, ok := r.state.(FindingResolver); !ok {
+		return nil
+	}
+	var resolutions []FindingResolution
+	for _, finding := range open {
+		if finding.Scope != pass.Scope || finding.Stream != StreamFills || finding.Code != "ORDER_PROGRESS_WITHOUT_FILL" {
+			continue
+		}
+		orderKey, missing, parsed := orderProgressFindingCondition(finding)
+		if !parsed {
+			continue
+		}
+		if _, stillUnresolved := unresolved[orderKey]; stillUnresolved {
+			continue
+		}
+		var recognizedQuantity decimal.Decimal
+		for _, fill := range recognized[orderKey] {
+			recognizedQuantity = recognizedQuantity.Add(fill.Quantity)
+		}
+		if recognizedQuantity.LessThan(missing) {
+			continue
+		}
+		resolutions = append(resolutions, FindingResolution{
+			FindingID:  finding.ID,
+			PassID:     pass.PassID,
+			ResolvedAt: resolutionTime(pass),
+			Reason:     "complete fill report coverage closed the cumulative order-progress gap",
+		})
+	}
+	return resolutions
+}
+
+func orderProgressFindingCondition(finding Finding) (orderIdentityKey, decimal.Decimal, bool) {
+	const prefix = "order "
+	const middle = " cumulative filled quantity advanced by "
+	const missingMarker = " without "
+	const suffix = " of recoverable fill reports"
+	if !strings.HasPrefix(finding.Message, prefix) {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	conditionEnd := strings.Index(finding.Message[len(prefix):], middle)
+	if conditionEnd < 0 {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	conditionEnd += len(prefix)
+	orderKey, ok := decodeOrderProgressCondition(finding.Message[len(prefix):conditionEnd])
+	if !ok {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	rest := finding.Message[conditionEnd+len(middle):]
+	missingStart := strings.Index(rest, missingMarker)
+	if missingStart < 0 {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	rest = rest[missingStart+len(missingMarker):]
+	missingEnd := strings.Index(rest, suffix)
+	if missingEnd < 0 {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	missing, err := decimal.NewFromString(rest[:missingEnd])
+	if err != nil || !missing.IsPositive() {
+		return orderIdentityKey{}, decimal.Zero, false
+	}
+	return orderKey, missing, true
+}
+
+func (r *Reconciler) inferMissingSnapshotFills(
+	pass PassHeader,
+	mass *model.ExecutionMassStatus,
+	snapshots []orderReportSnapshot,
+) error {
+	fillIndex := newFillPresenceIndex(mass.FillReports)
+	for _, snapshot := range snapshots {
+		progress := snapshot.order.FilledQty.Sub(snapshot.baselineFilled)
+		if !progress.IsPositive() || fillIndex.hasOrder(snapshot.order) {
+			continue
+		}
+		fill, ok := inferredFillFromSnapshot(snapshot, progress, pass.StableEventAt)
+		if !ok {
+			continue
+		}
+		if err := mass.AddFillReport(model.FillReport{
+			Venue:      mass.Venue,
+			AccountID:  fill.AccountID,
+			Fill:       fill,
+			ReportedAt: fill.Timestamp,
+		}); err != nil {
+			return err
+		}
+		fillIndex.add(fill)
+	}
+	return nil
+}
+
+func newFillPresenceIndex(groups map[string][]model.FillReport) fillPresenceIndex {
+	index := make(fillPresenceIndex)
+	for _, reports := range groups {
+		for _, report := range reports {
+			index.add(report.Fill)
+		}
+	}
+	return index
+}
+
+func (index fillPresenceIndex) add(fill model.Fill) {
+	instrument := fill.InstrumentID
+	if instrument.Symbol == "" {
+		instrument = model.InstrumentID{}
+	}
+	aliases := [...]struct {
+		namespace string
+		id        string
+	}{
+		{namespace: "client", id: fill.ClientID},
+		{namespace: "venue", id: fill.VenueOrderID},
+	}
+	for _, alias := range aliases {
+		if alias.id == "" {
+			continue
+		}
+		for _, anyAccount := range [...]bool{false, true} {
+			for _, anyInstrument := range [...]bool{false, true} {
+				accountID := fill.AccountID
+				if anyAccount {
+					accountID = ""
+				}
+				indexedInstrument := instrument
+				if anyInstrument {
+					indexedInstrument = model.InstrumentID{}
+				}
+				index[fillPresenceKey{
+					accountID:     accountID,
+					anyAccount:    anyAccount,
+					instrument:    indexedInstrument,
+					anyInstrument: anyInstrument,
+					namespace:     alias.namespace,
+					id:            alias.id,
+				}] = struct{}{}
+			}
+		}
+	}
+}
+
+func (index fillPresenceIndex) hasOrder(order model.Order) bool {
+	accountScopes := []fillPresenceKey{{accountID: order.Request.AccountID}}
+	if order.Request.AccountID == "" {
+		accountScopes = []fillPresenceKey{{anyAccount: true}}
+	} else {
+		accountScopes = append(accountScopes, fillPresenceKey{})
+	}
+	instrumentScopes := []fillPresenceKey{{instrument: order.Request.InstrumentID}}
+	if order.Request.InstrumentID.Symbol == "" {
+		instrumentScopes = []fillPresenceKey{{anyInstrument: true}}
+	} else {
+		instrumentScopes = append(instrumentScopes, fillPresenceKey{})
+	}
+	aliases := [...]struct {
+		namespace string
+		id        string
+	}{
+		{namespace: "client", id: order.Request.ClientID},
+		{namespace: "venue", id: order.VenueOrderID},
+	}
+	for _, alias := range aliases {
+		if alias.id == "" {
+			continue
+		}
+		for _, account := range accountScopes {
+			for _, instrument := range instrumentScopes {
+				key := fillPresenceKey{
+					accountID:     account.accountID,
+					anyAccount:    account.anyAccount,
+					instrument:    instrument.instrument,
+					anyInstrument: instrument.anyInstrument,
+					namespace:     alias.namespace,
+					id:            alias.id,
+				}
+				if _, present := index[key]; present {
+					return true
 				}
 			}
-			if fill.AccountID == "" {
-				fill.AccountID = accountID
+		}
+	}
+	return false
+}
+
+func inferredFillFromSnapshot(snapshot orderReportSnapshot, quantity decimal.Decimal, stableAt time.Time) (model.Fill, bool) {
+	order := snapshot.order
+	if !quantity.IsPositive() || order.Request.InstrumentID.Symbol == "" || order.Request.Side == enums.SideUnknown || !order.AvgFillPrice.IsPositive() {
+		return model.Fill{}, false
+	}
+	price := order.AvgFillPrice
+	if snapshot.baselineFilled.IsPositive() {
+		if !snapshot.baseline.AvgFillPrice.IsPositive() {
+			return model.Fill{}, false
+		}
+		newNotional := order.AvgFillPrice.Mul(order.FilledQty)
+		oldNotional := snapshot.baseline.AvgFillPrice.Mul(snapshot.baselineFilled)
+		price = newNotional.Sub(oldNotional).Div(quantity)
+		if !price.IsPositive() {
+			return model.Fill{}, false
+		}
+	}
+	at := order.UpdatedAt
+	if at.IsZero() {
+		at = stableAt
+	}
+	return model.Fill{
+		AccountID:    order.Request.AccountID,
+		InstrumentID: order.Request.InstrumentID,
+		ClientID:     order.Request.ClientID,
+		VenueOrderID: order.VenueOrderID,
+		Side:         order.Request.Side,
+		Price:        price,
+		Quantity:     quantity,
+		Timestamp:    at,
+	}, true
+}
+
+func (r *Reconciler) applyFillReports(
+	ctx context.Context,
+	pass PassHeader,
+	mass *model.ExecutionMassStatus,
+	rep *Report,
+	appliedFills map[orderIdentityKey][]model.Fill,
+	recognizedFills recognizedFillSet,
+) ([]string, error) {
+	var appliedEventRecordIDs []string
+	r.observedFills = make(map[string]string)
+	for _, report := range sortedFillReports(mass.FillReports) {
+		accountID := report.AccountID
+		if accountID == "" {
+			accountID = mass.AccountID
+		}
+		fill := report.Fill
+		if fill.AccountID == "" {
+			fill.AccountID = accountID
+		}
+		if r.fillMatcher != nil {
+			if resolvedFill, resolved := r.fillMatcher.MatchFillInFlight(fill); resolved {
+				fill = resolvedFill
 			}
-			if fill.TradeID == "" {
-				fill.TradeID = SyntheticTradeID(accountID, fill, pass.StableEventAt)
-				rep.FillsInferred++
+		}
+		if fill.AccountID == "" {
+			fill.AccountID = accountID
+		}
+		order, orderFound, identityErr := r.orderForFill(fill)
+		if identityErr != nil {
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamFills,
+				FindingBlocking,
+				"FILL_ORDER_IDENTITY_CONFLICT",
+				"fill report conflicts with cached order identity: "+identityErr.Error(),
+				true,
+			)); err != nil {
+				return appliedEventRecordIDs, err
 			}
-			fillKey := orderstate.FillKey(fill)
-			if _, ok := r.fills[fillKey]; ok {
-				rep.FillsDuplicate++
-				continue
+			continue
+		}
+		if orderFound {
+			fill = normalizeFillIdentity(fill, order)
+		}
+		if fill.TradeID == "" {
+			stableFillAt := report.ReportedAt
+			if !fill.Timestamp.IsZero() {
+				stableFillAt = fill.Timestamp
 			}
-			order, ok := r.orderForFill(fill)
-			if !ok {
-				if materialized, materializedOK := materializeOrderFromFill(fill, pass.StableEventAt); materializedOK {
-					order = materialized
-					r.cache.UpsertOrder(order)
-					rep.OrdersMaterialized++
-					ok = true
-				}
+			if stableFillAt.IsZero() {
+				stableFillAt = pass.StableEventAt
 			}
-			if !ok {
-				finding := r.finding(pass, StreamFills, FindingBlocking, "FILL_WITHOUT_ORDER", "fill report could not be matched or materialized", true)
-				rep.Findings = append(rep.Findings, finding)
-				if err := r.state.RecordFinding(ctx, finding); err != nil {
-					return err
-				}
-				continue
+			fill.TradeID = SyntheticTradeID(accountID, fill, stableFillAt)
+			rep.FillsInferred++
+		}
+		fillKey := orderstate.FillKey(fill)
+		if r.fillIdentityConflicts(fillKey, fill) {
+			rep.FillsDuplicate++
+			warning := model.ReportWarning{
+				Code:    "FILL_TRADE_IDENTITY_CONFLICT",
+				Message: fmt.Sprintf("trade %s was reported for conflicting order identities; duplicate report skipped", fill.TradeID),
 			}
+			rep.Warnings = append(rep.Warnings, warning)
+			if err := r.recordFinding(ctx, rep, r.finding(pass, StreamFills, FindingWarning, warning.Code, warning.Message, false)); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			continue
+		}
+		if pending, ok := r.pending[fillKey]; ok {
+			rememberRecognizedFill(recognizedFills, fillKey, fill)
+			if err := r.ensurePassFillCapacity(fillKey); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			if err := r.rememberObservedFill(fillKey, ""); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			recorder, recordable := r.state.(AppliedFillRecorder)
+			if !recordable {
+				return appliedEventRecordIDs, fmt.Errorf("reconcile: applied fill %q lost its durability recorder", fillKey)
+			}
+			recordID, err := recorder.RecordAppliedFill(ctx, pending.pass, pending.meta, pending.fill, pending.appliedAt)
+			if err != nil {
+				return appliedEventRecordIDs, err
+			}
+			if recordID == "" {
+				return appliedEventRecordIDs, fmt.Errorf("reconcile: applied fill %q returned an empty durable record ID", fillKey)
+			}
+			delete(r.pending, fillKey)
+			r.rememberAppliedFill(fillKey, recordID)
+			if err := r.rememberObservedFill(fillKey, recordID); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			appliedEventRecordIDs = appendAppliedEventDependency(appliedEventRecordIDs, recordID)
+			rep.FillsDuplicate++
+			r.resolveAcceptedFillInFlight(fill, pass.StableEventAt)
+			continue
+		}
+		if recordID, ok := r.passFills[fillKey]; ok {
+			rememberRecognizedFill(recognizedFills, fillKey, fill)
+			if err := r.rememberObservedFill(fillKey, recordID); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			appliedEventRecordIDs = appendAppliedEventDependency(appliedEventRecordIDs, recordID)
+			rep.FillsDuplicate++
+			r.resolveAcceptedFillInFlight(fill, pass.StableEventAt)
+			continue
+		}
+		if recordID, ok := r.fills[fillKey]; ok {
+			rememberRecognizedFill(recognizedFills, fillKey, fill)
+			if err := r.rememberObservedFill(fillKey, recordID); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			appliedEventRecordIDs = appendAppliedEventDependency(appliedEventRecordIDs, recordID)
+			rep.FillsDuplicate++
+			r.resolveAcceptedFillInFlight(fill, pass.StableEventAt)
+			continue
+		}
+		if _, recordable := r.state.(AppliedFillRecorder); recordable && !canReplayUncommittedAppliedFills(r.state) {
+			return appliedEventRecordIDs, fmt.Errorf("reconcile: applied-fill journal cannot enumerate records for crash recovery")
+		}
+		materializedOrder := false
+		if !orderFound {
+			if materialized, materializedOK := materializeOrderFromFill(fill, pass.StableEventAt); materializedOK {
+				order = materialized
+				orderFound = true
+				materializedOrder = true
+			}
+		}
+		if !orderFound {
+			finding := r.finding(pass, StreamFills, FindingBlocking, "FILL_WITHOUT_ORDER", "fill report could not be matched or materialized", true)
+			rep.Findings = append(rep.Findings, finding)
+			if err := r.state.RecordFinding(ctx, finding); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			continue
+		}
+		if err := r.ensureObservedFillCapacity(fillKey); err != nil {
+			return appliedEventRecordIDs, err
+		}
+		if err := r.ensurePassFillCapacity(fillKey); err != nil {
+			return appliedEventRecordIDs, err
+		}
+		appliedAt := time.Now()
+		flags := contract.EventFlagFromSnapshot | contract.EventFlagFromReconciliation
+		if report.Fill.TradeID == "" {
+			flags |= contract.EventFlagSynthetic
+		}
+		env := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, contract.EventMeta{
+			Source:    contract.SourceReconciliation,
+			TsApplied: appliedAt,
+			Flags:     flags,
+		})
+		applyResult := FillApplyApplied
+		if r.fillApplier != nil {
+			applyResult = r.fillApplier(fill, env.Meta())
+		} else {
 			r.applyFillToOrder(order, fill)
-			if r.resolver != nil {
-				resolvedAt := fill.Timestamp
-				if resolvedAt.IsZero() {
-					resolvedAt = pass.StableEventAt
-				}
-				r.resolver.ResolveInFlight(fill.ClientID, fill.VenueOrderID, resolvedAt)
+		}
+		duplicate := false
+		switch applyResult {
+		case FillApplyUnmatched:
+			return appliedEventRecordIDs, fmt.Errorf("reconcile: recovered fill %q could not be applied", fillKey)
+		case FillApplyDuplicate:
+			duplicate = true
+		case FillApplyConflict:
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamFills,
+				FindingBlocking,
+				"FILL_ORDER_IDENTITY_CONFLICT",
+				"recovered fill was rejected by the runtime identity guard",
+				true,
+			)); err != nil {
+				return appliedEventRecordIDs, err
 			}
-			r.fills[fillKey] = struct{}{}
+			continue
+		case FillApplyApplied:
+		default:
+			return appliedEventRecordIDs, fmt.Errorf("reconcile: recovered fill %q returned unknown apply result %d", fillKey, applyResult)
+		}
+		fill = normalizeFillIdentity(fill, order)
+		if materializedOrder {
+			// The canonical runtime path must run its FillBuffer identity guard
+			// before an externally discovered alias becomes authoritative.
+			if _, cached := cachedOrderByTypedIdentity(r.cache, order.Request.AccountID, order); !cached {
+				r.cache.UpsertOrder(order)
+			}
+			rep.OrdersMaterialized++
+		}
+		r.rememberFillIdentity(fillKey, fill)
+		rememberRecognizedFill(recognizedFills, fillKey, fill)
+		r.resolveAcceptedFillInFlight(fill, pass.StableEventAt)
+		recordID := ""
+		if recorder, ok := r.state.(AppliedFillRecorder); ok {
+			var err error
+			recordID, err = recorder.RecordAppliedFill(ctx, pass, env.Meta(), fill, appliedAt)
+			if err != nil {
+				r.pending[fillKey] = pendingAppliedFill{pass: pass, meta: env.Meta(), fill: fill, appliedAt: appliedAt}
+				return appliedEventRecordIDs, err
+			}
+			if recordID == "" {
+				r.pending[fillKey] = pendingAppliedFill{pass: pass, meta: env.Meta(), fill: fill, appliedAt: appliedAt}
+				return appliedEventRecordIDs, fmt.Errorf("reconcile: applied fill %q returned an empty durable record ID", fillKey)
+			}
+			appliedEventRecordIDs = appendAppliedEventDependency(appliedEventRecordIDs, recordID)
+		}
+		r.rememberAppliedFill(fillKey, recordID)
+		if err := r.rememberObservedFill(fillKey, recordID); err != nil {
+			return appliedEventRecordIDs, err
+		}
+		if duplicate {
+			rep.FillsDuplicate++
+		} else {
+			key := orderProgressKey(order)
+			appliedFills[key] = append(appliedFills[key], fill)
 			rep.FillsApplied++
 		}
 	}
+	return appliedEventRecordIDs, nil
+}
+
+func (r *Reconciler) resolveAcceptedFillInFlight(fill model.Fill, fallback time.Time) {
+	if r.resolver == nil {
+		return
+	}
+	resolvedAt := fill.Timestamp
+	if resolvedAt.IsZero() {
+		resolvedAt = fallback
+	}
+	if r.orderResolver != nil {
+		if order, ok, err := r.orderForFill(fill); err == nil && ok {
+			r.orderResolver.ResolveOrderInFlight(order, resolvedAt)
+			return
+		}
+	}
+	if r.fillResolver != nil {
+		r.fillResolver.ResolveFillInFlight(fill, resolvedAt)
+		return
+	}
+	r.resolver.ResolveInFlight(fill.ClientID, fill.VenueOrderID, resolvedAt)
+}
+
+func (r *Reconciler) flushPendingAppliedFills(ctx context.Context) ([]string, error) {
+	if len(r.pending) == 0 {
+		return nil, nil
+	}
+	recorder, ok := r.state.(AppliedFillRecorder)
+	if !ok {
+		return nil, fmt.Errorf("reconcile: pending applied fills lost their durability recorder")
+	}
+	keys := make([]string, 0, len(r.pending))
+	for fillKey := range r.pending {
+		keys = append(keys, fillKey)
+	}
+	sort.Strings(keys)
+	dependencies := make([]string, 0, len(keys))
+	for _, fillKey := range keys {
+		pending := r.pending[fillKey]
+		if err := r.ensurePassFillCapacity(fillKey); err != nil {
+			return nil, err
+		}
+		recordID, err := recorder.RecordAppliedFill(ctx, pending.pass, pending.meta, pending.fill, pending.appliedAt)
+		if err != nil {
+			return nil, err
+		}
+		if recordID == "" {
+			return nil, fmt.Errorf("reconcile: applied fill %q returned an empty durable record ID", fillKey)
+		}
+		delete(r.pending, fillKey)
+		r.rememberAppliedFill(fillKey, recordID)
+		dependencies = appendAppliedEventDependency(dependencies, recordID)
+	}
+	return dependencies, nil
+}
+
+func (r *Reconciler) seedAppliedFillDependencies(ctx context.Context, scope ScopeKey, cursor Cursor) error {
+	var dependencies []AppliedFillDependency
+	if len(cursor.AppliedEventRecordIDs) > 0 {
+		loader, ok := r.state.(AppliedFillLoader)
+		if !ok {
+			return fmt.Errorf("reconcile: cursor has applied-fill dependencies but state store cannot replay them")
+		}
+		loaded, err := loader.LoadAppliedFills(ctx, cursor.AppliedEventRecordIDs)
+		if err != nil {
+			return err
+		}
+		if err := validateAppliedFillDependencies(cursor.AppliedEventRecordIDs, loaded); err != nil {
+			return err
+		}
+		dependencies = append(dependencies, loaded...)
+	}
+	if loader, ok := r.state.(AppliedFillReplayLoader); ok && canReplayUncommittedAppliedFills(r.state) {
+		loaded, err := loader.LoadAppliedFillReplay(ctx, scope)
+		if err != nil {
+			return err
+		}
+		dependencies = append(dependencies, loaded...)
+	}
+	for _, dependency := range dependencies {
+		if dependency.RecordID == "" {
+			return fmt.Errorf("reconcile: applied fill dependency has an empty record ID")
+		}
+	}
+	seededRecords := make(map[string]struct{}, len(dependencies))
+	for _, dependency := range dependencies {
+		if _, seeded := seededRecords[dependency.RecordID]; seeded {
+			continue
+		}
+		seededRecords[dependency.RecordID] = struct{}{}
+		fillKey := orderstate.FillKey(dependency.Fill)
+		if fillKey == "" {
+			return fmt.Errorf("reconcile: applied fill dependency %q has no stable identity", dependency.RecordID)
+		}
+		if err := r.ensurePassFillCapacity(fillKey); err != nil {
+			return err
+		}
+		if err := r.rememberOverlapFill(fillKey, dependency.RecordID); err != nil {
+			return err
+		}
+		r.rememberFillIdentity(fillKey, dependency.Fill)
+		r.rememberAppliedFill(fillKey, dependency.RecordID)
+		if r.fillSeeder != nil {
+			r.fillSeeder(dependency.Fill)
+		}
+	}
 	return nil
 }
 
-func fillResolvedAt(fill model.Fill, pass PassHeader) time.Time {
-	if !fill.Timestamp.IsZero() {
-		return fill.Timestamp
+func validateAppliedFillDependencies(requested []string, loaded []AppliedFillDependency) error {
+	wanted := make(map[string]struct{}, len(requested))
+	for _, recordID := range requested {
+		if recordID == "" {
+			return fmt.Errorf("reconcile: cursor contains an empty applied-fill dependency ID")
+		}
+		if _, duplicate := wanted[recordID]; duplicate {
+			return fmt.Errorf("reconcile: cursor contains duplicate applied-fill dependency %q", recordID)
+		}
+		wanted[recordID] = struct{}{}
 	}
-	return pass.StableEventAt
+	seen := make(map[string]struct{}, len(loaded))
+	for _, dependency := range loaded {
+		if dependency.RecordID == "" {
+			return fmt.Errorf("reconcile: applied-fill loader returned an empty dependency ID")
+		}
+		if _, expected := wanted[dependency.RecordID]; !expected {
+			return fmt.Errorf("reconcile: applied-fill loader returned unexpected dependency %q", dependency.RecordID)
+		}
+		if _, duplicate := seen[dependency.RecordID]; duplicate {
+			return fmt.Errorf("reconcile: applied-fill loader returned duplicate dependency %q", dependency.RecordID)
+		}
+		seen[dependency.RecordID] = struct{}{}
+	}
+	for recordID := range wanted {
+		if _, present := seen[recordID]; !present {
+			return fmt.Errorf("reconcile: applied-fill loader omitted dependency %q", recordID)
+		}
+	}
+	return nil
 }
 
-func (r *Reconciler) orderForFill(fill model.Fill) (model.Order, bool) {
-	accountID := fill.AccountID
-	if accountID == "" {
-		accountID = r.accountID
+func sortedFillReports(groups map[string][]model.FillReport) []model.FillReport {
+	var reports []model.FillReport
+	for _, group := range groups {
+		reports = append(reports, group...)
 	}
-	if fill.ClientID != "" {
-		if o, ok := r.cache.OrderForAccount(accountID, fill.ClientID); ok {
-			if orderMatchesFillAccount(o, fill) {
-				return o, true
+	sort.SliceStable(reports, func(i, j int) bool {
+		iAt := fillReportEventAt(reports[i])
+		jAt := fillReportEventAt(reports[j])
+		if !iAt.Equal(jAt) {
+			if iAt.IsZero() {
+				return false
+			}
+			if jAt.IsZero() {
+				return true
+			}
+			return iAt.Before(jAt)
+		}
+		return fillReportSortKey(reports[i]) < fillReportSortKey(reports[j])
+	})
+	return reports
+}
+
+func fillReportEventAt(report model.FillReport) time.Time {
+	if !report.Fill.Timestamp.IsZero() {
+		return report.Fill.Timestamp
+	}
+	return report.ReportedAt
+}
+
+func fillReportSortKey(report model.FillReport) string {
+	fill := report.Fill
+	return strings.Join([]string{
+		report.AccountID,
+		fill.InstrumentID.String(),
+		fill.VenueOrderID,
+		fill.ClientID,
+		fill.TradeID,
+		fill.Side.String(),
+		fill.Price.String(),
+		fill.Quantity.String(),
+		string(report.ReportID),
+	}, "\x00")
+}
+
+func normalizeFillIdentity(fill model.Fill, order model.Order) model.Fill {
+	if fill.AccountID == "" {
+		fill.AccountID = order.Request.AccountID
+	}
+	if fill.InstrumentID == (model.InstrumentID{}) {
+		fill.InstrumentID = order.Request.InstrumentID
+	}
+	if fill.ClientID == "" {
+		fill.ClientID = order.Request.ClientID
+	}
+	if fill.VenueOrderID == "" {
+		fill.VenueOrderID = order.VenueOrderID
+	}
+	if fill.Side == enums.SideUnknown {
+		fill.Side = order.Request.Side
+	}
+	return fill
+}
+
+func orderProgressKey(order model.Order) orderIdentityKey {
+	if order.Request.ClientID != "" {
+		return orderIdentityKey{
+			accountID:  order.Request.AccountID,
+			instrument: order.Request.InstrumentID.String(),
+			namespace:  "client",
+			id:         order.Request.ClientID,
+		}
+	}
+	return orderIdentityKey{
+		accountID:  order.Request.AccountID,
+		instrument: order.Request.InstrumentID.String(),
+		namespace:  "venue",
+		id:         order.VenueOrderID,
+	}
+}
+
+func (r *Reconciler) reconcileOrderSnapshotProgress(snapshot orderReportSnapshot, fills []model.Fill) decimal.Decimal {
+	covered := snapshot.order.FilledQty.Sub(snapshot.baselineFilled)
+	if !covered.IsPositive() {
+		return decimal.Zero
+	}
+	if len(fills) == 0 {
+		return covered
+	}
+
+	// Start from the cumulative venue quantity, then apply only the portion of
+	// newly recovered fills that exceeds the snapshot's progress over the
+	// pre-pass cache. Passing a zero observation time intentionally performs the
+	// reset: the fill list below already preserves events newer than the snapshot.
+	r.cache.UpsertOrderSnapshot(snapshot.order, time.Time{})
+	for _, fill := range fills {
+		if covered.IsPositive() {
+			if !fill.Quantity.GreaterThan(covered) {
+				covered = covered.Sub(fill.Quantity)
+				continue
+			}
+			fill.Quantity = fill.Quantity.Sub(covered)
+			covered = decimal.Zero
+		}
+		order, ok := cachedOrderByTypedIdentity(r.cache, snapshot.order.Request.AccountID, snapshot.order)
+		if !ok {
+			return covered
+		}
+		r.applyFillToOrder(order, fill)
+	}
+	return covered
+}
+
+func hasBlockingFindingExcept(findings []Finding, resolutions []FindingResolution) bool {
+	resolved := make(map[string]struct{}, len(resolutions))
+	for _, resolution := range resolutions {
+		resolved[resolution.FindingID] = struct{}{}
+	}
+	for _, finding := range findings {
+		if _, resolving := resolved[finding.ID]; resolving {
+			continue
+		}
+		if finding.Blocking || finding.Severity == FindingBlocking {
+			return true
+		}
+	}
+	return false
+}
+
+func appendAppliedEventDependency(ids []string, recordID string) []string {
+	if recordID == "" {
+		return ids
+	}
+	for _, existing := range ids {
+		if existing == recordID {
+			return ids
+		}
+	}
+	return append(ids, recordID)
+}
+
+func retainedAppliedEventDependencies(current []string, retained ...map[string]string) []string {
+	unique := make(map[string]struct{}, len(current))
+	for _, recordID := range current {
+		if recordID != "" {
+			unique[recordID] = struct{}{}
+		}
+	}
+	for _, records := range retained {
+		for _, recordID := range records {
+			if recordID != "" {
+				unique[recordID] = struct{}{}
 			}
 		}
 	}
-	if fill.VenueOrderID != "" {
-		if o, ok := r.cache.OrderForAccount(accountID, fill.VenueOrderID); ok {
-			if orderMatchesFillAccount(o, fill) {
-				return o, true
-			}
-		}
-		for _, o := range r.cache.Orders() {
-			if o.VenueOrderID == fill.VenueOrderID && orderMatchesAccountID(o, accountID) && orderMatchesFillAccount(o, fill) {
-				return o, true
-			}
-		}
+	out := make([]string, 0, len(unique))
+	for recordID := range unique {
+		out = append(out, recordID)
 	}
-	return model.Order{}, false
+	sort.Strings(out)
+	return out
+}
+
+func (r *Reconciler) fillIdentityConflicts(fillKey string, fill model.Fill) bool {
+	if fillKey == "" {
+		return false
+	}
+	known, exists := r.fillIdentities[fillKey]
+	if !exists {
+		return false
+	}
+	if known.clientID != "" && fill.ClientID != "" && known.clientID != fill.ClientID {
+		return true
+	}
+	return known.venueOrderID != "" && fill.VenueOrderID != "" && known.venueOrderID != fill.VenueOrderID
+}
+
+func (r *Reconciler) rememberFillIdentity(fillKey string, fill model.Fill) {
+	if fillKey == "" {
+		return
+	}
+	if r.fillIdentities == nil {
+		r.fillIdentities = make(map[string]fillOrderIdentity)
+	}
+	identity := r.fillIdentities[fillKey]
+	if identity.clientID == "" {
+		identity.clientID = fill.ClientID
+	}
+	if identity.venueOrderID == "" {
+		identity.venueOrderID = fill.VenueOrderID
+	}
+	r.fillIdentities[fillKey] = identity
+}
+
+func (r *Reconciler) orderForFill(fill model.Fill) (model.Order, bool, error) {
+	return r.cache.ResolveOrderForFill(r.accountID, fill)
 }
 
 func (r *Reconciler) applyFillToOrder(order model.Order, fill model.Fill) {
 	r.cache.UpsertOrder(orderstate.ApplyFill(order, fill, time.Now()))
-}
-
-func orderMatchesFillAccount(o model.Order, fill model.Fill) bool {
-	if fill.AccountID == "" || o.Request.AccountID == "" {
-		return true
-	}
-	return o.Request.AccountID == fill.AccountID
-}
-
-func orderMatchesAccountID(o model.Order, accountID string) bool {
-	if accountID == "" || o.Request.AccountID == "" {
-		return true
-	}
-	return o.Request.AccountID == accountID
 }
 
 func orderInAccountScope(o model.Order, accountID string) bool {
@@ -489,7 +2150,13 @@ func materializeOrderFromFill(fill model.Fill, stableEventAt time.Time) (model.O
 }
 
 func (r *Reconciler) finding(pass PassHeader, stream ReportStream, severity FindingSeverity, code, message string, blocking bool) Finding {
-	id := string(DeterministicID("finding", string(pass.PassID), string(stream), code, message))
+	idParts := []string{"finding", string(pass.PassID), string(stream), code, message}
+	if blocking || severity == FindingBlocking {
+		// Blocking findings are sticky and journal-protected, so key them by
+		// logical condition instead of creating one permanent record per pass.
+		idParts = []string{"blocking-finding", pass.Scope.String(), string(stream), code, message}
+	}
+	id := string(DeterministicID(idParts...))
 	return Finding{
 		ID:        id,
 		PassID:    pass.PassID,
@@ -501,6 +2168,89 @@ func (r *Reconciler) finding(pass PassHeader, stream ReportStream, severity Find
 		Blocking:  blocking,
 		CreatedAt: time.Now(),
 	}
+}
+
+func cachedOrderByTypedIdentity(c *cache.Cache, accountID string, order model.Order) (model.Order, bool) {
+	existing, found, err := resolveCachedOrderByTypedIdentity(c, accountID, order)
+	return existing, found && err == nil
+}
+
+func resolveCachedOrderByTypedIdentity(c *cache.Cache, accountID string, order model.Order) (model.Order, bool, error) {
+	existing, found, err := c.ResolveOrderForFill(accountID, model.Fill{
+		AccountID:    order.Request.AccountID,
+		InstrumentID: order.Request.InstrumentID,
+		ClientID:     order.Request.ClientID,
+		VenueOrderID: order.VenueOrderID,
+		Side:         order.Request.Side,
+	})
+	return existing, found, err
+}
+
+func orderIdentityKeysForOrder(order model.Order, fallbackAccountID string) []orderIdentityKey {
+	accountID := order.Request.AccountID
+	if accountID == "" {
+		accountID = fallbackAccountID
+	}
+	base := orderIdentityKey{accountID: accountID, instrument: order.Request.InstrumentID.String()}
+	keys := make([]orderIdentityKey, 0, 2)
+	if order.Request.ClientID != "" {
+		key := base
+		key.namespace = "client"
+		key.id = order.Request.ClientID
+		keys = append(keys, key)
+	}
+	if order.VenueOrderID != "" {
+		key := base
+		key.namespace = "venue"
+		key.id = order.VenueOrderID
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func orderIdentityKeysForFill(fill model.Fill) []orderIdentityKey {
+	base := orderIdentityKey{accountID: fill.AccountID, instrument: fill.InstrumentID.String()}
+	keys := make([]orderIdentityKey, 0, 2)
+	if fill.ClientID != "" {
+		key := base
+		key.namespace = "client"
+		key.id = fill.ClientID
+		keys = append(keys, key)
+	}
+	if fill.VenueOrderID != "" {
+		key := base
+		key.namespace = "venue"
+		key.id = fill.VenueOrderID
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func encodeOrderProgressCondition(condition orderIdentityKey) string {
+	raw := strings.Join([]string{
+		condition.accountID,
+		condition.instrument,
+		condition.namespace,
+		condition.id,
+	}, "\x00")
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeOrderProgressCondition(encoded string) (orderIdentityKey, bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return orderIdentityKey{}, false
+	}
+	parts := strings.Split(string(raw), "\x00")
+	if len(parts) != 4 || (parts[2] != "client" && parts[2] != "venue") || parts[3] == "" {
+		return orderIdentityKey{}, false
+	}
+	return orderIdentityKey{
+		accountID:  parts[0],
+		instrument: parts[1],
+		namespace:  parts[2],
+		id:         parts[3],
+	}, true
 }
 
 // orderKeyOf mirrors the cache's keying: ClientID is preferred (stable across

@@ -36,17 +36,14 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 		HTTPClient:      httpClient,
 	})
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo adapter initialization")
 		t.Fatalf("new OKX Perp Demo adapter: %v", err)
 	}
 	defer adapter.Close()
 	if err := validateDemoPerpAccountMode(ctx, adapter.rest); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo account mode preflight")
 		t.Fatalf("OKX Perp Demo account mode preflight: %v", err)
 	}
 
 	if err := adapter.Start(ctx); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo private stream")
 		t.Fatalf("start OKX Perp Demo adapter stream: %v", err)
 	}
 	execEvents := collectDemoExecEvents(adapter.Execution.Events())
@@ -57,7 +54,6 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	}
 	insts, err := adapter.rest.GetInstruments(ctx, instTypeSwap)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo instruments")
 		t.Fatalf("instrument metadata: %v", err)
 	}
 	var native *okx.Instrument
@@ -73,7 +69,6 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	}
 	book, err := adapter.Market.OrderBook(ctx, instID, 5)
 	if err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo order book")
 		t.Fatalf("order book: %v", err)
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
@@ -81,24 +76,22 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	}
 	bid := book.Bids[0].Price
 	ask := book.Asks[0].Price
-	qty, err := selectDemoPerpQuantity(spec, cfg.MaxNotionalUSDT, ask)
+	restingPrice := floorDecimalToStep(bid.Mul(decimal.RequireFromString("0.80")), spec.PriceTick)
+	fillPrice := ceilDecimalToStep(ask.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
+	qty, err := selectDemoPerpQuantity(spec, cfg.MaxNotionalUSDT, fillPrice)
 	if err != nil {
 		t.Fatalf("select safe OKX Perp Demo order quantity: %v", err)
 	}
-	restingPrice := floorDecimalToStep(bid.Mul(decimal.RequireFromString("0.80")), spec.PriceTick)
-	fillPrice := ceilDecimalToStep(ask.Mul(decimal.RequireFromString("1.01")), spec.PriceTick)
 
 	if open, err := adapter.Execution.OpenOrders(ctx, instID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo open order preflight")
 		t.Fatalf("open order preflight: %v", err)
 	} else if len(open) > 0 {
-		t.Skipf("skipping OKX Perp Demo acceptance: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
+		t.Fatalf("OKX Perp Demo acceptance requires a clean account: %s already has %d open order(s); clean the Demo account before running", spec.VenueSymbol, len(open))
 	}
 	if exposure, err := demoCurrentExposure(ctx, adapter, instID); err != nil {
-		testenv.SkipIfTransientLiveNetworkError(t, err, "OKX Perp Demo position preflight")
 		t.Fatalf("position preflight: %v", err)
 	} else if !exposure.IsZero() {
-		t.Skipf("skipping OKX Perp Demo acceptance: %s already has exposure %s; start from a flat Demo account", spec.VenueSymbol, exposure)
+		t.Fatalf("OKX Perp Demo acceptance requires a flat account: %s already has exposure %s; flatten the Demo account before running", spec.VenueSymbol, exposure)
 	}
 
 	cleanup := newDemoPerpCleanupState(spec, qty)
@@ -114,7 +107,7 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	}()
 
 	restingClientID := demoClientOrderID("rest")
-	cleanup.Arm(restingClientID)
+	cleanup.TrackOrder(demoOrderRoleResting, restingClientID)
 	resting, err := adapter.Execution.Submit(ctx, model.OrderRequest{
 		InstrumentID: instID,
 		ClientID:     restingClientID,
@@ -126,18 +119,33 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("submit OKX Perp Demo resting order: %v", err)
+		recoveryErr := recoverAmbiguousOKXPerpDemoOrder(ctx, adapter, spec, &cleanup, restingClientID)
+		t.Fatalf("submit OKX Perp Demo resting order returned an ambiguous error: %v; client-ID recovery: %v\n%s", err, recoveryErr, cleanup.Remediation())
 	}
-	cleanup.RecordVenueOrderID(resting.VenueOrderID)
-	if err := adapter.Execution.Cancel(ctx, instID, resting.VenueOrderID); err != nil {
-		t.Fatalf("cancel OKX Perp Demo resting order %s: %v", resting.VenueOrderID, err)
+	cleanup.RecordVenueOrderID(restingClientID, resting.VenueOrderID)
+	if resting.VenueOrderID == "" {
+		if err := recoverAmbiguousOKXPerpDemoOrder(ctx, adapter, spec, &cleanup, restingClientID); err != nil {
+			t.Fatalf("recover OKX Perp Demo resting order identity: %v\n%s", err, cleanup.Remediation())
+		}
 	}
-	if _, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, restingClientID, "canceled"); err != nil {
-		t.Fatalf("wait for resting order cancel: %v", err)
+	if err := cancelAndConfirmOKXPerpDemoOrder(ctx, adapter, instID, spec, &cleanup, restingClientID); err != nil {
+		t.Fatalf("cancel and confirm OKX Perp Demo resting order: %v\n%s", err, cleanup.Remediation())
+	}
+	if cleanup.RestingFillQuantity().IsPositive() {
+		t.Fatalf("OKX Perp Demo resting order partially filled %s; IOC opening is blocked and bounded cleanup will run\n%s", cleanup.RestingFillQuantity(), cleanup.Remediation())
+	}
+	if !cleanup.OpeningAllowed() {
+		t.Fatalf("OKX Perp Demo resting order is not authoritatively canceled without fills\n%s", cleanup.Remediation())
+	}
+	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
+		t.Fatalf("prove stable no-open state after resting cancel: %v\n%s", err, cleanup.Remediation())
+	}
+	if err := waitForDemoFlat(ctx, adapter, instID); err != nil {
+		t.Fatalf("prove stable flat state after resting cancel: %v\n%s", err, cleanup.Remediation())
 	}
 
 	fillClientID := demoClientOrderID("fill")
-	cleanup.Arm(fillClientID)
+	cleanup.TrackOrder(demoOrderRoleOpening, fillClientID)
 	filled, err := adapter.Execution.Submit(ctx, model.OrderRequest{
 		InstrumentID: instID,
 		ClientID:     fillClientID,
@@ -149,16 +157,17 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 		PositionSide: enums.PosNet,
 	})
 	if err != nil {
-		t.Fatalf("submit OKX Perp Demo fill order: %v", err)
+		recoveryErr := recoverAmbiguousOKXPerpDemoOrder(ctx, adapter, spec, &cleanup, fillClientID)
+		t.Fatalf("submit OKX Perp Demo fill order returned an ambiguous error: %v; client-ID recovery: %v\n%s", err, recoveryErr, cleanup.Remediation())
 	}
-	cleanup.RecordVenueOrderID(filled.VenueOrderID)
-	filledResp, err := waitForDemoOrderStatus(ctx, adapter.rest, spec.VenueSymbol, fillClientID, "filled")
+	cleanup.RecordVenueOrderID(fillClientID, filled.VenueOrderID)
+	filledResp, err := confirmOKXPerpDemoOrderTerminal(ctx, adapter, spec, &cleanup, fillClientID)
 	if err != nil {
-		t.Fatalf("wait for fill order: %v", err)
+		t.Fatalf("wait for fill order terminal state: %v", err)
 	}
-	filledQty := dec(filledResp.AccFillSz)
-	if filledQty.IsZero() {
-		t.Fatalf("filled order reported zero executed quantity: %+v", filledResp)
+	filledQty, err := validateOKXPerpDemoFill(filledResp, spec, cfg.MaxNotionalUSDT)
+	if err != nil {
+		t.Fatalf("validate bounded OKX Perp Demo fill: %v\n%s", err, cleanup.Remediation())
 	}
 	if err := waitForDemoExecObservation(ctx, execEvents, fillClientID, filled.VenueOrderID); err != nil {
 		t.Fatalf("adapter execution stream did not observe OKX Perp Demo fill: %v", err)
@@ -169,8 +178,14 @@ func TestOKXPerpDemoExecAcceptance(t *testing.T) {
 	}
 	cleanup.SetExposure(exposure)
 
-	if err := closeOKXPerpDemoExposure(ctx, adapter, instID, spec); err != nil {
+	closed, err := closeOKXPerpDemoExposure(ctx, adapter, instID, spec, &cleanup)
+	if err != nil {
 		t.Fatalf("close OKX Perp Demo exposure: %v\n%s", err, cleanup.Remediation())
+	}
+	if closed != nil {
+		if _, err := confirmOKXPerpDemoOrderTerminal(ctx, adapter, spec, &cleanup, closed.Request.ClientID); err != nil {
+			t.Fatalf("confirm OKX Perp Demo close terminal state: %v\n%s", err, cleanup.Remediation())
+		}
 	}
 	if err := waitForNoDemoOpenOrders(ctx, adapter, instID); err != nil {
 		t.Fatalf("wait for no OKX Perp Demo open orders: %v\n%s", err, cleanup.Remediation())

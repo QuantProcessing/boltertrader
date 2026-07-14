@@ -33,6 +33,12 @@ func TestBybitAcceptanceLifecycleQuantityCoversRestingMinNotional(t *testing.T) 
 	if spec.Quantity.Mul(spec.RestingPrice).LessThan(inst.MinNotional) {
 		t.Fatalf("resting notional %s below min %s with spec %+v", spec.Quantity.Mul(spec.RestingPrice), inst.MinNotional, spec)
 	}
+	if !spec.CloseQuantity.IsPositive() || !spec.CloseQuantity.LessThan(spec.Quantity) {
+		t.Fatalf("close quantity=%s quantity=%s, want fee-buffered Spot close", spec.CloseQuantity, spec.Quantity)
+	}
+	if spec.CloseQuantity.LessThan(inst.MinQty) || spec.CloseQuantity.Mul(spec.ClosePrice).LessThan(inst.MinNotional) {
+		t.Fatalf("buffered close is not tradable: close_qty=%s close_price=%s min_qty=%s min_notional=%s", spec.CloseQuantity, spec.ClosePrice, inst.MinQty, inst.MinNotional)
+	}
 }
 
 func TestBybitSpotAcceptanceLifecyclePricesUseTightIOCSlippage(t *testing.T) {
@@ -85,6 +91,9 @@ func TestBybitPerpAcceptanceLifecyclePricesUseWiderIOCSlippage(t *testing.T) {
 	}
 
 	spec := bybitAcceptanceLifecycleSpec(t, adapter, "Bybit Demo USDT Perp", inst.ID, book, decimal.RequireFromString("20"))
+	if spec.CleanExistingPosition {
+		t.Fatal("Bybit Perp acceptance must reject, not auto-flatten, pre-existing positions")
+	}
 	if spec.FillPrice.GreaterThan(decimal.RequireFromString("102.02")) {
 		t.Fatalf("fill price %s uses too much IOC buy slippage", spec.FillPrice)
 	}
@@ -129,6 +138,27 @@ func TestBybitLifecycleFundsUseUnifiedBaseCurrencyForPerps(t *testing.T) {
 	spec := runtimeLifecycleFundsSpec(inst.ID)
 
 	ensureBybitLifecycleFunds(t, "Bybit Demo USDC Perp", adapter, state, spec)
+}
+
+func TestAcceptanceEnvironmentRecognizesDemo(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		label string
+		want  string
+	}{
+		{label: "Bybit Demo Spot", want: "Demo"},
+		{label: "Bybit Demo USDT Perp Runtime", want: "Demo"},
+		{label: "Bybit Testnet Spot", want: "Testnet"},
+		{label: "Bybit Mainnet Spot", want: ""},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			t.Parallel()
+			if got := acceptanceEnvironment(tc.label); got != tc.want {
+				t.Fatalf("acceptanceEnvironment(%q)=%q, want %q", tc.label, got, tc.want)
+			}
+		})
+	}
 }
 
 func runtimeLifecycleFundsSpec(id model.InstrumentID) runtimeaccept.OrderLifecycleSpec {

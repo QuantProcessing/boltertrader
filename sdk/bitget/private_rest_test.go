@@ -2,12 +2,18 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// Keep the exported response shape source-compatible for callers that use an
+// unkeyed composite literal. Cursor pagination is an SDK implementation detail.
+var _ = OrderList{nil, ""}
 
 func TestClient_PlaceOrder(t *testing.T) {
 	client := requireBitgetLiveWrite(t, "BITGET_TEST_ORDER_QTY", "BITGET_TEST_ORDER_PRICE")
@@ -395,6 +401,263 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 		if !strings.Contains(seenQuery, want) {
 			t.Fatalf("expected query to contain %s, got %s", want, seenQuery)
 		}
+	}
+}
+
+func TestClient_GetFillsBoundedConsumesCursorWithinOverallLimit(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := `{"code":"00000","msg":"success","data":{"list":[{"execId":"fill-1"}],"cursor":"next"}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"code":"00000","msg":"success","data":{"list":[{"execId":"fill-2"}],"cursor":""}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "150"})
+	if err != nil {
+		t.Fatalf("GetFillsBounded: %v", err)
+	}
+	if saturated || len(records) != 2 || records[0].ExecID != "fill-1" || records[1].ExecID != "fill-2" {
+		t.Fatalf("records=%+v saturated=%v, want both complete pages", records, saturated)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want 2", calls)
+	}
+}
+
+func TestClient_GetFillsBoundedStopsAtOverallLimit(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"code":"00000","msg":"success","data":{"list":[{"execId":"fill-1"},{"execId":"fill-2"}],"cursor":"more"}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "2"})
+	if err != nil {
+		t.Fatalf("GetFillsBounded: %v", err)
+	}
+	if !saturated || len(records) != 2 {
+		t.Fatalf("records=%+v saturated=%v, want two records and saturation", records, saturated)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want 1", calls)
+	}
+}
+
+func TestClient_GetFillsBoundedTreatsExactFullPageWithoutCursorAsComplete(t *testing.T) {
+	rows := strings.TrimSuffix(strings.Repeat(`{"execId":"fill"},`, 100), ",")
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[` + rows + `],"cursor":""}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "100"})
+	if err != nil {
+		t.Fatalf("GetFillsBounded: %v", err)
+	}
+	if saturated || len(records) != 100 {
+		t.Fatalf("records=%d saturated=%v, want exact complete page", len(records), saturated)
+	}
+}
+
+func TestClient_GetFillsBoundedRejectsCursorCycleWithoutPartialData(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cursor := req.URL.Query().Get("cursor")
+			next := "a"
+			if cursor == "a" {
+				next = "b"
+			} else if cursor == "b" {
+				next = "a"
+			}
+			body := `{"code":"00000","msg":"success","data":{"list":[{"execId":"fill"}],"cursor":"` + next + `"}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "100"})
+	if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+		t.Fatalf("error=%v, want repeated cursor", err)
+	}
+	if records != nil || saturated {
+		t.Fatalf("records=%+v saturated=%v, want fail-closed empty result", records, saturated)
+	}
+}
+
+func TestClient_GetFillsBoundedRejectsLaterPageErrorWithoutPartialData(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[{"execId":"first"}],"cursor":"next"}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"code":"40000","msg":"later page failed","data":{"list":[],"cursor":""}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "100"})
+	if err == nil || !strings.Contains(err.Error(), "later page failed") {
+		t.Fatalf("error=%v, want later-page venue error", err)
+	}
+	if records != nil || saturated {
+		t.Fatalf("records=%+v saturated=%v, want fail-closed empty result", records, saturated)
+	}
+}
+
+func TestClient_GetFillsBoundedRejectsEmptyNonTerminalPage(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[],"cursor":"next"}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{Category: bitgetPerpCategory, Limit: "100"})
+	if err == nil || !strings.Contains(err.Error(), "empty page") {
+		t.Fatalf("error=%v, want empty non-terminal page rejection", err)
+	}
+	if records != nil || saturated {
+		t.Fatalf("records=%+v saturated=%v, want fail-closed empty result", records, saturated)
+	}
+}
+
+func TestClient_GetFillsBoundedRejectsExcessivePageCount(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := fmt.Sprintf(`{"code":"00000","msg":"success","data":{"list":[{"execId":"fill-%d"}],"cursor":"cursor-%d"}}`, calls, calls)
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetFillsBounded(context.Background(), GetFillsRequest{
+		Category: bitgetPerpCategory,
+		Limit:    strconv.Itoa(privatePaginationMaxPages + 1),
+	})
+	if err == nil || !strings.Contains(err.Error(), "page safety limit") {
+		t.Fatalf("error=%v, want page safety limit", err)
+	}
+	if records != nil || saturated {
+		t.Fatalf("records=%+v saturated=%v, want fail-closed empty result", records, saturated)
+	}
+	if calls != privatePaginationMaxPages {
+		t.Fatalf("calls=%d, want exactly %d bounded requests", calls, privatePaginationMaxPages)
+	}
+}
+
+func TestClient_GetOpenOrdersConsumesCursorPages(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if got := req.URL.Query().Get("limit"); got != "100" {
+				t.Fatalf("limit=%q, want 100", got)
+			}
+			body := `{"code":"00000","msg":"success","data":{"list":[{"orderId":"first"}],"cursor":"next"}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"code":"00000","msg":"success","data":{"list":[{"orderId":"second"}],"cursor":""}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
+	if err != nil {
+		t.Fatalf("GetOpenOrders: %v", err)
+	}
+	if calls != 2 || len(records) != 2 || records[0].OrderID != "first" || records[1].OrderID != "second" {
+		t.Fatalf("calls=%d records=%+v, want both cursor pages", calls, records)
+	}
+}
+
+func TestClient_GetOpenOrdersRejectsRepeatedCursorWithoutPartialData(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[{"orderId":"first"}],"cursor":"same"}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
+	if err == nil || !strings.Contains(err.Error(), "repeated cursor") {
+		t.Fatalf("error=%v, want repeated cursor", err)
+	}
+	if records != nil {
+		t.Fatalf("records=%+v, want fail-closed empty result", records)
+	}
+}
+
+func TestClient_GetOpenOrdersRejectsLaterPageErrorWithoutPartialData(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[{"orderId":"first"}],"cursor":"next"}}`
+			if req.URL.Query().Get("cursor") == "next" {
+				body = `{"code":"40000","msg":"later page failed","data":{"list":[],"cursor":""}}`
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
+	if err == nil || !strings.Contains(err.Error(), "later page failed") {
+		t.Fatalf("error=%v, want later-page venue error", err)
+	}
+	if records != nil {
+		t.Fatalf("records=%+v, want fail-closed empty result", records)
+	}
+}
+
+func TestClient_GetOpenOrdersRejectsEmptyNonTerminalPage(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			body := `{"code":"00000","msg":"success","data":{"list":[],"cursor":"next"}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
+	if err == nil || !strings.Contains(err.Error(), "empty page") {
+		t.Fatalf("error=%v, want empty non-terminal page rejection", err)
+	}
+	if records != nil {
+		t.Fatalf("records=%+v, want fail-closed empty result", records)
+	}
+}
+
+func TestClient_GetOpenOrdersRejectsExcessivePageCount(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := fmt.Sprintf(`{"code":"00000","msg":"success","data":{"list":[{"orderId":"order-%d"}],"cursor":"cursor-%d"}}`, calls, calls)
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, err := client.GetOpenOrders(context.Background(), bitgetSpotCategory, bitgetSpotSymbol)
+	if err == nil || !strings.Contains(err.Error(), "page safety limit") {
+		t.Fatalf("error=%v, want page safety limit", err)
+	}
+	if records != nil {
+		t.Fatalf("records=%+v, want fail-closed empty result", records)
+	}
+	if calls != privatePaginationMaxPages {
+		t.Fatalf("calls=%d, want exactly %d bounded requests", calls, privatePaginationMaxPages)
 	}
 }
 
