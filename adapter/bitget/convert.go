@@ -301,7 +301,7 @@ func positionFromBitget(record bitgetsdk.PositionRecord, resolve func(string) mo
 		Quantity:      qty,
 		EntryPrice:    firstNonZero(dec(record.AvgPrice), dec(record.OpenPriceAvg), dec(record.AverageOpenPrice)),
 		MarkPrice:     dec(record.MarkPrice),
-		UnrealizedPnL: dec(record.UnrealizedPL),
+		UnrealizedPnL: dec(firstNonEmpty(record.UnrealisedPnl, record.UnrealizedPL)),
 		Leverage:      dec(record.Leverage),
 		UpdatedAt:     firstNonZeroTime(timeFromMillisString(record.UpdatedTime), now),
 	}, nil

@@ -268,7 +268,8 @@ func TestNodeAccountIDFallbacksRemainExplicitForPureTests(t *testing.T) {
 func TestNodeStampsResolvedAccountIDOnAccountEventsAndExternalFills(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	node := NewNode(Clients{}, clk, "acct-1")
-	id := model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	positionID := model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	fillID := model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindSpot}
 
 	node.onAccount(contract.NewAccountEnvelopeWithMeta(contract.BalanceEvent{
 		Balance: model.AccountBalance{Currency: "USDT", Total: decimal.RequireFromString("100"), Free: decimal.RequireFromString("90")},
@@ -278,14 +279,14 @@ func TestNodeStampsResolvedAccountIDOnAccountEventsAndExternalFills(t *testing.T
 	}
 
 	node.onAccount(contract.NewAccountEnvelopeWithMeta(contract.PositionEvent{
-		Position: model.Position{InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("1")},
+		Position: model.Position{InstrumentID: positionID, Side: enums.PosNet, Quantity: decimal.RequireFromString("1")},
 	}, contract.EventMeta{}))
-	if p, ok := node.Cache.PositionForAccount("acct-1", id, enums.PosNet); !ok || !p.Quantity.Equal(decimal.RequireFromString("1")) {
+	if p, ok := node.Cache.PositionForAccount("acct-1", positionID, enums.PosNet); !ok || !p.Quantity.Equal(decimal.RequireFromString("1")) {
 		t.Fatalf("stamped position=%+v ok=%v, want acct-1 qty 1", p, ok)
 	}
 
 	fill := model.Fill{
-		InstrumentID: id,
+		InstrumentID: fillID,
 		VenueOrderID: "venue-external",
 		TradeID:      "trade-external",
 		Side:         enums.SideBuy,
@@ -293,9 +294,7 @@ func TestNodeStampsResolvedAccountIDOnAccountEventsAndExternalFills(t *testing.T
 		Quantity:     decimal.RequireFromString("2"),
 		Timestamp:    clk.Now(),
 	}
-	if ok := node.applyFill(fill, contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, contract.EventMeta{})); !ok {
-		t.Fatal("external fill should materialize an account-scoped order")
-	}
+	node.applyOrBufferFill(fill, contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, contract.EventMeta{}))
 	order, ok := node.Cache.Order("external-acct-1-venue-external-trade-external")
 	if !ok {
 		t.Fatal("materialized account-scoped external order missing")
@@ -303,7 +302,7 @@ func TestNodeStampsResolvedAccountIDOnAccountEventsAndExternalFills(t *testing.T
 	if order.Request.AccountID != "acct-1" {
 		t.Fatalf("materialized order account id=%q, want acct-1", order.Request.AccountID)
 	}
-	if got := node.Portfolio.NetQtyForAccount("acct-1", id, enums.PosNet); !got.Equal(decimal.RequireFromString("2")) {
+	if got := node.Portfolio.NetQtyForAccount("acct-1", fillID, enums.PosNet); !got.Equal(decimal.RequireFromString("2")) {
 		t.Fatalf("portfolio acct-1 net qty=%s, want 2", got)
 	}
 }

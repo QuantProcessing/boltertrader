@@ -58,17 +58,39 @@ func accountEventsFromPositionMessage(msg *bitgetsdk.WSPositionMessage, resolve 
 	}
 	out := make([]contract.AccountEvent, 0, len(msg.Data))
 	for _, record := range msg.Data {
-		id, ok := resolve(record.Category, record.Symbol)
+		category := positionCategoryFromBitget(record)
+		id, ok := resolve(category, record.Symbol)
 		if !ok {
 			continue
 		}
 		position, err := positionFromBitget(record, func(string) model.InstrumentID { return id }, accountID, now)
 		if err != nil {
-			return nil, fmt.Errorf("bitget: invalid private position semantics category=%s symbol=%s: %w", record.Category, record.Symbol, err)
+			return nil, fmt.Errorf("bitget: invalid private position semantics category=%s symbol=%s: %w", category, record.Symbol, err)
 		}
 		out = append(out, contract.PositionEvent{Position: position})
 	}
 	return out, nil
+}
+
+func positionCategoryFromBitget(record bitgetsdk.PositionRecord) string {
+	explicit := normalizeVenueSymbol(record.Category)
+	inferred := ""
+	switch normalizeVenueSymbol(record.MarginCoin) {
+	case "USDT":
+		inferred = bitgetsdk.ProductTypeUSDTFutures
+	case "USDC":
+		inferred = bitgetsdk.ProductTypeUSDCFutures
+	case "":
+	default:
+		inferred = "COIN-FUTURES"
+	}
+	if explicit != "" {
+		if inferred != "" && explicit != inferred {
+			return ""
+		}
+		return explicit
+	}
+	return inferred
 }
 
 func accountEventsFromAccountMessage(msg *bitgetsdk.WSAccountMessage, accountID string, now time.Time) []contract.AccountEvent {

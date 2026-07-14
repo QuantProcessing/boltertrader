@@ -2,6 +2,7 @@ package bitget
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -484,6 +485,9 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				Message: fmt.Sprintf("fill-history recovery reached the global %d-record limit; recovered fills may be incomplete", executionMassStatusFillLimit),
 			})
 		}
+		if err := c.addHistoricalDerivativeOrders(ctx, mass); err != nil {
+			return nil, err
+		}
 	}
 	if query.IncludePositions && c.Capabilities().Reports.PositionReports {
 		positions, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID})
@@ -497,6 +501,199 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		}
 	}
 	return mass, nil
+}
+
+type historicalFillOrderIdentity struct {
+	venueOrderID string
+	clientID     string
+}
+
+type derivativeOrderHistoryGroup struct {
+	instrumentID model.InstrumentID
+	identities   map[historicalFillOrderIdentity]struct{}
+}
+
+// addHistoricalDerivativeOrders batches terminal order recovery by instrument
+// and retained history window. Any identity not found in the bounded scan is
+// deliberately left absent so the runtime can use its exact-order fallback.
+func (c *executionClient) addHistoricalDerivativeOrders(ctx context.Context, mass *model.ExecutionMassStatus) error {
+	groups := make(map[model.InstrumentID]*derivativeOrderHistoryGroup)
+	for _, reports := range mass.FillReports {
+		for _, report := range reports {
+			fill := report.Fill
+			if fill.InstrumentID.Kind == enums.KindSpot || massHasStrictFillOrder(mass, fill) {
+				continue
+			}
+			identity := historicalFillOrderIdentity{venueOrderID: fill.VenueOrderID, clientID: fill.ClientID}
+			group := groups[fill.InstrumentID]
+			if group == nil {
+				group = &derivativeOrderHistoryGroup{
+					instrumentID: fill.InstrumentID,
+					identities:   make(map[historicalFillOrderIdentity]struct{}),
+				}
+				groups[fill.InstrumentID] = group
+			}
+			group.identities[identity] = struct{}{}
+		}
+	}
+
+	orderedGroups := make([]*derivativeOrderHistoryGroup, 0, len(groups))
+	for _, group := range groups {
+		orderedGroups = append(orderedGroups, group)
+	}
+	sort.Slice(orderedGroups, func(i, j int) bool {
+		return orderedGroups[i].instrumentID.String() < orderedGroups[j].instrumentID.String()
+	})
+	for _, group := range orderedGroups {
+		if err := c.addHistoricalDerivativeOrdersForInstrument(ctx, mass, group); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *executionClient) addHistoricalDerivativeOrdersForInstrument(
+	ctx context.Context,
+	mass *model.ExecutionMassStatus,
+	group *derivativeOrderHistoryGroup,
+) error {
+	inst, err := c.instrument(group.instrumentID)
+	if err != nil {
+		return err
+	}
+	category, err := categoryForInstrument(inst)
+	if err != nil {
+		return err
+	}
+	if category == "SPOT" {
+		return nil
+	}
+	now := time.UnixMilli(c.clk.Now().UnixMilli())
+	windows, err := c.fillReportWindows(now.Add(-bitgetFillHistory), now)
+	if err != nil {
+		return err
+	}
+	limitReached := false
+	for _, window := range windows {
+		records, saturated, err := c.rest.GetOrderHistoryBounded(ctx, bitgetsdk.GetOrderHistoryRequest{
+			Category:  category,
+			Symbol:    inst.VenueSymbol,
+			StartTime: unixMillisString(window.since),
+			EndTime:   unixMillisString(window.until),
+			Limit:     strconv.Itoa(executionMassStatusFillLimit),
+		})
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{
+				Code:    "ORDER_HISTORY_PREFETCH_FAILED",
+				Message: fmt.Sprintf("historical-order batch recovery failed for %s; exact-order fallback remains required: %v", group.instrumentID, err),
+			})
+			return nil
+		}
+		limitReached = limitReached || saturated
+		for _, record := range records {
+			identity, wanted := matchingHistoricalFillIdentity(record, group.identities)
+			if !wanted {
+				continue
+			}
+			if !bitgetRecordCategoryMatches(record.Category, category) {
+				return fmt.Errorf("bitget: historical order category mismatch requested=%s received=%s symbol=%s", category, record.Category, record.Symbol)
+			}
+			if normalizeVenueSymbol(record.Symbol) != normalizeVenueSymbol(inst.VenueSymbol) {
+				return fmt.Errorf("bitget: historical order symbol mismatch requested=%s received=%s category=%s", inst.VenueSymbol, record.Symbol, category)
+			}
+			order, err := orderFromBitgetRecord(record, group.instrumentID, c.accountID)
+			if err != nil {
+				return fmt.Errorf("bitget: invalid historical order position semantics symbol=%s: %w", record.Symbol, err)
+			}
+			if !historicalIdentityMatchesOrder(identity, order) || massHasConflictingOrderIdentity(mass, order) {
+				continue
+			}
+			if err := mass.AddOrderReport(model.OrderStatusReport{
+				Venue:      VenueName,
+				AccountID:  c.accountID,
+				Order:      order,
+				ReportedAt: c.clk.Now(),
+			}); err != nil {
+				return err
+			}
+			deleteHistoricalFillIdentitiesForOrder(group.identities, order)
+		}
+		if len(group.identities) == 0 {
+			break
+		}
+	}
+	if limitReached && len(group.identities) > 0 {
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{
+			Code:    "ORDER_HISTORY_PREFETCH_LIMIT_REACHED",
+			Message: fmt.Sprintf("historical-order batch recovery reached the bounded record limit for %s; exact-order fallback remains required", group.instrumentID),
+		})
+	}
+	return nil
+}
+
+func matchingHistoricalFillIdentity(record bitgetsdk.OrderRecord, identities map[historicalFillOrderIdentity]struct{}) (historicalFillOrderIdentity, bool) {
+	candidates := [...]historicalFillOrderIdentity{
+		{venueOrderID: record.OrderID, clientID: record.ClientOID},
+		{venueOrderID: record.OrderID},
+		{clientID: record.ClientOID},
+	}
+	for _, candidate := range candidates {
+		if _, ok := identities[candidate]; ok {
+			return candidate, true
+		}
+	}
+	return historicalFillOrderIdentity{}, false
+}
+
+func historicalIdentityMatchesOrder(identity historicalFillOrderIdentity, order model.Order) bool {
+	if identity.venueOrderID != "" && order.VenueOrderID != identity.venueOrderID {
+		return false
+	}
+	if identity.clientID != "" && order.Request.ClientID != identity.clientID {
+		return false
+	}
+	return identity.venueOrderID != "" || identity.clientID != ""
+}
+
+func deleteHistoricalFillIdentitiesForOrder(identities map[historicalFillOrderIdentity]struct{}, order model.Order) {
+	for identity := range identities {
+		if historicalIdentityMatchesOrder(identity, order) {
+			delete(identities, identity)
+		}
+	}
+}
+
+func massHasStrictFillOrder(mass *model.ExecutionMassStatus, fill model.Fill) bool {
+	for _, report := range mass.OrderReports {
+		if model.OrderMatchesStatusQuery(report.Order, model.OrderStatusReportQuery{
+			InstrumentID: fill.InstrumentID,
+			AccountID:    fill.AccountID,
+			ClientID:     fill.ClientID,
+			VenueOrderID: fill.VenueOrderID,
+		}) {
+			return true
+		}
+	}
+	return false
+}
+
+func massHasConflictingOrderIdentity(mass *model.ExecutionMassStatus, candidate model.Order) bool {
+	if _, exists := mass.OrderReports[candidate.VenueOrderID]; candidate.VenueOrderID != "" && exists {
+		return true
+	}
+	for _, report := range mass.OrderReports {
+		existing := report.Order
+		if candidate.VenueOrderID != "" && existing.VenueOrderID == candidate.VenueOrderID {
+			return true
+		}
+		if candidate.Request.ClientID != "" && existing.Request.ClientID == candidate.Request.ClientID {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *executionClient) resolveFillInstrument(category string, scoped model.InstrumentID, venueSymbol string) (model.InstrumentID, bool) {

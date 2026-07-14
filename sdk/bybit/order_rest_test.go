@@ -6,8 +6,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClient_PlaceOrder(t *testing.T) {
@@ -312,6 +314,156 @@ func TestClient_GetOrderHistoryFiltered(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected filtered order history slice")
+	}
+}
+
+func TestClient_GetOrderHistoryWithRequestPaginatesBoundedWindow(t *testing.T) {
+	const (
+		startMillis = int64(1_700_000_000_000)
+		endMillis   = startMillis + int64(2*time.Hour/time.Millisecond)
+	)
+	var calls int
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.URL.Path != "/v5/order/history" {
+				t.Fatalf("path=%q, want order history", req.URL.Path)
+			}
+			query := req.URL.Query()
+			if got := query.Get("category"); got != "linear" {
+				t.Fatalf("category=%q, want linear", got)
+			}
+			if got := query.Get("symbol"); got != "BTCUSDT" {
+				t.Fatalf("symbol=%q, want BTCUSDT", got)
+			}
+			if got := query.Get("settleCoin"); got != SettleCoinUSDT {
+				t.Fatalf("settleCoin=%q, want %s", got, SettleCoinUSDT)
+			}
+			if got := query.Get("startTime"); got != strconv.FormatInt(startMillis, 10) {
+				t.Fatalf("startTime=%q, want %d", got, startMillis)
+			}
+			if got := query.Get("endTime"); got != strconv.FormatInt(endMillis, 10) {
+				t.Fatalf("endTime=%q, want %d", got, endMillis)
+			}
+			if got := query.Get("limit"); got != "50" {
+				t.Fatalf("limit=%q, want 50", got)
+			}
+			cursor := ""
+			orderID := "order-1"
+			if calls == 1 {
+				cursor = "next"
+			} else {
+				orderID = "order-2"
+				if got := query.Get("cursor"); got != "next" {
+					t.Fatalf("continuation cursor=%q, want next", got)
+				}
+			}
+			body := fmt.Sprintf(`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":%q,"list":[{"orderId":%q}]}}`, cursor, orderID)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	records, err := client.GetOrderHistoryWithRequest(context.Background(), GetOrderHistoryRequest{
+		Category:    "linear",
+		Symbol:      "BTCUSDT",
+		SettleCoin:  SettleCoinUSDT,
+		StartMillis: startMillis,
+		EndMillis:   endMillis,
+	})
+	if err != nil {
+		t.Fatalf("GetOrderHistoryWithRequest: %v", err)
+	}
+	if len(records) != 2 || records[0].OrderID != "order-1" || records[1].OrderID != "order-2" {
+		t.Fatalf("records=%+v, want both paginated orders", records)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want two pages", calls)
+	}
+}
+
+func TestClient_ScanOrderHistoryStopsWhenVisitorCompletes(t *testing.T) {
+	var calls int
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			if calls > 1 {
+				return nil, fmt.Errorf("scanner requested a page after the visitor completed")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"unused","list":[{"orderId":"target"}]}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	var visited []OrderRecord
+	saturated, err := client.ScanOrderHistory(context.Background(), GetOrderHistoryRequest{Category: "linear", Symbol: "BTCUSDT"}, 1000, func(page []OrderRecord) (bool, error) {
+		visited = append(visited, page...)
+		return len(visited) == 1 && visited[0].OrderID == "target", nil
+	})
+	if err != nil {
+		t.Fatalf("ScanOrderHistory: %v", err)
+	}
+	if saturated {
+		t.Fatal("visitor completion must not be reported as record saturation")
+	}
+	if calls != 1 || len(visited) != 1 || visited[0].OrderID != "target" {
+		t.Fatalf("calls=%d visited=%+v, want one completed page", calls, visited)
+	}
+}
+
+func TestClient_ScanOrderHistoryStopsAtOverallLimit(t *testing.T) {
+	var calls int
+	client := NewClient().
+		WithCredentials("key", "secret").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if got := req.URL.Query().Get("limit"); got != "2" {
+				t.Fatalf("limit=%q, want remaining overall limit 2", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(
+					`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"more","list":[{"orderId":"one"},{"orderId":"two"}]}}`,
+				)),
+				Header: make(http.Header),
+			}, nil
+		})})
+
+	visited := 0
+	saturated, err := client.ScanOrderHistory(context.Background(), GetOrderHistoryRequest{Category: "linear", Symbol: "BTCUSDT"}, 2, func(page []OrderRecord) (bool, error) {
+		visited += len(page)
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("ScanOrderHistory: %v", err)
+	}
+	if !saturated || calls != 1 || visited != 2 {
+		t.Fatalf("saturated=%v calls=%d visited=%d, want true/1/2", saturated, calls, visited)
+	}
+}
+
+func TestClient_GetOrderHistoryWithRequestRejectsWindowOverSevenDays(t *testing.T) {
+	client := NewClient().WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid history window crossed HTTP boundary")
+		return nil, nil
+	})})
+
+	_, err := client.GetOrderHistoryWithRequest(context.Background(), GetOrderHistoryRequest{
+		Category:    "linear",
+		Symbol:      "BTCUSDT",
+		StartMillis: 1_700_000_000_000,
+		EndMillis:   1_700_000_000_000 + int64((7*24*time.Hour+time.Millisecond)/time.Millisecond),
+	})
+	if err == nil || !strings.Contains(err.Error(), "seven days") {
+		t.Fatalf("error=%v, want seven-day window rejection", err)
 	}
 }
 

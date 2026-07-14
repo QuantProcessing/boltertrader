@@ -560,6 +560,97 @@ func TestClient_GetFillsBoundedRejectsExcessivePageCount(t *testing.T) {
 	}
 }
 
+func TestClient_GetOrderHistoryBoundedConsumesMoreThanTwoHundredRowsWithVenueLimit(t *testing.T) {
+	const totalOrders = 217
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			query := req.URL.Query()
+			if req.URL.Path != "/api/v3/trade/history-orders" {
+				t.Fatalf("path=%q, want UTA history-orders", req.URL.Path)
+			}
+			if query.Get("category") != bitgetPerpCategory || query.Get("symbol") != bitgetPerpSymbol {
+				t.Fatalf("scope query=%q, want %s/%s", req.URL.RawQuery, bitgetPerpCategory, bitgetPerpSymbol)
+			}
+			if query.Get("startTime") != "1000" || query.Get("endTime") != "2000" {
+				t.Fatalf("time query=%q, want startTime=1000 and endTime=2000", req.URL.RawQuery)
+			}
+			if _, ok := query["orderId"]; ok {
+				t.Fatalf("unsupported orderId filter was sent: %q", req.URL.RawQuery)
+			}
+			if _, ok := query["clientOid"]; ok {
+				t.Fatalf("unsupported clientOid filter was sent: %q", req.URL.RawQuery)
+			}
+			limit, err := strconv.Atoi(query.Get("limit"))
+			if err != nil || limit <= 0 || limit > 100 {
+				t.Fatalf("venue limit=%q, want 1..100", query.Get("limit"))
+			}
+			start := 0
+			if query.Get("cursor") != "" {
+				start, err = strconv.Atoi(query.Get("cursor"))
+				if err != nil {
+					t.Fatalf("cursor=%q is not an integer offset", query.Get("cursor"))
+				}
+			}
+			end := start + limit
+			if end > totalOrders {
+				end = totalOrders
+			}
+			var rows strings.Builder
+			for i := start; i < end; i++ {
+				if rows.Len() > 0 {
+					rows.WriteByte(',')
+				}
+				fmt.Fprintf(&rows, `{"orderId":"order-%d"}`, i)
+			}
+			next := ""
+			if end < totalOrders {
+				next = strconv.Itoa(end)
+			}
+			body := fmt.Sprintf(`{"code":"00000","msg":"success","data":{"list":[%s],"cursor":"%s"}}`, rows.String(), next)
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetOrderHistoryBounded(context.Background(), GetOrderHistoryRequest{
+		Category:  bitgetPerpCategory,
+		Symbol:    bitgetPerpSymbol,
+		StartTime: "1000",
+		EndTime:   "2000",
+		Limit:     "1000",
+	})
+	if err != nil {
+		t.Fatalf("GetOrderHistoryBounded: %v", err)
+	}
+	if saturated || calls != 3 || len(records) != totalOrders || records[0].OrderID != "order-0" || records[totalOrders-1].OrderID != "order-216" {
+		t.Fatalf("calls=%d records=%d saturated=%v, want 217 rows across three complete cursor pages", calls, len(records), saturated)
+	}
+}
+
+func TestClient_GetOrderHistoryBoundedStopsAtOverallLimit(t *testing.T) {
+	calls := 0
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := `{"code":"00000","msg":"success","data":{"list":[{"orderId":"first"},{"orderId":"second"}],"cursor":"more"}}`
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})})
+
+	records, saturated, err := client.GetOrderHistoryBounded(context.Background(), GetOrderHistoryRequest{
+		Category: bitgetPerpCategory,
+		Symbol:   bitgetPerpSymbol,
+		Limit:    "2",
+	})
+	if err != nil {
+		t.Fatalf("GetOrderHistoryBounded: %v", err)
+	}
+	if !saturated || calls != 1 || len(records) != 2 {
+		t.Fatalf("calls=%d records=%+v saturated=%v, want one bounded saturated page", calls, records, saturated)
+	}
+}
+
 func TestClient_GetOpenOrdersConsumesCursorPages(t *testing.T) {
 	calls := 0
 	client := NewClient().

@@ -246,7 +246,7 @@ func TestOrderProgressFindingCannotBeResolvedByCrossNamespaceFill(t *testing.T) 
 func TestExternalFillMaterializesOnlyAfterRuntimeIdentityGuardAccepts(t *testing.T) {
 	at := time.Unix(400, 0)
 	fill := model.Fill{
-		AccountID: "acct", InstrumentID: btc, VenueOrderID: "external-venue", TradeID: "external-trade",
+		AccountID: "acct", InstrumentID: spotBTC, VenueOrderID: "external-venue", TradeID: "external-trade",
 		Side: enums.SideBuy, Price: d("100"), Quantity: d("1"), Timestamp: at,
 	}
 	mass := model.NewExecutionMassStatus("T", "acct", at)

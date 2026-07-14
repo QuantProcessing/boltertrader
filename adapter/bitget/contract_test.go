@@ -283,13 +283,13 @@ func TestBitgetPositionRecordUsesHoldModeToClassifyPositionSideAndSign(t *testin
 	resolve := func(string) model.InstrumentID { return id }
 
 	oneWay, err := positionFromBitget(bitgetsdk.PositionRecord{
-		Symbol: "BTCUSDT", HoldMode: "one_way_mode", PosSide: "short", Total: "0.01",
+		Symbol: "BTCUSDT", HoldMode: "one_way_mode", PosSide: "short", Total: "0.01", UnrealizedPL: "2.5",
 	}, resolve, AccountIDUnified, time.Unix(1, 0))
 	if err != nil {
 		t.Fatalf("one-way position conversion: %v", err)
 	}
-	if oneWay.Side != enums.PosNet || !oneWay.Quantity.Equal(decimal.RequireFromString("-0.01")) {
-		t.Fatalf("one-way position=%+v, want NET quantity -0.01", oneWay)
+	if oneWay.Side != enums.PosNet || !oneWay.Quantity.Equal(decimal.RequireFromString("-0.01")) || !oneWay.UnrealizedPnL.Equal(decimal.RequireFromString("2.5")) {
+		t.Fatalf("one-way position=%+v, want NET quantity -0.01 and legacy unrealized PnL 2.5", oneWay)
 	}
 
 	hedge, err := positionFromBitget(bitgetsdk.PositionRecord{

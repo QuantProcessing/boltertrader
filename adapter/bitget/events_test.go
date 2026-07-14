@@ -133,6 +133,80 @@ func TestBitgetPrivateWSEventsRouteSameSymbolByNormalizedCategory(t *testing.T) 
 	}
 }
 
+func TestBitgetUTAPositionWSDerivesFuturesCategoryFromMarginCoin(t *testing.T) {
+	provider := newInstrumentProvider()
+	spot := instrumentFromBitget(bitgetsdk.Instrument{Category: "SPOT", Symbol: "BTCUSDT", BaseCoin: "BTC", QuoteCoin: "USDT"})
+	usdt := instrumentFromBitget(bitgetsdk.Instrument{Category: bitgetsdk.ProductTypeUSDTFutures, Symbol: "BTCUSDT", BaseCoin: "BTC", QuoteCoin: "USDT"})
+	usdc := instrumentFromBitget(bitgetsdk.Instrument{Category: bitgetsdk.ProductTypeUSDCFutures, Symbol: "BTCUSDC", BaseCoin: "BTC", QuoteCoin: "USDC"})
+	provider.LoadSnapshot([]*model.Instrument{spot, usdt, usdc})
+
+	tests := []struct {
+		name    string
+		payload string
+		wantID  model.InstrumentID
+	}{
+		{
+			name:    "USDT futures",
+			payload: `{"arg":{"instType":"UTA","topic":"position"},"action":"update","data":[{"symbol":"BTCUSDT","marginCoin":"USDT","posSide":"long","holdMode":"hedge_mode","size":"0.0001","unrealisedPnl":"1.25"}]}`,
+			wantID:  usdt.ID,
+		},
+		{
+			name:    "USDC futures",
+			payload: `{"arg":{"instType":"UTA","topic":"position"},"action":"update","data":[{"symbol":"BTCUSDC","marginCoin":"USDC","posSide":"long","holdMode":"hedge_mode","size":"0.0001","unrealisedPnl":"1.25"}]}`,
+			wantID:  usdc.ID,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := newExecutionClient(nil, provider, nil, AccountIDUnified)
+			defer exec.Close()
+			adapter := &Adapter{provider: provider, exec: exec}
+			adapter.bindPrivateGapHooks(&discardReconnectHooks{})
+
+			msg, err := bitgetsdk.DecodePositionMessage([]byte(tt.payload))
+			if err != nil {
+				t.Fatalf("decode position message: %v", err)
+			}
+			events, err := accountEventsFromPositionMessage(msg, adapter.resolvePrivateInstrument, AccountIDUnified, time.Unix(1, 0))
+			if err != nil {
+				t.Fatalf("position events: %v", err)
+			}
+			select {
+			case envelope := <-exec.Events():
+				t.Fatalf("valid UTA position emitted recovery event: %+v", envelope.Payload)
+			default:
+			}
+			if len(events) != 1 {
+				t.Fatalf("position events=%+v, want one", events)
+			}
+			position := events[0].(contract.PositionEvent).Position
+			if position.InstrumentID != tt.wantID || position.Side != enums.PosLong || !position.Quantity.Equal(decimal.RequireFromString("0.0001")) || !position.UnrealizedPnL.Equal(decimal.RequireFromString("1.25")) {
+				t.Fatalf("position=%+v, want instrument=%s side=LONG quantity=0.0001 unrealized_pnl=1.25", position, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestBitgetUTAPositionCategoryPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		record bitgetsdk.PositionRecord
+		want   string
+	}{
+		{name: "explicit category agrees", record: bitgetsdk.PositionRecord{Category: bitgetsdk.ProductTypeUSDTFutures, MarginCoin: "USDT"}, want: bitgetsdk.ProductTypeUSDTFutures},
+		{name: "explicit category conflicts", record: bitgetsdk.PositionRecord{Category: bitgetsdk.ProductTypeUSDTFutures, MarginCoin: "USDC"}},
+		{name: "missing category and margin coin", record: bitgetsdk.PositionRecord{}},
+		{name: "unsupported coin futures", record: bitgetsdk.PositionRecord{MarginCoin: "BTC"}, want: "COIN-FUTURES"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := positionCategoryFromBitget(tt.record); got != tt.want {
+				t.Fatalf("category=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBitgetPrivateWSEventsSkipUnknownOrOutOfScopeIdentity(t *testing.T) {
 	provider := newInstrumentProvider()
 	provider.LoadSnapshot([]*model.Instrument{

@@ -894,14 +894,10 @@ func (n *TradingNode) onExecContext(ctx context.Context, env contract.ExecEnvelo
 		n.notifyObserver(func(observer observ.Observer) { observer.OnOrder(e.Order) })
 		for _, fill := range n.fills.DrainBuffered(e.Order) {
 			fillEnv := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill.Fill}, fill.Meta)
-			if !n.applyFill(fill.Fill, fillEnv) {
-				n.fills.BufferEnvelope(fill.Fill, fill.Meta)
-			}
+			n.applyOrBufferFill(fill.Fill, fillEnv)
 		}
 	case contract.FillEvent:
-		if !n.applyFill(e.Fill, env) {
-			n.fills.BufferEnvelope(e.Fill, env.Meta())
-		}
+		n.applyOrBufferFill(e.Fill, env)
 	case contract.RejectEvent:
 		atomic.AddInt64(&n.counters.Rejects, 1)
 		venueOrderID := ""
@@ -1000,17 +996,54 @@ func (n *TradingNode) validateStreamGap(gap contract.StreamGapEvent) error {
 	return nil
 }
 
-func (n *TradingNode) applyFill(fill model.Fill, env contract.ExecEnvelope) bool {
-	return n.applyFillResult(fill, env) != reconcile.FillApplyUnmatched
+func (n *TradingNode) applyOrBufferFill(fill model.Fill, env contract.ExecEnvelope) {
+	if !hasRecoverableFillEconomics(fill) {
+		n.Halt("invalid fill economics")
+		return
+	}
+	if n.applyFillResult(fill, env) != reconcile.FillApplyUnmatched {
+		return
+	}
+	resolved := fill
+	if n.Exec != nil {
+		if matched, ok := n.Exec.MatchFillInFlight(fill); ok {
+			resolved = matched
+		}
+	}
+	if strings.TrimSpace(resolved.ClientID) == "" && strings.TrimSpace(resolved.VenueOrderID) == "" {
+		n.Halt("invalid fill identity")
+		return
+	}
+	_, found, identityErr := n.orderForFill(resolved)
+	if identityErr != nil {
+		n.Halt("fill order identity conflict: " + identityErr.Error())
+		return
+	}
+	if found {
+		n.Halt("fill remains non-executable after order resolution")
+		return
+	}
+	n.fills.BufferEnvelope(resolved, env.Meta())
 }
 
 func (n *TradingNode) applyFillResult(fill model.Fill, env contract.ExecEnvelope) reconcile.FillApplyResult {
+	return n.applyFillResultWithAuthorization(fill, env, false)
+}
+
+func (n *TradingNode) applyFillResultWithAuthorization(
+	fill model.Fill,
+	env contract.ExecEnvelope,
+	allowAuthoritativeClientID bool,
+) reconcile.FillApplyResult {
 	resolvedFromInFlight := false
 	if n.Exec != nil {
 		if resolvedFill, ok := n.Exec.MatchFillInFlight(fill); ok {
 			fill = resolvedFill
 			resolvedFromInFlight = true
 		}
+	}
+	if !hasRecoverableFillEconomics(fill) {
+		return reconcile.FillApplyUnmatched
 	}
 	o, ok, identityErr := n.orderForFill(fill)
 	if identityErr != nil {
@@ -1019,7 +1052,7 @@ func (n *TradingNode) applyFillResult(fill model.Fill, env contract.ExecEnvelope
 	}
 	materialized := false
 	if !ok {
-		if external, materializedOK := n.materializeExternalOrder(fill, resolvedFromInFlight); materializedOK {
+		if external, materializedOK := n.materializeExternalOrder(fill, resolvedFromInFlight || allowAuthoritativeClientID); materializedOK {
 			o = external
 			ok = true
 			materialized = true
@@ -1048,6 +1081,9 @@ func (n *TradingNode) applyFillResult(fill model.Fill, env contract.ExecEnvelope
 	}
 	if fill.Side == enums.SideUnknown {
 		fill.Side = o.Request.Side
+	}
+	if !hasExecutableFillEconomics(fill) {
+		return reconcile.FillApplyUnmatched
 	}
 	applied, _, identityErr := n.fills.AcceptAppliedWithCoverageChecked(fill, func(willApply bool, prior decimal.Decimal) error {
 		var materializedOrder *model.Order
@@ -1143,7 +1179,7 @@ func (n *TradingNode) canonicalOrder(hint model.Order) model.Order {
 
 func (n *TradingNode) applyRecoveredFill(fill model.Fill, meta contract.EventMeta) reconcile.FillApplyResult {
 	env := contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: fill}, meta)
-	return n.applyFillResult(fill, env)
+	return n.applyFillResultWithAuthorization(fill, env, true)
 }
 
 func (n *TradingNode) orderForFill(fill model.Fill) (model.Order, bool, error) {
@@ -1177,8 +1213,8 @@ func (n *TradingNode) syncFillTerminalOrders() error {
 }
 
 func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient bool) (model.Order, bool) {
-	if fill.VenueOrderID == "" || fill.InstrumentID.Symbol == "" ||
-		fill.Quantity.IsZero() {
+	if fill.InstrumentID.Kind != enums.KindSpot || fill.VenueOrderID == "" || fill.InstrumentID.Symbol == "" ||
+		!hasExecutableFillEconomics(fill) {
 		return model.Order{}, false
 	}
 	if fill.ClientID != "" && !allowKnownClient {
@@ -1216,6 +1252,16 @@ func (n *TradingNode) materializeExternalOrder(fill model.Fill, allowKnownClient
 		UpdatedAt:    ts,
 	}
 	return order, true
+}
+
+func hasRecoverableFillEconomics(fill model.Fill) bool {
+	return fill.Quantity.IsPositive() && fill.Price.IsPositive() &&
+		(fill.Side == enums.SideUnknown || fill.Side == enums.SideBuy || fill.Side == enums.SideSell)
+}
+
+func hasExecutableFillEconomics(fill model.Fill) bool {
+	return fill.Quantity.IsPositive() && fill.Price.IsPositive() &&
+		(fill.Side == enums.SideBuy || fill.Side == enums.SideSell)
 }
 
 // onAccount applies a balance/position event to the cache. Runs on the bus

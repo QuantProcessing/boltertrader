@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 )
 
 const maxPaginationPages = 1000
+
+const maxOrderHistoryWindowMillis = int64(7 * 24 * time.Hour / time.Millisecond)
 
 func (c *Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*OrderActionResponse, error) {
 	var resp responseEnvelope[OrderActionResponse]
@@ -97,53 +100,152 @@ func (c *Client) GetOpenOrders(ctx context.Context, category, symbol string) ([]
 }
 
 func (c *Client) GetOrderHistory(ctx context.Context, category, symbol string) ([]OrderRecord, error) {
-	return c.GetOrderHistoryFilteredScoped(ctx, category, symbol, "", "", "")
+	return c.GetOrderHistoryWithRequest(ctx, GetOrderHistoryRequest{Category: category, Symbol: symbol})
 }
 
 func (c *Client) GetOrderHistoryFiltered(ctx context.Context, category, symbol, orderID, orderLinkID string) ([]OrderRecord, error) {
-	return c.GetOrderHistoryFilteredScoped(ctx, category, symbol, "", orderID, orderLinkID)
+	return c.GetOrderHistoryWithRequest(ctx, GetOrderHistoryRequest{
+		Category:    category,
+		Symbol:      symbol,
+		OrderID:     orderID,
+		OrderLinkID: orderLinkID,
+	})
 }
 
 func (c *Client) GetOrderHistoryFilteredScoped(ctx context.Context, category, symbol, settleCoin, orderID, orderLinkID string) ([]OrderRecord, error) {
+	return c.GetOrderHistoryWithRequest(ctx, GetOrderHistoryRequest{
+		Category:    category,
+		Symbol:      symbol,
+		SettleCoin:  settleCoin,
+		OrderID:     orderID,
+		OrderLinkID: orderLinkID,
+	})
+}
+
+type GetOrderHistoryRequest struct {
+	Category    string
+	Symbol      string
+	SettleCoin  string
+	OrderID     string
+	OrderLinkID string
+	StartMillis int64
+	EndMillis   int64
+}
+
+func (c *Client) GetOrderHistoryWithRequest(ctx context.Context, req GetOrderHistoryRequest) ([]OrderRecord, error) {
+	maxInt := int(^uint(0) >> 1)
 	var out []OrderRecord
+	_, err := c.scanOrderHistory(ctx, req, maxInt, func(records []OrderRecord) (bool, error) {
+		out = append(out, records...)
+		return false, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ScanOrderHistory visits order-history pages until the visitor reports that
+// its targets are complete, the venue exhausts the cursor, or maxRecords have
+// been visited. saturated is true only when maxRecords stopped an otherwise
+// incomplete cursor traversal.
+func (c *Client) ScanOrderHistory(
+	ctx context.Context,
+	req GetOrderHistoryRequest,
+	maxRecords int,
+	visit func([]OrderRecord) (bool, error),
+) (saturated bool, err error) {
+	if maxRecords <= 0 {
+		return false, fmt.Errorf("bybit sdk: order history record limit must be positive")
+	}
+	if visit == nil {
+		return false, fmt.Errorf("bybit sdk: order history visitor is nil")
+	}
+	return c.scanOrderHistory(ctx, req, maxRecords, visit)
+}
+
+func (c *Client) scanOrderHistory(
+	ctx context.Context,
+	req GetOrderHistoryRequest,
+	maxRecords int,
+	visit func([]OrderRecord) (bool, error),
+) (bool, error) {
+	if req.StartMillis > 0 && req.EndMillis > 0 {
+		if req.EndMillis < req.StartMillis {
+			return false, fmt.Errorf("bybit sdk: order history end time precedes start time")
+		}
+		if req.EndMillis-req.StartMillis > maxOrderHistoryWindowMillis {
+			return false, fmt.Errorf("bybit sdk: order history window cannot exceed seven days")
+		}
+	}
+
 	cursor := ""
 	seenCursors := make(map[string]struct{})
+	visited := 0
 
 	for page := 1; ; page++ {
+		pageLimit := 50
+		if remaining := maxRecords - visited; remaining < pageLimit {
+			pageLimit = remaining
+		}
 		query := map[string]string{
-			"category": category,
-			"limit":    strconv.Itoa(50),
+			"category": req.Category,
+			"limit":    strconv.Itoa(pageLimit),
 			"cursor":   cursor,
 		}
-		if symbol != "" {
-			query["symbol"] = symbol
+		if req.Symbol != "" {
+			query["symbol"] = req.Symbol
 		}
-		if settleCoin != "" {
-			query["settleCoin"] = settleCoin
+		if req.SettleCoin != "" {
+			query["settleCoin"] = req.SettleCoin
 		}
-		if orderID != "" {
-			query["orderId"] = orderID
+		if req.OrderID != "" {
+			query["orderId"] = req.OrderID
 		}
-		if orderLinkID != "" {
-			query["orderLinkId"] = orderLinkID
+		if req.OrderLinkID != "" {
+			query["orderLinkId"] = req.OrderLinkID
+		}
+		if req.StartMillis > 0 {
+			query["startTime"] = strconv.FormatInt(req.StartMillis, 10)
+		}
+		if req.EndMillis > 0 {
+			query["endTime"] = strconv.FormatInt(req.EndMillis, 10)
 		}
 
 		var resp responseEnvelope[OrdersResult]
 		err := c.getPrivate(ctx, "/v5/order/history", query, &resp)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit sdk: get order history failed: %d %s", resp.RetCode, resp.RetMsg)
+			return false, fmt.Errorf("bybit sdk: get order history failed: %d %s", resp.RetCode, resp.RetMsg)
 		}
 
-		out = append(out, resp.Result.List...)
-		if resp.Result.NextPageCursor == "" || orderID != "" || orderLinkID != "" {
-			return out, nil
+		records := resp.Result.List
+		truncated := len(records) > pageLimit
+		if truncated {
+			records = records[:pageLimit]
+		}
+		visited += len(records)
+		done, err := visit(records)
+		if err != nil {
+			return false, err
+		}
+		if done {
+			return false, nil
+		}
+		if truncated {
+			return true, nil
+		}
+		if resp.Result.NextPageCursor == "" || req.OrderID != "" || req.OrderLinkID != "" {
+			return false, nil
+		}
+		if visited >= maxRecords {
+			return true, nil
 		}
 		cursor, err = nextPaginationCursor("get order history", cursor, resp.Result.NextPageCursor, page, seenCursors)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
 	}
 }

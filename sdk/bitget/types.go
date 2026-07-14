@@ -134,6 +134,18 @@ type OrderList struct {
 	EndID string        `json:"endId"`
 }
 
+// GetOrderHistoryRequest scopes UTA order-history retrieval. Limit is the
+// overall record cap used by GetOrderHistoryBounded; each venue request is
+// automatically capped at Bitget's 100-row page maximum.
+type GetOrderHistoryRequest struct {
+	Category  string
+	Symbol    string
+	StartTime string
+	EndTime   string
+	Limit     string
+	Cursor    string
+}
+
 type GetFillsRequest struct {
 	Category  string
 	OrderID   string
@@ -254,6 +266,7 @@ type OpenInterestLimit struct {
 type PositionRecord struct {
 	Symbol           string `json:"symbol"`
 	Category         string `json:"category"`
+	MarginCoin       string `json:"marginCoin"`
 	PosSide          string `json:"posSide"`
 	HoldSide         string `json:"holdSide"`
 	HoldMode         string `json:"holdMode"`
@@ -270,6 +283,7 @@ type PositionRecord struct {
 	LiqPrice         string `json:"liqPrice"`
 	Leverage         string `json:"leverage"`
 	MarginMode       string `json:"marginMode"`
+	UnrealisedPnl    string `json:"unrealisedPnl"`
 	UnrealizedPL     string `json:"unrealizedPL"`
 	AchievedProfits  string `json:"achievedProfits"`
 	CurRealisedPnl   string `json:"curRealisedPnl"`

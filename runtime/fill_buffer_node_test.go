@@ -191,6 +191,8 @@ func TestBufferedFillWithoutTradeIDDedupesClientAndVenueIndexes(t *testing.T) {
 
 func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	spotInst := inst
+	spotInst.Kind = enums.KindSpot
 	fexec := runtimetest.NewFakeExec()
 	filled := make(chan model.Fill, 8)
 	node := runtime.NewNode(
@@ -205,7 +207,7 @@ func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 	waitNodeRunning(t, node)
 
 	fexec.EmitFill(model.Fill{
-		InstrumentID: inst,
+		InstrumentID: spotInst,
 		VenueOrderID: "external-venue",
 		TradeID:      "external-trade",
 		Side:         enums.SideBuy,
@@ -224,7 +226,7 @@ func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 
 	fexec.EmitOrder(model.Order{
 		Request: model.OrderRequest{
-			InstrumentID: inst,
+			InstrumentID: spotInst,
 			Side:         enums.SideBuy,
 			Type:         enums.TypeMarket,
 			Quantity:     d("1"),

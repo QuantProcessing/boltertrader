@@ -14,6 +14,11 @@ type openOrdersPage struct {
 	Cursor string        `json:"cursor"`
 }
 
+type orderHistoryPage struct {
+	List   []OrderRecord `json:"list"`
+	Cursor string        `json:"cursor"`
+}
+
 func (c *Client) PlaceOrder(ctx context.Context, req *PlaceOrderRequest) (*PlaceOrderResponse, error) {
 	var out responseEnvelope[PlaceOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/place-order", req, &out)
@@ -172,10 +177,89 @@ func (c *Client) getOpenOrdersPage(ctx context.Context, category, symbol, limit,
 }
 
 func (c *Client) GetOrderHistory(ctx context.Context, category, symbol string) ([]OrderRecord, error) {
-	var out responseEnvelope[OrderList]
+	page, err := c.getOrderHistoryPage(ctx, GetOrderHistoryRequest{Category: category, Symbol: symbol})
+	if err != nil {
+		return nil, err
+	}
+	return page.List, nil
+}
+
+// GetOrderHistoryBounded follows UTA cursor pages until the configured overall
+// record cap is reached. The boolean reports that venue rows remain beyond that
+// cap, allowing callers to retain a precise single-order fallback.
+func (c *Client) GetOrderHistoryBounded(ctx context.Context, req GetOrderHistoryRequest) ([]OrderRecord, bool, error) {
+	overallLimit := 100
+	if req.Limit != "" {
+		parsed, err := strconv.Atoi(req.Limit)
+		if err != nil || parsed <= 0 {
+			return nil, false, fmt.Errorf("bitget sdk: invalid order history limit %q", req.Limit)
+		}
+		overallLimit = parsed
+	}
+	if err := validateOrderHistoryWindow(req.StartTime, req.EndTime); err != nil {
+		return nil, false, err
+	}
+	pageLimit := overallLimit
+	if pageLimit > 100 {
+		pageLimit = 100
+	}
+	cursor := req.Cursor
+	seenCursors := make(map[string]struct{})
+	if cursor != "" {
+		seenCursors[cursor] = struct{}{}
+	}
+	var records []OrderRecord
+	pageCount := 0
+	for {
+		pageCount++
+		if pageCount > privatePaginationMaxPages {
+			return nil, false, fmt.Errorf("bitget sdk: get order history exceeded %d-page safety limit", privatePaginationMaxPages)
+		}
+		pageReq := req
+		pageReq.Limit = strconv.Itoa(pageLimit)
+		pageReq.Cursor = cursor
+		page, err := c.getOrderHistoryPage(ctx, pageReq)
+		if err != nil {
+			return nil, false, err
+		}
+		pageRecords := page.List
+		if len(records)+len(pageRecords) > overallLimit {
+			pageRecords = pageRecords[:overallLimit-len(records)]
+		}
+		records = append(records, pageRecords...)
+		if len(records) >= overallLimit {
+			return records, page.Cursor != "" || len(page.List) > len(pageRecords), nil
+		}
+		if page.Cursor == "" {
+			return records, false, nil
+		}
+		if len(page.List) == 0 {
+			return nil, false, fmt.Errorf("bitget sdk: get order history returned empty page with non-terminal cursor %q", page.Cursor)
+		}
+		if page.Cursor == cursor {
+			return nil, false, fmt.Errorf("bitget sdk: get order history repeated cursor %q", page.Cursor)
+		}
+		if _, duplicate := seenCursors[page.Cursor]; duplicate {
+			return nil, false, fmt.Errorf("bitget sdk: get order history repeated cursor %q", page.Cursor)
+		}
+		seenCursors[page.Cursor] = struct{}{}
+		cursor = page.Cursor
+		pageLimit = overallLimit - len(records)
+		if pageLimit > 100 {
+			pageLimit = 100
+		}
+	}
+}
+
+func (c *Client) getOrderHistoryPage(ctx context.Context, req GetOrderHistoryRequest) (*orderHistoryPage, error) {
+	var out responseEnvelope[orderHistoryPage]
 	err := c.getPrivate(ctx, "/api/v3/trade/history-orders", map[string]string{
-		"category": category,
-		"symbol":   symbol,
+		"category":  req.Category,
+		"symbol":    req.Symbol,
+		"startTime": req.StartTime,
+		"endTime":   req.EndTime,
+		"limit":     req.Limit,
+		"cursor":    req.Cursor,
 	}, &out)
 	if err != nil {
 		return nil, err
@@ -183,7 +267,29 @@ func (c *Client) GetOrderHistory(ctx context.Context, category, symbol string) (
 	if out.Code != "00000" {
 		return nil, fmt.Errorf("bitget sdk: get order history failed: %s %s", out.Code, out.Msg)
 	}
-	return out.Data.List, nil
+	return &out.Data, nil
+}
+
+func validateOrderHistoryWindow(startTime, endTime string) error {
+	if startTime == "" || endTime == "" {
+		return nil
+	}
+	start, err := strconv.ParseInt(startTime, 10, 64)
+	if err != nil {
+		return fmt.Errorf("bitget sdk: invalid order history startTime %q", startTime)
+	}
+	end, err := strconv.ParseInt(endTime, 10, 64)
+	if err != nil {
+		return fmt.Errorf("bitget sdk: invalid order history endTime %q", endTime)
+	}
+	if start > end {
+		return fmt.Errorf("bitget sdk: order history startTime %d is after endTime %d", start, end)
+	}
+	const maxOrderHistoryWindowMillis = int64(30 * 24 * 60 * 60 * 1000)
+	if end-start > maxOrderHistoryWindowMillis {
+		return fmt.Errorf("bitget sdk: order history window exceeds 30 days")
+	}
+	return nil
 }
 
 func (c *Client) GetFills(ctx context.Context, req GetFillsRequest) ([]FillRecord, error) {

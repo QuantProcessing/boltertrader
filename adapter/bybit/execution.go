@@ -2,9 +2,11 @@ package bybit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -16,7 +18,12 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const executionMassStatusFillLimit = 1000
+const (
+	executionMassStatusFillLimit         = 1000
+	derivativeOrderHistoryHydrationLimit = 1000
+)
+
+const derivativeOrderHistoryWindow = 7 * 24 * time.Hour
 
 type executionClient struct {
 	rest       *bybitsdk.Client
@@ -461,6 +468,9 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				Message: fmt.Sprintf("the Bybit execution-history query reached the %d-record limit; recovered fills may be incomplete", executionMassStatusFillLimit),
 			})
 		}
+		if err := c.addHistoricalOrderReportsForDerivativeFills(ctx, mass, query); err != nil {
+			return nil, err
+		}
 	}
 	if query.IncludePositions {
 		positions, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID})
@@ -474,6 +484,170 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		}
 	}
 	return mass, nil
+}
+
+type derivativeFillOrderIdentity struct {
+	venueOrderID string
+	clientID     string
+}
+
+func (c *executionClient) addHistoricalOrderReportsForDerivativeFills(ctx context.Context, mass *model.ExecutionMassStatus, query model.MassStatusQuery) error {
+	groups := make(map[model.InstrumentID]map[derivativeFillOrderIdentity]struct{})
+	for _, reports := range mass.FillReports {
+		for _, report := range reports {
+			fill := report.Fill
+			if fill.InstrumentID.Kind != enums.KindPerp {
+				continue
+			}
+			identity := derivativeFillOrderIdentity{venueOrderID: fill.VenueOrderID, clientID: fill.ClientID}
+			if identity.venueOrderID == "" && identity.clientID == "" {
+				continue
+			}
+			if massHasOrderMatchingDerivativeFill(mass, fill.InstrumentID, identity) {
+				continue
+			}
+			if groups[fill.InstrumentID] == nil {
+				groups[fill.InstrumentID] = make(map[derivativeFillOrderIdentity]struct{})
+			}
+			groups[fill.InstrumentID][identity] = struct{}{}
+		}
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+
+	ids := make([]model.InstrumentID, 0, len(groups))
+	for id := range groups {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+
+	windowEnd := query.Until
+	if windowEnd.IsZero() {
+		windowEnd = mass.GeneratedAt
+	}
+	if windowEnd.IsZero() {
+		windowEnd = c.clk.Now()
+	}
+	windowStart := windowEnd.Add(-derivativeOrderHistoryWindow)
+
+	for _, id := range ids {
+		inst, err := c.instrument(id)
+		if err != nil {
+			return err
+		}
+		category, err := categoryForInstrument(inst)
+		if err != nil {
+			return err
+		}
+		if category != "linear" {
+			continue
+		}
+		target := orderReportTarget{category: category, symbol: inst.VenueSymbol, settle: inst.Settle}
+		identities := groups[id]
+		var semanticErr error
+		saturated, err := c.rest.ScanOrderHistory(ctx, bybitsdk.GetOrderHistoryRequest{
+			Category:    target.category,
+			Symbol:      target.symbol,
+			SettleCoin:  target.settle,
+			StartMillis: windowStart.UnixMilli(),
+			EndMillis:   windowEnd.UnixMilli(),
+		}, derivativeOrderHistoryHydrationLimit, func(records []bybitsdk.OrderRecord) (bool, error) {
+			for _, record := range records {
+				if !bybitOrderRecordMatchesDerivativeFill(record, identities) {
+					continue
+				}
+				resolvedID, ok := c.resolveOrderInstrument(target, id, record.Symbol)
+				if !ok || resolvedID != id {
+					semanticErr = fmt.Errorf("bybit: historical order identity matched fill for unexpected instrument category=%s settle=%s symbol=%s", target.category, target.settle, record.Symbol)
+					return false, semanticErr
+				}
+				order, convertErr := orderFromBybitRecord(record, resolvedID, c.accountID)
+				if convertErr != nil {
+					semanticErr = convertErr
+					return false, semanticErr
+				}
+				if !orderMatchesAnyDerivativeFillIdentity(order, identities) {
+					continue
+				}
+				report := model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: mass.GeneratedAt}
+				if _, exists := mass.OrderReports[report.Key()]; exists {
+					continue
+				}
+				if addErr := mass.AddOrderReport(report); addErr != nil {
+					semanticErr = addErr
+					return false, semanticErr
+				}
+				for identity := range identities {
+					if derivativeFillIdentityMatchesOrder(identity, order) {
+						delete(identities, identity)
+					}
+				}
+			}
+			return len(identities) == 0, nil
+		})
+		if semanticErr != nil {
+			return semanticErr
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{
+				Code:    "DERIVATIVE_ORDER_HISTORY_HYDRATION_UNAVAILABLE",
+				Message: fmt.Sprintf("Bybit derivative order-history hydration was unavailable for %s; exact-order fallback remains required: %v", id, err),
+			})
+			continue
+		}
+		if saturated && len(identities) > 0 {
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{
+				Code:    "DERIVATIVE_ORDER_HISTORY_HYDRATION_LIMIT_REACHED",
+				Message: fmt.Sprintf("Bybit derivative order-history hydration reached the %d-record bound for %s; exact-order fallback remains required", derivativeOrderHistoryHydrationLimit, id),
+			})
+		}
+	}
+	return nil
+}
+
+func massHasOrderMatchingDerivativeFill(mass *model.ExecutionMassStatus, id model.InstrumentID, identity derivativeFillOrderIdentity) bool {
+	for _, report := range mass.OrderReports {
+		if report.Order.Request.InstrumentID == id && derivativeFillIdentityMatchesOrder(identity, report.Order) {
+			return true
+		}
+	}
+	return false
+}
+
+func bybitOrderRecordMatchesDerivativeFill(record bybitsdk.OrderRecord, identities map[derivativeFillOrderIdentity]struct{}) bool {
+	for identity := range identities {
+		if derivativeFillIdentityMatchesAliases(identity, record.OrderID, record.OrderLinkID) {
+			return true
+		}
+	}
+	return false
+}
+
+func orderMatchesAnyDerivativeFillIdentity(order model.Order, identities map[derivativeFillOrderIdentity]struct{}) bool {
+	for identity := range identities {
+		if derivativeFillIdentityMatchesOrder(identity, order) {
+			return true
+		}
+	}
+	return false
+}
+
+func derivativeFillIdentityMatchesOrder(identity derivativeFillOrderIdentity, order model.Order) bool {
+	return derivativeFillIdentityMatchesAliases(identity, order.VenueOrderID, order.Request.ClientID)
+}
+
+func derivativeFillIdentityMatchesAliases(identity derivativeFillOrderIdentity, venueOrderID, clientID string) bool {
+	if identity.venueOrderID != "" && identity.venueOrderID != venueOrderID {
+		return false
+	}
+	if identity.clientID != "" && identity.clientID != clientID {
+		return false
+	}
+	return identity.venueOrderID != "" || identity.clientID != ""
 }
 
 func (c *executionClient) resolveFillInstrument(category string, scoped model.InstrumentID, venueSymbol string) (model.InstrumentID, bool) {
@@ -600,6 +774,7 @@ func (c *executionClient) Capabilities() contract.Capabilities {
 		Venue:    VenueName,
 		Products: products,
 		Reports: contract.ReportCapabilities{
+			SingleOrderStatus:         true,
 			OpenOrders:                true,
 			OrderHistory:              true,
 			FillHistory:               true,

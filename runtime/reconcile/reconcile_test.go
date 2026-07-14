@@ -28,6 +28,7 @@ type snapshotAccount struct {
 	positions         []model.Position
 	positionErr       error
 	accountState      model.AccountState
+	accountStates     []model.AccountState
 	hasAccountState   bool
 	positionReports   bool
 	balanceCalls      int
@@ -48,6 +49,13 @@ func (s *snapshotAccount) Balances(context.Context) ([]model.AccountBalance, err
 }
 func (s *snapshotAccount) AccountState(context.Context) (model.AccountState, error) {
 	s.accountStateCalls++
+	if len(s.accountStates) != 0 {
+		index := s.accountStateCalls - 1
+		if index >= len(s.accountStates) {
+			index = len(s.accountStates) - 1
+		}
+		return s.accountStates[index], nil
+	}
 	return s.accountState, nil
 }
 func (s *snapshotAccount) Positions(context.Context) ([]model.Position, error) {
@@ -75,6 +83,7 @@ type snapshotExec struct {
 	queries     []model.MassStatusQuery
 	fillHistory bool
 	positions   bool
+	massDelay   time.Duration
 }
 
 func (s *snapshotExec) Capabilities() contract.Capabilities {
@@ -121,8 +130,17 @@ func (s *snapshotExec) GenerateFillReports(context.Context, model.FillReportQuer
 func (s *snapshotExec) GeneratePositionReports(context.Context, model.PositionReportQuery) ([]model.PositionReport, error) {
 	return nil, contract.ErrNotSupported
 }
-func (s *snapshotExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+func (s *snapshotExec) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	s.queries = append(s.queries, query)
+	if s.massDelay > 0 {
+		timer := time.NewTimer(s.massDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	if s.massErr != nil {
 		return nil, s.massErr
 	}
@@ -508,6 +526,64 @@ func TestReconcileNormalizesScopedAccountStateEventID(t *testing.T) {
 	}
 }
 
+func TestReconcileRefreshesAccountStateAfterLongOrderRecovery(t *testing.T) {
+	c := cache.New()
+	c.SetAccountStaleAfter(20 * time.Millisecond)
+	firstAt := time.Unix(100, 0)
+	secondAt := firstAt.Add(time.Second)
+	state := func(at time.Time, free string) model.AccountState {
+		return model.AccountState{
+			AccountID: model.AccountIDBitgetDefault,
+			Venue:     "BITGET",
+			Type:      model.AccountMargin,
+			Balances: []model.AccountBalance{{
+				AccountID: model.AccountIDBitgetDefault,
+				Currency:  "USDT",
+				Total:     d("1000"),
+				Free:      d(free),
+				UpdatedAt: at,
+			}},
+			Reported: true,
+			EventID:  model.AccountStateEventID("BITGET", model.AccountIDBitgetDefault, at),
+			TsEvent:  at,
+			TsInit:   at,
+		}
+	}
+	account := &snapshotAccount{
+		hasAccountState: true,
+		accountStates: []model.AccountState{
+			state(firstAt, "900"),
+			state(secondAt, "800"),
+		},
+	}
+	mass := model.NewExecutionMassStatus("BITGET", model.AccountIDBitgetDefault, secondAt)
+	execution := &snapshotExec{mass: mass, massDelay: 35 * time.Millisecond}
+
+	report, err := New(account, execution, c).WithAccountID(model.AccountIDBitgetDefault).Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if account.accountStateCalls != 2 {
+		t.Fatalf("account state calls=%d, want initial snapshot plus post-recovery refresh", account.accountStateCalls)
+	}
+	if report.AccountStatesApplied != 1 || report.BalancesUpdated != 1 {
+		t.Fatalf("report=%+v, post-recovery freshness maintenance must preserve one logical account reconciliation", report)
+	}
+	cached, ok := c.Account(model.AccountIDBitgetDefault)
+	if !ok {
+		t.Fatal("refreshed account missing")
+	}
+	if !cached.IsFresh(time.Now()) {
+		t.Fatalf("refreshed account is stale: %+v", cached.Freshness())
+	}
+	if got := cached.LastEvent().TsEvent; !got.Equal(secondAt) {
+		t.Fatalf("cached account event at=%s, want refreshed event %s", got, secondAt)
+	}
+	if balance, ok := c.BalanceForAccount(model.AccountIDBitgetDefault, "USDT"); !ok || !balance.Free.Equal(d("800")) {
+		t.Fatalf("refreshed balance=(%+v,%v), want free=800", balance, ok)
+	}
+}
+
 func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 	c := cache.New()
 	ts := time.Unix(20, 0)
@@ -579,5 +655,16 @@ func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t
 	}
 	if !hasFindingCode(rep.Findings, "POSITION_MISMATCH") || rep.ActivationVerdict().Safe {
 		t.Fatalf("report=%+v, legacy spot-position mismatch must fail closed", rep)
+	}
+}
+
+func TestDerivativeFillOrderValidationCapacityRetainsEveryInput(t *testing.T) {
+	existing := []model.Order{{}, {}, {}}
+	reports := []*model.OrderStatusReport{{}, nil, {}}
+	if got := derivativeFillOrderValidationTerminalLimit(existing, reports); got != 5 {
+		t.Fatalf("validation terminal limit=%d, want one slot for every existing order and non-nil report", got)
+	}
+	if got := derivativeFillOrderValidationTerminalLimit(nil, nil); got != 1 {
+		t.Fatalf("empty validation terminal limit=%d, want minimum safe capacity 1", got)
 	}
 }

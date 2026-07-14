@@ -34,8 +34,8 @@ func TestBybitClientsImplementContractsAndCapabilities(t *testing.T) {
 	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountStateSnapshots || !caps.Streaming.Account {
 		t.Fatalf("account capabilities missing account-state/private stream support: %+v", caps)
 	}
-	if caps := newExecutionClient(rest, provider, clk).Capabilities(); !caps.Trading.Submit || !caps.Reports.OpenOrders {
-		t.Fatalf("execution capabilities missing submit/open-order support: %+v", caps)
+	if caps := newExecutionClient(rest, provider, clk).Capabilities(); !caps.Trading.Submit || !caps.Reports.OpenOrders || !caps.Reports.SingleOrderStatus {
+		t.Fatalf("execution capabilities missing submit/open-order/single-order support: %+v", caps)
 	}
 	if ref := newMarketDataClient(rest, nil, provider, clk).Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest || !ref.ReferencePolling {
 		t.Fatalf("reference capabilities incomplete: %+v", ref)
@@ -298,14 +298,14 @@ func TestBybitSingleOrderStatusFallsBackToOrderHistory(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if got := r.URL.Query().Get("category"); got != "spot" {
-			t.Fatalf("category=%q, want spot", got)
+		if got := r.URL.Query().Get("category"); got != "linear" {
+			t.Fatalf("category=%q, want linear", got)
 		}
-		if got := r.URL.Query().Get("symbol"); got != "ETHUSDT" {
-			t.Fatalf("symbol=%q, want ETHUSDT", got)
+		if got := r.URL.Query().Get("symbol"); got != "BTCUSDT" {
+			t.Fatalf("symbol=%q, want BTCUSDT", got)
 		}
-		if got := r.URL.Query().Get("orderLinkId"); got != "client-spot" {
-			t.Fatalf("orderLinkId=%q, want client-spot", got)
+		if got := r.URL.Query().Get("orderLinkId"); got != "client-perp" {
+			t.Fatalf("orderLinkId=%q, want client-perp", got)
 		}
 		switch r.URL.Path {
 		case "/v5/order/realtime":
@@ -320,10 +320,11 @@ func TestBybitSingleOrderStatusFallsBackToOrderHistory(t *testing.T) {
 				"retMsg":  "OK",
 				"result": map[string]any{"list": []any{
 					map[string]any{
-						"orderId":      "spot-order",
-						"orderLinkId":  "client-spot",
-						"symbol":       "ETHUSDT",
-						"side":         "Buy",
+						"orderId":      "perp-order",
+						"orderLinkId":  "client-perp",
+						"symbol":       "BTCUSDT",
+						"side":         "Sell",
+						"positionIdx":  2,
 						"orderType":    "Limit",
 						"timeInForce":  "IOC",
 						"qty":          "0.01",
@@ -353,14 +354,14 @@ func TestBybitSingleOrderStatusFallsBackToOrderHistory(t *testing.T) {
 
 	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
 		AccountID:    AccountIDUnified,
-		InstrumentID: model.InstrumentID{Venue: VenueName, Symbol: "ETH-USDT", Kind: enums.KindSpot},
-		ClientID:     "client-spot",
-		VenueOrderID: "spot-order",
+		InstrumentID: model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		ClientID:     "client-perp",
+		VenueOrderID: "perp-order",
 	})
 	if err != nil {
 		t.Fatalf("GenerateOrderStatusReport: %v", err)
 	}
-	if report == nil || report.Order.Status != enums.StatusFilled || !report.Order.FilledQty.Equal(decimal.RequireFromString("0.01")) {
+	if report == nil || report.Order.Status != enums.StatusFilled || !report.Order.FilledQty.Equal(decimal.RequireFromString("0.01")) || report.Order.Request.PositionSide != enums.PosShort {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 	if strings.Join(paths, ",") != "/v5/order/realtime,/v5/order/history" {

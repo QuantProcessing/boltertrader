@@ -59,12 +59,12 @@ func TestDecodeAccountMessage(t *testing.T) {
 	}
 }
 
-func TestDecodePositionMessagePreservesHoldMode(t *testing.T) {
-	msg, err := DecodePositionMessage([]byte(`{"arg":{"instType":"UTA","topic":"position"},"action":"snapshot","data":[{"symbol":"BTCUSDT","posSide":"short","holdMode":"one_way_mode","size":"0.01"}]}`))
+func TestDecodePositionMessagePreservesUTAPositionFields(t *testing.T) {
+	msg, err := DecodePositionMessage([]byte(`{"arg":{"instType":"UTA","topic":"position"},"action":"snapshot","data":[{"symbol":"BTCUSDT","marginCoin":"USDT","posSide":"short","holdMode":"one_way_mode","size":"0.01","unrealisedPnl":"1.25"}]}`))
 	if err != nil {
 		t.Fatalf("DecodePositionMessage: %v", err)
 	}
-	if len(msg.Data) != 1 || msg.Data[0].HoldMode != "one_way_mode" || msg.Data[0].PosSide != "short" {
+	if len(msg.Data) != 1 || msg.Data[0].MarginCoin != "USDT" || msg.Data[0].HoldMode != "one_way_mode" || msg.Data[0].PosSide != "short" || msg.Data[0].UnrealisedPnl != "1.25" {
 		t.Fatalf("unexpected position data: %+v", msg.Data)
 	}
 }

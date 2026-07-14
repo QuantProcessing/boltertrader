@@ -123,10 +123,10 @@ func TestVerticalSlice(t *testing.T) {
 	// 4. Account push updates the cache balance/position.
 	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("10019.8"), Available: d("10019.8")})
 	facct.EmitPosition(model.Position{InstrumentID: inst, Side: enums.PosNet, Quantity: d("0")})
-
-	// Drain by advancing through a sync point: emit a sentinel fill and wait.
-	fexec.EmitFill(model.Fill{InstrumentID: inst, ClientID: order.Request.ClientID, Side: enums.SideBuy, Price: d("0"), Quantity: d("0")})
-	waitFill(t, filled)
+	waitUntil(t, func() bool {
+		balance, ok := node.Cache.Balance("USDT")
+		return ok && balance.Total.Equal(d("10019.8"))
+	}, "timed out waiting for account updates")
 
 	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Total.Equal(d("10019.8")) {
 		t.Fatalf("cache balance not updated: ok=%v", ok)

@@ -347,7 +347,7 @@ func TestLivePartialFillDoesNotConfirmPendingCancel(t *testing.T) {
 }
 
 func TestCacheCommitFailureDoesNotConsumeFillBufferIdentity(t *testing.T) {
-	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindSpot}
 	node := NewNode(Clients{}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	node.Cache = cache.NewWithTerminalOrderLimit(1)
 
@@ -410,7 +410,7 @@ func TestConflictingFillDoesNotConsumeInFlightRecoveryState(t *testing.T) {
 }
 
 func TestDirectClientFillCanMaterializeOnlyAfterValidatedInFlightMatch(t *testing.T) {
-	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindSpot}
 	fake := runtimetest.NewFakeExec()
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	inflight := exec.NewInFlightJournal()

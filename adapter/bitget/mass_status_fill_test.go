@@ -2,8 +2,10 @@ package bitget
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	bitgetsdk "github.com/QuantProcessing/boltertrader/sdk/bitget"
 )
@@ -30,6 +33,7 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 	until := since.Add(2 * time.Second)
 	const clientID = "keep-client"
 	var fillCalls atomic.Int32
+	var historyCalls atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -64,6 +68,9 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 					bitgetFillFixture("other-client", "other-order", "other-client", since.Add(time.Second)),
 				}},
 			})
+		case "/api/v3/trade/history-orders":
+			historyCalls.Add(1)
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{}, "cursor": ""}})
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			http.Error(w, "unexpected path", http.StatusNotFound)
@@ -104,6 +111,9 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 	if got := fillCalls.Load(); got != 1 {
 		t.Fatalf("fill history calls=%d, want 1", got)
 	}
+	if got := historyCalls.Load(); got != 0 {
+		t.Fatalf("Spot fills triggered derivative order history; calls=%d", got)
+	}
 
 	withoutFills, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
 		AccountID: AccountIDUnified,
@@ -118,6 +128,190 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 	}
 	if got := fillCalls.Load(); got != 1 {
 		t.Fatalf("IncludeFills=false made a fill-history request; calls=%d", got)
+	}
+}
+
+func TestBitgetExecutionMassStatusBatchHydratesDerivativeFillOrders(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	perp := instrumentFromBitget(bitgetsdk.Instrument{
+		Category:  bitgetsdk.ProductTypeUSDTFutures,
+		Symbol:    "BTCUSDT",
+		BaseCoin:  "BTC",
+		QuoteCoin: "USDT",
+		Status:    "online",
+	})
+	provider := newInstrumentProvider()
+	provider.LoadSnapshot([]*model.Instrument{perp})
+
+	var historyCalls atomic.Int32
+	var historyWindows [][2]int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/trade/unfilled-orders":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
+				bitgetOrderFixture("order-existing", "client-existing", "long", "new"),
+			}, "cursor": ""}})
+		case "/api/v3/trade/fills":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
+				bitgetDerivativeFillFixture("fill-1", "order-1", "client-1", now.Add(-time.Hour)),
+				bitgetDerivativeFillFixture("fill-2", "order-2", "client-2", now.Add(-2*time.Hour)),
+				bitgetDerivativeFillFixture("fill-3", "order-3", "client-3", now.Add(-3*time.Hour)),
+				bitgetDerivativeFillFixture("fill-existing", "order-existing", "client-existing", now.Add(-4*time.Hour)),
+			}, "cursor": ""}})
+		case "/api/v3/trade/history-orders":
+			historyCalls.Add(1)
+			start, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
+			end, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
+			historyWindows = append(historyWindows, [2]int64{start, end})
+			if got := r.URL.Query().Get("category"); got != bitgetsdk.ProductTypeUSDTFutures {
+				t.Errorf("history category=%q, want %s", got, bitgetsdk.ProductTypeUSDTFutures)
+			}
+			if got := r.URL.Query().Get("symbol"); got != "BTCUSDT" {
+				t.Errorf("history symbol=%q, want BTCUSDT", got)
+			}
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
+				bitgetOrderFixture("order-1", "client-1", "long", "filled"),
+				bitgetOrderFixture("order-2", "client-2", "short", "filled"),
+				bitgetOrderFixture("order-3", "wrong-client", "long", "filled"),
+				bitgetOrderFixture("order-existing", "client-existing", "short", "filled"),
+				bitgetOrderFixture("unrelated", "unrelated-client", "long", "filled"),
+			}, "cursor": ""}})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	exec := newExecutionClient(
+		bitgetsdk.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL).WithHTTPClient(server.Client()),
+		provider,
+		clock.NewSimulatedClock(now),
+	)
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDUnified, IncludeFills: true})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	if got := historyCalls.Load(); got != 3 {
+		t.Fatalf("history calls=%d, want three 30-day windows for four same-instrument fills", got)
+	}
+	if len(historyWindows) != 3 {
+		t.Fatalf("history windows=%v, want three", historyWindows)
+	}
+	sort.Slice(historyWindows, func(i, j int) bool { return historyWindows[i][0] < historyWindows[j][0] })
+	if historyWindows[0][0] != now.Add(-90*24*time.Hour).UnixMilli() || historyWindows[2][1] != now.UnixMilli() {
+		t.Fatalf("history windows=%v, want full retained 90-day range ending now", historyWindows)
+	}
+	for _, window := range historyWindows {
+		if got := time.Duration(window[1]-window[0]) * time.Millisecond; got > 30*24*time.Hour {
+			t.Fatalf("history window=%v spans %s, want at most 30 days", window, got)
+		}
+	}
+
+	longReport, ok := mass.OrderReports["order-1"]
+	if !ok || longReport.Order.Request.PositionSide != enums.PosLong {
+		t.Fatalf("long historical order=%+v ok=%v, want hedge LONG", longReport, ok)
+	}
+	shortReport, ok := mass.OrderReports["order-2"]
+	if !ok || shortReport.Order.Request.PositionSide != enums.PosShort {
+		t.Fatalf("short historical order=%+v ok=%v, want hedge SHORT", shortReport, ok)
+	}
+	if _, ok := mass.OrderReports["order-3"]; ok {
+		t.Fatalf("dual-identity mismatch was accepted: %+v", mass.OrderReports["order-3"])
+	}
+	if _, ok := mass.OrderReports["unrelated"]; ok {
+		t.Fatalf("unrelated history order was added: %+v", mass.OrderReports["unrelated"])
+	}
+	existing := mass.OrderReports["order-existing"].Order
+	if existing.Status != enums.StatusNew || existing.Request.PositionSide != enums.PosLong {
+		t.Fatalf("existing mass order was overwritten by history: %+v", existing)
+	}
+}
+
+func TestBitgetExecutionMassStatusFallsBackWhenDerivativeOrderHistoryIsUnavailable(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	provider := newInstrumentProvider()
+	provider.LoadSnapshot([]*model.Instrument{instrumentFromBitget(bitgetsdk.Instrument{
+		Category:  bitgetsdk.ProductTypeUSDTFutures,
+		Symbol:    "BTCUSDT",
+		BaseCoin:  "BTC",
+		QuoteCoin: "USDT",
+		Status:    "online",
+	})})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/trade/unfilled-orders":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{}, "cursor": ""}})
+		case "/api/v3/trade/fills":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
+				bitgetDerivativeFillFixture("fill-1", "order-1", "client-1", now.Add(-time.Hour)),
+			}, "cursor": ""}})
+		case "/api/v3/trade/history-orders":
+			writeJSON(t, w, map[string]any{"code": "40000", "msg": "history temporarily unavailable", "data": map[string]any{"list": []any{}, "cursor": ""}})
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	exec := newExecutionClient(
+		bitgetsdk.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL).WithHTTPClient(server.Client()),
+		provider,
+		clock.NewSimulatedClock(now),
+	)
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDUnified, IncludeFills: true})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus must retain exact fallback after batch history failure: %v", err)
+	}
+	if len(mass.FillReports["order-1"]) != 1 || len(mass.OrderReports) != 0 {
+		t.Fatalf("fallback mass=%+v, want fill retained and unresolved order absent", mass)
+	}
+	if !bitgetHasWarning(mass.Warnings, "ORDER_HISTORY_PREFETCH_FAILED") {
+		t.Fatalf("warnings=%+v, want explicit batch-prefetch failure", mass.Warnings)
+	}
+}
+
+func TestBitgetExecutionMassStatusPropagatesDerivativeOrderHistoryCancellation(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+	provider := newInstrumentProvider()
+	provider.LoadSnapshot([]*model.Instrument{instrumentFromBitget(bitgetsdk.Instrument{
+		Category:  bitgetsdk.ProductTypeUSDTFutures,
+		Symbol:    "BTCUSDT",
+		BaseCoin:  "BTC",
+		QuoteCoin: "USDT",
+		Status:    "online",
+	})})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/trade/unfilled-orders":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{}, "cursor": ""}})
+		case "/api/v3/trade/fills":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{
+				bitgetDerivativeFillFixture("fill-1", "order-1", "client-1", now.Add(-time.Hour)),
+			}, "cursor": ""}})
+		case "/api/v3/trade/history-orders":
+			<-r.Context().Done()
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	exec := newExecutionClient(
+		bitgetsdk.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL).WithHTTPClient(server.Client()),
+		provider,
+		clock.NewSimulatedClock(now),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := exec.GenerateExecutionMassStatus(ctx, model.MassStatusQuery{AccountID: AccountIDUnified, IncludeFills: true})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GenerateExecutionMassStatus error=%v, want context deadline exceeded", err)
 	}
 }
 
@@ -273,6 +467,41 @@ func bitgetFillFixtureForSymbol(execID, orderID, clientID, symbol string, timest
 		"execPrice": "1000",
 		"execQty":   "0.01",
 		"execTime":  strconv.FormatInt(timestamp.UnixMilli(), 10),
+	}
+}
+
+func bitgetDerivativeFillFixture(execID, orderID, clientID string, timestamp time.Time) map[string]any {
+	return map[string]any{
+		"category":  bitgetsdk.ProductTypeUSDTFutures,
+		"execId":    execID,
+		"orderId":   orderID,
+		"clientOid": clientID,
+		"symbol":    "BTCUSDT",
+		"side":      "buy",
+		"execPrice": "50000",
+		"execQty":   "0.01",
+		"execTime":  strconv.FormatInt(timestamp.UnixMilli(), 10),
+	}
+}
+
+func bitgetOrderFixture(orderID, clientID, posSide, status string) map[string]any {
+	return map[string]any{
+		"orderId":     orderID,
+		"clientOid":   clientID,
+		"category":    bitgetsdk.ProductTypeUSDTFutures,
+		"symbol":      "BTCUSDT",
+		"side":        "buy",
+		"orderType":   "limit",
+		"timeInForce": "gtc",
+		"price":       "50000",
+		"qty":         "0.01",
+		"filledQty":   "0.01",
+		"avgPrice":    "50000",
+		"orderStatus": status,
+		"holdMode":    "hedge_mode",
+		"posSide":     posSide,
+		"cTime":       "1799990000000",
+		"uTime":       "1800000000000",
 	}
 }
 

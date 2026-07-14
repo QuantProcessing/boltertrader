@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -156,6 +157,11 @@ const defaultFillOverlapLimit = 100_000
 // bounded overlap safe.
 const defaultCursorOverlap = time.Minute
 
+// derivativeFillOrderPrefetchLimit bounds read-only exact-order fan-out within
+// one reconciliation pass. It is a fallback for orders absent from the mass
+// report, not a replacement for adapter-side batch history recovery.
+const derivativeFillOrderPrefetchLimit = 4
+
 // FillApplyResult lets the node-owned fill path distinguish a new application
 // from a previously applied live/recovered fill and from an unmatched fill.
 type FillApplyResult uint8
@@ -204,6 +210,18 @@ type fillPresenceKey struct {
 }
 
 type fillPresenceIndex map[fillPresenceKey]struct{}
+
+type derivativeFillOrderPrefetchKey struct {
+	accountID  string
+	instrument model.InstrumentID
+	namespace  string
+	id         string
+}
+
+type derivativeFillOrderPrefetchRequest struct {
+	key   derivativeFillOrderPrefetchKey
+	fills []model.Fill
+}
 
 // New builds a Reconciler. account drives balance and fallback position-report
 // reconciliation; orders drives mass-status reconciliation. Either may be nil.
@@ -477,7 +495,35 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 			return rep, err
 		}
 	}
+	if r.account != nil && r.orders != nil {
+		if err := r.refreshStaleAccountState(ctx); err != nil {
+			cmd.Err = err.Error()
+			return rep, err
+		}
+	}
 	return rep, nil
+}
+
+func (r *Reconciler) refreshStaleAccountState(ctx context.Context) error {
+	if !r.account.Capabilities().Reports.AccountStateSnapshots {
+		return nil
+	}
+	accountID := r.accountID
+	if accountID == "" {
+		if provider, ok := r.account.(contract.AccountIDProvider); ok {
+			accountID = provider.AccountID()
+		}
+	}
+	account, ok := r.cache.Account(accountID)
+	if !ok || account.IsFresh(time.Now()) {
+		return nil
+	}
+	state, appliedAt, err := r.applyAccountStateSnapshot(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("reconcile: refresh stale account state after order recovery: %w", err)
+	}
+	r.cache.MarkAccountReconciled(state.AccountID, appliedAt)
+	return nil
 }
 
 func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
@@ -487,26 +533,12 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 	var accountStateAppliedAt time.Time
 	var accountSnapshotAt time.Time
 	if caps.Reports.AccountStateSnapshots {
-		reporter, ok := r.account.(contract.AccountStateReporter)
-		if !ok {
-			return contract.ErrNotSupported
-		}
-		state, err := reporter.AccountState(ctx)
+		state, appliedAt, err := r.applyAccountStateSnapshot(ctx, scopeAccountID)
 		if err != nil {
 			return err
 		}
-		if state.AccountID == "" {
-			state.AccountID = scopeAccountID
-		}
 		if scopeAccountID == "" {
 			scopeAccountID = state.AccountID
-		}
-		if state.EventID == "" {
-			state.EventID = model.AccountStateEventID(state.Venue, state.AccountID, state.TsEvent)
-		}
-		appliedAt := time.Now()
-		if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {
-			return err
 		}
 		accountStateID = state.AccountID
 		accountStateAppliedAt = appliedAt
@@ -562,6 +594,28 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		r.cache.MarkAccountReconciled(accountStateID, accountStateAppliedAt)
 	}
 	return nil
+}
+
+func (r *Reconciler) applyAccountStateSnapshot(ctx context.Context, scopeAccountID string) (model.AccountState, time.Time, error) {
+	reporter, ok := r.account.(contract.AccountStateReporter)
+	if !ok {
+		return model.AccountState{}, time.Time{}, contract.ErrNotSupported
+	}
+	state, err := reporter.AccountState(ctx)
+	if err != nil {
+		return model.AccountState{}, time.Time{}, err
+	}
+	if state.AccountID == "" {
+		state.AccountID = scopeAccountID
+	}
+	if state.EventID == "" {
+		state.EventID = model.AccountStateEventID(state.Venue, state.AccountID, state.TsEvent)
+	}
+	appliedAt := time.Now()
+	if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {
+		return model.AccountState{}, time.Time{}, err
+	}
+	return state, appliedAt, nil
 }
 
 // reconcileOrders rebuilds open-order state from the venue's authoritative mass
@@ -1556,8 +1610,13 @@ func (r *Reconciler) applyFillReports(
 	recognizedFills recognizedFillSet,
 ) ([]string, error) {
 	var appliedEventRecordIDs []string
+	reports := sortedFillReports(mass.FillReports)
+	prefetchedOrders, err := r.prefetchDerivativeFillOrders(ctx, mass, reports)
+	if err != nil {
+		return nil, err
+	}
 	r.observedFills = make(map[string]string)
-	for _, report := range sortedFillReports(mass.FillReports) {
+	for _, report := range reports {
 		accountID := report.AccountID
 		if accountID == "" {
 			accountID = mass.AccountID
@@ -1573,6 +1632,19 @@ func (r *Reconciler) applyFillReports(
 		}
 		if fill.AccountID == "" {
 			fill.AccountID = accountID
+		}
+		if !hasRecoverableFillEconomics(fill) {
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamFills,
+				FindingBlocking,
+				"FILL_INVALID_ECONOMICS",
+				"fill report has an invalid side, price, or quantity",
+				true,
+			)); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			continue
 		}
 		order, orderFound, identityErr := r.orderForFill(fill)
 		if identityErr != nil {
@@ -1669,6 +1741,18 @@ func (r *Reconciler) applyFillReports(
 		}
 		materializedOrder := false
 		if !orderFound {
+			hydrated, hydratedOK, hydrateErr := r.hydrateAuthoritativeOrderForFill(ctx, fill, prefetchedOrders)
+			if hydrateErr != nil {
+				return appliedEventRecordIDs, hydrateErr
+			}
+			if hydratedOK {
+				order = hydrated
+				orderFound = true
+				fill = normalizeFillIdentity(fill, order)
+				rep.OrdersExternal++
+			}
+		}
+		if !orderFound {
 			if materialized, materializedOK := materializeOrderFromFill(fill, pass.StableEventAt); materializedOK {
 				order = materialized
 				orderFound = true
@@ -1679,6 +1763,19 @@ func (r *Reconciler) applyFillReports(
 			finding := r.finding(pass, StreamFills, FindingBlocking, "FILL_WITHOUT_ORDER", "fill report could not be matched or materialized", true)
 			rep.Findings = append(rep.Findings, finding)
 			if err := r.state.RecordFinding(ctx, finding); err != nil {
+				return appliedEventRecordIDs, err
+			}
+			continue
+		}
+		if !hasExecutableFillEconomics(fill) {
+			if err := r.recordFinding(ctx, rep, r.finding(
+				pass,
+				StreamFills,
+				FindingBlocking,
+				"FILL_INVALID_ECONOMICS",
+				"fill report side could not be resolved to BUY or SELL",
+				true,
+			)); err != nil {
 				return appliedEventRecordIDs, err
 			}
 			continue
@@ -2104,6 +2201,284 @@ func (r *Reconciler) orderForFill(fill model.Fill) (model.Order, bool, error) {
 	return r.cache.ResolveOrderForFill(r.accountID, fill)
 }
 
+func (r *Reconciler) prefetchDerivativeFillOrders(
+	ctx context.Context,
+	mass *model.ExecutionMassStatus,
+	reports []model.FillReport,
+) (map[derivativeFillOrderPrefetchKey]*model.OrderStatusReport, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if !r.orders.Capabilities().Reports.SingleOrderStatus {
+		return nil, nil
+	}
+	requestIndex := make(map[derivativeFillOrderPrefetchKey]int)
+	requests := make([]derivativeFillOrderPrefetchRequest, 0)
+	for _, report := range reports {
+		fill := report.Fill
+		if fill.AccountID == "" {
+			fill.AccountID = report.AccountID
+		}
+		if fill.AccountID == "" {
+			fill.AccountID = mass.AccountID
+		}
+		if !r.derivativeFillNeedsOrderPrefetch(fill) {
+			continue
+		}
+		key, ok := derivativeFillOrderKey(fill)
+		if !ok {
+			continue
+		}
+		if index, exists := requestIndex[key]; exists {
+			requests[index].fills = append(requests[index].fills, fill)
+			continue
+		}
+		requestIndex[key] = len(requests)
+		requests = append(requests, derivativeFillOrderPrefetchRequest{key: key, fills: []model.Fill{fill}})
+	}
+	if len(requests) == 0 {
+		return nil, nil
+	}
+
+	results := make([]*model.OrderStatusReport, len(requests))
+	jobs := make(chan int, len(requests))
+	for index := range requests {
+		jobs <- index
+	}
+	close(jobs)
+	workerCount := derivativeFillOrderPrefetchLimit
+	if len(requests) < workerCount {
+		workerCount = len(requests)
+	}
+	var workers sync.WaitGroup
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+	var firstErr error
+	var firstErrOnce sync.Once
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				var index int
+				var ok bool
+				select {
+				case <-workerCtx.Done():
+					return
+				case index, ok = <-jobs:
+					if !ok {
+						return
+					}
+				}
+				if workerCtx.Err() != nil {
+					return
+				}
+				request := requests[index]
+				report, err := r.queryAuthoritativeOrderForFill(workerCtx, request.fills[0])
+				if err == nil && report != nil {
+					for _, fill := range request.fills[1:] {
+						if _, validateErr := validateAuthoritativeOrderForFill(fill, *report); validateErr != nil {
+							err = validateErr
+							break
+						}
+					}
+				}
+				if err != nil {
+					firstErrOnce.Do(func() {
+						firstErr = err
+						cancelWorkers()
+					})
+					return
+				}
+				results[index] = report
+			}
+		}()
+	}
+	workers.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validatePrefetchedDerivativeOrderBatch(r.cache.Orders(), results); err != nil {
+		return nil, err
+	}
+	prefetched := make(map[derivativeFillOrderPrefetchKey]*model.OrderStatusReport, len(requests))
+	for index, request := range requests {
+		prefetched[request.key] = results[index]
+	}
+	return prefetched, nil
+}
+
+func validatePrefetchedDerivativeOrderBatch(existing []model.Order, reports []*model.OrderStatusReport) error {
+	staged := cache.NewWithTerminalOrderLimit(derivativeFillOrderValidationTerminalLimit(existing, reports))
+	for _, order := range existing {
+		if err := staged.UpsertOrderChecked(order); err != nil {
+			return fmt.Errorf("reconcile: cached order identity graph is invalid before derivative fill hydration: %w", err)
+		}
+	}
+	for _, report := range reports {
+		if report == nil {
+			continue
+		}
+		if err := staged.UpsertOrderChecked(report.Order); err != nil {
+			return fmt.Errorf("reconcile: derivative fill order batch identity conflict: %w", err)
+		}
+	}
+	return nil
+}
+
+func derivativeFillOrderValidationTerminalLimit(existing []model.Order, reports []*model.OrderStatusReport) int {
+	limit := len(existing)
+	for _, report := range reports {
+		if report != nil {
+			limit++
+		}
+	}
+	if limit == 0 {
+		return 1
+	}
+	return limit
+}
+
+func (r *Reconciler) derivativeFillNeedsOrderPrefetch(fill model.Fill) bool {
+	if fill.InstrumentID.Kind == enums.KindSpot || fill.TradeID == "" || !hasRecoverableFillEconomics(fill) {
+		return false
+	}
+	if _, found, err := r.orderForFill(fill); err != nil || found {
+		return false
+	}
+	fillKey := orderstate.FillKey(fill)
+	if fillKey == "" || r.fillIdentityConflicts(fillKey, fill) {
+		return false
+	}
+	if _, duplicate := r.pending[fillKey]; duplicate {
+		return false
+	}
+	if _, duplicate := r.passFills[fillKey]; duplicate {
+		return false
+	}
+	_, duplicate := r.fills[fillKey]
+	return !duplicate
+}
+
+func derivativeFillOrderKey(fill model.Fill) (derivativeFillOrderPrefetchKey, bool) {
+	key := derivativeFillOrderPrefetchKey{accountID: fill.AccountID, instrument: fill.InstrumentID}
+	if fill.VenueOrderID != "" {
+		key.namespace = "venue"
+		key.id = fill.VenueOrderID
+		return key, true
+	}
+	if fill.ClientID != "" {
+		key.namespace = "client"
+		key.id = fill.ClientID
+		return key, true
+	}
+	return derivativeFillOrderPrefetchKey{}, false
+}
+
+func (r *Reconciler) hydrateAuthoritativeOrderForFill(
+	ctx context.Context,
+	fill model.Fill,
+	prefetched map[derivativeFillOrderPrefetchKey]*model.OrderStatusReport,
+) (model.Order, bool, error) {
+	if fill.InstrumentID.Kind == enums.KindSpot || !r.orders.Capabilities().Reports.SingleOrderStatus {
+		return model.Order{}, false, nil
+	}
+	if key, ok := derivativeFillOrderKey(fill); ok {
+		if report, found := prefetched[key]; found {
+			if report == nil {
+				return model.Order{}, false, nil
+			}
+			return r.cacheAuthoritativeOrderForFill(fill, *report)
+		}
+	}
+	report, err := r.queryAuthoritativeOrderForFill(ctx, fill)
+	if err != nil {
+		return model.Order{}, false, err
+	}
+	if report == nil {
+		return model.Order{}, false, nil
+	}
+	return r.cacheAuthoritativeOrderForFill(fill, *report)
+}
+
+func (r *Reconciler) queryAuthoritativeOrderForFill(ctx context.Context, fill model.Fill) (*model.OrderStatusReport, error) {
+	if fill.InstrumentID.Kind == enums.KindSpot || !r.orders.Capabilities().Reports.SingleOrderStatus {
+		return nil, nil
+	}
+	report, err := r.orders.GenerateOrderStatusReport(ctx, model.SingleOrderStatusQuery{
+		InstrumentID: fill.InstrumentID,
+		AccountID:    fill.AccountID,
+		ClientID:     fill.ClientID,
+		VenueOrderID: fill.VenueOrderID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reconcile: hydrate order for derivative fill: %w", err)
+	}
+	if report == nil {
+		return nil, nil
+	}
+	order, err := validateAuthoritativeOrderForFill(fill, *report)
+	if err != nil {
+		return nil, err
+	}
+	copy := *report
+	copy.Order = order
+	return &copy, nil
+}
+
+func validateAuthoritativeOrderForFill(fill model.Fill, report model.OrderStatusReport) (model.Order, error) {
+	if report.AccountID != "" && fill.AccountID != "" && report.AccountID != fill.AccountID {
+		return model.Order{}, fmt.Errorf("reconcile: derivative fill order report account %q does not match fill account %q", report.AccountID, fill.AccountID)
+	}
+	order := report.Order
+	if order.Request.AccountID == "" {
+		order.Request.AccountID = fill.AccountID
+	}
+	report.Order = order
+	if err := report.Validate(); err != nil {
+		return model.Order{}, fmt.Errorf("reconcile: invalid derivative fill order report: %w", err)
+	}
+	if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{
+		InstrumentID: fill.InstrumentID,
+		AccountID:    fill.AccountID,
+		ClientID:     fill.ClientID,
+		VenueOrderID: fill.VenueOrderID,
+	}) {
+		return model.Order{}, fmt.Errorf("reconcile: derivative fill order report does not match fill identity")
+	}
+	if order.Request.Side != enums.SideBuy && order.Request.Side != enums.SideSell {
+		return model.Order{}, fmt.Errorf("reconcile: derivative fill order report has invalid side %d", order.Request.Side)
+	}
+	if fill.Side != enums.SideUnknown && fill.Side != order.Request.Side {
+		return model.Order{}, fmt.Errorf("reconcile: derivative fill side %d does not match order side %d", fill.Side, order.Request.Side)
+	}
+	if order.Request.PositionSide != enums.PosNet && order.Request.PositionSide != enums.PosLong && order.Request.PositionSide != enums.PosShort {
+		return model.Order{}, fmt.Errorf("reconcile: derivative fill order report has invalid position side %d", order.Request.PositionSide)
+	}
+	return order, nil
+}
+
+func (r *Reconciler) cacheAuthoritativeOrderForFill(fill model.Fill, report model.OrderStatusReport) (model.Order, bool, error) {
+	order, err := validateAuthoritativeOrderForFill(fill, report)
+	if err != nil {
+		return model.Order{}, false, err
+	}
+	if err := r.cache.UpsertOrderChecked(order); err != nil {
+		return model.Order{}, false, fmt.Errorf("reconcile: derivative fill order identity conflict: %w", err)
+	}
+	canonical, ok, err := r.orderForFill(fill)
+	if err != nil {
+		return model.Order{}, false, fmt.Errorf("reconcile: derivative fill order identity conflict after hydration: %w", err)
+	}
+	if !ok {
+		return model.Order{}, false, fmt.Errorf("reconcile: hydrated derivative fill order is not addressable by fill identity")
+	}
+	return canonical, true, nil
+}
+
 func (r *Reconciler) applyFillToOrder(order model.Order, fill model.Fill) {
 	r.cache.UpsertOrder(orderstate.ApplyFill(order, fill, time.Now()))
 }
@@ -2113,7 +2488,8 @@ func orderInAccountScope(o model.Order, accountID string) bool {
 }
 
 func materializeOrderFromFill(fill model.Fill, stableEventAt time.Time) (model.Order, bool) {
-	if fill.InstrumentID.Symbol == "" || fill.VenueOrderID == "" || fill.Quantity.IsZero() {
+	if fill.InstrumentID.Kind != enums.KindSpot || fill.InstrumentID.Symbol == "" || fill.VenueOrderID == "" ||
+		!hasExecutableFillEconomics(fill) {
 		return model.Order{}, false
 	}
 	clientID := fill.ClientID
@@ -2147,6 +2523,16 @@ func materializeOrderFromFill(fill model.Fill, stableEventAt time.Time) (model.O
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}, true
+}
+
+func hasRecoverableFillEconomics(fill model.Fill) bool {
+	return fill.Quantity.IsPositive() && fill.Price.IsPositive() &&
+		(fill.Side == enums.SideUnknown || fill.Side == enums.SideBuy || fill.Side == enums.SideSell)
+}
+
+func hasExecutableFillEconomics(fill model.Fill) bool {
+	return fill.Quantity.IsPositive() && fill.Price.IsPositive() &&
+		(fill.Side == enums.SideBuy || fill.Side == enums.SideSell)
 }
 
 func (r *Reconciler) finding(pass PassHeader, stream ReportStream, severity FindingSeverity, code, message string, blocking bool) Finding {

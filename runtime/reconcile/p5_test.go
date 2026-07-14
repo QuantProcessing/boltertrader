@@ -621,7 +621,7 @@ func TestVenueOnlyFillAfterReplayMaterializesOriginalClientOrder(t *testing.T) {
 	firstCache := cache.New()
 	first := exec.New(fake, firstCache, clk, "reconcile").WithJournal(j)
 	req := model.OrderRequest{
-		InstrumentID: btc,
+		InstrumentID: spotBTC,
 		ClientID:     "replayed-venue-fill",
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,
@@ -645,7 +645,7 @@ func TestVenueOnlyFillAfterReplayMaterializesOriginalClientOrder(t *testing.T) {
 	generatedAt := time.Date(2026, 1, 1, 0, 1, 0, 0, time.UTC)
 	mass := model.NewExecutionMassStatus("T", "reconcile", generatedAt)
 	fill := model.Fill{
-		InstrumentID: btc,
+		InstrumentID: spotBTC,
 		VenueOrderID: "venue-replayed-fill",
 		TradeID:      "replayed-fill-trade",
 		Side:         enums.SideBuy,
@@ -746,7 +746,7 @@ func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mass := model.NewExecutionMassStatus("T", "", generatedAt)
 	fill := model.Fill{
-		InstrumentID: btc,
+		InstrumentID: spotBTC,
 		VenueOrderID: "external-venue",
 		TradeID:      "external-trade",
 		Side:         enums.SideBuy,
@@ -774,12 +774,53 @@ func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	}
 }
 
+func TestMaterializeOrderFromFillRequiresExecutableEconomics(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		instrument model.InstrumentID
+		side       enums.OrderSide
+		price      decimal.Decimal
+		quantity   decimal.Decimal
+		want       bool
+	}{
+		{name: "unknown_side", instrument: spotBTC, side: enums.SideUnknown, price: d("100"), quantity: d("1")},
+		{name: "invalid_side", instrument: spotBTC, side: enums.OrderSide(255), price: d("100"), quantity: d("1")},
+		{name: "zero_price", instrument: spotBTC, side: enums.SideBuy, price: decimal.Zero, quantity: d("1")},
+		{name: "negative_price", instrument: spotBTC, side: enums.SideBuy, price: d("-1"), quantity: d("1")},
+		{name: "zero_quantity", instrument: spotBTC, side: enums.SideBuy, price: d("100"), quantity: decimal.Zero},
+		{name: "negative_quantity", instrument: spotBTC, side: enums.SideBuy, price: d("100"), quantity: d("-1")},
+		{name: "derivative_requires_authoritative_order", instrument: btc, side: enums.SideBuy, price: d("100"), quantity: d("1")},
+		{name: "spot_buy", instrument: spotBTC, side: enums.SideBuy, price: d("100"), quantity: d("1"), want: true},
+		{name: "spot_sell", instrument: spotBTC, side: enums.SideSell, price: d("100"), quantity: d("1"), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fill := model.Fill{
+				AccountID: "acct", InstrumentID: tt.instrument, ClientID: "materialized-client",
+				VenueOrderID: "materialized-venue", TradeID: "materialized-trade", Side: tt.side,
+				Price: tt.price, Quantity: tt.quantity, Timestamp: at,
+			}
+			order, ok := materializeOrderFromFill(fill, at)
+			if ok != tt.want {
+				t.Fatalf("materialized=%v order=%+v, want materialized=%v", ok, order, tt.want)
+			}
+			if !ok {
+				return
+			}
+			if order.Request.Side != fill.Side || !order.Request.Price.Equal(fill.Price) {
+				t.Fatalf("materialized order=%+v, want side=%s price=%s", order, fill.Side, fill.Price)
+			}
+		})
+	}
+}
+
 func TestFillReportMaterializesExternalOrderWithAccountScope(t *testing.T) {
 	c := cache.New()
 	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	mass := model.NewExecutionMassStatus("T", "acct-a", generatedAt)
 	fill := model.Fill{
-		InstrumentID: btc,
+		InstrumentID: spotBTC,
 		VenueOrderID: "external-venue",
 		TradeID:      "external-trade",
 		Side:         enums.SideBuy,
