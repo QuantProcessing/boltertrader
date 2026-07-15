@@ -309,3 +309,79 @@ func TestOrderFromLighterPrefersMappedClientOrderID(t *testing.T) {
 		t.Fatalf("client id=%q, want mapped runtime id", order.Request.ClientID)
 	}
 }
+
+func TestOrderFromLighterPreservesTimeInForce(t *testing.T) {
+	inst := &model.Instrument{
+		ID:         model.InstrumentID{Venue: venueName, Symbol: "ETH-USDC", Kind: enums.KindSpot},
+		AssetIndex: intPtr(2048),
+		PriceTick:  decimal.RequireFromString("0.01"),
+		SizeStep:   decimal.RequireFromString("0.0001"),
+	}
+	exec := newExecutionClient(nil, newRegistry([]*model.Instrument{inst}), nil, 66)
+
+	for _, test := range []struct {
+		wire string
+		want enums.TimeInForce
+	}{
+		{wire: "good-till-time", want: enums.TifGTC},
+		{wire: "immediate-or-cancel", want: enums.TifIOC},
+		{wire: "post-only", want: enums.TifGTX},
+		{wire: "Unknown", want: enums.TifUnknown},
+		{wire: "", want: enums.TifUnknown},
+	} {
+		t.Run(test.wire, func(t *testing.T) {
+			order := exec.orderFromLighter(&sdk.Order{
+				MarketIndex:       2048,
+				OrderIndex:        1001,
+				InitialBaseAmount: "0.0100",
+				Price:             "100.00",
+				TimeInForce:       test.wire,
+				Status:            sdk.OrderStatusOpen,
+			})
+			if order.Request.TIF != test.want {
+				t.Fatalf("TIF=%s, want %s", order.Request.TIF, test.want)
+			}
+		})
+	}
+}
+
+func TestOrderFromLighterPreservesOrderType(t *testing.T) {
+	inst := &model.Instrument{
+		ID:         model.InstrumentID{Venue: venueName, Symbol: "ETH-USDC", Kind: enums.KindPerp},
+		AssetIndex: intPtr(0),
+		PriceTick:  decimal.RequireFromString("0.01"),
+		SizeStep:   decimal.RequireFromString("0.0001"),
+	}
+	exec := newExecutionClient(nil, newRegistry([]*model.Instrument{inst}), nil, 66)
+
+	for _, test := range []struct {
+		wire sdk.OrderTypeResp
+		want enums.OrderType
+	}{
+		{wire: sdk.OrderTypeRespLimit, want: enums.TypeLimit},
+		{wire: sdk.OrderTypeRespMarket, want: enums.TypeMarket},
+		{wire: sdk.OrderTypeRespStopLoss, want: enums.TypeStopMarket},
+		{wire: sdk.OrderTypeRespStopLossLimit, want: enums.TypeStopLimit},
+		{wire: sdk.OrderTypeRespTakeProfit, want: enums.TypeMarketIfTouched},
+		{wire: sdk.OrderTypeRespTakeProfitLimit, want: enums.TypeLimitIfTouched},
+		{wire: sdk.OrderTypeRespTwap, want: enums.TypeUnknown},
+		{wire: sdk.OrderTypeRespTwapSub, want: enums.TypeUnknown},
+		{wire: sdk.OrderTypeRespLiquidation, want: enums.TypeUnknown},
+		{wire: "future-type", want: enums.TypeUnknown},
+		{wire: "", want: enums.TypeUnknown},
+	} {
+		t.Run(string(test.wire), func(t *testing.T) {
+			order := exec.orderFromLighter(&sdk.Order{
+				MarketIndex:       0,
+				OrderIndex:        1001,
+				InitialBaseAmount: "0.0100",
+				Price:             "100.00",
+				OrderType:         test.wire,
+				Status:            sdk.OrderStatusOpen,
+			})
+			if order.Request.Type != test.want {
+				t.Fatalf("type=%s, want %s", order.Request.Type, test.want)
+			}
+		})
+	}
+}

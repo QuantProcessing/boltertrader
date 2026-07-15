@@ -191,6 +191,38 @@ func sideFromLighter(o *sdk.Order) enums.OrderSide {
 	return enums.SideBuy
 }
 
+func orderTypeFromLighter(value sdk.OrderTypeResp) enums.OrderType {
+	switch value {
+	case sdk.OrderTypeRespLimit:
+		return enums.TypeLimit
+	case sdk.OrderTypeRespMarket:
+		return enums.TypeMarket
+	case sdk.OrderTypeRespStopLoss:
+		return enums.TypeStopMarket
+	case sdk.OrderTypeRespStopLossLimit:
+		return enums.TypeStopLimit
+	case sdk.OrderTypeRespTakeProfit:
+		return enums.TypeMarketIfTouched
+	case sdk.OrderTypeRespTakeProfitLimit:
+		return enums.TypeLimitIfTouched
+	default:
+		return enums.TypeUnknown
+	}
+}
+
+func timeInForceFromLighter(value string) enums.TimeInForce {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "good-till-time":
+		return enums.TifGTC
+	case "immediate-or-cancel":
+		return enums.TifIOC
+	case "post-only":
+		return enums.TifGTX
+	default:
+		return enums.TifUnknown
+	}
+}
+
 func timeInForceToLighter(tif enums.TimeInForce) (uint32, error) {
 	switch tif {
 	case enums.TifUnknown, enums.TifGTC:
@@ -482,8 +514,8 @@ func (c *executionClient) orderFromLighterWithRegistry(o *sdk.Order, provider *r
 			InstrumentID: inst.ID,
 			ClientID:     clientID,
 			Side:         sideFromLighter(o),
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifGTC,
+			Type:         orderTypeFromLighter(o.OrderType),
+			TIF:          timeInForceFromLighter(o.TimeInForce),
 			Quantity:     dec(o.InitialBaseAmount),
 			Price:        dec(o.Price),
 			PositionSide: enums.PosNet,
