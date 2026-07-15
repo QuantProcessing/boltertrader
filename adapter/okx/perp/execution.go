@@ -17,6 +17,25 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// OKX requires ordType on pending-algo inventory requests. Conditional and OCO
+// are the only families the venue permits in one combined selector; chase is
+// included here because OKX limits it to derivative products.
+var perpPendingAlgoOrderTypes = [...]string{
+	string(okx.AlgoOrderTypeConditional) + "," + string(okx.AlgoOrderTypeOCO),
+	string(okx.AlgoOrderTypeTrigger),
+	string(okx.AlgoOrderTypeMoveOrderStop),
+	string(okx.AlgoOrderTypeIceberg),
+	string(okx.AlgoOrderTypeTWAP),
+	string(okx.AlgoOrderTypeSmartIceberg),
+	string(okx.AlgoOrderTypeChase),
+}
+
+type pendingAlgoPage struct {
+	orderType string
+	orders    []okx.AlgoOrder
+	err       error
+}
+
 // executionClient implements contract.ExecutionClient over the OKX REST + ws.
 // OKX REST PlaceOrder blocks until the venue responds, so Submit is naturally
 // synchronous.
@@ -440,11 +459,42 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	requestStartedAt := c.clk.Now()
 	setOptionalUnsupportedCoverage(mass, query, accountID, ids, requestStartedAt)
 
+	// Read parent algos before regular orders. If an algo triggers between
+	// requests, this ordering can duplicate evidence but cannot miss both the
+	// disappearing parent and its newly created regular child.
+	algoPages := c.fetchPendingAlgoPages(ctx, instTypeSwap)
 	instType := instTypeSwap
 	orders, regularErr := c.rest.GetOrders(ctx, &instType, nil)
-	algos, algoErr := c.rest.GetPendingAlgoOrders(ctx, instTypeSwap, "", "", "", "")
 	selected := instrumentIDSet(ids)
+	successfulSources := 0
+	incomplete := false
+	for _, page := range algoPages {
+		if page.err != nil {
+			incomplete = true
+			appendMassStatusWarning(mass, pendingAlgoWarningCode(page.orderType), page.err)
+			continue
+		}
+		successfulSources++
+		if len(page.orders) >= okxPendingOrdersPageLimit {
+			incomplete = true
+		}
+		appendPendingOrdersSaturationWarning(mass, pendingAlgoWarningCode(page.orderType), len(page.orders), nil)
+		now := c.clk.Now()
+		for i := range page.orders {
+			order := orderFromPendingAlgo(&page.orders[i], resolver, accountID)
+			if _, ok := selected[order.Request.InstrumentID]; !ok || !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+				continue
+			}
+			if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if regularErr == nil {
+		successfulSources++
+		if len(orders) >= okxPendingOrdersPageLimit {
+			incomplete = true
+		}
 		now := c.clk.Now()
 		for i := range orders {
 			order := orderFromOKX(&orders[i], resolver, accountID)
@@ -455,35 +505,37 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				return nil, err
 			}
 		}
-	}
-	if algoErr == nil {
-		now := c.clk.Now()
-		for i := range algos {
-			order := orderFromPendingAlgo(&algos[i], resolver, accountID)
-			if _, ok := selected[order.Request.InstrumentID]; !ok || !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
-				continue
-			}
-			if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}); err != nil {
-				return nil, err
-			}
-		}
+	} else {
+		incomplete = true
 	}
 	state := model.CoverageComplete
 	switch {
-	case regularErr != nil && algoErr != nil:
+	case successfulSources == 0:
 		state = model.CoverageUnavailable
-	case regularErr != nil || algoErr != nil || len(orders) >= okxPendingOrdersPageLimit || len(algos) >= okxPendingOrdersPageLimit:
+	case incomplete:
 		state = model.CoveragePartial
 	}
 	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(state, accountID, query.ClientID, ids, requestStartedAt)
 	appendMassStatusWarning(mass, "OPEN_ORDERS", regularErr)
-	appendMassStatusWarning(mass, "ALGO_ORDERS", algoErr)
 	appendPendingOrdersSaturationWarning(mass, "REGULAR", len(orders), regularErr)
-	appendPendingOrdersSaturationWarning(mass, "ALGO", len(algos), algoErr)
 	if err := mass.ValidateFor(query); err != nil {
 		return nil, err
 	}
 	return mass, nil
+}
+
+func (c *executionClient) fetchPendingAlgoPages(ctx context.Context, instType string) []pendingAlgoPage {
+	pages := make([]pendingAlgoPage, 0, len(perpPendingAlgoOrderTypes))
+	for _, orderType := range perpPendingAlgoOrderTypes {
+		orders, err := c.rest.GetPendingAlgoOrders(ctx, instType, "", orderType, "", "")
+		pages = append(pages, pendingAlgoPage{orderType: orderType, orders: orders, err: err})
+	}
+	return pages
+}
+
+func pendingAlgoWarningCode(orderType string) string {
+	token := strings.NewReplacer(",", "_", "-", "_").Replace(strings.ToUpper(orderType))
+	return "ALGO_" + token
 }
 
 func (c *executionClient) freezeMassStatusScope(query model.MassStatusQuery) ([]model.InstrumentID, frozenInstResolver, error) {
@@ -582,15 +634,19 @@ func orderFromPendingAlgo(order *okx.AlgoOrder, resolver instResolver, accountID
 	if order == nil {
 		return model.Order{}
 	}
-	orderType := enums.TypeStopMarket
+	orderType := enums.TypeUnknown
 	price := dec(order.OrderPx)
 	if price.IsZero() {
 		price = dec(order.OrdPx)
 	}
-	if strings.EqualFold(order.OrdType, "move_order_stop") {
+	switch strings.ToLower(order.OrdType) {
+	case string(okx.AlgoOrderTypeMoveOrderStop):
 		orderType = enums.TypeTrailingStopMarket
-	} else if price.IsPositive() {
-		orderType = enums.TypeStopLimit
+	case string(okx.AlgoOrderTypeTrigger):
+		orderType = enums.TypeStopMarket
+		if price.IsPositive() {
+			orderType = enums.TypeStopLimit
+		}
 	}
 	clientID := order.AlgoClOrdId
 	if clientID == "" {

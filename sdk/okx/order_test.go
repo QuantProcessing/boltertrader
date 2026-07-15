@@ -422,6 +422,26 @@ func TestClient_GetAlgoOrderBuildsPrivateQuery(t *testing.T) {
 	}
 }
 
+func TestClient_GetPendingAlgoOrdersRequiresOrderTypeBeforeIO(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(srv.URL)
+	_, err := client.GetPendingAlgoOrders(context.Background(), "SPOT", "", "", "", "")
+	if err == nil || !strings.Contains(err.Error(), "ordType is required") {
+		t.Fatalf("GetPendingAlgoOrders blank ordType error=%v, want local required-parameter rejection", err)
+	}
+	if calls != 0 {
+		t.Fatalf("GetPendingAlgoOrders blank ordType performed %d HTTP calls, want 0", calls)
+	}
+}
+
 func TestClient_GetPendingAlgoOrdersBuildsPrivateQuery(t *testing.T) {
 	t.Parallel()
 

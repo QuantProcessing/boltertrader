@@ -2,8 +2,10 @@ package okx
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // PlaceOrder submits a new order.
@@ -171,6 +173,10 @@ func (c *Client) GetSpreadOrders(ctx context.Context, sprdId *string) ([]SpreadO
 
 // GetPendingAlgoOrders retrieves pending strategy/algo orders.
 func (c *Client) GetPendingAlgoOrders(ctx context.Context, instType, instId, ordType, algoId, algoClOrdId string) ([]AlgoOrder, error) {
+	ordType = strings.TrimSpace(ordType)
+	if ordType == "" {
+		return nil, fmt.Errorf("okx: pending algo order ordType is required")
+	}
 	params := url.Values{}
 	if instType != "" {
 		params.Add("instType", instType)
@@ -178,9 +184,7 @@ func (c *Client) GetPendingAlgoOrders(ctx context.Context, instType, instId, ord
 	if instId != "" {
 		params.Add("instId", instId)
 	}
-	if ordType != "" {
-		params.Add("ordType", ordType)
-	}
+	params.Add("ordType", ordType)
 	if algoId != "" {
 		params.Add("algoId", algoId)
 	}

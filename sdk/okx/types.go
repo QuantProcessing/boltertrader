@@ -714,6 +714,8 @@ const (
 	AlgoOrderTypeMoveOrderStop AlgoOrderType = "move_order_stop"
 	AlgoOrderTypeIceberg       AlgoOrderType = "iceberg"
 	AlgoOrderTypeTWAP          AlgoOrderType = "twap"
+	AlgoOrderTypeSmartIceberg  AlgoOrderType = "smart_iceberg"
+	AlgoOrderTypeChase         AlgoOrderType = "chase"
 )
 
 type Side string

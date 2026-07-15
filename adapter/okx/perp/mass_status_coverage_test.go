@@ -10,9 +10,64 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
+
+func TestOKXPerpMassStatusQueriesEveryPendingAlgoFamilyWithRequiredOrderType(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	var gotRequests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			gotRequests = append(gotRequests, "regular")
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			ordType := r.URL.Query().Get("ordType")
+			gotRequests = append(gotRequests, ordType)
+			if ordType == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"code":"51000","msg":"Parameter ordType error","data":[]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	rest := okx.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL)
+	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewSimulatedClock(time.Unix(25, 0)), defaultDerivativeTdMode)
+
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	wantRequests := []string{"conditional,oco", "trigger", "move_order_stop", "iceberg", "twap", "smart_iceberg", "chase", "regular"}
+	if strings.Join(gotRequests, "|") != strings.Join(wantRequests, "|") {
+		t.Fatalf("pending-order requests=%q, want typed algos before regular snapshot %q", gotRequests, wantRequests)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete {
+		t.Fatalf("open-order coverage=%+v warnings=%+v, want Complete", mass.OpenOrdersCoverage, mass.Warnings)
+	}
+}
+
+func TestOKXPerpPendingAlgoTranslationDoesNotInventUnsupportedNeutralType(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	order := orderFromPendingAlgo(&okx.AlgoOrder{
+		InstId:  inst.VenueSymbol,
+		AlgoId:  "twap-1",
+		OrdType: "twap",
+		State:   "live",
+		Side:    "buy",
+		PosSide: "net",
+		Sz:      "1",
+	}, frozenInstResolver{inst.VenueSymbol: inst.ID}, AccountIDDefault)
+	if order.Request.Type != enums.TypeUnknown {
+		t.Fatalf("unsupported OKX algo neutral type=%v, want TypeUnknown", order.Request.Type)
+	}
+}
 
 func TestOKXPerpMassStatusOwnsFrozenTypedCoverage(t *testing.T) {
 	btc := testOKXLinearInstrument(t)
@@ -53,8 +108,8 @@ func TestOKXPerpMassStatusOwnsFrozenTypedCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if calls != 2 {
-		t.Fatalf("open-order calls=%d, want regular+algo", calls)
+	if calls != 1+len(perpPendingAlgoOrderTypes) {
+		t.Fatalf("open-order calls=%d, want regular plus %d typed algo families", calls, len(perpPendingAlgoOrderTypes))
 	}
 	if mass.AccountID != AccountIDDefault || mass.OpenOrdersCoverage.State != model.CoverageComplete || !mass.OpenOrdersCoverage.Scope.Through.Equal(start) {
 		t.Fatalf("mass account=%q open coverage=%+v", mass.AccountID, mass.OpenOrdersCoverage)
@@ -74,6 +129,45 @@ func TestOKXPerpMassStatusOwnsFrozenTypedCoverage(t *testing.T) {
 	}
 	if err := mass.ValidateFor(query); err != nil {
 		t.Fatalf("typed mass status validation: %v", err)
+	}
+}
+
+func TestOKXPerpMassStatusMarksOneFailedAlgoFamilyPartial(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			switch r.URL.Query().Get("ordType") {
+			case string(okx.AlgoOrderTypeTrigger):
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT-SWAP","instType":"SWAP","algoId":"84","algoClOrdId":"a-btc","state":"live","side":"buy","posSide":"net","ordType":"trigger","sz":"1","triggerPx":"90","orderPx":"-1"}]}`))
+			case string(okx.AlgoOrderTypeTWAP):
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"code":"50000","msg":"temporary twap failure","data":[]}`))
+			default:
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	rest := okx.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL)
+	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewSimulatedClock(time.Unix(40, 0)), defaultDerivativeTdMode)
+
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoveragePartial {
+		t.Fatalf("coverage=%+v, want Partial", mass.OpenOrdersCoverage)
+	}
+	if _, ok := mass.OrderReports["84"]; !ok {
+		t.Fatalf("successful trigger row was not retained: %+v", mass.OrderReports)
+	}
+	if !hasOKXPerpWarningCode(mass.Warnings, "ALGO_TWAP_UNAVAILABLE") {
+		t.Fatalf("warnings=%+v, want ALGO_TWAP_UNAVAILABLE", mass.Warnings)
 	}
 }
 
@@ -145,7 +239,7 @@ func TestOKXPerpMassStatusMarksCappedPendingPagePartial(t *testing.T) {
 						return
 					}
 				case "/api/v5/trade/orders-algo-pending":
-					if saturated == "algo" {
+					if saturated == "algo" && r.URL.Query().Get("ordType") == string(okx.AlgoOrderTypeTrigger) {
 						_, _ = w.Write([]byte(okxPerpPendingPage(inst.VenueSymbol, true)))
 						return
 					}
@@ -177,22 +271,73 @@ func TestOKXPerpMassStatusMarksCappedPendingPagePartial(t *testing.T) {
 	}
 }
 
+func TestOKXPerpMassStatusUsesPerFamilyPageCaps(t *testing.T) {
+	inst := testOKXLinearInstrument(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+		case "/api/v5/trade/orders-algo-pending":
+			switch r.URL.Query().Get("ordType") {
+			case "conditional,oco":
+				_, _ = w.Write([]byte(okxPerpAlgoPendingPage(inst.VenueSymbol, "conditional", "conditional", 60)))
+			case string(okx.AlgoOrderTypeTrigger):
+				_, _ = w.Write([]byte(okxPerpAlgoPendingPage(inst.VenueSymbol, "trigger", "trigger", 60)))
+			default:
+				_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	rest := okx.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL)
+	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewSimulatedClock(time.Unix(350, 0)), defaultDerivativeTdMode)
+
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || len(mass.OrderReports) != 120 {
+		t.Fatalf("coverage=%+v reports=%d, want Complete with two independent 60-row pages", mass.OpenOrdersCoverage, len(mass.OrderReports))
+	}
+}
+
 func okxPerpPendingPage(instID string, algo bool) string {
+	if algo {
+		return okxPerpAlgoPendingPage(instID, "conditional", "a", 100)
+	}
 	rows := make([]string, 100)
 	for i := range rows {
-		if algo {
-			rows[i] = fmt.Sprintf(`{"instId":%q,"instType":"SWAP","algoId":%q,"algoClOrdId":%q,"state":"live","side":"buy","posSide":"net","ordType":"conditional","sz":"1","triggerPx":"90","orderPx":"100"}`, instID, fmt.Sprintf("a-%d", i), fmt.Sprintf("ac-%d", i))
-		} else {
-			rows[i] = fmt.Sprintf(`{"instId":%q,"instType":"SWAP","ordId":%q,"clOrdId":%q,"state":"live","side":"buy","posSide":"net","ordType":"limit","sz":"1","px":"100"}`, instID, fmt.Sprintf("r-%d", i), fmt.Sprintf("rc-%d", i))
-		}
+		rows[i] = fmt.Sprintf(`{"instId":%q,"instType":"SWAP","ordId":%q,"clOrdId":%q,"state":"live","side":"buy","posSide":"net","ordType":"limit","sz":"1","px":"100"}`, instID, fmt.Sprintf("r-%d", i), fmt.Sprintf("rc-%d", i))
+	}
+	return `{"code":"0","msg":"","data":[` + strings.Join(rows, ",") + `]}`
+}
+
+func okxPerpAlgoPendingPage(instID, orderType, prefix string, count int) string {
+	rows := make([]string, count)
+	for i := range rows {
+		rows[i] = fmt.Sprintf(`{"instId":%q,"instType":"SWAP","algoId":%q,"algoClOrdId":%q,"state":"live","side":"buy","posSide":"net","ordType":%q,"sz":"1","triggerPx":"90","orderPx":"100"}`, instID, fmt.Sprintf("%s-%d", prefix, i), fmt.Sprintf("%sc-%d", prefix, i), orderType)
 	}
 	return `{"code":"0","msg":"","data":[` + strings.Join(rows, ",") + `]}`
 }
 
 func hasOKXPerpSaturationWarning(warnings []model.ReportWarning, saturated string) bool {
 	want := strings.ToUpper(saturated) + "_ORDERS_SATURATED"
+	if saturated == "algo" {
+		want = "ALGO_TRIGGER_ORDERS_SATURATED"
+	}
 	for _, warning := range warnings {
 		if warning.Code == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOKXPerpWarningCode(warnings []model.ReportWarning, code string) bool {
+	for _, warning := range warnings {
+		if warning.Code == code {
 			return true
 		}
 	}
