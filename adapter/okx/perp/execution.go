@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
@@ -436,9 +437,9 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	setOptionalUnsupportedCoverage(mass, query)
-
 	requestStartedAt := c.clk.Now()
+	setOptionalUnsupportedCoverage(mass, query, accountID, ids, requestStartedAt)
+
 	instType := instTypeSwap
 	orders, regularErr := c.rest.GetOrders(ctx, &instType, nil)
 	algos, algoErr := c.rest.GetPendingAlgoOrders(ctx, instTypeSwap, "", "", "", "")
@@ -533,14 +534,20 @@ func (r frozenInstResolver) resolveInstID(instID string) model.InstrumentID {
 	return model.InstrumentID{Venue: venueName, Symbol: instIDToNeutral(instID), Kind: enums.KindPerp}
 }
 
-func setOptionalUnsupportedCoverage(mass *model.ExecutionMassStatus, query model.MassStatusQuery) {
+func setOptionalUnsupportedCoverage(
+	mass *model.ExecutionMassStatus,
+	query model.MassStatusQuery,
+	accountID string,
+	ids []model.InstrumentID,
+	requestStartedAt time.Time,
+) {
 	if query.IncludeFills {
 		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
 	} else {
 		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 	}
 	if query.IncludePositions {
-		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, ids, requestStartedAt)
 	} else {
 		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 	}

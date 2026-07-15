@@ -580,14 +580,14 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
 	}
 	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
-	if query.IncludePositions {
-		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
-	}
 	insts, ids, err := c.massStatusInstruments(query.InstrumentIDs)
 	if err != nil {
 		return nil, err
 	}
 	requestStart := c.clk.Now()
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, ids, requestStart)
+	}
 	if len(insts) == 0 {
 		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, requestStart)
 		if query.IncludeFills {

@@ -547,7 +547,7 @@ func TestCompleteEmptyPositionCoverageSuppressesFallbackAndRequery(t *testing.T)
 	}
 }
 
-func TestFallbackCompleteEmptyCapturesOwnRequestStartWatermark(t *testing.T) {
+func TestScopedUnavailablePositionFallbackCapturesOwnRequestStartWatermark(t *testing.T) {
 	start := time.Unix(100, 0)
 	clk := clock.NewSimulatedClock(start)
 	acct := &snapshotAccount{
@@ -557,7 +557,7 @@ func TestFallbackCompleteEmptyCapturesOwnRequestStartWatermark(t *testing.T) {
 		products:        []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
 	}
 	exec := &snapshotExec{positions: true, massFn: func(query model.MassStatusQuery) *model.ExecutionMassStatus {
-		mass := typedCoverageMass(query, []model.InstrumentID{btc}, model.CoverageComplete, model.CoverageNotRequested, model.CoveragePartial)
+		mass := typedCoverageMass(query, []model.InstrumentID{btc}, model.CoverageComplete, model.CoverageNotRequested, model.CoverageUnavailable)
 		clk.Advance(5 * time.Second)
 		return mass
 	}}

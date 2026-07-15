@@ -461,18 +461,18 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
+	requestStartedAt := c.clk.Now()
 	if query.IncludeFills {
 		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
 	} else {
 		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 	}
 	if query.IncludePositions {
-		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, ids, requestStartedAt)
 	} else {
 		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 	}
 
-	requestStartedAt := c.clk.Now()
 	regularOrders, regularErr := c.rest.GetOpenOrders(ctx, "")
 	algoOrders, algoErr := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{AlgoType: "CONDITIONAL"})
 	state := model.CoverageComplete

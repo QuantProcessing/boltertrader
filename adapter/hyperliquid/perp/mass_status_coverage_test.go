@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -99,15 +100,30 @@ func TestHyperliquidPerpMassStatusUsesEarliestDexRequestAndFrozenRegistry(t *tes
 }
 
 func TestHyperliquidPerpMassStatusDistinguishesEmptyFromPreIOUnavailable(t *testing.T) {
-	clk := clock.NewSimulatedClock(time.Date(2026, 7, 15, 3, 0, 0, 0, time.UTC))
-	exec := newExecutionClient(nil, testProvider(t), clk, AccountIDDefault)
-	requested := model.MassStatusQuery{AccountID: AccountIDDefault, IncludeFills: true, IncludePositions: true}
+	start := time.Date(2026, 7, 15, 3, 0, 0, 0, time.UTC)
+	clk := clock.NewSimulatedClock(start)
+	provider := testProvider(t)
+	exec := newExecutionClient(nil, provider, clk, AccountIDDefault)
+	requested := model.MassStatusQuery{AccountID: AccountIDDefault, ClientID: "client-scope", IncludeFills: true, IncludePositions: true}
 	unavailable, err := exec.GenerateExecutionMassStatus(context.Background(), requested)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unavailable.OpenOrdersCoverage.State != model.CoverageUnavailable || unavailable.FillsCoverage.State != model.CoverageUnavailable || unavailable.PositionsCoverage.State != model.CoverageUnavailable || !unavailable.OpenOrdersCoverage.Scope.IsZero() {
 		t.Fatalf("pre-I/O coverage=%+v/%+v/%+v", unavailable.OpenOrdersCoverage, unavailable.FillsCoverage, unavailable.PositionsCoverage)
+	}
+	wantPositionIDs := make([]model.InstrumentID, 0)
+	for _, inst := range provider.All() {
+		if inst != nil && inst.ID.Kind == enums.KindPerp {
+			wantPositionIDs = append(wantPositionIDs, inst.ID)
+		}
+	}
+	wantPositionIDs = model.NormalizeInstrumentIDs(wantPositionIDs)
+	positionScope := unavailable.PositionsCoverage.Scope
+	if positionScope.AccountID != AccountIDDefault || positionScope.ClientID != requested.ClientID ||
+		positionScope.InstrumentIDs == nil || !slices.Equal(positionScope.InstrumentIDs, wantPositionIDs) ||
+		!positionScope.Through.Equal(start) {
+		t.Fatalf("positions scope=%+v, want frozen account/client/standard+HIP-3 selector at %s", positionScope, start)
 	}
 	if err := unavailable.ValidateFor(requested); err != nil {
 		t.Fatalf("pre-I/O validation: %v", err)

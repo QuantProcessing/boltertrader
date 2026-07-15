@@ -201,21 +201,35 @@ func hasOKXPerpSaturationWarning(warnings []model.ReportWarning, saturated strin
 
 func TestOKXPerpMassStatusMarksUnsupportedRequestedDomainsUnavailable(t *testing.T) {
 	inst := testOKXLinearInstrument(t)
+	start := time.Unix(100, 0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[]}`))
 	}))
 	defer server.Close()
 	rest := okx.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL)
-	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewSimulatedClock(time.Unix(100, 0)), defaultDerivativeTdMode)
-	query := model.MassStatusQuery{IncludeFills: true, IncludePositions: true}
+	exec := newExecutionClient(rest, testOKXProvider(inst), clock.NewSimulatedClock(start), defaultDerivativeTdMode)
+	query := model.MassStatusQuery{
+		ClientID:         "client-scope",
+		InstrumentIDs:    []model.InstrumentID{inst.ID, inst.ID},
+		IncludeFills:     true,
+		IncludePositions: true,
+	}
 
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if mass.FillsCoverage.State != model.CoverageUnavailable || !mass.FillsCoverage.Scope.IsZero() ||
-		mass.PositionsCoverage.State != model.CoverageUnavailable || !mass.PositionsCoverage.Scope.IsZero() {
+	if mass.FillsCoverage.State != model.CoverageUnavailable || !mass.FillsCoverage.Scope.IsZero() {
 		t.Fatalf("unsupported coverage fills=%+v positions=%+v", mass.FillsCoverage, mass.PositionsCoverage)
+	}
+	positions := mass.PositionsCoverage
+	if positions.State != model.CoverageUnavailable ||
+		positions.Scope.AccountID != AccountIDDefault ||
+		positions.Scope.ClientID != query.ClientID ||
+		positions.Scope.InstrumentIDs == nil ||
+		len(positions.Scope.InstrumentIDs) != 1 || positions.Scope.InstrumentIDs[0] != inst.ID ||
+		!positions.Scope.From.IsZero() || !positions.Scope.Through.Equal(start) {
+		t.Fatalf("unsupported position coverage=%+v, want frozen account/client/instrument scope at %s", positions, start)
 	}
 	if err := mass.ValidateFor(query); err != nil {
 		t.Fatalf("typed mass status validation: %v", err)

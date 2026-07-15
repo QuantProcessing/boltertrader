@@ -129,12 +129,13 @@ func TestBinancePerpMassStatusRetainsSuccessfulDomainWhenAnotherFails(t *testing
 
 func TestBinancePerpMassStatusMarksUnsupportedRequestedDomainsUnavailable(t *testing.T) {
 	inst := rejectionTestInstrument()
+	start := time.Unix(100, 0)
 	rest := sdkperp.NewClient().WithRateLimiter(nil)
 	rest.HTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`[]`)), Header: make(http.Header)}, nil
 	})}
-	exec := newExecutionClient(rest, rejectionTestProvider(inst), clock.NewSimulatedClock(time.Unix(100, 0)))
-	query := model.MassStatusQuery{IncludeFills: true, IncludePositions: true}
+	exec := newExecutionClient(rest, rejectionTestProvider(inst), clock.NewSimulatedClock(start))
+	query := model.MassStatusQuery{ClientID: "client-filter", IncludeFills: true, IncludePositions: true}
 
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
@@ -143,8 +144,12 @@ func TestBinancePerpMassStatusMarksUnsupportedRequestedDomainsUnavailable(t *tes
 	if mass.FillsCoverage.State != model.CoverageUnavailable || !mass.FillsCoverage.Scope.IsZero() {
 		t.Fatalf("fills coverage=%+v, want unavailable before request", mass.FillsCoverage)
 	}
-	if mass.PositionsCoverage.State != model.CoverageUnavailable || !mass.PositionsCoverage.Scope.IsZero() {
-		t.Fatalf("positions coverage=%+v, want unavailable before request", mass.PositionsCoverage)
+	positions := mass.PositionsCoverage
+	if positions.State != model.CoverageUnavailable || positions.Scope.AccountID != AccountIDDefault ||
+		positions.Scope.ClientID != query.ClientID || positions.Scope.InstrumentIDs == nil ||
+		len(positions.Scope.InstrumentIDs) != 1 || positions.Scope.InstrumentIDs[0] != inst.ID ||
+		!positions.Scope.From.IsZero() || !positions.Scope.Through.Equal(start) {
+		t.Fatalf("positions coverage=%+v, want unavailable with frozen account/client/instrument scope at %s", positions, start)
 	}
 	if err := mass.ValidateFor(query); err != nil {
 		t.Fatalf("typed mass status validation: %v", err)
