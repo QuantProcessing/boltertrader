@@ -96,6 +96,7 @@ type Order struct {
 	CreateTime   NumberString `json:"create_time,omitempty"`
 	CreateTimeMS NumberString `json:"create_time_ms,omitempty"`
 	UpdateTimeMS NumberString `json:"update_time_ms,omitempty"`
+	Event        string       `json:"event,omitempty"`
 	Status       string       `json:"status,omitempty"`
 	CurrencyPair string       `json:"currency_pair"`
 	Type         string       `json:"type"`

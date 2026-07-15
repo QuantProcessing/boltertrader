@@ -240,6 +240,9 @@ func classifyOrderEvidence(entry InFlightEntry, order model.Order) (OutcomeClass
 		if order.Status == enums.StatusRejected || order.Status == enums.StatusExpired {
 			return OutcomeDefinitiveVenueRejected, orderEvidenceReason(entry, order), true
 		}
+		if order.Status == enums.StatusPendingNew || order.Status == enums.StatusUnknown {
+			return "", "", false
+		}
 		return OutcomeConfirmedAccepted, "", true
 	case journal.CommandCancel:
 		if order.Status == enums.StatusCanceled {

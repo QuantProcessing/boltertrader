@@ -55,12 +55,12 @@ func TestWSPrivateSubscribeRequiresCredentials(t *testing.T) {
 }
 
 func TestDecodeWSMessages(t *testing.T) {
-	spotPayload := []byte(`{"time":1,"time_ms":1000,"channel":"spot.orders","event":"update","result":[{"id":"1","currency_pair":"BTC_USDT","side":"buy","amount":"0.01","status":"open"}]}`)
+	spotPayload := []byte(`{"time":1,"time_ms":1000,"channel":"spot.orders","event":"update","result":[{"id":"1","currency_pair":"BTC_USDT","side":"buy","amount":"0.01","event":"put","finish_as":"open"}]}`)
 	spot, err := DecodeSpotOrderMessage(spotPayload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spot.Channel != ChannelSpotOrder || len(spot.Orders) != 1 || spot.Orders[0].ID != "1" {
+	if spot.Channel != ChannelSpotOrder || len(spot.Orders) != 1 || spot.Orders[0].ID != "1" || spot.Orders[0].Event != "put" || spot.Orders[0].FinishAs != "open" {
 		t.Fatalf("unexpected spot message: %+v", spot)
 	}
 

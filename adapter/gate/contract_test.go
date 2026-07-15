@@ -233,7 +233,7 @@ func TestGateSpotPrivateStreamEventConversions(t *testing.T) {
 		t.Fatalf("order events len=%d", len(orderEvents))
 	}
 	orderEvent := orderEvents[0].(contract.OrderEvent)
-	if !orderEvent.Order.FilledQty.IsZero() || orderEvent.Order.Request.ClientID != "spot-client-1" {
+	if orderEvent.Order.Status != enums.StatusPartiallyFilled || !orderEvent.Order.FilledQty.IsZero() || orderEvent.Order.Request.ClientID != "spot-client-1" {
 		t.Fatalf("unexpected order event: %+v", orderEvent)
 	}
 
@@ -261,6 +261,100 @@ func TestGateSpotPrivateStreamEventConversions(t *testing.T) {
 	balanceEvent := accountEvents[0].(contract.BalanceEvent)
 	if balanceEvent.Balance.AccountID != AccountIDUnified || !balanceEvent.Balance.CashInvariantOK() {
 		t.Fatalf("unexpected balance event: %+v", balanceEvent)
+	}
+}
+
+func TestGateSpotPrivateStreamStatusUsesWireEvent(t *testing.T) {
+	provider := gateSpotTestProvider()
+	resolve := provider.resolveVenueSymbol
+	tests := []struct {
+		name    string
+		payload string
+		want    enums.OrderStatus
+	}{
+		{
+			name:    "put is new",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"1","text":"t-put","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.01","price":"1000","event":"put","finish_as":"open"}]}`,
+			want:    enums.StatusNew,
+		},
+		{
+			name:    "fill update is partial",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"2","text":"t-update","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.005","filled_amount":"0.005","price":"1000","event":"update","finish_as":"open"}]}`,
+			want:    enums.StatusPartiallyFilled,
+		},
+		{
+			name:    "filled finish is filled",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"3","text":"t-filled","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0","filled_amount":"0.01","price":"1000","event":"finish","finish_as":"filled"}]}`,
+			want:    enums.StatusFilled,
+		},
+		{
+			name:    "manual finish is canceled",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"4","text":"t-cancel","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.01","price":"1000","event":"finish","finish_as":"cancelled"}]}`,
+			want:    enums.StatusCanceled,
+		},
+		{
+			name:    "post-only finish is canceled",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"5","text":"t-poc","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.01","price":"1000","event":"finish","finish_as":"poc"}]}`,
+			want:    enums.StatusCanceled,
+		},
+		{
+			name:    "rest closed post-only is canceled",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"6","text":"t-rest-poc","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.01","price":"1000","status":"closed","finish_as":"poc"}]}`,
+			want:    enums.StatusCanceled,
+		},
+		{
+			name:    "price protection finish is canceled",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"8","text":"t-price-protect","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.005","filled_amount":"0.005","price":"1000","event":"finish","finish_as":"price_protect_cancelled"}]}`,
+			want:    enums.StatusCanceled,
+		},
+		{
+			name:    "unknown closed reason fails closed",
+			payload: `{"channel":"spot.orders","event":"update","result":[{"id":"7","text":"t-unknown","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"0.01","left":"0.01","price":"1000","status":"closed","finish_as":"future_reason"}]}`,
+			want:    enums.StatusUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg, err := gatesdk.DecodeSpotOrderMessage([]byte(tt.payload))
+			if err != nil {
+				t.Fatalf("DecodeSpotOrderMessage: %v", err)
+			}
+			events := execEventsFromSpotOrderMessage(msg, resolve, AccountIDUnified)
+			if len(events) != 1 {
+				t.Fatalf("events=%+v, want one order event", events)
+			}
+			order := events[0].(contract.OrderEvent).Order
+			if order.Status != tt.want {
+				t.Fatalf("status=%s, want %s for payload %s", order.Status, tt.want, tt.payload)
+			}
+		})
+	}
+}
+
+func TestGateFuturesFinishReasonsAreCanceled(t *testing.T) {
+	id := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
+	for _, finishAs := range []string{
+		"liquidated",
+		"auto_deleveraged",
+		"reduce_only",
+		"position_closed",
+		"reduce_out",
+	} {
+		t.Run(finishAs, func(t *testing.T) {
+			order := orderFromGateFuturesRESTRecord(gatesdk.FuturesOrder{
+				ID:       456,
+				Contract: "BTC_USDT",
+				Size:     1,
+				Left:     1,
+				Price:    "50000",
+				Status:   "finished",
+				FinishAs: finishAs,
+			}, id, AccountIDUnified)
+			if order.Status != enums.StatusCanceled {
+				t.Fatalf("status=%s, want %s for finish_as=%q", order.Status, enums.StatusCanceled, finishAs)
+			}
+		})
 	}
 }
 

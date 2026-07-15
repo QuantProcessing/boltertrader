@@ -123,16 +123,50 @@ func statusFromGate(value string) enums.OrderStatus {
 
 func orderStatusFromGate(status, finishAs string) enums.OrderStatus {
 	if strings.EqualFold(status, "closed") || strings.EqualFold(status, "finished") {
-		switch strings.ToLower(finishAs) {
-		case "cancelled", "canceled":
-			return enums.StatusCanceled
-		case "expired":
-			return enums.StatusExpired
-		case "filled":
-			return enums.StatusFilled
+		if terminal := finishStatusFromGate(finishAs); terminal != enums.StatusUnknown {
+			return terminal
 		}
+		return enums.StatusUnknown
 	}
 	return statusFromGate(status)
+}
+
+func finishStatusFromGate(finishAs string) enums.OrderStatus {
+	switch strings.ToLower(finishAs) {
+	case "filled":
+		return enums.StatusFilled
+	case "expired":
+		return enums.StatusExpired
+	case "cancelled", "canceled", "ioc", "stp", "poc", "fok",
+		"trader_not_enough", "depth_not_enough", "small", "liquidate_cancelled", "price_protect_cancelled",
+		"liquidated", "auto_deleveraged", "reduce_only", "position_closed", "reduce_out":
+		return enums.StatusCanceled
+	default:
+		return enums.StatusUnknown
+	}
+}
+
+func spotOrderStatusFromGate(record gatesdk.Order) enums.OrderStatus {
+	status := orderStatusFromGate(record.Status, record.FinishAs)
+	if status == enums.StatusNew && dec(record.FilledAmount).IsPositive() {
+		return enums.StatusPartiallyFilled
+	}
+	if status != enums.StatusUnknown {
+		return status
+	}
+	switch strings.ToLower(record.Event) {
+	case "put":
+		return enums.StatusNew
+	case "update":
+		if dec(record.FilledAmount).IsPositive() {
+			return enums.StatusPartiallyFilled
+		}
+		return enums.StatusNew
+	case "finish":
+		return finishStatusFromGate(record.FinishAs)
+	default:
+		return enums.StatusUnknown
+	}
 }
 
 func positionSideFromGate(size int64) enums.PositionSide {
@@ -233,7 +267,7 @@ func orderFromGateSpotAction(resp *gatesdk.Order, req model.OrderRequest, now ti
 	order := model.Order{Request: req, Status: enums.StatusNew, CreatedAt: now, UpdatedAt: now}
 	if resp != nil {
 		order.VenueOrderID = resp.ID
-		if status := orderStatusFromGate(resp.Status, resp.FinishAs); status != enums.StatusUnknown {
+		if status := spotOrderStatusFromGate(*resp); status != enums.StatusUnknown {
 			order.Status = status
 		}
 		order.FilledQty = dec(resp.FilledAmount)
@@ -257,7 +291,7 @@ func orderFromGateSpotRecord(record gatesdk.Order, id model.InstrumentID, accoun
 	return model.Order{
 		Request:      req,
 		VenueOrderID: record.ID,
-		Status:       orderStatusFromGate(record.Status, record.FinishAs),
+		Status:       spotOrderStatusFromGate(record),
 		FilledQty:    dec(record.FilledAmount),
 		AvgFillPrice: dec(record.AvgDealPrice),
 		CreatedAt:    firstNonZeroTime(timeFromMillisString(string(record.CreateTimeMS)), timeFromSecondsString(string(record.CreateTime))),

@@ -73,6 +73,56 @@ func TestSubmitAckClearsInFlight(t *testing.T) {
 	assertResultOutcome(t, j, exec.OutcomeConfirmedAccepted)
 }
 
+func TestSubmitNonDefinitiveEventDoesNotBeatLateAdapterAcceptance(t *testing.T) {
+	for _, status := range []enums.OrderStatus{enums.StatusUnknown, enums.StatusPendingNew} {
+		t.Run(status.String(), func(t *testing.T) {
+			fake := runtimetest.NewFakeExec()
+			e, c, j := testEngine(fake)
+			req := testReq("non-definitive-event-" + strings.ToLower(status.String()))
+			const venueOrderID = "non-definitive-event-venue"
+			fake.SetSubmitResult(&model.Order{
+				Request:      req,
+				VenueOrderID: venueOrderID,
+				Status:       enums.StatusNew,
+			}, nil)
+
+			resolved := false
+			fake.OnSubmit(func(venueReq model.OrderRequest) {
+				event := model.Order{
+					Request:      venueReq,
+					VenueOrderID: venueOrderID,
+					Status:       status,
+					CreatedAt:    time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC),
+					UpdatedAt:    time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC),
+				}
+				if err := c.UpsertOrderChecked(event); err != nil {
+					t.Fatalf("apply non-definitive event: %v", err)
+				}
+				canonical, ok := c.OrderByClientIDForAccount("test", venueReq.ClientID)
+				if !ok {
+					t.Fatal("cache missing submitted order after event")
+				}
+				resolved = e.ResolveOrderInFlight(canonical, event.UpdatedAt)
+			})
+
+			order, err := e.Submit(context.Background(), req)
+			if err != nil || order == nil || order.Status != enums.StatusNew || order.VenueOrderID != venueOrderID {
+				t.Fatalf("submit order=%+v err=%v, want late definitive adapter acceptance", order, err)
+			}
+			if resolved {
+				t.Fatalf("status %s prematurely resolved the submit intent", status)
+			}
+			if got := e.InFlightCount(); got != 0 {
+				t.Fatalf("in-flight=%d, want adapter acceptance to resolve intent", got)
+			}
+			results := commandResultsForType(t, j.Records(), journal.CommandSubmit)
+			if len(results) != 1 || results[0].Outcome != string(exec.OutcomeConfirmedAccepted) {
+				t.Fatalf("submit results=%+v, want one confirmed acceptance", results)
+			}
+		})
+	}
+}
+
 func TestSubmitCrossedVenueAliasFailsClosedBeforeResolvingInFlight(t *testing.T) {
 	fake := runtimetest.NewFakeExec()
 	e, c, j := testEngine(fake)
