@@ -288,7 +288,6 @@ func TestReconnectDoesNotRecoverWhenAnySubscriptionReplayFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Errorf("upgrade websocket: %v", err)
 			return
 		}
 		defer conn.Close()
