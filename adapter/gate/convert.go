@@ -139,7 +139,8 @@ func finishStatusFromGate(finishAs string) enums.OrderStatus {
 		return enums.StatusExpired
 	case "cancelled", "canceled", "ioc", "stp", "poc", "fok",
 		"trader_not_enough", "depth_not_enough", "small", "liquidate_cancelled", "price_protect_cancelled",
-		"liquidated", "auto_deleveraged", "reduce_only", "position_closed", "reduce_out":
+		"liquidated", "auto_deleveraged", "auto_deleveraging", "reduce_only",
+		"position_closed", "position_close", "reduce_out", "split":
 		return enums.StatusCanceled
 	default:
 		return enums.StatusUnknown
@@ -267,7 +268,7 @@ func orderFromGateSpotAction(resp *gatesdk.Order, req model.OrderRequest, now ti
 	order := model.Order{Request: req, Status: enums.StatusNew, CreatedAt: now, UpdatedAt: now}
 	if resp != nil {
 		order.VenueOrderID = resp.ID
-		if status := spotOrderStatusFromGate(*resp); status != enums.StatusUnknown {
+		if status := spotOrderStatusFromGate(*resp); status != enums.StatusUnknown || resp.Status != "" || resp.Event != "" {
 			order.Status = status
 		}
 		order.FilledQty = dec(resp.FilledAmount)
@@ -360,7 +361,7 @@ func orderFromGateFuturesAction(resp *gatesdk.FuturesOrder, req model.OrderReque
 	order := model.Order{Request: req, Status: enums.StatusNew, CreatedAt: now, UpdatedAt: now}
 	if resp != nil {
 		order.VenueOrderID = strconv.FormatInt(resp.ID, 10)
-		if status := orderStatusFromGate(resp.Status, resp.FinishAs); status != enums.StatusUnknown {
+		if status := orderStatusFromGate(resp.Status, resp.FinishAs); status != enums.StatusUnknown || resp.Status != "" {
 			order.Status = status
 		}
 		order.FilledQty = filledFuturesQty(resp.Size, resp.Left)

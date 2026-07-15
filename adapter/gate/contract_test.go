@@ -337,9 +337,12 @@ func TestGateFuturesFinishReasonsAreCanceled(t *testing.T) {
 	for _, finishAs := range []string{
 		"liquidated",
 		"auto_deleveraged",
+		"auto_deleveraging",
 		"reduce_only",
 		"position_closed",
+		"position_close",
 		"reduce_out",
+		"split",
 	} {
 		t.Run(finishAs, func(t *testing.T) {
 			order := orderFromGateFuturesRESTRecord(gatesdk.FuturesOrder{
@@ -355,6 +358,46 @@ func TestGateFuturesFinishReasonsAreCanceled(t *testing.T) {
 				t.Fatalf("status=%s, want %s for finish_as=%q", order.Status, enums.StatusCanceled, finishAs)
 			}
 		})
+	}
+}
+
+func TestGateActionUnknownTerminalFailsClosed(t *testing.T) {
+	now := time.Date(2026, 7, 15, 9, 30, 0, 0, time.UTC)
+	spotReq := model.OrderRequest{
+		AccountID:    AccountIDUnified,
+		InstrumentID: model.InstrumentID{Venue: VenueName, Symbol: "ETH-USDT", Kind: enums.KindSpot},
+		ClientID:     "spot-action",
+	}
+	for _, response := range []gatesdk.Order{
+		{ID: "1", Status: "closed", FinishAs: "future_reason"},
+		{ID: "2", Event: "finish", FinishAs: "future_reason"},
+	} {
+		order := orderFromGateSpotAction(&response, spotReq, now)
+		if order.Status != enums.StatusUnknown {
+			t.Fatalf("spot action status=%s, want %s for response %+v", order.Status, enums.StatusUnknown, response)
+		}
+	}
+	spotSparse := orderFromGateSpotAction(&gatesdk.Order{ID: "3"}, spotReq, now)
+	if spotSparse.Status != enums.StatusNew {
+		t.Fatalf("sparse spot ACK status=%s, want %s", spotSparse.Status, enums.StatusNew)
+	}
+
+	perpReq := model.OrderRequest{
+		AccountID:    AccountIDUnified,
+		InstrumentID: model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp},
+		ClientID:     "perp-action",
+	}
+	perp := orderFromGateFuturesAction(&gatesdk.FuturesOrder{
+		ID:       4,
+		Status:   "finished",
+		FinishAs: "future_reason",
+	}, perpReq, now)
+	if perp.Status != enums.StatusUnknown {
+		t.Fatalf("futures action status=%s, want %s", perp.Status, enums.StatusUnknown)
+	}
+	perpSparse := orderFromGateFuturesAction(&gatesdk.FuturesOrder{ID: 5}, perpReq, now)
+	if perpSparse.Status != enums.StatusNew {
+		t.Fatalf("sparse futures ACK status=%s, want %s", perpSparse.Status, enums.StatusNew)
 	}
 }
 
