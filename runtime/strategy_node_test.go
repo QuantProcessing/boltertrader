@@ -17,12 +17,14 @@ import (
 // recordingStrategy buys one unit on the first bar and records every callback.
 type recordingStrategy struct {
 	strategy.Base
-	mu      sync.Mutex
-	started bool
-	bars    int
-	trades  int
-	fills   int
-	metaIDs []string
+	mu        sync.Mutex
+	started   bool
+	bars      int
+	trades    int
+	fills     int
+	submitted bool
+	submitErr error
+	metaIDs   []string
 }
 
 func (s *recordingStrategy) OnStart(c *strategy.Context) {
@@ -50,7 +52,11 @@ func (s *recordingStrategy) OnBar(c *strategy.Context, bar model.Bar) {
 	s.mu.Unlock()
 	if first {
 		// Strategy acts through the context, not an adapter.
-		_, _ = c.Buy(bar.InstrumentID, decimal.RequireFromString("1"), bar.Close)
+		_, err := c.Buy(bar.InstrumentID, decimal.RequireFromString("1"), bar.Close)
+		s.mu.Lock()
+		s.submitted = true
+		s.submitErr = err
+		s.mu.Unlock()
 	}
 }
 
@@ -87,19 +93,25 @@ func TestStrategyCallbacksAndBars(t *testing.T) {
 	fmarket.EmitTrade(model.TradeTick{InstrumentID: inst, Price: decimal.RequireFromString("102"), Quantity: decimal.RequireFromString("1"), Timestamp: base.Add(30 * time.Second)})
 	fmarket.EmitTrade(model.TradeTick{InstrumentID: inst, Price: decimal.RequireFromString("104"), Quantity: decimal.RequireFromString("1"), Timestamp: base.Add(70 * time.Second)})
 
-	// Wait until the bar callback has fired (and thus the order submitted).
+	// Wait until the bar callback's synchronous submission has returned. The
+	// bar count is published before Buy starts, so it is not a completion fence.
 	deadline := time.After(2 * time.Second)
 	for {
 		strat.mu.Lock()
 		bars := strat.bars
 		started := strat.started
+		submitted := strat.submitted
+		submitErr := strat.submitErr
 		strat.mu.Unlock()
-		if started && bars >= 1 {
+		if started && bars >= 1 && submitted {
+			if submitErr != nil {
+				t.Fatalf("strategy order submission failed: %v", submitErr)
+			}
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("strategy did not receive a bar in time (started=%v bars=%d)", started, bars)
+			t.Fatalf("strategy did not complete bar submission in time (started=%v bars=%d submitted=%v err=%v)", started, bars, submitted, submitErr)
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
