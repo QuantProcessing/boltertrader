@@ -19,10 +19,9 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient  = (*executionClient)(nil)
+	_ contract.AccountClient    = (*accountClient)(nil)
+	_ contract.MarketDataClient = (*marketDataClient)(nil)
 )
 
 func TestAccountIDOverridePropagatesToClients(t *testing.T) {
@@ -110,7 +109,6 @@ func TestOKXSpotInstrumentTranslation(t *testing.T) {
 		SizeStep:    d("0.0001"),
 		MinNotional: decimal.Zero,
 		VenueSymbol: "ETH-USDT",
-		HasIntCode:  false,
 		HasAssetIdx: false,
 	}})
 }
@@ -345,14 +343,22 @@ func TestOKXSpotCancelOrderTranslation(t *testing.T) {
 func TestOKXSpotOpenOrdersTranslation(t *testing.T) {
 	inst := testSpotInstrument()
 	rest := testREST(func(r *http.Request) (string, int) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v5/trade/orders-pending" {
-			t.Fatalf("request=%s %s, want GET /api/v5/trade/orders-pending", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet {
+			t.Fatalf("request=%s %s, want GET", r.Method, r.URL.Path)
 		}
 		q := r.URL.Query()
 		if q.Get("instType") != instTypeSpot {
 			t.Fatalf("query=%s, want instType SPOT", q.Encode())
 		}
-		return `{"code":"0","msg":"","data":[{"instId":"ETH-USDT","instType":"SPOT","ordId":"777","clOrdId":"c-open","state":"live","side":"sell","ordType":"limit","sz":"0.0200","px":"3200.00","accFillSz":"0","avgPx":"","uTime":"1700000000000"}]}`, 200
+		switch r.URL.Path {
+		case "/api/v5/trade/orders-pending":
+			return `{"code":"0","msg":"","data":[{"instId":"ETH-USDT","instType":"SPOT","ordId":"777","clOrdId":"c-open","state":"live","side":"sell","ordType":"limit","sz":"0.0200","px":"3200.00","accFillSz":"0","avgPx":"","uTime":"1700000000000"}]}`, 200
+		case "/api/v5/trade/orders-algo-pending":
+			return `{"code":"0","msg":"","data":[]}`, 200
+		default:
+			t.Fatalf("unexpected open-order path %s", r.URL.Path)
+			return "", 0
+		}
 	})
 	exec := newExecutionClient(rest, testProvider(inst), clock.NewRealClock(), "")
 
@@ -396,8 +402,8 @@ func TestOKXSpotReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T)
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "OKX-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "OKX-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty OKX-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want fail-closed error", mass, err)
 	}
 	if called {
 		t.Fatal("mismatched account report crossed HTTP boundary")
@@ -429,7 +435,7 @@ func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	if len(bals) != 2 {
 		t.Fatalf("balances len=%d", len(bals))
 	}
-	if bals[0].Currency != "USDT" || !bals[0].Available.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
+	if bals[0].Currency != "USDT" || !bals[0].Free.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
 		t.Fatalf("balance[0]=%+v", bals[0])
 	}
 	if !bals[0].Free.Equal(d("100.5")) {
@@ -442,7 +448,7 @@ func TestOKXSpotAccountBalancesTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXDefault || state.Venue != venueName || state.Type != model.AccountCash {
+	if state.AccountID != AccountIDDefault || state.Venue != venueName || state.Type != model.AccountCash {
 		t.Fatalf("account state identity/type=%+v", state)
 	}
 	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
@@ -481,7 +487,7 @@ func TestOKXSpotOrderUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(golden), &o); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := execEventsFromOrder(&o, testProvider(testSpotInstrument()), model.AccountIDOKXDefault)
+	events := execEventsFromOrder(&o, testProvider(testSpotInstrument()), AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("want OrderEvent+FillEvent, got %d", len(events))
 	}
@@ -489,14 +495,14 @@ func TestOKXSpotOrderUpdateTranslation(t *testing.T) {
 	if oe.Order.Request.PositionSide != enums.PosNet || oe.Order.Request.ReduceOnly {
 		t.Fatalf("spot order leaked derivative fields: %+v", oe.Order.Request)
 	}
-	if oe.Order.Request.AccountID != model.AccountIDOKXDefault {
+	if oe.Order.Request.AccountID != AccountIDDefault {
 		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
 	}
 	fe := events[1].(contract.FillEvent)
 	if fe.Fill.TradeID != "99" || !fe.Fill.Price.Equal(d("3000")) || !fe.Fill.Fee.Equal(d("0.003")) {
 		t.Fatalf("fill=%+v", fe.Fill)
 	}
-	if fe.Fill.AccountID != model.AccountIDOKXDefault {
+	if fe.Fill.AccountID != AccountIDDefault {
 		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
@@ -516,8 +522,8 @@ func TestOKXSpotContractCapabilities(t *testing.T) {
 			return "", 0
 		}
 	}), provider, clock.NewRealClock())
-	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
-		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	if caps := acct.Capabilities(); !caps.Reports.AccountBalanceSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account capability flags=%+v, want balance snapshot true and account-state stream false", caps)
 	}
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{

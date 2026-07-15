@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -55,7 +55,7 @@ func (c *executionClient) Capabilities() contract.Capabilities {
 }
 
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
-	if err := c.ValidateSubmit(req); err != nil {
+	if err := c.validateOrderRequest(req); err != nil {
 		return nil, err
 	}
 	inst, err := c.provider.instrument(req.InstrumentID)
@@ -74,9 +74,12 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}
 	resp, err := c.rest.PlaceOrder(ctx, venueReq)
 	if err != nil {
-		return nil, mapAsterError(err)
+		return nil, mapAsterCommandError(err)
 	}
 	if err := validateOrderResponseDecimals(resp); err != nil {
+		return nil, err
+	}
+	if err := validateSubmitOrderResponseIdentity(resp, req, inst); err != nil {
 		return nil, err
 	}
 	order := orderFromResponse(resp, req, c.accountID)
@@ -85,6 +88,10 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 }
 
 func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
+	return c.validateOrderRequest(req)
+}
+
+func (c *executionClient) validateOrderRequest(req model.OrderRequest) error {
 	if req.AccountID != "" && req.AccountID != c.accountID {
 		return fmt.Errorf("aster spot: account id %q does not match adapter account %q", req.AccountID, c.accountID)
 	}
@@ -107,8 +114,30 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return fmt.Errorf("aster spot: parse order id %q: %w", venueOrderID, err)
 	}
-	_, err = c.rest.CancelOrder(ctx, sdkspot.CancelOrderParams{Symbol: inst.VenueSymbol, OrderID: &orderID})
-	return mapAsterError(err)
+	if orderID <= 0 {
+		return fmt.Errorf("aster spot: order id must be positive: %d", orderID)
+	}
+	resp, err := c.rest.CancelOrder(ctx, sdkspot.CancelOrderParams{Symbol: inst.VenueSymbol, OrderID: &orderID})
+	if err != nil {
+		return mapAsterCommandError(err)
+	}
+	return validateCancelOrderResponse(resp, orderID, inst.VenueSymbol)
+}
+
+func validateCancelOrderResponse(resp *sdkspot.OrderResponse, expectedOrderID int64, expectedSymbol string) error {
+	if resp == nil {
+		return fmt.Errorf("aster spot: cancel response is required")
+	}
+	if resp.OrderID <= 0 || resp.OrderID != expectedOrderID {
+		return fmt.Errorf("aster spot: cancel response order id mismatch: got %d, want %d", resp.OrderID, expectedOrderID)
+	}
+	if resp.Symbol == "" || resp.Symbol != expectedSymbol {
+		return fmt.Errorf("aster spot: cancel response symbol mismatch: got %q, want %q", resp.Symbol, expectedSymbol)
+	}
+	if resp.Status != "CANCELED" {
+		return fmt.Errorf("aster spot: cancel response status %q does not prove cancellation", resp.Status)
+	}
+	return nil
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -120,7 +149,7 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 		return fmt.Errorf("aster spot: rest client not configured: %w", errs.ErrNotSupported)
 	}
 	_, err = c.rest.CancelAllOpenOrders(ctx, sdkspot.CancelAllOrdersParams{Symbol: inst.VenueSymbol})
-	return mapAsterError(err)
+	return mapAsterCommandError(err)
 }
 
 func (c *executionClient) Modify(context.Context, model.InstrumentID, string, decimal.Decimal, decimal.Decimal) (*model.Order, error) {
@@ -131,6 +160,13 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	inst, err := c.provider.instrument(id)
 	if err != nil {
 		return nil, err
+	}
+	return c.openOrdersForInstrument(ctx, inst)
+}
+
+func (c *executionClient) openOrdersForInstrument(ctx context.Context, inst *model.Instrument) ([]model.Order, error) {
+	if inst == nil {
+		return nil, fmt.Errorf("aster spot: instrument is required")
 	}
 	if c.rest == nil {
 		return nil, fmt.Errorf("aster spot: rest client not configured: %w", errs.ErrNotSupported)
@@ -147,7 +183,7 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 		if err := validateOrderResponseDecimals(&orders[i]); err != nil {
 			return nil, err
 		}
-		out = append(out, orderFromResponse(&orders[i], model.OrderRequest{InstrumentID: id, AccountID: c.accountID}, c.accountID))
+		out = append(out, orderFromResponse(&orders[i], model.OrderRequest{InstrumentID: inst.ID, AccountID: c.accountID}, c.accountID))
 	}
 	return out, nil
 }
@@ -275,6 +311,13 @@ func (c *executionClient) generateFillReports(ctx context.Context, query model.F
 	if err != nil {
 		return nil, false, err
 	}
+	return c.generateFillReportsForInstrument(ctx, query, inst)
+}
+
+func (c *executionClient) generateFillReportsForInstrument(ctx context.Context, query model.FillReportQuery, inst *model.Instrument) ([]model.FillReport, bool, error) {
+	if inst == nil {
+		return nil, false, fmt.Errorf("aster spot: instrument is required")
+	}
 	if c.rest == nil {
 		return nil, false, fmt.Errorf("aster spot: rest client not configured: %w", errs.ErrNotSupported)
 	}
@@ -307,7 +350,7 @@ func (c *executionClient) generateFillReports(ctx context.Context, query model.F
 		if query.VenueOrderID != "" {
 			clientID = query.ClientID
 		}
-		fill := fillFromTrade(trade, query.InstrumentID, c.accountID, clientID)
+		fill := fillFromTrade(trade, inst.ID, c.accountID, clientID)
 		if !model.FillMatchesReportQuery(fill, query) {
 			continue
 		}
@@ -330,42 +373,93 @@ func (c *executionClient) GeneratePositionReports(context.Context, model.Positio
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	accountID := c.accountID
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(VenueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("aster spot: mass status account %q does not match execution account %q", query.AccountID, c.accountID)
+	}
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != VenueName {
+		return nil, fmt.Errorf("aster spot: mass status venue %q does not match %q", query.Venue, VenueName)
 	}
 	mass := model.NewExecutionMassStatus(VenueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ONLY", Message: "mass status contains authoritative open orders; missing cached orders are no longer open, but terminal reason is unknown"})
-	fillLimitReached := false
-	for _, inst := range sortedInstruments(c.provider) {
-		orderReports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{
-			InstrumentID: inst.ID,
-			AccountID:    accountID,
-			ClientID:     query.ClientID,
-			OpenOnly:     true,
-			Since:        query.Since,
-			Until:        query.Until,
-		})
-		if err != nil {
-			return nil, err
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if query.IncludePositions {
+		// Cash positions are balance-sourced, so no execution request can start.
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	}
+	insts, ids, err := c.massStatusInstruments(query.InstrumentIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(insts) == 0 {
+		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, c.clk.Now())
+		if query.IncludeFills {
+			fillFrom, fillThrough := massStatusFillInterval(query, c.clk.Now())
+			mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, accountID, query.ClientID, ids, fillFrom, fillThrough)
 		}
-		for _, report := range orderReports {
+		if query.IncludePositions {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, c.clk.Now())
+		}
+		return validateMassStatusResult(mass, query, "aster spot")
+	}
+	if c.rest == nil {
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		if query.IncludeFills {
+			mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		}
+		return validateMassStatusResult(mass, query, "aster spot")
+	}
+
+	openStart := c.clk.Now()
+	openSuccesses, openFailures := 0, 0
+	for _, inst := range insts {
+		orders, err := c.openOrdersForInstrument(ctx, inst)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			openFailures++
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_PARTIAL", Message: err.Error()})
+			continue
+		}
+		openSuccesses++
+		now := c.clk.Now()
+		for _, order := range orders {
+			if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{InstrumentID: inst.ID, AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+				continue
+			}
+			report := model.OrderStatusReport{ReportID: orderReportID(order), Venue: VenueName, AccountID: accountID, Order: order, ReportedAt: now}
 			if err := mass.AddOrderReport(report); err != nil {
 				return nil, err
 			}
 		}
-		if query.IncludeFills {
-			fillReports, limitReached, err := c.generateFillReports(ctx, model.FillReportQuery{
+	}
+	openState := coverageState(len(insts), openSuccesses, openFailures, false)
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(openState, accountID, query.ClientID, ids, openStart)
+
+	fillLimitReached := false
+	if query.IncludeFills {
+		fillFrom, fillThrough := massStatusFillInterval(query, c.clk.Now())
+		fillSuccesses, fillFailures := 0, 0
+		for _, inst := range insts {
+			fillReports, limitReached, err := c.generateFillReportsForInstrument(ctx, model.FillReportQuery{
 				InstrumentID: inst.ID,
 				AccountID:    accountID,
 				ClientID:     query.ClientID,
-				Since:        query.Since,
-				Until:        query.Until,
+				Since:        fillFrom,
+				Until:        fillThrough,
 				Limit:        executionMassStatusFillLimit,
-			})
+			}, inst)
 			if err != nil {
-				return nil, err
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				fillFailures++
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_PARTIAL", Message: err.Error()})
+				continue
 			}
+			fillSuccesses++
 			fillLimitReached = fillLimitReached || limitReached
 			for _, report := range fillReports {
 				if err := mass.AddFillReport(report); err != nil {
@@ -373,15 +467,82 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				}
 			}
 		}
+		fillState := coverageState(len(insts), fillSuccesses, fillFailures, fillLimitReached || query.ClientID != "")
+		mass.FillsCoverage = model.NewFillCoverage(fillState, accountID, query.ClientID, ids, fillFrom, fillThrough)
 	}
 	if fillLimitReached {
-		mass.Partial = true
 		mass.Warnings = append(mass.Warnings, model.ReportWarning{
 			Code:    "FILL_REPORTS_LIMIT_REACHED",
 			Message: "one or more Aster Spot account-trade queries reached the 1000-record API limit; recovered fills may be incomplete",
 		})
 	}
+	return validateMassStatusResult(mass, query, "aster spot")
+}
+
+func (c *executionClient) massStatusInstruments(requested []model.InstrumentID) ([]*model.Instrument, []model.InstrumentID, error) {
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("aster spot: instrument provider required for mass status")
+	}
+	var candidates []model.InstrumentID
+	if requested == nil {
+		for _, inst := range c.provider.All() {
+			if inst != nil && inst.ID.Kind == enums.KindSpot {
+				candidates = append(candidates, inst.ID)
+			}
+		}
+	} else {
+		candidates = model.NormalizeInstrumentIDs(requested)
+	}
+	insts := make([]*model.Instrument, 0, len(candidates))
+	ids := make([]model.InstrumentID, 0, len(candidates))
+	for _, id := range model.NormalizeInstrumentIDs(candidates) {
+		if id.Venue != VenueName || id.Kind != enums.KindSpot || id.Symbol == "" {
+			return nil, nil, fmt.Errorf("aster spot: mass status instrument %s is outside execution scope", id)
+		}
+		inst, ok := c.provider.Instrument(id)
+		if !ok || inst == nil {
+			return nil, nil, fmt.Errorf("aster spot: unknown mass status instrument %s", id)
+		}
+		clone := *inst
+		insts = append(insts, &clone)
+		ids = append(ids, clone.ID)
+	}
+	return insts, model.NormalizeInstrumentIDs(ids), nil
+}
+
+func validateMassStatusResult(mass *model.ExecutionMassStatus, query model.MassStatusQuery, source string) (*model.ExecutionMassStatus, error) {
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, fmt.Errorf("%s: invalid mass status result: %w", source, err)
+	}
 	return mass, nil
+}
+
+func coverageState(attempts, successes, failures int, incomplete bool) model.CoverageState {
+	if attempts == 0 {
+		if incomplete {
+			return model.CoveragePartial
+		}
+		return model.CoverageComplete
+	}
+	if successes == 0 && failures > 0 {
+		return model.CoverageUnavailable
+	}
+	if failures > 0 || incomplete {
+		return model.CoveragePartial
+	}
+	return model.CoverageComplete
+}
+
+func massStatusFillInterval(query model.MassStatusQuery, fallbackThrough time.Time) (time.Time, time.Time) {
+	through := query.Until
+	if through.IsZero() {
+		through = fallbackThrough
+	}
+	from := query.Since
+	if from.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+		from = query.Until.Add(-query.Lookback)
+	}
+	return from, through
 }
 
 func (c *executionClient) Events() <-chan contract.ExecEnvelope   { return c.stream.C() }
@@ -439,12 +600,6 @@ func validateTradeDecimals(t sdkspot.Trade) error {
 		}
 	}
 	return nil
-}
-
-func sortedInstruments(provider *instrumentProvider) []*model.Instrument {
-	insts := provider.All()
-	sort.Slice(insts, func(i, j int) bool { return insts[i].ID.String() < insts[j].ID.String() })
-	return insts
 }
 
 func orderReportID(order model.Order) model.ReportID {

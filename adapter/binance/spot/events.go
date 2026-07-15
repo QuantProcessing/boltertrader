@@ -112,7 +112,6 @@ func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent, accountI
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
 			Free:      free,
-			Available: free,
 			Locked:    locked,
 			UpdatedAt: ts,
 		}})

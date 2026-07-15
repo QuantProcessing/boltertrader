@@ -9,43 +9,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-const (
-	AccountIDBinanceDefault     = "BINANCE-001"
-	AccountIDOKXDefault         = "OKX-001"
-	AccountIDBybitDefault       = "BYBIT-001"
-	AccountIDBitgetDefault      = "BITGET-001"
-	AccountIDGateDefault        = "GATE-001"
-	AccountIDLighterDefault     = "LIGHTER-001"
-	AccountIDHyperliquidDefault = "HYPERLIQUID-001"
-	AccountIDAsterDefault       = "ASTER-001"
-	AccountIDNadoDefault        = "NADO-001"
-)
-
-func DefaultAccountIDForVenue(venue string) string {
-	switch strings.ToUpper(strings.TrimSpace(venue)) {
-	case "BINANCE":
-		return AccountIDBinanceDefault
-	case "OKX":
-		return AccountIDOKXDefault
-	case "BYBIT":
-		return AccountIDBybitDefault
-	case "BITGET":
-		return AccountIDBitgetDefault
-	case "GATE":
-		return AccountIDGateDefault
-	case "LIGHTER":
-		return AccountIDLighterDefault
-	case "HYPERLIQUID":
-		return AccountIDHyperliquidDefault
-	case "ASTER":
-		return AccountIDAsterDefault
-	case "NADO":
-		return AccountIDNadoDefault
-	default:
-		return ""
-	}
-}
-
 type AccountType uint8
 
 const (
@@ -92,51 +55,28 @@ type AccountBalance struct {
 	Currency  string
 	Total     decimal.Decimal
 	Free      decimal.Decimal
-	Available decimal.Decimal
 	Locked    decimal.Decimal
 	Borrowed  decimal.Decimal
 	Interest  decimal.Decimal
 	UpdatedAt time.Time
 }
 
-// FreeOrAvailable returns the canonical free balance while keeping old adapter
-// snapshots readable during the migration from Available to Free.
-func (b AccountBalance) FreeOrAvailable() decimal.Decimal {
-	if !b.Free.IsZero() || b.Available.IsZero() {
-		return b.Free
-	}
-	return b.Available
-}
-
-// Normalized returns a copy with both Free and Available populated from the
-// non-zero side when only one side is present.
-func (b AccountBalance) Normalized() AccountBalance {
-	if b.Free.IsZero() && !b.Available.IsZero() {
-		b.Free = b.Available
-	}
-	if b.Available.IsZero() && !b.Free.IsZero() {
-		b.Available = b.Free
-	}
-	return b
-}
-
 // CashInvariantOK reports whether a cash-account balance satisfies
 // total == free + locked. Margin accounts may intentionally not use this
 // invariant because Free can represent free margin instead of free cash.
 func (b AccountBalance) CashInvariantOK() bool {
-	return b.Total.Equal(b.FreeOrAvailable().Add(b.Locked))
+	return b.Total.Equal(b.Free.Add(b.Locked))
 }
 
 func (b AccountBalance) ValidateCash() error {
-	free := b.FreeOrAvailable()
 	if b.Currency == "" {
 		return fmt.Errorf("account balance: currency required")
 	}
 	if b.Total.IsNegative() {
 		return fmt.Errorf("account balance %s: negative total %s", b.Currency, b.Total)
 	}
-	if free.IsNegative() {
-		return fmt.Errorf("account balance %s: negative free %s", b.Currency, free)
+	if b.Free.IsNegative() {
+		return fmt.Errorf("account balance %s: negative free %s", b.Currency, b.Free)
 	}
 	if b.Locked.IsNegative() {
 		return fmt.Errorf("account balance %s: negative locked %s", b.Currency, b.Locked)
@@ -261,6 +201,9 @@ func (s AccountState) Validate() error {
 		return fmt.Errorf("account state %s: invalid type %s", s.AccountID, s.Type)
 	}
 	for _, bal := range s.Balances {
+		if bal.AccountID != "" && bal.AccountID != s.AccountID {
+			return fmt.Errorf("account state %s: balance %s belongs to account %s", s.AccountID, bal.Currency, bal.AccountID)
+		}
 		if s.Type == AccountCash {
 			if err := bal.ValidateCash(); err != nil {
 				return err

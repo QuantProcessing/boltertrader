@@ -51,8 +51,8 @@ Current anchors:
 - `core/model.Instrument` contains common identity, base/quote/settle,
   venue-identity fields, precision, limits, multiplier, and position-mode
   capability.
-- `core/model.OrderRequest` is intentionally portable, with `Venue` as the
-  non-portable escape hatch.
+- `core/model.OrderRequest` is intentionally portable; venue-only order fields
+  stay private to adapters.
 - `core/contract` has product-neutral market, execution, and account clients.
 - The runtime state path supports live-style order, fill, balance, position,
   market, risk, reconciliation, and observer events through a single bus
@@ -63,6 +63,25 @@ workflows. It is not sufficient for options because option correctness depends
 on expiry, strike, call/put kind, exercise style, premium treatment, settlement,
 assignment/exercise lifecycle, and Greeks.
 
+## Current Runtime Boundaries
+
+Every execution adapter implements one venue-neutral command contract. Runtime
+calls `ValidateSubmit`, then an optional explicitly configured generic local
+risk checker and its generic exposure reservation, then ordinary `Submit`.
+Runtime does not discover venue-specific
+validators, prepare exchange payloads, hold adapter leases, query venue
+capacity, or select a second submission method. Request conversion, signing,
+response identity checks, conclusive venue-rejection classification, and
+ambiguous transport handling belong to the adapter and its SDK.
+
+Reconciliation uses mandatory typed coverage for open orders, fills, and
+positions. Each adapter returns an owned frozen instrument selector and an
+observation watermark captured before its first authoritative request for that
+domain. Runtime may infer absence only from matching `CoverageComplete`
+evidence and identities frozen locally before the request. Report warnings are
+diagnostics only; their spelling never controls activation, cursor, position,
+or order-closure behavior.
+
 ## Design Principles
 
 1. Product identity is not just a symbol string. Product kind, underlying,
@@ -71,8 +90,8 @@ assignment/exercise lifecycle, and Greeks.
    zero fields.
 3. The common `Instrument` remains the registry entry strategies and runtime use
    to resolve precision, limits, fees, margin, status, and product spec.
-4. Venue payload fields stay in adapters or `OrderRequest.Venue`. Core can carry
-   opaque venue identifiers, but it must not mirror exchange JSON.
+4. Venue payload fields stay in adapters. Core can carry portable venue
+   identifiers, but it must not mirror exchange JSON or expose an order escape hatch.
 5. Missing product support is explicit through capability declarations and
    `contract.ErrNotSupported`, never silent coercion.
 6. Runtime behavior expands by live vertical slice: product model, fake venue

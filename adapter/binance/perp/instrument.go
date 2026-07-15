@@ -97,7 +97,6 @@ func instrumentFromSymbolInfo(s *sdkperp.SymbolInfo) *model.Instrument {
 		Quote:          s.QuoteAsset,
 		Settle:         s.MarginAsset,
 		VenueSymbol:    s.Symbol,
-		VenueIntCode:   nil, // Binance has no integer instrument code
 		AssetIndex:     nil, // Binance is symbol-keyed
 		PriceTick:      tick,
 		SizeStep:       step,

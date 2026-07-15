@@ -148,6 +148,10 @@ func (c *Client) call(ctx context.Context, method, endpoint string, params map[s
 		if err := json.Unmarshal(data, &apiErr); err != nil {
 			return fmt.Errorf("http error %d: %s", resp.StatusCode, string(data))
 		}
+		apiErr.HTTPStatus = resp.StatusCode
+		if isAuthenticationError(resp.StatusCode, apiErr.Code) {
+			return sdkcore.NewExchangeError("BINANCE", fmt.Sprintf("%d", apiErr.Code), apiErr.Message, sdkcore.ErrAuthFailed)
+		}
 		return &apiErr
 	}
 

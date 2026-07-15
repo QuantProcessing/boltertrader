@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,141 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
+	client := NewClient().WithCredentials("key", "secret").WithBaseURL("https://example.test").WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"retCode":110001,"retMsg":"order does not exist","result":{}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "submit", run: func() error { _, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{}); return err }},
+		{name: "cancel", run: func() error { _, err := client.CancelOrder(context.Background(), CancelOrderRequest{}); return err }},
+		{name: "modify", run: func() error { _, err := client.AmendOrder(context.Background(), AmendOrderRequest{}); return err }},
+		{name: "cancel all", run: func() error { return client.CancelAllOrders(context.Background(), CancelAllOrdersRequest{}) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run()
+			var responseErr *ResponseError
+			if !errors.As(err, &responseErr) || responseErr.Code != 110001 || responseErr.Message != "order does not exist" {
+				t.Fatalf("error=%v (%T), want typed response error", err, err)
+			}
+		})
+	}
+}
+
+func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		run  func(*Client) error
+		want string
+	}{
+		{
+			name: "missing response code",
+			body: `{"retMsg":"OK","result":{"orderId":"100","orderLinkId":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{OrderLinkID: "client-1"})
+				return err
+			},
+			want: "without retCode",
+		},
+		{
+			name: "missing response result",
+			body: `{"retCode":0,"retMsg":"OK"}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{OrderLinkID: "client-1"})
+				return err
+			},
+			want: "without result",
+		},
+		{
+			name: "place missing order id",
+			body: `{"retCode":0,"retMsg":"OK","result":{"orderLinkId":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{OrderLinkID: "client-1"})
+				return err
+			},
+			want: "without order id",
+		},
+		{
+			name: "place link id mismatch",
+			body: `{"retCode":0,"retMsg":"OK","result":{"orderId":"100","orderLinkId":"other"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), PlaceOrderRequest{OrderLinkID: "client-1"})
+				return err
+			},
+			want: "mismatched order link id",
+		},
+		{
+			name: "cancel order id mismatch",
+			body: `{"retCode":0,"retMsg":"OK","result":{"orderId":"101","orderLinkId":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.CancelOrder(context.Background(), CancelOrderRequest{OrderID: "100", OrderLinkID: "client-1"})
+				return err
+			},
+			want: "mismatched order id",
+		},
+		{
+			name: "amend link id mismatch",
+			body: `{"retCode":0,"retMsg":"OK","result":{"orderId":"100","orderLinkId":"other"}}`,
+			run: func(client *Client) error {
+				_, err := client.AmendOrder(context.Background(), AmendOrderRequest{OrderID: "100", OrderLinkID: "client-1"})
+				return err
+			},
+			want: "mismatched order link id",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient().
+				WithCredentials("key", "secret").
+				WithBaseURL("https://example.test").
+				WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(test.body)),
+						Header:     make(http.Header),
+					}, nil
+				})})
+			err := test.run(client)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want text %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBybitResponseErrorDefinitiveClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		code int
+		want bool
+	}{
+		{name: "order business rejection", code: 110001, want: true},
+		{name: "auth rejection", code: 10003, want: true},
+		{name: "rate limit", code: 10006},
+		{name: "timeout", code: 10000},
+		{name: "backend", code: 10016},
+		{name: "service restart", code: 10019},
+		{name: "unknown future code", code: 199999},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsDefinitiveCommandRejection(&ResponseError{Code: test.code}); got != test.want {
+				t.Fatalf("code %d definitive=%t, want %t", test.code, got, test.want)
+			}
+		})
+	}
+}
 
 func TestClient_PlaceOrder(t *testing.T) {
 	client := requireBybitLiveWrite(t, "BYBIT_TEST_ORDER_QTY", "BYBIT_TEST_ORDER_PRICE")

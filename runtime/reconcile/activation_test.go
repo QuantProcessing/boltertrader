@@ -7,29 +7,57 @@ import (
 )
 
 func TestReportActivationVerdict(t *testing.T) {
+	complete := Report{
+		OpenOrdersCoverage: model.ReportCoverage{State: model.CoverageComplete},
+		FillsCoverage:      model.ReportCoverage{State: model.CoverageNotRequested},
+		PositionsCoverage:  model.ReportCoverage{State: model.CoverageNotRequested},
+	}
 	tests := []struct {
 		name string
 		rep  Report
 		safe bool
 	}{
-		{name: "complete", rep: Report{}, safe: true},
+		{name: "complete", rep: complete, safe: true},
 		{
-			name: "open-orders-only partial remains safe",
-			rep:  Report{Partial: true, Warnings: []model.ReportWarning{{Code: "OPEN_ORDERS_ONLY"}}},
+			name: "diagnostic warning remains safe",
+			rep: func() Report {
+				rep := complete
+				rep.Partial = true
+				rep.Warnings = []model.ReportWarning{{Code: "SNAPSHOT_PAGE_NOTE"}}
+				return rep
+			}(),
 			safe: true,
 		},
-		{name: "fill partial", rep: Report{FillsPartial: true}},
+		{name: "fill partial", rep: Report{
+			OpenOrdersCoverage: model.ReportCoverage{State: model.CoverageComplete},
+			FillsCoverage:      model.ReportCoverage{State: model.CoveragePartial},
+			PositionsCoverage:  model.ReportCoverage{State: model.CoverageNotRequested},
+			FillsPartial:       true,
+		}},
 		{
-			name: "fill limit warning",
-			rep:  Report{Warnings: []model.ReportWarning{{Code: "FILL_REPORTS_LIMIT_REACHED"}}},
+			name: "fill limit warning is diagnostic",
+			rep: func() Report {
+				rep := complete
+				rep.Warnings = []model.ReportWarning{{Code: "HISTORY_PAGE_NOTE"}}
+				return rep
+			}(),
+			safe: true,
 		},
 		{
-			name: "open orders unavailable",
-			rep:  Report{Warnings: []model.ReportWarning{{Code: "OPEN_ORDERS_UNAVAILABLE"}}},
+			name: "open orders unavailable typed",
+			rep: Report{
+				OpenOrdersCoverage: model.ReportCoverage{State: model.CoverageUnavailable},
+				FillsCoverage:      model.ReportCoverage{State: model.CoverageNotRequested},
+				PositionsCoverage:  model.ReportCoverage{State: model.CoverageNotRequested},
+			},
 		},
 		{
 			name: "blocking finding",
-			rep:  Report{Findings: []Finding{{Severity: FindingBlocking, Blocking: true}}},
+			rep: func() Report {
+				rep := complete
+				rep.Findings = []Finding{{Severity: FindingBlocking, Blocking: true}}
+				return rep
+			}(),
 		},
 	}
 	for _, tt := range tests {

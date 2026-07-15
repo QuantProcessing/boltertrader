@@ -29,8 +29,10 @@ type gapAwareExec struct {
 }
 
 func newGapAwareExec(fillHistory bool) *gapAwareExec {
+	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("gap")
 	return &gapAwareExec{
-		FakeExec:        runtimetest.NewFakeExec(),
+		FakeExec:        fake,
 		events:          make(chan contract.ExecEnvelope, 32),
 		fillHistory:     fillHistory,
 		recoveryStarted: make(chan struct{}),
@@ -61,7 +63,24 @@ func (e *gapAwareExec) GenerateExecutionMassStatus(ctx context.Context, query mo
 			return nil, ctx.Err()
 		}
 	}
-	return e.FakeExec.GenerateExecutionMassStatus(ctx, query)
+	mass, err := e.FakeExec.GenerateExecutionMassStatus(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if query.IncludeFills && e.fillHistory {
+		mass.FillsCoverage = model.NewFillCoverage(
+			model.CoverageComplete,
+			query.AccountID,
+			query.ClientID,
+			mass.OpenOrdersCoverage.Scope.InstrumentIDs,
+			query.Since,
+			query.Until,
+		)
+		if err := mass.ValidateFor(query); err != nil {
+			return nil, err
+		}
+	}
+	return mass, nil
 }
 
 func (e *gapAwareExec) emitGap(streamID string, generation uint64, phase contract.StreamGapPhase) {

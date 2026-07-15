@@ -12,87 +12,88 @@ const maxPaginationPages = 1000
 const maxOrderHistoryWindowMillis = int64(7 * 24 * time.Hour / time.Millisecond)
 
 func (c *Client) PlaceOrder(ctx context.Context, req PlaceOrderRequest) (*OrderActionResponse, error) {
-	var resp responseEnvelope[OrderActionResponse]
+	var resp commandResponseEnvelope[OrderActionResponse]
 	err := c.postPrivate(ctx, "/v5/order/create", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: place order failed: %d %s", resp.RetCode, resp.RetMsg)
+	result, err := commandResult("place order", resp)
+	if err != nil {
+		return nil, err
 	}
-	return &resp.Result, nil
+	if err := validateOrderActionResult("place order", result, "", req.OrderLinkID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) BatchPlaceOrders(ctx context.Context, req BatchPlaceOrdersRequest) (*BatchOrderActionResult, error) {
-	var resp responseEnvelope[BatchOrderActionResult]
+	var resp commandResponseEnvelope[BatchOrderActionResult]
 	err := c.postPrivate(ctx, "/v5/order/create-batch", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: batch place orders failed: %d %s", resp.RetCode, resp.RetMsg)
-	}
-	return &resp.Result, nil
+	return commandResult("batch place orders", resp)
 }
 
 func (c *Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (*OrderActionResponse, error) {
-	var resp responseEnvelope[OrderActionResponse]
+	var resp commandResponseEnvelope[OrderActionResponse]
 	err := c.postPrivate(ctx, "/v5/order/cancel", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: cancel order failed: %d %s", resp.RetCode, resp.RetMsg)
+	result, err := commandResult("cancel order", resp)
+	if err != nil {
+		return nil, err
 	}
-	return &resp.Result, nil
+	if err := validateOrderActionResult("cancel order", result, req.OrderID, req.OrderLinkID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) BatchCancelOrders(ctx context.Context, req BatchCancelOrdersRequest) (*BatchOrderActionResult, error) {
-	var resp responseEnvelope[BatchOrderActionResult]
+	var resp commandResponseEnvelope[BatchOrderActionResult]
 	err := c.postPrivate(ctx, "/v5/order/cancel-batch", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: batch cancel orders failed: %d %s", resp.RetCode, resp.RetMsg)
-	}
-	return &resp.Result, nil
+	return commandResult("batch cancel orders", resp)
 }
 
 func (c *Client) CancelAllOrders(ctx context.Context, req CancelAllOrdersRequest) error {
-	var resp responseEnvelope[map[string]any]
+	var resp commandResponseEnvelope[map[string]any]
 	err := c.postPrivate(ctx, "/v5/order/cancel-all", req, &resp)
 	if err != nil {
 		return err
 	}
-	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit sdk: cancel all orders failed: %d %s", resp.RetCode, resp.RetMsg)
-	}
-	return nil
+	_, err = commandResult("cancel all orders", resp)
+	return err
 }
 
 func (c *Client) AmendOrder(ctx context.Context, req AmendOrderRequest) (*OrderActionResponse, error) {
-	var resp responseEnvelope[OrderActionResponse]
+	var resp commandResponseEnvelope[OrderActionResponse]
 	err := c.postPrivate(ctx, "/v5/order/amend", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: amend order failed: %d %s", resp.RetCode, resp.RetMsg)
+	result, err := commandResult("amend order", resp)
+	if err != nil {
+		return nil, err
 	}
-	return &resp.Result, nil
+	if err := validateOrderActionResult("amend order", result, req.OrderID, req.OrderLinkID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) BatchAmendOrders(ctx context.Context, req BatchAmendOrdersRequest) (*BatchOrderActionResult, error) {
-	var resp responseEnvelope[BatchOrderActionResult]
+	var resp commandResponseEnvelope[BatchOrderActionResult]
 	err := c.postPrivate(ctx, "/v5/order/amend-batch", req, &resp)
 	if err != nil {
 		return nil, err
 	}
-	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit sdk: batch amend orders failed: %d %s", resp.RetCode, resp.RetMsg)
-	}
-	return &resp.Result, nil
+	return commandResult("batch amend orders", resp)
 }
 
 func (c *Client) GetOpenOrders(ctx context.Context, category, symbol string) ([]OrderRecord, error) {

@@ -194,7 +194,7 @@ func accountEventsFromAccountPosition(ev *sdkspot.AccountPositionEvent, accountI
 		if err != nil {
 			return nil, fmt.Errorf("aster spot: account position %s: %w", row.Asset, err)
 		}
-		balance := model.AccountBalance{AccountID: accountID, Currency: row.Asset, Total: free.Add(locked), Free: free, Available: free, Locked: locked, UpdatedAt: ts}
+		balance := model.AccountBalance{AccountID: accountID, Currency: row.Asset, Total: free.Add(locked), Free: free, Locked: locked, UpdatedAt: ts}
 		if err := balance.ValidateCash(); err != nil {
 			return nil, err
 		}

@@ -147,7 +147,6 @@ func balancesAndMargins(accountID string, accountMode sdk.AccountAbstraction, pe
 				Currency:  currency,
 				Total:     totals.total,
 				Free:      totals.free,
-				Available: totals.free,
 				Locked:    totals.marginUsed,
 				UpdatedAt: now,
 			})
@@ -169,7 +168,6 @@ func balancesAndMargins(accountID string, accountMode sdk.AccountAbstraction, pe
 		if idx, ok := balanceIndex[currency]; ok {
 			balances[idx].Total = balances[idx].Total.Add(balance.Total)
 			balances[idx].Free = balances[idx].Free.Add(balance.Free)
-			balances[idx].Available = balances[idx].Available.Add(balance.Available)
 			balances[idx].Locked = balances[idx].Locked.Add(balance.Locked)
 			continue
 		}
@@ -296,7 +294,6 @@ func spotBalance(accountID string, raw sdk.SpotBalance, now time.Time) (model.Ac
 		Currency:  raw.Coin,
 		Total:     total,
 		Free:      free,
-		Available: free,
 		Locked:    locked,
 		UpdatedAt: now,
 	}, nil

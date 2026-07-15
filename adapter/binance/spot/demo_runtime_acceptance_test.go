@@ -29,9 +29,9 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime balance preflight: %v", err)
 	}
-	startBaseAvailable := startBalances[spec.BaseCurrency].Available
+	startBaseAvailable := startBalances[spec.BaseCurrency].Free
 	startBaseTotal := startBalances[spec.BaseCurrency].Total
-	quoteAvailable := startBalances[spec.QuoteCurrency].Available
+	quoteAvailable := startBalances[spec.QuoteCurrency].Free
 	requiredQuote := qty.Mul(fillPrice).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
 		t.Fatalf("Binance Spot Demo runtime acceptance has insufficient funds: %s available %s below required %s for %s quantity %s at fill price %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, fillPrice)
@@ -62,8 +62,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
+	runtimeaccept.AssertAccountStateReady(t, node, AccountIDDefault, model.AccountCash, enums.KindSpot)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 before writes", got)
 	}
@@ -88,6 +87,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime node did not become active before Binance Spot Demo writes: %v", err)
 	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID, maxNotional)
 
 	restingClientID := demoClientOrderID("runtime-rest")
 	cleanup.Arm(enums.SideBuy, restingClientID)
@@ -175,7 +175,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if postBuyReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("post-buy Binance Spot Demo runtime reconcile account states=%d, want 1: %+v", postBuyReconcile.AccountStatesApplied, postBuyReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, AccountIDDefault, model.AccountCash, enums.KindSpot)
 
 	closeQty := floorDecimalToStep(baseDelta, spec.SizeStep)
 	if closeQty.GreaterThan(cleanup.CloseLimit()) {
@@ -220,7 +220,7 @@ func TestBinanceSpotDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final Binance Spot Demo runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountCash, enums.KindSpot)
+	runtimeaccept.AssertAccountStateReady(t, node, AccountIDDefault, model.AccountCash, enums.KindSpot)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("spot runtime cache positions=%d, want 0 after final reconcile", got)
 	}

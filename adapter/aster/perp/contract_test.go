@@ -28,7 +28,6 @@ var (
 	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
 	_ contract.ExecutionClient               = (*executionClient)(nil)
 	_ contract.AccountClient                 = (*accountClient)(nil)
-	_ contract.AccountStateReporter          = (*accountClient)(nil)
 	_ contract.AccountIDProvider             = (*executionClient)(nil)
 	_ contract.AccountIDProvider             = (*accountClient)(nil)
 	_ model.InstrumentProvider               = (*instrumentProvider)(nil)
@@ -43,8 +42,8 @@ func TestDefaultAndCustomAccountIDPropagation(t *testing.T) {
 	if exec.AccountID() != AccountIDDefault {
 		t.Fatalf("default account id=%q, want %q", exec.AccountID(), AccountIDDefault)
 	}
-	if AccountIDDefault != model.AccountIDAsterDefault {
-		t.Fatalf("AccountIDDefault=%q, want model.AccountIDAsterDefault %q", AccountIDDefault, model.AccountIDAsterDefault)
+	if AccountIDDefault != "ASTER-001" {
+		t.Fatalf("AccountIDDefault=%q, want %q", AccountIDDefault, "ASTER-001")
 	}
 	order := orderFromResponse(&sdkperp.OrderResponse{
 		Symbol: "BTCUSDT", OrderID: 42, ClientOrderID: "c1", Status: "NEW", Type: "LIMIT", Side: "SELL", TimeInForce: "GTC", OrigQty: "0.25", Price: "60000", ReduceOnly: true,
@@ -94,7 +93,6 @@ func TestValidateSubmitRejectsInvalidPerpRequestsBeforeREST(t *testing.T) {
 		"below minimum notional": withPerp(valid, func(r *model.OrderRequest) { r.Quantity = d("0.01") }),
 		"wrong instrument kind":  withPerp(valid, func(r *model.OrderRequest) { r.InstrumentID.Kind = enums.KindSpot }),
 		"market post only":       withPerp(valid, func(r *model.OrderRequest) { r.Type = enums.TypeMarket; r.TIF = enums.TifGTX; r.Price = decimal.Zero }),
-		"venue options":          withPerp(valid, func(r *model.OrderRequest) { r.Venue = &model.VenueOrderOpts{Native: struct{}{}} }),
 		"hedge position side":    withPerp(valid, func(r *model.OrderRequest) { r.PositionSide = enums.PosLong }),
 	}
 	for name, req := range cases {
@@ -126,6 +124,38 @@ func TestSubmitRejectsMalformedRequiredOrderResponseDecimal(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("Submit accepted malformed required response decimal")
+	}
+}
+
+func TestPerpSubmitRejectsMalformedSuccessfulResponseIdentity(t *testing.T) {
+	inst := mustPerpInstrument(t)
+	req := model.OrderRequest{
+		AccountID: AccountIDDefault, InstrumentID: inst.ID, ClientID: "submit-identity",
+		Side: enums.SideSell, Type: enums.TypeLimit, TIF: enums.TifGTC,
+		Quantity: d("1.23"), Price: d("10.0000"), PositionSide: enums.PosNet, ReduceOnly: true,
+	}
+	for name, identity := range map[string]struct {
+		symbol   string
+		clientID string
+		orderID  int64
+	}{
+		"empty symbol":        {clientID: req.ClientID, orderID: 42},
+		"mismatched symbol":   {symbol: "OTHERUSDT", clientID: req.ClientID, orderID: 42},
+		"empty client id":     {symbol: inst.VenueSymbol, orderID: 42},
+		"mismatched client":   {symbol: inst.VenueSymbol, clientID: "other-client", orderID: 42},
+		"missing venue order": {symbol: inst.VenueSymbol, clientID: req.ClientID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"symbol":%q,"orderId":%d,"clientOrderId":%q,"status":"NEW","type":"LIMIT","side":"SELL","positionSide":"BOTH","timeInForce":"GTC","origQty":"1.23","price":"10","executedQty":"0","cumQty":"0","cumQuote":"0","reduceOnly":true}`, identity.symbol, identity.orderID, identity.clientID)
+			exec := newExecutionClient(perpClientResponse(t, body), testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+			order, err := exec.Submit(context.Background(), req)
+			if order != nil || err == nil {
+				t.Fatalf("order=%+v err=%v, want ambiguous malformed-success error", order, err)
+			}
+			if errors.Is(err, contract.ErrVenueRejected) {
+				t.Fatalf("err=%v, malformed success must not claim venue rejection", err)
+			}
+		})
 	}
 }
 
@@ -273,6 +303,142 @@ func TestPerpGenerateOrderStatusReportHandlesNotFoundAndAccountMismatch(t *testi
 	}
 }
 
+func TestPerpCommandErrorMapsOnlyStructuredBusinessRejections(t *testing.T) {
+	business := astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/fapi/v3/order", -2019, "Margin is insufficient")
+	if err := mapAsterCommandError(business); !errors.Is(err, contract.ErrVenueRejected) {
+		t.Fatalf("business err=%v, want ErrVenueRejected", err)
+	}
+	for _, err := range []error{
+		astercommon.NewVenueError(http.StatusInternalServerError, http.MethodPost, "/fapi/v3/order", -2019, "internal error"),
+		astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/fapi/v3/order", 0, "malformed"),
+		astercommon.NewTransportError(http.MethodPost, "/fapi/v3/order", context.DeadlineExceeded),
+	} {
+		if mapped := mapAsterCommandError(err); errors.Is(mapped, contract.ErrVenueRejected) {
+			t.Fatalf("ambiguous err=%v mapped as venue rejection: %v", err, mapped)
+		}
+	}
+}
+
+func TestPerpAsterErrorMappingsPreserveOriginalVenueError(t *testing.T) {
+	tests := []error{
+		astercommon.NewVenueError(http.StatusUnauthorized, http.MethodPost, "/fapi/v3/order", -2015, "invalid api key"),
+		astercommon.NewVenueError(http.StatusTooManyRequests, http.MethodPost, "/fapi/v3/order", -1003, "too many requests"),
+		astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/fapi/v3/order", -1121, "invalid symbol"),
+		astercommon.NewVenueError(http.StatusBadRequest, http.MethodDelete, "/fapi/v3/order", -2011, "unknown order"),
+		astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/fapi/v3/order", -1013, "invalid precision"),
+	}
+	for _, original := range tests {
+		var want *astercommon.VenueError
+		if !errors.As(original, &want) {
+			t.Fatalf("fixture %T is not VenueError", original)
+		}
+		for name, mapError := range map[string]func(error) error{
+			"query":   mapAsterError,
+			"command": mapAsterCommandError,
+		} {
+			t.Run(fmt.Sprintf("%s/%d", name, want.Code()), func(t *testing.T) {
+				mapped := mapError(original)
+				var got *astercommon.VenueError
+				if !errors.As(mapped, &got) || got != want {
+					t.Fatalf("mapped=%v VenueError=%p, want original %p", mapped, got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestPerpCancelRequiresExactAuthoritativeSuccessResponse(t *testing.T) {
+	inst := mustPerpInstrument(t)
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "exact canceled order", body: `{"symbol":"ASTERUSDT","orderId":42,"clientOrderId":"client-42","status":"CANCELED"}`},
+		{name: "empty object", body: `{}`, wantErr: true},
+		{name: "zero order id", body: `{"symbol":"ASTERUSDT","orderId":0,"status":"CANCELED"}`, wantErr: true},
+		{name: "mismatched order id", body: `{"symbol":"ASTERUSDT","orderId":43,"status":"CANCELED"}`, wantErr: true},
+		{name: "mismatched symbol", body: `{"symbol":"OTHERUSDT","orderId":42,"status":"CANCELED"}`, wantErr: true},
+		{name: "mismatched status", body: `{"symbol":"ASTERUSDT","orderId":42,"status":"NEW"}`, wantErr: true},
+		{name: "lowercase status", body: `{"symbol":"ASTERUSDT","orderId":42,"status":"canceled"}`, wantErr: true},
+		{name: "padded status", body: `{"symbol":"ASTERUSDT","orderId":42,"status":" CANCELED "}`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := perpClientNoNetwork(t)
+			client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(test.body)), Header: make(http.Header), Request: request}, nil
+			})})
+			exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+			err := exec.Cancel(context.Background(), inst.ID, "42")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Cancel err=%v, wantErr=%v", err, test.wantErr)
+			}
+			if errors.Is(err, contract.ErrVenueRejected) {
+				t.Fatalf("HTTP-200 response validation err=%v must remain ambiguous", err)
+			}
+		})
+	}
+}
+
+func TestPerpCommandOutcomeMatrixUsesVenueRejectedOnlyForDefinitiveBusinessErrors(t *testing.T) {
+	inst := mustPerpInstrument(t)
+	req := model.OrderRequest{
+		AccountID: AccountIDDefault, InstrumentID: inst.ID, ClientID: "command-perp",
+		Side: enums.SideSell, Type: enums.TypeLimit, TIF: enums.TifGTC,
+		Quantity: d("1.23"), Price: d("10.0000"), PositionSide: enums.PosNet, ReduceOnly: true,
+	}
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		transport  error
+		definitive bool
+	}{
+		{name: "business 4xx", statusCode: http.StatusBadRequest, body: `{"code":-2019,"msg":"Margin is insufficient"}`, definitive: true},
+		{name: "transport", transport: context.DeadlineExceeded},
+		{name: "http 5xx", statusCode: http.StatusInternalServerError, body: `{"code":-2019,"msg":"internal"}`},
+		{name: "malformed success", statusCode: http.StatusOK, body: `{not-json`},
+	}
+	for _, operation := range []string{"submit", "cancel"} {
+		for _, test := range tests {
+			t.Run(operation+"/"+test.name, func(t *testing.T) {
+				body := test.body
+				if operation == "cancel" && test.definitive {
+					body = `{"code":-2011,"msg":"Unknown order"}`
+				}
+				client := perpClientNoNetwork(t)
+				client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					if test.transport != nil {
+						return nil, test.transport
+					}
+					return &http.Response{StatusCode: test.statusCode, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: request}, nil
+				})})
+				exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+				var err error
+				if operation == "submit" {
+					_, err = exec.Submit(context.Background(), req)
+				} else {
+					err = exec.Cancel(context.Background(), inst.ID, "42")
+				}
+				if err == nil {
+					t.Fatal("command unexpectedly succeeded")
+				}
+				if got := errors.Is(err, contract.ErrVenueRejected); got != test.definitive {
+					t.Fatalf("err=%v venueRejected=%v, want %v", err, got, test.definitive)
+				}
+				if test.transport != nil && !errors.Is(err, test.transport) {
+					t.Fatalf("err=%v, want preserved transport cause %v", err, test.transport)
+				}
+			})
+		}
+	}
+	exec := newExecutionClient(nil, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
+	if order, err := exec.Modify(context.Background(), inst.ID, "42", d("10.1"), d("1.23")); order != nil || !errors.Is(err, contract.ErrNotSupported) {
+		t.Fatalf("Modify order=%+v err=%v, want ErrNotSupported", order, err)
+	}
+}
+
 func TestInstrumentConversionUsesExactDecimalIncrements(t *testing.T) {
 	inst := mustPerpInstrument(t)
 	if inst.ID != (model.InstrumentID{Venue: VenueName, Symbol: "ASTER-USDT", Kind: enums.KindPerp}) {
@@ -335,7 +501,7 @@ func TestCapabilitiesAndUnsupportedBehaviorAreTruthful(t *testing.T) {
 	if !exec.Capabilities().Trading.CancelAll || exec.Capabilities().Trading.Modify || !exec.Capabilities().Reports.OpenOrders || !exec.Capabilities().Reports.SingleOrderStatus || exec.Capabilities().Streaming.Execution {
 		t.Fatalf("exec capabilities=%#v", exec.Capabilities())
 	}
-	if !acct.Capabilities().Reports.PositionReports || !acct.Capabilities().Reports.AccountStateSnapshots {
+	if !acct.Capabilities().Reports.PositionReports || !acct.Capabilities().Reports.AccountBalanceSnapshots {
 		t.Fatalf("acct capabilities=%#v", acct.Capabilities())
 	}
 	if _, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{}); !errors.Is(err, contract.ErrNotSupported) {
@@ -492,12 +658,10 @@ func TestPerpExecutionMassStatusResyncsOpenOrdersFillsAndPositions(t *testing.T)
 		"/fapi/v3/positionRisk": `[{"symbol":"ASTERUSDT","positionSide":"BOTH","positionAmt":"-2.5","entryPrice":"1.2","markPrice":"1.1","unRealizedProfit":"-0.25","leverage":"3","updateTime":1700000000000}]`,
 	})
 	exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDDefault, IncludeFills: true, IncludePositions: true})
+	query := model.MassStatusQuery{AccountID: AccountIDDefault, IncludeFills: true, IncludePositions: true}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus returned error: %v", err)
-	}
-	if mass.Partial {
-		t.Fatalf("complete open-order enumeration must not be partial: warnings=%#v", mass.Warnings)
 	}
 	if len(mass.OrderReports) != 1 || mass.OrderReports["42"].Order.VenueOrderID != "42" {
 		t.Fatalf("order reports=%#v", mass.OrderReports)
@@ -507,6 +671,21 @@ func TestPerpExecutionMassStatusResyncsOpenOrdersFillsAndPositions(t *testing.T)
 	}
 	if len(mass.PositionReports) != 1 {
 		t.Fatalf("position reports=%#v", mass.PositionReports)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("typed coverage: %v", err)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != model.CoverageComplete || mass.PositionsCoverage.State != model.CoverageComplete {
+		t.Fatalf("coverage=%+v/%+v/%+v", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage)
+	}
+	if open := mass.OpenOrdersCoverage.Scope; open.AccountID != AccountIDDefault || open.ClientID != "" || len(open.InstrumentIDs) != 1 || open.InstrumentIDs[0] != inst.ID || open.Through.IsZero() || !open.From.IsZero() {
+		t.Fatalf("open-order coverage scope=%+v, want exact account/instrument snapshot scope", open)
+	}
+	if fills := mass.FillsCoverage.Scope; fills.AccountID != AccountIDDefault || fills.ClientID != "" || len(fills.InstrumentIDs) != 1 || fills.InstrumentIDs[0] != inst.ID || !fills.From.IsZero() || fills.Through.IsZero() {
+		t.Fatalf("fill coverage scope=%+v, want exact account/instrument history scope", fills)
+	}
+	if positions := mass.PositionsCoverage.Scope; positions.AccountID != AccountIDDefault || positions.ClientID != "" || len(positions.InstrumentIDs) != 1 || positions.InstrumentIDs[0] != inst.ID || positions.Through.IsZero() || !positions.From.IsZero() {
+		t.Fatalf("position coverage scope=%+v, want exact account/instrument snapshot scope", positions)
 	}
 }
 
@@ -559,12 +738,13 @@ func TestPerpExecutionMassStatusBoundsFillHistoryAndWarnsOnSaturation(t *testing
 
 	inst := mustPerpInstrument(t)
 	exec := newExecutionClient(client, testProvider(inst), clock.NewRealClock(), AccountIDDefault)
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
+	query := model.MassStatusQuery{
 		AccountID:    AccountIDDefault,
 		Since:        since,
 		Until:        until,
 		IncludeFills: true,
-	})
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
@@ -575,8 +755,17 @@ func TestPerpExecutionMassStatusBoundsFillHistoryAndWarnsOnSaturation(t *testing
 	if totalFills != fillLimit {
 		t.Fatalf("fill reports=%d, want bounded page of %d", totalFills, fillLimit)
 	}
-	if !mass.Partial {
-		t.Fatal("saturated fill history was reported as complete")
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != model.CoveragePartial || mass.PositionsCoverage.State != model.CoverageNotRequested {
+		t.Fatalf("fills coverage=%+v, want typed Partial for saturated history", mass.FillsCoverage)
+	}
+	if fills := mass.FillsCoverage.Scope; fills.AccountID != AccountIDDefault || fills.ClientID != "" || len(fills.InstrumentIDs) != 1 || fills.InstrumentIDs[0] != inst.ID || !fills.From.Equal(since) || !fills.Through.Equal(until) {
+		t.Fatalf("fills coverage scope=%+v, want exact [%s,%s] history scope for %s", fills, since, until, inst.ID)
+	}
+	if !mass.PositionsCoverage.Scope.IsZero() {
+		t.Fatalf("not-requested position coverage scope=%+v, want zero", mass.PositionsCoverage.Scope)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("ValidateFor: %v", err)
 	}
 	for _, warning := range mass.Warnings {
 		if warning.Code == "FILL_REPORTS_LIMIT_REACHED" {

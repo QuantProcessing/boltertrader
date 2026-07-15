@@ -455,7 +455,7 @@ func (c *lighterAcceptanceExposureCleaner) CaptureBaseline(ctx context.Context, 
 		}
 		balance := lighterAcceptanceBalance(state, inst.Base)
 		baseline.BaseTotal = balance.Total
-		baseline.BaseAvailable = balance.FreeOrAvailable()
+		baseline.BaseAvailable = balance.Free
 	default:
 		return lighterAcceptanceExposureBaseline{}, fmt.Errorf("unsupported Lighter acceptance exposure kind %s", inst.ID.Kind)
 	}
@@ -513,7 +513,7 @@ func (c *lighterAcceptanceExposureCleaner) recoverPerp(ctx context.Context, inst
 		return err
 	}
 	_, err = c.exec.Submit(ctx, model.OrderRequest{
-		AccountID:    model.AccountIDLighterDefault,
+		AccountID:    AccountIDDefault,
 		InstrumentID: inst.ID,
 		ClientID:     newLighterAcceptanceClientID("cleanup-perp"),
 		Side:         enums.SideSell,
@@ -555,7 +555,7 @@ func (c *lighterAcceptanceExposureCleaner) recoverSpot(
 		return fmt.Errorf("Lighter owned Spot delta notional %s is below minimum %s", closeQty.Mul(price), inst.MinNotional)
 	}
 	_, err = c.exec.Submit(ctx, model.OrderRequest{
-		AccountID:    model.AccountIDLighterDefault,
+		AccountID:    AccountIDDefault,
 		InstrumentID: inst.ID,
 		ClientID:     newLighterAcceptanceClientID("cleanup-spot"),
 		Side:         enums.SideSell,
@@ -602,7 +602,7 @@ func (c *lighterAcceptanceExposureCleaner) waitForOwnedSpotDelta(
 			return decimal.Zero, fmt.Errorf("read Lighter Spot exposure for cleanup: %w", err)
 		}
 		current := lighterAcceptanceBalance(state, baseline.BaseCurrency)
-		currentAvailable := current.FreeOrAvailable()
+		currentAvailable := current.Free
 		if current.Total.LessThan(baseline.BaseTotal) {
 			return decimal.Zero, fmt.Errorf("refusing Lighter Spot cleanup: current %s total %s is below pre-submit baseline %s", baseline.BaseCurrency, current.Total, baseline.BaseTotal)
 		}
@@ -670,7 +670,7 @@ func (c *lighterAcceptanceExposureCleaner) waitForSpotBaseline(ctx context.Conte
 			return fmt.Errorf("confirm Lighter Spot cleanup: %w", err)
 		}
 		current := lighterAcceptanceBalance(state, baseline.BaseCurrency)
-		currentAvailable := current.FreeOrAvailable()
+		currentAvailable := current.Free
 		if current.Total.LessThan(baseline.BaseTotal) {
 			return fmt.Errorf("Lighter Spot cleanup consumed pre-existing %s: total=%s baseline=%s", baseline.BaseCurrency, current.Total, baseline.BaseTotal)
 		}
@@ -716,7 +716,7 @@ func lighterAcceptanceBalance(state model.AccountState, currency string) model.A
 			return balance
 		}
 	}
-	return model.AccountBalance{AccountID: model.AccountIDLighterDefault, Currency: currency}
+	return model.AccountBalance{AccountID: AccountIDDefault, Currency: currency}
 }
 
 func minLighterAcceptanceDecimal(values ...decimal.Decimal) decimal.Decimal {

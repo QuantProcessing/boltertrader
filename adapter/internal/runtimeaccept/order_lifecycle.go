@@ -60,7 +60,7 @@ type PerpPositionReporter interface {
 }
 
 type spotBalanceGuardConfig struct {
-	reporter      contract.AccountStateReporter
+	reporter      accountStateSource
 	baseCurrency  string
 	sizeStep      decimal.Decimal
 	minQty        decimal.Decimal
@@ -68,6 +68,10 @@ type spotBalanceGuardConfig struct {
 	feeReserve    decimal.Decimal
 	closeQuantity decimal.Decimal
 	closePrice    decimal.Decimal
+}
+
+type accountStateSource interface {
+	AccountState(context.Context) (model.AccountState, error)
 }
 
 type spotBalanceSnapshot struct {
@@ -226,7 +230,7 @@ func (e *spotBalanceInvariantError) Unwrap() error { return e.err }
 // a Spot acceptance lifecycle without changing the public lifecycle API.
 func ConfigureSpotBalanceGuard(
 	spec OrderLifecycleSpec,
-	reporter contract.AccountStateReporter,
+	reporter accountStateSource,
 	baseCurrency string,
 	sizeStep, minQty, minNotional, feeReserve decimal.Decimal,
 ) OrderLifecycleSpec {
@@ -1575,7 +1579,7 @@ func validateOrderLifecycleSpec(spec OrderLifecycleSpec) error {
 	return nil
 }
 
-func isNilSpotBalanceReporter(reporter contract.AccountStateReporter) bool {
+func isNilSpotBalanceReporter(reporter accountStateSource) bool {
 	if reporter == nil {
 		return true
 	}

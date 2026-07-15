@@ -88,9 +88,9 @@ func TestAccountStateFromLighterAccountIsUnifiedMargin(t *testing.T) {
 		},
 	}
 
-	state := accountStateFromLighterAccount(acct, model.AccountIDLighterDefault, now)
+	state := accountStateFromLighterAccount(acct, AccountIDDefault, now)
 
-	if state.AccountID != model.AccountIDLighterDefault || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
+	if state.AccountID != AccountIDDefault || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
 		t.Fatalf("unexpected state identity: %+v", state)
 	}
 	if err := state.Validate(); err != nil {
@@ -123,7 +123,7 @@ func TestPlaceOrderRequestQuantizesTicksAndAccountID(t *testing.T) {
 	exec := newExecutionClient(nil, provider, clock.NewSimulatedClock(now), 66)
 
 	req, index, err := exec.placeOrderRequest(model.OrderRequest{
-		AccountID:    model.AccountIDLighterDefault,
+		AccountID:    AccountIDDefault,
 		InstrumentID: inst.ID,
 		ClientID:     "lighter-test-order",
 		Side:         enums.SideBuy,
@@ -173,7 +173,7 @@ func TestLighterFilledSubmitEmitsDeterministicLocalFill(t *testing.T) {
 		PositionMode: model.NetOnly,
 	}
 	req := model.OrderRequest{
-		AccountID:    model.AccountIDLighterDefault,
+		AccountID:    AccountIDDefault,
 		InstrumentID: inst.ID,
 		ClientID:     "lighter-filled-submit",
 		Side:         enums.SideBuy,
@@ -271,8 +271,8 @@ func TestReportsRejectMismatchedAccountIDBeforeREST(t *testing.T) {
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "LIGHTER-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "LIGHTER-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty LIGHTER-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want fail-closed error", mass, err)
 	}
 }
 

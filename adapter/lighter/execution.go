@@ -2,9 +2,11 @@ package lighter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +37,7 @@ func newExecutionClient(rest *sdk.Client, provider *registry, clk clock.Clock, a
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
-	accountID := model.AccountIDLighterDefault
+	accountID := AccountIDDefault
 	if len(accountIDs) > 0 && accountIDs[0] != "" {
 		accountID = accountIDs[0]
 	}
@@ -87,8 +89,11 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	if res.Code != 0 && res.Code != 200 {
-		return &model.Order{Request: req, Status: enums.StatusRejected, RejectReason: res.Message, UpdatedAt: c.clk.Now()}, fmt.Errorf("lighter: place order rejected code=%d message=%s", res.Code, res.Message)
+	if resultErr := lighterCommandResultError(res.Code, res.Message, res.TxHash); resultErr != nil {
+		if !errors.Is(resultErr, contract.ErrVenueRejected) {
+			return nil, resultErr
+		}
+		return &model.Order{Request: req, Status: enums.StatusRejected, RejectReason: res.Message, UpdatedAt: c.clk.Now()}, resultErr
 	}
 	var order *model.Order
 	if wire.TimeInForce == sdk.OrderTimeInForceImmediateOrCancel {
@@ -331,8 +336,8 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return err
 	}
-	if res.Code != 0 && res.Code != 200 {
-		return fmt.Errorf("lighter: cancel rejected code=%d message=%s", res.Code, res.Message)
+	if resultErr := lighterCommandResultError(res.Code, res.Message, res.TxHash); resultErr != nil {
+		return resultErr
 	}
 	c.emitCanceled(id, venueOrderID)
 	return nil
@@ -389,8 +394,8 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	if res.Code != 0 && res.Code != 200 {
-		return nil, fmt.Errorf("lighter: modify rejected code=%d message=%s", res.Code, res.Message)
+	if resultErr := lighterCommandResultError(res.Code, res.Message, res.TxHash); resultErr != nil {
+		return nil, resultErr
 	}
 	order.Request.Price = price
 	order.Request.Quantity = qty
@@ -419,9 +424,19 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 }
 
 func (c *executionClient) openOrdersForMarket(ctx context.Context, marketID int) ([]sdk.Order, error) {
+	page, err := c.openOrdersPageForMarket(ctx, marketID)
+	return page.orders, err
+}
+
+type openOrdersPage struct {
+	orders     []sdk.Order
+	nextCursor string
+}
+
+func (c *executionClient) openOrdersPageForMarket(ctx context.Context, marketID int) (openOrdersPage, error) {
 	res, err := c.rest.GetAccountActiveOrders(ctx, marketID)
 	if err != nil {
-		return nil, err
+		return openOrdersPage{}, err
 	}
 	out := make([]sdk.Order, 0, len(res.Orders))
 	for _, order := range res.Orders {
@@ -430,14 +445,21 @@ func (c *executionClient) openOrdersForMarket(ctx context.Context, marketID int)
 		}
 		out = append(out, *order)
 	}
-	return out, nil
+	return openOrdersPage{orders: out, nextCursor: res.NextCursor}, nil
 }
 
 func (c *executionClient) orderFromLighter(o *sdk.Order) model.Order {
+	return c.orderFromLighterWithRegistry(o, c.provider)
+}
+
+func (c *executionClient) orderFromLighterWithRegistry(o *sdk.Order, provider *registry) model.Order {
 	if o == nil {
 		return model.Order{}
 	}
-	inst, _ := c.provider.byMarket(o.MarketIndex)
+	inst, _ := provider.byMarket(o.MarketIndex)
+	if inst == nil {
+		return model.Order{}
+	}
 	clientID := ""
 	if o.ClientOrderIndex != 0 {
 		clientID = c.lookupClientID(o.ClientOrderIndex)
@@ -572,23 +594,151 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	accountID, ok := c.scopedReportAccountID(query.AccountID)
 	if !ok {
-		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("lighter: mass status account %q does not match adapter account %q", query.AccountID, c.accountID)
+	}
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != venueName {
+		return nil, fmt.Errorf("lighter: mass status venue %q does not match %q", query.Venue, venueName)
+	}
+	openIDs, openRegistry, err := c.freezeMassStatusRegistry(query.InstrumentIDs)
+	if err != nil {
+		return nil, err
 	}
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	mass.Partial = true
-	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
-	if err != nil {
-		return nil, err
+	if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 	}
-	for _, report := range reports {
-		if err := mass.AddOrderReport(report); err != nil {
-			return nil, err
+
+	openStartedAt := c.clk.Now()
+	openSuccesses := 0
+	openFailures := 0
+	openTruncated := false
+	for _, id := range openIDs {
+		instrument, ok := openRegistry.Instrument(id)
+		if !ok || instrument.AssetIndex == nil {
+			openFailures++
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: fmt.Sprintf("lighter: missing frozen market mapping for %s", id)})
+			continue
+		}
+		page, err := c.openOrdersPageForMarket(ctx, *instrument.AssetIndex)
+		if err != nil {
+			openFailures++
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: err.Error()})
+			continue
+		}
+		openSuccesses++
+		if strings.TrimSpace(page.nextCursor) != "" {
+			openTruncated = true
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{
+				Code:    "OPEN_ORDERS_TRUNCATED",
+				Message: fmt.Sprintf("lighter: active-order page for %s has a next cursor; completeness is unproven", id),
+			})
+		}
+		reportedAt := c.clk.Now()
+		for i := range page.orders {
+			order := c.orderFromLighterWithRegistry(&page.orders[i], openRegistry)
+			if order.Request.InstrumentID != id || !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+				continue
+			}
+			order = c.rememberOrder(order)
+			if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: reportedAt}); err != nil {
+				return nil, err
+			}
 		}
 	}
+	openState := model.CoverageComplete
+	if openFailures > 0 {
+		if openSuccesses > 0 {
+			openState = model.CoveragePartial
+		} else {
+			openState = model.CoverageUnavailable
+		}
+	}
+	if openTruncated && openSuccesses > 0 {
+		openState = model.CoveragePartial
+	}
+	if query.ClientID != "" && openSuccesses > 0 {
+		openState = model.CoveragePartial
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{
+			Code:    "OPEN_ORDERS_CLIENT_ID_UNVERIFIED",
+			Message: "lighter: client-id scope depends on lossy process-local client-index reconstruction; completeness is unproven",
+		})
+	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(openState, accountID, query.ClientID, openIDs, openStartedAt)
+
+	if !query.IncludePositions {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	} else {
+		positionIDs, positionRegistry, err := c.freezeMassStatusRegistry(query.InstrumentIDs)
+		if err != nil {
+			return nil, err
+		}
+		positionStartedAt := c.clk.Now()
+		account := newAccountClient(c.rest, positionRegistry, c.clk, c.accountIndex, c.accountID)
+		positions, positionErr := account.Positions(ctx)
+		if positionErr != nil {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, positionIDs, positionStartedAt)
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "POSITIONS_UNAVAILABLE", Message: positionErr.Error()})
+		} else {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, positionIDs, positionStartedAt)
+			selected := instrumentIDSet(positionIDs)
+			reportedAt := c.clk.Now()
+			for _, position := range positions {
+				if _, ok := selected[position.InstrumentID]; !ok {
+					continue
+				}
+				if err := mass.AddPositionReport(model.PositionReport{Venue: venueName, AccountID: accountID, Position: position, ReportedAt: reportedAt}); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
 	return mass, nil
+}
+
+func (c *executionClient) freezeMassStatusRegistry(queryIDs []model.InstrumentID) ([]model.InstrumentID, *registry, error) {
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("lighter: instrument registry required for mass status")
+	}
+	var ids []model.InstrumentID
+	if queryIDs != nil {
+		ids = model.NormalizeInstrumentIDs(queryIDs)
+	} else {
+		instruments := c.provider.All()
+		ids = make([]model.InstrumentID, 0, len(instruments))
+		for _, instrument := range instruments {
+			if instrument != nil {
+				ids = append(ids, instrument.ID)
+			}
+		}
+		ids = model.NormalizeInstrumentIDs(ids)
+	}
+	frozen := make([]*model.Instrument, 0, len(ids))
+	for _, id := range ids {
+		if id.Venue != venueName || id.Symbol == "" || (id.Kind != enums.KindSpot && id.Kind != enums.KindPerp) {
+			return nil, nil, fmt.Errorf("lighter: invalid mass status instrument %s", id)
+		}
+		instrument, ok := c.provider.Instrument(id)
+		if !ok || instrument.AssetIndex == nil {
+			return nil, nil, fmt.Errorf("lighter: cannot freeze market mapping for mass status instrument %s", id)
+		}
+		frozen = append(frozen, instrument)
+	}
+	return ids, newRegistry(frozen), nil
+}
+
+func instrumentIDSet(ids []model.InstrumentID) map[model.InstrumentID]struct{} {
+	set := make(map[model.InstrumentID]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 func (c *executionClient) scopedReportAccountID(accountID string) (string, bool) {
@@ -596,6 +746,24 @@ func (c *executionClient) scopedReportAccountID(accountID string) (string, bool)
 		return c.accountID, true
 	}
 	return c.accountID, accountID == c.accountID
+}
+
+func lighterVenueRejected(code int32, message string) error {
+	return errs.NewExchangeError(venueName, strconv.FormatInt(int64(code), 10), message, contract.ErrVenueRejected)
+}
+
+func lighterCommandResultError(code int32, message, txHash string) error {
+	message = strings.TrimSpace(message)
+	if code == 400 && message != "" {
+		return lighterVenueRejected(code, message)
+	}
+	if code == 0 || code == 200 {
+		if strings.TrimSpace(txHash) == "" {
+			return fmt.Errorf("lighter: ambiguous command response code=%d missing tx_hash", code)
+		}
+		return nil
+	}
+	return fmt.Errorf("lighter: ambiguous command response code=%d message=%q", code, message)
 }
 
 func (c *executionClient) marketIDsForQuery(id model.InstrumentID) []int {

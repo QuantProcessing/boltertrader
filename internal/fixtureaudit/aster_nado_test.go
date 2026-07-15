@@ -192,10 +192,25 @@ func TestAsterNadoApprovedTestNamesAreTraceable(t *testing.T) {
 	}
 
 	namePattern := regexp.MustCompile(`Test[A-Z0-9_][A-Za-z0-9_]*`)
-	covered := make(map[string]bool)
-	for _, name := range namePattern.FindAllString(string(trace), -1) {
-		covered[name] = true
+	functionPattern := regexp.MustCompile(`(?m)^func (Test[A-Z0-9_][A-Za-z0-9_]*)\(`)
+	traceable := make(map[string]bool)
+	mappedImplementations := make(map[string]bool)
+	for _, line := range strings.Split(string(trace), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+			continue
+		}
+		columns := strings.Split(line, "|")
+		if len(columns) < 4 {
+			continue
+		}
+		for _, name := range namePattern.FindAllString(columns[1], -1) {
+			traceable[name] = true
+		}
+		for _, name := range namePattern.FindAllString(columns[2], -1) {
+			mappedImplementations[name] = true
+		}
 	}
+	implemented := make(map[string]bool)
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -214,8 +229,8 @@ func TestAsterNadoApprovedTestNamesAreTraceable(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, name := range namePattern.FindAllString(string(body), -1) {
-			covered[name] = true
+		for _, match := range functionPattern.FindAllStringSubmatch(string(body), -1) {
+			implemented[match[1]] = true
 		}
 		return nil
 	})
@@ -225,13 +240,24 @@ func TestAsterNadoApprovedTestNamesAreTraceable(t *testing.T) {
 
 	var missing []string
 	for _, name := range namePattern.FindAllString(string(approved), -1) {
-		if !covered[name] {
+		if !traceable[name] && !implemented[name] {
 			missing = append(missing, name)
 		}
 	}
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Fatalf("approved Aster/Nado test names lack implementation or traceability: %s", strings.Join(missing, ", "))
+	}
+
+	var missingImplementations []string
+	for name := range mappedImplementations {
+		if !implemented[name] {
+			missingImplementations = append(missingImplementations, name)
+		}
+	}
+	sort.Strings(missingImplementations)
+	if len(missingImplementations) > 0 {
+		t.Fatalf("Aster/Nado traceability maps nonexistent implementation tests: %s", strings.Join(missingImplementations, ", "))
 	}
 }
 

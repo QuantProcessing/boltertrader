@@ -195,7 +195,6 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 		ensureBybitLifecycleFunds(t, label, adapter, state.LastEvent(), lifecycle)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, kind)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id)
 	if err := adapter.Start(ctx); err != nil {
 		t.Fatalf("%s private stream: %v", label, err)
 	}
@@ -208,6 +207,10 @@ func runBybitRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret string, pr
 		close(done)
 	}()
 	defer stopBybitRuntimeNode(t, stop, done)
+	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
+		t.Fatalf("%s runtime did not become active before risk probe: %v", label, err)
+	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id, maxNotional)
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
 		t.Fatalf("%s runtime order lifecycle: %v", label, err)
 	}
@@ -497,7 +500,7 @@ func bybitAvailableBalance(state model.AccountState, currency string) decimal.De
 		if balance.Currency != currency {
 			continue
 		}
-		if candidate := balance.FreeOrAvailable(); candidate.GreaterThan(available) {
+		if candidate := balance.Free; candidate.GreaterThan(available) {
 			available = candidate
 		}
 	}

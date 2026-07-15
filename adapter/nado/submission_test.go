@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,87 +19,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestNadoPreTradeChecksCapacityBeforePreparedLeaseAndSubmitConsumesOnce(t *testing.T) {
-	clk := clock.NewSimulatedClock(time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
-	exec := newExecutionClient(nil, nadoTestProvider(), clk, enums.KindSpot, AccountIDUnified)
-	deps := &recordingPreTradeDeps{
-		sender:     "sender-1",
-		maxSizeX18: "5000000000000000000",
-		prepared:   preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", "digest-1"),
-		executed:   &sdk.PlaceOrderResponse{Digest: "digest-1"},
-	}
-	exec.pretrade = deps
-
-	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
-	lease, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err != nil {
-		t.Fatalf("ValidatePreTrade: %v", err)
-	}
-	if lease == nil {
-		t.Fatal("ValidatePreTrade returned nil lease")
-	}
-	if got, want := deps.calls, []string{"sender", "max", "prepare"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("call order=%v, want %v", got, want)
-	}
-	if deps.maxReq == nil || deps.maxReq.SpotLeverage == nil || *deps.maxReq.SpotLeverage {
-		t.Fatalf("spot max_order_size must set spot_leverage=false: %+v", deps.maxReq)
-	}
-	if !exec.Capabilities().Trading.Submit {
-		t.Fatal("Submit capability must be true when pretrade executor is configured")
-	}
-
-	order, err := exec.Submit(context.Background(), req)
-	if err != nil {
-		t.Fatalf("Submit: %v", err)
-	}
-	if order.VenueOrderID != "digest-1" || order.Status != enums.StatusNew || order.Request.ClientID != req.ClientID {
-		t.Fatalf("submitted order mismatch: %+v", order)
-	}
-	if got, want := deps.calls, []string{"sender", "max", "prepare", "execute"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("call order after submit=%v, want %v", got, want)
-	}
-	if _, err := exec.Submit(context.Background(), req); err == nil || !strings.Contains(err.Error(), "prepared") {
-		t.Fatalf("reused prepared state must fail closed, err=%v", err)
-	}
-	lease.Release()
-	lease.Release()
-}
-
-func TestNadoPreTradeRejectsBeforePrepareAndExecute(t *testing.T) {
-	clk := clock.NewSimulatedClock(time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
-	exec := newExecutionClient(nil, nadoTestProvider(), clk, enums.KindPerp, AccountIDUnified)
-	deps := &recordingPreTradeDeps{
-		sender:     "sender-1",
-		maxSizeX18: "100000000000000000",
-		prepared:   preparedOrderForTest(2, "1000000000000000000", "2000000000000000000", "digest-2"),
-	}
-	exec.pretrade = deps
-
-	req := nadoTestOrderRequest(enums.KindPerp, enums.SideBuy)
-	_, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err == nil || !strings.Contains(err.Error(), "max_order_size") {
-		t.Fatalf("capacity rejection err=%v", err)
-	}
-	if got, want := deps.calls, []string{"sender", "max"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("call order=%v, want %v", got, want)
-	}
-	if _, err := exec.Submit(context.Background(), req); err == nil {
-		t.Fatal("Submit without prepared state must fail closed")
-	}
-
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	deps.calls = nil
-	_, err = exec.ValidatePreTrade(cancelled, req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled ValidatePreTrade err=%v, want context.Canceled", err)
-	}
-	if len(deps.calls) != 0 {
-		t.Fatalf("cancelled context must not call transport: %v", deps.calls)
-	}
-}
-
-func TestNadoPreTradeUsesDiscoveredIsolatedOnlyMode(t *testing.T) {
+func TestNadoSubmitUsesDiscoveredIsolatedOnlyMode(t *testing.T) {
 	symbols := nadoTestSymbols()
 	perp := symbols.Symbols["BTC_USDT0-PERP"]
 	perp.IsolatedOnly = true
@@ -111,19 +29,14 @@ func TestNadoPreTradeUsesDiscoveredIsolatedOnlyMode(t *testing.T) {
 		t.Fatalf("newInstrumentProviderFromDiscovery: %v", err)
 	}
 	exec := newExecutionClient(nil, provider, clock.NewRealClock(), enums.KindPerp, AccountIDUnified)
-	deps := newRecordingPreTradeDeps()
-	exec.pretrade = deps
+	deps := newRecordingSubmissionDeps()
+	exec.submitter = deps
 	req := nadoTestOrderRequest(enums.KindPerp, enums.SideBuy)
-	lease, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err != nil {
-		t.Fatalf("ValidatePreTrade: %v", err)
-	}
-	defer lease.Release()
-	if deps.maxReq.Isolated == nil || !*deps.maxReq.Isolated {
-		t.Fatalf("max_order_size isolated=%v, want true", deps.maxReq.Isolated)
+	if _, err := exec.Submit(context.Background(), req); err != nil {
+		t.Fatalf("Submit: %v", err)
 	}
 	if !deps.input.Isolated {
-		t.Fatal("prepared order did not use discovered isolated-only mode")
+		t.Fatal("ordinary submit did not use discovered isolated-only mode")
 	}
 	if deps.input.IsolatedMargin != 2 {
 		t.Fatalf("isolated margin=%v, want 1x notional 2", deps.input.IsolatedMargin)
@@ -139,96 +52,6 @@ func TestNadoPreTradeUsesDiscoveredIsolatedOnlyMode(t *testing.T) {
 	}
 	if !input.Isolated || input.IsolatedMargin != 0 {
 		t.Fatalf("reduce-only isolated input=%+v, want isolated with zero added margin", input)
-	}
-}
-
-func TestNadoPreTradeCancellationStagesStopBeforeLaterVenueCalls(t *testing.T) {
-	clk := clock.NewSimulatedClock(time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
-	req := nadoTestOrderRequest(enums.KindPerp, enums.SideBuy)
-
-	t.Run("after max size", func(t *testing.T) {
-		exec := newExecutionClient(nil, nadoTestProvider(), clk, enums.KindPerp, AccountIDUnified)
-		ctx, cancel := context.WithCancel(context.Background())
-		deps := &recordingPreTradeDeps{
-			sender:     "sender-1",
-			maxSizeX18: "5000000000000000000",
-			prepared:   preparedOrderForTest(2, "1000000000000000000", "2000000000000000000", "digest-cancel-max"),
-			onMax:      cancel,
-		}
-		exec.pretrade = deps
-
-		_, err := exec.ValidatePreTrade(ctx, req, mustNadoInstrument(t, exec, req.InstrumentID))
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("ValidatePreTrade err=%v, want context.Canceled", err)
-		}
-		if got, want := deps.calls, []string{"sender", "max"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("call order=%v, want %v", got, want)
-		}
-		if got := exec.preparedLen(); got != 0 {
-			t.Fatalf("prepared entries after max cancel=%d, want 0", got)
-		}
-	})
-
-	t.Run("after prepare", func(t *testing.T) {
-		exec := newExecutionClient(nil, nadoTestProvider(), clk, enums.KindPerp, AccountIDUnified)
-		ctx, cancel := context.WithCancel(context.Background())
-		deps := &recordingPreTradeDeps{
-			sender:     "sender-1",
-			maxSizeX18: "5000000000000000000",
-			prepared:   preparedOrderForTest(2, "1000000000000000000", "2000000000000000000", "digest-cancel-prepare"),
-			onPrepare:  cancel,
-		}
-		exec.pretrade = deps
-
-		_, err := exec.ValidatePreTrade(ctx, req, mustNadoInstrument(t, exec, req.InstrumentID))
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("ValidatePreTrade err=%v, want context.Canceled", err)
-		}
-		if got, want := deps.calls, []string{"sender", "max", "prepare"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("call order=%v, want %v", got, want)
-		}
-		if got := exec.preparedLen(); got != 0 {
-			t.Fatalf("prepared entries after prepare cancel=%d, want 0", got)
-		}
-		if deps.prepared.Signature != "" || deps.prepared.EncodedOrder != "" || deps.prepared.Request != nil {
-			t.Fatalf("cancelled prepared payload was not redacted: %+v", deps.prepared)
-		}
-	})
-}
-
-func TestNadoPreparedLeaseReleaseIsConcurrentSafeAndRemovesPayload(t *testing.T) {
-	clk := clock.NewSimulatedClock(time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
-	exec := newExecutionClient(nil, nadoTestProvider(), clk, enums.KindSpot, AccountIDUnified)
-	deps := &recordingPreTradeDeps{
-		sender:     "sender-1",
-		maxSizeX18: "5000000000000000000",
-		prepared:   preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", "digest-3"),
-	}
-	exec.pretrade = deps
-
-	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
-	lease, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err != nil {
-		t.Fatalf("ValidatePreTrade: %v", err)
-	}
-	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			lease.Release()
-		}()
-	}
-	wg.Wait()
-
-	if _, err := exec.Submit(context.Background(), req); err == nil || !strings.Contains(err.Error(), "prepared") {
-		t.Fatalf("released prepared state must fail closed, err=%v", err)
-	}
-	if got := exec.preparedLen(); got != 0 {
-		t.Fatalf("prepared cache len=%d, want 0", got)
-	}
-	if deps.prepared.Signature != "" || deps.prepared.EncodedOrder != "" || deps.prepared.Request != nil {
-		t.Fatalf("removed prepared payload was not redacted: %+v", deps.prepared)
 	}
 }
 
@@ -384,19 +207,37 @@ func TestNadoMassStatusCompleteOpenEnumerationRepairsMissedCancellation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := newExecutionClient(rest, nadoTestProvider(), clk, enums.KindPerp, AccountIDUnified)
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDUnified})
+	provider := nadoTestProvider()
+	exec := newExecutionClient(rest, provider, clk, enums.KindPerp, AccountIDUnified)
+	query := model.MassStatusQuery{AccountID: AccountIDUnified}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
-	}
-	if mass.Partial {
-		t.Fatalf("complete open-order enumeration must be non-partial: %+v", mass)
 	}
 	if len(mass.OrderReports) != 0 {
 		t.Fatalf("missed cancellation repair expects missing local open, got venue reports: %+v", mass.OrderReports)
 	}
 	if calls[2] != 1 {
 		t.Fatalf("scoped perp product was not enumerated exactly once: %+v", calls)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("typed coverage: %v", err)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != model.CoverageNotRequested || mass.PositionsCoverage.State != model.CoverageNotRequested {
+		t.Fatalf("coverage=%+v/%+v/%+v", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage)
+	}
+	if !mass.OpenOrdersCoverage.Scope.Through.Equal(clk.Now()) || len(mass.OpenOrdersCoverage.Scope.InstrumentIDs) != 1 {
+		t.Fatalf("watermark/selector=%s/%v", mass.OpenOrdersCoverage.Scope.Through, mass.OpenOrdersCoverage.Scope.InstrumentIDs)
+	}
+	frozenID := mass.OpenOrdersCoverage.Scope.InstrumentIDs[0]
+	provider.mu.Lock()
+	provider.byID = map[string]*model.Instrument{}
+	provider.byProductID = map[int64]model.InstrumentID{}
+	provider.productIDByInstrument = map[string]int64{}
+	provider.all = nil
+	provider.mu.Unlock()
+	if len(mass.OpenOrdersCoverage.Scope.InstrumentIDs) != 1 || mass.OpenOrdersCoverage.Scope.InstrumentIDs[0] != frozenID {
+		t.Fatalf("provider mutation changed response selector: %v", mass.OpenOrdersCoverage.Scope.InstrumentIDs)
 	}
 	foundOpenOnly := false
 	for _, warning := range mass.Warnings {
@@ -441,7 +282,8 @@ func TestNadoFillReportsResolveTxProductAndRejectAmbiguousMatches(t *testing.T) 
 	if _, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{AccountID: AccountIDUnified, Limit: 10}); err == nil {
 		t.Fatal("ambiguous match was silently skipped")
 	}
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: AccountIDUnified, IncludeFills: true})
+	query := model.MassStatusQuery{AccountID: AccountIDUnified, IncludeFills: true}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("mass status should mark partial instead of failing ambiguous fills: %v", err)
 	}
@@ -451,28 +293,38 @@ func TestNadoFillReportsResolveTxProductAndRejectAmbiguousMatches(t *testing.T) 
 			found = true
 		}
 	}
-	if !found || !mass.Partial {
-		t.Fatalf("mass status did not mark partial ambiguous fills: %+v", mass)
+	if !found {
+		t.Fatalf("mass status did not diagnose unavailable ambiguous fills: %+v", mass)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageUnavailable || mass.FillsCoverage.State != model.CoverageUnavailable || mass.PositionsCoverage.State != model.CoverageNotRequested {
+		t.Fatalf("coverage=%+v/%+v/%+v, want Unavailable/Unavailable/NotRequested", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage)
+	}
+	if !mass.OpenOrdersCoverage.Scope.IsZero() || !mass.PositionsCoverage.Scope.IsZero() {
+		t.Fatalf("unattempted/not-requested scopes open=%+v positions=%+v, want zero", mass.OpenOrdersCoverage.Scope, mass.PositionsCoverage.Scope)
+	}
+	wantID := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT0", Kind: enums.KindPerp}
+	if fills := mass.FillsCoverage.Scope; fills.AccountID != AccountIDUnified || fills.ClientID != "" || len(fills.InstrumentIDs) != 1 || fills.InstrumentIDs[0] != wantID || !fills.From.IsZero() || !fills.Through.Equal(clk.Now()) {
+		t.Fatalf("fill coverage scope=%+v, want exact attempted history scope", fills)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("ValidateFor: %v", err)
 	}
 }
 
-var _ contract.VenuePreTradeValidator = (*executionClient)(nil)
-var _ contract.PreparedExecutionClient = (*executionClient)(nil)
-
-type recordingPreTradeDeps struct {
+type recordingSubmissionDeps struct {
 	mu           sync.Mutex
 	calls        []string
-	sender       string
-	maxReq       *sdk.MaxOrderSizeRequest
 	input        sdk.ClientOrderInput
-	maxSizeX18   string
 	prepared     *sdk.PreparedOrder
+	prepareErr   error
+	prepareFn    func(int, sdk.ClientOrderInput) (*sdk.PreparedOrder, error)
 	executed     *sdk.PlaceOrderResponse
 	executeErr   error
+	executeFn    func(*sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error)
 	prepareCalls int
+	executeCalls int
 	onPrepare    func()
-	blockPrepare chan struct{}
-	onMax        func()
+	onExecute    func(*sdk.PreparedOrder)
 }
 
 type recordingReportDeps struct {
@@ -524,45 +376,55 @@ func (d *recordingReportDeps) GetAccountSnapshot(ctx context.Context) (*sdk.Acco
 	return d.snapshot, nil
 }
 
-func (d *recordingPreTradeDeps) Sender() (string, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.calls = append(d.calls, "sender")
-	return d.sender, nil
-}
-
-func (d *recordingPreTradeDeps) GetMaxOrderSize(ctx context.Context, req sdk.MaxOrderSizeRequest) (*sdk.MaxOrderSizeResponse, error) {
-	d.mu.Lock()
-	d.calls = append(d.calls, "max")
-	cp := req
-	d.maxReq = &cp
-	onMax := d.onMax
-	d.mu.Unlock()
-	if onMax != nil {
-		onMax()
-	}
-	return &sdk.MaxOrderSizeResponse{MaxOrderSize: d.maxSizeX18}, nil
-}
-
-func (d *recordingPreTradeDeps) PrepareOrder(ctx context.Context, input sdk.ClientOrderInput) (*sdk.PreparedOrder, error) {
+func (d *recordingSubmissionDeps) PrepareOrder(ctx context.Context, input sdk.ClientOrderInput) (*sdk.PreparedOrder, error) {
 	d.mu.Lock()
 	d.calls = append(d.calls, "prepare")
 	d.input = input
 	d.prepareCalls++
+	call := d.prepareCalls
 	onPrepare := d.onPrepare
 	prepared := d.prepared
+	prepareErr := d.prepareErr
+	prepareFn := d.prepareFn
 	d.mu.Unlock()
 	if onPrepare != nil {
 		onPrepare()
 	}
-	return prepared, nil
+	if prepareFn != nil {
+		return prepareFn(call, input)
+	}
+	return prepared, prepareErr
 }
 
-func (d *recordingPreTradeDeps) ExecutePreparedOrder(ctx context.Context, order *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error) {
+func (d *recordingSubmissionDeps) ExecutePreparedOrder(ctx context.Context, order *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error) {
+	d.mu.Lock()
+	d.calls = append(d.calls, "execute")
+	d.executeCalls++
+	onExecute := d.onExecute
+	executed := d.executed
+	executeErr := d.executeErr
+	executeFn := d.executeFn
+	d.mu.Unlock()
+	if onExecute != nil {
+		onExecute(order)
+	}
+	if executeFn != nil {
+		return executeFn(order)
+	}
+	return executed, executeErr
+}
+
+func (d *recordingSubmissionDeps) snapshot() (calls []string, prepareCalls, executeCalls int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.calls = append(d.calls, "execute")
-	return d.executed, d.executeErr
+	return append([]string(nil), d.calls...), d.prepareCalls, d.executeCalls
+}
+
+func newRecordingSubmissionDeps() *recordingSubmissionDeps {
+	return &recordingSubmissionDeps{
+		prepared: preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", "digest-safe"),
+		executed: &sdk.PlaceOrderResponse{Digest: "digest-safe"},
+	}
 }
 
 func nadoTestOrderRequest(kind enums.InstrumentKind, side enums.OrderSide) model.OrderRequest {
@@ -573,7 +435,7 @@ func nadoTestOrderRequest(kind enums.InstrumentKind, side enums.OrderSide) model
 	return model.OrderRequest{
 		AccountID:    AccountIDUnified,
 		InstrumentID: model.InstrumentID{Venue: VenueName, Symbol: symbol, Kind: kind},
-		ClientID:     "client-pretrade-1",
+		ClientID:     "client-submit-1",
 		Side:         side,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifGTC,

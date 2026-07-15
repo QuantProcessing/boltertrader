@@ -61,10 +61,6 @@ func cloneInstrument(inst *model.Instrument) *model.Instrument {
 		return nil
 	}
 	copied := *inst
-	if inst.VenueIntCode != nil {
-		v := *inst.VenueIntCode
-		copied.VenueIntCode = &v
-	}
 	if inst.AssetIndex != nil {
 		v := *inst.AssetIndex
 		copied.AssetIndex = &v

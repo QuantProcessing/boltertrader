@@ -130,7 +130,7 @@ func balanceFromPerpPosition(state *sdkperp.PerpPosition, clk clock.Clock, accou
 		AccountID: firstAccountID(accountID),
 		Currency:  "USDC",
 		Total:     total,
-		Available: available,
+		Free:      available,
 		Locked:    locked,
 		UpdatedAt: updatedAt,
 	}, true

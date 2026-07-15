@@ -2,7 +2,6 @@ package perp
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -231,13 +230,6 @@ func TestPerpFundingHistoryStrictlyNormalizesRowsAndBounds(t *testing.T) {
 				t.Fatalf("FundingHistory accepted malformed row")
 			}
 		})
-	}
-}
-
-func TestPerpOpenInterestHistoryRemainsUnsupported(t *testing.T) {
-	market := newMarketDataClient(nil, nil, newInstrumentProvider(), nil)
-	if _, err := market.OpenInterestHistory(context.Background(), testPerpID(), model.OpenInterestHistoryQuery{}); !errors.Is(err, contract.ErrNotSupported) {
-		t.Fatalf("OpenInterestHistory err=%v, want ErrNotSupported", err)
 	}
 }
 

@@ -35,7 +35,7 @@ func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDOKXDefault
+		accountID = AccountIDDefault
 	}
 	return &accountClient{
 		rest:      rest,
@@ -125,7 +125,6 @@ func perpBalancesFromOKX(bals []okx.Balance, accountID string, now time.Time) []
 				Currency:  d.Ccy,
 				Total:     total,
 				Free:      available,
-				Available: available,
 				Locked:    firstNonZeroDecimal(dec(d.Imr), dec(d.FrozenBal)),
 				Borrowed:  dec(d.Liab),
 				Interest:  dec(d.Interest),

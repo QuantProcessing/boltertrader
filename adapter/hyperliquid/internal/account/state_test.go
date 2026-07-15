@@ -13,7 +13,7 @@ import (
 func TestBuildAccountStateMergesPerpAndSpotWithoutDoubleCountingUSDC(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	state, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionDefault,
 		Perp:        perpState("100", "88", "12", "7"),
 		Spot:        spotState(rawSpotBalance("USDC", "10", "1.5"), rawSpotBalance("PURR", "2", "0.5")),
@@ -22,7 +22,7 @@ func TestBuildAccountStateMergesPerpAndSpotWithoutDoubleCountingUSDC(t *testing.
 	if err != nil {
 		t.Fatalf("BuildAccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDHyperliquidDefault || state.Venue != "HYPERLIQUID" || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
+	if state.AccountID != DefaultAccountID || state.Venue != "HYPERLIQUID" || state.Type != model.AccountMargin || state.BaseCurrency != "USDC" {
 		t.Fatalf("unexpected account identity/type: %+v", state)
 	}
 	usdc := mustBalance(t, state, "USDC")
@@ -46,7 +46,7 @@ func TestBuildAccountStateMergesPerpAndSpotWithoutDoubleCountingUSDC(t *testing.
 
 func TestBuildAccountStateUsesSpotUSDCWhenPerpSummaryIsEmpty(t *testing.T) {
 	state, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionDefault,
 		Perp:        perpState("0", "", "0", "0"),
 		Spot:        spotState(rawSpotBalance("USDC", "10", "1.5")),
@@ -72,7 +72,7 @@ func TestBuildAccountStateAcceptsSupportedAccountAbstractions(t *testing.T) {
 	}
 	for _, mode := range tests {
 		state, err := BuildAccountState(StateInput{
-			AccountID:   model.AccountIDHyperliquidDefault,
+			AccountID:   DefaultAccountID,
 			AccountMode: mode,
 			Perp:        perpState("1", "1", "0", "0"),
 			Spot:        spotState(),
@@ -81,7 +81,7 @@ func TestBuildAccountStateAcceptsSupportedAccountAbstractions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildAccountState(%s): %v", mode, err)
 		}
-		if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" {
+		if state.AccountID != DefaultAccountID || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" {
 			t.Fatalf("mode=%s account state=%+v", mode, state)
 		}
 	}
@@ -95,7 +95,7 @@ func TestBuildAccountStateFailsClosedForPartialOrMalformedSnapshots(t *testing.T
 		{
 			name: "missing perp",
 			in: StateInput{
-				AccountID:   model.AccountIDHyperliquidDefault,
+				AccountID:   DefaultAccountID,
 				AccountMode: sdk.AccountAbstractionDefault,
 				Spot:        spotState(),
 			},
@@ -103,7 +103,7 @@ func TestBuildAccountStateFailsClosedForPartialOrMalformedSnapshots(t *testing.T
 		{
 			name: "missing spot",
 			in: StateInput{
-				AccountID:   model.AccountIDHyperliquidDefault,
+				AccountID:   DefaultAccountID,
 				AccountMode: sdk.AccountAbstractionDefault,
 				Perp:        perpState("1", "1", "0", "0"),
 			},
@@ -111,7 +111,7 @@ func TestBuildAccountStateFailsClosedForPartialOrMalformedSnapshots(t *testing.T
 		{
 			name: "unknown account mode",
 			in: StateInput{
-				AccountID:   model.AccountIDHyperliquidDefault,
+				AccountID:   DefaultAccountID,
 				AccountMode: sdk.AccountAbstractionUnknown,
 				Perp:        perpState("1", "1", "0", "0"),
 				Spot:        spotState(),
@@ -120,7 +120,7 @@ func TestBuildAccountStateFailsClosedForPartialOrMalformedSnapshots(t *testing.T
 		{
 			name: "bad perp number",
 			in: StateInput{
-				AccountID:   model.AccountIDHyperliquidDefault,
+				AccountID:   DefaultAccountID,
 				AccountMode: sdk.AccountAbstractionDefault,
 				Perp:        perpState("bad", "1", "0", "0"),
 				Spot:        spotState(),
@@ -129,7 +129,7 @@ func TestBuildAccountStateFailsClosedForPartialOrMalformedSnapshots(t *testing.T
 		{
 			name: "bad spot number",
 			in: StateInput{
-				AccountID:   model.AccountIDHyperliquidDefault,
+				AccountID:   DefaultAccountID,
 				AccountMode: sdk.AccountAbstractionDefault,
 				Perp:        perpState("1", "1", "0", "0"),
 				Spot:        spotState(rawSpotBalance("USDC", "10", "bad")),

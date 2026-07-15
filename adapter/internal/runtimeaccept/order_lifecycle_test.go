@@ -119,7 +119,7 @@ func TestAdapterOrderLifecycleClosesAuthoritativePartialIOCQuantity(t *testing.T
 
 func TestAdapterSpotOrderLifecycleScalesGuardedCloseToPartialIOCQuantity(t *testing.T) {
 	exec := &partialOpeningLifecycleExec{partialQty: decimal.RequireFromString("0.004")}
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -164,7 +164,7 @@ func TestGuardedSpotFullFillKeepsConfiguredCloseQuantityAtTickBoundary(t *testin
 		FillPrice:      decimal.RequireFromString("0.64"),
 		ClosePrice:     decimal.RequireFromString("0.62227"),
 		CloseAfterFill: true,
-	}, &sequenceAccountStateReporter{}, "ASTER",
+	}, &sequenceAccountStateSource{}, "ASTER",
 		decimal.RequireFromString("0.01"), decimal.RequireFromString("0.01"),
 		decimal.NewFromInt(5), decimal.RequireFromString("0.05"))
 
@@ -190,7 +190,7 @@ func TestAdapterSpotOrderLifecycleRejectsScaledPartialCloseBelowVenueMinimum(t *
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			exec := &partialOpeningLifecycleExec{partialQty: decimal.RequireFromString("0.004")}
-			reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+			reporter := &sequenceAccountStateSource{states: []model.AccountState{
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -826,7 +826,7 @@ func TestRuntimeOrderLifecycleRecoversAmbiguousPartialOpeningForPerpCleanup(t *t
 
 func TestAdapterSpotOrderLifecycleRecoversAmbiguousPartialOpeningWithScaledGuard(t *testing.T) {
 	exec := newAmbiguousFilledOpeningLifecycleExec(decimal.RequireFromString("0.004"), decimal.RequireFromString("0.003"))
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -852,7 +852,7 @@ func TestAdapterSpotOrderLifecycleRecoversAmbiguousPartialOpeningWithScaledGuard
 }
 
 func TestAdapterSpotOrderLifecyclePreservesBaselineAndAcceptsFeeDust(t *testing.T) {
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -877,7 +877,7 @@ func TestAdapterSpotOrderLifecyclePreservesBaselineAndAcceptsFeeDust(t *testing.
 }
 
 func TestAdapterSpotOrderLifecycleTreatsOmittedAuthoritativeZeroBalanceAsZero(t *testing.T) {
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotAccountState("TEST:unified", "TEST"),
 		spotAccountState("TEST:unified", "TEST"),
 		spotAccountState("TEST:unified", "TEST"),
@@ -898,7 +898,7 @@ func TestAdapterSpotOrderLifecycleTreatsOmittedAuthoritativeZeroBalanceAsZero(t 
 }
 
 func TestAdapterSpotOrderLifecycleRestingCancelRaceBlocksFill(t *testing.T) {
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "11", "0"),
@@ -929,7 +929,7 @@ func TestAdapterSpotOrderLifecycleUnsafeFillBalanceNeverSells(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+			reporter := &sequenceAccountStateSource{states: []model.AccountState{
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 				spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -951,7 +951,7 @@ func TestAdapterSpotOrderLifecycleUnsafeFillBalanceNeverSells(t *testing.T) {
 }
 
 func TestAdapterSpotOrderLifecycleAccountMismatchBlocksAllSubmits(t *testing.T) {
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:other", "TEST", "BTC", "10", "0"),
 	}}
 	exec := &recordingLifecycleExec{}
@@ -980,7 +980,7 @@ func TestAdapterSpotOrderLifecycleRejectsMalformedAuthoritativeSnapshot(t *testi
 		t.Run(tt.name, func(t *testing.T) {
 			state := spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0")
 			tt.mutate(&state)
-			reporter := &sequenceAccountStateReporter{states: []model.AccountState{state}}
+			reporter := &sequenceAccountStateSource{states: []model.AccountState{state}}
 			exec := &recordingLifecycleExec{}
 
 			_, err := RunAdapterOrderLifecycle(context.Background(), exec, guardedSpotLifecycleSpec(reporter))
@@ -997,7 +997,7 @@ func TestAdapterSpotOrderLifecycleRejectsMalformedAuthoritativeSnapshot(t *testi
 func TestAdapterSpotOrderLifecycleAmbiguousCloseNeverSubmitsSecondSell(t *testing.T) {
 	t.Run("authoritative balance eventually returns to baseline", func(t *testing.T) {
 		closeErr := errors.New("close outcome unknown")
-		reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+		reporter := &sequenceAccountStateSource{states: []model.AccountState{
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -1022,7 +1022,7 @@ func TestAdapterSpotOrderLifecycleAmbiguousCloseNeverSubmitsSecondSell(t *testin
 
 	t.Run("persistent ambiguity joins cleanup blocker", func(t *testing.T) {
 		closeErr := errors.New("persistent close outcome unknown")
-		reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+		reporter := &sequenceAccountStateSource{states: []model.AccountState{
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 			spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -1094,7 +1094,7 @@ func TestRuntimeSpotOrderLifecycleRetriesOneCleanupAfterAuthoritativeZeroClose(t
 }
 
 func TestAdapterSpotOrderLifecycleSellableResidualFailsClosed(t *testing.T) {
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -2282,7 +2282,7 @@ func TestRuntimeSpotOrderLifecycleUsesAuthoritativeBalanceGuard(t *testing.T) {
 			t.Fatal("runtime node did not stop")
 		}
 	}()
-	reporter := &sequenceAccountStateReporter{states: []model.AccountState{
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
 		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
@@ -2677,6 +2677,8 @@ type recordingLifecycleExec struct {
 	submits            []model.OrderRequest
 	cancelVenueOrderID string
 }
+
+func (e *recordingLifecycleExec) AccountID() string { return "TEST:unified" }
 
 func terminalFilledLifecycleSpec() OrderLifecycleSpec {
 	return OrderLifecycleSpec{
@@ -3586,13 +3588,13 @@ func (e *cancelAcknowledgedButOpenLifecycleExec) GenerateOrderStatusReport(_ con
 	return e.terminalFilledLifecycleExec.GenerateOrderStatusReport(context.Background(), query)
 }
 
-type sequenceAccountStateReporter struct {
+type sequenceAccountStateSource struct {
 	mu     sync.Mutex
 	states []model.AccountState
 	calls  int
 }
 
-func (r *sequenceAccountStateReporter) AccountState(context.Context) (model.AccountState, error) {
+func (r *sequenceAccountStateSource) AccountState(context.Context) (model.AccountState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.states) == 0 {
@@ -3630,11 +3632,11 @@ func spotAccountState(accountID, venue string) model.AccountState {
 	}
 }
 
-func guardedSpotLifecycleSpec(reporter contract.AccountStateReporter) OrderLifecycleSpec {
+func guardedSpotLifecycleSpec(reporter accountStateSource) OrderLifecycleSpec {
 	return guardedSpotLifecycleSpecWithRules(reporter, "0.995", "0.001", "0.001", "1", "0.005")
 }
 
-func guardedSpotLifecycleSpecWithRules(reporter contract.AccountStateReporter, closeQty, step, minQty, minNotional, feeReserve string) OrderLifecycleSpec {
+func guardedSpotLifecycleSpecWithRules(reporter accountStateSource, closeQty, step, minQty, minNotional, feeReserve string) OrderLifecycleSpec {
 	spec := OrderLifecycleSpec{
 		Label:          "guarded spot",
 		Venue:          "TEST",
@@ -3883,6 +3885,8 @@ func (e *recordingLifecycleExec) Capabilities() contract.Capabilities {
 	}
 }
 
+func (*recordingLifecycleExec) ValidateSubmit(model.OrderRequest) error { return nil }
+
 func (e *recordingLifecycleExec) Submit(_ context.Context, req model.OrderRequest) (*model.Order, error) {
 	e.submits = append(e.submits, req)
 	venueID := fmt.Sprintf("venue-%d", len(e.submits))
@@ -3960,8 +3964,44 @@ func (e *recordingLifecycleExec) GeneratePositionReports(context.Context, model.
 	return nil, nil
 }
 
-func (e *recordingLifecycleExec) GenerateExecutionMassStatus(context.Context, model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	return model.NewExecutionMassStatus("TEST", "TEST:unified", time.Now()), nil
+func (e *recordingLifecycleExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	venue := strings.TrimSpace(query.Venue)
+	if venue == "" {
+		venue = "TEST"
+	}
+	accountID := strings.TrimSpace(query.AccountID)
+	if accountID == "" {
+		accountID = "TEST:unified"
+	}
+	now := time.Now()
+	ids := model.NormalizeInstrumentIDs(query.InstrumentIDs)
+	if ids == nil {
+		ids = []model.InstrumentID{}
+	}
+	mass := model.NewExecutionMassStatus(venue, accountID, now)
+	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, now)
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if query.IncludeFills {
+		from := query.Since
+		through := query.Until
+		if through.IsZero() {
+			through = now
+		}
+		if from.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+			from = query.Until.Add(-query.Lookback)
+		}
+		mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, accountID, query.ClientID, ids, from, through)
+	}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, now)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
+	return mass, nil
 }
 
 func (e *recordingLifecycleExec) Events() <-chan contract.ExecEnvelope { return nil }
@@ -4152,6 +4192,8 @@ func newRuntimeLifecycleExec() *runtimeLifecycleExec {
 		venueToReq: make(map[string]model.OrderRequest),
 	}
 }
+
+func (e *runtimeLifecycleExec) AccountID() string { return "TEST:unified" }
 
 func (e *runtimeLifecycleExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
 	order, err := e.recordingLifecycleExec.Submit(ctx, req)

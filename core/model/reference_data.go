@@ -166,21 +166,3 @@ type FundingRateHistoryEntry struct {
 	Timestamp    time.Time
 	Fields       ReferenceFieldMask
 }
-
-// OpenInterestHistoryQuery bounds optional venue OI-history requests.
-type OpenInterestHistoryQuery struct {
-	Start    time.Time
-	End      time.Time
-	Limit    int
-	Interval string
-}
-
-// OpenInterestHistoryEntry is the normalized optional OI history row.
-type OpenInterestHistoryEntry struct {
-	InstrumentID         InstrumentID
-	OpenInterest         decimal.Decimal
-	OpenInterestNotional decimal.Decimal
-	Unit                 string
-	Timestamp            time.Time
-	Fields               OpenInterestFieldMask
-}

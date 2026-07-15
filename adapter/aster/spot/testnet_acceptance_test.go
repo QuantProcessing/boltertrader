@@ -469,8 +469,8 @@ func ensureAsterSpotAcceptanceFunds(t *testing.T, label string, state model.Acco
 	required := lifecycle.Quantity.Mul(lifecycle.FillPrice)
 	for _, balance := range state.Balances {
 		if strings.EqualFold(balance.Currency, "USDT") {
-			if balance.Available.LessThan(required) {
-				t.Skipf("skipping %s acceptance: available USDT %s below required notional %s", label, balance.Available, required)
+			if balance.Free.LessThan(required) {
+				t.Skipf("skipping %s acceptance: available USDT %s below required notional %s", label, balance.Free, required)
 			}
 			return
 		}

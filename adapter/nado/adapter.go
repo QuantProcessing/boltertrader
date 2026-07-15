@@ -110,7 +110,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 		if err != nil {
 			return nil, fmt.Errorf("nado: ws api client: %w", err)
 		}
-		exec.pretrade = nadoSDKPreTradeBackend{rest: rest, api: api}
+		exec.submitter = nadoSDKSubmissionBackend{api: api}
 		accountStream, err := sdk.NewWsAccountClient(context.Background(), rest)
 		if err != nil {
 			return nil, fmt.Errorf("nado: account stream client: %w", err)
@@ -165,7 +165,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if err := a.market.Start(ctx); err != nil {
 		return err
 	}
-	if starter, ok := a.exec.pretrade.(interface{ Connect() error }); ok {
+	if starter, ok := a.exec.submitter.(interface{ Connect() error }); ok {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

@@ -41,7 +41,7 @@ core/                venue-neutral domain (decimal everywhere; no float64)
    │
 adapter/<venue>/     translate SDKs into the contract (see Status)
    │
-sdk/<venue>/         faithful official-API clients (13 venues)
+sdk/<venue>/         faithful official-API clients (13 SDK venue packages; 9 runtime-supported exchanges)
 ```
 
 ## Key invariants
@@ -54,7 +54,23 @@ sdk/<venue>/         faithful official-API clients (13 venues)
   string vs struct order types, blocking vs async submit, hedge vs net — all
   handled below the contract. The one deliberate model-level concept is
   `PositionSide` (hedge mode is portable on Binance & OKX).
-- **Non-portable knobs use an escape hatch**: `OrderRequest.Venue`.
+- **Order submission stays portable.** Venue-only request conversion, signing,
+  and response interpretation never enter `OrderRequest` or runtime control
+  flow. Runtime always uses adapter `ValidateSubmit`, one optional configured
+  generic risk check with its generic exposure reservation, and ordinary
+  adapter `Submit`.
+
+### Breaking convergence note (2026-07-15)
+
+This boundary cleanup is intentionally breaking for custom integrations.
+Execution clients must implement mandatory `ValidateSubmit`; configured local
+risk must implement `exec.SubmissionRiskChecker.CheckSubmission` directly; and
+account clients must provide authoritative `AccountState` while balance
+producers populate `Free`. Venue-specific prepared/lease capacity contracts,
+legacy balance normalization, core-owned venue account defaults, and unused
+compatibility model/capability fields were removed. Configure concrete risk
+engines explicitly with their instrument provider and execution/account
+capability roles before attaching them to a node.
 
 ## Quickstart — offline runtime test
 
@@ -66,7 +82,7 @@ events that live adapters push.
 ```go
 clk := clock.NewSimulatedClock(start)
 market := runtimetest.NewFakeMarket()
-exec := runtimetest.NewFakeExec()
+exec := runtimetest.NewFakeExec().WithClock(clk)
 account := runtimetest.NewFakeAccount()
 
 node := runtime.NewNode(
@@ -87,29 +103,18 @@ exec.EmitFill(model.Fill{InstrumentID: inst, ClientID: order.Request.ClientID, V
 
 ## Quickstart — live (Binance USD-M perp)
 
-```go
-adapter, _ := perp.New(ctx, perp.Config{APIKey: key, APISecret: secret})
-defer adapter.Close()
-journalStore, _ := journal.OpenFile(".boltertrader/live.journal", journal.FileOptions{})
-defer journalStore.Close()
+See [`cmd/livedemo`](cmd/livedemo/main.go) for the compiled, env-gated Binance
+USD-M assembly and [`strategy/strategies`](strategy/strategies/) for example
+strategies. Treat the command as a wiring demo, not a production safety
+template: a production runner must check every constructor, journal, startup,
+subscription, and initial `Resync` error and must not trade after any of those
+steps fails.
 
-node := runtime.NewNode(
-    runtime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
-    clock.NewRealClock(), "live",
-    runtime.WithStrategy(myStrategy),
-    runtime.WithBars(inst, time.Minute, "1m"),
-    runtime.WithRisk(riskEngine, adapter.Market.InstrumentProvider()),
-    runtime.WithJournal(journalStore),
-)
-
-node.Resync(ctx)          // reconcile cache from REST
-adapter.Start(ctx)        // private user-data stream
-adapter.Market.SubscribeTrades(ctx, inst)
-node.Run(ctx)             // blocks
-```
-
-See [`cmd/livedemo`](cmd/livedemo/main.go) for a full env-gated live wiring and
-[`strategy/strategies`](strategy/strategies/) for example strategies.
+When attaching a concrete `risk.Engine`, configure it before `runtime.WithRisk`:
+call `WithInstrumentProvider(provider)` and, for account-backed risk, call
+`SetRuntimeCapabilities(node.ExecutionCapabilities(),
+node.AccountCapabilities())`. The runtime does not discover or configure those
+optional concrete-engine facilities.
 
 For live trading, keep `WithJournal` on a file-backed journal. Adapters expose
 their logical runtime account id; `WithAccountID` is an optional expected-id
@@ -149,9 +154,11 @@ subset. The explicit support matrix is in
 [`docs/adapter-capabilities.md`](docs/adapter-capabilities.md). Adding a venue
 means writing one adapter; no runtime or strategy change.
 
-Nado Spot funded-only/no-borrow and Nado Perp are implemented through runtime.
-Their pre-trade path uses the documented `max_order_size` query, local risk
-checks, exact prepared-payload matching, and one-time `place_order` submission.
+Nado Spot funded-only/no-borrow and Nado Perp use the same runtime submission
+path as every other venue: adapter `ValidateSubmit`, optional configured generic
+runtime risk/reservation, then ordinary adapter `Submit`. Nado signing and the one-time
+`place_order` request stay private to the adapter. Venue capacity is
+server-authoritative; runtime and adapter admission do not query a venue limit.
 The undocumented `validate_order` query is intentionally unsupported.
 
 ## Testing
@@ -203,12 +210,14 @@ Nado's currently tradable Testnet products require the explicit
 Endpoint variables are diagnostics only and must equal the selected official
 Testnet profile; production endpoints fail before network access.
 
-Nado read-only Spot/Perp and reference/OI probes pass. All four Spot/Perp
-adapter/runtime write rows also pass through local risk, documented
-`max_order_size`, exact prepared payload ownership, one-time `place_order`,
-private fill evidence, reconciliation, and clean final state. Isolated-only
-Perp products use a conservative 1x initial-margin transfer; reduce-only closes
-add no margin.
+Historical Nado Testnet rows proved Spot/Perp lifecycle and reference/OI access
+before the current runtime-boundary convergence; they do not certify this tree.
+The frozen-candidate G008 run must re-execute the full Nado aggregate through
+the generic submission path, adapter-local signing, private fill evidence,
+reconciliation, and clean final state. The Testnet maximum-notional setting is
+only a bounded-test safety envelope, not local venue-capacity admission.
+Isolated-only Perp products use a conservative 1x initial-margin transfer;
+reduce-only closes add no margin.
 
 Live write tests are venue-specific and may create, modify, cancel, or close
 real exchange state:
@@ -378,10 +387,10 @@ make test-hyperliquid-testnet-acceptance
 The Hyperliquid Make targets wrap `go test -json` and fail if any selected
 acceptance test skips. This keeps the full gate honest: missing funding, dirty
 open orders, dirty positions, or missing HIP-3 symbol config are incomplete
-acceptance runs, not green runs. Runtime targets require
-`AccountStateReporter` snapshots, the adapter-provided logical account id (or a
-matching `runtime.WithAccountID` guard), and `risk.RequireAccountState()` before
-any risk-increasing order is allowed.
+acceptance runs, not green runs. Runtime targets require the mandatory
+`AccountClient.AccountState` snapshot, the adapter-provided logical account id
+(or a matching `runtime.WithAccountID` guard), and
+`risk.RequireAccountState()` before any risk-increasing order is allowed.
 
 Product-qualified Hyperliquid targets are:
 

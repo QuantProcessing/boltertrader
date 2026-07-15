@@ -134,7 +134,6 @@ func accountEventsFromFuturesBalanceMessage(msg *gatesdk.FuturesBalanceMessage, 
 			Currency:  currency,
 			Total:     total,
 			Free:      total,
-			Available: total,
 			UpdatedAt: firstNonZeroTime(timeFromMillis(record.TimeMS), timeFromSeconds(record.Time), now),
 		}
 		out = append(out, contract.BalanceEvent{Balance: balance})

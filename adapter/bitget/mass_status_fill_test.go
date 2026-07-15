@@ -87,14 +87,15 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 		clock.NewSimulatedClock(until.Add(time.Minute)),
 	)
 	lookback := 5 * time.Minute
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
+	query := model.MassStatusQuery{
 		AccountID:    AccountIDUnified,
 		ClientID:     clientID,
 		Since:        since,
 		Until:        until,
 		Lookback:     lookback,
 		IncludeFills: true,
-	})
+	}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
@@ -114,6 +115,12 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 	if got := historyCalls.Load(); got != 0 {
 		t.Fatalf("Spot fills triggered derivative order history; calls=%d", got)
 	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("typed coverage validation: %v; mass=%+v", err, mass)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != model.CoverageComplete || mass.PositionsCoverage.State != model.CoverageNotRequested {
+		t.Fatalf("unexpected domain coverage: open=%+v fills=%+v positions=%+v", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage)
+	}
 
 	withoutFills, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
 		AccountID: AccountIDUnified,
@@ -128,6 +135,75 @@ func TestBitgetExecutionMassStatusIncludesBoundedFillsWhenRequested(t *testing.T
 	}
 	if got := fillCalls.Load(); got != 1 {
 		t.Fatalf("IncludeFills=false made a fill-history request; calls=%d", got)
+	}
+}
+
+func TestBitgetExecutionMassStatusMarksBoundedFillSaturationPartial(t *testing.T) {
+	const pageSize = 100
+	since := time.UnixMilli(1_700_000_000_000)
+	until := since.Add(2 * time.Second)
+	provider := bitgetTestProvider()
+	spotID := firstBitgetIDOfKind(t, provider, enums.KindSpot)
+	var fillCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/trade/unfilled-orders":
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{"list": []any{}}})
+		case "/api/v3/trade/fills":
+			page := int(fillCalls.Add(1))
+			wantCursor := ""
+			if page > 1 {
+				wantCursor = "cursor-" + strconv.Itoa(page-1)
+			}
+			if got := r.URL.Query().Get("cursor"); got != wantCursor {
+				t.Errorf("page %d cursor=%q, want %q", page, got, wantCursor)
+			}
+			records := make([]any, 0, pageSize)
+			for i := 0; i < pageSize; i++ {
+				index := (page-1)*pageSize + i
+				records = append(records, bitgetFillFixture(
+					"exec-"+strconv.Itoa(index),
+					"order-"+strconv.Itoa(index),
+					"client",
+					since.Add(time.Duration(index+1)*time.Millisecond),
+				))
+			}
+			writeJSON(t, w, map[string]any{"code": "00000", "msg": "success", "data": map[string]any{
+				"list": records, "cursor": "cursor-" + strconv.Itoa(page),
+			}})
+		default:
+			http.Error(w, "unexpected path", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	exec := newExecutionClient(bitgetsdk.NewClient().WithCredentials("key", "secret", "pass").WithBaseURL(server.URL).WithHTTPClient(server.Client()), provider, clock.NewSimulatedClock(until.Add(time.Minute)))
+	query := model.MassStatusQuery{
+		Venue: VenueName, AccountID: AccountIDUnified, ClientID: "client",
+		InstrumentIDs: []model.InstrumentID{spotID}, Since: since, Until: until, IncludeFills: true,
+	}
+
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
+	if err != nil {
+		t.Fatalf("GenerateExecutionMassStatus: %v", err)
+	}
+	coverage := mass.FillsCoverage
+	if coverage.State != model.CoveragePartial || coverage.Scope.AccountID != AccountIDUnified || coverage.Scope.ClientID != query.ClientID ||
+		len(coverage.Scope.InstrumentIDs) != 1 || coverage.Scope.InstrumentIDs[0] != spotID ||
+		!coverage.Scope.From.Equal(since) || !coverage.Scope.Through.Equal(until) {
+		t.Fatalf("fills coverage=%+v, want exact bounded Partial scope", coverage)
+	}
+	if len(mass.FillReports) != executionMassStatusFillLimit {
+		t.Fatalf("retained fill groups=%d, want bounded %d positive rows", len(mass.FillReports), executionMassStatusFillLimit)
+	}
+	if fillCalls.Load() != 10 {
+		t.Fatalf("fill calls=%d, want ten full pages before saturation", fillCalls.Load())
+	}
+	if !bitgetHasWarning(mass.Warnings, "FILL_REPORTS_LIMIT_REACHED") {
+		t.Fatalf("warnings=%+v, want fill saturation warning", mass.Warnings)
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("ValidateFor: %v", err)
 	}
 }
 
@@ -414,7 +490,7 @@ func TestBitgetExecutionMassStatusPaginatesFillHistoryWithoutFalsePartial(t *tes
 		t.Fatalf("filtered fill report groups=%d, want first and continuation-page matches", len(mass.FillReports))
 	}
 	if bitgetHasWarning(mass.Warnings, "FILL_REPORTS_LIMIT_REACHED") {
-		t.Fatalf("warnings=%+v, complete cursor traversal must not report saturation", mass.Warnings)
+		t.Fatalf("diagnostics=%+v, exhausted cursor traversal must not report saturation", mass.Warnings)
 	}
 	if fillCalls.Load() != 2 {
 		t.Fatalf("fill calls=%d, want initial and continuation pages", fillCalls.Load())

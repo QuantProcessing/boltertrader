@@ -7,11 +7,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
-const privateStreamID = "okx:spot:private"
+const (
+	AccountIDDefault = "OKX-001"
+	privateStreamID  = "okx:spot:private"
+)
 
 type Config struct {
 	APIKey     string
@@ -74,7 +76,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	accountID := cfg.AccountID
 	if accountID == "" {
-		accountID = model.AccountIDOKXDefault
+		accountID = AccountIDDefault
 	}
 
 	provider := newInstrumentProvider()

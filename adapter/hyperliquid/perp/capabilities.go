@@ -19,7 +19,6 @@ func (c *marketDataClient) Capabilities() contract.Capabilities {
 			ReferencePolling:    true,
 			CurrentOpenInterest: true,
 		},
-		Latency: contract.LatencyCapabilities{},
 	}
 }
 
@@ -34,7 +33,6 @@ func (c *executionClient) Capabilities() contract.Capabilities {
 		},
 		Streaming: contract.StreamCapabilities{Execution: c.stream != nil},
 		Trading:   contract.TradingCapabilities{Submit: true, Cancel: true, CancelAll: true, Modify: true},
-		Latency:   contract.LatencyCapabilities{},
 	}
 }
 
@@ -42,8 +40,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     venueName,
 		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
-		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: c.stream != nil},
-		Latency:   contract.LatencyCapabilities{},
 	}
 }

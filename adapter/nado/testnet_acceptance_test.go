@@ -11,7 +11,6 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
-	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
@@ -76,20 +75,13 @@ func runNadoTestnetAdapterAcceptance(t *testing.T, label string, cfg testenv.Nad
 	requireNoNadoAcceptancePosition(t, ctx, adapter, label, id)
 	state := requireNadoAcceptanceAccountState(t, ctx, adapter, label)
 	requireNadoLifecycleFunds(t, label, adapter, state, lifecycle)
-	defer assertNoNadoPreparedAcceptanceEntries(t, label, adapter)
-	preparedExec := nadoAcceptancePreparedExecution{
-		ExecutionClient: adapter.Execution,
-		validator:       adapter.exec,
-		prepared:        adapter.exec,
-		provider:        adapter.provider,
-	}
 	if err := adapter.Start(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, label+" private stream")
 		t.Fatalf("%s private stream: %v", label, err)
 	}
 	lifecycle.PrivateStreamTopics = []string{"orders", "fills", "positions"}
 	t.Logf("%s private_stream_topics=%s", label, strings.Join(lifecycle.PrivateStreamTopics, ","))
-	if _, err := runtimeaccept.RunAdapterOrderLifecycle(ctx, preparedExec, lifecycle); err != nil {
+	if _, err := runtimeaccept.RunAdapterOrderLifecycle(ctx, adapter.Execution, lifecycle); err != nil {
 		t.Fatalf("%s adapter order lifecycle: %v", label, err)
 	}
 	evidenceCtx, evidenceCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -132,7 +124,6 @@ func runNadoTestnetRuntimeAcceptance(t *testing.T, label string, cfg testenv.Nad
 		close(done)
 	}()
 	defer stopNadoRuntimeNode(t, stop, done)
-	defer assertNoNadoPreparedAcceptanceEntries(t, label, adapter)
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, label+" startup reconcile")
 		t.Fatalf("%s runtime active before lifecycle: %v", label, err)
@@ -592,7 +583,7 @@ func requireNoNadoSpotBorrow(t *testing.T, label string, state model.AccountStat
 	t.Helper()
 	for _, balance := range state.Balances {
 		if balance.Borrowed.IsPositive() || balance.Interest.IsPositive() {
-			t.Fatalf("%s Spot funded-only pretrade requires no borrowed balance, got currency=%s borrowed=%s interest=%s", label, balance.Currency, balance.Borrowed, balance.Interest)
+			t.Fatalf("%s Spot funded-only submission requires no borrowed balance, got currency=%s borrowed=%s interest=%s", label, balance.Currency, balance.Borrowed, balance.Interest)
 		}
 	}
 }
@@ -624,19 +615,6 @@ func requireNoNadoAcceptancePosition(t *testing.T, ctx context.Context, adapter 
 			t.Fatalf("%s has pre-existing position for %s: %+v", label, id, pos)
 		}
 	}
-}
-
-func assertNoNadoPreparedAcceptanceEntries(t *testing.T, label string, adapter *Adapter) {
-	t.Helper()
-	if adapter == nil || adapter.exec == nil {
-		t.Errorf("%s prepared-state cleanup cannot inspect execution client", label)
-		return
-	}
-	if got := adapter.exec.preparedLen(); got != 0 {
-		t.Errorf("%s left %d active prepared-order entries", label, got)
-		return
-	}
-	t.Logf("%s cleanup=prepared_entries_zero", label)
 }
 
 func nadoAcceptanceVenueSymbol(t *testing.T, adapter *Adapter, id model.InstrumentID) string {
@@ -697,31 +675,6 @@ func floorNadoAcceptanceDecimal(value, step decimal.Decimal) decimal.Decimal {
 		return value
 	}
 	return value.Div(step).Floor().Mul(step)
-}
-
-type nadoAcceptancePreparedExecution struct {
-	contract.ExecutionClient
-	validator contract.VenuePreTradeValidator
-	prepared  contract.PreparedExecutionClient
-	provider  model.InstrumentProvider
-}
-
-func (e nadoAcceptancePreparedExecution) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
-	if e.validator == nil || e.prepared == nil {
-		return nil, fmt.Errorf("nado acceptance: prepared pre-trade surfaces are required")
-	}
-	var inst *model.Instrument
-	if e.provider != nil {
-		inst, _ = e.provider.Instrument(req.InstrumentID)
-	}
-	lease, err := e.validator.ValidatePreTrade(ctx, req, inst)
-	if err != nil {
-		return nil, err
-	}
-	if lease != nil {
-		defer lease.Release()
-	}
-	return e.prepared.SubmitPrepared(ctx, req)
 }
 
 func stopNadoRuntimeNode(t *testing.T, stop context.CancelFunc, done <-chan struct{}) {

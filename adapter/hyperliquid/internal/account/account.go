@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
@@ -14,6 +13,8 @@ var (
 	ErrIdentityRequired  = errors.New("hyperliquid account identity required")
 	ErrAccountIDMismatch = errors.New("hyperliquid account id mismatch")
 )
+
+const DefaultAccountID = "HYPERLIQUID-001"
 
 type Source struct {
 	ExplicitAccountID string
@@ -34,7 +35,7 @@ func ResolveIdentity(src Source) (Identity, error) {
 		if queryAddress == "" {
 			return Identity{}, ErrIdentityRequired
 		}
-		accountID = model.AccountIDHyperliquidDefault
+		accountID = DefaultAccountID
 	}
 	return Identity{AccountID: accountID, QueryAddress: queryAddress}, nil
 }
@@ -43,7 +44,7 @@ func ResolveIdentity(src Source) (Identity, error) {
 // account selectors; the runtime account id is the venue default unless
 // explicitly overridden.
 func AccountIDForAddress(address string) string {
-	return model.AccountIDHyperliquidDefault
+	return DefaultAccountID
 }
 
 func ResolveAPIAccountAddress(ctx context.Context, client *sdk.Client, configuredAddress string) (string, error) {

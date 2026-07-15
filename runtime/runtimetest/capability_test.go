@@ -98,16 +98,48 @@ func TestFakeExecCapabilitiesMatchImplementedReports(t *testing.T) {
 	}
 }
 
-func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
+func TestFakeClientsExposeSameNonEmptyAccountIdentity(t *testing.T) {
+	exec := NewFakeExec()
+	account := NewFakeAccount()
+
+	var execProvider contract.AccountIDProvider = exec
+	var accountProvider contract.AccountIDProvider = account
+	if execProvider.AccountID() == "" || execProvider.AccountID() != accountProvider.AccountID() {
+		t.Fatalf("fake identities execution=%q account=%q, want the same non-empty account", execProvider.AccountID(), accountProvider.AccountID())
+	}
+}
+
+func TestFakeAccountCapabilitiesFollowConfiguredVenue(t *testing.T) {
+	account := NewFakeAccount()
+	if got := account.Capabilities().Venue; got != "FAKE" {
+		t.Fatalf("default venue=%q, want FAKE", got)
+	}
+
+	account.SetAccountStateSnapshot(model.AccountState{Venue: "TEST", AccountID: account.AccountID()})
+	if got := account.Capabilities().Venue; got != "TEST" {
+		t.Fatalf("account-state venue=%q, want TEST", got)
+	}
+
+	positions := NewFakeAccount()
+	positions.SetSnapshots(nil, []model.Position{{InstrumentID: model.InstrumentID{Venue: "BINANCE", Symbol: "BTC-USDT", Kind: enums.KindPerp}}})
+	if got := positions.Capabilities().Venue; got != "BINANCE" {
+		t.Fatalf("position venue=%q, want BINANCE", got)
+	}
+}
+
+func TestFakeAccountSnapshotConfigurationIsIndependentOfStreamCapability(t *testing.T) {
 	account := NewFakeAccount()
 	caps := account.Capabilities()
-	if caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
-		t.Fatalf("unconfigured fake account should not declare account state support: %+v", caps)
+	if !caps.Streaming.AccountState {
+		t.Fatalf("fake account stream capability should reflect its event API: %+v", caps)
+	}
+	if _, err := account.AccountState(context.Background()); err == nil {
+		t.Fatal("unconfigured mandatory snapshot should fail explicitly")
 	}
 
 	ts := time.Unix(1, 0)
 	account.SetAccountStateSnapshot(model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -116,13 +148,16 @@ func TestFakeAccountDeclaresAccountStateOnlyWhenConfigured(t *testing.T) {
 			Free:     decimal.NewFromInt(1),
 		}},
 		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+		EventID:  model.AccountStateEventID("BINANCE", "T:acct", ts),
 		TsEvent:  ts,
 		TsInit:   ts,
 	})
 	caps = account.Capabilities()
-	if !caps.Reports.AccountStateSnapshots || !caps.Streaming.AccountState {
-		t.Fatalf("configured fake account should declare account state support: %+v", caps)
+	if !caps.Streaming.AccountState {
+		t.Fatalf("snapshot configuration must not alter stream capability: %+v", caps)
+	}
+	if _, err := account.AccountState(context.Background()); err != nil {
+		t.Fatalf("configured mandatory snapshot failed: %v", err)
 	}
 }
 

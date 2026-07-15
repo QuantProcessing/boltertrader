@@ -62,7 +62,6 @@ type InstrumentExpectation struct {
 	SizeStep    decimal.Decimal
 	MinNotional decimal.Decimal
 	VenueSymbol string
-	HasIntCode  bool // OKX populates VenueIntCode
 	HasAssetIdx bool // Hyperliquid populates AssetIndex
 }
 
@@ -87,9 +86,6 @@ func RunInstrumentParsing(t *testing.T, provider model.InstrumentProvider, want 
 		}
 		if inst.VenueSymbol != w.VenueSymbol {
 			t.Errorf("%s VenueSymbol=%q, want %q", w.ID, inst.VenueSymbol, w.VenueSymbol)
-		}
-		if (inst.VenueIntCode != nil) != w.HasIntCode {
-			t.Errorf("%s VenueIntCode present=%v, want %v", w.ID, inst.VenueIntCode != nil, w.HasIntCode)
 		}
 		if (inst.AssetIndex != nil) != w.HasAssetIdx {
 			t.Errorf("%s AssetIndex present=%v, want %v", w.ID, inst.AssetIndex != nil, w.HasAssetIdx)

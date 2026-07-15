@@ -20,6 +20,7 @@ import (
 )
 
 const (
+	AccountIDDefault     = hlaccount.DefaultAccountID
 	privateStreamID      = "hyperliquid:perp:private"
 	accountStateStreamID = "hyperliquid:perp:private:account-state"
 )

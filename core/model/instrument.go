@@ -43,9 +43,8 @@ type Instrument struct {
 	Base, Quote, Settle string // Settle is the margin/settlement currency
 
 	// Venue identity forms (carried, not interpreted by the runtime):
-	VenueSymbol  string // Binance symbol / OKX InstId / Hyperliquid Coin
-	VenueIntCode *int64 // OKX InstIdCode (required on WS); nil if N/A
-	AssetIndex   *int   // Hyperliquid AssetID (universe array index); nil if N/A
+	VenueSymbol string // Binance symbol / OKX InstId / Hyperliquid Coin
+	AssetIndex  *int   // Hyperliquid AssetID (universe array index); nil if N/A
 
 	// Precision, as exact decimals:
 	PriceTick      decimal.Decimal // minimum price increment

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -87,7 +88,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}
 	resp, err := c.rest.PlaceOrder(ctx, &venueReq)
 	if err != nil {
-		return nil, err
+		return nil, bitgetCommandError("submit order", err)
 	}
 	order := orderFromBitgetAction(resp, req, c.clk.Now())
 	return &order, nil
@@ -103,7 +104,7 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 		return err
 	}
 	_, err = c.rest.CancelOrder(ctx, &bitgetsdk.CancelOrderRequest{Category: category, Symbol: inst.VenueSymbol, OrderID: venueOrderID})
-	return err
+	return bitgetCommandError("cancel order", err)
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -115,7 +116,7 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 	if err != nil {
 		return err
 	}
-	return c.rest.CancelAllOrders(ctx, &bitgetsdk.CancelAllOrdersRequest{Category: category, Symbol: inst.VenueSymbol})
+	return bitgetCommandError("cancel all orders", c.rest.CancelAllOrders(ctx, &bitgetsdk.CancelAllOrdersRequest{Category: category, Symbol: inst.VenueSymbol}))
 }
 
 func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
@@ -135,11 +136,21 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 		NewPrice: decimalStringOrEmpty(newPrice),
 	})
 	if err != nil {
-		return nil, err
+		return nil, bitgetCommandError("modify order", err)
 	}
 	req := model.OrderRequest{AccountID: c.accountID, InstrumentID: id, Quantity: newQty, Price: newPrice}
 	order := model.Order{Request: req, VenueOrderID: resp.OrderID, Status: enums.StatusNew, UpdatedAt: c.clk.Now()}
 	return &order, nil
+}
+
+func bitgetCommandError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !bitgetsdk.IsDefinitiveCommandRejection(err) {
+		return err
+	}
+	return fmt.Errorf("bitget: %s rejected: %w", operation, errors.Join(contract.ErrVenueRejected, err))
 }
 
 func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
@@ -183,30 +194,40 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 	now := c.clk.Now()
 	var out []model.OrderStatusReport
 	for _, target := range targets {
-		records, err := c.rest.GetOpenOrders(ctx, target.category, target.symbol)
+		reports, err := c.generateOrderStatusReportsForTarget(ctx, target, query, now)
 		if err != nil {
 			return nil, err
 		}
-		for _, record := range records {
-			if !bitgetRecordCategoryMatches(record.Category, target.category) {
-				return nil, fmt.Errorf("bitget: order category mismatch requested=%s received=%s symbol=%s", target.category, record.Category, record.Symbol)
-			}
-			id, ok := c.resolveReportInstrument(target.category, query.InstrumentID, record.Symbol)
-			if !ok {
-				return nil, fmt.Errorf("bitget: unknown order-report instrument category=%s symbol=%s", target.category, record.Symbol)
-			}
-			order, err := orderFromBitgetRecord(record, id, c.accountID)
-			if err != nil {
-				return nil, fmt.Errorf("bitget: invalid order-report position semantics symbol=%s: %w", record.Symbol, err)
-			}
-			if !model.OrderMatchesStatusQuery(order, query) {
-				continue
-			}
-			out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
-		}
+		out = append(out, reports...)
 	}
 	if query.Limit > 0 && len(out) > query.Limit {
 		out = out[:query.Limit]
+	}
+	return out, nil
+}
+
+func (c *executionClient) generateOrderStatusReportsForTarget(ctx context.Context, target reportTarget, query model.OrderStatusReportQuery, now time.Time) ([]model.OrderStatusReport, error) {
+	records, err := c.rest.GetOpenOrders(ctx, target.category, target.symbol)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.OrderStatusReport, 0, len(records))
+	for _, record := range records {
+		if !bitgetRecordCategoryMatches(record.Category, target.category) {
+			return nil, fmt.Errorf("bitget: order category mismatch requested=%s received=%s symbol=%s", target.category, record.Category, record.Symbol)
+		}
+		id, ok := c.resolveReportInstrument(target.category, query.InstrumentID, record.Symbol)
+		if !ok {
+			return nil, fmt.Errorf("bitget: unknown order-report instrument category=%s symbol=%s", target.category, record.Symbol)
+		}
+		order, err := orderFromBitgetRecord(record, id, c.accountID)
+		if err != nil {
+			return nil, fmt.Errorf("bitget: invalid order-report position semantics symbol=%s: %w", record.Symbol, err)
+		}
+		if !model.OrderMatchesStatusQuery(order, query) {
+			continue
+		}
+		out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
 	}
 	return out, nil
 }
@@ -274,6 +295,10 @@ func (c *executionClient) GenerateFillReports(ctx context.Context, query model.F
 }
 
 func (c *executionClient) generateFillReports(ctx context.Context, query model.FillReportQuery) ([]model.FillReport, bool, bool, error) {
+	return c.generateFillReportsWithWindowMode(ctx, query, false)
+}
+
+func (c *executionClient) generateFillReportsWithWindowMode(ctx context.Context, query model.FillReportQuery, openStart bool) ([]model.FillReport, bool, bool, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
 		return nil, false, false, nil
 	}
@@ -289,7 +314,7 @@ func (c *executionClient) generateFillReports(ctx context.Context, query model.F
 	limitReached := false
 	unsafeIncomplete := false
 	for _, target := range targets {
-		reports, reached, unsafe, err := c.generateFillReportsForCategory(ctx, target.category, query, limit)
+		reports, reached, unsafe, err := c.generateFillReportsForCategoryWithWindowMode(ctx, target.category, query, limit, openStart)
 		if err != nil {
 			return nil, false, false, err
 		}
@@ -308,7 +333,17 @@ func (c *executionClient) generateFillReports(ctx context.Context, query model.F
 }
 
 func (c *executionClient) generateFillReportsForCategory(ctx context.Context, category string, query model.FillReportQuery, limit int) ([]model.FillReport, bool, bool, error) {
-	windows, err := c.fillReportWindows(query.Since, query.Until)
+	return c.generateFillReportsForCategoryWithWindowMode(ctx, category, query, limit, false)
+}
+
+func (c *executionClient) generateFillReportsForCategoryWithWindowMode(ctx context.Context, category string, query model.FillReportQuery, limit int, openStart bool) ([]model.FillReport, bool, bool, error) {
+	var windows []fillReportWindow
+	var err error
+	if openStart {
+		windows = []fillReportWindow{{until: query.Until}}
+	} else {
+		windows, err = c.fillReportWindows(query.Since, query.Until)
+	}
 	if err != nil {
 		return nil, false, false, err
 	}
@@ -416,65 +451,150 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 	now := c.clk.Now()
 	out := make([]model.PositionReport, 0)
 	for _, target := range targets {
-		records, err := c.rest.GetCurrentPositions(ctx, target.category, target.symbol)
+		reports, err := c.generatePositionReportsForTarget(ctx, target, query, now)
 		if err != nil {
 			return nil, err
 		}
-		for _, record := range records {
-			if !bitgetRecordCategoryMatches(record.Category, target.category) {
-				return nil, fmt.Errorf("bitget: position category mismatch requested=%s received=%s symbol=%s", target.category, record.Category, record.Symbol)
-			}
-			id, ok := c.resolveReportInstrument(target.category, query.InstrumentID, record.Symbol)
-			if !ok {
-				return nil, fmt.Errorf("bitget: unknown position-report instrument category=%s symbol=%s", target.category, record.Symbol)
-			}
-			quantity, err := bitgetAuthoritativePositionQuantity(record)
-			if err != nil {
-				return nil, fmt.Errorf("bitget: invalid position-report quantity category=%s symbol=%s: %w", target.category, record.Symbol, err)
-			}
-			pos, err := positionFromBitget(record, func(string) model.InstrumentID { return id }, c.accountID, now)
-			if err != nil {
-				return nil, fmt.Errorf("bitget: invalid position-report semantics category=%s symbol=%s: %w", target.category, record.Symbol, err)
-			}
-			pos.Quantity = quantity
-			if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
-				continue
-			}
-			out = append(out, model.PositionReport{Venue: VenueName, AccountID: c.accountID, Position: pos, ReportedAt: now})
+		out = append(out, reports...)
+	}
+	return out, nil
+}
+
+func (c *executionClient) generatePositionReportsForTarget(ctx context.Context, target reportTarget, query model.PositionReportQuery, now time.Time) ([]model.PositionReport, error) {
+	records, err := c.rest.GetCurrentPositions(ctx, target.category, target.symbol)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.PositionReport, 0, len(records))
+	for _, record := range records {
+		if !bitgetRecordCategoryMatches(record.Category, target.category) {
+			return nil, fmt.Errorf("bitget: position category mismatch requested=%s received=%s symbol=%s", target.category, record.Category, record.Symbol)
 		}
+		id, ok := c.resolveReportInstrument(target.category, query.InstrumentID, record.Symbol)
+		if !ok {
+			return nil, fmt.Errorf("bitget: unknown position-report instrument category=%s symbol=%s", target.category, record.Symbol)
+		}
+		quantity, err := bitgetAuthoritativePositionQuantity(record)
+		if err != nil {
+			return nil, fmt.Errorf("bitget: invalid position-report quantity category=%s symbol=%s: %w", target.category, record.Symbol, err)
+		}
+		pos, err := positionFromBitget(record, func(string) model.InstrumentID { return id }, c.accountID, now)
+		if err != nil {
+			return nil, fmt.Errorf("bitget: invalid position-report semantics category=%s symbol=%s: %w", target.category, record.Symbol, err)
+		}
+		pos.Quantity = quantity
+		if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
+			continue
+		}
+		out = append(out, model.PositionReport{Venue: VenueName, AccountID: c.accountID, Position: pos, ReportedAt: now})
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(VenueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("bitget: mass status account %q does not match execution account %q", query.AccountID, c.accountID)
 	}
-	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
-	mass.ClientID = query.ClientID
-	mass.Lookback = query.Lookback
-	mass.Partial = true
-	orders, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true})
+	frozen, selector, err := c.freezeMassStatusScope(query)
 	if err != nil {
 		return nil, err
 	}
-	for _, report := range orders {
-		if err := mass.AddOrderReport(report); err != nil {
+	selectorSet := bitgetInstrumentIDSet(selector)
+	openSelector := append([]model.InstrumentID{}, selector...)
+	fillSelector := append([]model.InstrumentID{}, selector...)
+	positionSelector := bitgetSelectorForKind(selector, enums.KindPerp)
+	mass := model.NewExecutionMassStatus(VenueName, c.accountID, frozen.clk.Now())
+	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if frozen.rest == nil {
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		if query.IncludeFills {
+			mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		}
+		if query.IncludePositions {
+			mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		}
+		if err := mass.ValidateFor(query); err != nil {
 			return nil, err
 		}
+		return mass, nil
 	}
-	if query.IncludeFills && c.Capabilities().Reports.FillHistory {
-		fills, limitReached, _, err := c.generateFillReports(ctx, model.FillReportQuery{
+	openStartedAt := frozen.clk.Now()
+	openTargets, err := frozen.massStatusReportTargets(openSelector)
+	if err != nil {
+		return nil, err
+	}
+	openSuccesses := 0
+	openFailures := 0
+	for _, target := range openTargets {
+		orders, err := frozen.generateOrderStatusReportsForTarget(ctx, target, model.OrderStatusReportQuery{AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true}, frozen.clk.Now())
+		if err != nil {
+			openFailures++
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: fmt.Sprintf("category %s: %v", target.category, err)})
+			continue
+		}
+		openSuccesses++
+		for _, report := range orders {
+			if _, ok := selectorSet[report.Order.Request.InstrumentID.String()]; !ok {
+				continue
+			}
+			if err := mass.AddOrderReport(report); err != nil {
+				return nil, err
+			}
+		}
+	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(bitgetMassStatusCoverageState(len(openTargets), openSuccesses, openFailures, false), c.accountID, query.ClientID, openSelector, openStartedAt)
+	if query.IncludeFills && frozen.Capabilities().Reports.FillHistory {
+		fillThrough := query.Until
+		if fillThrough.IsZero() {
+			fillThrough = frozen.clk.Now()
+		}
+		fillFrom := query.Since
+		if fillFrom.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+			fillFrom = query.Until.Add(-query.Lookback)
+		}
+		fillQuery := model.FillReportQuery{
 			AccountID: c.accountID,
 			ClientID:  query.ClientID,
-			Since:     query.Since,
-			Until:     query.Until,
+			Since:     fillFrom,
+			Until:     fillThrough,
 			Limit:     executionMassStatusFillLimit,
-		})
+		}
+		fillTargets, err := frozen.massStatusReportTargets(fillSelector)
 		if err != nil {
 			return nil, err
 		}
+		fillSuccesses := 0
+		fillFailures := 0
+		limitReached := false
+		unsafeIncomplete := false
+		fills := make([]model.FillReport, 0)
+		openStart := query.Since.IsZero() && query.Until.IsZero()
+		for _, target := range fillTargets {
+			reports, reached, unsafe, err := frozen.generateFillReportsForCategoryWithWindowMode(ctx, target.category, fillQuery, executionMassStatusFillLimit, openStart)
+			if err != nil {
+				fillFailures++
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_UNAVAILABLE", Message: fmt.Sprintf("category %s: %v", target.category, err)})
+				continue
+			}
+			fillSuccesses++
+			limitReached = limitReached || reached
+			unsafeIncomplete = unsafeIncomplete || unsafe
+			fills = append(fills, reports...)
+		}
+		sort.SliceStable(fills, func(i, j int) bool {
+			return fills[i].Fill.Timestamp.After(fills[j].Fill.Timestamp)
+		})
+		if len(fills) > executionMassStatusFillLimit {
+			fills = fills[:executionMassStatusFillLimit]
+			limitReached = true
+		}
 		for _, report := range fills {
+			if _, ok := selectorSet[report.Fill.InstrumentID.String()]; !ok {
+				continue
+			}
 			if err := mass.AddFillReport(report); err != nil {
 				return nil, err
 			}
@@ -485,22 +605,173 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 				Message: fmt.Sprintf("fill-history recovery reached the global %d-record limit; recovered fills may be incomplete", executionMassStatusFillLimit),
 			})
 		}
-		if err := c.addHistoricalDerivativeOrders(ctx, mass); err != nil {
-			return nil, err
-		}
-	}
-	if query.IncludePositions && c.Capabilities().Reports.PositionReports {
-		positions, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID})
-		if err != nil {
-			return nil, err
-		}
-		for _, report := range positions {
-			if err := mass.AddPositionReport(report); err != nil {
+		if fillSuccesses > 0 {
+			if err := frozen.addHistoricalDerivativeOrders(ctx, mass); err != nil {
 				return nil, err
 			}
 		}
+		fillState := bitgetMassStatusCoverageState(len(fillTargets), fillSuccesses, fillFailures, limitReached || unsafeIncomplete)
+		mass.FillsCoverage = model.NewFillCoverage(fillState, c.accountID, query.ClientID, fillSelector, fillFrom, fillThrough)
+	} else if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	}
+	if query.IncludePositions {
+		positionsStartedAt := frozen.clk.Now()
+		if len(positionSelector) == 0 {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, c.accountID, query.ClientID, positionSelector, positionsStartedAt)
+		} else if !frozen.Capabilities().Reports.PositionReports {
+			mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		} else {
+			positionTargets, err := frozen.massStatusReportTargets(positionSelector)
+			if err != nil {
+				return nil, err
+			}
+			positionSuccesses := 0
+			positionFailures := 0
+			for _, target := range positionTargets {
+				positions, err := frozen.generatePositionReportsForTarget(ctx, target, model.PositionReportQuery{AccountID: c.accountID}, frozen.clk.Now())
+				if err != nil {
+					positionFailures++
+					mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "POSITIONS_UNAVAILABLE", Message: fmt.Sprintf("category %s: %v", target.category, err)})
+					continue
+				}
+				positionSuccesses++
+				for _, report := range positions {
+					if _, ok := selectorSet[report.Position.InstrumentID.String()]; !ok {
+						continue
+					}
+					if err := mass.AddPositionReport(report); err != nil {
+						return nil, err
+					}
+				}
+			}
+			mass.PositionsCoverage = model.NewSnapshotCoverage(bitgetMassStatusCoverageState(len(positionTargets), positionSuccesses, positionFailures, false), c.accountID, query.ClientID, positionSelector, positionsStartedAt)
+		}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
 	}
 	return mass, nil
+}
+
+func (c *executionClient) freezeMassStatusScope(query model.MassStatusQuery) (*executionClient, []model.InstrumentID, error) {
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != VenueName {
+		return nil, nil, fmt.Errorf("bitget: mass status venue %q does not match %q", query.Venue, VenueName)
+	}
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("bitget: instrument provider required for mass status")
+	}
+	c.provider.mu.RLock()
+	instruments := make([]*model.Instrument, 0, len(c.provider.all))
+	for _, inst := range c.provider.all {
+		if inst == nil {
+			continue
+		}
+		clone := *inst
+		if inst.AssetIndex != nil {
+			assetIndex := *inst.AssetIndex
+			clone.AssetIndex = &assetIndex
+		}
+		instruments = append(instruments, &clone)
+	}
+	categories := make([]string, 0, len(c.provider.categoryScope))
+	for category := range c.provider.categoryScope {
+		categories = append(categories, category)
+	}
+	c.provider.mu.RUnlock()
+	sort.Strings(categories)
+	snapshot := newInstrumentProvider()
+	snapshot.loadSnapshot(instruments, categories)
+	frozen := *c
+	frozen.provider = snapshot
+	frozen.categories = append([]string(nil), c.categories...)
+	selector, err := frozen.massStatusSelector(query.InstrumentIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &frozen, selector, nil
+}
+
+func (c *executionClient) massStatusSelector(requested []model.InstrumentID) ([]model.InstrumentID, error) {
+	if requested != nil {
+		selector := model.NormalizeInstrumentIDs(requested)
+		for _, id := range selector {
+			inst, ok := c.provider.Instrument(id)
+			if !ok {
+				return nil, fmt.Errorf("bitget: unknown mass status instrument %s: %w", id, errs.ErrSymbolNotFound)
+			}
+			category, err := categoryForInstrument(inst)
+			if err != nil || id.Venue != VenueName || !c.supportsCategory(category) {
+				return nil, fmt.Errorf("bitget: mass status instrument %s is outside execution scope", id)
+			}
+		}
+		return selector, nil
+	}
+	all := c.provider.All()
+	selector := make([]model.InstrumentID, 0, len(all))
+	for _, inst := range all {
+		if inst == nil || inst.ID.Venue != VenueName {
+			continue
+		}
+		category, err := categoryForInstrument(inst)
+		if err == nil && c.supportsCategory(category) {
+			selector = append(selector, inst.ID)
+		}
+	}
+	return model.NormalizeInstrumentIDs(selector), nil
+}
+
+func (c *executionClient) massStatusReportTargets(selector []model.InstrumentID) ([]reportTarget, error) {
+	seen := make(map[string]struct{})
+	targets := make([]reportTarget, 0, len(c.categories))
+	for _, id := range selector {
+		inst, err := c.instrument(id)
+		if err != nil {
+			return nil, err
+		}
+		category, err := categoryForInstrument(inst)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		targets = append(targets, reportTarget{category: category})
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].category < targets[j].category })
+	return targets, nil
+}
+
+func bitgetMassStatusCoverageState(attempts, successes, failures int, incomplete bool) model.CoverageState {
+	switch {
+	case attempts == 0:
+		return model.CoverageComplete
+	case successes == 0 && failures > 0:
+		return model.CoverageUnavailable
+	case failures > 0 || incomplete:
+		return model.CoveragePartial
+	default:
+		return model.CoverageComplete
+	}
+}
+
+func bitgetSelectorForKind(ids []model.InstrumentID, kind enums.InstrumentKind) []model.InstrumentID {
+	out := make([]model.InstrumentID, 0, len(ids))
+	for _, id := range ids {
+		if id.Kind == kind {
+			out = append(out, id)
+		}
+	}
+	return model.NormalizeInstrumentIDs(out)
+}
+
+func bitgetInstrumentIDSet(ids []model.InstrumentID) map[string]struct{} {
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		out[id.String()] = struct{}{}
+	}
+	return out
 }
 
 type historicalFillOrderIdentity struct {

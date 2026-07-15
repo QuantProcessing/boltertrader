@@ -307,13 +307,131 @@ func TestClientSingleOrderMethodsRejectEmptyStatusesWithoutPanic(t *testing.T) {
 
 	if status, err := client.PlaceOrder(context.Background(), order); status != nil || err == nil || !strings.Contains(err.Error(), "no order status") {
 		t.Fatalf("PlaceOrder status=%+v err=%v, want descriptive empty-status error", status, err)
+	} else if errors.Is(err, hyperliquid.ErrOrderRejected) {
+		t.Fatalf("PlaceOrder err=%v, malformed empty status must remain ambiguous", err)
 	}
 	oid := int64(1)
 	if status, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order}); status != nil || err == nil || !strings.Contains(err.Error(), "no order status") {
 		t.Fatalf("ModifyOrder status=%+v err=%v, want descriptive empty-status error", status, err)
+	} else if errors.Is(err, hyperliquid.ErrOrderRejected) {
+		t.Fatalf("ModifyOrder err=%v, malformed empty status must remain ambiguous", err)
 	}
 	if status, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1}); status != nil || err == nil || !strings.Contains(err.Error(), "no order status") {
 		t.Fatalf("CancelOrder status=%+v err=%v, want descriptive empty-status error", status, err)
+	} else if errors.Is(err, hyperliquid.ErrOrderRejected) {
+		t.Fatalf("CancelOrder err=%v, malformed empty status must remain ambiguous", err)
+	}
+}
+
+func TestClientSingleOrderMethodsKeepMalformedStatusesAmbiguous(t *testing.T) {
+	cloid := "client-1"
+	oid := int64(1)
+	order := PlaceOrderRequest{
+		AssetID: 1, IsBuy: true, Price: 10, Size: 1, ClientOrderID: &cloid,
+		OrderType: OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifGtc}},
+	}
+	tests := []struct {
+		name     string
+		response string
+		call     func(*Client) error
+	}{
+		{"place extra cardinality", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"client-1"}},{"resting":{"oid":2,"cloid":"client-1"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place empty shape", `{"status":"ok","response":{"type":"order","data":{"statuses":[{}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place invalid resting oid", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":0,"cloid":"client-1"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place malformed filled values", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":1,"totalSz":"bad","avgPx":"10"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place cloid mismatch", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"other"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"modify extra cardinality", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"client-1"}},{"resting":{"oid":2,"cloid":"client-1"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify empty shape", `{"status":"ok","response":{"type":"order","data":{"statuses":[{}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify invalid filled oid", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":0,"totalSz":"1","avgPx":"10"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify malformed filled values", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":1,"totalSz":"1","avgPx":"bad"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify cloid mismatch", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"other"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"cancel extra cardinality", `{"status":"ok","response":{"type":"default","data":{"statuses":["success","success"]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+		{"cancel arbitrary string", `{"status":"ok","response":{"type":"default","data":{"statuses":["unexpected"]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+		{"cancel malformed object", `{"status":"ok","response":{"type":"default","data":{"statuses":[{}]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.response))
+			}))
+			t.Cleanup(srv.Close)
+			base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+			base.BaseURL = srv.URL
+			err := test.call(NewClient(base))
+			if err == nil {
+				t.Fatal("malformed status unexpectedly succeeded")
+			}
+			if errors.Is(err, hyperliquid.ErrOrderRejected) {
+				t.Fatalf("err=%v, malformed status must remain ambiguous", err)
+			}
+		})
+	}
+}
+
+func TestClientCancelAndModifyExposeTypedOrderRejection(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		call     func(*Client) error
+	}{
+		{
+			name:     "cancel",
+			response: `{"status":"ok","response":{"type":"default","data":{"statuses":[{"error":"Order was never placed"}]}}}`,
+			call: func(client *Client) error {
+				_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+				return err
+			},
+		},
+		{
+			name:     "modify",
+			response: `{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"Insufficient spot balance"}]}}}`,
+			call: func(client *Client) error {
+				oid := int64(1)
+				_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: PlaceOrderRequest{
+					AssetID: 1, IsBuy: true, Price: 10, Size: 1,
+					OrderType: OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifGtc}},
+				}})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer srv.Close()
+			base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+			base.BaseURL = srv.URL
+			err := test.call(NewClient(base))
+			if !errors.Is(err, hyperliquid.ErrOrderRejected) {
+				t.Fatalf("err=%v, want ErrOrderRejected", err)
+			}
+		})
 	}
 }
 

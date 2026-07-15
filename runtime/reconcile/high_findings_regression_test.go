@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -172,6 +173,7 @@ func TestCumulativeOrderProgressWithoutDerivablePriceBlocksActivation(t *testing
 }
 
 func TestZeroGeneratedAtAnonymousFillUsesStableIdentity(t *testing.T) {
+	at := time.Unix(300, 0)
 	c := cache.New()
 	known := order("anonymous-fill", btc, "2", enums.StatusNew)
 	known.Request.AccountID = "acct"
@@ -184,7 +186,7 @@ func TestZeroGeneratedAtAnonymousFillUsesStableIdentity(t *testing.T) {
 		Fill: model.Fill{
 			AccountID: "acct", InstrumentID: btc, ClientID: known.Request.ClientID,
 			VenueOrderID: known.VenueOrderID, Side: enums.SideBuy,
-			Price: d("100"), Quantity: d("1"),
+			Price: d("100"), Quantity: d("1"), Timestamp: at,
 		},
 	}); err != nil {
 		t.Fatalf("add fill report: %v", err)
@@ -193,6 +195,7 @@ func TestZeroGeneratedAtAnonymousFillUsesStableIdentity(t *testing.T) {
 	var tradeIDs []string
 	r := New(nil, &snapshotExec{mass: mass, fillHistory: true}, c).
 		WithAccountID("acct").
+		WithClock(clock.NewSimulatedClock(at)).
 		WithFillApplier(func(fill model.Fill, _ contract.EventMeta) FillApplyResult {
 			tradeIDs = append(tradeIDs, fill.TradeID)
 			return FillApplyApplied

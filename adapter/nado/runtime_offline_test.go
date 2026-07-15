@@ -7,18 +7,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
+	"github.com/QuantProcessing/boltertrader/runtime/cache"
 	runtimeexec "github.com/QuantProcessing/boltertrader/runtime/exec"
 	"github.com/QuantProcessing/boltertrader/runtime/journal"
 	"github.com/QuantProcessing/boltertrader/runtime/lifecycle"
-	"github.com/QuantProcessing/boltertrader/runtime/risk"
 	"github.com/shopspring/decimal"
 )
 
@@ -31,22 +33,18 @@ type nadoIntentFailStore struct {
 	err error
 }
 
-type nadoAdvancingIntentStore struct {
-	journal.Store
-	clk     *clock.SimulatedClock
-	advance time.Duration
+type nadoRuntimeRiskProbe struct {
+	checks   int
+	releases int
+}
+
+func (p *nadoRuntimeRiskProbe) CheckSubmission(context.Context, model.OrderRequest, *model.Instrument) (func(), error) {
+	p.checks++
+	return func() { p.releases++ }, nil
 }
 
 func (s *nadoIntentFailStore) AppendCommandIntent(context.Context, journal.CommandIntent) error {
 	return s.err
-}
-
-func (s *nadoAdvancingIntentStore) AppendCommandIntent(ctx context.Context, intent journal.CommandIntent) error {
-	if err := s.Store.AppendCommandIntent(ctx, intent); err != nil {
-		return err
-	}
-	s.clk.Advance(s.advance)
-	return nil
 }
 
 func (a *nadoRuntimeAccount) AccountID() string { return a.state.AccountID }
@@ -57,7 +55,7 @@ func (a *nadoRuntimeAccount) Capabilities() contract.Capabilities {
 			Kind:    enums.KindSpot,
 			Account: true,
 		}},
-		Reports: contract.ReportCapabilities{AccountStateSnapshots: true},
+		Reports: contract.ReportCapabilities{},
 	}
 }
 func (a *nadoRuntimeAccount) AccountState(context.Context) (model.AccountState, error) {
@@ -78,13 +76,47 @@ func (a *nadoRuntimeAccount) SetMarginMode(context.Context, model.InstrumentID, 
 func (a *nadoRuntimeAccount) Events() <-chan contract.AccountEnvelope { return nil }
 func (a *nadoRuntimeAccount) Close() error                            { return nil }
 
-func TestNadoRuntimeUsesVenuePreTradeWithoutFabricatedFreeBalance(t *testing.T) {
+func TestNadoWhitespaceClientIDFailsDuringMandatoryValidation(t *testing.T) {
+	clk := clock.NewSimulatedClock(time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC))
+	provider := nadoTestProvider()
+	execution := newNadoRuntimeExecution(t, provider, clk)
+	submitter := newRecordingSubmissionDeps()
+	execution.submitter = submitter
+	risk := &nadoRuntimeRiskProbe{}
+	cached := cache.New()
+	store := journal.NewMemory()
+	engine := runtimeexec.New(execution, cached, clk, "nado-whitespace").
+		WithAccountID(AccountIDUnified).
+		WithJournal(store).
+		WithRisk(risk, provider)
+	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
+	req.ClientID = "   "
+
+	if _, err := engine.Submit(context.Background(), req); err == nil || !strings.Contains(err.Error(), "client id is required") {
+		t.Fatalf("Submit err=%v, want mandatory validation rejection", err)
+	}
+	if risk.checks != 0 || risk.releases != 0 {
+		t.Fatalf("risk checks/releases=%d/%d, want 0/0", risk.checks, risk.releases)
+	}
+	if len(store.Records()) != 0 || engine.InFlightCount() != 0 {
+		t.Fatalf("validation rejection durable state records=%d inflight=%d", len(store.Records()), engine.InFlightCount())
+	}
+	if _, ok := cached.OrderByClientIDForAccount(AccountIDUnified, req.ClientID); ok {
+		t.Fatal("validation rejection produced cached PendingNew")
+	}
+	calls, prepareCalls, executeCalls := submitter.snapshot()
+	if len(calls) != 0 || prepareCalls != 0 || executeCalls != 0 {
+		t.Fatalf("submission backend calls=%v prepare=%d execute=%d, want none", calls, prepareCalls, executeCalls)
+	}
+}
+
+func TestNadoRuntimeUsesOrdinarySubmitWithoutFabricatedFreeBalance(t *testing.T) {
 	now := time.Now().UTC()
 	clk := clock.NewSimulatedClock(now)
 	provider := nadoTestProvider()
 	execution := newNadoRuntimeExecution(t, provider, clk)
-	pretrade := newRecordingPreTradeDeps()
-	execution.pretrade = pretrade
+	submitter := newRecordingSubmissionDeps()
+	execution.submitter = submitter
 	account := &nadoRuntimeAccount{state: model.AccountState{
 		AccountID:    AccountIDUnified,
 		Venue:        VenueName,
@@ -113,11 +145,7 @@ func TestNadoRuntimeUsesVenuePreTradeWithoutFabricatedFreeBalance(t *testing.T) 
 		"nado-runtime",
 		runtime.WithAccountID(AccountIDUnified),
 	)
-	riskEngine := risk.New(risk.Limits{}, node.Cache).
-		WithClock(func() time.Time { return clk.Now() }).
-		RequireAccountState()
-	runtime.WithRisk(riskEngine, provider)(node)
-
+	runtimeaccept.AttachAccountRequiredRiskWithMaxNotional(node, provider, decimal.NewFromInt(1_000_000))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -135,23 +163,20 @@ func TestNadoRuntimeUsesVenuePreTradeWithoutFabricatedFreeBalance(t *testing.T) 
 	if order == nil || order.Request.AccountID != AccountIDUnified || order.VenueOrderID == "" {
 		t.Fatalf("runtime order=%+v", order)
 	}
-	if execution.preparedLen() != 0 {
-		t.Fatalf("prepared entries=%d, want 0 after submit", execution.preparedLen())
-	}
-	pretrade.mu.Lock()
-	calls := append([]string(nil), pretrade.calls...)
-	pretrade.mu.Unlock()
-	wantCalls := []string{"sender", "max", "prepare", "execute"}
+	submitter.mu.Lock()
+	calls := append([]string(nil), submitter.calls...)
+	submitter.mu.Unlock()
+	wantCalls := []string{"prepare", "execute"}
 	if len(calls) != len(wantCalls) {
-		t.Fatalf("pretrade calls=%v, want %v", calls, wantCalls)
+		t.Fatalf("submission calls=%v, want %v", calls, wantCalls)
 	}
 	for i := range wantCalls {
 		if calls[i] != wantCalls[i] {
-			t.Fatalf("pretrade calls=%v, want %v", calls, wantCalls)
+			t.Fatalf("submission calls=%v, want %v", calls, wantCalls)
 		}
 	}
-	if bal, ok := node.Cache.BalanceForAccount(AccountIDUnified, "USDT0"); !ok || bal.Free.IsPositive() || bal.Available.IsPositive() {
-		t.Fatalf("runtime fabricated currency availability: %+v ok=%v", bal, ok)
+	if bal, ok := node.Cache.BalanceForAccount(AccountIDUnified, "USDT0"); !ok || !bal.Free.IsZero() {
+		t.Fatalf("runtime fabricated currency free balance: %+v ok=%v", bal, ok)
 	}
 
 	cancel()
@@ -162,13 +187,13 @@ func TestNadoRuntimeUsesVenuePreTradeWithoutFabricatedFreeBalance(t *testing.T) 
 	}
 }
 
-func TestNadoRuntimeJournalFailureReleasesPreparedPayloadBeforeVenueWrite(t *testing.T) {
+func TestNadoRuntimeJournalFailureStopsBeforeAdapterPreparationOrVenueWrite(t *testing.T) {
 	now := time.Now().UTC()
 	clk := clock.NewSimulatedClock(now)
 	provider := nadoTestProvider()
 	execution := newNadoRuntimeExecution(t, provider, clk)
-	pretrade := newRecordingPreTradeDeps()
-	execution.pretrade = pretrade
+	submitter := newRecordingSubmissionDeps()
+	execution.submitter = submitter
 	account := &nadoRuntimeAccount{state: model.AccountState{
 		AccountID:    AccountIDUnified,
 		Venue:        VenueName,
@@ -194,11 +219,6 @@ func TestNadoRuntimeJournalFailureReleasesPreparedPayloadBeforeVenueWrite(t *tes
 		runtime.WithAccountID(AccountIDUnified),
 		runtime.WithJournal(store),
 	)
-	riskEngine := risk.New(risk.Limits{}, node.Cache).
-		WithClock(func() time.Time { return clk.Now() }).
-		RequireAccountState()
-	runtime.WithRisk(riskEngine, provider)(node)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan struct{})
@@ -213,136 +233,15 @@ func TestNadoRuntimeJournalFailureReleasesPreparedPayloadBeforeVenueWrite(t *tes
 	if _, err := node.Exec.Submit(context.Background(), req); !errors.Is(err, fail) {
 		t.Fatalf("submit err=%v, want %v", err, fail)
 	}
-	if execution.preparedLen() != 0 {
-		t.Fatalf("prepared entries=%d, want 0 after journal failure", execution.preparedLen())
-	}
-	pretrade.mu.Lock()
-	calls := append([]string(nil), pretrade.calls...)
-	pretrade.mu.Unlock()
-	for _, call := range calls {
-		if call == "execute" {
-			t.Fatalf("venue execute called after journal failure: %v", calls)
-		}
+	submitter.mu.Lock()
+	calls := append([]string(nil), submitter.calls...)
+	submitter.mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("adapter called before durable intent succeeded: %v", calls)
 	}
 	if _, ok := node.Cache.Order(req.ClientID); ok {
 		t.Fatal("journal-rejected order entered cache")
 	}
-	if pretrade.prepared.Signature != "" || pretrade.prepared.EncodedOrder != "" || pretrade.prepared.Request != nil {
-		t.Fatalf("released prepared payload retained secret material: %+v", pretrade.prepared)
-	}
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("node did not stop")
-	}
-}
-
-func TestNadoRuntimeExpiredPreparedPayloadClosesLocalDeniedWithoutRevalidation(t *testing.T) {
-	now := time.Now().UTC()
-	clk := clock.NewSimulatedClock(now)
-	provider := nadoTestProvider()
-	execution := newNadoRuntimeExecution(t, provider, clk)
-	execution.prepared = newPreparedOrderCache(8, time.Second)
-	pretrade := newRecordingPreTradeDeps()
-	execution.pretrade = pretrade
-	account := &nadoRuntimeAccount{state: model.AccountState{
-		AccountID:    AccountIDUnified,
-		Venue:        VenueName,
-		Type:         model.AccountMargin,
-		BaseCurrency: "USDT0",
-		Balances: []model.AccountBalance{{
-			AccountID: AccountIDUnified,
-			Currency:  "USDT0",
-			Total:     decimal.NewFromInt(1000),
-			UpdatedAt: now,
-		}},
-		Summary: &model.AccountSummary{
-			SettlementCurrency:  "USDT0",
-			Equity:              decimal.NewFromInt(1000),
-			AvailableCollateral: decimal.NewFromInt(900),
-			UpdatedAt:           now,
-		},
-		Reported: true,
-		EventID:  model.AccountStateEventID(VenueName, AccountIDUnified, now),
-		TsEvent:  now,
-		TsInit:   now,
-	}}
-	memory := journal.NewMemory()
-	store := &nadoAdvancingIntentStore{Store: memory, clk: clk, advance: 2 * time.Second}
-	node := runtime.NewNode(
-		runtime.Clients{Execution: execution, Account: account},
-		clk,
-		"nado-runtime-expired",
-		runtime.WithAccountID(AccountIDUnified),
-		runtime.WithJournal(store),
-	)
-	riskEngine := risk.New(risk.Limits{}, node.Cache).
-		WithClock(func() time.Time { return clk.Now() }).
-		RequireAccountState()
-	runtime.WithRisk(riskEngine, provider)(node)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		node.Run(ctx)
-		close(done)
-	}()
-	waitNadoNodeRunning(t, node)
-
-	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
-	req.ClientID = "runtime-expired"
-	if _, err := node.Exec.Submit(context.Background(), req); !errors.Is(err, contract.ErrPreparedStateUnavailable) {
-		t.Fatalf("submit err=%v, want ErrPreparedStateUnavailable", err)
-	}
-	pretrade.mu.Lock()
-	calls := append([]string(nil), pretrade.calls...)
-	pretrade.mu.Unlock()
-	wantCalls := []string{"sender", "max", "prepare"}
-	if len(calls) != len(wantCalls) {
-		t.Fatalf("pretrade calls=%v, want %v", calls, wantCalls)
-	}
-	for i := range wantCalls {
-		if calls[i] != wantCalls[i] {
-			t.Fatalf("pretrade calls=%v, want %v", calls, wantCalls)
-		}
-	}
-	if execution.preparedLen() != 0 {
-		t.Fatalf("prepared entries=%d, want 0", execution.preparedLen())
-	}
-	order, ok := node.Cache.Order(req.ClientID)
-	if !ok || order.Status != enums.StatusRejected {
-		t.Fatalf("cache order=%+v ok=%v, want rejected", order, ok)
-	}
-	if got := node.Exec.InFlightCount(); got != 0 {
-		t.Fatalf("in-flight count=%d, want 0", got)
-	}
-	records := memory.Records()
-	var commandIntents int
-	var commandResults int
-	var resultPayload json.RawMessage
-	for _, record := range records {
-		switch record.Type {
-		case journal.RecordCommandIntent:
-			commandIntents++
-		case journal.RecordCommandResult:
-			commandResults++
-			resultPayload = record.Payload
-		}
-	}
-	if commandIntents != 1 || commandResults != 1 {
-		t.Fatalf("command journal records intents=%d results=%d", commandIntents, commandResults)
-	}
-	var result journal.CommandResult
-	if err := json.Unmarshal(resultPayload, &result); err != nil {
-		t.Fatalf("decode command result: %v", err)
-	}
-	if result.Outcome != string(runtimeexec.OutcomeLocalDenied) {
-		t.Fatalf("journal outcome=%q, want %q", result.Outcome, runtimeexec.OutcomeLocalDenied)
-	}
-
 	cancel()
 	select {
 	case <-done:
@@ -353,7 +252,7 @@ func TestNadoRuntimeExpiredPreparedPayloadClosesLocalDeniedWithoutRevalidation(t
 
 func TestNadoRuntimeWithoutOpenOrderBackendStaysRestricted(t *testing.T) {
 	execution := newExecutionClient(nil, nadoTestProvider(), clock.NewRealClock(), enums.KindSpot, AccountIDUnified)
-	execution.pretrade = newRecordingPreTradeDeps()
+	execution.submitter = newRecordingSubmissionDeps()
 	node := runtime.NewNode(
 		runtime.Clients{Execution: execution},
 		nil,
@@ -368,7 +267,7 @@ func TestNadoRuntimeWithoutOpenOrderBackendStaysRestricted(t *testing.T) {
 	for time.Now().Before(deadline) {
 		state := node.State()
 		if state.Node == lifecycle.NodeRunning && state.Trading == lifecycle.TradingReconciling {
-			if state.Reason != "open-order status requires a configured REST client" {
+			if state.Reason != "reconciliation open-order evidence is incomplete" {
 				t.Fatalf("restricted reason=%q", state.Reason)
 			}
 			return

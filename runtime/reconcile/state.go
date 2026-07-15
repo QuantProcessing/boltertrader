@@ -51,6 +51,7 @@ type PassHeader struct {
 type Cursor struct {
 	Scope                 ScopeKey
 	Stream                ReportStream
+	FillInstrumentIDs     []model.InstrumentID
 	LastSuccessfulPass    model.ReconciliationID
 	LastReportID          model.ReportID
 	LastVenueTime         time.Time
@@ -80,6 +81,7 @@ type Finding struct {
 	Message   string
 	Blocking  bool
 	CreatedAt time.Time
+	revision  uint64
 }
 
 // StateStore keeps reconciliation cursors plus operator-audit findings.
@@ -97,10 +99,11 @@ type StateStore interface {
 // Automatic reconciliation only emits these for narrowly proven conditions;
 // operators may use the same capability for findings that require review.
 type FindingResolution struct {
-	FindingID  string
-	PassID     model.ReconciliationID
-	ResolvedAt time.Time
-	Reason     string
+	FindingID        string
+	PassID           model.ReconciliationID
+	ResolvedAt       time.Time
+	Reason           string
+	expectedRevision uint64
 }
 
 // FindingResolver is an optional StateStore capability. It is deliberately not
@@ -111,6 +114,14 @@ type FindingResolver interface {
 
 type findingBatchResolver interface {
 	resolveFindings(ctx context.Context, resolutions []FindingResolution) error
+}
+
+// revisionFindingResolver marks the built-in state store as supporting the
+// compare-and-swap revision carried by automatic finding resolutions. The
+// unexported marker deliberately keeps third-party resolvers fail-closed.
+type revisionFindingResolver interface {
+	FindingResolver
+	supportsFindingRevisionCAS()
 }
 
 // AppliedFillRecorder is the optional durability surface used when a state
@@ -233,15 +244,34 @@ func (s *JournalStateStore) LoadCursor(ctx context.Context, scope ScopeKey, stre
 	if err != nil {
 		return Cursor{}, err
 	}
+	targetScope := scope.String()
+	targetStream := string(stream)
 	var out Cursor
 	for _, c := range cursors {
-		var payload Cursor
-		if err := json.Unmarshal([]byte(c.Cursor), &payload); err != nil {
+		if c.Scope != targetScope || c.Stream != targetStream {
 			continue
 		}
-		if payload.Scope == scope && payload.Stream == stream {
-			out = payload
+		var payload Cursor
+		if err := json.Unmarshal([]byte(c.Cursor), &payload); err != nil {
+			return Cursor{}, fmt.Errorf(
+				"reconcile: load cursor record %q for scope %q stream %q: decode payload: %w",
+				c.RecordID,
+				targetScope,
+				stream,
+				err,
+			)
 		}
+		if payload.Scope != scope || payload.Stream != stream {
+			return Cursor{}, fmt.Errorf(
+				"reconcile: load cursor record %q for scope %q stream %q: payload identity scope %q stream %q does not match journal identity",
+				c.RecordID,
+				targetScope,
+				stream,
+				payload.Scope.String(),
+				payload.Stream,
+			)
+		}
+		out = payload
 	}
 	return out, nil
 }
@@ -444,6 +474,8 @@ func (s *JournalStateStore) ResolveFinding(ctx context.Context, resolution Findi
 	return s.resolveFindings(ctx, []FindingResolution{resolution})
 }
 
+func (*JournalStateStore) supportsFindingRevisionCAS() {}
+
 func (s *JournalStateStore) resolveFindings(ctx context.Context, resolutions []FindingResolution) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -484,6 +516,10 @@ func (s *JournalStateStore) resolveFindings(ctx context.Context, resolutions []F
 
 func (s *JournalStateStore) resolveFindingCurrent(ctx context.Context, resolution FindingResolution) error {
 	s.mu.Lock()
+	if resolution.expectedRevision != 0 && s.findingVersions[resolution.FindingID] != resolution.expectedRevision {
+		s.mu.Unlock()
+		return nil
+	}
 	findingRecordIDs := append([]string(nil), s.findingRecords[resolution.FindingID]...)
 	if len(findingRecordIDs) == 0 {
 		s.mu.Unlock()
@@ -700,6 +736,7 @@ func (s *JournalStateStore) LoadOpenFindings(ctx context.Context, scope ScopeKey
 	out := make([]Finding, 0, len(s.findings))
 	for _, f := range s.findings {
 		if f.Scope == scope && findingIsBlocking(f) {
+			f.revision = s.findingVersions[f.ID]
 			out = append(out, f)
 		}
 	}

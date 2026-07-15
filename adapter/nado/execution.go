@@ -2,6 +2,7 @@ package nado
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,6 +24,11 @@ const (
 	nadoOrderCorrelationRetention  = 15 * time.Minute
 )
 
+type massStatusInstrument struct {
+	instrument *model.Instrument
+	productID  int64
+}
+
 type executionClient struct {
 	rest          *sdk.Client
 	provider      *instrumentProvider
@@ -30,12 +36,11 @@ type executionClient struct {
 	productKind   enums.InstrumentKind
 	accountID     string
 	stream        *wsstream.Stream[contract.ExecEnvelope]
-	pretrade      nadoPreTradeBackend
+	submitter     nadoSubmissionBackend
 	reports       nadoExecutionReportBackend
 	accountStream nadoAccountStreamBackend
 	startMu       sync.Mutex
 	started       bool
-	prepared      preparedOrderCache
 	correlations  nadoOrderCorrelationCache
 }
 
@@ -54,7 +59,6 @@ func newExecutionClient(rest *sdk.Client, provider *instrumentProvider, clk cloc
 		productKind: kind,
 		accountID:   accountID,
 		stream:      wsstream.New[contract.ExecEnvelope](256),
-		prepared:    newPreparedOrderCache(128, 30*time.Second),
 		correlations: newNadoOrderCorrelationCache(
 			nadoOrderCorrelationLimit,
 			nadoOrderCorrelationRetention,
@@ -63,7 +67,7 @@ func newExecutionClient(rest *sdk.Client, provider *instrumentProvider, clk cloc
 	if rest != nil && rest.Signer != nil {
 		c.reports = nadoSDKExecutionReportBackend{rest: rest}
 		if api, err := sdk.NewWsApiClient(context.Background(), rest); err == nil {
-			c.pretrade = nadoSDKPreTradeBackend{rest: rest, api: api}
+			c.submitter = nadoSDKSubmissionBackend{api: api}
 		}
 	}
 	return c
@@ -76,7 +80,7 @@ func (c *executionClient) Capabilities() contract.Capabilities {
 		Venue: VenueName,
 		Products: []contract.ProductCapability{{
 			Kind:    selectedKind(c.productKind),
-			Trading: c.pretrade != nil,
+			Trading: c.submitter != nil,
 		}},
 		Reports: contract.ReportCapabilities{
 			SingleOrderStatus:         true,
@@ -85,7 +89,7 @@ func (c *executionClient) Capabilities() contract.Capabilities {
 			FillHistory:               c.reports != nil,
 			PositionReports:           c.reports != nil && selectedKind(c.productKind) == enums.KindPerp,
 		},
-		Trading:   contract.TradingCapabilities{Submit: c.pretrade != nil, Cancel: true, CancelAll: true},
+		Trading:   contract.TradingCapabilities{Submit: c.submitter != nil, Cancel: true, CancelAll: true},
 		Streaming: contract.StreamCapabilities{Execution: c.accountStream != nil},
 	}
 }
@@ -98,6 +102,9 @@ func (c *executionClient) validateOrderRequest(req model.OrderRequest) error {
 	if req.AccountID != "" && req.AccountID != c.accountID {
 		return fmt.Errorf("%w: order account %s does not match adapter account %s", ErrAccountMismatch, req.AccountID, c.accountID)
 	}
+	if strings.TrimSpace(req.ClientID) == "" {
+		return fmt.Errorf("nado: client id is required for submit")
+	}
 	if req.InstrumentID.Kind != selectedKind(c.productKind) {
 		return fmt.Errorf("nado: product %s is outside adapter scope %s: %w", req.InstrumentID.Kind, selectedKind(c.productKind), contract.ErrNotSupported)
 	}
@@ -107,90 +114,6 @@ func (c *executionClient) validateOrderRequest(req model.OrderRequest) error {
 	}
 	_, err = c.orderInput(req, inst, productID)
 	return err
-}
-
-func (c *executionClient) ValidatePreTrade(ctx context.Context, req model.OrderRequest, inst *model.Instrument) (contract.PreTradeLease, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(req.ClientID) == "" {
-		return nil, fmt.Errorf("nado: client id is required for prepared pre-trade validation")
-	}
-	if err := c.validateOrderRequest(req); err != nil {
-		return nil, err
-	}
-	resolved, productID, err := c.instrument(req.InstrumentID)
-	if err != nil {
-		return nil, err
-	}
-	if inst != nil && inst.ID != resolved.ID {
-		return nil, fmt.Errorf("nado: pre-trade instrument mismatch")
-	}
-	if c.pretrade == nil {
-		return nil, fmt.Errorf("nado: pre-trade backend not configured: %w", contract.ErrNotSupported)
-	}
-	input, err := c.orderInput(req, resolved, productID)
-	if err != nil {
-		return nil, err
-	}
-	reservation, err := c.prepared.reserve(req.ClientID, req, c.clk.Now())
-	if err != nil {
-		return nil, err
-	}
-	published := false
-	defer func() {
-		if !published {
-			reservation.Rollback()
-		}
-	}()
-	sender, err := c.pretrade.Sender()
-	if err != nil {
-		return nil, fmt.Errorf("nado pre-trade sender: %w", err)
-	}
-	maxReq := sdk.MaxOrderSizeRequest{
-		ProductID:    productID,
-		Sender:       sender,
-		PriceX18:     decimalToX18String(req.Price),
-		Direction:    nadoOrderDirection(req.Side),
-		ReduceOnly:   &input.ReduceOnly,
-		Isolated:     &input.Isolated,
-		BorrowMargin: input.BorrowMargin,
-	}
-	if input.SpotLeverage != nil {
-		maxReq.SpotLeverage = input.SpotLeverage
-	}
-	maxSize, err := c.pretrade.GetMaxOrderSize(ctx, maxReq)
-	if err != nil {
-		return nil, fmt.Errorf("nado pre-trade max_order_size: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	maxQty, err := parseX18Required(maxSize.MaxOrderSize, "max_order_size")
-	if err != nil {
-		return nil, err
-	}
-	if req.Quantity.GreaterThan(maxQty) {
-		return nil, fmt.Errorf("nado: quantity %s exceeds max_order_size %s", req.Quantity, maxQty)
-	}
-	prepared, err := c.pretrade.PrepareOrder(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("nado pre-trade prepare_order: %w", err)
-	}
-	if prepared == nil {
-		return nil, fmt.Errorf("nado: prepared order is required")
-	}
-	if err := ctx.Err(); err != nil {
-		redactPreparedOrder(prepared)
-		return nil, err
-	}
-	lease, err := reservation.Publish(prepared, c.clk.Now())
-	if err != nil {
-		redactPreparedOrder(prepared)
-		return nil, fmt.Errorf("nado pre-trade publish prepared order: %w", err)
-	}
-	published = true
-	return lease, nil
 }
 
 func (c *executionClient) orderInput(req model.OrderRequest, inst *model.Instrument, productID int64) (sdk.ClientOrderInput, error) {
@@ -221,49 +144,39 @@ func (c *executionClient) orderInput(req model.OrderRequest, inst *model.Instrum
 }
 
 func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
-	return c.submit(ctx, req, true)
-}
-
-func (c *executionClient) SubmitPrepared(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
-	return c.submit(ctx, req, false)
-}
-
-func (c *executionClient) submit(ctx context.Context, req model.OrderRequest, allowDirectFallback bool) (*model.Order, error) {
 	if err := c.validateOrderRequest(req); err != nil {
 		return nil, err
 	}
-	if c.pretrade == nil {
-		return nil, fmt.Errorf("nado: submit requires prepared pre-trade backend: %w", contract.ErrNotSupported)
+	if c.submitter == nil {
+		return nil, fmt.Errorf("nado: submission backend not configured: %w", contract.ErrNotSupported)
 	}
-	if strings.TrimSpace(req.ClientID) == "" {
-		return nil, fmt.Errorf("nado: client id is required for prepared submit")
-	}
-	entry, ok := c.prepared.consume(req.ClientID, req, c.clk.Now())
-	if !ok {
-		if c.prepared.isTerminal(req.ClientID, c.clk.Now()) {
-			return nil, fmt.Errorf("%w: nado prepared state for client id %s is no longer usable", contract.ErrPreparedStateUnavailable, req.ClientID)
-		}
-		if !allowDirectFallback {
-			return nil, fmt.Errorf("%w: nado prepared state for client id %s is missing or expired", contract.ErrPreparedStateUnavailable, req.ClientID)
-		}
-		lease, err := c.ValidatePreTrade(ctx, req, nil)
-		if err != nil {
-			return nil, err
-		}
-		defer lease.Release()
-		entry, ok = c.prepared.consume(req.ClientID, req, c.clk.Now())
-		if !ok {
-			return nil, fmt.Errorf("nado: missing prepared state after validation")
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		redactPreparedOrder(entry.order)
+	inst, productID, err := c.instrument(req.InstrumentID)
+	if err != nil {
 		return nil, err
 	}
-	digest := strings.TrimSpace(entry.order.Digest)
-	if digest == "" {
-		redactPreparedOrder(entry.order)
+	input, err := c.orderInput(req, inst, productID)
+	if err != nil {
+		return nil, err
+	}
+	prepared, prepareErr := c.submitter.PrepareOrder(ctx, input)
+	if prepared != nil {
+		defer redactPreparedOrder(prepared)
+	}
+	if prepareErr != nil {
+		return nil, fmt.Errorf("nado prepare order: %w", prepareErr)
+	}
+	if prepared == nil {
+		return nil, fmt.Errorf("nado: prepared order is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	digest := prepared.Digest
+	if strings.TrimSpace(digest) == "" {
 		return nil, fmt.Errorf("nado: prepared order digest is required")
+	}
+	if digest != strings.TrimSpace(digest) {
+		return nil, fmt.Errorf("nado: prepared order digest must not contain surrounding whitespace")
 	}
 	if err := c.correlations.remember(nadoOrderCorrelation{
 		accountID:    c.accountID,
@@ -272,20 +185,22 @@ func (c *executionClient) submit(ctx context.Context, req model.OrderRequest, al
 		venueOrderID: digest,
 		request:      req,
 	}, c.clk.Now()); err != nil {
-		redactPreparedOrder(entry.order)
 		return nil, err
 	}
-	resp, err := c.pretrade.ExecutePreparedOrder(ctx, entry.order)
+	resp, err := c.submitter.ExecutePreparedOrder(ctx, prepared)
 	if err != nil {
-		redactPreparedOrder(entry.order)
-		return nil, fmt.Errorf("nado execute prepared order: %w", err)
+		return nil, mapNadoCommandError(fmt.Errorf("nado execute prepared order: %w", err))
 	}
-	if resp != nil && strings.TrimSpace(resp.Digest) != "" && !strings.EqualFold(strings.TrimSpace(resp.Digest), digest) {
-		foreignDigest := strings.TrimSpace(resp.Digest)
-		redactPreparedOrder(entry.order)
-		return nil, fmt.Errorf("nado execute prepared order: response digest mismatch: signed=%s response=%s", digest, foreignDigest)
+	if resp == nil {
+		return nil, fmt.Errorf("nado execute prepared order: response is required")
 	}
-	redactPreparedOrder(entry.order)
+	responseDigest := resp.Digest
+	if strings.TrimSpace(responseDigest) == "" {
+		return nil, fmt.Errorf("nado execute prepared order: response digest is required")
+	}
+	if !strings.EqualFold(responseDigest, digest) {
+		return nil, fmt.Errorf("nado execute prepared order: response digest mismatch: signed=%s response=%s", digest, responseDigest)
+	}
 	return &model.Order{
 		Request:      req,
 		VenueOrderID: digest,
@@ -303,11 +218,36 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 	if c.rest == nil {
 		return fmt.Errorf("nado: rest client not configured: %w", contract.ErrNotSupported)
 	}
-	_, err = c.rest.CancelOrders(ctx, sdk.CancelOrdersInput{ProductIds: []int64{productID}, Digests: []string{venueOrderID}})
-	if err == nil {
-		c.correlations.markTerminalByVenueOrderID(c.accountID, id, venueOrderID, enums.StatusCanceled, c.clk.Now())
+	resp, err := c.rest.CancelOrders(ctx, sdk.CancelOrdersInput{ProductIds: []int64{productID}, Digests: []string{venueOrderID}})
+	if err != nil {
+		return mapNadoCommandError(err)
 	}
-	return err
+	if err := validateCancelOrdersResponse(resp, productID, venueOrderID); err != nil {
+		return err
+	}
+	c.correlations.markTerminalByVenueOrderID(c.accountID, id, venueOrderID, enums.StatusCanceled, c.clk.Now())
+	return nil
+}
+
+func validateCancelOrdersResponse(resp *sdk.CancelOrdersResponse, expectedProductID int64, expectedDigest string) error {
+	if resp == nil {
+		return fmt.Errorf("nado cancel orders: response is required")
+	}
+	if len(resp.CancelledOrders) != 1 {
+		return fmt.Errorf("nado cancel orders: expected exactly one cancelled order, got %d", len(resp.CancelledOrders))
+	}
+	cancelled := resp.CancelledOrders[0]
+	if cancelled.ProductID != expectedProductID {
+		return fmt.Errorf("nado cancel orders: response product id mismatch: got %d, want %d", cancelled.ProductID, expectedProductID)
+	}
+	if strings.TrimSpace(expectedDigest) == "" || expectedDigest != strings.TrimSpace(expectedDigest) {
+		return fmt.Errorf("nado cancel orders: expected digest must be nonblank without surrounding whitespace")
+	}
+	digest := cancelled.Digest
+	if strings.TrimSpace(digest) == "" || !strings.EqualFold(digest, expectedDigest) {
+		return fmt.Errorf("nado cancel orders: response digest mismatch: got %q, want %q", digest, expectedDigest)
+	}
+	return nil
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -319,11 +259,18 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 		return fmt.Errorf("nado: rest client not configured: %w", contract.ErrNotSupported)
 	}
 	_, err = c.rest.CancelProductOrders(ctx, []int64{productID})
-	return err
+	return mapNadoCommandError(err)
 }
 
 func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
 	return nil, fmt.Errorf("nado: modify is not part of Story 5 adapter foundations: %w", contract.ErrNotSupported)
+}
+
+func mapNadoCommandError(err error) error {
+	if errors.Is(err, sdk.ErrExecutionRejected) {
+		return errors.Join(contract.ErrVenueRejected, err)
+	}
+	return err
 }
 
 func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
@@ -338,9 +285,19 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 	if err != nil {
 		return nil, err
 	}
+	return c.openOrdersForInstrument(ctx, inst, productID, sender)
+}
+
+func (c *executionClient) openOrdersForInstrument(ctx context.Context, inst *model.Instrument, productID int64, sender string) ([]model.Order, error) {
+	if inst == nil {
+		return nil, fmt.Errorf("nado: instrument is required")
+	}
 	orders, err := c.rest.GetAccountProductOrders(ctx, productID, sender)
 	if err != nil {
 		return nil, err
+	}
+	if orders == nil {
+		return nil, fmt.Errorf("nado: account product orders response is required")
 	}
 	out := make([]model.Order, 0, len(orders.Orders))
 	for _, order := range orders.Orders {
@@ -531,6 +488,10 @@ func (c *executionClient) generateFillReports(ctx context.Context, query model.F
 	if err != nil {
 		return nil, false, err
 	}
+	return c.generateFillReportsForProducts(ctx, query, productIDs, instByProduct, sender)
+}
+
+func (c *executionClient) generateFillReportsForProducts(ctx context.Context, query model.FillReportQuery, productIDs []int64, instByProduct map[int64]*model.Instrument, sender string) ([]model.FillReport, bool, error) {
 	limit := query.Limit
 	if limit <= 0 {
 		limit = nadoArchiveMatchesDefaultLimit
@@ -616,55 +577,113 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(VenueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("nado: mass status account %q does not match execution account %q", query.AccountID, c.accountID)
+	}
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != VenueName {
+		return nil, fmt.Errorf("nado: mass status venue %q does not match %q", query.Venue, VenueName)
 	}
 	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
 	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	selected, ids, err := c.massStatusInstruments(query.InstrumentIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, c.accountID, query.ClientID, ids, c.clk.Now())
+		if query.IncludeFills {
+			fillFrom, fillThrough := massStatusFillInterval(query, c.clk.Now())
+			mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, c.accountID, query.ClientID, ids, fillFrom, fillThrough)
+		}
+		if query.IncludePositions {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, c.accountID, query.ClientID, ids, c.clk.Now())
+		}
+		return validateMassStatusResult(mass, query, "nado")
+	}
+
 	if c.rest == nil {
-		mass.Partial = true
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
 		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: "open-order status requires a configured REST client"})
+	} else if sender, err := c.rest.Sender(); err != nil {
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: err.Error()})
 	} else {
-		for _, inst := range c.provider.All() {
-			if inst == nil || inst.ID.Kind != selectedKind(c.productKind) {
-				continue
-			}
-			orders, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{InstrumentID: inst.ID, AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true, Since: query.Since, Until: query.Until})
+		openStart := c.clk.Now()
+		openSuccesses, openFailures := 0, 0
+		for _, selectedInst := range selected {
+			orders, err := c.openOrdersForInstrument(ctx, selectedInst.instrument, selectedInst.productID, sender)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return nil, ctxErr
 				}
-				mass.Partial = true
+				openFailures++
 				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_PARTIAL", Message: err.Error()})
 				continue
 			}
-			for _, report := range orders {
+			openSuccesses++
+			now := c.clk.Now()
+			for _, order := range orders {
+				if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{InstrumentID: selectedInst.instrument.ID, AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true}) {
+					continue
+				}
+				report := model.OrderStatusReport{ReportID: model.ReportID(fmt.Sprintf("%s:%s:order:%s", VenueName, c.accountID, order.VenueOrderID)), Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now}
 				if err := mass.AddOrderReport(report); err != nil {
 					return nil, err
 				}
 			}
 		}
+		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(coverageState(len(selected), openSuccesses, openFailures, query.ClientID != ""), c.accountID, query.ClientID, ids, openStart)
 	}
+
 	if query.IncludeFills {
-		fills, limitReached, err := c.generateFillReports(ctx, model.FillReportQuery{
-			AccountID: c.accountID,
-			ClientID:  query.ClientID,
-			Since:     query.Since,
-			Until:     query.Until,
-			Limit:     nadoArchiveMatchesMaxLimit,
-		})
-		if err != nil {
-			mass.Partial = true
-			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_PARTIAL", Message: err.Error()})
-		} else {
+		fillFrom, fillThrough := massStatusFillInterval(query, c.clk.Now())
+		switch {
+		case len(selected) == 0:
+			mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, c.accountID, query.ClientID, ids, fillFrom, fillThrough)
+		case c.reports == nil:
+			mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		default:
+			sender, err := c.reports.Sender()
+			if err != nil {
+				mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_UNAVAILABLE", Message: err.Error()})
+				break
+			}
+			productIDs := make([]int64, 0, len(selected))
+			instByProduct := make(map[int64]*model.Instrument, len(selected))
+			for _, selectedInst := range selected {
+				productIDs = append(productIDs, selectedInst.productID)
+				instByProduct[selectedInst.productID] = selectedInst.instrument
+			}
+			fills, limitReached, err := c.generateFillReportsForProducts(ctx, model.FillReportQuery{
+				AccountID: c.accountID,
+				ClientID:  query.ClientID,
+				Since:     fillFrom,
+				Until:     fillThrough,
+				Limit:     nadoArchiveMatchesMaxLimit,
+			}, productIDs, instByProduct, sender)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				mass.FillsCoverage = model.NewFillCoverage(model.CoverageUnavailable, c.accountID, query.ClientID, ids, fillFrom, fillThrough)
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_PARTIAL", Message: err.Error()})
+				break
+			}
 			for _, report := range fills {
 				if err := mass.AddFillReport(report); err != nil {
 					return nil, err
 				}
 			}
+			fillState := model.CoverageComplete
+			if limitReached || query.ClientID != "" {
+				fillState = model.CoveragePartial
+			}
+			mass.FillsCoverage = model.NewFillCoverage(fillState, c.accountID, query.ClientID, ids, fillFrom, fillThrough)
 			if limitReached {
-				mass.Partial = true
 				mass.Warnings = append(mass.Warnings, model.ReportWarning{
 					Code:    "FILL_REPORTS_LIMIT_REACHED",
 					Message: "fill-history query reached the 500-record archive limit; recovered fills may be incomplete",
@@ -673,20 +692,122 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 		}
 	}
 	if query.IncludePositions {
-		if selectedKind(c.productKind) != enums.KindPerp || c.reports == nil {
-			return mass, nil
-		}
-		positions, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID, Since: query.Since, Until: query.Until})
-		if err != nil {
-			return nil, err
-		}
-		for _, report := range positions {
-			if err := mass.AddPositionReport(report); err != nil {
-				return nil, err
+		switch {
+		case selectedKind(c.productKind) != enums.KindPerp || c.reports == nil:
+			mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		default:
+			positionStart := c.clk.Now()
+			snapshot, err := c.reports.GetAccountSnapshot(ctx)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, c.accountID, query.ClientID, ids, positionStart)
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "POSITIONS_UNAVAILABLE", Message: err.Error()})
+				break
 			}
+			if snapshot == nil || snapshot.ReceivedAt.IsZero() {
+				mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, c.accountID, query.ClientID, ids, positionStart)
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "POSITIONS_UNAVAILABLE", Message: "nado: account snapshot and receipt time are required"})
+				break
+			}
+			byProduct := make(map[int64]model.InstrumentID, len(selected))
+			for _, selectedInst := range selected {
+				byProduct[selectedInst.productID] = selectedInst.instrument.ID
+			}
+			now := c.clk.Now()
+			for _, balance := range snapshot.Account.PerpBalances {
+				id, inScope := byProduct[balance.ProductID]
+				if !inScope {
+					continue
+				}
+				qty, err := parseX18Required(balance.Balance.Amount, fmt.Sprintf("perp product %d balance", balance.ProductID))
+				if err != nil {
+					return nil, err
+				}
+				if qty.IsZero() {
+					continue
+				}
+				position := model.Position{AccountID: c.accountID, InstrumentID: id, Side: enums.PosNet, Quantity: qty, UpdatedAt: snapshot.ReceivedAt}
+				report := model.PositionReport{ReportID: model.ReportID(model.PositionReportKey(c.accountID, position)), Venue: VenueName, AccountID: c.accountID, Position: position, ReportedAt: now}
+				if err := mass.AddPositionReport(report); err != nil {
+					return nil, err
+				}
+			}
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, c.accountID, query.ClientID, ids, positionStart)
 		}
 	}
+	return validateMassStatusResult(mass, query, "nado")
+}
+
+func (c *executionClient) massStatusInstruments(requested []model.InstrumentID) ([]massStatusInstrument, []model.InstrumentID, error) {
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("nado: instrument provider required for mass status")
+	}
+	var candidates []model.InstrumentID
+	if requested == nil {
+		for _, inst := range c.provider.All() {
+			if inst != nil && inst.ID.Kind == selectedKind(c.productKind) {
+				candidates = append(candidates, inst.ID)
+			}
+		}
+	} else {
+		candidates = model.NormalizeInstrumentIDs(requested)
+	}
+	selected := make([]massStatusInstrument, 0, len(candidates))
+	ids := make([]model.InstrumentID, 0, len(candidates))
+	for _, id := range model.NormalizeInstrumentIDs(candidates) {
+		if id.Venue != VenueName || id.Kind != selectedKind(c.productKind) || id.Symbol == "" {
+			return nil, nil, fmt.Errorf("nado: mass status instrument %s is outside execution scope", id)
+		}
+		inst, ok := c.provider.Instrument(id)
+		if !ok || inst == nil {
+			return nil, nil, fmt.Errorf("nado: unknown mass status instrument %s", id)
+		}
+		productID, ok := c.provider.ProductID(id)
+		if !ok {
+			return nil, nil, fmt.Errorf("nado: missing product id for mass status instrument %s", id)
+		}
+		clone := *inst
+		selected = append(selected, massStatusInstrument{instrument: &clone, productID: productID})
+		ids = append(ids, clone.ID)
+	}
+	return selected, model.NormalizeInstrumentIDs(ids), nil
+}
+
+func validateMassStatusResult(mass *model.ExecutionMassStatus, query model.MassStatusQuery, source string) (*model.ExecutionMassStatus, error) {
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, fmt.Errorf("%s: invalid mass status result: %w", source, err)
+	}
 	return mass, nil
+}
+
+func coverageState(attempts, successes, failures int, incomplete bool) model.CoverageState {
+	if attempts == 0 {
+		if incomplete {
+			return model.CoveragePartial
+		}
+		return model.CoverageComplete
+	}
+	if successes == 0 && failures > 0 {
+		return model.CoverageUnavailable
+	}
+	if failures > 0 || incomplete {
+		return model.CoveragePartial
+	}
+	return model.CoverageComplete
+}
+
+func massStatusFillInterval(query model.MassStatusQuery, fallbackThrough time.Time) (time.Time, time.Time) {
+	through := query.Until
+	if through.IsZero() {
+		through = fallbackThrough
+	}
+	from := query.Since
+	if from.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+		from = query.Until.Add(-query.Lookback)
+	}
+	return from, through
 }
 
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
@@ -716,7 +837,7 @@ func (c *executionClient) Start(ctx context.Context) error {
 }
 
 func (c *executionClient) Close() error {
-	if closer, ok := c.pretrade.(interface{ Close() }); ok {
+	if closer, ok := c.submitter.(interface{ Close() }); ok {
 		closer.Close()
 	}
 	if c.accountStream != nil {
@@ -840,9 +961,7 @@ func (c *executionClient) handleFill(fill *sdk.Fill) {
 	c.stream.Emit(contract.NewExecEnvelopeWithMeta(contract.FillEvent{Fill: converted}, nadoEventMeta("exec", "fill", c.accountID, fmt.Sprint(fill.ProductId), fill.OrderDigest, fill.SubmissionIdx, fill.Timestamp)))
 }
 
-type nadoPreTradeBackend interface {
-	Sender() (string, error)
-	GetMaxOrderSize(context.Context, sdk.MaxOrderSizeRequest) (*sdk.MaxOrderSizeResponse, error)
+type nadoSubmissionBackend interface {
 	PrepareOrder(context.Context, sdk.ClientOrderInput) (*sdk.PreparedOrder, error)
 	ExecutePreparedOrder(context.Context, *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error)
 }
@@ -878,32 +997,23 @@ func (b nadoSDKExecutionReportBackend) GetAccountSnapshot(ctx context.Context) (
 	return b.rest.GetAccountSnapshot(ctx)
 }
 
-type nadoSDKPreTradeBackend struct {
-	rest *sdk.Client
-	api  *sdk.WsApiClient
+type nadoSDKSubmissionBackend struct {
+	api *sdk.WsApiClient
 }
 
-func (b nadoSDKPreTradeBackend) Sender() (string, error) {
-	return b.rest.Sender()
-}
-
-func (b nadoSDKPreTradeBackend) Connect() error {
+func (b nadoSDKSubmissionBackend) Connect() error {
 	return b.api.Connect()
 }
 
-func (b nadoSDKPreTradeBackend) Close() {
+func (b nadoSDKSubmissionBackend) Close() {
 	b.api.Close()
 }
 
-func (b nadoSDKPreTradeBackend) GetMaxOrderSize(ctx context.Context, req sdk.MaxOrderSizeRequest) (*sdk.MaxOrderSizeResponse, error) {
-	return b.rest.GetMaxOrderSize(ctx, req)
-}
-
-func (b nadoSDKPreTradeBackend) PrepareOrder(ctx context.Context, input sdk.ClientOrderInput) (*sdk.PreparedOrder, error) {
+func (b nadoSDKSubmissionBackend) PrepareOrder(ctx context.Context, input sdk.ClientOrderInput) (*sdk.PreparedOrder, error) {
 	return b.api.PrepareOrder(ctx, input)
 }
 
-func (b nadoSDKPreTradeBackend) ExecutePreparedOrder(ctx context.Context, order *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error) {
+func (b nadoSDKSubmissionBackend) ExecutePreparedOrder(ctx context.Context, order *sdk.PreparedOrder) (*sdk.PlaceOrderResponse, error) {
 	return b.api.ExecutePreparedOrder(ctx, order)
 }
 
@@ -1023,237 +1133,6 @@ func (c *nadoOrderCorrelationCache) evictExpiredLocked(now time.Time) {
 			}
 		}
 	}
-}
-
-type preparedOrderCache struct {
-	mu             sync.Mutex
-	items          map[string]*preparedOrderEntry
-	terminalStates map[string]preparedTerminal
-	ttl            time.Duration
-	maxSize        int
-}
-
-type preparedState uint8
-
-const (
-	preparedStateReserved preparedState = iota
-	preparedStatePrepared
-	preparedStateConsumed
-	preparedStateReleased
-)
-
-type preparedOrderEntry struct {
-	clientID string
-	req      model.OrderRequest
-	order    *sdk.PreparedOrder
-	expires  time.Time
-	state    preparedState
-}
-
-type preparedTerminal struct {
-	state   preparedState
-	expires time.Time
-}
-
-type nadoPreparedLease struct {
-	cache    *preparedOrderCache
-	clientID string
-}
-
-type nadoPreparedReservation struct {
-	cache    *preparedOrderCache
-	clientID string
-}
-
-func newPreparedOrderCache(maxSize int, ttl time.Duration) preparedOrderCache {
-	return preparedOrderCache{items: make(map[string]*preparedOrderEntry), terminalStates: make(map[string]preparedTerminal), maxSize: maxSize, ttl: ttl}
-}
-
-func (c *preparedOrderCache) reserve(clientID string, req model.OrderRequest, now time.Time) (*nadoPreparedReservation, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evictLocked(now)
-	if _, ok := c.terminalStates[clientID]; ok {
-		return nil, fmt.Errorf("nado: prepared state for client id %s is terminal", clientID)
-	}
-	if _, exists := c.items[clientID]; exists {
-		return nil, fmt.Errorf("nado: prepared state for client id %s already exists", clientID)
-	}
-	if c.maxSize > 0 && len(c.items)+len(c.terminalStates) >= c.maxSize && len(c.items) == 0 {
-		c.evictOldestTerminalLocked()
-	}
-	if c.maxSize > 0 && len(c.items)+len(c.terminalStates) >= c.maxSize {
-		return nil, fmt.Errorf("nado: prepared state capacity %d reached", c.maxSize)
-	}
-	c.items[clientID] = &preparedOrderEntry{clientID: clientID, req: req, expires: now.Add(c.ttl), state: preparedStateReserved}
-	return &nadoPreparedReservation{cache: c, clientID: clientID}, nil
-}
-
-func (c *preparedOrderCache) consume(clientID string, req model.OrderRequest, now time.Time) (*preparedOrderEntry, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evictLocked(now)
-	entry := c.items[clientID]
-	if entry == nil || entry.state != preparedStatePrepared || !samePreparedRequest(entry.req, req) {
-		return nil, false
-	}
-	delete(c.items, clientID)
-	entry.state = preparedStateConsumed
-	c.terminalStates[clientID] = preparedTerminal{state: preparedStateConsumed, expires: entry.expires}
-	c.enforceTerminalBoundLocked()
-	return entry, true
-}
-
-func (c *preparedOrderCache) release(clientID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.removeLocked(clientID, preparedStateReleased)
-}
-
-func (c *preparedOrderCache) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.items)
-}
-
-func (c *preparedOrderCache) isTerminal(clientID string, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.evictLocked(now)
-	_, ok := c.terminalStates[clientID]
-	return ok
-}
-
-func (c *preparedOrderCache) evictLocked(now time.Time) {
-	for key, item := range c.items {
-		if !item.expires.After(now) {
-			c.removeLocked(key, preparedStateReleased, now.Add(c.ttl))
-		}
-	}
-	for key, terminal := range c.terminalStates {
-		if !terminal.expires.After(now) {
-			delete(c.terminalStates, key)
-		}
-	}
-}
-
-func (c *preparedOrderCache) removeLocked(clientID string, state preparedState, terminalExpiry ...time.Time) {
-	entry := c.items[clientID]
-	if entry == nil {
-		return
-	}
-	delete(c.items, clientID)
-	entry.state = state
-	expires := entry.expires
-	if len(terminalExpiry) > 0 {
-		expires = terminalExpiry[0]
-	}
-	c.terminalStates[clientID] = preparedTerminal{state: state, expires: expires}
-	c.enforceTerminalBoundLocked()
-	redactPreparedOrder(entry.order)
-}
-
-func (c *preparedOrderCache) enforceTerminalBoundLocked() {
-	if c.maxSize <= 0 {
-		return
-	}
-	for len(c.terminalStates) > c.maxSize {
-		var oldestKey string
-		var oldest time.Time
-		for key, terminal := range c.terminalStates {
-			if oldestKey == "" || terminal.expires.Before(oldest) {
-				oldestKey, oldest = key, terminal.expires
-			}
-		}
-		if oldestKey == "" {
-			return
-		}
-		delete(c.terminalStates, oldestKey)
-	}
-}
-
-func (c *preparedOrderCache) evictOldestTerminalLocked() {
-	var oldestKey string
-	var oldest time.Time
-	for key, terminal := range c.terminalStates {
-		if oldestKey == "" || terminal.expires.Before(oldest) {
-			oldestKey, oldest = key, terminal.expires
-		}
-	}
-	if oldestKey != "" {
-		delete(c.terminalStates, oldestKey)
-	}
-}
-
-func (r *nadoPreparedReservation) Publish(order *sdk.PreparedOrder, now time.Time) (contract.PreTradeLease, error) {
-	if r == nil || r.cache == nil || r.clientID == "" {
-		redactPreparedOrder(order)
-		return nil, fmt.Errorf("nado: prepared reservation is required")
-	}
-	r.cache.mu.Lock()
-	defer r.cache.mu.Unlock()
-	r.cache.evictLocked(now)
-	entry := r.cache.items[r.clientID]
-	if entry == nil || entry.state != preparedStateReserved {
-		redactPreparedOrder(order)
-		return nil, fmt.Errorf("nado: prepared reservation for client id %s is not active", r.clientID)
-	}
-	entry.order = order
-	entry.expires = now.Add(r.cache.ttl)
-	entry.state = preparedStatePrepared
-	return &nadoPreparedLease{cache: r.cache, clientID: r.clientID}, nil
-}
-
-func (r *nadoPreparedReservation) Rollback() {
-	if r == nil || r.cache == nil || r.clientID == "" {
-		return
-	}
-	r.cache.mu.Lock()
-	defer r.cache.mu.Unlock()
-	entry := r.cache.items[r.clientID]
-	if entry == nil || entry.state != preparedStateReserved {
-		return
-	}
-	delete(r.cache.items, r.clientID)
-}
-
-func (l *nadoPreparedLease) Release() {
-	if l == nil || l.cache == nil || l.clientID == "" {
-		return
-	}
-	l.cache.release(l.clientID)
-}
-
-func (c *executionClient) preparedLen() int {
-	return c.prepared.len()
-}
-
-func samePreparedRequest(a, b model.OrderRequest) bool {
-	return a.AccountID == b.AccountID &&
-		a.InstrumentID == b.InstrumentID &&
-		a.ClientID == b.ClientID &&
-		a.Side == b.Side &&
-		a.Type == b.Type &&
-		a.TIF == b.TIF &&
-		a.PositionSide == b.PositionSide &&
-		a.ReduceOnly == b.ReduceOnly &&
-		a.Venue == nil && b.Venue == nil &&
-		a.Quantity.Equal(b.Quantity) &&
-		a.Price.Equal(b.Price) &&
-		a.TriggerPrice.Equal(b.TriggerPrice) &&
-		a.ActivationPrice.Equal(b.ActivationPrice) &&
-		a.TrailingOffsetBps.Equal(b.TrailingOffsetBps)
-}
-
-func nadoOrderDirection(side enums.OrderSide) sdk.OrderDirection {
-	if side == enums.SideSell {
-		return sdk.OrderDirectionShort
-	}
-	return sdk.OrderDirectionLong
-}
-
-func decimalToX18String(value decimal.Decimal) string {
-	return value.Shift(18).StringFixed(0)
 }
 
 func redactPreparedOrder(order *sdk.PreparedOrder) {

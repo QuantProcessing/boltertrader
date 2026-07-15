@@ -20,7 +20,7 @@ import (
 // over-limit order before it reaches the venue, and the cache holds no order.
 func TestRiskGateBlocksSubmit(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
 
 	node := runtime.NewNode(runtime.Clients{Execution: fexec}, clk, "rk")
 	riskEng := risk.New(risk.Limits{MaxOrderQty: decimal.RequireFromString("5")}, node.Cache)
@@ -79,6 +79,8 @@ func TestReconnectTriggersResync(t *testing.T) {
 			{InstrumentID: inst, Side: enums.PosNet, Quantity: decimal.RequireFromString("1.5"), EntryPrice: decimal.RequireFromString("100")},
 		},
 	}
+	acct.SetAccountID("rc")
+	acct.SetAccountStateSnapshot(authoritativeAccountState("rc", model.AccountMargin, clk.Now()))
 	node := runtime.NewNode(runtime.Clients{Account: acct}, clk, "rc")
 
 	rep, err := node.Reconnect(context.Background())
@@ -98,9 +100,13 @@ func TestReconnectTriggersResync(t *testing.T) {
 
 func TestHealthExposesOperatingSurface(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
+	fexec.SetAccountID("health")
 	fexec.SetSubmitResult(nil, runtimeexec.ErrAmbiguousResult)
-	node := runtime.NewNode(runtime.Clients{Execution: fexec, Account: runtimetest.NewFakeAccount()}, clk, "health")
+	facct := runtimetest.NewFakeAccount()
+	facct.SetAccountID("health")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("health", model.AccountMargin, clk.Now()))
+	node := runtime.NewNode(runtime.Clients{Execution: fexec, Account: facct}, clk, "health")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go node.Run(ctx)

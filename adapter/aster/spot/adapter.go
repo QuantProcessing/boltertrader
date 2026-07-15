@@ -9,14 +9,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/aster/spot"
 )
 
 const (
 	VenueName        = "ASTER"
-	AccountIDDefault = model.AccountIDAsterDefault
+	AccountIDDefault = "ASTER-001"
 	privateStreamID  = "aster:spot:private"
 )
 

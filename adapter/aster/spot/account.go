@@ -39,7 +39,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     VenueName,
 		Products:  []contract.ProductCapability{{Kind: enums.KindSpot, Account: true}},
-		Reports:   contract.ReportCapabilities{AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: c.streaming, AccountState: false},
 	}
 }
@@ -137,7 +137,6 @@ func balancesFromResponse(account *sdkspot.AccountResponse, accountID string, fa
 			Currency:  bal.Asset,
 			Total:     free.Add(locked),
 			Free:      free,
-			Available: free,
 			Locked:    locked,
 			UpdatedAt: ts,
 		})

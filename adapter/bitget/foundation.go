@@ -18,7 +18,7 @@ import (
 
 const (
 	VenueName        = "BITGET"
-	AccountIDUnified = model.AccountIDBitgetDefault
+	AccountIDUnified = "BITGET-001"
 )
 
 type Config struct {
@@ -330,13 +330,19 @@ func instrumentFromBitget(in bitgetsdk.Instrument) *model.Instrument {
 
 func CapabilityRows() []adapter.CapabilityRow {
 	return []adapter.CapabilityRow{
-		capabilityRow("Spot cash", "make test-bitget-spot-acceptance"),
-		capabilityRow("USDT-linear Perp/SWAP", "make test-bitget-usdt-perp-acceptance"),
-		capabilityRow("USDC-linear Perp/SWAP", "make test-bitget-usdc-perp-acceptance"),
+		capabilityRow("Spot cash", "make test-bitget-spot-acceptance", false),
+		capabilityRow("USDT-linear Perp/SWAP", "make test-bitget-usdt-perp-acceptance", true),
+		capabilityRow("USDC-linear Perp/SWAP", "make test-bitget-usdc-perp-acceptance", true),
 	}
 }
 
-func capabilityRow(product, target string) adapter.CapabilityRow {
+func capabilityRow(product, target string, positionReports bool) adapter.CapabilityRow {
+	positionReportsLabel := "unsupported"
+	massStatusLabel := "open orders, bounded fills"
+	if positionReports {
+		positionReportsLabel = "account snapshot"
+		massStatusLabel += ", positions"
+	}
 	return adapter.CapabilityRow{
 		Venue:                VenueName,
 		Product:              product,
@@ -349,8 +355,8 @@ func capabilityRow(product, target string) adapter.CapabilityRow {
 		Modify:               true,
 		OrderStatusReports:   "open orders",
 		FillReports:          "bounded 90-day trade history",
-		PositionReports:      "account snapshot",
-		MassStatus:           "open orders, bounded fills, positions",
+		PositionReports:      positionReportsLabel,
+		MassStatus:           massStatusLabel,
 		SingleOrderQuery:     "open order filter",
 		OpenOnlyCaveat:       true,
 		LatencyTimestamps:    false,

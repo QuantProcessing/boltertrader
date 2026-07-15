@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime/cache"
@@ -27,6 +28,7 @@ func TestAccountSnapshotConcurrentApplyAndRead(t *testing.T) {
 	if err := c.ApplyAccountStateAt(concurrentAccountState(now, "1000"), now); err != nil {
 		t.Fatalf("seed account state: %v", err)
 	}
+	c.MarkAccountReconciled("T:perp", now)
 	c.UpsertPosition(model.Position{
 		InstrumentID:  id,
 		Side:          enums.PosNet,
@@ -40,6 +42,14 @@ func TestAccountSnapshotConcurrentApplyAndRead(t *testing.T) {
 	engine := risk.New(risk.Limits{}, c).
 		WithClock(func() time.Time { return now.Add(time.Second) }).
 		RequireAccountState()
+	executionCaps := contract.Capabilities{
+		Venue: "T", Products: []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true}},
+		Trading: contract.TradingCapabilities{Submit: true},
+	}
+	accountCaps := contract.Capabilities{
+		Venue: "T", Products: []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
+	}
+	engine.SetRuntimeCapabilities(&executionCaps, &accountCaps)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
@@ -73,7 +83,7 @@ func TestAccountSnapshotConcurrentApplyAndRead(t *testing.T) {
 				_, _ = pf.MarginInitial("T:perp")
 				_, _ = pf.MarginMaintenance("T:perp")
 				_, _ = pf.NetExposure("T:perp")
-				err := engine.Check(model.OrderRequest{
+				err := checkSubmissionRisk(engine, model.OrderRequest{
 					InstrumentID: id,
 					Side:         enums.SideBuy,
 					Type:         enums.TypeLimit,

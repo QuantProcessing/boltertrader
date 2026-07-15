@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/errs"
@@ -37,17 +38,38 @@ func mapAsterError(err error) error {
 	}
 	switch {
 	case venueErr.StatusCode() == http.StatusUnauthorized || venueErr.StatusCode() == http.StatusForbidden:
-		return errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrAuthFailed)
+		return errors.Join(errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrAuthFailed), err)
 	case venueErr.StatusCode() == http.StatusTooManyRequests:
-		return errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrRateLimited)
+		return errors.Join(errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrRateLimited), err)
 	case venueErr.Code() == -1121:
-		return errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrSymbolNotFound)
+		return errors.Join(errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrSymbolNotFound), err)
 	case venueErr.Code() == -2011 || venueErr.Code() == -2013:
-		return errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrOrderNotFound)
+		return errors.Join(errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrOrderNotFound), err)
 	case venueErr.Code() == -1013:
-		return errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrInvalidPrecision)
+		return errors.Join(errs.NewExchangeError(VenueName, strconv.Itoa(venueErr.Code()), venueErr.Message(), errs.ErrInvalidPrecision), err)
 	default:
 		return err
+	}
+}
+
+// mapAsterCommandError marks only documented, structured 4xx application
+// codes as definitive venue command rejections. Transport failures, malformed
+// envelopes, authentication/rate limits, and every 5xx remain ambiguous.
+func mapAsterCommandError(err error) error {
+	mapped := mapAsterError(err)
+	var venueErr *astercommon.VenueError
+	if !errors.As(err, &venueErr) || venueErr.StatusCode() < 400 || venueErr.StatusCode() >= 500 {
+		return mapped
+	}
+	switch venueErr.StatusCode() {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests:
+		return mapped
+	}
+	switch venueErr.Code() {
+	case -1013, -1111, -1121, -2010, -2011, -2013, -2019, -2021, -2022:
+		return errors.Join(contract.ErrVenueRejected, mapped)
+	default:
+		return mapped
 	}
 }
 
@@ -115,9 +137,6 @@ func tifFromAster(s string) enums.TimeInForce {
 }
 
 func validateOrderRequest(req model.OrderRequest, inst *model.Instrument) error {
-	if req.Venue != nil {
-		return fmt.Errorf("aster spot: venue-specific order options are not supported: %w", errs.ErrNotSupported)
-	}
 	if req.ReduceOnly {
 		return fmt.Errorf("aster spot: reduce-only orders are not supported: %w", errs.ErrNotSupported)
 	}
@@ -278,6 +297,22 @@ func validateOrderResponseDecimals(r *sdkspot.OrderResponse) error {
 		if err := validateSDKDecimal(field, raw); err != nil {
 			return fmt.Errorf("aster spot: order response: %w", err)
 		}
+	}
+	return nil
+}
+
+func validateSubmitOrderResponseIdentity(r *sdkspot.OrderResponse, req model.OrderRequest, inst *model.Instrument) error {
+	if r == nil || inst == nil {
+		return fmt.Errorf("aster spot: submit response and instrument are required")
+	}
+	if strings.TrimSpace(r.Symbol) == "" || r.Symbol != inst.VenueSymbol {
+		return fmt.Errorf("aster spot: submit response symbol mismatch: requested %q, got %q", inst.VenueSymbol, r.Symbol)
+	}
+	if strings.TrimSpace(r.ClientOrderID) == "" || r.ClientOrderID != req.ClientID {
+		return fmt.Errorf("aster spot: submit response client order id mismatch: requested %q, got %q", req.ClientID, r.ClientOrderID)
+	}
+	if r.OrderID <= 0 {
+		return fmt.Errorf("aster spot: submit response venue order id must be positive, got %d", r.OrderID)
 	}
 	return nil
 }

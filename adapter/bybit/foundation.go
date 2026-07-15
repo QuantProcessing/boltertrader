@@ -17,7 +17,7 @@ import (
 
 const (
 	VenueName        = "BYBIT"
-	AccountIDUnified = model.AccountIDBybitDefault
+	AccountIDUnified = "BYBIT-001"
 )
 
 type Config struct {
@@ -295,8 +295,10 @@ func CapabilityRows() []adapter.CapabilityRow {
 
 func capabilityRow(product, target string, positionReports bool) adapter.CapabilityRow {
 	positionReportsLabel := "unsupported"
+	massStatusLabel := "open orders, bounded fills"
 	if positionReports {
 		positionReportsLabel = "account snapshot"
+		massStatusLabel += ", positions"
 	}
 	return adapter.CapabilityRow{
 		Venue:                VenueName,
@@ -309,9 +311,9 @@ func capabilityRow(product, target string, positionReports bool) adapter.Capabil
 		Cancel:               true,
 		Modify:               true,
 		OrderStatusReports:   "open orders",
-		FillReports:          "unsupported",
+		FillReports:          "bounded execution history",
 		PositionReports:      positionReportsLabel,
-		MassStatus:           "open-order mass status",
+		MassStatus:           massStatusLabel,
 		SingleOrderQuery:     "open order filter",
 		OpenOnlyCaveat:       true,
 		LatencyTimestamps:    false,

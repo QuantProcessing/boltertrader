@@ -211,7 +211,7 @@ func TestFreshNodeMaterializesAuthoritativeRecoveredSpotFillWithClientID(t *test
 	callbacks := 0
 	node := NewNode(
 		Clients{Execution: newRecoveredFillHistoryExec(mass)},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"authoritative-recovery",
 		WithOnFill(func(got model.Fill) {
 			callbacks++
@@ -297,7 +297,7 @@ func TestFreshNodeHydratesAuthoritativeRecoveredPerpPositionSide(t *testing.T) {
 			callbacks := 0
 			node := NewNode(
 				Clients{Execution: exec},
-				clock.NewSimulatedClock(at),
+				clock.NewSimulatedClock(mass.GeneratedAt),
 				"authoritative-hedge-recovery",
 				WithOnFill(func(model.Fill) { callbacks++ }),
 			)
@@ -382,7 +382,7 @@ func TestRecoveredDerivativeOrdersArePrefetchedWithBoundedConcurrency(t *testing
 	var callbackTrades []string
 	node := NewNode(
 		Clients{Execution: exec},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"bounded-order-prefetch",
 		WithOnFill(func(fill model.Fill) {
 			callbacksMu.Lock()
@@ -447,7 +447,7 @@ func TestRecoveredDerivativeOrderPrefetchFailsBeforeFillMutation(t *testing.T) {
 	callbacks := 0
 	node := NewNode(
 		Clients{Execution: exec},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"atomic-order-prefetch",
 		WithJournal(store),
 		WithOnFill(func(model.Fill) { callbacks++ }),
@@ -499,7 +499,7 @@ func TestRecoveredDerivativeOrderPrefetchStopsSchedulingAfterFirstError(t *testi
 	callbacks := 0
 	node := NewNode(
 		Clients{Execution: exec},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"cancel-order-prefetch",
 		WithJournal(store),
 		WithOnFill(func(model.Fill) { callbacks++ }),
@@ -547,7 +547,7 @@ func TestRecoveredDerivativeOrderPrefetchRejectsCrossReportAliasConflictBeforeFi
 	callbacks := 0
 	node := NewNode(
 		Clients{Execution: exec},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"conflicting-order-prefetch",
 		WithJournal(store),
 		WithOnFill(func(model.Fill) { callbacks++ }),
@@ -580,7 +580,7 @@ func TestRecoveredDerivativeOrderPrefetchPropagatesAlreadyCanceledContext(t *tes
 	callbacks := 0
 	node := NewNode(
 		Clients{Execution: exec},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"canceled-order-prefetch",
 		WithJournal(store),
 		WithOnFill(func(model.Fill) { callbacks++ }),
@@ -807,7 +807,7 @@ func TestAuthoritativeRecoveredFillFailsClosedWithoutMutation(t *testing.T) {
 		{name: "zero_price_with_exact_order", side: enums.SideBuy, price: decimal.Zero, exactOrder: true, finding: "FILL_INVALID_ECONOMICS"},
 		{name: "negative_price_with_exact_order", side: enums.SideBuy, price: decimal.NewFromInt(-1), exactOrder: true, finding: "FILL_INVALID_ECONOMICS"},
 		{name: "side_mismatch_with_exact_order", side: enums.SideSell, price: decimal.NewFromInt(100), exactOrder: true, wantError: true},
-		{name: "wrong_account", side: enums.SideBuy, price: decimal.NewFromInt(100), fillAccount: "other-acct", checkAccounts: []string{"acct", "other-acct"}, finding: "FILL_ORDER_IDENTITY_CONFLICT"},
+		{name: "wrong_account", side: enums.SideBuy, price: decimal.NewFromInt(100), fillAccount: "other-acct", checkAccounts: []string{"acct", "other-acct"}, wantError: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -832,7 +832,7 @@ func TestAuthoritativeRecoveredFillFailsClosedWithoutMutation(t *testing.T) {
 			}
 			node := NewNode(
 				Clients{Execution: newRecoveredFillHistoryExec(mass, exactOrders...)},
-				clock.NewSimulatedClock(at),
+				clock.NewSimulatedClock(mass.GeneratedAt),
 				"invalid-authoritative-fill",
 				WithJournal(store),
 				WithOnFill(func(model.Fill) { callbacks++ }),
@@ -883,7 +883,7 @@ func TestRecoveredFillWithUnknownSideUsesKnownOrderSide(t *testing.T) {
 	callbackSide := enums.SideUnknown
 	node := NewNode(
 		Clients{Execution: newRecoveredFillHistoryExec(mass)},
-		clock.NewSimulatedClock(at),
+		clock.NewSimulatedClock(mass.GeneratedAt),
 		"known-side-recovery",
 		WithOnFill(func(got model.Fill) {
 			callbacks++
@@ -930,7 +930,7 @@ func TestRecoveredFillDoesNotDoubleCountCumulativeOrderSnapshot(t *testing.T) {
 	if err := mass.AddFillReport(model.FillReport{Venue: "RECOVERY", AccountID: "acct", Fill: fill, ReportedAt: at.Add(time.Second)}); err != nil {
 		t.Fatalf("add fill report: %v", err)
 	}
-	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "cumulative")
+	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "cumulative")
 
 	report, err := node.Resync(context.Background())
 	if err != nil {
@@ -970,7 +970,7 @@ func TestCumulativeSnapshotDoesNotRegressPreviouslyAppliedFills(t *testing.T) {
 	if err := mass.AddFillReport(model.FillReport{Venue: "RECOVERY", AccountID: "acct", Fill: second, ReportedAt: second.Timestamp}); err != nil {
 		t.Fatalf("add fill report: %v", err)
 	}
-	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "nonregression", WithOnFill(func(model.Fill) { callbacks++ }))
+	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "nonregression", WithOnFill(func(model.Fill) { callbacks++ }))
 	node.Cache.UpsertOrder(order)
 	for i, tradeID := range []string{"nonregression-1", "nonregression-2"} {
 		fill := second
@@ -1017,7 +1017,7 @@ func TestCumulativeSnapshotReappliesOnlyUncoveredRecoveredFills(t *testing.T) {
 			t.Fatalf("add fill report: %v", err)
 		}
 	}
-	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "partial-coverage")
+	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "partial-coverage")
 	report, err := node.Resync(context.Background())
 	if err != nil {
 		t.Fatalf("resync: %v", err)
@@ -1045,7 +1045,7 @@ func TestLiveFillIdentityEnrichmentRemainsDuplicate(t *testing.T) {
 		t.Fatalf("add fill report: %v", err)
 	}
 	callbacks := 0
-	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "identity", WithOnFill(func(model.Fill) { callbacks++ }))
+	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "identity", WithOnFill(func(model.Fill) { callbacks++ }))
 	node.Cache.UpsertOrder(order)
 	live := recovered
 	live.ClientID = ""
@@ -1075,7 +1075,7 @@ func TestRestartSeedsDurableRecoveredFillDedupe(t *testing.T) {
 	}
 	j := journal.NewMemory()
 	firstCallbacks := 0
-	first := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "restart",
+	first := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "restart",
 		WithJournal(j), WithOnFill(func(model.Fill) { firstCallbacks++ }))
 	first.Cache.UpsertOrder(order)
 	if _, err := first.Resync(context.Background()); err != nil {
@@ -1086,7 +1086,7 @@ func TestRestartSeedsDurableRecoveredFillDedupe(t *testing.T) {
 	}
 
 	secondCallbacks := 0
-	second := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "restart",
+	second := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "restart",
 		WithJournal(j), WithOnFill(func(model.Fill) { secondCallbacks++ }))
 	second.Cache.UpsertOrder(order)
 	report, err := second.Resync(context.Background())
@@ -1118,7 +1118,7 @@ func TestRestartSeedsAppliedFillWhenCursorCommitFailed(t *testing.T) {
 	underlying := journal.NewMemory()
 	fail := errors.New("injected cursor commit failure")
 	firstCallbacks := 0
-	first := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass, order)}, clock.NewSimulatedClock(at), "failed-cursor",
+	first := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass, order)}, clock.NewSimulatedClock(mass.GeneratedAt), "failed-cursor",
 		WithJournal(&failCursorJournal{MemoryJournal: underlying, err: fail}),
 		WithOnFill(func(model.Fill) { firstCallbacks++ }))
 	firstReport, err := first.Resync(context.Background())
@@ -1146,7 +1146,7 @@ func TestRestartSeedsAppliedFillWhenCursorCommitFailed(t *testing.T) {
 	}
 
 	secondCallbacks := 0
-	second := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass, order)}, clock.NewSimulatedClock(at), "failed-cursor",
+	second := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass, order)}, clock.NewSimulatedClock(mass.GeneratedAt), "failed-cursor",
 		WithJournal(underlying), WithOnFill(func(model.Fill) { secondCallbacks++ }))
 	report, err := second.Resync(context.Background())
 	if err != nil {
@@ -1184,7 +1184,7 @@ func TestRecoveredFillsApplyInVenueTimestampOrder(t *testing.T) {
 				t.Fatalf("add fill report: %v", err)
 			}
 		}
-		node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "ordered")
+		node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "ordered")
 		for _, order := range orders {
 			node.Cache.UpsertOrder(order)
 		}
@@ -1221,7 +1221,7 @@ func TestStartupObserverReceivesFillAfterNodeStart(t *testing.T) {
 		t.Fatalf("add fill report: %v", err)
 	}
 	observer := &startupOrderObserver{events: make(chan string, 2)}
-	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(at), "observer", WithObserver(observer))
+	node := NewNode(Clients{Execution: newRecoveredFillHistoryExec(mass)}, clock.NewSimulatedClock(mass.GeneratedAt), "observer", WithObserver(observer))
 	node.Cache.UpsertOrder(order)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

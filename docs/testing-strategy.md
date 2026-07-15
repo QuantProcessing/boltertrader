@@ -185,8 +185,9 @@ and exchange state are available.
 - `make test-nado-testnet-spot` and `make test-nado-testnet-runtime-spot`:
   funded-only/no-borrow Nado Spot adapter/runtime write and cleanup rows.
 - `make test-nado-testnet-perp` and `make test-nado-testnet-runtime-perp`:
-  Nado Perp adapter/runtime write, flatten, and cleanup rows using the exact
-  prepared pre-trade payload.
+  Nado Perp adapter/runtime write, flatten, and cleanup rows through ordinary
+  adapter `Submit`, with signing and exact request ownership kept inside the
+  adapter.
 - `make test-nado-testnet-acceptance`: all Nado read and four write rows under
   `noskipgotest`.
 - `make test-aster-nado-testnet-acceptance`: serial aggregate for both venues;
@@ -204,14 +205,14 @@ for the approved Aster/Nado spec-case to grouped-test mapping.
 The account model is tested as a runtime safety envelope, not only as adapter
 translation code. Default tests must prove:
 
-- adapters that claim account-state snapshots also implement
-  `contract.AccountStateReporter`;
-- reconciliation applies the snapshot before balances and positions;
-- the runtime cache exposes canonical account state and mirrors balances for
-  older consumers during migration;
+- every `contract.AccountClient` implements the mandatory `AccountState` snapshot;
+- reconciliation calls that snapshot directly before account-only position checks;
+- the runtime cache exposes canonical account state and exact `Balance.Free` values;
 - portfolio account views can read equity, margin, and exposure from the cache;
-- risk checks can require fresh account state and fail closed when free balance
-  is missing or insufficient.
+- account-backed risk requires configured client provenance, one successful
+  authoritative reconciliation, and fresh matching account/venue/product state;
+- only cash-account Spot risk consumes exact `Balance.Free` plus working-order
+  reservations. Unified-margin capacity remains server-authoritative.
 
 `runtime.TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk` is the
 fake-venue end-to-end gate for this behavior. Non-production runtime acceptance
@@ -225,16 +226,13 @@ and USD-M may still use separate nodes, while unified venues such as Lighter can
 run Spot and Perp against the same logical `LIGHTER-001` account id. Venue
 selectors such as Lighter account indexes, Hyperliquid owner/vault/signer
 addresses, OKX `tdMode`, and product scopes are configuration or mode metadata;
-they are not canonical runtime account ids. The phase-one default account-id
-matrix is `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `GATE-001`,
+they are not canonical runtime account ids. Adapter-owned default account ids
+are `BINANCE-001`, `OKX-001`, `BYBIT-001`, `BITGET-001`, `GATE-001`,
 `LIGHTER-001`, `HYPERLIQUID-001`, `ASTER-001`, and `NADO-001`, unless a caller
 explicitly overrides the logical id.
 
-Risk gates are strict by default for spot orders once this account-state runtime
-path is in use: a missing account state rejects instead of silently falling back
-to raw cache balances. Legacy balance fallback exists only for adapters/tests
-that have not implemented `AccountStateReporter` yet, and those callers must opt
-in explicitly with `risk.Engine.AllowLegacyBalanceFallback()`.
+Risk gates are strict for spot orders: a missing, stale, or mismatched
+authoritative account state rejects instead of falling back to raw cache balances.
 
 ## Reference-Data Acceptance
 
@@ -511,12 +509,12 @@ connections.
 local `.env` files, but new configuration should use `BITGET_DEMO_*`. Bitget
 Demo defaults to the official paper-trading profile: REST requests use
 `paptrading: 1` and private/public streams use `wspap.bitget.com`. Like Bybit,
-the current G010 evidence accepted the adapter/runtime entrypoints after they
+historical pre-convergence G010 evidence exercised the adapter/runtime entrypoints after they
 verified live market data, authoritative account-state snapshots, runtime
 reconciliation into cache/portfolio, risk fail-closed behavior, private stream
-startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder.
-Future reruns remain NT-style noskip gates and require real credentials and
-clean venue state.
+startup, and a bounded resting-cancel plus IOC fill/close cleanup ladder. It
+does not certify this tree. G008 reruns the NT-style noskip gate and requires
+real credentials and clean venue state.
 
 ## Gate Testnet Writes
 
@@ -683,21 +681,25 @@ Nado acceptance uses one official Testnet unified-margin profile and logical
 `NADO-001` account. Authenticated rows require `NADO_TESTNET_PRIVATE_KEY`;
 `NADO_TESTNET_SUBACCOUNT_NAME` defaults to `default`, and
 `NADO_TESTNET_MAX_NOTIONAL_USDT0` defaults to `100`. Spot acceptance is
-funded-only/no-borrow. Perp and Spot submissions must consume the exact payload
-prepared after the documented max-order-size pre-trade check. Set
-`BOLTER_ENABLE_NADO_TESTNET_WRITES=1` only for write rows.
+funded-only/no-borrow. Perp and Spot submissions follow `ValidateSubmit`,
+optional configured generic runtime risk, and ordinary adapter `Submit`.
+Signing material is transient adapter-local state. The maximum-notional value
+is a test safety envelope only; venue capacity remains server-authoritative.
+Set `BOLTER_ENABLE_NADO_TESTNET_WRITES=1` only for write rows.
 
-Current live status (2026-07-14): read-only Spot/Perp and reference/OI gates
-pass. All four Aster adapter/runtime write rows also pass with private events,
-runtime-local rejection before venue handoff, bounded Spot balance deltas, no
-open orders, and flat Perp positions. Nado's current Testnet products require
-slightly more than the default `100 USDT0`; run its write matrix with
-`NADO_TESTNET_MAX_NOTIONAL_USDT0=110`. All four Nado adapter/runtime rows pass.
-Nado write acceptance uses only
-documented API surfaces: local checks, `max_order_size`, exact signed
-preparation, one-time `place_order`, private lifecycle evidence, and bounded
-cleanup. The undocumented `validate_order` query is not part of the SDK,
-adapter, runtime, fixtures, or acceptance criteria.
+Historical live status (2026-07-14, before this architecture convergence):
+read-only Spot/Perp and reference/OI gates and all four adapter/runtime rows for
+both venues passed. Those rows are retained only as environment and lifecycle
+evidence; they do not certify the current tree. G008 must rerun the Aster and
+Nado aggregates on the frozen candidate. Nado's currently tradable Testnet
+products require slightly more than the default `100 USDT0`, so run its row as
+`NADO_TESTNET_MAX_NOTIONAL_USDT0=110 make test-nado-testnet-acceptance`.
+
+Current Nado acceptance requires documented API surfaces only: local
+validation, optional generic runtime risk, adapter-local signing, one-time
+`place_order`, private lifecycle evidence, and bounded cleanup. The
+undocumented `validate_order` query is not part of the SDK, adapter, runtime,
+fixtures, or acceptance criteria.
 
 An earlier Aster Spot run, before the full-fill close-quantity rounding bug was
 repaired, left a known bounded test-asset residual. Successful post-fix rows
@@ -718,7 +720,7 @@ layer faithfully represents the official API. Those methods do not implement
 the adapter/runtime safety envelope and are never acceptance substitutes. Their legacy
 live integration tests require the separate
 `BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES=1` gate; normal Nado write acceptance
-uses only the adapter/runtime prepared-order path.
+uses only the generic adapter/runtime submission path.
 
 Both venues load these values through `internal/testenv`. Optional endpoint
 variables are diagnostic assertions, not arbitrary overrides: a configured URL

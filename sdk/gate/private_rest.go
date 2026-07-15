@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strconv"
 )
@@ -16,6 +17,15 @@ func (c *Client) ListSpotAccounts(ctx context.Context, currency string) ([]SpotA
 func (c *Client) CreateSpotOrder(ctx context.Context, order Order) (*Order, error) {
 	var out Order
 	err := c.postPrivate(ctx, "/spot/orders", order, &out)
+	if err == nil && out.ID == "" {
+		err = fmt.Errorf("gate sdk: create spot order returned a partial response without order id")
+	}
+	if err == nil && order.Text != "" && out.Text != "" && out.Text != order.Text {
+		err = fmt.Errorf("gate sdk: create spot order returned mismatched client text %q for %q", out.Text, order.Text)
+	}
+	if err == nil && order.CurrencyPair != "" && out.CurrencyPair != "" && out.CurrencyPair != order.CurrencyPair {
+		err = fmt.Errorf("gate sdk: create spot order returned mismatched currency pair %q for %q", out.CurrencyPair, order.CurrencyPair)
+	}
 	return &out, err
 }
 
@@ -51,6 +61,9 @@ func (c *Client) GetSpotOrder(ctx context.Context, orderID, currencyPair string)
 func (c *Client) CancelSpotOrder(ctx context.Context, orderID, currencyPair string) (*Order, error) {
 	var out Order
 	err := c.deletePrivate(ctx, "/spot/orders/"+url.PathEscape(orderID), map[string]string{"currency_pair": currencyPair}, &out)
+	if err == nil && (out.ID == "" || out.ID != orderID) {
+		err = fmt.Errorf("gate sdk: cancel spot order returned mismatched order id %q for %q", out.ID, orderID)
+	}
 	return &out, err
 }
 
@@ -89,6 +102,15 @@ func (c *Client) ListPositions(ctx context.Context, settle string, holding bool)
 func (c *Client) CreateFuturesOrder(ctx context.Context, settle string, order FuturesOrder) (*FuturesOrder, error) {
 	var out FuturesOrder
 	err := c.postPrivate(ctx, futuresPath(settle, "orders"), order, &out)
+	if err == nil && out.ID == 0 {
+		err = fmt.Errorf("gate sdk: create futures order returned a partial response without order id")
+	}
+	if err == nil && order.Text != "" && out.Text != "" && out.Text != order.Text {
+		err = fmt.Errorf("gate sdk: create futures order returned mismatched client text %q for %q", out.Text, order.Text)
+	}
+	if err == nil && order.Contract != "" && out.Contract != "" && out.Contract != order.Contract {
+		err = fmt.Errorf("gate sdk: create futures order returned mismatched contract %q for %q", out.Contract, order.Contract)
+	}
 	return &out, err
 }
 
@@ -111,6 +133,9 @@ func (c *Client) GetFuturesOrder(ctx context.Context, settle string, orderID int
 func (c *Client) CancelFuturesOrder(ctx context.Context, settle string, orderID int64) (*FuturesOrder, error) {
 	var out FuturesOrder
 	err := c.deletePrivate(ctx, futuresPath(settle, "orders", strconv.FormatInt(orderID, 10)), nil, &out)
+	if err == nil && out.ID != orderID {
+		err = fmt.Errorf("gate sdk: cancel futures order returned mismatched order id %d for %d", out.ID, orderID)
+	}
 	return &out, err
 }
 

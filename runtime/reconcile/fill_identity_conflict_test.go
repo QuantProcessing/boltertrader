@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -66,6 +67,7 @@ func TestReconcileOverlapRetainsFillOrderIdentityAfterLongTermIndexEviction(t *t
 	applications := 0
 	r := New(nil, execClient, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithFillRetentionLimit(1).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
 			applications++

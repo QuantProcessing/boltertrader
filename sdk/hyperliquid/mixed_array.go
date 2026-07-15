@@ -85,13 +85,12 @@ func (ma MixedArray) FirstError() error {
 			if s == "success" {
 				continue
 			}
-			// any other string? treat as error text
-			return errors.New(s)
+			return errors.New("unexpected command status: " + s)
 		}
 		if obj, ok := mv.Object(); ok {
 			if v, ok := obj["error"]; ok {
 				if msg, ok := v.(string); ok && msg != "" {
-					return errors.New(msg)
+					return &OrderRejectedError{Reason: msg}
 				}
 				// stringify unknown error shapes
 				b, _ := json.Marshal(v)

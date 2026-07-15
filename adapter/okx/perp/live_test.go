@@ -44,9 +44,8 @@ func TestLiveOKXAdapterSmoke(t *testing.T) {
 	if !ok {
 		t.Skip("BTC-USDT SWAP not present")
 	}
-	// The OKX divergence: InstIdCode should be populated.
-	if got.VenueIntCode == nil {
-		t.Error("expected OKX VenueIntCode to be populated")
+	if got.VenueSymbol != "BTC-USDT-SWAP" {
+		t.Errorf("VenueSymbol=%q, want BTC-USDT-SWAP", got.VenueSymbol)
 	}
 
 	book, err := a.Market.OrderBook(ctx, inst, 5)

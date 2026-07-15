@@ -57,7 +57,7 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 			AccountID: c.accountID,
 			Currency:  b.Coin,
 			Total:     total,
-			Available: available,
+			Free:      available,
 			Locked:    locked,
 			UpdatedAt: now,
 		})
@@ -160,7 +160,7 @@ func (c *accountClient) Close() error {
 
 func firstAccountID(ids []string) string {
 	if len(ids) == 0 || ids[0] == "" {
-		return model.AccountIDHyperliquidDefault
+		return AccountIDDefault
 	}
 	return ids[0]
 }

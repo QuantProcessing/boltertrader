@@ -97,8 +97,5 @@ func MergeKnownRequest(known, update model.OrderRequest) model.OrderRequest {
 	if update.Price.IsZero() {
 		update.Price = known.Price
 	}
-	if update.Venue == nil {
-		update.Venue = known.Venue
-	}
 	return update
 }

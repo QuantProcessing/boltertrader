@@ -1,5 +1,12 @@
 # Code Review Remediation Implementation Plan
 
+> **Historical / superseded:** This record predates the 2026-07-15
+> runtime/adapter convergence PRD. Its additive-compatibility and optional risk
+> lease decisions are not current requirements and must not be used to restore
+> venue-specific runtime choreography. The 2026-07-15 PRD and test specification
+> are authoritative; only their G008 frozen-candidate Demo/Testnet run can
+> certify the converged tree.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use test-driven development for every finding. Ralph coordinates independent severity-matched lanes and the root agent performs integration plus final review. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fix every valid finding from the `cc2524a` full-repository review without breaking existing public APIs, and prove each repair with a regression test plus full Go verification.

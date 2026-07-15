@@ -28,10 +28,9 @@ func TestBitgetClientsImplementContractsAndCapabilities(t *testing.T) {
 	var _ contract.OpenInterestClient = newMarketDataClient(rest, nil, provider, clk)
 	var _ contract.ExecutionClient = newExecutionClient(rest, provider, clk)
 	var _ contract.AccountClient = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
-	var _ contract.AccountStateReporter = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot, enums.KindPerp})
 
-	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountStateSnapshots || !caps.Streaming.Account {
-		t.Fatalf("account capabilities missing account-state/private stream support: %+v", caps)
+	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountBalanceSnapshots || !caps.Streaming.Account {
+		t.Fatalf("account capabilities missing balance/private stream support: %+v", caps)
 	}
 	if ref := newMarketDataClient(rest, nil, provider, clk).Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest || !ref.ReferencePolling {
 		t.Fatalf("reference capabilities incomplete: %+v", ref)
@@ -517,8 +516,8 @@ func TestBitgetReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T) 
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "BITGET-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "BITGET-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty BITGET-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want nil error", mass, err)
 	}
 	if called {
 		t.Fatal("mismatched account report crossed HTTP boundary")

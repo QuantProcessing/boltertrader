@@ -28,7 +28,7 @@ func newAccountClient(rest *okx.Client, provider *instrumentProvider, clk clock.
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDOKXDefault
+		accountID = AccountIDDefault
 	}
 	return &accountClient{
 		rest:      rest,
@@ -81,7 +81,6 @@ func spotBalancesFromOKX(bals []okx.Balance, accountID string, now time.Time) []
 				Currency:  d.Ccy,
 				Total:     total,
 				Free:      available,
-				Available: available,
 				Locked:    locked,
 				UpdatedAt: firstNonZeroTime(parseMillis(d.UTime), parseMillis(b.UTime), now),
 			})

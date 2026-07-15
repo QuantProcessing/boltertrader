@@ -2017,9 +2017,9 @@ type countingRisk struct {
 	calls int
 }
 
-func (r *countingRisk) Check(model.OrderRequest, *model.Instrument) error {
+func (r *countingRisk) CheckSubmission(context.Context, model.OrderRequest, *model.Instrument) (func(), error) {
 	r.calls++
-	return nil
+	return nil, nil
 }
 
 type cancelBeforeReturnExec struct {

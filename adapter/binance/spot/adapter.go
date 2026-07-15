@@ -7,11 +7,11 @@ import (
 	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdkspot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
 )
 
 const (
+	AccountIDDefault = "BINANCE-001"
 	demoRESTBaseURL  = sdkspot.DemoBaseURL
 	demoWSBaseURL    = sdkspot.DemoWSBaseURL
 	demoWSAPIBaseURL = sdkspot.DemoWSAPIBaseURL
@@ -95,7 +95,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	accountID := cfg.AccountID
 	if accountID == "" {
-		accountID = model.AccountIDBinanceDefault
+		accountID = AccountIDDefault
 	}
 
 	provider := newInstrumentProvider()

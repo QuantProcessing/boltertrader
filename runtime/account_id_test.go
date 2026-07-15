@@ -64,12 +64,12 @@ func (a *recordingAccount) Positions(ctx context.Context) ([]model.Position, err
 }
 
 type productionVenueExecWithoutAccountID struct {
-	*runtimetest.FakeExec
+	contract.ExecutionClient
 	venue string
 }
 
 func (e *productionVenueExecWithoutAccountID) Capabilities() contract.Capabilities {
-	caps := e.FakeExec.Capabilities()
+	caps := e.ExecutionClient.Capabilities()
 	caps.Venue = e.venue
 	return caps
 }
@@ -82,19 +82,19 @@ type startCounterStrategy struct {
 func (s *startCounterStrategy) OnStart(*strategy.Context) { s.starts++ }
 
 func TestResolveRuntimeAccountIDPrefersAdapterAndGuardsExpected(t *testing.T) {
-	exec := &accountIDExec{FakeExec: runtimetest.NewFakeExec(), accountID: model.AccountIDBinanceDefault}
-	account := &accountIDAccount{FakeAccount: runtimetest.NewFakeAccount(), accountID: model.AccountIDBinanceDefault}
+	exec := &accountIDExec{FakeExec: runtimetest.NewFakeExec(), accountID: "T:acct"}
+	account := &accountIDAccount{FakeAccount: runtimetest.NewFakeAccount(), accountID: "T:acct"}
 
 	got, adapterBacked, err := resolveRuntimeAccountID(Clients{Execution: exec, Account: account}, "", "strategy")
 	if err != nil {
 		t.Fatalf("adapter-backed account id rejected: %v", err)
 	}
-	if got != model.AccountIDBinanceDefault || !adapterBacked {
-		t.Fatalf("resolved account id=%q adapterBacked=%v, want %q true", got, adapterBacked, model.AccountIDBinanceDefault)
+	if got != "T:acct" || !adapterBacked {
+		t.Fatalf("resolved account id=%q adapterBacked=%v, want %q true", got, adapterBacked, "T:acct")
 	}
 
-	got, adapterBacked, err = resolveRuntimeAccountID(Clients{Execution: exec, Account: account}, model.AccountIDBinanceDefault, "strategy")
-	if err != nil || got != model.AccountIDBinanceDefault || !adapterBacked {
+	got, adapterBacked, err = resolveRuntimeAccountID(Clients{Execution: exec, Account: account}, "T:acct", "strategy")
+	if err != nil || got != "T:acct" || !adapterBacked {
 		t.Fatalf("matching expected account id should be accepted: got=%q adapterBacked=%v err=%v", got, adapterBacked, err)
 	}
 
@@ -102,7 +102,7 @@ func TestResolveRuntimeAccountIDPrefersAdapterAndGuardsExpected(t *testing.T) {
 		t.Fatal("expected account id mismatch should fail")
 	}
 
-	otherAccount := &accountIDAccount{FakeAccount: runtimetest.NewFakeAccount(), accountID: model.AccountIDOKXDefault}
+	otherAccount := &accountIDAccount{FakeAccount: runtimetest.NewFakeAccount(), accountID: "T:other"}
 	if _, _, err := resolveRuntimeAccountID(Clients{Execution: exec, Account: otherAccount}, "", "strategy"); err == nil {
 		t.Fatal("execution/account adapter id mismatch should fail")
 	}
@@ -117,8 +117,8 @@ func TestResolveRuntimeAccountIDPrefersAdapterAndGuardsExpected(t *testing.T) {
 		"",
 		"strategy",
 	)
-	if err != nil || got != "strategy" || adapterBacked {
-		t.Fatalf("pure-test fallback=%q adapterBacked=%v err=%v, want strategy false nil", got, adapterBacked, err)
+	if err != nil || got != "FAKE" || !adapterBacked {
+		t.Fatalf("fake-client account id=%q adapterBacked=%v err=%v, want FAKE true nil", got, adapterBacked, err)
 	}
 
 	got, adapterBacked, err = resolveRuntimeAccountID(Clients{}, "", "")
@@ -128,46 +128,64 @@ func TestResolveRuntimeAccountIDPrefersAdapterAndGuardsExpected(t *testing.T) {
 }
 
 func TestResolveRuntimeAccountIDFailsClosedForVenueClientWithoutProvider(t *testing.T) {
-	exec := &productionVenueExecWithoutAccountID{FakeExec: runtimetest.NewFakeExec(), venue: "BINANCE"}
-	if _, _, err := resolveRuntimeAccountID(Clients{Execution: exec}, model.AccountIDBinanceDefault, "strategy"); err == nil || !strings.Contains(err.Error(), "must expose AccountIDProvider") {
-		t.Fatalf("missing provider error=%v, want fail-closed AccountIDProvider guard", err)
+	for _, venue := range []string{"BINANCE", "FAKE", "TEST", "T"} {
+		t.Run(venue, func(t *testing.T) {
+			exec := &productionVenueExecWithoutAccountID{ExecutionClient: runtimetest.NewFakeExec(), venue: venue}
+			if _, _, err := resolveRuntimeAccountID(Clients{Execution: exec}, "T:acct", "strategy"); err == nil || !strings.Contains(err.Error(), "must expose AccountIDProvider") {
+				t.Fatalf("missing provider error=%v, want fail-closed AccountIDProvider guard", err)
+			}
+		})
 	}
 
+	exec := &productionVenueExecWithoutAccountID{ExecutionClient: runtimetest.NewFakeExec()}
 	exec.venue = ""
-	if _, _, err := resolveRuntimeAccountID(Clients{Execution: exec}, model.AccountIDBinanceDefault, "strategy"); err == nil || !strings.Contains(err.Error(), "empty venue") {
+	if _, _, err := resolveRuntimeAccountID(Clients{Execution: exec}, "T:acct", "strategy"); err == nil || !strings.Contains(err.Error(), "empty venue") {
 		t.Fatalf("empty venue missing-provider error=%v, want fail-closed empty venue guard", err)
 	}
 }
 
 func TestNodeUsesAdapterAccountIDForSubmitAndReconcile(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	fakeExec := runtimetest.NewFakeExec().WithClock(clk)
+	fakeExec.SetAccountID("T:acct")
 	exec := &recordingExec{accountIDExec: &accountIDExec{
-		FakeExec:  runtimetest.NewFakeExec(),
-		accountID: model.AccountIDBinanceDefault,
+		FakeExec:  fakeExec,
+		accountID: "T:acct",
 	}}
+	fakeAccount := runtimetest.NewFakeAccount()
+	fakeAccount.SetAccountID("T:acct")
 	account := &recordingAccount{accountIDAccount: &accountIDAccount{
-		FakeAccount: runtimetest.NewFakeAccount(),
-		accountID:   model.AccountIDBinanceDefault,
+		FakeAccount: fakeAccount,
+		accountID:   "T:acct",
 	}}
+	account.SetAccountStateSnapshot(model.AccountState{
+		AccountID: "T:acct",
+		Venue:     "FAKE",
+		Type:      model.AccountMargin,
+		Reported:  true,
+		EventID:   model.AccountStateEventID("FAKE", "T:acct", clk.Now()),
+		TsEvent:   clk.Now(),
+		TsInit:    clk.Now(),
+	})
 
 	node := NewNode(
 		Clients{Execution: exec, Account: account},
 		clk,
 		"strategy",
-		WithAccountID(model.AccountIDBinanceDefault),
+		WithAccountID("T:acct"),
 	)
 	if node.accountIDConfigErr != nil {
 		t.Fatalf("node account id config error: %v", node.accountIDConfigErr)
 	}
-	if node.accountID != model.AccountIDBinanceDefault || !node.adapterBackedAccountID {
-		t.Fatalf("node account id=%q adapterBacked=%v, want %q true", node.accountID, node.adapterBackedAccountID, model.AccountIDBinanceDefault)
+	if node.accountID != "T:acct" || !node.adapterBackedAccountID {
+		t.Fatalf("node account id=%q adapterBacked=%v, want %q true", node.accountID, node.adapterBackedAccountID, "T:acct")
 	}
 
 	if _, err := node.Resync(context.Background()); err != nil {
 		t.Fatalf("resync: %v", err)
 	}
-	if len(exec.massStatusAccountIDs) == 0 || exec.massStatusAccountIDs[len(exec.massStatusAccountIDs)-1] != model.AccountIDBinanceDefault {
-		t.Fatalf("reconcile account ids=%v, want last %q", exec.massStatusAccountIDs, model.AccountIDBinanceDefault)
+	if len(exec.massStatusAccountIDs) == 0 || exec.massStatusAccountIDs[len(exec.massStatusAccountIDs)-1] != "T:acct" {
+		t.Fatalf("reconcile account ids=%v, want last %q", exec.massStatusAccountIDs, "T:acct")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -186,8 +204,8 @@ func TestNodeUsesAdapterAccountIDForSubmitAndReconcile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	if order.Request.AccountID != model.AccountIDBinanceDefault {
-		t.Fatalf("submitted account id=%q, want %q", order.Request.AccountID, model.AccountIDBinanceDefault)
+	if order.Request.AccountID != "T:acct" {
+		t.Fatalf("submitted account id=%q, want %q", order.Request.AccountID, "T:acct")
 	}
 }
 
@@ -195,11 +213,11 @@ func TestNodeAccountIDMismatchFailsBeforeLifecycleSideEffects(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	exec := &recordingExec{accountIDExec: &accountIDExec{
 		FakeExec:  runtimetest.NewFakeExec(),
-		accountID: model.AccountIDBinanceDefault,
+		accountID: "T:acct",
 	}}
 	account := &recordingAccount{accountIDAccount: &accountIDAccount{
 		FakeAccount: runtimetest.NewFakeAccount(),
-		accountID:   model.AccountIDOKXDefault,
+		accountID:   "T:other",
 	}}
 	strat := &startCounterStrategy{}
 	node := NewNode(Clients{Execution: exec, Account: account}, clk, "strategy", WithStrategy(strat))
@@ -238,15 +256,15 @@ func TestNodeAccountIDMismatchFailsBeforeLifecycleSideEffects(t *testing.T) {
 	}
 }
 
-func TestNodeAccountIDFallbacksRemainExplicitForPureTests(t *testing.T) {
+func TestNodeAccountIDResolutionUsesGenericProvidersAndExplicitEmptyClientFallback(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	node := NewNode(
 		Clients{Execution: runtimetest.NewFakeExec(), Account: runtimetest.NewFakeAccount()},
 		clk,
 		"legacy-test",
 	)
-	if node.accountID != "legacy-test" || node.adapterBackedAccountID {
-		t.Fatalf("fallback account id=%q adapterBacked=%v, want legacy-test false", node.accountID, node.adapterBackedAccountID)
+	if node.accountID != "FAKE" || !node.adapterBackedAccountID {
+		t.Fatalf("fake-provider account id=%q adapterBacked=%v, want FAKE true", node.accountID, node.adapterBackedAccountID)
 	}
 
 	node = NewNode(Clients{}, clk, "")
@@ -255,13 +273,13 @@ func TestNodeAccountIDFallbacksRemainExplicitForPureTests(t *testing.T) {
 	}
 
 	node = NewNode(
-		Clients{Execution: runtimetest.NewFakeExec()},
+		Clients{Execution: &accountIDExec{FakeExec: runtimetest.NewFakeExec(), accountID: "TEST-001"}},
 		clk,
 		"strategy",
 		WithAccountID("TEST-001"),
 	)
-	if node.accountID != "TEST-001" || node.adapterBackedAccountID {
-		t.Fatalf("explicit pure-test account id=%q adapterBacked=%v, want TEST-001 false", node.accountID, node.adapterBackedAccountID)
+	if node.accountID != "TEST-001" || !node.adapterBackedAccountID {
+		t.Fatalf("explicit generic-provider account id=%q adapterBacked=%v, want TEST-001 true", node.accountID, node.adapterBackedAccountID)
 	}
 }
 

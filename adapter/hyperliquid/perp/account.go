@@ -448,7 +448,7 @@ func (c *accountClient) Close() error {
 
 func firstAccountID(ids []string) string {
 	if len(ids) == 0 || ids[0] == "" {
-		return model.AccountIDHyperliquidDefault
+		return AccountIDDefault
 	}
 	return ids[0]
 }

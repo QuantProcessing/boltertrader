@@ -24,11 +24,13 @@ type accountClient struct {
 	stream       *wsstream.Stream[contract.AccountEnvelope]
 }
 
+var _ contract.AccountClient = (*accountClient)(nil)
+
 func newAccountClient(rest *sdk.Client, provider *registry, clk clock.Clock, accountIndex int64, accountIDs ...string) *accountClient {
 	if clk == nil {
 		clk = clock.NewRealClock()
 	}
-	accountID := model.AccountIDLighterDefault
+	accountID := AccountIDDefault
 	if len(accountIDs) > 0 && accountIDs[0] != "" {
 		accountID = accountIDs[0]
 	}
@@ -98,7 +100,7 @@ func (c *accountClient) fetchAccount(ctx context.Context) (*sdk.Account, error) 
 
 func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now time.Time) model.AccountState {
 	if accountID == "" {
-		accountID = model.AccountIDLighterDefault
+		accountID = AccountIDDefault
 	}
 	balances := make([]model.AccountBalance, 0, len(acct.Assets))
 	for _, asset := range acct.Assets {
@@ -116,7 +118,6 @@ func accountStateFromLighterAccount(acct *sdk.Account, accountID string, now tim
 			Currency:  asset.Symbol,
 			Total:     total,
 			Free:      free,
-			Available: free,
 			Locked:    locked,
 			UpdatedAt: now,
 		})
@@ -229,7 +230,6 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 		Reports: contract.ReportCapabilities{
 			AccountBalanceSnapshots: true,
 			PositionReports:         true,
-			AccountStateSnapshots:   true,
 		},
 		Streaming: contract.StreamCapabilities{Account: false},
 	}

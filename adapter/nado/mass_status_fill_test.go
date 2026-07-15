@@ -51,12 +51,13 @@ func TestNadoExecutionMassStatusUsesMaximumFillLimitAndWarnsOnSaturation(t *test
 			exec := newExecutionClient(rest, nadoTestProvider(), clock.NewSimulatedClock(until.Add(time.Minute)), enums.KindPerp, AccountIDUnified)
 			exec.reports = backend
 
-			mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{
+			query := model.MassStatusQuery{
 				AccountID:    AccountIDUnified,
 				Until:        until,
 				Lookback:     lookback,
 				IncludeFills: true,
-			})
+			}
+			mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 			if err != nil {
 				t.Fatalf("GenerateExecutionMassStatus: %v", err)
 			}
@@ -72,8 +73,25 @@ func TestNadoExecutionMassStatusUsesMaximumFillLimitAndWarnsOnSaturation(t *test
 			if got := nadoHasReportWarning(mass.Warnings, "FILL_REPORTS_LIMIT_REACHED"); got != test.wantWarning {
 				t.Fatalf("limit warning=%v, want %v; warnings=%+v", got, test.wantWarning, mass.Warnings)
 			}
-			if mass.Partial != test.wantWarning {
-				t.Fatalf("partial=%v, want %v when archive saturation warning=%v", mass.Partial, test.wantWarning, test.wantWarning)
+			wantCoverage := model.CoverageComplete
+			if test.wantWarning {
+				wantCoverage = model.CoveragePartial
+			}
+			if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != wantCoverage || mass.PositionsCoverage.State != model.CoverageNotRequested {
+				t.Fatalf("coverage=%+v/%+v/%+v, want Complete/%s/NotRequested", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage, wantCoverage)
+			}
+			wantID := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT0", Kind: enums.KindPerp}
+			if open := mass.OpenOrdersCoverage.Scope; open.AccountID != AccountIDUnified || open.ClientID != "" || len(open.InstrumentIDs) != 1 || open.InstrumentIDs[0] != wantID || !open.Through.Equal(until.Add(time.Minute)) || !open.From.IsZero() {
+				t.Fatalf("open-order coverage scope=%+v, want exact Nado perp snapshot scope", open)
+			}
+			if fills := mass.FillsCoverage.Scope; fills.AccountID != AccountIDUnified || fills.ClientID != "" || len(fills.InstrumentIDs) != 1 || fills.InstrumentIDs[0] != wantID || !fills.From.Equal(until.Add(-lookback)) || !fills.Through.Equal(until) {
+				t.Fatalf("fill coverage scope=%+v, want exact [%s,%s] scope", fills, until.Add(-lookback), until)
+			}
+			if !mass.PositionsCoverage.Scope.IsZero() {
+				t.Fatalf("not-requested position coverage scope=%+v, want zero", mass.PositionsCoverage.Scope)
+			}
+			if err := mass.ValidateFor(query); err != nil {
+				t.Fatalf("ValidateFor: %v", err)
 			}
 		})
 	}

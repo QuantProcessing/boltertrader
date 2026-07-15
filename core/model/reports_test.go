@@ -75,6 +75,18 @@ func TestReportValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("overfilled order report should fail without explicit allowance")
 	}
+	allowed := OrderStatusReport{
+		Venue:           "T",
+		OverfillAllowed: true,
+		Order: Order{
+			Request:      OrderRequest{ClientID: "c1", InstrumentID: inst, Quantity: decimal.NewFromInt(1)},
+			VenueOrderID: "v1",
+			FilledQty:    decimal.NewFromInt(2),
+		},
+	}
+	if err := allowed.Validate(); err != nil {
+		t.Fatalf("explicitly allowed overfill rejected: %v", err)
+	}
 }
 
 func TestReportQueryMatchersRespectAccountID(t *testing.T) {

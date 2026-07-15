@@ -1,13 +1,50 @@
 package spot
 
+import (
+	"errors"
+	"net/http"
+)
+
 // APIError represents a Binance API error
 type APIError struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
+	Code       int    `json:"code"`
+	Message    string `json:"msg"`
+	HTTPStatus int    `json:"-"`
 }
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// IsDefinitiveOrderRejection reports whether err is a parsed Binance order or
+// request-business error carried by a 400 response. Transport failures,
+// authentication failures, temporary/unknown 10xx errors, rate limits,
+// malformed envelopes, other 4xx responses, and 5xx responses remain outside
+// the definitive venue-rejection taxonomy.
+func IsDefinitiveOrderRejection(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr == nil || apiErr.Code == 0 || apiErr.Message == "" {
+		return false
+	}
+	return apiErr.HTTPStatus == http.StatusBadRequest && isDefinitiveOrderErrorCode(apiErr.Code)
+}
+
+func isDefinitiveOrderErrorCode(code int) bool {
+	switch code {
+	case -1013, -1014, -1015, -1020,
+		-1100, -1101, -1102, -1103, -1104, -1105, -1106, -1108,
+		-1111, -1112, -1114, -1115, -1116, -1117, -1118, -1119,
+		-1121, -1128, -1130, -1134, -1135, -1145,
+		-2010, -2011, -2013, -2016, -2038, -2039:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAuthenticationError(status, code int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		code == -1002 || code == -1022 || code == -2014 || code == -2015
 }
 
 // Common response types

@@ -65,7 +65,7 @@ func TestExecEnvelopeWithMetaOverridesSourceAndFlags(t *testing.T) {
 func TestAccountStateEnvelopeInfersMeta(t *testing.T) {
 	ts := time.Unix(10, 0)
 	env := NewAccountEnvelope(AccountStateEvent{State: model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -74,11 +74,11 @@ func TestAccountStateEnvelopeInfersMeta(t *testing.T) {
 			Free:     decimal.RequireFromString("100"),
 		}},
 		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+		EventID:  model.AccountStateEventID("BINANCE", "T:acct", ts),
 		TsEvent:  ts,
 		TsInit:   ts,
 	}})
-	if env.Venue != "BINANCE" || env.AccountID != model.AccountIDBinanceDefault {
+	if env.Venue != "BINANCE" || env.AccountID != "T:acct" {
 		t.Fatalf("account state meta not inferred: %+v", env.EventMeta)
 	}
 	if !env.TsVenue.Equal(ts) {

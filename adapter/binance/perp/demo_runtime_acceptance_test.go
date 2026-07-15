@@ -48,8 +48,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if initialReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("initial runtime reconcile account states=%d, want 1: %+v", initialReconcile.AccountStatesApplied, initialReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountMargin, enums.KindPerp)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID)
+	runtimeaccept.AssertAccountStateReady(t, node, AccountIDDefault, model.AccountMargin, enums.KindPerp)
 	if err := adapter.Start(ctx); err != nil {
 		t.Fatalf("start Binance Demo adapter stream: %v", err)
 	}
@@ -72,6 +71,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime node did not become active before Binance Demo writes: %v", err)
 	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), instID, maxNotional)
 
 	restingClientID := demoClientOrderID("runtime-rest")
 	cleanup.Arm(enums.SideBuy, restingClientID)
@@ -203,7 +203,7 @@ func TestBinanceDemoRuntimeAcceptance(t *testing.T) {
 	if finalReconcile.AccountStatesApplied != 1 {
 		t.Fatalf("final runtime reconcile account states=%d, want 1: %+v", finalReconcile.AccountStatesApplied, finalReconcile)
 	}
-	runtimeaccept.AssertAccountStateReady(t, node, model.AccountIDBinanceDefault, model.AccountMargin, enums.KindPerp)
+	runtimeaccept.AssertAccountStateReady(t, node, AccountIDDefault, model.AccountMargin, enums.KindPerp)
 	if _, ok := node.Cache.Position(instID, enums.PosNet); ok {
 		t.Fatalf("runtime cache still has Demo position after final reconcile")
 	}

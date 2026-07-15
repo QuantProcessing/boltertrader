@@ -9,11 +9,13 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -46,6 +48,10 @@ type Report struct {
 	CursorsCommitted int
 	Warnings         []model.ReportWarning
 	Findings         []Finding
+
+	OpenOrdersCoverage model.ReportCoverage
+	FillsCoverage      model.ReportCoverage
+	PositionsCoverage  model.ReportCoverage
 }
 
 // ActivationVerdict is the runtime-facing safety decision produced from a
@@ -59,10 +65,24 @@ type ActivationVerdict struct {
 }
 
 // ActivationVerdict returns whether trading may be activated after this pass.
-// The method is additive so existing Report consumers remain source-compatible.
 func (r Report) ActivationVerdict() ActivationVerdict {
-	if r.FillsPartial {
-		return ActivationVerdict{Reason: "reconciliation fill history is incomplete"}
+	// An account-only reconciliation has no execution evidence to assess. Every
+	// report produced from an execution mass status carries explicit coverage.
+	if r.OpenOrdersCoverage.State != model.CoverageUnknown ||
+		r.FillsCoverage.State != model.CoverageUnknown ||
+		r.PositionsCoverage.State != model.CoverageUnknown {
+		if r.FillsPartial {
+			return ActivationVerdict{Reason: "reconciliation fill cursor continuity is incomplete"}
+		}
+		if r.OpenOrdersCoverage.State != model.CoverageComplete {
+			return ActivationVerdict{Reason: "reconciliation open-order evidence is incomplete"}
+		}
+		if r.FillsCoverage.State != model.CoverageComplete && r.FillsCoverage.State != model.CoverageNotRequested {
+			return ActivationVerdict{Reason: "reconciliation fill history is incomplete"}
+		}
+		if r.PositionsCoverage.State != model.CoverageComplete && r.PositionsCoverage.State != model.CoverageNotRequested {
+			return ActivationVerdict{Reason: "reconciliation position evidence is incomplete"}
+		}
 	}
 	for _, finding := range r.Findings {
 		if finding.Blocking || finding.Severity == FindingBlocking {
@@ -76,18 +96,6 @@ func (r Report) ActivationVerdict() ActivationVerdict {
 			return ActivationVerdict{Reason: reason}
 		}
 	}
-	for _, warning := range r.Warnings {
-		switch strings.ToUpper(strings.TrimSpace(warning.Code)) {
-		case "FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED":
-			return ActivationVerdict{Reason: "reconciliation fill history is incomplete"}
-		case "OPEN_ORDERS_UNAVAILABLE", "OPEN_ORDERS_PARTIAL", "BYBIT_SPOT_MASS_STATUS_SYMBOL_SCOPED":
-			reason := strings.TrimSpace(warning.Message)
-			if reason == "" {
-				reason = "reconciliation open-order evidence is incomplete"
-			}
-			return ActivationVerdict{Reason: reason}
-		}
-	}
 	return ActivationVerdict{Safe: true}
 }
 
@@ -96,12 +104,15 @@ func (r Report) ActivationVerdict() ActivationVerdict {
 // execution client supplies order/fill/position reports. Position evidence is
 // compared without a cache-only overwrite.
 type Reconciler struct {
-	account contract.AccountClient
-	orders  contract.ExecutionClient
-	cache   *cache.Cache
-	latency latency.Recorder
-	state   StateStore
-	fills   map[string]string
+	account                contract.AccountClient
+	accountCapabilities    contract.Capabilities
+	accountCapabilitiesSet bool
+	orders                 contract.ExecutionClient
+	cache                  *cache.Cache
+	clk                    clock.Clock
+	latency                latency.Recorder
+	state                  StateStore
+	fills                  map[string]string
 	// fillIdentities retains the order aliases first observed for a venue trade
 	// identity. A venue trade ID reused for a different order is a data conflict,
 	// not a second fill.
@@ -225,11 +236,14 @@ type derivativeFillOrderPrefetchRequest struct {
 
 // New builds a Reconciler. account drives balance and fallback position-report
 // reconciliation; orders drives mass-status reconciliation. Either may be nil.
+// When account is non-nil, callers must install its generic contract with
+// WithAccountCapabilities before Run so snapshot venue provenance is explicit.
 func New(account contract.AccountClient, orders contract.ExecutionClient, c *cache.Cache) *Reconciler {
 	return &Reconciler{
 		account:        account,
 		orders:         orders,
 		cache:          c,
+		clk:            clock.NewRealClock(),
 		state:          noopStateStore{},
 		fills:          make(map[string]string),
 		fillIdentities: make(map[string]fillOrderIdentity),
@@ -237,6 +251,22 @@ func New(account contract.AccountClient, orders contract.ExecutionClient, c *cac
 		overlapLimit:   defaultFillOverlapLimit,
 		pending:        make(map[string]pendingAppliedFill),
 	}
+}
+
+// WithClock installs the runtime clock used for request-start observation
+// watermarks and all reconciliation-owned application timestamps.
+func (r *Reconciler) WithClock(clk clock.Clock) *Reconciler {
+	if clk != nil {
+		r.clk = clk
+	}
+	return r
+}
+
+func (r *Reconciler) now() time.Time {
+	if r.clk == nil {
+		return time.Now()
+	}
+	return r.clk.Now()
 }
 
 func (r *Reconciler) WithLatencyRecorder(rec latency.Recorder) *Reconciler {
@@ -253,6 +283,16 @@ func (r *Reconciler) WithStateStore(store StateStore) *Reconciler {
 
 func (r *Reconciler) WithAccountID(accountID string) *Reconciler {
 	r.accountID = accountID
+	return r
+}
+
+// WithAccountCapabilities installs the account client's generic product and
+// report contract. The mandatory AccountState snapshot path never discovers
+// capabilities itself; callers provide them once when constructing the
+// runtime so capability flags cannot select or bypass authoritative state.
+func (r *Reconciler) WithAccountCapabilities(caps contract.Capabilities) *Reconciler {
+	r.accountCapabilities = caps
+	r.accountCapabilitiesSet = true
 	return r
 }
 
@@ -474,9 +514,9 @@ func (r *Reconciler) rememberOverlapFill(fillKey, recordID string) error {
 // open snapshot as closed with unknown reason). Intended to be called at startup
 // and after every reconnect.
 func (r *Reconciler) Run(ctx context.Context) (Report, error) {
-	cmd := latency.CommandLatency{Command: string(latency.ChainReconciliation), StartedAt: time.Now()}
+	cmd := latency.CommandLatency{Command: string(latency.ChainReconciliation), StartedAt: r.now()}
 	defer func() {
-		cmd.Finish(time.Now())
+		cmd.Finish(r.now())
 		if r.latency != nil {
 			r.latency.RecordCommandLatency(cmd)
 		}
@@ -495,83 +535,34 @@ func (r *Reconciler) Run(ctx context.Context) (Report, error) {
 			return rep, err
 		}
 	}
-	if r.account != nil && r.orders != nil {
-		if err := r.refreshStaleAccountState(ctx); err != nil {
-			cmd.Err = err.Error()
-			return rep, err
-		}
-	}
 	return rep, nil
 }
 
-func (r *Reconciler) refreshStaleAccountState(ctx context.Context) error {
-	if !r.account.Capabilities().Reports.AccountStateSnapshots {
-		return nil
-	}
-	accountID := r.accountID
-	if accountID == "" {
-		if provider, ok := r.account.(contract.AccountIDProvider); ok {
-			accountID = provider.AccountID()
-		}
-	}
-	account, ok := r.cache.Account(accountID)
-	if !ok || account.IsFresh(time.Now()) {
-		return nil
-	}
-	state, appliedAt, err := r.applyAccountStateSnapshot(ctx, accountID)
-	if err != nil {
-		return fmt.Errorf("reconcile: refresh stale account state after order recovery: %w", err)
-	}
-	r.cache.MarkAccountReconciled(state.AccountID, appliedAt)
-	return nil
-}
-
 func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
-	caps := r.account.Capabilities()
 	scopeAccountID := r.accountID
-	var accountStateID string
-	var accountStateAppliedAt time.Time
-	var accountSnapshotAt time.Time
-	if caps.Reports.AccountStateSnapshots {
-		state, appliedAt, err := r.applyAccountStateSnapshot(ctx, scopeAccountID)
-		if err != nil {
-			return err
-		}
-		if scopeAccountID == "" {
-			scopeAccountID = state.AccountID
-		}
-		accountStateID = state.AccountID
-		accountStateAppliedAt = appliedAt
-		accountSnapshotAt = state.TsEvent
-		rep.AccountStatesApplied++
-		rep.BalancesUpdated += len(state.Balances)
-	} else {
-		balances, err := r.account.Balances(ctx)
-		if err != nil {
-			return err
-		}
-		for _, b := range balances {
-			if b.AccountID == "" {
-				b.AccountID = scopeAccountID
-			}
-			r.cache.UpsertBalance(b)
-			rep.BalancesUpdated++
-		}
+	state, accountStateAppliedAt, err := r.applyAccountStateSnapshot(ctx, scopeAccountID, r.accountCapabilities.Venue)
+	if err != nil {
+		return err
 	}
+	if scopeAccountID == "" {
+		scopeAccountID = state.AccountID
+	}
+	rep.AccountStatesApplied++
+	rep.BalancesUpdated += len(state.Balances)
 
 	// Position reconciliation is report/event based. When there is no execution
 	// client to provide a mass-status position report, normalize the account
 	// snapshot into the same comparison path. Never overwrite or clear the cache
 	// here: doing so would leave the node-owned portfolio/PnL/callback state
 	// behind the cache.
-	if r.orders == nil && caps.Reports.PositionReports {
+	if r.orders == nil && r.accountCapabilitiesSet && r.accountCapabilities.Reports.PositionReports {
 		positions, err := r.account.Positions(ctx)
 		if err != nil {
 			return err
 		}
-		reports := positionReportsFromSnapshot(caps.Venue, scopeAccountID, accountSnapshotAt, positions)
+		reports := positionReportsFromSnapshot(r.accountCapabilities.Venue, scopeAccountID, state.TsEvent, positions)
 		stableAt := latestPositionReportAt(reports)
-		pass := positionPass(caps.Venue, scopeAccountID, stableAt)
+		pass := positionPass(r.accountCapabilities.Venue, scopeAccountID, stableAt, r.now())
 		openFindings, err := r.state.LoadOpenFindings(ctx, pass.Scope)
 		if err != nil {
 			return err
@@ -582,7 +573,7 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 		if err := r.state.BeginPass(ctx, pass); err != nil {
 			return err
 		}
-		unresolved, err := r.reconcilePositionReports(ctx, pass, reports, caps, rep)
+		unresolved, err := r.reconcilePositionReports(ctx, pass, reports, r.accountCapabilities, nil, rep)
 		if err != nil {
 			return err
 		}
@@ -590,28 +581,28 @@ func (r *Reconciler) reconcileAccount(ctx context.Context, rep *Report) error {
 			return err
 		}
 	}
-	if accountStateID != "" {
-		r.cache.MarkAccountReconciled(accountStateID, accountStateAppliedAt)
-	}
+	r.cache.MarkAccountReconciled(state.AccountID, accountStateAppliedAt)
 	return nil
 }
 
-func (r *Reconciler) applyAccountStateSnapshot(ctx context.Context, scopeAccountID string) (model.AccountState, time.Time, error) {
-	reporter, ok := r.account.(contract.AccountStateReporter)
-	if !ok {
-		return model.AccountState{}, time.Time{}, contract.ErrNotSupported
-	}
-	state, err := reporter.AccountState(ctx)
+func (r *Reconciler) applyAccountStateSnapshot(ctx context.Context, scopeAccountID, expectedVenue string) (model.AccountState, time.Time, error) {
+	state, err := r.account.AccountState(ctx)
 	if err != nil {
 		return model.AccountState{}, time.Time{}, err
 	}
 	if state.AccountID == "" {
-		state.AccountID = scopeAccountID
+		return model.AccountState{}, time.Time{}, fmt.Errorf("reconcile: authoritative account state account id is required")
 	}
-	if state.EventID == "" {
-		state.EventID = model.AccountStateEventID(state.Venue, state.AccountID, state.TsEvent)
+	if scopeAccountID != "" && state.AccountID != scopeAccountID {
+		return model.AccountState{}, time.Time{}, fmt.Errorf("reconcile: account state account id %q does not match runtime account id %q", state.AccountID, scopeAccountID)
 	}
-	appliedAt := time.Now()
+	if strings.TrimSpace(expectedVenue) == "" {
+		return model.AccountState{}, time.Time{}, fmt.Errorf("reconcile: account client capability venue is required")
+	}
+	if state.Venue != expectedVenue {
+		return model.AccountState{}, time.Time{}, fmt.Errorf("reconcile: account state venue %q does not match account client venue %q", state.Venue, expectedVenue)
+	}
+	appliedAt := r.now()
 	if err := r.cache.ApplyAccountStateAt(state, appliedAt); err != nil {
 		return model.AccountState{}, time.Time{}, err
 	}
@@ -631,10 +622,20 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	if err != nil {
 		return err
 	}
-	query, err := r.massStatusQuery(ctx)
+	query, priorCursor, err := r.massStatusQuery(ctx)
 	if err != nil {
 		return err
 	}
+	// Freeze every local identity that could be resolved by absence immediately
+	// before the authoritative request. Neither cache nor finding state is
+	// re-read later to expand this candidate set.
+	requestScope := ScopeKey{Venue: query.Venue, AccountID: query.AccountID}
+	openFindings, err := r.state.LoadOpenFindings(ctx, requestScope)
+	if err != nil {
+		return err
+	}
+	openFindings = append([]Finding(nil), openFindings...)
+	orderCandidates := r.cache.OpenOrders()
 	mass, err := r.orders.GenerateExecutionMassStatus(ctx, query)
 	if err != nil {
 		return err
@@ -642,42 +643,40 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	if mass == nil {
 		return fmt.Errorf("reconcile: execution mass status is nil")
 	}
-	if mass.AccountID == "" {
-		mass.AccountID = r.accountID
-	}
-	if query.IncludePositions && len(mass.PositionReports) == 0 && r.account != nil && r.account.Capabilities().Reports.PositionReports {
-		positions, err := r.account.Positions(ctx)
-		if err != nil {
-			return err
-		}
-		venue := mass.Venue
-		if venue == "" {
-			venue = r.account.Capabilities().Venue
-		}
-		for _, report := range positionReportsFromSnapshot(venue, mass.AccountID, mass.GeneratedAt, positions) {
-			if err := mass.AddPositionReport(report); err != nil {
-				return err
-			}
-		}
-	}
-	if err := mass.Validate(); err != nil {
+	if err := validateMassBeforePositionFallback(mass, query); err != nil {
 		return err
 	}
-	stableEventAt := massStableEventAt(mass)
+	r.tryPositionFallback(ctx, mass, query)
+	if err := mass.ValidateFor(query); err != nil {
+		return err
+	}
+	stableEventAt := mass.OpenOrdersCoverage.Scope.Through
+	if stableEventAt.IsZero() {
+		stableEventAt = query.Until
+	}
 	coverageAt := query.Until
 	if coverageAt.IsZero() {
 		coverageAt = stableEventAt
 	}
+	if query.IncludeFills && mass.FillsCoverage.State == model.CoverageComplete {
+		coverageAt = mass.FillsCoverage.Scope.Through
+	} else if !mass.OpenOrdersCoverage.Scope.Through.IsZero() {
+		coverageAt = mass.OpenOrdersCoverage.Scope.Through
+	}
 	scope := ScopeKey{Venue: mass.Venue, AccountID: mass.AccountID}
 	queryFrom := query.Since
-	if queryFrom.IsZero() && !stableEventAt.IsZero() {
+	if query.IncludeFills && (mass.FillsCoverage.State == model.CoverageComplete || mass.FillsCoverage.State == model.CoveragePartial) {
+		queryFrom = mass.FillsCoverage.Scope.From
+	} else if queryFrom.IsZero() && !stableEventAt.IsZero() {
 		queryFrom = stableEventAt.Add(-mass.Lookback)
 	}
 	if queryFrom.After(coverageAt) {
 		queryFrom = coverageAt
 	}
 	fillLookbackFloor := query.Since
-	if fillLookbackFloor.IsZero() && mass.Lookback > 0 && !stableEventAt.IsZero() {
+	if query.IncludeFills && (mass.FillsCoverage.State == model.CoverageComplete || mass.FillsCoverage.State == model.CoveragePartial) {
+		fillLookbackFloor = mass.FillsCoverage.Scope.From
+	} else if fillLookbackFloor.IsZero() && mass.Lookback > 0 && !stableEventAt.IsZero() {
 		fillLookbackFloor = stableEventAt.Add(-mass.Lookback)
 	}
 	if fillLookbackFloor.After(coverageAt) {
@@ -686,31 +685,62 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	pass := PassHeader{
 		PassID:        PassID(scope, stableEventAt),
 		Scope:         scope,
-		StartedAt:     time.Now(),
+		StartedAt:     r.now(),
 		StableEventAt: stableEventAt,
 		QueryFrom:     queryFrom,
 		QueryTo:       coverageAt,
-	}
-	openFindings, err := r.state.LoadOpenFindings(ctx, scope)
-	if err != nil {
-		return err
 	}
 	rep.Findings = append(rep.Findings, openFindings...)
 	var autoResolutions []FindingResolution
 	if err := r.state.BeginPass(ctx, pass); err != nil {
 		return err
 	}
-	rep.Partial = rep.Partial || mass.Partial
-	fillsPartial := fillReportsPartial(mass.Warnings)
+	fillsPartial := query.IncludeFills && mass.FillsCoverage.State != model.CoverageComplete
+	fillCursorScopeMismatch := false
+	rep.OpenOrdersCoverage = mass.OpenOrdersCoverage.Clone()
+	rep.FillsCoverage = mass.FillsCoverage.Clone()
+	rep.PositionsCoverage = mass.PositionsCoverage.Clone()
+	rep.Partial = rep.Partial || coverageIncomplete(mass.OpenOrdersCoverage) ||
+		coverageIncomplete(mass.FillsCoverage) || coverageIncomplete(mass.PositionsCoverage)
+	if query.IncludeFills && mass.FillsCoverage.State == model.CoverageComplete &&
+		!fillCursorScopeCompatible(query, priorCursor, mass.FillsCoverage) {
+		fillsPartial = true
+		fillCursorScopeMismatch = true
+		rep.Partial = true
+		appendCoverageWarning(mass, "FILL_CURSOR_SCOPE_CHANGED", "complete fill evidence does not match the durable cursor instrument selector; cursor reset required")
+	}
 	rep.FillsPartial = rep.FillsPartial || fillsPartial
 	rep.Warnings = append(rep.Warnings, mass.Warnings...)
-	if query.IncludePositions {
-		unresolved, err := r.reconcilePositionReports(ctx, pass, sortedPositionReports(mass.PositionReports), r.orders.Capabilities(), rep)
-		if err != nil {
+	if fillCursorScopeMismatch {
+		reset := priorCursor
+		reset.Scope = scope
+		reset.Stream = StreamOrders
+		reset.FillInstrumentIDs = append([]model.InstrumentID{}, mass.FillsCoverage.Scope.InstrumentIDs...)
+		reset.LastVenueTime = time.Time{}
+		reset.LookbackFloor = time.Time{}
+		reset.LastLocalApplyTime = r.now()
+		reset.Partial = true
+		reset.FillsPartial = true
+		if err := r.state.CommitCursor(ctx, reset); err != nil {
 			return err
 		}
-		if !mass.Partial && !positionReportsPartial(mass.Warnings) {
-			autoResolutions = append(autoResolutions, r.positionResolutionCandidates(openFindings, pass, unresolved)...)
+		rep.CursorsCommitted++
+	}
+	if query.IncludePositions {
+		positionState := mass.PositionsCoverage.State
+		if positionState == model.CoverageComplete || positionState == model.CoveragePartial {
+			var coverage *model.ReportCoverage
+			coverage = &mass.PositionsCoverage
+			unresolved, err := r.reconcilePositionReports(ctx, pass, sortedPositionReports(mass.PositionReports), contract.Capabilities{}, coverage, rep)
+			if err != nil {
+				return err
+			}
+			if positionState == model.CoverageComplete {
+				scoped := positionFindingsWithinCoverage(openFindings, mass.PositionsCoverage)
+				resolutionPass := pass
+				resolutionPass.StableEventAt = mass.PositionsCoverage.Scope.Through
+				autoResolutions = append(autoResolutions, r.positionResolutionCandidates(scoped, resolutionPass, unresolved)...)
+			}
 		}
 	}
 
@@ -796,6 +826,9 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	if err := r.inferMissingSnapshotFills(pass, mass, orderSnapshots); err != nil {
 		return err
 	}
+	if err := mass.ValidateFor(query); err != nil {
+		return err
+	}
 
 	appliedFills := make(map[orderIdentityKey][]model.Fill)
 	recognizedFills := make(recognizedFillSet)
@@ -832,12 +865,20 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 			}
 		}
 	}
-	if query.IncludeFills && !mass.Partial && !fillsPartial {
-		autoResolutions = append(autoResolutions, r.orderProgressResolutionCandidates(openFindings, pass, unresolvedOrderProgress, recognizedFills)...)
+	if query.IncludeFills && !fillsPartial {
+		progressFindings := openFindings
+		resolutionPass := pass
+		progressFindings = orderProgressFindingsWithinCoverage(openFindings, mass.FillsCoverage)
+		resolutionPass.StableEventAt = mass.FillsCoverage.Scope.Through
+		autoResolutions = append(autoResolutions, r.orderProgressResolutionCandidates(progressFindings, resolutionPass, unresolvedOrderProgress, recognizedFills)...)
 	}
 
-	for _, co := range r.cache.OpenOrders() {
+	partialFindingRecorded := false
+	for _, co := range orderCandidates {
 		if !orderInAccountScope(co, mass.AccountID) {
+			continue
+		}
+		if !orderWithinCoverage(co, mass.OpenOrdersCoverage, mass.AccountID) {
 			continue
 		}
 		matched := false
@@ -853,17 +894,25 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 		if orderIdentityConflict {
 			continue
 		}
-		if mass.Partial {
-			finding := r.finding(pass, StreamOrders, FindingWarning, "PARTIAL_ORDER_REPORT", "partial mass-status report cannot prove missing open order terminal state", false)
-			rep.Findings = append(rep.Findings, finding)
-			if err := r.state.RecordFinding(ctx, finding); err != nil {
-				return err
+		openOrdersIncomplete := mass.OpenOrdersCoverage.State != model.CoverageComplete
+		if openOrdersIncomplete {
+			if !partialFindingRecorded {
+				finding := r.finding(pass, StreamOrders, FindingWarning, "PARTIAL_ORDER_REPORT", "incomplete mass-status coverage cannot prove missing open order terminal state", false)
+				appendFindingUnique(rep, finding)
+				if err := r.state.RecordFinding(ctx, finding); err != nil {
+					return err
+				}
+				partialFindingRecorded = true
 			}
 			continue
 		}
-		co.Status = enums.StatusUnknown
-		r.cache.UpsertOrder(co)
-		rep.OrdersClosedUnknown++
+		updated, err := r.cache.MarkOrderUnknownIfUnchanged(mass.AccountID, co)
+		if err != nil {
+			return fmt.Errorf("reconcile: close missing order by frozen identity: %w", err)
+		}
+		if updated {
+			rep.OrdersClosedUnknown++
+		}
 	}
 
 	cursor := Cursor{
@@ -872,13 +921,21 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 		LastSuccessfulPass:    pass.PassID,
 		LastReportID:          mass.ReportID,
 		LastVenueTime:         coverageAt,
-		LastLocalApplyTime:    time.Now(),
+		LastLocalApplyTime:    r.now(),
 		LookbackFloor:         fillLookbackFloor,
-		Partial:               mass.Partial,
+		Partial:               rep.Partial,
 		FillsPartial:          fillsPartial,
 		AppliedEventRecordIDs: appliedEventRecordIDs,
 	}
+	if query.IncludeFills && mass.FillsCoverage.State == model.CoverageComplete {
+		cursor.FillInstrumentIDs = append([]model.InstrumentID{}, mass.FillsCoverage.Scope.InstrumentIDs...)
+	}
 	if hasBlockingFindingExcept(rep.Findings, autoResolutions) {
+		return nil
+	}
+	if fillsPartial {
+		// Positive evidence has already been applied, but an incomplete history
+		// cannot advance the durable full-coverage cursor.
 		return nil
 	}
 	if err := r.state.CommitCursor(ctx, cursor); err != nil {
@@ -899,26 +956,29 @@ func (r *Reconciler) reconcileOrders(ctx context.Context, rep *Report) error {
 	return nil
 }
 
-func (r *Reconciler) massStatusQuery(ctx context.Context) (model.MassStatusQuery, error) {
+func (r *Reconciler) massStatusQuery(ctx context.Context) (model.MassStatusQuery, Cursor, error) {
 	caps := r.orders.Capabilities()
 	includePositions := caps.Reports.PositionReports
-	if r.account != nil && r.account.Capabilities().Reports.PositionReports {
+	if r.account != nil && r.accountCapabilitiesSet && r.accountCapabilities.Reports.PositionReports {
 		includePositions = true
 	}
 	query := model.MassStatusQuery{
+		Venue:            caps.Venue,
 		AccountID:        r.accountID,
 		IncludeFills:     caps.Reports.FillHistory,
 		IncludePositions: includePositions,
-		Until:            time.Now(),
 	}
 	scope := ScopeKey{Venue: caps.Venue, AccountID: r.accountID}
 	cursor, err := r.state.LoadCursor(ctx, scope, StreamOrders)
 	if err != nil {
-		return model.MassStatusQuery{}, err
+		return model.MassStatusQuery{}, Cursor{}, err
 	}
 	if err := r.seedAppliedFillDependencies(ctx, scope, cursor); err != nil {
-		return model.MassStatusQuery{}, err
+		return model.MassStatusQuery{}, Cursor{}, err
 	}
+	// The bound is captured after every prerequisite state read and immediately
+	// before callers freeze local candidates and enter the authoritative request.
+	query.Until = r.now()
 	if cursor.FillsPartial {
 		query.Since = cursor.LookbackFloor
 	} else {
@@ -939,62 +999,207 @@ func (r *Reconciler) massStatusQuery(ctx context.Context) (model.MassStatusQuery
 	if !query.Since.IsZero() {
 		query.Lookback = query.Until.Sub(query.Since)
 	}
-	return query, nil
+	return query, cursor, nil
 }
 
-func fillReportsPartial(warnings []model.ReportWarning) bool {
-	for _, warning := range warnings {
-		switch warning.Code {
-		case "FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED":
-			return true
+func validateMassBeforePositionFallback(mass *model.ExecutionMassStatus, query model.MassStatusQuery) error {
+	if mass == nil {
+		return fmt.Errorf("reconcile: execution mass status is nil")
+	}
+	validation := mass.Clone()
+	if query.IncludePositions && validation.PositionsCoverage.State == model.CoverageUnknown {
+		if !validation.PositionsCoverage.Scope.IsZero() {
+			return validation.ValidateFor(query)
+		}
+		// Unknown has no selector to authorize a fallback, but validate every
+		// other domain and the empty shape before the final strict rejection.
+		validation.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	}
+	return validation.ValidateFor(query)
+}
+
+func fillCursorScopeCompatible(query model.MassStatusQuery, cursor Cursor, coverage model.ReportCoverage) bool {
+	if coverage.State != model.CoverageComplete {
+		return false
+	}
+	responseIDs := coverage.Scope.InstrumentIDs
+	if query.InstrumentIDs != nil && !slices.Equal(model.NormalizeInstrumentIDs(query.InstrumentIDs), responseIDs) {
+		return false
+	}
+	if cursor.FillsPartial {
+		return cursor.FillInstrumentIDs != nil &&
+			slices.Equal(model.NormalizeInstrumentIDs(cursor.FillInstrumentIDs), responseIDs)
+	}
+	if cursor.LastVenueTime.IsZero() {
+		return true
+	}
+	if cursor.FillInstrumentIDs == nil {
+		return false
+	}
+	return slices.Equal(model.NormalizeInstrumentIDs(cursor.FillInstrumentIDs), responseIDs)
+}
+
+func (r *Reconciler) tryPositionFallback(ctx context.Context, mass *model.ExecutionMassStatus, query model.MassStatusQuery) {
+	if mass == nil || !query.IncludePositions || r.account == nil {
+		return
+	}
+	original := mass.PositionsCoverage.Clone()
+	if original.State == model.CoverageComplete || original.State == model.CoverageNotRequested {
+		return
+	}
+	accountID := strings.TrimSpace(r.accountID)
+	if accountProvider, ok := r.account.(contract.AccountIDProvider); ok {
+		providedAccountID := strings.TrimSpace(accountProvider.AccountID())
+		if accountID != "" && providedAccountID != accountID {
+			appendCoverageWarning(mass, "POSITION_FALLBACK_ACCOUNT_UNPROVEN", "account position fallback cannot prove the execution coverage account")
+			return
+		}
+		accountID = providedAccountID
+	}
+	if accountID == "" || accountID != original.Scope.AccountID {
+		appendCoverageWarning(mass, "POSITION_FALLBACK_ACCOUNT_UNPROVEN", "account position fallback cannot prove the execution coverage account")
+		return
+	}
+	if !r.accountCapabilitiesSet {
+		appendCoverageWarning(mass, "POSITION_FALLBACK_CAPABILITIES_UNAVAILABLE", "account position fallback has no configured account capability contract")
+		return
+	}
+	caps := r.accountCapabilities
+	if !accountCapabilitiesCoverPositionSelector(caps, mass.Venue, original.Scope) {
+		appendCoverageWarning(mass, "POSITION_FALLBACK_SCOPE_UNPROVEN", "account position fallback cannot prove the original frozen instrument selector")
+		return
+	}
+	fallbackStartedAt := r.now()
+	if !original.Scope.Through.IsZero() && fallbackStartedAt.Before(original.Scope.Through) {
+		appendCoverageWarning(mass, "POSITION_FALLBACK_CLOCK_REGRESSION", "account position fallback request-start precedes execution position coverage")
+		return
+	}
+	positions, err := r.account.Positions(ctx)
+	if err != nil {
+		appendCoverageWarning(mass, "POSITION_FALLBACK_UNAVAILABLE", "account position fallback failed: "+err.Error())
+		return
+	}
+	venue := mass.Venue
+	if venue == "" {
+		venue = caps.Venue
+	}
+	replacement := model.NewExecutionMassStatus(venue, mass.AccountID, fallbackStartedAt)
+	seen := make(map[string]struct{}, len(positions))
+	for _, position := range positions {
+		if position.AccountID == "" {
+			position.AccountID = mass.AccountID
+		}
+		if position.AccountID != original.Scope.AccountID || !original.Scope.ContainsInstrument(position.InstrumentID) {
+			appendCoverageWarning(mass, "POSITION_FALLBACK_SCOPE_MISMATCH", "account position fallback returned a row outside the original frozen scope")
+			return
+		}
+		report := model.PositionReport{
+			Venue:      venue,
+			AccountID:  position.AccountID,
+			Position:   position,
+			ReportedAt: fallbackStartedAt,
+		}
+		if _, duplicate := seen[report.Key()]; duplicate {
+			appendCoverageWarning(mass, "POSITION_FALLBACK_INVALID", "account position fallback returned duplicate position identities")
+			return
+		}
+		seen[report.Key()] = struct{}{}
+		if err := replacement.AddPositionReport(report); err != nil {
+			appendCoverageWarning(mass, "POSITION_FALLBACK_INVALID", "account position fallback returned an invalid row: "+err.Error())
+			return
 		}
 	}
-	return false
+	mass.PositionReports = replacement.PositionReports
+	mass.PositionsCoverage = model.NewSnapshotCoverage(
+		model.CoverageComplete,
+		original.Scope.AccountID,
+		original.Scope.ClientID,
+		original.Scope.InstrumentIDs,
+		fallbackStartedAt,
+	)
 }
 
-func positionReportsPartial(warnings []model.ReportWarning) bool {
-	for _, warning := range warnings {
-		code := strings.ToUpper(strings.TrimSpace(warning.Code))
-		if !strings.Contains(code, "POSITION") {
+func accountCapabilitiesCoverPositionSelector(caps contract.Capabilities, venue string, scope model.CoverageScope) bool {
+	if !caps.Reports.PositionReports || scope.InstrumentIDs == nil || caps.Venue == "" || !strings.EqualFold(caps.Venue, venue) {
+		return false
+	}
+	for _, id := range scope.InstrumentIDs {
+		if !strings.EqualFold(caps.Venue, id.Venue) {
+			return false
+		}
+		covered := false
+		for _, product := range caps.Products {
+			if product.Kind == id.Kind && product.Account {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
+}
+
+func appendCoverageWarning(mass *model.ExecutionMassStatus, code, message string) {
+	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: code, Message: message})
+}
+
+func coverageIncomplete(coverage model.ReportCoverage) bool {
+	return coverage.State != model.CoverageComplete && coverage.State != model.CoverageNotRequested
+}
+
+func orderWithinCoverage(order model.Order, coverage model.ReportCoverage, fallbackAccountID string) bool {
+	if coverage.State != model.CoverageComplete && coverage.State != model.CoveragePartial && coverage.State != model.CoverageUnavailable {
+		return false
+	}
+	accountID := order.Request.AccountID
+	if accountID == "" {
+		accountID = fallbackAccountID
+	}
+	if accountID != coverage.Scope.AccountID || !coverage.Scope.ContainsInstrument(order.Request.InstrumentID) {
+		return false
+	}
+	return coverage.Scope.ClientID == "" || order.Request.ClientID == coverage.Scope.ClientID
+}
+
+func positionFindingsWithinCoverage(findings []Finding, coverage model.ReportCoverage) []Finding {
+	out := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		condition, ok := positionFindingCondition(finding)
+		if !ok {
 			continue
 		}
-		if strings.Contains(code, "PARTIAL") || strings.Contains(code, "UNAVAILABLE") || strings.Contains(code, "LIMIT") {
-			return true
+		for _, id := range coverage.Scope.InstrumentIDs {
+			if strings.HasPrefix(condition, coverage.Scope.AccountID+"|"+id.String()+"|") {
+				out = append(out, finding)
+				break
+			}
 		}
 	}
-	return false
+	return out
 }
 
-func massStableEventAt(mass *model.ExecutionMassStatus) time.Time {
-	if mass == nil {
-		return time.Time{}
+func orderProgressFindingsWithinCoverage(findings []Finding, coverage model.ReportCoverage) []Finding {
+	instruments := make(map[string]struct{}, len(coverage.Scope.InstrumentIDs))
+	for _, id := range coverage.Scope.InstrumentIDs {
+		instruments[id.String()] = struct{}{}
 	}
-	if !mass.GeneratedAt.IsZero() {
-		return mass.GeneratedAt
-	}
-	var latest time.Time
-	consider := func(at time.Time) {
-		if !at.IsZero() && (latest.IsZero() || at.After(latest)) {
-			latest = at
+	out := make([]Finding, 0, len(findings))
+	for _, finding := range findings {
+		key, _, ok := orderProgressFindingCondition(finding)
+		if !ok || key.accountID != coverage.Scope.AccountID {
+			continue
 		}
-	}
-	for _, report := range mass.OrderReports {
-		consider(report.ReportedAt)
-		consider(report.Order.UpdatedAt)
-	}
-	for _, reports := range mass.FillReports {
-		for _, report := range reports {
-			consider(report.ReportedAt)
-			consider(report.Fill.Timestamp)
+		if _, ok := instruments[key.instrument]; !ok {
+			continue
 		}
-	}
-	for _, reports := range mass.PositionReports {
-		for _, report := range reports {
-			consider(report.ReportedAt)
-			consider(report.Position.UpdatedAt)
+		if coverage.Scope.ClientID != "" && (key.namespace != "client" || key.id != coverage.Scope.ClientID) {
+			continue
 		}
+		out = append(out, finding)
 	}
-	return latest
+	return out
 }
 
 func positionReportsFromSnapshot(venue, accountID string, reportedAt time.Time, positions []model.Position) []model.PositionReport {
@@ -1031,12 +1236,12 @@ func latestPositionReportAt(reports []model.PositionReport) time.Time {
 	return latest
 }
 
-func positionPass(venue, accountID string, stableAt time.Time) PassHeader {
+func positionPass(venue, accountID string, stableAt, startedAt time.Time) PassHeader {
 	scope := ScopeKey{Venue: venue, AccountID: accountID}
 	return PassHeader{
 		PassID:        PassID(scope, stableAt),
 		Scope:         scope,
-		StartedAt:     time.Now(),
+		StartedAt:     startedAt,
 		StableEventAt: stableAt,
 		QueryFrom:     stableAt,
 		QueryTo:       stableAt,
@@ -1076,10 +1281,12 @@ func (r *Reconciler) reconcilePositionReports(
 	pass PassHeader,
 	reports []model.PositionReport,
 	caps contract.Capabilities,
+	coverage *model.ReportCoverage,
 	rep *Report,
 ) (map[string]struct{}, error) {
 	unresolved := make(map[string]struct{})
 	authoritative := make(map[positionKey]model.Position, len(reports))
+	reported := make(map[positionKey]struct{}, len(reports))
 	lastReported := make(map[positionKey]model.Position, len(reports))
 	authoritativeAt := make(map[positionKey]time.Time, len(reports))
 	ambiguous := make(map[positionKey]struct{})
@@ -1091,10 +1298,12 @@ func (r *Reconciler) reconcilePositionReports(
 		if position.AccountID == "" {
 			position.AccountID = pass.Scope.AccountID
 		}
-		if !positionInReportScope(position, pass.Scope, caps.Products) {
+		if !positionInReportScope(position, pass.Scope, caps.Products) ||
+			(coverage != nil && !coverage.Scope.ContainsInstrument(position.InstrumentID)) {
 			continue
 		}
 		key := positionKey{position.AccountID, position.InstrumentID.String(), position.Side}
+		reported[key] = struct{}{}
 		at := report.ReportedAt
 		if !position.UpdatedAt.IsZero() {
 			at = position.UpdatedAt
@@ -1119,10 +1328,19 @@ func (r *Reconciler) reconcilePositionReports(
 		if position.AccountID == "" {
 			position.AccountID = pass.Scope.AccountID
 		}
-		if !positionInReportScope(position, pass.Scope, caps.Products) {
+		if !positionInReportScope(position, pass.Scope, caps.Products) ||
+			(coverage != nil && !coverage.Scope.ContainsInstrument(position.InstrumentID)) {
 			continue
 		}
-		local[positionKey{position.AccountID, position.InstrumentID.String(), position.Side}] = position
+		key := positionKey{position.AccountID, position.InstrumentID.String(), position.Side}
+		if coverage != nil && coverage.State != model.CoverageComplete {
+			if _, explicitlyReported := reported[key]; !explicitlyReported {
+				if _, conflict := ambiguous[key]; !conflict {
+					continue
+				}
+			}
+		}
+		local[key] = position
 	}
 
 	keys := make(map[positionKey]struct{}, len(authoritative)+len(local)+len(ambiguous))
@@ -1231,7 +1449,7 @@ func (r *Reconciler) positionResolutionCandidates(
 	pass PassHeader,
 	unresolved map[string]struct{},
 ) []FindingResolution {
-	if _, ok := r.state.(FindingResolver); !ok {
+	if _, ok := r.state.(revisionFindingResolver); !ok {
 		return nil
 	}
 	var resolutions []FindingResolution
@@ -1247,10 +1465,11 @@ func (r *Reconciler) positionResolutionCandidates(
 			continue
 		}
 		resolutions = append(resolutions, FindingResolution{
-			FindingID:  finding.ID,
-			PassID:     pass.PassID,
-			ResolvedAt: resolutionTime(pass),
-			Reason:     "complete authoritative position report no longer reproduces the condition",
+			FindingID:        finding.ID,
+			PassID:           pass.PassID,
+			ResolvedAt:       resolutionTime(pass),
+			Reason:           "complete authoritative position report no longer reproduces the condition",
+			expectedRevision: finding.revision,
 		})
 	}
 	return resolutions
@@ -1341,9 +1560,6 @@ func removeResolvedFindings(rep *Report, resolutions []FindingResolution) {
 }
 
 func (r *Reconciler) refreshResolvedFindings(ctx context.Context, rep *Report, scope ScopeKey, resolutions []FindingResolution) error {
-	if len(resolutions) == 0 {
-		return nil
-	}
 	removeResolvedFindings(rep, resolutions)
 	open, err := r.state.LoadOpenFindings(ctx, scope)
 	if err != nil {
@@ -1382,7 +1598,7 @@ func (r *Reconciler) orderProgressResolutionCandidates(
 	unresolved map[orderIdentityKey]struct{},
 	recognized recognizedFillSet,
 ) []FindingResolution {
-	if _, ok := r.state.(FindingResolver); !ok {
+	if _, ok := r.state.(revisionFindingResolver); !ok {
 		return nil
 	}
 	var resolutions []FindingResolution
@@ -1405,10 +1621,11 @@ func (r *Reconciler) orderProgressResolutionCandidates(
 			continue
 		}
 		resolutions = append(resolutions, FindingResolution{
-			FindingID:  finding.ID,
-			PassID:     pass.PassID,
-			ResolvedAt: resolutionTime(pass),
-			Reason:     "complete fill report coverage closed the cumulative order-progress gap",
+			FindingID:        finding.ID,
+			PassID:           pass.PassID,
+			ResolvedAt:       resolutionTime(pass),
+			Reason:           "complete fill report coverage closed the cumulative order-progress gap",
+			expectedRevision: finding.revision,
 		})
 	}
 	return resolutions
@@ -1459,8 +1676,14 @@ func (r *Reconciler) inferMissingSnapshotFills(
 		if !progress.IsPositive() || fillIndex.hasOrder(snapshot.order) {
 			continue
 		}
+		if snapshot.order.UpdatedAt.IsZero() {
+			continue
+		}
 		fill, ok := inferredFillFromSnapshot(snapshot, progress, pass.StableEventAt)
 		if !ok {
+			continue
+		}
+		if !fillWithinCoverage(fill, mass.FillsCoverage) {
 			continue
 		}
 		if err := mass.AddFillReport(model.FillReport{
@@ -1474,6 +1697,21 @@ func (r *Reconciler) inferMissingSnapshotFills(
 		fillIndex.add(fill)
 	}
 	return nil
+}
+
+func fillWithinCoverage(fill model.Fill, coverage model.ReportCoverage) bool {
+	if coverage.State != model.CoverageComplete && coverage.State != model.CoveragePartial {
+		return false
+	}
+	if fill.AccountID != coverage.Scope.AccountID || !coverage.Scope.ContainsInstrument(fill.InstrumentID) {
+		return false
+	}
+	if coverage.Scope.ClientID != "" && fill.ClientID != coverage.Scope.ClientID {
+		return false
+	}
+	return !fill.Timestamp.IsZero() &&
+		!fill.Timestamp.Before(coverage.Scope.From) &&
+		!fill.Timestamp.After(coverage.Scope.Through)
 }
 
 func newFillPresenceIndex(groups map[string][]model.FillReport) fillPresenceIndex {
@@ -1786,7 +2024,7 @@ func (r *Reconciler) applyFillReports(
 		if err := r.ensurePassFillCapacity(fillKey); err != nil {
 			return appliedEventRecordIDs, err
 		}
-		appliedAt := time.Now()
+		appliedAt := r.now()
 		flags := contract.EventFlagFromSnapshot | contract.EventFlagFromReconciliation
 		if report.Fill.TradeID == "" {
 			flags |= contract.EventFlagSynthetic
@@ -2480,7 +2718,7 @@ func (r *Reconciler) cacheAuthoritativeOrderForFill(fill model.Fill, report mode
 }
 
 func (r *Reconciler) applyFillToOrder(order model.Order, fill model.Fill) {
-	r.cache.UpsertOrder(orderstate.ApplyFill(order, fill, time.Now()))
+	r.cache.UpsertOrder(orderstate.ApplyFill(order, fill, r.now()))
 }
 
 func orderInAccountScope(o model.Order, accountID string) bool {
@@ -2552,7 +2790,7 @@ func (r *Reconciler) finding(pass PassHeader, stream ReportStream, severity Find
 		Code:      code,
 		Message:   message,
 		Blocking:  blocking,
-		CreatedAt: time.Now(),
+		CreatedAt: r.now(),
 	}
 }
 

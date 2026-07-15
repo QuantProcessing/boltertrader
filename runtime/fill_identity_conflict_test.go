@@ -217,6 +217,7 @@ func TestLiveTradeIDReuseAcrossOrdersHaltsWithoutMutatingSecondOrder(t *testing.
 func TestLiveCrossedOrderAliasesHaltWithoutResolvingInFlight(t *testing.T) {
 	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
 	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("acct")
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	first := fillIdentityOrder(id, "client-a", "venue-a")
 	second := fillIdentityOrder(id, "client-b", "venue-b")
@@ -390,6 +391,7 @@ func TestConflictingFillDoesNotConsumeInFlightRecoveryState(t *testing.T) {
 	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
 	wrong := model.InstrumentID{Venue: "T", Symbol: "ETH-USDT", Kind: enums.KindPerp}
 	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("acct")
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	order := fillIdentityOrder(id, "client-a", "venue-a")
 	node.Cache.UpsertOrder(order)
@@ -412,6 +414,7 @@ func TestConflictingFillDoesNotConsumeInFlightRecoveryState(t *testing.T) {
 func TestDirectClientFillCanMaterializeOnlyAfterValidatedInFlightMatch(t *testing.T) {
 	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindSpot}
 	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("acct")
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	inflight := exec.NewInFlightJournal()
 	inflight.TrackIntent(journal.CommandIntent{
@@ -437,6 +440,7 @@ func TestDirectClientFillCanMaterializeOnlyAfterValidatedInFlightMatch(t *testin
 func TestConfirmedCancelReleasesTerminalFillCoverage(t *testing.T) {
 	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
 	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("acct")
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	node.Exec.WithCommandGate(nil)
 	node.fills = exec.NewFillBufferWithAppliedLimit(1)
@@ -463,6 +467,7 @@ func TestConfirmedCancelReleasesTerminalFillCoverage(t *testing.T) {
 func TestConfirmedTerminalModifyReleasesTerminalFillCoverage(t *testing.T) {
 	id := model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.KindPerp}
 	fake := runtimetest.NewFakeExec()
+	fake.SetAccountID("acct")
 	fake.SetModifySupported(true)
 	node := NewNode(Clients{Execution: fake}, clock.NewSimulatedClock(time.Unix(100, 0)), "acct")
 	node.Exec.WithCommandGate(nil)

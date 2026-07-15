@@ -1,10 +1,6 @@
 package contract
 
-import (
-	"time"
-
-	"github.com/QuantProcessing/boltertrader/core/enums"
-)
+import "github.com/QuantProcessing/boltertrader/core/enums"
 
 type Capabilities struct {
 	Venue         string
@@ -12,7 +8,6 @@ type Capabilities struct {
 	Reports       ReportCapabilities
 	Streaming     StreamCapabilities
 	Trading       TradingCapabilities
-	Latency       LatencyCapabilities
 	ReferenceData ReferenceDataCapabilities
 }
 
@@ -30,10 +25,6 @@ type ReportCapabilities struct {
 	FillHistory               bool
 	PositionReports           bool
 	AccountBalanceSnapshots   bool
-	AccountStateSnapshots     bool
-	MaxLookback               time.Duration
-	ClosedOrderRetention      string
-	DefinitiveNotFound        bool
 	OpenOnlyNotFoundAmbiguous bool
 }
 
@@ -52,12 +43,6 @@ type TradingCapabilities struct {
 	Modify    bool
 }
 
-type LatencyCapabilities struct {
-	VenueTimestamps   bool
-	AdapterTimestamps bool
-	SequenceNumbers   bool
-}
-
 type ReferenceDataCapabilities struct {
 	CurrentFunding      bool
 	CurrentMarkPrice    bool
@@ -67,6 +52,5 @@ type ReferenceDataCapabilities struct {
 	ReferencePolling    bool
 	FundingHistory      bool
 	CurrentOpenInterest bool
-	OpenInterestHistory bool
 	OpenInterestCached  bool
 }

@@ -168,7 +168,7 @@ func TestLighterRestingCleanupFindsInitiallyInvisibleOwnOrder(t *testing.T) {
 		{unrelated},
 		{unrelated},
 	}}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	if err := cleanup.CancelAndConfirm(context.Background()); err != nil {
@@ -204,7 +204,7 @@ func TestLighterRestingCleanupWaitsPastKnownOrderWindowForAmbiguousSubmit(t *tes
 		{unrelated},
 		{unrelated},
 	}}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	cleanup.pollInterval = 0
 
 	if err := cleanup.CancelAndConfirm(context.Background()); err != nil {
@@ -242,7 +242,7 @@ func TestLighterRestingCleanupRetriesAfterSuccessfulCancelUntilNoOpenEvidence(t 
 		{},
 		{},
 	}}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	if err := cleanup.CancelAndConfirm(context.Background()); err != nil {
@@ -261,7 +261,7 @@ func TestLighterRestingCleanupPreservesUnrelatedOrders(t *testing.T) {
 		{unrelated},
 		{unrelated},
 	}}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	if err := cleanup.CancelAndConfirm(context.Background()); err != nil {
@@ -282,7 +282,7 @@ func TestLighterRestingCleanupFailsClosedOnLatePartialFill(t *testing.T) {
 		{unrelated},
 		{unrelated},
 	}}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	err := cleanup.CancelAndConfirm(context.Background())
@@ -306,7 +306,7 @@ func TestLighterRestingCleanupAcceptsExactTerminalStatusEvidence(t *testing.T) {
 		openSnapshots: [][]model.Order{{lighterCleanupOrder(id, "btac-own", "venue-own", enums.StatusNew, decimal.Zero)}},
 		statusReports: []*model.OrderStatusReport{{Order: terminal}},
 	}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	if err := cleanup.CancelAndConfirm(context.Background()); err != nil {
@@ -324,7 +324,7 @@ func TestLighterRestingCleanupFailsClosedOnInactiveTerminalFill(t *testing.T) {
 		openSnapshots: [][]model.Order{{}, {}, {}},
 		exactReports:  []*model.OrderStatusReport{{Order: terminalFill}},
 	}
-	cleanup := newLighterRestingOrderCleanup(fake, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	cleanup := newLighterRestingOrderCleanup(fake, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(cleanup)
 
 	err := cleanup.CancelAndConfirm(context.Background())
@@ -338,7 +338,7 @@ func TestLighterRestingCleanupFullFillStillNeedsExposureCleanup(t *testing.T) {
 	cleanup := newLighterRestingOrderCleanup(
 		&lighterAcceptanceCleanupFake{},
 		id,
-		model.AccountIDLighterDefault,
+		AccountIDDefault,
 		"btac-own",
 		decimal.NewFromInt(1),
 	)
@@ -364,7 +364,7 @@ func TestLighterFullFillCleanupRecoversExposureEvenWhenOrderIsTerminal(t *testin
 	orderCleanup := newLighterRestingOrderCleanup(
 		&lighterAcceptanceCleanupFake{},
 		id,
-		model.AccountIDLighterDefault,
+		AccountIDDefault,
 		"btac-own",
 		decimal.RequireFromString("0.25"),
 	)
@@ -374,7 +374,7 @@ func TestLighterFullFillCleanupRecoversExposureEvenWhenOrderIsTerminal(t *testin
 	}
 	exposure := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{
-			{{AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
+			{{AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
 			{},
 		},
 		book:        &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
@@ -405,7 +405,7 @@ func TestLighterFullSpotFillCleanupPreservesPreExistingInventory(t *testing.T) {
 	orderCleanup := newLighterRestingOrderCleanup(
 		&lighterAcceptanceCleanupFake{},
 		id,
-		model.AccountIDLighterDefault,
+		AccountIDDefault,
 		"btac-own",
 		decimal.RequireFromString("0.25"),
 	)
@@ -442,7 +442,7 @@ func TestLighterFillAboveOwnedQuantityNeverAuthorizesReverseOrder(t *testing.T) 
 	orderCleanup := newLighterRestingOrderCleanup(
 		&lighterAcceptanceCleanupFake{},
 		id,
-		model.AccountIDLighterDefault,
+		AccountIDDefault,
 		"btac-own",
 		decimal.RequireFromString("0.25"),
 	)
@@ -450,7 +450,7 @@ func TestLighterFillAboveOwnedQuantityNeverAuthorizesReverseOrder(t *testing.T) 
 	_ = orderCleanup.ObserveSubmitResult(&invalid)
 	exposure := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{{{
-			AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
+			AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
 		}}},
 		book: &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
 	}
@@ -472,7 +472,7 @@ func TestLighterAmbiguousExposureCleanupIsNeverRetriedByOrderCleanup(t *testing.
 	orderCleanup := newLighterRestingOrderCleanup(
 		&lighterAcceptanceCleanupFake{},
 		id,
-		model.AccountIDLighterDefault,
+		AccountIDDefault,
 		"btac-own",
 		decimal.RequireFromString("0.25"),
 	)
@@ -480,7 +480,7 @@ func TestLighterAmbiguousExposureCleanupIsNeverRetriedByOrderCleanup(t *testing.
 	_ = orderCleanup.ObserveSubmitResult(&full)
 	exposure := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{{{
-			AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
+			AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
 		}}},
 		book:      &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
 		submitErr: errors.New("ambiguous transport failure"),
@@ -505,11 +505,11 @@ func TestLighterPartialFillCleanupCancelsRemainderBeforeExposureRecovery(t *test
 		exactReports:  []*model.OrderStatusReport{{Order: partial}, {Order: canceled}},
 		openSnapshots: [][]model.Order{{partial}},
 	}
-	orderCleanup := newLighterRestingOrderCleanup(orderIO, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	orderCleanup := newLighterRestingOrderCleanup(orderIO, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	configureFastLighterCleanup(orderCleanup)
 	exposure := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{
-			{{AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
+			{{AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
 			{},
 		},
 		book:        &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
@@ -538,7 +538,7 @@ func TestLighterPartialFillDoesNotRecoverBeforeRemainderIsTerminal(t *testing.T)
 		exactReports:  []*model.OrderStatusReport{{Order: partial}},
 		openSnapshots: [][]model.Order{{partial}},
 	}
-	orderCleanup := newLighterRestingOrderCleanup(orderIO, id, model.AccountIDLighterDefault, "btac-own", decimal.NewFromInt(1))
+	orderCleanup := newLighterRestingOrderCleanup(orderIO, id, AccountIDDefault, "btac-own", decimal.NewFromInt(1))
 	orderCleanup.pollInterval = 0
 	orderCleanup.maxPolls = 2
 	orderCleanup.minObservationPolls = 2
@@ -546,7 +546,7 @@ func TestLighterPartialFillDoesNotRecoverBeforeRemainderIsTerminal(t *testing.T)
 	orderCleanup.stableAbsentPolls = 2
 	exposure := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{{{
-			AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
+			AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
 		}}},
 		book: &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
 	}
@@ -580,7 +580,7 @@ func TestLighterExposureBaselineIsAuthoritative(t *testing.T) {
 	perpID := lighterCleanupInstrumentID()
 	perp := &model.Instrument{ID: perpID}
 	fake.positionSnapshots = [][]model.Position{{{
-		AccountID: model.AccountIDLighterDefault, InstrumentID: perpID, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.1"),
+		AccountID: AccountIDDefault, InstrumentID: perpID, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.1"),
 	}}}
 	if _, err := cleaner.CaptureBaseline(context.Background(), perp); err == nil {
 		t.Fatal("non-flat Perp baseline must fail closed")
@@ -601,7 +601,7 @@ func TestLighterPerpExposureCleanupUsesSingleBoundedReduceOnlyIOC(t *testing.T) 
 	}
 	fake := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{
-			{{AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
+			{{AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25")}},
 			{},
 		},
 		book: &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
@@ -645,7 +645,7 @@ func TestLighterPerpExposureCleanupFailsClosedOutsideOwnedFill(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &lighterAcceptanceExposureFake{positionSnapshots: [][]model.Position{{{
-				AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: tc.qty,
+				AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: tc.qty,
 			}}}}
 			cleaner := newLighterAcceptanceExposureCleaner(fake, fake, fake)
 			cleaner.pollInterval = 0
@@ -774,7 +774,7 @@ func TestLighterExposureCleanupDoesNotRetryAmbiguousClose(t *testing.T) {
 	inst := &model.Instrument{ID: id, PriceTick: decimal.RequireFromString("0.01"), SizeStep: decimal.RequireFromString("0.01")}
 	fake := &lighterAcceptanceExposureFake{
 		positionSnapshots: [][]model.Position{{{
-			AccountID: model.AccountIDLighterDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
+			AccountID: AccountIDDefault, InstrumentID: id, Side: enums.PosNet, Quantity: decimal.RequireFromString("0.25"),
 		}}},
 		book:      &model.OrderBook{Bids: []model.BookLevel{{Price: decimal.NewFromInt(100)}}},
 		submitErr: errors.New("ambiguous transport failure"),
@@ -968,11 +968,10 @@ func (f *lighterAcceptanceExposureFake) Submit(_ context.Context, req model.Orde
 
 func lighterExposureAccountState(currency, total, available string) model.AccountState {
 	return model.AccountState{Balances: []model.AccountBalance{{
-		AccountID: model.AccountIDLighterDefault,
+		AccountID: AccountIDDefault,
 		Currency:  currency,
 		Total:     decimal.RequireFromString(total),
 		Free:      decimal.RequireFromString(available),
-		Available: decimal.RequireFromString(available),
 	}}}
 }
 
@@ -983,7 +982,7 @@ func lighterCleanupInstrumentID() model.InstrumentID {
 func lighterCleanupOrder(id model.InstrumentID, clientID, venueOrderID string, status enums.OrderStatus, filled decimal.Decimal) model.Order {
 	return model.Order{
 		Request: model.OrderRequest{
-			AccountID:    model.AccountIDLighterDefault,
+			AccountID:    AccountIDDefault,
 			InstrumentID: id,
 			ClientID:     clientID,
 			Quantity:     decimal.NewFromInt(1),

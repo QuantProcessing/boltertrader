@@ -121,7 +121,6 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 		t.Fatalf("%s account states applied=%d, want 1: %+v", label, report.AccountStatesApplied, report)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, model.AccountMargin, kind)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id)
 	if state, ok := node.Cache.Account(AccountIDUnified); ok {
 		ensureBitgetLifecycleFunds(t, label, adapter, state.LastEvent(), lifecycle)
 	}
@@ -137,6 +136,10 @@ func runBitgetRuntimeAcceptance(t *testing.T, label, apiKey, apiSecret, passphra
 		close(done)
 	}()
 	defer stopBitgetRuntimeNode(t, stop, done)
+	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
+		t.Fatalf("%s runtime did not become active before risk probe: %v", label, err)
+	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id, maxNotional)
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
 		metrics := node.Metrics()
 		t.Fatalf("%s runtime order lifecycle: %v (order_envelopes=%d fill_envelopes=%d applied_fills=%d pending_fills=%d)", label, err, orderEnvelopes.Load(), fillEnvelopes.Load(), appliedFills.Load(), metrics.PendingFills)
@@ -417,7 +420,7 @@ func ensureBitgetLifecycleFunds(t *testing.T, label string, adapter *Adapter, st
 		}
 	}
 	for _, balance := range state.Balances {
-		if balance.Currency == currency && balance.FreeOrAvailable().GreaterThanOrEqual(required) {
+		if balance.Currency == currency && balance.Free.GreaterThanOrEqual(required) {
 			return
 		}
 	}

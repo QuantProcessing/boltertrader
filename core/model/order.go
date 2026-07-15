@@ -7,9 +7,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// OrderRequest is a venue-neutral order submission. The runtime fills the
-// portable fields; venue-only knobs go through Venue (the escape hatch), which
-// is nil for fully portable orders.
+// OrderRequest is a venue-neutral order submission. Venue-only conversion and
+// request details remain private to the owning adapter.
 type OrderRequest struct {
 	AccountID    string
 	InstrumentID InstrumentID
@@ -27,23 +26,6 @@ type OrderRequest struct {
 	TrailingOffsetBps decimal.Decimal
 	PositionSide      enums.PositionSide
 	ReduceOnly        bool
-
-	// Venue is the per-venue escape hatch for non-portable options. Setting it
-	// forfeits cross-venue portability for those fields. Nil for portable orders.
-	Venue *VenueOrderOpts
-}
-
-// VenueOrderOpts carries venue-specific order options with no portable meaning.
-// Exactly one sub-struct is expected to be set, matching the target venue; a
-// foreign sub-struct must be rejected by the adapter with contract.ErrNotSupported.
-//
-// The sub-structs are intentionally left to the adapter packages to define and
-// attach; this neutral type holds opaque references so core/model stays free of
-// any venue import. Adapters type-assert their own option type out of Native.
-type VenueOrderOpts struct {
-	// Native is the adapter-defined options value (e.g. *binance.OrderOpts).
-	// The owning adapter type-asserts it; others reject it.
-	Native any
 }
 
 // Order is the lifecycle state of a submitted order as tracked by the runtime.

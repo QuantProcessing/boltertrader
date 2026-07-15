@@ -16,32 +16,10 @@ func TestAccountTypeValid(t *testing.T) {
 	}
 }
 
-func TestDefaultAccountIDForVenue(t *testing.T) {
-	tests := map[string]string{
-		"binance":     AccountIDBinanceDefault,
-		" OKX ":       AccountIDOKXDefault,
-		"bybit":       AccountIDBybitDefault,
-		"bitget":      AccountIDBitgetDefault,
-		"gate":        AccountIDGateDefault,
-		"lighter":     AccountIDLighterDefault,
-		"hyperliquid": AccountIDHyperliquidDefault,
-		" aster ":     AccountIDAsterDefault,
-		"NADO":        AccountIDNadoDefault,
-	}
-	for venue, want := range tests {
-		if got := DefaultAccountIDForVenue(venue); got != want {
-			t.Fatalf("DefaultAccountIDForVenue(%q)=%q, want %q", venue, got, want)
-		}
-	}
-	if got := DefaultAccountIDForVenue("unknown"); got != "" {
-		t.Fatalf("unknown venue default=%q, want empty", got)
-	}
-}
-
 func TestAccountStateSummaryValidationAndClone(t *testing.T) {
 	now := time.Unix(50, 0)
 	state := AccountState{
-		AccountID: AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      AccountMargin,
 		Summary: &AccountSummary{
@@ -88,7 +66,7 @@ func TestAccountStateSummaryValidationAndClone(t *testing.T) {
 
 func TestAccountStateSummaryNilCompatibility(t *testing.T) {
 	state := AccountState{
-		AccountID: AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      AccountCash,
 	}
@@ -111,43 +89,53 @@ func TestAccountStateEventIDUsesCanonicalInstant(t *testing.T) {
 	}
 }
 
-func TestAccountBalanceFreeMigrationCompatibility(t *testing.T) {
-	old := AccountBalance{
-		Currency:  "USDT",
-		Total:     decimal.RequireFromString("100"),
-		Available: decimal.RequireFromString("80"),
-		Locked:    decimal.RequireFromString("20"),
-	}
-	if got := old.FreeOrAvailable(); !got.Equal(decimal.RequireFromString("80")) {
-		t.Fatalf("FreeOrAvailable()=%s, want 80", got)
-	}
-	if !old.CashInvariantOK() {
-		t.Fatal("cash invariant should use Available while Free is absent")
-	}
-	normalized := old.Normalized()
-	if !normalized.Free.Equal(old.Available) {
-		t.Fatalf("normalized Free=%s, want %s", normalized.Free, old.Available)
-	}
-
-	next := AccountBalance{
+func TestAccountBalanceFreeIsCanonical(t *testing.T) {
+	balance := AccountBalance{
 		Currency: "USDT",
 		Total:    decimal.RequireFromString("100"),
 		Free:     decimal.RequireFromString("75"),
 		Locked:   decimal.RequireFromString("25"),
 	}
-	if got := next.FreeOrAvailable(); !got.Equal(decimal.RequireFromString("75")) {
-		t.Fatalf("FreeOrAvailable()=%s, want 75", got)
+	if !balance.CashInvariantOK() {
+		t.Fatalf("cash invariant should use canonical Free: %+v", balance)
 	}
-	normalized = next.Normalized()
-	if !normalized.Available.Equal(next.Free) {
-		t.Fatalf("normalized Available=%s, want %s", normalized.Available, next.Free)
+	if err := balance.ValidateCash(); err != nil {
+		t.Fatalf("canonical cash balance rejected: %v", err)
+	}
+
+	balance.Free = decimal.Zero
+	balance.Locked = balance.Total
+	if !balance.CashInvariantOK() {
+		t.Fatalf("legitimate zero Free should be preserved: %+v", balance)
+	}
+}
+
+func TestAccountStateRejectsBalanceOwnedByAnotherAccount(t *testing.T) {
+	now := time.Unix(75, 0)
+	state := AccountState{
+		AccountID: "T:expected",
+		Venue:     "T",
+		Type:      AccountMargin,
+		Balances: []AccountBalance{{
+			AccountID: "T:other",
+			Currency:  "USDT",
+			Total:     decimal.NewFromInt(100),
+			Free:      decimal.NewFromInt(100),
+		}},
+		Reported: true,
+		EventID:  AccountStateEventID("T", "T:expected", now),
+		TsEvent:  now,
+		TsInit:   now,
+	}
+	if err := state.Validate(); err == nil {
+		t.Fatal("account state must reject a nested balance owned by another account")
 	}
 }
 
 func TestAccountStateValidateTradingReady(t *testing.T) {
 	now := time.Unix(100, 0)
 	state := AccountState{
-		AccountID: AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      AccountCash,
 		Balances: []AccountBalance{{
@@ -156,7 +144,7 @@ func TestAccountStateValidateTradingReady(t *testing.T) {
 			Free:     decimal.RequireFromString("100"),
 		}},
 		Reported: true,
-		EventID:  AccountStateEventID("BINANCE", AccountIDBinanceDefault, now),
+		EventID:  AccountStateEventID("BINANCE", "T:acct", now),
 		TsEvent:  now,
 		TsInit:   now,
 	}
@@ -175,7 +163,7 @@ func TestAccountStateValidateTradingReady(t *testing.T) {
 	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {
 		t.Fatal("missing event id should reject trading-ready state")
 	}
-	state.EventID = AccountStateEventID("BINANCE", AccountIDBinanceDefault, now)
+	state.EventID = AccountStateEventID("BINANCE", "T:acct", now)
 
 	state.TsEvent = time.Time{}
 	if err := state.ValidateTradingReady(fresh, now.Add(time.Second)); err == nil {

@@ -17,7 +17,7 @@ import (
 
 const (
 	VenueName        = "NADO"
-	AccountIDUnified = model.AccountIDNadoDefault
+	AccountIDUnified = "NADO-001"
 )
 
 func nadoEventMeta(parts ...string) contract.EventMeta {

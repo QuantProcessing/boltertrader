@@ -7,11 +7,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
-const privateStreamID = "okx:perp:private"
+const (
+	AccountIDDefault = "OKX-001"
+	privateStreamID  = "okx:perp:private"
+)
 
 // Config configures a live OKX perpetual (SWAP) adapter.
 type Config struct {
@@ -81,7 +83,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	accountID := cfg.AccountID
 	if accountID == "" {
-		accountID = model.AccountIDOKXDefault
+		accountID = AccountIDDefault
 	}
 
 	provider := newInstrumentProvider()

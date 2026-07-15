@@ -202,12 +202,19 @@ func (c *Client) PlaceOrders(ctx context.Context, reqs []PlaceOrderRequest) ([]O
 	if res.Response == nil {
 		return nil, fmt.Errorf("place orders failed: missing response")
 	}
-	for _, status := range res.Response.Data.Statuses {
-		if status.Error != nil {
-			return nil, &hyperliquid.OrderRejectedError{Reason: *status.Error}
+	statuses := res.Response.Data.Statuses
+	if len(statuses) == 0 {
+		return nil, fmt.Errorf("place orders failed: venue returned no order status")
+	}
+	if len(statuses) != len(reqs) {
+		return nil, fmt.Errorf("place orders failed: venue returned %d statuses for %d requests", len(statuses), len(reqs))
+	}
+	for i, status := range statuses {
+		if err := validateCommandOrderStatus(status, reqs[i], "place order"); err != nil {
+			return nil, err
 		}
 	}
-	return res.Response.Data.Statuses, nil
+	return statuses, nil
 }
 
 func (c *Client) modifyOrder(ctx context.Context, req ModifyOrderRequest) ([]byte, error) {
@@ -244,9 +251,12 @@ func (c *Client) ModifyOrder(ctx context.Context, req ModifyOrderRequest) (*Orde
 	if len(res.Response.Data.Statuses) == 0 {
 		return nil, fmt.Errorf("modify order failed: venue returned no order status")
 	}
+	if len(res.Response.Data.Statuses) != 1 {
+		return nil, fmt.Errorf("modify order failed: venue returned %d statuses for 1 request", len(res.Response.Data.Statuses))
+	}
 	status := res.Response.Data.Statuses[0]
-	if status.Error != nil {
-		return nil, fmt.Errorf("modify order failed: %s", *status.Error)
+	if err := validateCommandOrderStatus(status, req.Order, "modify order"); err != nil {
+		return nil, err
 	}
 	return &status, nil
 }
@@ -309,6 +319,12 @@ func (c *Client) CancelOrders(ctx context.Context, reqs []CancelOrderRequest) ([
 	if res.Response == nil {
 		return nil, fmt.Errorf("cancel orders failed: missing response")
 	}
+	if len(res.Response.Data.Statuses) == 0 {
+		return nil, fmt.Errorf("cancel orders failed: venue returned no order status")
+	}
+	if len(res.Response.Data.Statuses) != len(reqs) {
+		return nil, fmt.Errorf("cancel orders failed: venue returned %d statuses for %d requests", len(res.Response.Data.Statuses), len(reqs))
+	}
 	if err := res.Response.Data.Statuses.FirstError(); err != nil {
 		return nil, err
 	}
@@ -319,4 +335,47 @@ func (c *Client) CancelOrders(ctx context.Context, reqs []CancelOrderRequest) ([
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
+}
+
+func validateCommandOrderStatus(status OrderStatus, req PlaceOrderRequest, operation string) error {
+	shapeCount := 0
+	if status.Resting != nil {
+		shapeCount++
+	}
+	if status.Filled != nil {
+		shapeCount++
+	}
+	if status.Error != nil {
+		shapeCount++
+	}
+	if shapeCount != 1 {
+		return fmt.Errorf("%s failed: malformed venue status contains %d result shapes", operation, shapeCount)
+	}
+	if status.Error != nil {
+		reason := strings.TrimSpace(*status.Error)
+		if reason == "" {
+			return fmt.Errorf("%s failed: malformed empty venue rejection", operation)
+		}
+		return &hyperliquid.OrderRejectedError{Reason: reason}
+	}
+	if status.Resting != nil && status.Resting.Oid <= 0 {
+		return fmt.Errorf("%s failed: malformed resting venue order id %d", operation, status.Resting.Oid)
+	}
+	if status.Resting != nil && req.ClientOrderID != nil && status.Resting.ClientID != nil && !strings.EqualFold(*status.Resting.ClientID, *req.ClientOrderID) {
+		return fmt.Errorf("%s failed: client order id mismatch: requested %q, got %q", operation, *req.ClientOrderID, *status.Resting.ClientID)
+	}
+	if status.Filled != nil {
+		if status.Filled.Oid <= 0 {
+			return fmt.Errorf("%s failed: malformed filled venue order id %d", operation, status.Filled.Oid)
+		}
+		totalSize, err := decimal.NewFromString(status.Filled.TotalSz)
+		if err != nil || !totalSize.IsPositive() {
+			return fmt.Errorf("%s failed: malformed filled total size %q", operation, status.Filled.TotalSz)
+		}
+		averagePrice, err := decimal.NewFromString(status.Filled.AvgPx)
+		if err != nil || !averagePrice.IsPositive() {
+			return fmt.Errorf("%s failed: malformed filled average price %q", operation, status.Filled.AvgPx)
+		}
+	}
+	return nil
 }

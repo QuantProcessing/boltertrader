@@ -38,7 +38,7 @@ type Engine struct {
 
 	// risk, if set, gates every submission. provider resolves instrument
 	// metadata for instrument-level checks. Both optional.
-	risk     RiskChecker
+	risk     SubmissionRiskChecker
 	provider model.InstrumentProvider
 	latency  latency.Recorder
 	gate     CommandGate
@@ -54,24 +54,6 @@ type Engine struct {
 	onTerminalOrder        func(model.Order)
 }
 
-// RiskChecker is the pre-trade gate ExecEngine consults before submitting. It is
-// satisfied by runtime/risk.Engine. Decoupled via interface so exec doesn't
-// import risk (and to keep it swappable/testable).
-type RiskChecker interface {
-	Check(req model.OrderRequest, inst *model.Instrument) error
-}
-
-// ContextRiskChecker is the optional context-aware risk surface used when a
-// venue must authoritatively validate capacity or a prepared payload. Existing
-// RiskChecker implementations remain source-compatible.
-type ContextRiskChecker interface {
-	CheckContext(
-		ctx context.Context,
-		req model.OrderRequest,
-		inst *model.Instrument,
-	) (contract.PreTradeLease, error)
-}
-
 // SubmissionRiskChecker atomically holds local risk exposure across the gap
 // between validation and PendingNew cache insertion. release must be safe to
 // call after any later submit outcome.
@@ -80,17 +62,13 @@ type SubmissionRiskChecker interface {
 		ctx context.Context,
 		req model.OrderRequest,
 		inst *model.Instrument,
-	) (contract.PreTradeLease, func(), error)
+	) (release func(), err error)
 }
 
 type CommandGate interface {
 	CanSubmit(model.OrderRequest) error
 	CanCancel() error
 	CanModify() error
-}
-
-type SubmitValidator interface {
-	ValidateSubmit(model.OrderRequest) error
 }
 
 // New builds an ExecutionEngine. idPrefix namespaces generated client ids
@@ -111,16 +89,13 @@ func New(client contract.ExecutionClient, c *cache.Cache, clk clock.Clock, idPre
 	}
 }
 
-// WithRisk attaches a pre-trade risk gate and an instrument provider for
-// instrument-level checks (provider may be nil).
-func (e *Engine) WithRisk(r RiskChecker, provider model.InstrumentProvider) *Engine {
+// WithRisk attaches the generic submission-risk checker and the instrument
+// provider used to resolve the metadata passed to it. Concrete checker
+// configuration remains the caller's responsibility; Engine does not discover
+// optional checker-specific setters.
+func (e *Engine) WithRisk(r SubmissionRiskChecker, provider model.InstrumentProvider) *Engine {
 	e.risk = r
 	e.provider = provider
-	if aware, ok := r.(interface {
-		SetInstrumentProvider(model.InstrumentProvider)
-	}); ok {
-		aware.SetInstrumentProvider(provider)
-	}
 	return e
 }
 
@@ -494,18 +469,14 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		cmd.Err = err.Error()
 		return nil, err
 	}
-	if validator, ok := e.client.(SubmitValidator); ok {
-		if err := validator.ValidateSubmit(req); err != nil {
-			cmd.Err = err.Error()
-			return nil, err
-		}
+	if err := e.client.ValidateSubmit(req); err != nil {
+		cmd.Err = err.Error()
+		return nil, err
 	}
 
-	// Pre-trade risk gate. A rejection never touches the execution venue or the
-	// cache. Context-aware risk may perform read-only venue validation and hand
-	// exec a lease for the prepared payload.
-	var preTradeLease contract.PreTradeLease
-	var releaseRiskReservation func()
+	// Submission risk is local and venue-neutral. A rejection never touches the
+	// execution venue or cache; an accepted reservation spans the journal/cache
+	// handoff and is released after the submission outcome is recorded.
 	if e.risk != nil {
 		cmd.RiskStart = time.Now()
 		var inst *model.Instrument
@@ -514,22 +485,9 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 				inst = got
 			}
 		}
-		var err error
-		if checker, ok := e.risk.(SubmissionRiskChecker); ok {
-			preTradeLease, releaseRiskReservation, err = checker.CheckSubmission(ctx, req, inst)
-			if releaseRiskReservation != nil {
-				defer releaseRiskReservation()
-			}
-			if preTradeLease != nil {
-				defer preTradeLease.Release()
-			}
-		} else if checker, ok := e.risk.(ContextRiskChecker); ok {
-			preTradeLease, err = checker.CheckContext(ctx, req, inst)
-			if preTradeLease != nil {
-				defer preTradeLease.Release()
-			}
-		} else {
-			err = e.risk.Check(req, inst)
+		releaseRiskReservation, err := e.risk.CheckSubmission(ctx, req, inst)
+		if releaseRiskReservation != nil {
+			defer releaseRiskReservation()
 		}
 		if err != nil {
 			cmd.RiskEnd = time.Now()
@@ -542,17 +500,6 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 		cmd.Err = err.Error()
 		return nil, err
 	}
-	var preparedClient contract.PreparedExecutionClient
-	if preTradeLease != nil {
-		var ok bool
-		preparedClient, ok = e.client.(contract.PreparedExecutionClient)
-		if !ok {
-			err := fmt.Errorf("exec: pre-trade lease requires prepared execution client: %w", contract.ErrNotSupported)
-			cmd.Err = err.Error()
-			return nil, err
-		}
-	}
-
 	now := e.clk.Now()
 	intent, intentErr := e.intent(journal.CommandSubmit, req, "", now)
 	if intentErr != nil {
@@ -597,15 +544,9 @@ func (e *Engine) Submit(ctx context.Context, req model.OrderRequest) (*model.Ord
 	}
 
 	cmd.AdapterStart = time.Now()
-	var order *model.Order
-	var err error
-	if preTradeLease != nil {
-		order, err = preparedClient.SubmitPrepared(ctx, req)
-	} else {
-		order, err = e.client.Submit(ctx, req)
-	}
+	order, err := e.client.Submit(ctx, req)
 	cmd.AdapterEnd = time.Now()
-	sent := !errors.Is(err, contract.ErrPreparedStateUnavailable)
+	sent := true
 	if order != nil {
 		normalized, identityErr := e.normalizeCommandOrder(req, *order, true)
 		if identityErr != nil {
@@ -1249,9 +1190,6 @@ func mergeModifyRequest(base, venue model.OrderRequest) model.OrderRequest {
 	}
 	if venue.ReduceOnly {
 		out.ReduceOnly = true
-	}
-	if venue.Venue != nil {
-		out.Venue = venue.Venue
 	}
 	return out
 }

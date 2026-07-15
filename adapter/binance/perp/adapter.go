@@ -7,9 +7,10 @@ import (
 	"github.com/QuantProcessing/boltertrader/adapter/internal/streamgap"
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdkperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 )
+
+const AccountIDDefault = "BINANCE-001"
 
 // Config configures a live Binance USD-M perpetual adapter.
 type Config struct {
@@ -98,7 +99,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	accountID := cfg.AccountID
 	if accountID == "" {
-		accountID = model.AccountIDBinanceDefault
+		accountID = AccountIDDefault
 	}
 
 	provider := newInstrumentProvider()

@@ -153,7 +153,6 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 		t.Fatalf("%s account states applied=%d, want 1: %+v", label, report.AccountStatesApplied, report)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, accountType, kind)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id)
 	if state, ok := node.Cache.Account(AccountIDUnified); ok {
 		ensureGateLifecycleFunds(t, label, adapter, state.LastEvent(), lifecycle)
 	}
@@ -170,6 +169,10 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 		close(done)
 	}()
 	defer stopGateRuntimeNode(t, stop, done)
+	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
+		t.Fatalf("%s runtime did not become active before risk probe: %v", label, err)
+	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), id, cfg.MaxNotionalUSDT)
 	if _, err := runtimeaccept.RunRuntimeOrderLifecycle(ctx, node, adapter.Execution, lifecycle); err != nil {
 		t.Fatalf("%s runtime order lifecycle: %v", label, err)
 	}
@@ -431,7 +434,7 @@ func ensureGateLifecycleFunds(t *testing.T, label string, adapter *Adapter, stat
 		currency = inst.Settle
 	}
 	for _, balance := range state.Balances {
-		if balance.Currency == currency && balance.FreeOrAvailable().GreaterThanOrEqual(required) {
+		if balance.Currency == currency && balance.Free.GreaterThanOrEqual(required) {
 			return
 		}
 	}

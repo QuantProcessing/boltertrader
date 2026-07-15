@@ -141,7 +141,6 @@ func balancesFromSpotAccounts(accounts []gatesdk.SpotAccount, accountID string, 
 			Currency:  account.Currency,
 			Total:     free.Add(locked),
 			Free:      free,
-			Available: free,
 			Locked:    locked,
 			UpdatedAt: now,
 		})
@@ -159,7 +158,6 @@ func balanceFromSpotBalance(row gatesdk.SpotBalance, accountID string, fallback 
 		Currency:  row.Currency,
 		Total:     total,
 		Free:      free,
-		Available: free,
 		Locked:    locked,
 		UpdatedAt: ts,
 	}
@@ -184,7 +182,6 @@ func balanceFromFuturesAccount(account *gatesdk.FuturesAccount, accountID string
 		Currency:  currency,
 		Total:     total,
 		Free:      free,
-		Available: free,
 		Locked:    locked,
 		UpdatedAt: now,
 	}
@@ -232,7 +229,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     VenueName,
 		Products:  products,
-		Reports:   contract.ReportCapabilities{PositionReports: hasKind(c.scope, enums.KindPerp), AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: hasKind(c.scope, enums.KindPerp), AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: true},
 	}
 }

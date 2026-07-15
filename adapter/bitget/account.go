@@ -281,7 +281,6 @@ func balancesFromAssets(assets *bitgetsdk.AccountAssets, accountID string, now t
 			Currency:  asset.Coin,
 			Total:     total,
 			Free:      free,
-			Available: free,
 			Locked:    firstNonZero(dec(asset.Frozen), dec(asset.Locked)),
 			UpdatedAt: now,
 		})
@@ -347,7 +346,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     VenueName,
 		Products:  products,
-		Reports:   contract.ReportCapabilities{PositionReports: hasBitgetAccountKind(c.scope, enums.KindPerp), AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: hasBitgetAccountKind(c.scope, enums.KindPerp), AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: true, AccountState: true},
 	}
 }

@@ -270,7 +270,7 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -280,22 +280,50 @@ func TestApplyAccountStateCreatesAccountAndCompatibilityBalance(t *testing.T) {
 			Locked:   decimal.RequireFromString("10"),
 		}},
 		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+		EventID:  model.AccountStateEventID("BINANCE", "T:acct", ts),
 		TsEvent:  ts,
 		TsInit:   ts,
 	}
 	if err := c.ApplyAccountStateAt(state, ts); err != nil {
 		t.Fatalf("apply account state: %v", err)
 	}
-	acct, ok := c.Account(model.AccountIDBinanceDefault)
-	if !ok || acct.ID() != model.AccountIDBinanceDefault {
+	acct, ok := c.Account("T:acct")
+	if !ok || acct.ID() != "T:acct" {
 		t.Fatalf("account lookup failed: ok=%v acct=%v", ok, acct)
 	}
-	if acct, ok := c.AccountForVenue("BINANCE"); !ok || acct.ID() != model.AccountIDBinanceDefault {
+	if acct, ok := c.AccountForVenue("BINANCE"); !ok || acct.ID() != "T:acct" {
 		t.Fatalf("account for venue failed: ok=%v acct=%v", ok, acct)
 	}
 	if b, ok := c.Balance("USDT"); !ok || !b.Free.Equal(decimal.RequireFromString("90")) {
 		t.Fatalf("compat balance=%+v ok=%v, want free 90", b, ok)
+	}
+}
+
+func TestApplyAccountStatePreservesExplicitZeroFree(t *testing.T) {
+	c := New()
+	at := time.Unix(11, 0)
+	state := model.AccountState{
+		AccountID: "acct-zero-free",
+		Venue:     "T",
+		Type:      model.AccountMargin,
+		Balances: []model.AccountBalance{{
+			AccountID: "acct-zero-free",
+			Currency:  "USDT",
+			Total:     decimal.NewFromInt(10),
+			Free:      decimal.Zero,
+			UpdatedAt: at,
+		}},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", "acct-zero-free", at),
+		TsEvent:  at,
+		TsInit:   at,
+	}
+	if err := c.ApplyAccountStateAt(state, at); err != nil {
+		t.Fatalf("apply account state: %v", err)
+	}
+	got, ok := c.BalanceForAccount("acct-zero-free", "USDT")
+	if !ok || !got.Free.IsZero() {
+		t.Fatalf("balance=%+v ok=%v, want explicit zero Free preserved", got, ok)
 	}
 }
 
@@ -338,7 +366,7 @@ func TestApplyAccountStateRejectsNonTradingReadyState(t *testing.T) {
 	c := New()
 	ts := time.Unix(10, 0)
 	err := c.ApplyAccountStateAt(model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -359,7 +387,7 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 	c := New()
 	ts := time.Unix(10, 0)
 	state := model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
+		AccountID: "T:acct",
 		Venue:     "BINANCE",
 		Type:      model.AccountCash,
 		Balances: []model.AccountBalance{{
@@ -368,7 +396,7 @@ func TestApplyAccountStateAllowsMultipleAccountsForSameVenueAndAmbiguousFallback
 			Free:     decimal.RequireFromString("1"),
 		}},
 		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+		EventID:  model.AccountStateEventID("BINANCE", "T:acct", ts),
 		TsEvent:  ts,
 		TsInit:   ts,
 	}
@@ -421,37 +449,37 @@ func TestBalanceUpsertSynchronizesAccountWithoutRefreshingSnapshotFreshness(t *t
 	c := New()
 	initialAt := time.Unix(20, 0)
 	state := model.AccountState{
-		AccountID:    "ASTER-001",
-		Venue:        "ASTER",
+		AccountID:    "T:acct",
+		Venue:        "T",
 		BaseCurrency: "USDT",
 		Type:         model.AccountCash,
 		Balances: []model.AccountBalance{
-			{AccountID: "ASTER-001", Currency: "USDT", Total: decimal.NewFromInt(100), Free: decimal.NewFromInt(100)},
-			{AccountID: "ASTER-001", Currency: "ASTER", Total: decimal.Zero, Free: decimal.Zero},
+			{AccountID: "T:acct", Currency: "USDT", Total: decimal.NewFromInt(100), Free: decimal.NewFromInt(100)},
+			{AccountID: "T:acct", Currency: "TOKEN", Total: decimal.Zero, Free: decimal.Zero},
 		},
 		Reported: true,
-		EventID:  model.AccountStateEventID("ASTER", "ASTER-001", initialAt),
+		EventID:  model.AccountStateEventID("T", "T:acct", initialAt),
 		TsEvent:  initialAt,
 		TsInit:   initialAt,
 	}
 	if err := c.ApplyAccountStateAt(state, initialAt); err != nil {
 		t.Fatal(err)
 	}
-	acct, ok := c.Account("ASTER-001")
+	acct, ok := c.Account("T:acct")
 	if !ok {
 		t.Fatal("account missing after initial state")
 	}
 	freshness := acct.Freshness()
 	c.UpsertBalance(model.AccountBalance{
-		AccountID: "ASTER-001",
-		Currency:  "ASTER",
+		AccountID: "T:acct",
+		Currency:  "TOKEN",
 		Total:     decimal.RequireFromString("8.18"),
 		Free:      decimal.RequireFromString("8.18"),
 		UpdatedAt: initialAt.Add(time.Second),
 	})
-	free, ok := acct.BalanceFree("ASTER")
+	free, ok := acct.BalanceFree("TOKEN")
 	if !ok || !free.Equal(decimal.RequireFromString("8.18")) {
-		t.Fatalf("account ASTER free=%s ok=%v, want 8.18 true", free, ok)
+		t.Fatalf("account TOKEN free=%s ok=%v, want 8.18 true", free, ok)
 	}
 	if got := acct.Freshness().LastAccountStateAt; !got.Equal(freshness.LastAccountStateAt) {
 		t.Fatalf("balance delta refreshed full account snapshot from %s to %s", freshness.LastAccountStateAt, got)

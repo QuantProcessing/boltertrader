@@ -87,9 +87,9 @@ func TestOKXSpotDemoExecAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance preflight: %v", err)
 	}
-	startBaseAvailable := startBalances[spec.BaseCurrency].Available
+	startBaseAvailable := startBalances[spec.BaseCurrency].Free
 	startBaseTotal := startBalances[spec.BaseCurrency].Total
-	quoteAvailable := startBalances[spec.QuoteCurrency].Available
+	quoteAvailable := startBalances[spec.QuoteCurrency].Free
 	requiredQuote := qty.Mul(fillPrice).Mul(decimal.RequireFromString("1.05"))
 	if quoteAvailable.LessThan(requiredQuote) {
 		t.Fatalf("OKX Spot Demo acceptance has insufficient funds: %s available %s below required %s for %s quantity %s at bounded fill price %s", spec.QuoteCurrency, quoteAvailable, requiredQuote, spec.VenueSymbol, qty, fillPrice)

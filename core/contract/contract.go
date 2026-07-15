@@ -54,11 +54,6 @@ type FundingHistoryClient interface {
 	FundingHistory(ctx context.Context, id model.InstrumentID, query model.FundingRateHistoryQuery) ([]model.FundingRateHistoryEntry, error)
 }
 
-// OpenInterestHistoryClient is optional. Phase one requires current OI only.
-type OpenInterestHistoryClient interface {
-	OpenInterestHistory(ctx context.Context, id model.InstrumentID, query model.OpenInterestHistoryQuery) ([]model.OpenInterestHistoryEntry, error)
-}
-
 // ExecutionClient is the order I/O surface. Submit is SYNCHRONOUS regardless of
 // whether the underlying venue is blocking (Binance/OKX) or async (Hyperliquid's
 // chan PostResult) — the adapter awaits the venue ack internally (deadline via
@@ -68,6 +63,9 @@ type ExecutionClient interface {
 	// Capabilities declares the venue/product/report/streaming surface.
 	Capabilities() Capabilities
 
+	// ValidateSubmit performs venue-specific, side-effect-free local validation.
+	// Runtime always calls it before local risk and before recording an intent.
+	ValidateSubmit(req model.OrderRequest) error
 	Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error)
 	Cancel(ctx context.Context, id model.InstrumentID, venueOrderID string) error
 	CancelAll(ctx context.Context, id model.InstrumentID) error
@@ -91,6 +89,9 @@ type AccountClient interface {
 	// Capabilities declares the venue/product/report/streaming surface.
 	Capabilities() Capabilities
 
+	// AccountState returns the authoritative account snapshot used to establish
+	// runtime readiness. This is mandatory for every account adapter.
+	AccountState(ctx context.Context) (model.AccountState, error)
 	Balances(ctx context.Context) ([]model.AccountBalance, error)
 	Positions(ctx context.Context) ([]model.Position, error)
 	// SetLeverage sets leverage for an instrument (best-effort per venue).
@@ -103,41 +104,10 @@ type AccountClient interface {
 	Close() error
 }
 
-// AccountStateReporter is the migration guard for the NT-style account loop.
-// AccountClient keeps legacy Balances/Positions methods while adapters migrate;
-// runtime reconciliation can type-assert this optional interface and prefer the
-// authoritative account state when available.
-type AccountStateReporter interface {
-	AccountState(ctx context.Context) (model.AccountState, error)
-}
-
 // AccountIDProvider is the runtime identity contract for adapters which have
 // resolved their logical account scope. Runtime clients may implement it on the
 // execution client, account client, or both; if both expose an id they must
 // agree before the node is allowed to start.
 type AccountIDProvider interface {
 	AccountID() string
-}
-
-// PreTradeLease owns adapter-local prepared state created during venue-backed
-// pre-trade validation. Release must be safe to call more than once.
-type PreTradeLease interface {
-	Release()
-}
-
-// PreparedExecutionClient consumes adapter-local state produced by a successful
-// VenuePreTradeValidator call. Runtime uses this optional surface only when risk
-// returned a non-nil lease, so Submit can remain the direct-call fallback.
-type PreparedExecutionClient interface {
-	SubmitPrepared(ctx context.Context, req model.OrderRequest) (*model.Order, error)
-}
-
-// VenuePreTradeValidator performs the venue's authoritative read-only capacity
-// and payload validation after runtime-local risk checks have passed.
-type VenuePreTradeValidator interface {
-	ValidatePreTrade(
-		ctx context.Context,
-		req model.OrderRequest,
-		inst *model.Instrument,
-	) (PreTradeLease, error)
 }

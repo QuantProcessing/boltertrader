@@ -46,26 +46,26 @@ func TestSignedPositionQuantity(t *testing.T) {
 
 func TestAccountBalanceCashInvariant(t *testing.T) {
 	bal := AccountBalance{
-		Currency:  "USDT",
-		Total:     decimal.RequireFromString("100"),
-		Available: decimal.RequireFromString("75"),
-		Locked:    decimal.RequireFromString("25"),
+		Currency: "USDT",
+		Total:    decimal.RequireFromString("100"),
+		Free:     decimal.RequireFromString("75"),
+		Locked:   decimal.RequireFromString("25"),
 	}
 	if !bal.CashInvariantOK() {
-		t.Fatalf("cash invariant should hold for total=%s available=%s locked=%s", bal.Total, bal.Available, bal.Locked)
+		t.Fatalf("cash invariant should hold for total=%s free=%s locked=%s", bal.Total, bal.Free, bal.Locked)
 	}
 
 	bal.Locked = decimal.RequireFromString("24")
 	if bal.CashInvariantOK() {
-		t.Fatalf("cash invariant should fail for total=%s available=%s locked=%s", bal.Total, bal.Available, bal.Locked)
+		t.Fatalf("cash invariant should fail for total=%s free=%s locked=%s", bal.Total, bal.Free, bal.Locked)
 	}
 }
 
 func TestAccountBalanceZeroLockedIsBackwardCompatible(t *testing.T) {
 	bal := AccountBalance{
-		Currency:  "USDT",
-		Total:     decimal.RequireFromString("1000"),
-		Available: decimal.RequireFromString("800"),
+		Currency: "USDT",
+		Total:    decimal.RequireFromString("1000"),
+		Free:     decimal.RequireFromString("800"),
 	}
 	if !bal.Locked.IsZero() {
 		t.Fatalf("zero-value locked=%s, want 0", bal.Locked)

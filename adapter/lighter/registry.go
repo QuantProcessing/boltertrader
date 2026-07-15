@@ -20,7 +20,7 @@ type registry struct {
 // AccountIDForIndex is retained for compatibility with older tests/callers.
 // AccountIndex is a Lighter selector, not a runtime account identity.
 func AccountIDForIndex(index int64) string {
-	return model.AccountIDLighterDefault
+	return AccountIDDefault
 }
 
 func newRegistry(insts []*model.Instrument) *registry {

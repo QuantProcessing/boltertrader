@@ -31,7 +31,7 @@ func newAccountClient(rest *sdkperp.Client, provider *instrumentProvider, clk cl
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDBinanceDefault
+		accountID = AccountIDDefault
 	}
 	return &accountClient{
 		rest:      rest,
@@ -61,7 +61,6 @@ func (c *accountClient) Balances(ctx context.Context) ([]model.AccountBalance, e
 			Currency:  b.Asset,
 			Total:     dec(b.Balance),
 			Free:      free,
-			Available: free,
 			UpdatedAt: now,
 		})
 	}
@@ -127,7 +126,6 @@ func perpBalancesFromAccount(acct *sdkperp.AccountResponse, accountID string, no
 			Currency:  b.Asset,
 			Total:     dec(b.WalletBalance),
 			Free:      free,
-			Available: free,
 			Locked:    dec(b.InitialMargin),
 			UpdatedAt: eventTimeFromMillis(b.UpdateTime, now),
 		})

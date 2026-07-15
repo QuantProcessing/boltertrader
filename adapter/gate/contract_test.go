@@ -29,17 +29,16 @@ func TestGateSpotClientsImplementContractsAndCapabilities(t *testing.T) {
 	var _ contract.OpenInterestClient = newMarketDataClient(rest, nil, nil, provider, clk)
 	var _ contract.ExecutionClient = newExecutionClient(rest, provider, clk)
 	var _ contract.AccountClient = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot})
-	var _ contract.AccountStateReporter = newAccountClient(rest, provider, clk, []enums.InstrumentKind{enums.KindSpot})
 
-	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountStateSnapshots || !caps.Reports.AccountBalanceSnapshots {
-		t.Fatalf("account capabilities missing spot account-state support: %+v", caps)
+	if caps := newAccountClient(rest, provider, clk, nil).Capabilities(); !caps.Reports.AccountBalanceSnapshots {
+		t.Fatalf("account capabilities missing balance snapshot support: %+v", caps)
 	}
 	if caps := newExecutionClient(rest, provider, clk).Capabilities(); !caps.Trading.Submit || caps.Trading.Modify {
 		t.Fatalf("execution capabilities must claim submit/cancel but not modify in phase one: %+v", caps)
 	}
 }
 
-func TestGateRuntimeCapabilitiesFollowConfiguredProductScope(t *testing.T) {
+func TestGateRuntimeCapabilitiesFollowSelectedProductScope(t *testing.T) {
 	provider := gateFullTestProvider()
 	clk := clock.NewSimulatedClock(time.Date(2026, 7, 8, 3, 20, 0, 0, time.UTC))
 	rest := gatesdk.NewClient().WithCredentials("key", "secret")
@@ -183,7 +182,7 @@ func TestGateSpotExecutionReportsAndMassStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if !mass.Partial || len(mass.OrderReports) != 1 {
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || len(mass.OrderReports) != 1 {
 		t.Fatalf("unexpected mass status: %+v", mass)
 	}
 }

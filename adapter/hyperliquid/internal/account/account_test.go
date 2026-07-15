@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
@@ -36,7 +35,7 @@ func TestResolveIdentityUsesDefaultAccountIDForAccountAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity: %v", err)
 	}
-	if id.AccountID != model.AccountIDHyperliquidDefault {
+	if id.AccountID != DefaultAccountID {
 		t.Fatalf("account id=%q, want default logical id", id.AccountID)
 	}
 	if id.QueryAddress != "0xABCDEF" {
@@ -52,7 +51,7 @@ func TestResolveIdentityPrefersVaultOverSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity: %v", err)
 	}
-	if id.AccountID != model.AccountIDHyperliquidDefault || id.QueryAddress != "0xVAULT" {
+	if id.AccountID != DefaultAccountID || id.QueryAddress != "0xVAULT" {
 		t.Fatalf("identity=%+v, want vault identity", id)
 	}
 }
@@ -62,7 +61,7 @@ func TestResolveIdentityFallsBackToSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveIdentity: %v", err)
 	}
-	if id.AccountID != model.AccountIDHyperliquidDefault || id.QueryAddress != "0xSIGNER" {
+	if id.AccountID != DefaultAccountID || id.QueryAddress != "0xSIGNER" {
 		t.Fatalf("identity=%+v, want signer identity", id)
 	}
 }

@@ -223,7 +223,13 @@ func (c *Client) execute(ctx context.Context, reqBody interface{}) ([]byte, erro
 	}
 
 	if apiResp.Status != "success" || apiResp.Error != "" {
-		return nil, fmt.Errorf("api v1 error: %d %s", apiResp.ErrorCode, apiResp.Error)
+		requestType := apiResp.RequestType
+		if requestType == "" {
+			if request, ok := reqBody.(map[string]interface{}); ok {
+				requestType = gatewayRequestType(request)
+			}
+		}
+		return nil, NewGatewayApplicationError(apiResp.ErrorCode, apiResp.Error, requestType)
 	}
 
 	return apiResp.Data, nil
@@ -301,7 +307,7 @@ func (c *Client) QueryGateWayV1(ctx context.Context, method string, req map[stri
 	}
 
 	if apiResp.Status != "success" || apiResp.Error != "" {
-		return nil, fmt.Errorf("api v1 error: %d %s", apiResp.ErrorCode, apiResp.Error)
+		return nil, NewGatewayApplicationError(apiResp.ErrorCode, apiResp.Error, apiResp.RequestType)
 	}
 
 	return apiResp.Data, nil

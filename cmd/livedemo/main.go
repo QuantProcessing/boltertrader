@@ -95,11 +95,12 @@ func main() {
 	)
 
 	// Pre-trade risk: cap a single order and the resulting position.
+	provider := adapter.Market.InstrumentProvider()
 	riskEng := risk.New(risk.Limits{
 		MaxOrderQty:    decimal.RequireFromString("0.01"),
 		MaxPositionQty: decimal.RequireFromString("0.05"),
-	}, node.Cache)
-	runtime.WithRisk(riskEng, adapter.Market.InstrumentProvider())(node)
+	}, node.Cache).WithInstrumentProvider(provider)
+	runtime.WithRisk(riskEng, provider)(node)
 
 	// Reconcile cache from REST before trading.
 	log.Println("reconciling account state...")

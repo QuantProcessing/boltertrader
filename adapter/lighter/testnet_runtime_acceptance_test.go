@@ -51,22 +51,25 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 	}
 	ensureLighterTestnetCollateral(t, ctx, adapter, "runtime "+label, qty, price)
 
-	accountID := model.AccountIDLighterDefault
+	accountID := AccountIDDefault
 	node := btruntime.NewNode(
 		btruntime.Clients{Market: adapter.Market, Execution: adapter.Execution, Account: adapter.Account},
 		clock.NewRealClock(),
 		"lighter-"+strings.ToLower(label)+"-testnet",
 		btruntime.WithAccountID(accountID),
 	)
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache).RequireAccountState()
-	btruntime.WithRisk(riskEngine, adapter.Market.InstrumentProvider())(node)
+	provider := adapter.Market.InstrumentProvider()
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: cfg.MaxNotionalUSDC}, node.Cache).
+		WithInstrumentProvider(provider).
+		RequireAccountState()
+	riskEngine.SetRuntimeCapabilities(node.ExecutionCapabilities(), node.AccountCapabilities())
+	btruntime.WithRisk(riskEngine, provider)(node)
 
 	if _, err := node.Resync(ctx); err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter "+label+" Testnet runtime initial reconcile")
 		t.Fatalf("initial runtime reconcile: %v", err)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, accountID, model.AccountMargin, kind)
-	runtimeaccept.AssertOversizedOrderRejected(t, node, adapter.Market.InstrumentProvider(), inst.ID)
 	if got := len(node.Cache.Positions()); got != 0 {
 		t.Fatalf("runtime cache has %d pre-existing positions after clean preflight", got)
 	}
@@ -85,6 +88,7 @@ func runLighterTestnetRuntimeAcceptance(t *testing.T, kind enums.InstrumentKind,
 	if err := runtimeaccept.WaitForActive(ctx, node); err != nil {
 		t.Fatalf("runtime did not become active before Lighter %s Testnet writes: %v", label, err)
 	}
+	runtimeaccept.AssertOversizedOrderRejected(t, node, provider, inst.ID, cfg.MaxNotionalUSDC)
 	book, err = adapter.Market.OrderBook(ctx, inst.ID, 5)
 	if err != nil {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter "+label+" Testnet runtime refreshed order book")

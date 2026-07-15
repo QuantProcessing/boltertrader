@@ -151,7 +151,7 @@ func requireSpotTestnetCash(t *testing.T, ctx context.Context, adapter *Adapter,
 	required := qty.Mul(price)
 	for _, balance := range state.Balances {
 		if balance.Currency == inst.Quote {
-			free := balance.FreeOrAvailable()
+			free := balance.Free
 			if free.LessThan(required) {
 				t.Fatalf("insufficient Hyperliquid Spot Testnet funds: account-state free %s %s below required %s", inst.Quote, free, required)
 			}

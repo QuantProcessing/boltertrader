@@ -13,7 +13,7 @@ account data.
 | --- | --- | --- |
 | Aster Spot V3 | `sdk/aster/spot/testdata/v3` | instrument, cash account, order, fill, market stream, private stream, venue error |
 | Aster USDT Perp V3 | `sdk/aster/perp/testdata/v3` | instrument, margin account, position, order, fill, mark stream, private stream, funding/mark/index, current OI, venue error |
-| Nado unified margin | `sdk/nado/testdata` | product and symbol discovery, contract discovery, account, order, fill, public/private streams, reference/OI, capacity, validation, simulation, venue error |
+| Nado unified margin | `sdk/nado/testdata` | product and symbol discovery, contract discovery, account, order, fill, public/private streams, reference/OI, raw capacity endpoint, simulation, venue error |
 
 Run `go test ./internal/fixtureaudit -count=1` to verify JSON validity,
 provenance, required conversion coverage, negative-path coverage, and credential
@@ -40,13 +40,16 @@ Symbol trading states use the official `live`, `post_only`, `reduce_only`,
 `soft_reduce_only`, and `not_tradable` values; fixtures must not use the former
 generic `active` market state.
 
-Funded-only Nado Spot admission uses the documented `max_order_size` query with
-`spot_leverage=false` and preserves `spot_leverage=false` on execute. The exact
-prepared payload owned by the pre-trade lease must be submitted once.
+The raw SDK fixture for Nado's documented capacity endpoint is retained only to
+keep the SDK faithful to the official API. Adapter/runtime admission does not
+call that endpoint: funded-only Spot validation enforces
+`spot_leverage=false`, then ordinary adapter `Submit` creates and executes one
+exact signed request. The transient signed object never crosses the adapter
+boundary and is redacted on every exit.
+
 Nado symbol fixtures preserve `isolated_only`. Such Perp orders must set the
-isolated appendix in both capacity and prepared-order paths, transfer 1x
-opening notional rounded up to x6 precision, and use zero added margin for
-reduce-only closes.
+isolated appendix on the executed request, transfer 1x opening notional rounded
+up to x6 precision, and use zero added margin for reduce-only closes.
 
 Aster `/fapi/v3/openInterest` is marked `probe`, not `official`: it returned a
 valid Testnet payload on 2026-07-10 but is absent from the inspected V3

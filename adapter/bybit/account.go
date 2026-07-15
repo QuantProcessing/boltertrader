@@ -169,7 +169,6 @@ func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, accountID string, 
 				Currency:  "USD",
 				Total:     firstNonZero(dec(account.TotalEquity), dec(account.TotalWalletBalance), available),
 				Free:      available,
-				Available: available,
 				UpdatedAt: now,
 			})
 		}
@@ -192,7 +191,6 @@ func balancesFromWallet(wallet *bybitsdk.WalletBalanceResult, accountID string, 
 				Currency:  coin.Coin,
 				Total:     total,
 				Free:      free,
-				Available: free,
 				Locked:    locked,
 				Borrowed:  borrowed,
 				UpdatedAt: now,
@@ -271,7 +269,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     VenueName,
 		Products:  products,
-		Reports:   contract.ReportCapabilities{PositionReports: c.supportsKind(enums.KindPerp), AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: c.supportsKind(enums.KindPerp), AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: true, AccountState: true},
 	}
 }

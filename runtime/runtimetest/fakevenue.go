@@ -8,8 +8,10 @@ package runtimetest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -20,13 +22,16 @@ import (
 // acknowledged order (status New) and the test injects fills/order events via
 // the Emit* helpers, which land on Events() exactly like a real venue push.
 type FakeExec struct {
-	events chan contract.ExecEnvelope
-	seq    int64
+	events    chan contract.ExecEnvelope
+	seq       int64
+	accountID string
+	clk       clock.Clock
 
 	// reports is the canned venue-wide open-order snapshot returned by mass
 	// status generation; set it to drive reconciliation tests.
-	reports   []model.Order
-	reportErr error
+	reports     []model.Order
+	instruments []model.InstrumentID
+	reportErr   error
 
 	submitErr       error
 	cancelErr       error
@@ -39,14 +44,20 @@ type FakeExec struct {
 	modifySupported bool
 }
 
+const fakeAccountID = "FAKE"
+
 // NewFakeExec returns a FakeExec with a buffered event channel.
 func NewFakeExec() *FakeExec {
-	return &FakeExec{events: make(chan contract.ExecEnvelope, 256)}
+	return &FakeExec{
+		events:    make(chan contract.ExecEnvelope, 256),
+		accountID: fakeAccountID,
+		clk:       clock.NewRealClock(),
+	}
 }
 
 func (f *FakeExec) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
-		Venue: "FAKE",
+		Venue: f.configuredVenue(),
 		Products: []contract.ProductCapability{
 			{Kind: enums.KindSpot, Trading: true},
 			{Kind: enums.KindPerp, Trading: true},
@@ -58,8 +69,40 @@ func (f *FakeExec) Capabilities() contract.Capabilities {
 		},
 		Streaming: contract.StreamCapabilities{Execution: true},
 		Trading:   contract.TradingCapabilities{Submit: true, Cancel: true, CancelAll: true, Modify: f.modifySupported},
-		Latency:   contract.LatencyCapabilities{},
 	}
+}
+
+func (f *FakeExec) AccountID() string { return f.accountID }
+
+// WithClock uses clk for every fake report observation timestamp. Runtime
+// tests should pass the same clock to FakeExec and TradingNode.
+func (f *FakeExec) WithClock(clk clock.Clock) *FakeExec {
+	if clk == nil {
+		clk = clock.NewRealClock()
+	}
+	f.clk = clk
+	return f
+}
+
+func (f *FakeExec) now() time.Time {
+	if f.clk == nil {
+		return clock.NewRealClock().Now()
+	}
+	return f.clk.Now()
+}
+
+func (f *FakeExec) configuredVenue() string {
+	for _, report := range f.reports {
+		if venue := strings.TrimSpace(report.Request.InstrumentID.Venue); venue != "" {
+			return venue
+		}
+	}
+	for _, id := range f.instruments {
+		if venue := strings.TrimSpace(id.Venue); venue != "" {
+			return venue
+		}
+	}
+	return "FAKE"
 }
 
 func (f *FakeExec) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
@@ -132,6 +175,7 @@ func (f *FakeExec) GenerateOrderStatusReports(ctx context.Context, query model.O
 	if f.reportErr != nil {
 		return nil, f.reportErr
 	}
+	reportedAt := f.now()
 	out := make([]model.OrderStatusReport, 0, len(f.reports))
 	for _, o := range f.reports {
 		if !model.OrderMatchesStatusQuery(o, query) {
@@ -141,7 +185,7 @@ func (f *FakeExec) GenerateOrderStatusReports(ctx context.Context, query model.O
 		if accountID == "" {
 			accountID = o.Request.AccountID
 		}
-		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: accountID, Order: o, ReportedAt: time.Now()})
+		out = append(out, model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: accountID, Order: o, ReportedAt: reportedAt})
 	}
 	return out, nil
 }
@@ -168,25 +212,179 @@ func (f *FakeExec) GeneratePositionReports(ctx context.Context, query model.Posi
 }
 
 func (f *FakeExec) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+	requestStartedAt := f.now()
 	if f.reportErr != nil {
 		return nil, f.reportErr
 	}
-	now := time.Now()
-	mass := model.NewExecutionMassStatus("FAKE", query.AccountID, now)
+	venue, err := f.massStatusVenue(query)
+	if err != nil {
+		return nil, err
+	}
+	accountID, err := f.massStatusAccount(query)
+	if err != nil {
+		return nil, err
+	}
+	availableIDs, err := f.massStatusInstruments(venue)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := massStatusSelector(availableIDs, query.InstrumentIDs, venue)
+	if err != nil {
+		return nil, err
+	}
+	selected := make(map[model.InstrumentID]struct{}, len(ids))
+	for _, id := range ids {
+		selected[id] = struct{}{}
+	}
+	now := requestStartedAt
+	mass := model.NewExecutionMassStatus(venue, accountID, now)
 	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
 	for _, o := range f.reports {
-		report := model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: query.AccountID, Order: o, ReportedAt: now}
+		if query.ClientID != "" && o.Request.ClientID != query.ClientID {
+			continue
+		}
+		if _, ok := selected[o.Request.InstrumentID]; !ok {
+			continue
+		}
+		report := model.OrderStatusReport{Venue: o.Request.InstrumentID.Venue, AccountID: accountID, Order: o, ReportedAt: now}
 		if err := mass.AddOrderReport(report); err != nil {
 			return nil, err
 		}
 	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, now)
+	if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, ids, now)
+	} else {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
 	return mass, nil
+}
+
+func (f *FakeExec) massStatusVenue(query model.MassStatusQuery) (string, error) {
+	venue := f.configuredVenue()
+	queryVenue := strings.TrimSpace(query.Venue)
+	if queryVenue != "" && queryVenue != venue {
+		return "", fmt.Errorf("fake execution mass status: query venue %q does not match configured venue %q", queryVenue, venue)
+	}
+	for _, id := range f.instruments {
+		if err := validateFakeInstrument(id, venue); err != nil {
+			return "", err
+		}
+	}
+	for _, report := range f.reports {
+		if err := validateFakeInstrument(report.Request.InstrumentID, venue); err != nil {
+			return "", err
+		}
+	}
+	return venue, nil
+}
+
+func (f *FakeExec) massStatusAccount(query model.MassStatusQuery) (string, error) {
+	configured := strings.TrimSpace(f.AccountID())
+	if configured == "" || configured != f.AccountID() {
+		return "", fmt.Errorf("fake execution mass status: normalized account identity required")
+	}
+	for _, report := range f.reports {
+		accountID := strings.TrimSpace(report.Request.AccountID)
+		if accountID == "" {
+			continue
+		}
+		if accountID != report.Request.AccountID {
+			return "", fmt.Errorf("fake execution mass status: normalized report account id required")
+		}
+		if configured != accountID {
+			return "", fmt.Errorf("fake execution mass status: report account %q does not match configured account %q", accountID, configured)
+		}
+	}
+	queryAccountID := strings.TrimSpace(query.AccountID)
+	if queryAccountID != "" && queryAccountID != configured {
+		return "", fmt.Errorf("fake execution mass status: query account %q does not match configured account %q", queryAccountID, configured)
+	}
+	return configured, nil
+}
+
+func (f *FakeExec) massStatusInstruments(venue string) ([]model.InstrumentID, error) {
+	ids := make([]model.InstrumentID, 0, len(f.instruments)+len(f.reports))
+	ids = append(ids, f.instruments...)
+	for _, report := range f.reports {
+		ids = append(ids, report.Request.InstrumentID)
+	}
+	for _, id := range ids {
+		if err := validateFakeInstrument(id, venue); err != nil {
+			return nil, err
+		}
+	}
+	return model.NormalizeInstrumentIDs(ids), nil
+}
+
+func massStatusSelector(available, requested []model.InstrumentID, venue string) ([]model.InstrumentID, error) {
+	if requested == nil {
+		return append([]model.InstrumentID{}, available...), nil
+	}
+	requested = model.NormalizeInstrumentIDs(requested)
+	for _, id := range requested {
+		if err := validateFakeInstrument(id, venue); err != nil {
+			return nil, fmt.Errorf("fake execution mass status: query instrument: %w", err)
+		}
+	}
+	availableSet := make(map[model.InstrumentID]struct{}, len(available))
+	for _, id := range available {
+		availableSet[id] = struct{}{}
+	}
+	selected := make([]model.InstrumentID, 0, len(requested))
+	for _, id := range requested {
+		if _, ok := availableSet[id]; ok {
+			selected = append(selected, id)
+		}
+	}
+	return selected, nil
+}
+
+func validateFakeInstrument(id model.InstrumentID, venue string) error {
+	normalized := model.NormalizeInstrumentIDs([]model.InstrumentID{id})
+	if len(normalized) != 1 || normalized[0] != id {
+		return fmt.Errorf("fake execution mass status: normalized instrument required: %s", id)
+	}
+	if id.Venue != venue {
+		return fmt.Errorf("fake execution mass status: instrument %s does not match venue %q", id, venue)
+	}
+	if id.Symbol == "" || id.Kind == enums.KindUnknown {
+		return fmt.Errorf("fake execution mass status: invalid instrument %s", id)
+	}
+	return nil
 }
 
 // SetOrderStatusReports installs the venue-wide open-order snapshot returned by
 // GenerateExecutionMassStatus/OpenOrders, simulating the venue's authoritative
 // resting set.
-func (f *FakeExec) SetOrderStatusReports(orders ...model.Order) { f.reports = orders }
+func (f *FakeExec) SetOrderStatusReports(orders ...model.Order) {
+	f.reports = orders
+	for _, order := range orders {
+		if accountID := strings.TrimSpace(order.Request.AccountID); accountID != "" {
+			f.accountID = accountID
+			break
+		}
+	}
+}
+
+// SetAccountID configures the single logical account represented by this fake.
+// The runtime requires execution and account clients to expose the same value.
+func (f *FakeExec) SetAccountID(accountID string) { f.accountID = strings.TrimSpace(accountID) }
+
+// SetInstruments freezes the explicit venue selector covered by fake mass
+// status snapshots, including complete-empty responses.
+func (f *FakeExec) SetInstruments(ids ...model.InstrumentID) {
+	f.instruments = model.NormalizeInstrumentIDs(ids)
+}
 
 func (f *FakeExec) SetReportError(err error) { f.reportErr = err }
 
@@ -235,26 +433,34 @@ func (f *FakeExec) EmitReject(clientID, reason string) {
 // FakeAccount is an in-memory AccountClient driven by Emit* helpers.
 type FakeAccount struct {
 	events       chan contract.AccountEnvelope
+	accountID    string
+	venue        string
 	balances     []model.AccountBalance
 	positions    []model.Position
 	accountState model.AccountState
 	hasState     bool
 }
 
+var _ contract.AccountClient = (*FakeAccount)(nil)
+
 // NewFakeAccount returns a FakeAccount with a buffered event channel.
 func NewFakeAccount() *FakeAccount {
-	return &FakeAccount{events: make(chan contract.AccountEnvelope, 256)}
+	return &FakeAccount{events: make(chan contract.AccountEnvelope, 256), accountID: fakeAccountID, venue: "FAKE"}
 }
+
+func (f *FakeAccount) AccountID() string { return f.accountID }
+
+// SetAccountID configures the same logical identity exposed to the runtime.
+func (f *FakeAccount) SetAccountID(accountID string) { f.accountID = strings.TrimSpace(accountID) }
+
+// SetVenue configures the single venue represented by account capabilities.
+func (f *FakeAccount) SetVenue(venue string) { f.venue = strings.TrimSpace(venue) }
 
 func (f *FakeAccount) Capabilities() contract.Capabilities {
 	reports := contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true}
-	streaming := contract.StreamCapabilities{Account: true}
-	if f.hasState {
-		reports.AccountStateSnapshots = true
-		streaming.AccountState = true
-	}
+	streaming := contract.StreamCapabilities{Account: true, AccountState: true}
 	return contract.Capabilities{
-		Venue: "FAKE",
+		Venue: f.venue,
 		Products: []contract.ProductCapability{
 			{Kind: enums.KindSpot, Account: true},
 			{Kind: enums.KindPerp, Account: true},
@@ -291,11 +497,20 @@ func (f *FakeAccount) Close() error                            { close(f.events)
 func (f *FakeAccount) SetSnapshots(balances []model.AccountBalance, positions []model.Position) {
 	f.balances = append([]model.AccountBalance(nil), balances...)
 	f.positions = append([]model.Position(nil), positions...)
+	for _, position := range positions {
+		if venue := strings.TrimSpace(position.InstrumentID.Venue); venue != "" {
+			f.venue = venue
+			break
+		}
+	}
 }
 
 func (f *FakeAccount) SetAccountStateSnapshot(state model.AccountState) {
 	f.accountState = cloneAccountState(state)
 	f.hasState = true
+	if venue := strings.TrimSpace(state.Venue); venue != "" {
+		f.venue = venue
+	}
 }
 
 // EmitBalance pushes a balance event.
@@ -346,7 +561,6 @@ func (f *FakeMarket) Capabilities() contract.Capabilities {
 		Venue:     "FAKE",
 		Reports:   contract.ReportCapabilities{},
 		Streaming: contract.StreamCapabilities{Market: true},
-		Latency:   contract.LatencyCapabilities{},
 		ReferenceData: contract.ReferenceDataCapabilities{
 			CurrentFunding:      true,
 			CurrentMarkPrice:    true,

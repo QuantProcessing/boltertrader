@@ -405,7 +405,7 @@ func TestBlockingFillFindingRetainsPriorCursor(t *testing.T) {
 	at := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
 	mass := model.NewExecutionMassStatus("T", "acct", at)
 	fill := model.Fill{
-		AccountID: "acct", VenueOrderID: "unknown-order", TradeID: "blocking-trade",
+		AccountID: "acct", InstrumentID: btc, VenueOrderID: "unknown-order", TradeID: "blocking-trade",
 		Side: enums.SideBuy, Price: d("100"), Quantity: d("1"), Timestamp: at,
 	}
 	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: at}); err != nil {

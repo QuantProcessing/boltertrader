@@ -21,14 +21,30 @@ func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 var inst = model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindPerp}
 
+func authoritativeAccountState(accountID string, accountType model.AccountType, at time.Time, balances ...model.AccountBalance) model.AccountState {
+	return model.AccountState{
+		AccountID: accountID,
+		Venue:     "FAKE",
+		Type:      accountType,
+		Balances:  balances,
+		Reported:  true,
+		EventID:   model.AccountStateEventID("FAKE", accountID, at),
+		TsEvent:   at,
+		TsInit:    at,
+	}
+}
+
 // TestVerticalSlice is the P4 acceptance test: submit -> ack -> fill -> cache +
 // portfolio, end to end, through the TradingNode on a SimulatedClock with no
 // network. It proves the runtime manages order/fill/position/PnL state purely
 // over the contract interfaces.
 func TestVerticalSlice(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
 	facct := runtimetest.NewFakeAccount()
+	fexec.SetAccountID("test")
+	facct.SetAccountID("test")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("test", model.AccountMargin, clk.Now()))
 
 	filled := make(chan model.Fill, 8)
 	node := runtime.NewNode(
@@ -121,7 +137,7 @@ func TestVerticalSlice(t *testing.T) {
 	}
 
 	// 4. Account push updates the cache balance/position.
-	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("10019.8"), Available: d("10019.8")})
+	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("10019.8"), Free: d("10019.8")})
 	facct.EmitPosition(model.Position{InstrumentID: inst, Side: enums.PosNet, Quantity: d("0")})
 	waitUntil(t, func() bool {
 		balance, ok := node.Cache.Balance("USDT")
@@ -169,6 +185,9 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fexec := runtimetest.NewFakeExec()
 	facct := runtimetest.NewFakeAccount()
+	fexec.SetAccountID("test")
+	facct.SetAccountID("test")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("test", model.AccountCash, clk.Now()))
 	filled := make(chan model.Fill, 1)
 	node := runtime.NewNode(
 		runtime.Clients{Execution: fexec, Account: facct},
@@ -182,28 +201,19 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 	waitNodeRunning(t, node)
 
 	ts := clk.Now()
-	state := model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
-		Venue:     "BINANCE",
-		Type:      model.AccountCash,
-		Balances: []model.AccountBalance{{
-			Currency: "USDT",
-			Total:    d("100"),
-			Free:     d("100"),
-		}},
-		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
-		TsEvent:  ts,
-		TsInit:   ts,
-	}
+	state := authoritativeAccountState("test", model.AccountCash, ts, model.AccountBalance{
+		Currency: "USDT",
+		Total:    d("100"),
+		Free:     d("100"),
+	})
 	facct.EmitAccountState(state)
 	waitUntil(t, func() bool {
-		_, ok := node.Cache.Account(model.AccountIDBinanceDefault)
-		return ok
+		balance, ok := node.Cache.BalanceForAccount("test", "USDT")
+		return ok && balance.Free.Equal(d("100"))
 	}, "timed out waiting for account state")
 
-	acct, ok := node.Cache.Account(model.AccountIDBinanceDefault)
-	if !ok || acct.ID() != model.AccountIDBinanceDefault {
+	acct, ok := node.Cache.Account("test")
+	if !ok || acct.ID() != "test" {
 		t.Fatalf("cache account missing: ok=%v acct=%v", ok, acct)
 	}
 	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Free.Equal(d("100")) {
@@ -217,6 +227,8 @@ func TestAccountStateEventAppliesToCache(t *testing.T) {
 func TestAccountStateEventLatencyUsesNormalizedAccountID(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	facct := runtimetest.NewFakeAccount()
+	facct.SetAccountID("test")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("test", model.AccountCash, clk.Now()))
 	obs := &recordingLatencyObserver{ch: make(chan latency.EventLatency, 1)}
 	node := runtime.NewNode(
 		runtime.Clients{Account: facct},
@@ -264,6 +276,9 @@ func TestReconnectForcesReconnectAndReconciles(t *testing.T) {
 	fmarket := runtimetest.NewFakeMarket()
 	fexec := runtimetest.NewFakeExec()
 	facct := runtimetest.NewFakeAccount()
+	fexec.SetAccountID("test")
+	facct.SetAccountID("test")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("test", model.AccountMargin, clk.Now()))
 
 	// The venue reports one resting order the cache has never seen.
 	fexec.SetOrderStatusReports(model.Order{

@@ -47,7 +47,7 @@ func TestNadoRegistryFromDiscoveryPreservesProductIdentityAndIncrements(t *testi
 	if !ok {
 		t.Fatalf("missing spot instrument %s", spotID)
 	}
-	if spot.VenueSymbol != "ETH_USDT0" || spot.AssetIndex != nil || spot.VenueIntCode != nil {
+	if spot.VenueSymbol != "ETH_USDT0" || spot.AssetIndex != nil {
 		t.Fatalf("spot venue identity not preserved: %+v", spot)
 	}
 	if productID, ok := provider.ProductID(spotID); !ok || productID != 1 {
@@ -66,7 +66,7 @@ func TestNadoRegistryFromDiscoveryPreservesProductIdentityAndIncrements(t *testi
 	if !ok {
 		t.Fatalf("missing perp instrument %s", perpID)
 	}
-	if perp.VenueSymbol != "BTC-PERP_USDT0" || perp.AssetIndex != nil || perp.VenueIntCode != nil || perp.PositionMode != model.NetOnly {
+	if perp.VenueSymbol != "BTC-PERP_USDT0" || perp.AssetIndex != nil || perp.PositionMode != model.NetOnly {
 		t.Fatalf("perp venue identity/mode mismatch: %+v", perp)
 	}
 	if perp.Settle != "USDT0" || !perp.PriceTick.Equal(decimal.RequireFromString("0.1")) || !perp.SizeStep.Equal(decimal.RequireFromString("0.001")) {
@@ -349,7 +349,7 @@ func TestNadoCapabilityTruthAndUnsupportedSurfaces(t *testing.T) {
 		t.Fatalf("execution capabilities are not truthful: %+v", execCaps)
 	}
 	acctCaps := acct.Capabilities()
-	if !acctCaps.Reports.AccountStateSnapshots || acctCaps.Reports.PositionReports || acctCaps.Streaming.Account {
+	if !acctCaps.Reports.AccountBalanceSnapshots || acctCaps.Reports.PositionReports || acctCaps.Streaming.Account {
 		t.Fatalf("account capabilities are not truthful: %+v", acctCaps)
 	}
 	perpAcctCaps := newAccountClient(nil, provider, clk, enums.KindPerp, AccountIDUnified).Capabilities()

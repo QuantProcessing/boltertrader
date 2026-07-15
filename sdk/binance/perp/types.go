@@ -1,13 +1,58 @@
 package perp
 
+import (
+	"errors"
+	"net/http"
+)
+
 // APIError represents a Binance API error
 type APIError struct {
-	Code    int    `json:"code"`
-	Message string `json:"msg"`
+	Code       int    `json:"code"`
+	Message    string `json:"msg"`
+	HTTPStatus int    `json:"-"`
 }
 
 func (e *APIError) Error() string {
 	return e.Message
+}
+
+// IsDefinitiveOrderRejection reports whether err is a parsed Binance order or
+// request-business error carried by a 400 response. Transport failures,
+// authentication failures, temporary/unknown 10xx errors, rate limits,
+// malformed envelopes, other 4xx responses, and 5xx responses remain outside
+// the definitive venue-rejection taxonomy.
+func IsDefinitiveOrderRejection(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr == nil || apiErr.Code == 0 || apiErr.Message == "" {
+		return false
+	}
+	return apiErr.HTTPStatus == http.StatusBadRequest && isDefinitiveOrderErrorCode(apiErr.Code)
+}
+
+func isDefinitiveOrderErrorCode(code int) bool {
+	switch code {
+	case -1013, -1014, -1015, -1020,
+		-1100, -1101, -1102, -1103, -1104, -1105, -1106,
+		-1111, -1114, -1115, -1116, -1117, -1118, -1119,
+		-1121, -1128, -1130, -1136,
+		-2010, -2011, -2012, -2013, -2016, -2018, -2019,
+		-2020, -2021, -2022, -2023, -2024, -2025, -2026, -2027, -2028,
+		-4000, -4001, -4002, -4003, -4004, -4005, -4006, -4007,
+		-4013, -4014, -4015, -4016, -4020, -4022, -4023, -4024,
+		-4031, -4032, -4045, -4058, -4060, -4061, -4062,
+		-4087, -4088, -4104, -4105, -4106, -4107, -4109,
+		-4116, -4117, -4118, -4120, -4131, -4135, -4137, -4138,
+		-4139, -4140, -4141, -4142, -4144, -4164, -4183, -4184,
+		-4189, -4192:
+		return true
+	default:
+		return false
+	}
+}
+
+func isAuthenticationError(status, code int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden ||
+		code == -1002 || code == -1022 || code == -2014 || code == -2015
 }
 
 // Common response types

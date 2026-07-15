@@ -44,7 +44,7 @@ func TestAdapterCapabilityMatrixRowsAreUniqueAndTargetsExist(t *testing.T) {
 	}
 }
 
-func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
+func TestAdapterCapabilityMatrixDocumentsMandatoryAccountState(t *testing.T) {
 	data, err := os.ReadFile("../docs/adapter-capabilities.md")
 	if err != nil {
 		t.Fatalf("read docs matrix: %v", err)
@@ -87,11 +87,98 @@ func TestAdapterCapabilityMatrixDocumentsAccountStateSnapshots(t *testing.T) {
 	}
 }
 
-func TestAdapterCapabilityMatrixDoesNotClaimAdapterTimestamps(t *testing.T) {
+func TestAdapterCapabilityMatrixDoesNotClaimLatencyTimestamps(t *testing.T) {
 	for _, row := range CapabilityMatrix() {
 		if row.LatencyTimestamps {
-			t.Fatalf("row %+v claims adapter timestamps before adapter recv/emit fields are populated", row)
+			t.Fatalf("row %+v claims latency timestamps before recv/emit fields are populated", row)
 		}
+	}
+}
+
+func TestAdapterCapabilityMatrixMatchesImplementedUnifiedFillRecovery(t *testing.T) {
+	docBytes, err := os.ReadFile("../docs/adapter-capabilities.md")
+	if err != nil {
+		t.Fatalf("read docs matrix: %v", err)
+	}
+	doc := string(docBytes)
+	wantRows := map[string]struct{}{
+		"BYBIT|Spot cash":              {},
+		"BYBIT|USDT-linear Perp/SWAP":  {},
+		"BYBIT|USDC-linear Perp/SWAP":  {},
+		"BITGET|Spot cash":             {},
+		"BITGET|USDT-linear Perp/SWAP": {},
+		"BITGET|USDC-linear Perp/SWAP": {},
+	}
+	for _, row := range CapabilityMatrix() {
+		key := row.Venue + "|" + row.Product
+		if _, ok := wantRows[key]; !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(row.FillReports), "unsupported") {
+			t.Fatalf("%s reports implemented fill history as unsupported", key)
+		}
+		if !strings.Contains(strings.ToLower(row.MassStatus), "fill") {
+			t.Fatalf("%s mass-status description omits implemented fills: %q", key, row.MassStatus)
+		}
+		documented := "| " + row.Venue + " | " + row.Product + " |"
+		claims := "| " + row.FillReports + " | " + row.PositionReports + " | " + row.MassStatus + " |"
+		matched := false
+		for _, line := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(line, documented) && strings.Contains(line, claims) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("docs row for %s does not match fill/position/mass-status claims %q", key, claims)
+		}
+		delete(wantRows, key)
+	}
+	if len(wantRows) != 0 {
+		t.Fatalf("capability matrix is missing unified fill rows: %v", wantRows)
+	}
+}
+
+func TestAdapterCapabilityMatrixMassStatusListsEveryDirectRecoveryDomain(t *testing.T) {
+	docBytes, err := os.ReadFile("../docs/adapter-capabilities.md")
+	if err != nil {
+		t.Fatalf("read docs matrix: %v", err)
+	}
+	doc := string(docBytes)
+	want := map[string]string{
+		"ASTER|Spot cash":            "open orders, bounded fills",
+		"ASTER|USDT-linear Perp":     "open orders, bounded fills, positions",
+		"NADO|Spot no-borrow":        "open orders, bounded fills",
+		"NADO|Perp":                  "open orders, bounded fills, positions",
+		"GATE|Spot cash":             "open orders, bounded fills",
+		"GATE|USDT-linear Perp/SWAP": "open orders, bounded fills, positions",
+		"LIGHTER|Perp":               "open orders, positions",
+	}
+	for _, row := range CapabilityMatrix() {
+		key := row.Venue + "|" + row.Product
+		massStatus, ok := want[key]
+		if !ok {
+			continue
+		}
+		if row.MassStatus != massStatus {
+			t.Fatalf("%s mass status=%q, want direct domains %q", key, row.MassStatus, massStatus)
+		}
+		prefix := "| " + row.Venue + " | " + row.Product + " |"
+		claims := "| " + row.FillReports + " | " + row.PositionReports + " | " + row.MassStatus + " |"
+		matched := false
+		for _, line := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(line, prefix) && strings.Contains(line, claims) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("docs row for %s does not match direct recovery-domain claims %q", key, claims)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 {
+		t.Fatalf("capability matrix is missing direct recovery rows: %v", want)
 	}
 }
 

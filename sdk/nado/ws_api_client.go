@@ -78,6 +78,7 @@ func (c *WsApiClient) handleMessage(msg []byte) {
 
 // Execute sends a request and waits for a response with matching ID.
 func (c *WsApiClient) Execute(ctx context.Context, req map[string]interface{}, sig *string) (*WsResponse, error) {
+	requestType := gatewayRequestType(req)
 	id, wait, err := ensureGatewayRequestID(req)
 	if err != nil {
 		return nil, err
@@ -102,7 +103,10 @@ func (c *WsApiClient) Execute(ctx context.Context, req map[string]interface{}, s
 	select {
 	case resp := <-ch:
 		if resp.Status != "success" {
-			return nil, fmt.Errorf("gateway error (%d): %s", resp.ErrorCode, resp.Error)
+			if resp.RequestType != "" {
+				requestType = resp.RequestType
+			}
+			return nil, NewGatewayApplicationError(resp.ErrorCode, resp.Error, requestType)
 		}
 		return resp, nil
 	case <-ctx.Done():
@@ -110,6 +114,15 @@ func (c *WsApiClient) Execute(ctx context.Context, req map[string]interface{}, s
 	case <-time.After(ReadTimeout):
 		return nil, fmt.Errorf("timeout waiting for response")
 	}
+}
+
+func gatewayRequestType(req map[string]interface{}) string {
+	for _, key := range []string{"place_order", "cancel_orders", "cancel_product_orders", "cancel_and_place"} {
+		if _, exists := req[key]; exists {
+			return key
+		}
+	}
+	return ""
 }
 
 func ensureGatewayRequestID(req map[string]interface{}) (int64, bool, error) {

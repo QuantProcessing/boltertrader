@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -47,8 +48,8 @@ func (s *overlapScenario) mass(ids string, pass int, fillsPartial bool) *model.E
 	mass := model.NewExecutionMassStatus("T", s.accountID, generatedAt)
 	if fillsPartial {
 		mass.Warnings = append(mass.Warnings, model.ReportWarning{
-			Code:    "FILL_REPORTS_PARTIAL",
-			Message: "fixture intentionally returns a partial fill page",
+			Code:    "HISTORY_PAGE_NOTE",
+			Message: "fixture diagnostic accompanies typed partial coverage",
 		})
 	}
 	for _, id := range ids {
@@ -89,6 +90,7 @@ func TestPartialFillPassRetainsPriorFullOverlap(t *testing.T) {
 	applications := 0
 	r := New(nil, exec, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
 			applications++
@@ -99,6 +101,7 @@ func TestPartialFillPassRetainsPriorFullOverlap(t *testing.T) {
 		t.Fatalf("full pass: %v", err)
 	}
 	exec.mass = s.mass("de", 2, true)
+	exec.fillState = model.CoveragePartial
 	partial, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("partial pass: %v", err)
@@ -107,6 +110,7 @@ func TestPartialFillPassRetainsPriorFullOverlap(t *testing.T) {
 		t.Fatalf("partial report was not classified as fill-partial: %+v", partial)
 	}
 	exec.mass = s.mass("abcde", 3, false)
+	exec.fillState = model.CoverageComplete
 	retry, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("safe-floor retry: %v", err)
@@ -123,6 +127,7 @@ func TestFailedFillPassRetainsUnprocessedPriorOverlap(t *testing.T) {
 	failB := false
 	r := New(nil, exec, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(fill model.Fill, _ contract.EventMeta) FillApplyResult {
 			if failB && strings.HasSuffix(fill.TradeID, "-b") {
@@ -184,6 +189,7 @@ func TestCursorCommitFailureRetainsPriorOverlapAcrossEmptyReport(t *testing.T) {
 	applications := 0
 	r := New(nil, exec, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithStateStore(store).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
@@ -215,6 +221,7 @@ func TestOverlapRetentionCapacityFailsClosedWithoutForgettingAppliedPrefix(t *te
 	applications := 0
 	r := New(nil, exec, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
 			applications++
@@ -244,6 +251,7 @@ func TestPartialCursorRetainsFullOverlapDependenciesAcrossCompactionAndRestart(t
 	applications := 0
 	r := New(nil, exec, s.cache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithStateStore(NewJournalStateStore(memory)).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
@@ -255,6 +263,7 @@ func TestPartialCursorRetainsFullOverlapDependenciesAcrossCompactionAndRestart(t
 		t.Fatalf("initial full pass: %v", err)
 	}
 	exec.mass = s.mass("de", 2, true)
+	exec.fillState = model.CoveragePartial
 	if report, err := r.Run(context.Background()); err != nil {
 		t.Fatalf("partial pass: %v", err)
 	} else if !report.FillsPartial {
@@ -268,6 +277,7 @@ func TestPartialCursorRetainsFullOverlapDependenciesAcrossCompactionAndRestart(t
 	restartExec := &snapshotExec{mass: full, fillHistory: true}
 	restarted := New(nil, restartExec, restartCache).
 		WithAccountID(s.accountID).
+		WithClock(clock.NewSimulatedClock(s.base)).
 		WithStateStore(NewJournalStateStore(memory)).
 		WithFillRetentionLimit(2).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {

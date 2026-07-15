@@ -24,7 +24,6 @@ import (
 var (
 	_ contract.ExecutionClient               = (*executionClient)(nil)
 	_ contract.AccountClient                 = (*accountClient)(nil)
-	_ contract.AccountStateReporter          = (*accountClient)(nil)
 	_ contract.MarketDataClient              = (*marketDataClient)(nil)
 	_ contract.DerivativeReferenceDataClient = (*marketDataClient)(nil)
 	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
@@ -78,8 +77,8 @@ func TestBinancePerpReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testin
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "BINANCE-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "BINANCE-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty BINANCE-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want fail-closed error", mass, err)
 	}
 	if called {
 		t.Fatal("mismatched account report crossed HTTP boundary")
@@ -169,7 +168,7 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenOrderTradeUpdate), &ev); err != nil {
 		t.Fatalf("unmarshal golden: %v", err)
 	}
-	events := execEventsFromOrderUpdate(&ev, stubResolver, model.AccountIDBinanceDefault)
+	events := execEventsFromOrderUpdate(&ev, stubResolver, AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("expected OrderEvent+FillEvent, got %d events", len(events))
 	}
@@ -190,7 +189,7 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if oe.Order.Request.Side != enums.SideBuy {
 		t.Errorf("side=%v", oe.Order.Request.Side)
 	}
-	if oe.Order.Request.AccountID != model.AccountIDBinanceDefault {
+	if oe.Order.Request.AccountID != AccountIDDefault {
 		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
 	}
 
@@ -207,7 +206,7 @@ func TestGoldenOrderTradeUpdateTranslation(t *testing.T) {
 	if !fe.Fill.Fee.Equal(d("0.24")) || fe.Fill.FeeCurrency != "USDT" {
 		t.Errorf("fee=%s %s", fe.Fill.Fee, fe.Fill.FeeCurrency)
 	}
-	if fe.Fill.AccountID != model.AccountIDBinanceDefault {
+	if fe.Fill.AccountID != AccountIDDefault {
 		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
@@ -223,7 +222,7 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenAccountUpdate), &ev); err != nil {
 		t.Fatalf("unmarshal golden: %v", err)
 	}
-	events := accountEventsFromUpdate(&ev, stubResolver, model.AccountIDBinanceDefault)
+	events := accountEventsFromUpdate(&ev, stubResolver, AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("expected BalanceEvent+PositionEvent, got %d", len(events))
 	}
@@ -231,10 +230,10 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	if !ok {
 		t.Fatalf("events[0] is %T, want BalanceEvent", events[0])
 	}
-	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("1000.5")) || !be.Balance.Free.Equal(d("950.0")) || !be.Balance.Available.Equal(d("950.0")) {
+	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("1000.5")) || !be.Balance.Free.Equal(d("950.0")) {
 		t.Errorf("balance=%+v", be.Balance)
 	}
-	if be.Balance.AccountID != model.AccountIDBinanceDefault {
+	if be.Balance.AccountID != AccountIDDefault {
 		t.Fatalf("balance account_id=%q", be.Balance.AccountID)
 	}
 	pe, ok := events[1].(contract.PositionEvent)
@@ -248,7 +247,7 @@ func TestGoldenAccountUpdateTranslation(t *testing.T) {
 	if !pe.Position.UnrealizedPnL.Equal(d("-12.5")) {
 		t.Errorf("uPnL=%s", pe.Position.UnrealizedPnL)
 	}
-	if pe.Position.AccountID != model.AccountIDBinanceDefault {
+	if pe.Position.AccountID != AccountIDDefault {
 		t.Fatalf("position account_id=%q", pe.Position.AccountID)
 	}
 }
@@ -286,7 +285,6 @@ func TestInstrumentParsing(t *testing.T) {
 		SizeStep:    d("0.001"),
 		MinNotional: d("5"),
 		VenueSymbol: "BTCUSDT",
-		HasIntCode:  false, // Binance has no integer code
 		HasAssetIdx: false, // Binance is symbol-keyed
 	}})
 }
@@ -308,8 +306,8 @@ func TestPerpCapabilitySuite(t *testing.T) {
 	if marketCaps.ReferenceData.ReferenceStream {
 		t.Fatal("REST-only client should not claim reference stream support")
 	}
-	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
-		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	if caps := acct.Capabilities(); !caps.Reports.AccountBalanceSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account capability flags=%+v, want balance snapshot true and account-state stream false", caps)
 	}
 	contracttest.RunPerpCapabilitySuite(t, contracttest.PerpCapabilitySuite{
 		Venue: "BINANCE",
@@ -443,7 +441,7 @@ func TestBinancePerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDBinanceDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
+	if state.AccountID != AccountIDDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != "USD" {
 		t.Fatalf("account state identity=%+v", state)
 	}
 	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {

@@ -16,23 +16,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-var acceptanceMaxOrderNotional = decimal.NewFromInt(1_000_000)
-
-func AttachAccountRequiredRisk(node *btruntime.TradingNode, provider model.InstrumentProvider) {
-	riskEngine := risk.New(risk.Limits{}, node.Cache).RequireAccountState()
-	btruntime.WithRisk(riskEngine, provider)(node)
-}
-
-// AttachAccountRequiredRiskWithAcceptanceLimit installs the normal account
-// gate plus a deliberately high local limit used by live acceptance orders.
-func AttachAccountRequiredRiskWithAcceptanceLimit(node *btruntime.TradingNode, provider model.InstrumentProvider) {
-	AttachAccountRequiredRiskWithMaxNotional(node, provider, acceptanceMaxOrderNotional)
-}
-
 // AttachAccountRequiredRiskWithMaxNotional installs the normal account gate
 // plus the caller's venue-specific acceptance notional envelope.
 func AttachAccountRequiredRiskWithMaxNotional(node *btruntime.TradingNode, provider model.InstrumentProvider, maxNotional decimal.Decimal) {
-	riskEngine := risk.New(risk.Limits{MaxOrderNotional: maxNotional}, node.Cache).RequireAccountState()
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: maxNotional}, node.Cache).
+		WithInstrumentProvider(provider).
+		RequireAccountState()
+	riskEngine.SetRuntimeCapabilities(node.ExecutionCapabilities(), node.AccountCapabilities())
 	btruntime.WithRisk(riskEngine, provider)(node)
 }
 
@@ -55,14 +45,19 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	if kind == enums.KindUnknown {
 		t.Fatalf("runtime account %s requires a concrete product kind", accountID)
 	}
-	if err := runtimeProductSupportReady(node.RuntimeCapabilities(), node.Exec != nil, kind); err != nil {
+	if err := runtimeProductSupportReady(node.ExecutionCapabilities(), node.AccountCapabilities(), node.Exec != nil, kind); err != nil {
 		t.Fatalf("runtime account %s product %s support incomplete: %v", accountID, kind, err)
 	}
 	if !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
 		t.Fatalf("runtime account %s state envelope incomplete: %+v", accountID, state)
 	}
-	if !acct.IsFresh(time.Now()) {
-		t.Fatalf("runtime account %s is not fresh after reconcile: %+v", accountID, acct.Freshness())
+	freshness := acct.Freshness()
+	metrics := node.Metrics()
+	if freshness.LastReconciledAt.IsZero() {
+		t.Fatalf("runtime account %s has no initial authoritative reconciliation: %+v", accountID, freshness)
+	}
+	if freshness.StaleAfter <= 0 || time.Duration(metrics.AccountStateAgeNs) > freshness.StaleAfter {
+		t.Fatalf("runtime account %s is not fresh after reconcile: freshness=%+v age=%s", accountID, freshness, time.Duration(metrics.AccountStateAgeNs))
 	}
 	if len(acct.Balances()) == 0 {
 		t.Fatalf("runtime account %s has no balances", accountID)
@@ -93,7 +88,6 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 			t.Fatalf("runtime portfolio maintenance margin=%v ok=%v for account %s, want readable account", maintenance, ok, accountID)
 		}
 	}
-	metrics := node.Metrics()
 	if metrics.Accounts == 0 || metrics.AccountStateAgeNs < 0 {
 		t.Fatalf("runtime metrics did not expose account state: %+v", metrics)
 	}
@@ -103,21 +97,25 @@ func AssertAccountStateReady(t testing.TB, node *btruntime.TradingNode, accountI
 	}
 }
 
-func runtimeProductSupportReady(caps []contract.Capabilities, requireTrading bool, kind enums.InstrumentKind) error {
+func runtimeProductSupportReady(execution, account *contract.Capabilities, requireTrading bool, kind enums.InstrumentKind) error {
 	if kind == enums.KindUnknown {
 		return fmt.Errorf("product kind is required")
 	}
 	trading := false
 	accountState := false
-	for _, cap := range caps {
-		for _, product := range cap.Products {
+	if execution != nil {
+		for _, product := range execution.Products {
 			if product.Kind != kind {
 				continue
 			}
-			if product.Trading && cap.Trading.Submit {
+			if product.Trading && execution.Trading.Submit {
 				trading = true
 			}
-			if product.Account && (cap.Reports.AccountStateSnapshots || cap.Streaming.AccountState) {
+		}
+	}
+	if account != nil {
+		for _, product := range account.Products {
+			if product.Kind == kind && product.Account {
 				accountState = true
 			}
 		}
@@ -131,40 +129,16 @@ func runtimeProductSupportReady(caps []contract.Capabilities, requireTrading boo
 	return nil
 }
 
-func AssertOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID) {
+func AssertOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID, maxNotional decimal.Decimal) {
 	t.Helper()
-	inst, ok := provider.Instrument(id)
-	if !ok {
-		t.Fatalf("instrument provider missing %s", id)
+	if node == nil || node.Exec == nil {
+		t.Fatal("runtime oversized-order probe requires a configured execution engine")
 	}
-	qty := inst.MinQty
-	if !qty.IsPositive() {
-		qty = decimal.NewFromInt(1)
+	if provider == nil {
+		t.Fatal("runtime oversized-order probe requires an instrument provider")
 	}
-	err := risk.New(risk.Limits{}, node.Cache).RequireAccountState().Check(model.OrderRequest{
-		ClientID:     "runtime-account-risk-probe",
-		InstrumentID: id,
-		Side:         enums.SideBuy,
-		Type:         enums.TypeLimit,
-		TIF:          enums.TifGTC,
-		Quantity:     qty,
-		Price:        decimal.NewFromInt(1_000_000_000_000),
-		PositionSide: enums.PosNet,
-	}, inst)
-	if !errors.Is(err, risk.ErrRiskRejected) {
-		t.Fatalf("oversized runtime account risk probe err=%v, want ErrRiskRejected", err)
-	}
-}
-
-// AssertRuntimeOversizedOrderRejected is retained for source compatibility.
-//
-// Deprecated: live acceptance must not send deliberately oversized orders
-// through a venue-backed execution engine. This compatibility helper now runs
-// the equivalent bounded risk check locally and performs no execution handoff.
-func AssertRuntimeOversizedOrderRejected(t testing.TB, node *btruntime.TradingNode, provider model.InstrumentProvider, id model.InstrumentID) {
-	t.Helper()
-	if node == nil || node.Cache == nil {
-		t.Fatal("runtime oversized-order probe requires a runtime cache")
+	if !maxNotional.IsPositive() {
+		t.Fatalf("runtime oversized-order probe max notional=%s, want positive", maxNotional)
 	}
 	inst, ok := provider.Instrument(id)
 	if !ok || inst == nil {
@@ -177,25 +151,32 @@ func AssertRuntimeOversizedOrderRejected(t testing.TB, node *btruntime.TradingNo
 	if !qty.IsPositive() {
 		qty = decimal.NewFromInt(1)
 	}
-	price := acceptanceMaxOrderNotional.Mul(decimal.NewFromInt(2)).Div(qty)
-	if inst.PriceTick.IsPositive() {
-		price = price.Div(inst.PriceTick).Ceil().Mul(inst.PriceTick)
-	}
-	err := risk.New(risk.Limits{MaxOrderNotional: acceptanceMaxOrderNotional}, node.Cache).
-		RequireAccountState().
-		Check(model.OrderRequest{
-			ClientID:     "runtime-local-risk-compatibility-probe",
-			InstrumentID: id,
-			Side:         enums.SideBuy,
-			Type:         enums.TypeLimit,
-			TIF:          enums.TifGTC,
-			Quantity:     qty,
-			Price:        price,
-			PositionSide: enums.PosNet,
-		}, inst)
+	price := oversizedOrderProbePrice(inst, qty, maxNotional)
+	_, err := node.Exec.Submit(context.Background(), model.OrderRequest{
+		ClientID:     "runtime-risk-probe",
+		InstrumentID: id,
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     qty,
+		Price:        price,
+		PositionSide: enums.PosNet,
+	})
 	if !errors.Is(err, risk.ErrRiskRejected) {
 		t.Fatalf("runtime oversized-order probe err=%v, want ErrRiskRejected", err)
 	}
+}
+
+func oversizedOrderProbePrice(inst *model.Instrument, qty, maxNotional decimal.Decimal) decimal.Decimal {
+	multiplier := decimal.NewFromInt(1)
+	if inst != nil && inst.ContractMultiplier.IsPositive() {
+		multiplier = inst.ContractMultiplier
+	}
+	price := maxNotional.Mul(decimal.NewFromInt(2)).Div(qty).Div(multiplier)
+	if inst != nil && inst.PriceTick.IsPositive() {
+		price = price.Div(inst.PriceTick).Ceil().Mul(inst.PriceTick)
+	}
+	return price
 }
 
 func WaitForActive(ctx context.Context, node *btruntime.TradingNode) error {

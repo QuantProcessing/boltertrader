@@ -20,87 +20,100 @@ type orderHistoryPage struct {
 }
 
 func (c *Client) PlaceOrder(ctx context.Context, req *PlaceOrderRequest) (*PlaceOrderResponse, error) {
-	var out responseEnvelope[PlaceOrderResponse]
+	var out commandResponseEnvelope[PlaceOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/place-order", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: place order failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("place order", out)
+	if err != nil {
+		return nil, err
 	}
-	return &out.Data, nil
+	if err := validateOrderActionResult("place order", result.OrderID, result.ClientOID, "", req.ClientOID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) BatchPlaceOrders(ctx context.Context, req []PlaceOrderRequest) ([]PlaceOrderResponse, error) {
-	var out responseEnvelope[[]PlaceOrderResponse]
+	var out commandResponseEnvelope[[]PlaceOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/place-batch", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: batch place orders failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("batch place orders", out)
+	if err != nil {
+		return nil, err
 	}
-	return out.Data, nil
+	return *result, nil
 }
 
 func (c *Client) CancelOrder(ctx context.Context, req *CancelOrderRequest) (*CancelOrderResponse, error) {
-	var out responseEnvelope[CancelOrderResponse]
+	var out commandResponseEnvelope[CancelOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/cancel-order", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: cancel order failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("cancel order", out)
+	if err != nil {
+		return nil, err
 	}
-	return &out.Data, nil
+	if err := validateOrderActionResult("cancel order", result.OrderID, result.ClientOID, req.OrderID, req.ClientOID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) BatchCancelOrders(ctx context.Context, req []CancelOrderRequest) ([]CancelOrderResponse, error) {
-	var out responseEnvelope[[]CancelOrderResponse]
+	var out commandResponseEnvelope[[]CancelOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/cancel-batch", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: batch cancel orders failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("batch cancel orders", out)
+	if err != nil {
+		return nil, err
 	}
-	return out.Data, nil
+	return *result, nil
 }
 
 func (c *Client) BatchModifyOrders(ctx context.Context, req []ModifyOrderRequest) ([]CancelOrderResponse, error) {
-	var out responseEnvelope[[]CancelOrderResponse]
+	var out commandResponseEnvelope[[]CancelOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/batch-modify-order", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: batch modify orders failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("batch modify orders", out)
+	if err != nil {
+		return nil, err
 	}
-	return out.Data, nil
+	return *result, nil
 }
 
 func (c *Client) CancelAllOrders(ctx context.Context, req *CancelAllOrdersRequest) error {
-	var out responseEnvelope[any]
+	var out commandResponseEnvelope[any]
 	err := c.postPrivate(ctx, "/api/v3/trade/cancel-symbol-order", req, &out)
 	if err != nil {
 		return err
 	}
-	if out.Code != "00000" {
-		return fmt.Errorf("bitget sdk: cancel all orders failed: %s %s", out.Code, out.Msg)
-	}
-	return nil
+	_, err = commandResult("cancel all orders", out)
+	return err
 }
 
 func (c *Client) ModifyOrder(ctx context.Context, req *ModifyOrderRequest) (*CancelOrderResponse, error) {
-	var out responseEnvelope[CancelOrderResponse]
+	var out commandResponseEnvelope[CancelOrderResponse]
 	err := c.postPrivate(ctx, "/api/v3/trade/modify-order", req, &out)
 	if err != nil {
 		return nil, err
 	}
-	if out.Code != "00000" {
-		return nil, fmt.Errorf("bitget sdk: modify order failed: %s %s", out.Code, out.Msg)
+	result, err := commandResult("modify order", out)
+	if err != nil {
+		return nil, err
 	}
-	return &out.Data, nil
+	if err := validateOrderActionResult("modify order", result.OrderID, result.ClientOID, req.OrderID, req.ClientOID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *Client) GetOrder(ctx context.Context, category, symbol, orderID, clientOID string) (*OrderRecord, error) {

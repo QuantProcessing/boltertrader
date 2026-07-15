@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/core/enums"
@@ -13,8 +14,8 @@ import (
 )
 
 func TestAccountIDIsCanonicalUnifiedPool(t *testing.T) {
-	if AccountIDUnified != model.AccountIDBybitDefault {
-		t.Fatalf("AccountIDUnified=%q", AccountIDUnified)
+	if AccountIDUnified != "BYBIT-001" {
+		t.Fatalf("AccountIDUnified=%q, want %q", AccountIDUnified, "BYBIT-001")
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDUnified || AccountIDForKind(enums.KindPerp) != AccountIDUnified {
 		t.Fatalf("Bybit unified account id must be shared across spot/perp")
@@ -223,6 +224,12 @@ func TestCapabilityRowsSplitSettlementCategories(t *testing.T) {
 	for _, row := range rows {
 		if row.Venue != VenueName || !row.AccountStateSnapshot {
 			t.Fatalf("unexpected row: %+v", row)
+		}
+		if strings.EqualFold(strings.TrimSpace(row.FillReports), "unsupported") {
+			t.Fatalf("capability row still reports implemented fill history as unsupported: %+v", row)
+		}
+		if !strings.Contains(strings.ToLower(row.MassStatus), "fill") {
+			t.Fatalf("mass-status capability omits implemented fills: %+v", row)
 		}
 		if positionReports, ok := want[row.Product]; ok {
 			if row.PositionReports != positionReports {

@@ -76,9 +76,10 @@ type ClientOrderInput struct {
 	TwapSlippage float64
 }
 
-// PlaceOrder executes the venue's raw place_order API. It intentionally does
-// not apply the adapter/runtime max_order_size and prepared-order safety envelope.
-// Trading applications should submit through adapter/nado instead.
+// PlaceOrder executes the venue's raw place_order API. It intentionally omits
+// adapter validation, generic runtime risk, durable intent, correlation, and
+// signed-material redaction. Trading applications should submit through
+// adapter/nado instead.
 func (c *Client) PlaceOrder(ctx context.Context, input ClientOrderInput) (*PlaceOrderResponse, error) {
 	if c.Signer == nil {
 		return nil, ErrCredentialsRequired

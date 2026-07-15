@@ -19,7 +19,7 @@ import (
 
 const (
 	VenueName        = "GATE"
-	AccountIDUnified = model.AccountIDGateDefault
+	AccountIDUnified = "GATE-001"
 )
 
 type Config struct {
@@ -259,6 +259,10 @@ func CapabilityRows() []adapter.CapabilityRow {
 }
 
 func capabilityRow(product, target, positionReports string) adapter.CapabilityRow {
+	massStatus := "open orders, bounded fills"
+	if positionReports != "unsupported" {
+		massStatus += ", positions"
+	}
 	return adapter.CapabilityRow{
 		Venue:                VenueName,
 		Product:              product,
@@ -272,7 +276,7 @@ func capabilityRow(product, target, positionReports string) adapter.CapabilityRo
 		OrderStatusReports:   "open orders",
 		FillReports:          "my trades",
 		PositionReports:      positionReports,
-		MassStatus:           "open-order mass status",
+		MassStatus:           massStatus,
 		SingleOrderQuery:     "venue order id",
 		OpenOnlyCaveat:       true,
 		LatencyTimestamps:    false,

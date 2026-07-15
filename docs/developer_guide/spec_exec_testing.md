@@ -11,6 +11,28 @@ is explicitly invoked, bounded by a notional envelope, and responsible for
 cleaning up any exchange state it creates. CEX first-stage acceptance uses Demo
 or paper-trading environments; DEX first-stage acceptance uses Testnet.
 
+## Generic Submission Contract
+
+All venues use the same runtime sequence:
+
+1. the adapter performs pure, local `ValidateSubmit` checks;
+2. runtime optionally invokes the one configured venue-neutral risk checker,
+   which atomically holds and later releases generic working exposure;
+3. runtime records the durable intent and invokes ordinary adapter `Submit`;
+4. the adapter converts/signs the venue request and interprets the response.
+
+Capacity limits advertised or enforced by an exchange are
+server-authoritative. Acceptance maximum-notional variables bound test writes;
+they are not runtime admission or adapter capacity protocols. Adapter tests
+must prove that local validation and configured risk failures perform no venue
+I/O, while post-handoff timeout, malformed, or unproven responses remain
+ambiguous until reconciliation.
+
+Mass-status acceptance must also prove typed coverage for open orders, fills,
+and positions. Coverage owns its frozen selector and request-start observation
+watermark. Warnings remain visible diagnostics and must not influence runtime
+control flow.
+
 ## Baseline Runtime Smoke
 
 The baseline live execution acceptance run must:
@@ -170,6 +192,24 @@ make test-lighter-testnet-runtime-spot
 make test-lighter-testnet-perp
 make test-lighter-testnet-runtime-perp
 make test-lighter-testnet-acceptance
+make test-gate-testnet-read
+make test-gate-testnet-spot
+make test-gate-testnet-runtime-spot
+make test-gate-testnet-usdt-perp
+make test-gate-testnet-runtime-usdt-perp
+make test-gate-testnet-acceptance
+make test-aster-testnet-read
+make test-aster-testnet-spot
+make test-aster-testnet-runtime-spot
+make test-aster-testnet-perp
+make test-aster-testnet-runtime-perp
+make test-aster-testnet-acceptance
+make test-nado-testnet-read
+make test-nado-testnet-spot
+make test-nado-testnet-runtime-spot
+make test-nado-testnet-perp
+make test-nado-testnet-runtime-perp
+NADO_TESTNET_MAX_NOTIONAL_USDT0=110 make test-nado-testnet-acceptance
 ```
 
 `make test-binance-demo-spot-data` is read-only and enables
@@ -196,14 +236,13 @@ Each venue also exposes product aggregates such as
 `make test-bybit-spot-acceptance` and `make test-bitget-usdt-perp-acceptance`.
 These targets use `noskipgotest`, so missing credentials, unsupported account
 mode, dirty account state, insufficient test balance, or invalid endpoint
-profiles are reported as incomplete acceptance instead of a green skip. The current
+profiles are reported as incomplete acceptance instead of a green skip. The
 entrypoints verify live market data, authoritative account-state snapshots,
 runtime reconciliation into cache/portfolio, risk fail-closed behavior, and
 private stream startup, then execute a bounded resting-cancel plus IOC
-fill/close cleanup ladder. The current G010 evidence accepted these rows after
-the noskip targets passed against configured real non-production accounts;
-future reruns keep the same noskip, funding, endpoint-profile, and clean-state
-requirements.
+fill/close cleanup ladder. Historical pre-convergence G010 evidence exercised
+these rows but does not certify this tree; G008 reruns them with the same
+noskip, funding, endpoint-profile, and clean-state requirements.
 
 `make test-hyperliquid-testnet-spot-read` and
 `make test-hyperliquid-testnet-perp-read` are read-only and enable
@@ -234,11 +273,12 @@ enabled through `node.Resync` before and after the live write flow.
 Hyperliquid runtime Testnet acceptance follows the same runtime-node shape but
 uses conservative resting orders plus explicit cancel rather than requiring a
 fill. It constructs the node with the adapter's canonical account id, requires a
-verified `AccountStateReporter` snapshot during startup reconciliation, attaches
-`risk.RequireAccountState()`, proves an account-state-backed oversized order is
-rejected before the venue boundary, observes cancel state through the runtime
-cache, checks REST open orders after cancel, and requires the final
-cache/portfolio to be flat. Perp and HIP-3 runs must start from a flat
+verified mandatory `AccountClient.AccountState` snapshot during startup
+reconciliation, attaches `risk.RequireAccountState()`, proves an explicitly
+configured max-notional limit rejects an oversized probe before the venue
+boundary, observes cancel state through the runtime cache, checks REST open
+orders after cancel, and requires the final cache/portfolio to be flat. Perp and
+HIP-3 runs must start from a flat
 derivatives account; otherwise the test skips and asks the operator to clean the
 testnet account first. The Make acceptance gate treats that skip as failed
 evidence until the account is clean and the place/cancel path actually runs.
@@ -249,8 +289,9 @@ account state before private stream startup, portfolio and risk must read by
 canonical account id, unsupported venue account configurations must fail
 closed, and the order lifecycle must pass through runtime execution with a
 resting cancel, IOC fill, IOC close, final open-order check, and final
-reconciliation. The current G010 evidence accepted these rows; future runs are
-not accepted when they skip or cannot reach the non-production venue.
+reconciliation. Historical pre-convergence G010 evidence exercised these rows
+but does not certify this tree; G008 is not accepted when they skip or cannot
+reach the non-production venue.
 
 Risk engine behavior remains covered by deterministic runtime tests. Add a
 separate non-production risk-gate acceptance only when the desired assertion

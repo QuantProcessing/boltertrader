@@ -28,7 +28,7 @@ func newAccountClient(rest *sdkspot.Client, provider *instrumentProvider, clk cl
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDBinanceDefault
+		accountID = AccountIDDefault
 	}
 	return &accountClient{
 		rest:      rest,
@@ -78,7 +78,6 @@ func spotBalancesFromAccount(acct *sdkspot.AccountResponse, accountID string, no
 			Currency:  b.Asset,
 			Total:     free.Add(locked),
 			Free:      free,
-			Available: free,
 			Locked:    locked,
 			UpdatedAt: now,
 		})

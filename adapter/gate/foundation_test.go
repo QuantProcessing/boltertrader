@@ -12,8 +12,8 @@ import (
 )
 
 func TestAccountIDIsCanonicalUnifiedPool(t *testing.T) {
-	if AccountIDUnified != model.AccountIDGateDefault {
-		t.Fatalf("AccountIDUnified=%q", AccountIDUnified)
+	if AccountIDUnified != "GATE-001" {
+		t.Fatalf("AccountIDUnified=%q, want %q", AccountIDUnified, "GATE-001")
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDUnified || AccountIDForKind(enums.KindPerp) != AccountIDUnified {
 		t.Fatalf("Gate account id must be shared across spot/perp")
@@ -87,7 +87,10 @@ func TestProductForInstrumentRejectsUnsupportedSettlement(t *testing.T) {
 
 func TestCapabilityRowsOnlyClaimSpotAndUSDTPerp(t *testing.T) {
 	rows := CapabilityRows()
-	want := map[string]bool{"Spot cash": false, "USDT-linear Perp/SWAP": false}
+	want := map[string]string{
+		"Spot cash":             "open orders, bounded fills",
+		"USDT-linear Perp/SWAP": "open orders, bounded fills, positions",
+	}
 	for _, row := range rows {
 		if row.Venue != VenueName || !row.AccountStateSnapshot {
 			t.Fatalf("unexpected row: %+v", row)
@@ -95,17 +98,18 @@ func TestCapabilityRowsOnlyClaimSpotAndUSDTPerp(t *testing.T) {
 		if row.Modify {
 			t.Fatalf("Gate phase-one must not claim modify support before adapter implementation proves it: %+v", row)
 		}
-		if _, ok := want[row.Product]; ok {
-			want[row.Product] = true
+		if massStatus, ok := want[row.Product]; ok {
+			if row.MassStatus != massStatus {
+				t.Fatalf("product=%s mass status=%q, want %q", row.Product, row.MassStatus, massStatus)
+			}
+			delete(want, row.Product)
 		}
 		if row.Product == "USDC-linear Perp/SWAP" {
 			t.Fatalf("USDC row must not be claimed in phase one")
 		}
 	}
-	for product, seen := range want {
-		if !seen {
-			t.Fatalf("missing capability row for %s", product)
-		}
+	for product := range want {
+		t.Fatalf("missing capability row for %s", product)
 	}
 }
 

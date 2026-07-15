@@ -303,7 +303,7 @@ func TestNadoPrivateStreamsEmitExecutionAndAccountEvents(t *testing.T) {
 	spotBackend.position(&sdk.PositionChange{Type: "position_change", ProductId: 1, Timestamp: "1695081920633151006", Amount: "-2000000000000000000", Reason: sdk.PositionReasonTransferQuote})
 	balEnv := <-spotAcct.Events()
 	bal := balEnv.Payload.(contract.BalanceEvent).Balance
-	if bal.Currency != "ETH" || !bal.Total.Equal(decimal.RequireFromString("-2")) || !bal.Borrowed.Equal(decimal.RequireFromString("2")) || bal.Free.IsPositive() || bal.Available.IsPositive() {
+	if bal.Currency != "ETH" || !bal.Total.Equal(decimal.RequireFromString("-2")) || !bal.Borrowed.Equal(decimal.RequireFromString("2")) || !bal.Free.IsZero() {
 		t.Fatalf("balance event mismatch: %+v", bal)
 	}
 

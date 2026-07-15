@@ -118,7 +118,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	}
 	resp, err := c.rest.PlaceOrder(ctx, venueReq)
 	if err != nil {
-		return nil, err
+		return nil, bybitCommandError("submit order", err)
 	}
 	order := orderFromBybitAction(resp, req, c.clk.Now())
 	return &order, nil
@@ -134,7 +134,7 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 		return err
 	}
 	_, err = c.rest.CancelOrder(ctx, bybitsdk.CancelOrderRequest{Category: category, Symbol: inst.VenueSymbol, OrderID: venueOrderID})
-	return err
+	return bybitCommandError("cancel order", err)
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -146,7 +146,7 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 	if err != nil {
 		return err
 	}
-	return c.rest.CancelAllOrders(ctx, bybitsdk.CancelAllOrdersRequest{Category: category, Symbol: inst.VenueSymbol})
+	return bybitCommandError("cancel all orders", c.rest.CancelAllOrders(ctx, bybitsdk.CancelAllOrdersRequest{Category: category, Symbol: inst.VenueSymbol}))
 }
 
 func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, venueOrderID string, newPrice, newQty decimal.Decimal) (*model.Order, error) {
@@ -166,11 +166,21 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 		Price:    decimalStringOrEmpty(newPrice),
 	})
 	if err != nil {
-		return nil, err
+		return nil, bybitCommandError("amend order", err)
 	}
 	req := model.OrderRequest{AccountID: c.accountID, InstrumentID: id, Quantity: newQty, Price: newPrice}
 	order := orderFromBybitAction(resp, req, c.clk.Now())
 	return &order, nil
+}
+
+func bybitCommandError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !bybitsdk.IsDefinitiveCommandRejection(err) {
+		return err
+	}
+	return fmt.Errorf("bybit: %s rejected: %w", operation, errors.Join(contract.ErrVenueRejected, err))
 }
 
 func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
@@ -386,48 +396,90 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 	now := c.clk.Now()
 	out := make([]model.PositionReport, 0)
 	for _, settle := range settles {
-		records, err := c.rest.GetPositions(ctx, "linear", "", settle)
+		reports, err := c.generatePositionReportsForSettle(ctx, settle, query, now)
 		if err != nil {
 			return nil, err
 		}
-		for _, record := range records {
-			id, ok := c.provider.ResolveVenueInstrument(record.Symbol, enums.KindPerp, settle)
-			if !ok {
-				return nil, fmt.Errorf("bybit: unknown position-report instrument settle=%s symbol=%s", settle, record.Symbol)
-			}
-			pos, err := positionFromBybit(record, func(string) model.InstrumentID { return id }, c.accountID, now)
-			if err != nil {
-				return nil, err
-			}
-			if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
-				continue
-			}
-			out = append(out, model.PositionReport{Venue: VenueName, AccountID: c.accountID, Position: pos, ReportedAt: now})
+		out = append(out, reports...)
+	}
+	return out, nil
+}
+
+func (c *executionClient) generatePositionReportsForSettle(ctx context.Context, settle string, query model.PositionReportQuery, now time.Time) ([]model.PositionReport, error) {
+	records, err := c.rest.GetPositions(ctx, "linear", "", settle)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.PositionReport, 0, len(records))
+	for _, record := range records {
+		id, ok := c.provider.ResolveVenueInstrument(record.Symbol, enums.KindPerp, settle)
+		if !ok {
+			return nil, fmt.Errorf("bybit: unknown position-report instrument settle=%s symbol=%s", settle, record.Symbol)
 		}
+		pos, err := positionFromBybit(record, func(string) model.InstrumentID { return id }, c.accountID, now)
+		if err != nil {
+			return nil, err
+		}
+		if query.InstrumentID.Symbol != "" && pos.InstrumentID != query.InstrumentID {
+			continue
+		}
+		out = append(out, model.PositionReport{Venue: VenueName, AccountID: c.accountID, Position: pos, ReportedAt: now})
 	}
 	return out, nil
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(VenueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("bybit: mass status account %q does not match execution account %q", query.AccountID, c.accountID)
 	}
-	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
-	mass.ClientID = query.ClientID
-	mass.Lookback = query.Lookback
-	orderTargets, err := c.orderReportTargets(model.OrderStatusReportQuery{ClientID: query.ClientID})
+	frozen, selector, err := c.freezeMassStatusScope(query)
 	if err != nil {
 		return nil, err
 	}
-	for _, target := range orderTargets {
-		records, err := c.rest.GetRealtimeOrders(ctx, target.category, target.symbol, target.settle, "", query.ClientID, 0)
-		if err != nil {
+	selectorSet := bybitInstrumentIDSet(selector)
+	openSelector := append([]model.InstrumentID{}, selector...)
+	fillSelector := append([]model.InstrumentID{}, selector...)
+	positionSelector := bybitSelectorForKind(selector, enums.KindPerp)
+	mass := model.NewExecutionMassStatus(VenueName, c.accountID, c.clk.Now())
+	mass.ClientID = query.ClientID
+	mass.Lookback = query.Lookback
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if frozen.rest == nil {
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		if query.IncludeFills {
+			mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		}
+		if query.IncludePositions {
+			mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		}
+		if err := mass.ValidateFor(query); err != nil {
 			return nil, err
 		}
+		return mass, nil
+	}
+	openStartedAt := frozen.clk.Now()
+	orderTargets, err := frozen.massStatusOrderTargets(openSelector, query.ClientID != "")
+	if err != nil {
+		return nil, err
+	}
+	openSuccesses := 0
+	openFailures := 0
+	for _, target := range orderTargets {
+		records, err := frozen.rest.GetRealtimeOrders(ctx, target.category, target.symbol, target.settle, "", query.ClientID, 0)
+		if err != nil {
+			openFailures++
+			mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: err.Error()})
+			continue
+		}
+		openSuccesses++
 		for _, record := range records {
-			id, ok := c.resolveOrderInstrument(target, model.InstrumentID{}, record.Symbol)
+			id, ok := frozen.resolveOrderInstrument(target, model.InstrumentID{}, record.Symbol)
 			if !ok {
 				return nil, fmt.Errorf("bybit: unknown open-order instrument category=%s settle=%s symbol=%s", target.category, target.settle, record.Symbol)
+			}
+			if _, ok := selectorSet[id.String()]; !ok {
+				continue
 			}
 			order, err := orderFromBybitRecord(record, id, c.accountID)
 			if err != nil {
@@ -441,49 +493,278 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 			}
 		}
 	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(bybitMassStatusCoverageState(len(orderTargets), openSuccesses, openFailures, false), c.accountID, query.ClientID, openSelector, openStartedAt)
 	if query.IncludeFills {
+		fillThrough := query.Until
+		if fillThrough.IsZero() {
+			fillThrough = frozen.clk.Now()
+		}
+		fillFrom := query.Since
+		if fillFrom.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+			fillFrom = query.Until.Add(-query.Lookback)
+		}
+		fillQuery := model.FillReportQuery{
+			AccountID: c.accountID,
+			ClientID:  query.ClientID,
+			Since:     fillFrom,
+			Until:     fillThrough,
+			Limit:     executionMassStatusFillLimit,
+		}
+		fillCategories := bybitSelectorCategories(fillSelector)
+		fillSuccesses := 0
+		fillFailures := 0
 		limitReached := false
-		for _, category := range c.categories {
-			fills, reached, err := c.generateFillReportsForCategory(ctx, category, "", model.FillReportQuery{
-				AccountID: c.accountID,
-				ClientID:  query.ClientID,
-				Since:     query.Since,
-				Until:     query.Until,
-				Limit:     executionMassStatusFillLimit,
-			})
+		fills := make([]model.FillReport, 0)
+		for _, category := range fillCategories {
+			reports, reached, err := frozen.generateFillReportsForCategory(ctx, category, "", fillQuery)
 			if err != nil {
+				fillFailures++
+				mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "FILL_REPORTS_UNAVAILABLE", Message: err.Error()})
+				continue
+			}
+			fillSuccesses++
+			limitReached = limitReached || reached
+			for _, report := range reports {
+				if _, ok := selectorSet[report.Fill.InstrumentID.String()]; !ok {
+					continue
+				}
+				fills = append(fills, report)
+			}
+		}
+		sort.SliceStable(fills, func(i, j int) bool {
+			return fills[i].Fill.Timestamp.After(fills[j].Fill.Timestamp)
+		})
+		if len(fills) > executionMassStatusFillLimit {
+			fills = fills[:executionMassStatusFillLimit]
+			limitReached = true
+		}
+		for _, report := range fills {
+			if err := mass.AddFillReport(report); err != nil {
 				return nil, err
 			}
-			limitReached = limitReached || reached
-			for _, report := range fills {
-				if err := mass.AddFillReport(report); err != nil {
-					return nil, err
-				}
+		}
+		if fillSuccesses > 0 {
+			normalizedQuery := query
+			normalizedQuery.Since = fillFrom
+			normalizedQuery.Until = fillThrough
+			if err := frozen.addHistoricalOrderReportsForDerivativeFills(ctx, mass, normalizedQuery); err != nil {
+				return nil, err
 			}
 		}
 		if limitReached {
-			mass.Partial = true
 			mass.Warnings = append(mass.Warnings, model.ReportWarning{
 				Code:    "FILL_REPORTS_LIMIT_REACHED",
 				Message: fmt.Sprintf("the Bybit execution-history query reached the %d-record limit; recovered fills may be incomplete", executionMassStatusFillLimit),
 			})
 		}
-		if err := c.addHistoricalOrderReportsForDerivativeFills(ctx, mass, query); err != nil {
-			return nil, err
-		}
+		fillState := bybitMassStatusCoverageState(len(fillCategories), fillSuccesses, fillFailures, limitReached)
+		mass.FillsCoverage = model.NewFillCoverage(fillState, c.accountID, query.ClientID, fillSelector, fillFrom, fillThrough)
 	}
 	if query.IncludePositions {
-		positions, err := c.GeneratePositionReports(ctx, model.PositionReportQuery{AccountID: c.accountID})
+		positionsStartedAt := frozen.clk.Now()
+		if len(positionSelector) == 0 {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, c.accountID, query.ClientID, positionSelector, positionsStartedAt)
+		} else if !frozen.supportsCategory("linear") {
+			mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		} else {
+			positionSettles, err := frozen.massStatusPositionSettles(positionSelector)
+			if err != nil {
+				return nil, err
+			}
+			positionSuccesses := 0
+			positionFailures := 0
+			for _, settle := range positionSettles {
+				positions, err := frozen.generatePositionReportsForSettle(ctx, settle, model.PositionReportQuery{AccountID: c.accountID}, frozen.clk.Now())
+				if err != nil {
+					positionFailures++
+					mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "POSITIONS_UNAVAILABLE", Message: fmt.Sprintf("settle %s: %v", settle, err)})
+					continue
+				}
+				positionSuccesses++
+				for _, report := range positions {
+					if _, ok := selectorSet[report.Position.InstrumentID.String()]; !ok {
+						continue
+					}
+					if err := mass.AddPositionReport(report); err != nil {
+						return nil, err
+					}
+				}
+			}
+			mass.PositionsCoverage = model.NewSnapshotCoverage(bybitMassStatusCoverageState(len(positionSettles), positionSuccesses, positionFailures, false), c.accountID, query.ClientID, positionSelector, positionsStartedAt)
+		}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
+	return mass, nil
+}
+
+func (c *executionClient) freezeMassStatusScope(query model.MassStatusQuery) (*executionClient, []model.InstrumentID, error) {
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != VenueName {
+		return nil, nil, fmt.Errorf("bybit: mass status venue %q does not match %q", query.Venue, VenueName)
+	}
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("bybit: instrument provider required for mass status")
+	}
+	c.provider.mu.RLock()
+	instruments := make([]*model.Instrument, 0, len(c.provider.all))
+	for _, inst := range c.provider.all {
+		if inst == nil {
+			continue
+		}
+		clone := *inst
+		if inst.AssetIndex != nil {
+			assetIndex := *inst.AssetIndex
+			clone.AssetIndex = &assetIndex
+		}
+		instruments = append(instruments, &clone)
+	}
+	deferred := make(map[deferredInstrumentKey]struct{}, len(c.provider.deferred))
+	for key := range c.provider.deferred {
+		deferred[key] = struct{}{}
+	}
+	c.provider.mu.RUnlock()
+	snapshot := newInstrumentProvider()
+	snapshot.loadSnapshot(instruments, deferred)
+	frozen := *c
+	frozen.provider = snapshot
+	frozen.categories = append([]string(nil), c.categories...)
+	selector, err := frozen.massStatusSelector(query.InstrumentIDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &frozen, selector, nil
+}
+
+func bybitMassStatusCoverageState(attempts, successes, failures int, incomplete bool) model.CoverageState {
+	switch {
+	case attempts == 0:
+		return model.CoverageComplete
+	case successes == 0 && failures > 0:
+		return model.CoverageUnavailable
+	case failures > 0 || incomplete:
+		return model.CoveragePartial
+	default:
+		return model.CoverageComplete
+	}
+}
+
+func (c *executionClient) massStatusSelector(requested []model.InstrumentID) ([]model.InstrumentID, error) {
+	if requested != nil {
+		selector := model.NormalizeInstrumentIDs(requested)
+		for _, id := range selector {
+			inst, ok := c.provider.Instrument(id)
+			if !ok {
+				return nil, fmt.Errorf("bybit: unknown mass status instrument %s: %w", id, errs.ErrSymbolNotFound)
+			}
+			category, err := categoryForInstrument(inst)
+			if err != nil || id.Venue != VenueName || !c.supportsCategory(category) {
+				return nil, fmt.Errorf("bybit: mass status instrument %s is outside execution scope", id)
+			}
+		}
+		return selector, nil
+	}
+	all := c.provider.All()
+	selector := make([]model.InstrumentID, 0, len(all))
+	for _, inst := range all {
+		if inst == nil || inst.ID.Venue != VenueName {
+			continue
+		}
+		category, err := categoryForInstrument(inst)
+		if err == nil && c.supportsCategory(category) {
+			selector = append(selector, inst.ID)
+		}
+	}
+	return model.NormalizeInstrumentIDs(selector), nil
+}
+
+func (c *executionClient) massStatusOrderTargets(selector []model.InstrumentID, exactClient bool) ([]orderReportTarget, error) {
+	seen := make(map[string]struct{})
+	targets := make([]orderReportTarget, 0)
+	for _, id := range selector {
+		inst, err := c.instrument(id)
 		if err != nil {
 			return nil, err
 		}
-		for _, report := range positions {
-			if err := mass.AddPositionReport(report); err != nil {
-				return nil, err
-			}
+		category, err := categoryForInstrument(inst)
+		if err != nil {
+			return nil, err
+		}
+		settle := ""
+		if category == "linear" && !exactClient {
+			settle = inst.Settle
+		}
+		key := category + "\x00" + settle
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, orderReportTarget{category: category, settle: settle})
+	}
+	return targets, nil
+}
+
+func bybitSelectorForKind(ids []model.InstrumentID, kind enums.InstrumentKind) []model.InstrumentID {
+	out := make([]model.InstrumentID, 0, len(ids))
+	for _, id := range ids {
+		if id.Kind == kind {
+			out = append(out, id)
 		}
 	}
-	return mass, nil
+	return model.NormalizeInstrumentIDs(out)
+}
+
+func bybitSelectorCategories(ids []model.InstrumentID) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 2)
+	for _, id := range ids {
+		category := ""
+		switch id.Kind {
+		case enums.KindSpot:
+			category = "spot"
+		case enums.KindPerp:
+			category = "linear"
+		}
+		if category == "" {
+			continue
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		out = append(out, category)
+	}
+	return out
+}
+
+func (c *executionClient) massStatusPositionSettles(ids []model.InstrumentID) ([]string, error) {
+	seen := make(map[string]struct{})
+	settles := make([]string, 0, 2)
+	for _, id := range ids {
+		inst, err := c.instrument(id)
+		if err != nil {
+			return nil, err
+		}
+		settle := strings.ToUpper(strings.TrimSpace(inst.Settle))
+		if settle == "" {
+			return nil, fmt.Errorf("bybit: position instrument %s has no settlement asset", id)
+		}
+		if _, ok := seen[settle]; ok {
+			continue
+		}
+		seen[settle] = struct{}{}
+		settles = append(settles, settle)
+	}
+	sort.Strings(settles)
+	return settles, nil
+}
+
+func bybitInstrumentIDSet(ids []model.InstrumentID) map[string]struct{} {
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		out[id.String()] = struct{}{}
+	}
+	return out
 }
 
 type derivativeFillOrderIdentity struct {

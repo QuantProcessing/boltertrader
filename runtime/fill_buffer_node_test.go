@@ -22,6 +22,7 @@ import (
 func TestFillBeforeOrderBuffersAndDrains(t *testing.T) {
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	fexec := runtimetest.NewFakeExec()
+	fexec.SetAccountID("fill-buffer")
 	filled := make(chan model.Fill, 8)
 	node := runtime.NewNode(
 		runtime.Clients{Execution: fexec},
@@ -194,6 +195,7 @@ func TestFillBeforeOrderCanMaterializeExternalOrder(t *testing.T) {
 	spotInst := inst
 	spotInst.Kind = enums.KindSpot
 	fexec := runtimetest.NewFakeExec()
+	fexec.SetAccountID("external-fill")
 	filled := make(chan model.Fill, 8)
 	node := runtime.NewNode(
 		runtime.Clients{Execution: fexec},

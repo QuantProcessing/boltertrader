@@ -5,13 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 )
 
 func TestBuildAccountStateStandardRejectsSameCurrencyPerpPools(t *testing.T) {
 	_, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionDefault,
 		Perp:        perpState("100", "88", "12", "7"),
 		PerpDexes: []PerpDexState{{
@@ -30,7 +29,7 @@ func TestBuildAccountStateStandardRejectsSameCurrencyPerpPools(t *testing.T) {
 func TestBuildAccountStateStandardKeepsDistinctPerpCollateralCurrencies(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	state, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionDefault,
 		Perp:        perpState("100", "88", "12", "7"),
 		PerpDexes:   []PerpDexState{{Dex: "usdt-dex", Collateral: "USDT", State: perpState("50", "45", "5", "3")}},
@@ -78,7 +77,7 @@ func TestBuildAccountStateStandardKeepsDistinctPerpCollateralCurrencies(t *testi
 func TestBuildAccountStateUnifiedUsesSpotFundingWithoutRepeatingPerpEquity(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	state, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionUnifiedAccount,
 		Perp:        perpState("100", "88", "12", "7"),
 		PerpDexes: []PerpDexState{
@@ -123,7 +122,7 @@ func TestBuildAccountStateUnifiedUsesSpotFundingWithoutRepeatingPerpEquity(t *te
 
 func TestBuildAccountStatePortfolioMarginUsesSpotFundingWithoutRepeatingPerpEquity(t *testing.T) {
 	state, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionPortfolioMargin,
 		Perp:        perpState("100", "88", "12", "7"),
 		PerpDexes: []PerpDexState{{
@@ -148,7 +147,7 @@ func TestBuildAccountStatePortfolioMarginUsesSpotFundingWithoutRepeatingPerpEqui
 
 func TestBuildAccountStateFailsClosedForMalformedPerpDexSnapshot(t *testing.T) {
 	_, err := BuildAccountState(StateInput{
-		AccountID:   model.AccountIDHyperliquidDefault,
+		AccountID:   DefaultAccountID,
 		AccountMode: sdk.AccountAbstractionDefault,
 		Perp:        perpState("100", "88", "12", "7"),
 		PerpDexes: []PerpDexState{{

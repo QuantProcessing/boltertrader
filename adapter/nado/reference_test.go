@@ -26,13 +26,12 @@ func TestNadoPerpReferenceCapabilitiesAndUnsupportedSpot(t *testing.T) {
 
 	var _ contract.DerivativeReferenceDataClient = perp
 	var _ contract.OpenInterestClient = perp
-	var _ contract.OpenInterestHistoryClient = perp
 
 	ref := perp.Capabilities().ReferenceData
 	if !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOraclePrice || !ref.CurrentOpenInterest {
 		t.Fatalf("perp reference capabilities missing: %+v", ref)
 	}
-	if !ref.ReferenceStream || !ref.ReferencePolling || ref.FundingHistory || ref.OpenInterestCached || ref.OpenInterestHistory {
+	if !ref.ReferenceStream || !ref.ReferencePolling || ref.FundingHistory || ref.OpenInterestCached {
 		t.Fatalf("perp reference capability truth mismatch: %+v", ref)
 	}
 
@@ -50,9 +49,6 @@ func TestNadoPerpReferenceCapabilitiesAndUnsupportedSpot(t *testing.T) {
 	}
 	if _, err := spot.OpenInterest(context.Background(), spotID); !errors.Is(err, contract.ErrNotSupported) {
 		t.Fatalf("spot OpenInterest err=%v, want ErrNotSupported", err)
-	}
-	if _, err := spot.OpenInterestHistory(context.Background(), spotID, model.OpenInterestHistoryQuery{}); !errors.Is(err, contract.ErrNotSupported) {
-		t.Fatalf("spot OpenInterestHistory err=%v, want ErrNotSupported", err)
 	}
 }
 

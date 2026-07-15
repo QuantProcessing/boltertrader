@@ -77,10 +77,9 @@ func (p *instrumentProvider) resolveInstID(instID string) model.InstrumentID {
 	return model.InstrumentID{Venue: venueName, Symbol: instIDToNeutral(instID), Kind: enums.KindPerp}
 }
 
-// instrumentFromOKX translates one supported OKX USDT-linear SWAP Instrument into a neutral
-// Instrument. The OKX InstIdCode populates VenueIntCode — the divergence the
-// contract test verifies. Returns nil for non-SWAP, inverse, or coin-margined
-// entries outside this adapter's first-phase runtime boundary.
+// instrumentFromOKX translates one supported OKX USDT-linear SWAP instrument
+// into a neutral Instrument. SDK-native integer metadata remains inside the SDK;
+// adapter I/O resolves through VenueSymbol.
 func instrumentFromOKX(in *okx.Instrument) *model.Instrument {
 	if !isSupportedUSDTLinearSwap(okxInstrumentShapeFromInstrument(in)) {
 		return nil
@@ -103,9 +102,8 @@ func instrumentFromOKX(in *okx.Instrument) *model.Instrument {
 		Base:               in.BaseCcy,
 		Quote:              in.QuoteCcy,
 		Settle:             settle,
-		VenueSymbol:        in.InstId,     // "BTC-USDT-SWAP"
-		VenueIntCode:       in.InstIdCode, // OKX integer code (nil-safe)
-		AssetIndex:         nil,           // OKX is not asset-index keyed
+		VenueSymbol:        in.InstId, // "BTC-USDT-SWAP"
+		AssetIndex:         nil,       // OKX is not asset-index keyed
 		PriceTick:          tick,
 		SizeStep:           dec(in.LotSz),
 		MinQty:             dec(in.MinSz),

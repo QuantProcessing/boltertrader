@@ -262,7 +262,7 @@ func inferAccountMeta(payload AccountEvent) EventMeta {
 		meta.AccountID = p.Balance.AccountID
 		meta.EventID = model.EventID(joinEventID(
 			"account", "balance", p.Balance.AccountID, p.Balance.Currency,
-			p.Balance.Total.String(), p.Balance.Free.String(), p.Balance.Available.String(),
+			p.Balance.Total.String(), p.Balance.Free.String(),
 			p.Balance.Locked.String(), p.Balance.Borrowed.String(), p.Balance.Interest.String(),
 			eventTimeKey(p.Balance.UpdatedAt),
 		))

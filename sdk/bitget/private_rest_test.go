@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,142 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
+	client := NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL("https://example.test").WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":"43001","msg":"order does not exist","data":{}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "submit", run: func() error { _, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{}); return err }},
+		{name: "cancel", run: func() error { _, err := client.CancelOrder(context.Background(), &CancelOrderRequest{}); return err }},
+		{name: "modify", run: func() error { _, err := client.ModifyOrder(context.Background(), &ModifyOrderRequest{}); return err }},
+		{name: "cancel all", run: func() error { return client.CancelAllOrders(context.Background(), &CancelAllOrdersRequest{}) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.run()
+			var responseErr *ResponseError
+			if !errors.As(err, &responseErr) || responseErr.Code != "43001" || responseErr.Message != "order does not exist" {
+				t.Fatalf("error=%v (%T), want typed response error", err, err)
+			}
+		})
+	}
+}
+
+func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		run  func(*Client) error
+		want string
+	}{
+		{
+			name: "missing response code",
+			body: `{"msg":"success","data":{"orderId":"100","clientOid":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{ClientOID: "client-1"})
+				return err
+			},
+			want: "without code",
+		},
+		{
+			name: "missing response data",
+			body: `{"code":"00000","msg":"success"}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{ClientOID: "client-1"})
+				return err
+			},
+			want: "without data",
+		},
+		{
+			name: "place missing order id",
+			body: `{"code":"00000","msg":"success","data":{"clientOid":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{ClientOID: "client-1"})
+				return err
+			},
+			want: "without order id",
+		},
+		{
+			name: "place client id mismatch",
+			body: `{"code":"00000","msg":"success","data":{"orderId":"100","clientOid":"other"}}`,
+			run: func(client *Client) error {
+				_, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{ClientOID: "client-1"})
+				return err
+			},
+			want: "mismatched client order id",
+		},
+		{
+			name: "cancel order id mismatch",
+			body: `{"code":"00000","msg":"success","data":{"orderId":"101","clientOid":"client-1"}}`,
+			run: func(client *Client) error {
+				_, err := client.CancelOrder(context.Background(), &CancelOrderRequest{OrderID: "100", ClientOID: "client-1"})
+				return err
+			},
+			want: "mismatched order id",
+		},
+		{
+			name: "modify client id mismatch",
+			body: `{"code":"00000","msg":"success","data":{"orderId":"100","clientOid":"other"}}`,
+			run: func(client *Client) error {
+				_, err := client.ModifyOrder(context.Background(), &ModifyOrderRequest{OrderID: "100", ClientOID: "client-1"})
+				return err
+			},
+			want: "mismatched client order id",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient().
+				WithCredentials("key", "secret", "passphrase").
+				WithBaseURL("https://example.test").
+				WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(test.body)),
+						Header:     make(http.Header),
+					}, nil
+				})})
+			err := test.run(client)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want text %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBitgetResponseErrorDefinitiveClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want bool
+	}{
+		{name: "order business rejection", code: "43001", want: true},
+		{name: "UTA order business rejection", code: "25204", want: true},
+		{name: "auth rejection", code: "40006", want: true},
+		{name: "rate limit", code: "42900"},
+		{name: "timeout", code: "40010"},
+		{name: "backend", code: "40725"},
+		{name: "release window", code: "40808"},
+		{name: "unknown operation result", code: "45001"},
+		{name: "unknown future code", code: "99999"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsDefinitiveCommandRejection(&ResponseError{Code: test.code}); got != test.want {
+				t.Fatalf("code %s definitive=%t, want %t", test.code, got, test.want)
+			}
+		})
+	}
+}
 
 // Keep the exported response shape source-compatible for callers that use an
 // unkeyed composite literal. Cursor pagination is an SDK implementation detail.

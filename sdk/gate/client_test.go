@@ -115,6 +115,101 @@ func TestClientCreateSpotOrderPostsOfficialBody(t *testing.T) {
 	}
 }
 
+func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		run  func(*Client) error
+		want string
+	}{
+		{
+			name: "spot create missing order id",
+			body: `{"currency_pair":"ETH_USDT","text":"client-1"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				return err
+			},
+			want: "without order id",
+		},
+		{
+			name: "spot create client text mismatch",
+			body: `{"id":"100","currency_pair":"ETH_USDT","text":"other"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				return err
+			},
+			want: "mismatched client text",
+		},
+		{
+			name: "spot create currency pair mismatch",
+			body: `{"id":"100","currency_pair":"BTC_USDT","text":"client-1"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				return err
+			},
+			want: "mismatched currency pair",
+		},
+		{
+			name: "spot cancel order id mismatch",
+			body: `{"id":"101","currency_pair":"ETH_USDT"}`,
+			run: func(client *Client) error {
+				_, err := client.CancelSpotOrder(context.Background(), "100", "ETH_USDT")
+				return err
+			},
+			want: "mismatched order id",
+		},
+		{
+			name: "futures create missing order id",
+			body: `{"contract":"BTC_USDT","text":"client-1"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				return err
+			},
+			want: "without order id",
+		},
+		{
+			name: "futures create client text mismatch",
+			body: `{"id":100,"contract":"BTC_USDT","text":"other"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				return err
+			},
+			want: "mismatched client text",
+		},
+		{
+			name: "futures create contract mismatch",
+			body: `{"id":100,"contract":"ETH_USDT","text":"client-1"}`,
+			run: func(client *Client) error {
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				return err
+			},
+			want: "mismatched contract",
+		},
+		{
+			name: "futures cancel order id mismatch",
+			body: `{"id":101,"contract":"BTC_USDT"}`,
+			run: func(client *Client) error {
+				_, err := client.CancelFuturesOrder(context.Background(), SettleUSDT, 100)
+				return err
+			},
+			want: "mismatched order id",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient().WithBaseURL("https://example.test/api/v4").WithCredentials("key", "secret")
+			client.WithHTTPClient(testHTTPClient(t, func(*http.Request) (int, string) {
+				return http.StatusOK, test.body
+			}))
+			err := test.run(client)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want text %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestClientListAllSpotOpenOrdersUsesAggregateEndpoint(t *testing.T) {
 	client := NewClient().WithBaseURL("https://example.test/api/v4").WithCredentials("key", "secret")
 	client.WithHTTPClient(testHTTPClient(t, func(req *http.Request) (int, string) {
@@ -170,5 +265,30 @@ func TestClientParsesGateAPIError(t *testing.T) {
 	}
 	if apiErr.Label != "INVALID_PARAM_VALUE" || apiErr.Message != "bad currency_pair" {
 		t.Fatalf("unexpected api error: %+v", apiErr)
+	}
+}
+
+func TestGateAPIErrorDefinitiveCommandRejectionClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "structured 4xx business response", err: &APIError{StatusCode: http.StatusBadRequest, Label: "INVALID_PARAM_VALUE", Message: "bad order"}, want: true},
+		{name: "documented futures business response", err: &APIError{StatusCode: http.StatusBadRequest, Label: "SIZE_TOO_SMALL", Message: "below minimum"}, want: true},
+		{name: "unknown structured 4xx remains ambiguous", err: &APIError{StatusCode: http.StatusBadRequest, Label: "FUTURE_UNCLASSIFIED_LABEL", Message: "unknown"}},
+		{name: "duplicate creation requires recovery", err: &APIError{StatusCode: http.StatusBadRequest, Label: "REPEATED_CREATION", Message: "possibly accepted before"}},
+		{name: "rate limit", err: &APIError{StatusCode: http.StatusTooManyRequests, Label: "TOO_MANY_REQUESTS"}},
+		{name: "request timeout", err: &APIError{StatusCode: http.StatusRequestTimeout, Label: "REQUEST_TIMEOUT"}},
+		{name: "temporary server response", err: &APIError{StatusCode: http.StatusServiceUnavailable, Label: "SERVER_ERROR"}},
+		{name: "unstructured 4xx", err: &APIError{StatusCode: http.StatusBadRequest, Body: "bad gateway"}},
+		{name: "transport", err: context.DeadlineExceeded},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsDefinitiveCommandRejection(test.err); got != test.want {
+				t.Fatalf("IsDefinitiveCommandRejection(%v)=%t, want %t", test.err, got, test.want)
+			}
+		})
 	}
 }

@@ -102,10 +102,10 @@ func TestBybitPerpAcceptanceLifecyclePricesUseWiderIOCSlippage(t *testing.T) {
 	}
 }
 
-func TestBybitAvailableBalanceUsesLargestFreeOrAvailableForCurrency(t *testing.T) {
+func TestBybitAvailableBalanceUsesLargestFreeForCurrency(t *testing.T) {
 	state := model.AccountState{
 		Balances: []model.AccountBalance{
-			{Currency: "USDT", Available: decimal.RequireFromString("1.25")},
+			{Currency: "USDT", Free: decimal.RequireFromString("1.25")},
 			{Currency: "USDT", Free: decimal.RequireFromString("2.5")},
 			{Currency: "USDC", Free: decimal.RequireFromString("10")},
 		},

@@ -52,7 +52,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 			Kind:    selectedKind(c.productKind),
 			Account: true,
 		}},
-		Reports:   contract.ReportCapabilities{AccountStateSnapshots: true, AccountBalanceSnapshots: true, PositionReports: selectedKind(c.productKind) == enums.KindPerp},
+		Reports:   contract.ReportCapabilities{AccountBalanceSnapshots: true, PositionReports: selectedKind(c.productKind) == enums.KindPerp},
 		Streaming: contract.StreamCapabilities{Account: c.streamBackend != nil},
 	}
 }

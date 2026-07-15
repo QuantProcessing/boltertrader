@@ -3,6 +3,8 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,31 +26,50 @@ var spotBTC = model.InstrumentID{Venue: "T", Symbol: "BTC-USDT", Kind: enums.Kin
 
 // snapshotAccount is a minimal AccountClient returning canned snapshots.
 type snapshotAccount struct {
-	balances          []model.AccountBalance
-	positions         []model.Position
-	positionErr       error
-	accountState      model.AccountState
-	accountStates     []model.AccountState
-	hasAccountState   bool
-	positionReports   bool
-	balanceCalls      int
-	accountStateCalls int
+	accountID          string
+	balances           []model.AccountBalance
+	positions          []model.Position
+	positionErr        error
+	products           []contract.ProductCapability
+	accountState       model.AccountState
+	accountStates      []model.AccountState
+	accountStateErr    error
+	streamAccountState bool
+	positionReports    bool
+	balanceCalls       int
+	positionCalls      int
+	accountStateCalls  int
+	capabilityCalls    int
 }
 
+func (s *snapshotAccount) AccountID() string { return s.accountID }
+
 func (s *snapshotAccount) Capabilities() contract.Capabilities {
+	s.capabilityCalls++
 	caps := contract.Capabilities{Venue: "T"}
-	if s.hasAccountState {
-		caps.Reports.AccountStateSnapshots = true
-	}
 	caps.Reports.PositionReports = s.positionReports
+	caps.Streaming.AccountState = s.streamAccountState
+	caps.Products = append([]contract.ProductCapability(nil), s.products...)
 	return caps
 }
+
+func newReconcilerWithAccountCapabilities(account *snapshotAccount, orders contract.ExecutionClient, c *cache.Cache) *Reconciler {
+	r := New(account, orders, c)
+	if account != nil {
+		r.WithAccountCapabilities(account.Capabilities())
+	}
+	return r
+}
+
 func (s *snapshotAccount) Balances(context.Context) ([]model.AccountBalance, error) {
 	s.balanceCalls++
 	return s.balances, nil
 }
 func (s *snapshotAccount) AccountState(context.Context) (model.AccountState, error) {
 	s.accountStateCalls++
+	if s.accountStateErr != nil {
+		return model.AccountState{}, s.accountStateErr
+	}
 	if len(s.accountStates) != 0 {
 		index := s.accountStateCalls - 1
 		if index >= len(s.accountStates) {
@@ -58,7 +79,49 @@ func (s *snapshotAccount) AccountState(context.Context) (model.AccountState, err
 	}
 	return s.accountState, nil
 }
+
+func authoritativeState(accountID string, at time.Time, free string) model.AccountState {
+	return model.AccountState{
+		AccountID: accountID,
+		Venue:     "T",
+		Type:      model.AccountCash,
+		Balances: []model.AccountBalance{{
+			AccountID: accountID,
+			Currency:  "USDT",
+			Total:     d(free),
+			Free:      d(free),
+			UpdatedAt: at,
+		}},
+		Reported: true,
+		EventID:  model.AccountStateEventID("T", accountID, at),
+		TsEvent:  at,
+		TsInit:   at,
+	}
+}
+
+func authoritativeSnapshot(accountID string, at time.Time, balances ...model.AccountBalance) model.AccountState {
+	owned := append([]model.AccountBalance(nil), balances...)
+	for i := range owned {
+		if owned[i].AccountID == "" {
+			owned[i].AccountID = accountID
+		}
+		if owned[i].UpdatedAt.IsZero() {
+			owned[i].UpdatedAt = at
+		}
+	}
+	return model.AccountState{
+		AccountID: accountID,
+		Venue:     "T",
+		Type:      model.AccountMargin,
+		Balances:  owned,
+		Reported:  true,
+		EventID:   model.AccountStateEventID("T", accountID, at),
+		TsEvent:   at,
+		TsInit:    at,
+	}
+}
 func (s *snapshotAccount) Positions(context.Context) ([]model.Position, error) {
+	s.positionCalls++
 	if s.positionErr != nil {
 		return nil, s.positionErr
 	}
@@ -83,18 +146,25 @@ type snapshotExec struct {
 	queries     []model.MassStatusQuery
 	fillHistory bool
 	positions   bool
+	products    []contract.ProductCapability
 	massDelay   time.Duration
+	rawMass     bool
+	fillState   model.CoverageState
 }
 
 func (s *snapshotExec) Capabilities() contract.Capabilities {
 	caps := contract.Capabilities{Venue: "T"}
-	caps.Reports.FillHistory = s.fillHistory
-	caps.Reports.PositionReports = s.positions
+	caps.Reports.FillHistory = s.fillHistory || (s.mass != nil && len(s.mass.FillReports) != 0)
+	caps.Reports.PositionReports = s.positions || (s.mass != nil && len(s.mass.PositionReports) != 0)
 	if s.positions {
-		caps.Products = []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true, Account: true}}
+		caps.Products = append([]contract.ProductCapability(nil), s.products...)
+		if s.products == nil {
+			caps.Products = []contract.ProductCapability{{Kind: enums.KindPerp, Trading: true, Account: true}}
+		}
 	}
 	return caps
 }
+func (*snapshotExec) ValidateSubmit(model.OrderRequest) error { return nil }
 func (s *snapshotExec) Submit(context.Context, model.OrderRequest) (*model.Order, error) {
 	return nil, nil
 }
@@ -145,10 +215,15 @@ func (s *snapshotExec) GenerateExecutionMassStatus(ctx context.Context, query mo
 		return nil, s.massErr
 	}
 	if s.massFn != nil {
-		return s.massFn(query), nil
+		mass := s.massFn(query)
+		if !s.rawMass {
+			completeFixtureCoverage(mass, query, s.fillState)
+		}
+		return mass, nil
 	}
 	if s.mass != nil {
 		mass := s.mass.Clone()
+		completeFixtureCoverage(&mass, query, s.fillState)
 		return &mass, nil
 	}
 	mass := model.NewExecutionMassStatus("T", query.AccountID, time.Time{})
@@ -157,10 +232,65 @@ func (s *snapshotExec) GenerateExecutionMassStatus(ctx context.Context, query mo
 			return nil, err
 		}
 	}
+	completeFixtureCoverage(mass, query, s.fillState)
 	return mass, nil
 }
 func (s *snapshotExec) Events() <-chan contract.ExecEnvelope { return nil }
 func (s *snapshotExec) Close() error                         { return nil }
+
+func completeFixtureCoverage(mass *model.ExecutionMassStatus, query model.MassStatusQuery, fillState model.CoverageState) {
+	if mass == nil || mass.OpenOrdersCoverage.State != model.CoverageUnknown ||
+		mass.FillsCoverage.State != model.CoverageUnknown ||
+		mass.PositionsCoverage.State != model.CoverageUnknown {
+		return
+	}
+	accountID := mass.AccountID
+	if accountID == "" {
+		accountID = query.AccountID
+	}
+	if accountID == "" {
+		accountID = "acct"
+	}
+	mass.AccountID = accountID
+	mass.ClientID = query.ClientID
+	ids := query.InstrumentIDs
+	if ids == nil {
+		ids = []model.InstrumentID{btc, eth, spotBTC}
+	}
+	appendID := func(id model.InstrumentID) {
+		if id.Venue != "" && id.Symbol != "" && id.Kind != enums.KindUnknown {
+			ids = append(ids, id)
+		}
+	}
+	for _, report := range mass.OrderReports {
+		appendID(report.Order.Request.InstrumentID)
+	}
+	for _, reports := range mass.FillReports {
+		for _, report := range reports {
+			appendID(report.Fill.InstrumentID)
+		}
+	}
+	for _, reports := range mass.PositionReports {
+		for _, report := range reports {
+			appendID(report.Position.InstrumentID)
+		}
+	}
+	ids = model.NormalizeInstrumentIDs(ids)
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, query.Until)
+	if query.IncludeFills {
+		if fillState == model.CoverageUnknown {
+			fillState = model.CoverageComplete
+		}
+		mass.FillsCoverage = model.NewFillCoverage(fillState, accountID, query.ClientID, ids, query.Since, query.Until)
+	} else {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, query.Until)
+	} else {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+}
 
 // order builds a minimal open order with a client id and instrument.
 func order(clientID string, id model.InstrumentID, qty string, status enums.OrderStatus) model.Order {
@@ -333,15 +463,17 @@ func TestReconcileAccountPositionMismatchDoesNotOverwriteOrClear(t *testing.T) {
 	c.UpsertPosition(model.Position{InstrumentID: btc, Side: enums.PosNet, Quantity: d("1")})
 	c.UpsertPosition(model.Position{InstrumentID: eth, Side: enums.PosNet, Quantity: d("3")})
 
+	balances := []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}}
 	acct := &snapshotAccount{
-		balances:        []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Available: d("900")}},
+		accountState:    authoritativeSnapshot("acct", time.Unix(1, 0), balances...),
+		balances:        balances,
 		positionReports: true,
 		positions: []model.Position{
 			{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2.5"), EntryPrice: d("60000")},
 		},
 	}
 
-	r := New(acct, nil, c)
+	r := newReconcilerWithAccountCapabilities(acct, nil, c)
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -370,15 +502,17 @@ func TestReconcileAccountSnapshotsAreScopedByAccountID(t *testing.T) {
 	c.UpsertPosition(model.Position{AccountID: "acct-a", InstrumentID: eth, Side: enums.PosNet, Quantity: d("3")})
 	c.UpsertPosition(model.Position{AccountID: "acct-b", InstrumentID: eth, Side: enums.PosNet, Quantity: d("7")})
 
+	balances := []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}}
 	acct := &snapshotAccount{
-		balances:        []model.AccountBalance{{Currency: "USDT", Total: d("1000"), Free: d("900")}},
+		accountState:    authoritativeSnapshot("acct-a", time.Unix(1, 0), balances...),
+		balances:        balances,
 		positionReports: true,
 		positions: []model.Position{
 			{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2.5"), EntryPrice: d("60000")},
 		},
 	}
 
-	r := New(acct, nil, c).WithAccountID("acct-a")
+	r := newReconcilerWithAccountCapabilities(acct, nil, c).WithAccountID("acct-a")
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -403,14 +537,15 @@ func TestReconcileAccountSnapshotsAreScopedByAccountID(t *testing.T) {
 	}
 }
 
-func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
+func TestReconcileCallsAccountStateDirectly(t *testing.T) {
 	c := cache.New()
 	ts := time.Unix(20, 0)
 	acct := &snapshotAccount{
-		hasAccountState: true,
+		// The authoritative snapshot is mandatory and must not depend on a
+		// report-capability bit or fall back to Balances.
 		accountState: model.AccountState{
-			AccountID: model.AccountIDBinanceDefault,
-			Venue:     "BINANCE",
+			AccountID: "acct-direct",
+			Venue:     "T",
 			Type:      model.AccountMargin,
 			Balances: []model.AccountBalance{{
 				Currency: "USDT",
@@ -418,14 +553,14 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 				Free:     d("950"),
 			}},
 			Reported: true,
-			EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+			EventID:  model.AccountStateEventID("T", "acct-direct", ts),
 			TsEvent:  ts,
 			TsInit:   ts,
 		},
-		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1"), Available: d("1")}},
+		balances: []model.AccountBalance{{Currency: "USDT", Total: d("1"), Free: d("1")}},
 	}
 
-	r := New(acct, nil, c)
+	r := New(acct, nil, c).WithAccountCapabilities(contract.Capabilities{Venue: "T"})
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -433,10 +568,10 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	if rep.AccountStatesApplied != 1 || rep.BalancesUpdated != 1 {
 		t.Fatalf("report=%+v, want one account state and one balance update", rep)
 	}
-	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
-		t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
+	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 || acct.capabilityCalls != 0 {
+		t.Fatalf("calls: accountState=%d balances=%d capabilities=%d, want 1/0/0", acct.accountStateCalls, acct.balanceCalls, acct.capabilityCalls)
 	}
-	cached, ok := c.Account(model.AccountIDBinanceDefault)
+	cached, ok := c.Account("acct-direct")
 	if !ok {
 		t.Fatal("account state not applied to cache")
 	}
@@ -448,23 +583,145 @@ func TestReconcilePrefersAccountStateWhenCapabilityDeclared(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsMissingOrBlankAccountCapabilityVenue(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configured bool
+		venue      string
+	}{
+		{name: "not configured"},
+		{name: "empty", configured: true},
+		{name: "whitespace", configured: true, venue: "  "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := cache.New()
+			acct := &snapshotAccount{accountState: authoritativeState("acct", time.Unix(20, 0), "10")}
+			r := New(acct, nil, c)
+			if tc.configured {
+				r.WithAccountCapabilities(contract.Capabilities{Venue: tc.venue})
+			}
+
+			_, err := r.Run(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "capability venue") {
+				t.Fatalf("run err=%v, want missing capability venue rejection", err)
+			}
+			if acct.accountStateCalls != 1 || acct.capabilityCalls != 0 {
+				t.Fatalf("calls: accountState=%d capabilities=%d, want 1/0", acct.accountStateCalls, acct.capabilityCalls)
+			}
+			if _, ok := c.Account("acct"); ok {
+				t.Fatal("unproven account state must not be applied")
+			}
+		})
+	}
+}
+
+func TestReconcileAccountStateIsIndependentOfStreamingCapability(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			c := cache.New()
+			at := time.Unix(25, 0)
+			acct := &snapshotAccount{
+				streamAccountState: streaming,
+				accountState:       authoritativeState("acct-stream", at, "10"),
+			}
+
+			if _, err := newReconcilerWithAccountCapabilities(acct, nil, c).WithAccountID("acct-stream").Run(context.Background()); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
+				t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
+			}
+		})
+	}
+}
+
+func TestReconcileAccountStateNeverFallsBackToBalances(t *testing.T) {
+	boom := errors.New("account state unavailable")
+	acct := &snapshotAccount{
+		accountStateErr: boom,
+		balances:        []model.AccountBalance{{Currency: "USDT", Total: d("100"), Free: d("100")}},
+	}
+
+	_, err := New(acct, nil, cache.New()).Run(context.Background())
+	if !errors.Is(err, boom) {
+		t.Fatalf("run err=%v, want authoritative AccountState error", err)
+	}
+	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
+		t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
+	}
+}
+
+func TestReconcileRejectsWrongAccountStateScopeWithoutBalanceFallback(t *testing.T) {
+	at := time.Unix(30, 0)
+	acct := &snapshotAccount{
+		accountState: authoritativeState("acct-other", at, "10"),
+		balances:     []model.AccountBalance{{AccountID: "acct-want", Currency: "USDT", Total: d("100"), Free: d("100")}},
+	}
+
+	_, err := newReconcilerWithAccountCapabilities(acct, nil, cache.New()).WithAccountID("acct-want").Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "acct-other") {
+		t.Fatalf("run err=%v, want wrong account scope rejection", err)
+	}
+	if acct.accountStateCalls != 1 || acct.balanceCalls != 0 {
+		t.Fatalf("calls: accountState=%d balances=%d, want 1/0", acct.accountStateCalls, acct.balanceCalls)
+	}
+}
+
+func TestReconcileRejectsWrongVenueAccountState(t *testing.T) {
+	at := time.Unix(31, 0)
+	state := authoritativeState("acct-want", at, "10")
+	state.Venue = "OTHER"
+	state.EventID = model.AccountStateEventID(state.Venue, state.AccountID, at)
+	acct := &snapshotAccount{accountState: state}
+
+	_, err := newReconcilerWithAccountCapabilities(acct, nil, cache.New()).WithAccountID("acct-want").Run(context.Background())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "venue") {
+		t.Fatalf("run err=%v, want wrong venue scope rejection", err)
+	}
+}
+
+func TestReconcileRejectsBlankAuthoritativeAccountIdentity(t *testing.T) {
+	at := time.Unix(32, 0)
+	state := authoritativeState("acct-want", at, "10")
+	state.AccountID = ""
+	state.EventID = ""
+	acct := &snapshotAccount{accountState: state}
+
+	_, err := newReconcilerWithAccountCapabilities(acct, nil, cache.New()).WithAccountID("acct-want").Run(context.Background())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "account id") {
+		t.Fatalf("run err=%v, want blank authoritative account identity rejection", err)
+	}
+}
+
+func TestReconcileRejectsBlankAuthoritativeEventIdentity(t *testing.T) {
+	at := time.Unix(33, 0)
+	state := authoritativeState("acct-want", at, "10")
+	state.EventID = ""
+	acct := &snapshotAccount{accountState: state}
+
+	_, err := newReconcilerWithAccountCapabilities(acct, nil, cache.New()).WithAccountID("acct-want").Run(context.Background())
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "event id") {
+		t.Fatalf("run err=%v, want blank authoritative event identity rejection", err)
+	}
+}
+
 func TestReconcileOlderAccountSnapshotDoesNotClearNewerStreamPosition(t *testing.T) {
 	c := cache.New()
 	newerAt := time.Unix(30, 0)
 	olderAt := newerAt.Add(-time.Second)
 	newer := model.AccountState{
-		AccountID: model.AccountIDBinanceDefault,
-		Venue:     "BINANCE",
+		AccountID: "T:acct",
+		Venue:     "T",
 		Type:      model.AccountMargin,
 		Balances: []model.AccountBalance{{
-			AccountID: model.AccountIDBinanceDefault,
+			AccountID: "T:acct",
 			Currency:  "USDT",
 			Total:     d("1000"),
 			Free:      d("900"),
 			UpdatedAt: newerAt,
 		}},
 		Reported: true,
-		EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, newerAt),
+		EventID:  model.AccountStateEventID("T", "T:acct", newerAt),
 		TsEvent:  newerAt,
 		TsInit:   newerAt,
 	}
@@ -472,7 +729,7 @@ func TestReconcileOlderAccountSnapshotDoesNotClearNewerStreamPosition(t *testing
 		t.Fatal(err)
 	}
 	c.UpsertPosition(model.Position{
-		AccountID:    model.AccountIDBinanceDefault,
+		AccountID:    "T:acct",
 		InstrumentID: btc,
 		Side:         enums.PosNet,
 		Quantity:     d("2"),
@@ -480,107 +737,73 @@ func TestReconcileOlderAccountSnapshotDoesNotClearNewerStreamPosition(t *testing
 	})
 
 	older := newer
-	older.EventID = model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, olderAt)
+	older.EventID = model.AccountStateEventID("T", "T:acct", olderAt)
 	older.TsEvent = olderAt
 	older.TsInit = olderAt
 	older.Balances[0].UpdatedAt = olderAt
-	acct := &snapshotAccount{hasAccountState: true, accountState: older}
-	if _, err := New(acct, nil, c).Run(context.Background()); err != nil {
+	acct := &snapshotAccount{accountState: older}
+	if _, err := newReconcilerWithAccountCapabilities(acct, nil, c).Run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if got, ok := c.PositionForAccount(model.AccountIDBinanceDefault, btc, enums.PosNet); !ok || !got.Quantity.Equal(d("2")) {
+	if got, ok := c.PositionForAccount("T:acct", btc, enums.PosNet); !ok || !got.Quantity.Equal(d("2")) {
 		t.Fatalf("older REST snapshot cleared newer stream position: %+v ok=%v", got, ok)
 	}
 }
 
-func TestReconcileNormalizesScopedAccountStateEventID(t *testing.T) {
-	c := cache.New()
-	ts := time.Unix(21, 0)
-	acct := &snapshotAccount{
-		hasAccountState: true,
-		accountState: model.AccountState{
-			Venue: "BINANCE",
-			Type:  model.AccountMargin,
-			Balances: []model.AccountBalance{{
-				Currency: "USDT",
-				Total:    d("1000"),
-				Free:     d("950"),
-			}},
-			Reported: true,
-			TsEvent:  ts,
-			TsInit:   ts,
-		},
-	}
-
-	r := New(acct, nil, c).WithAccountID(model.AccountIDBinanceDefault)
-	if _, err := r.Run(context.Background()); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	cached, ok := c.Account(model.AccountIDBinanceDefault)
-	if !ok {
-		t.Fatal("account state not applied to cache")
-	}
-	want := model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts)
-	if got := cached.LastEvent().EventID; got != want {
-		t.Fatalf("event id=%q, want %q", got, want)
-	}
-}
-
-func TestReconcileRefreshesAccountStateAfterLongOrderRecovery(t *testing.T) {
+func TestReconcileDoesNotHideStalenessWithSecondAccountStateCall(t *testing.T) {
 	c := cache.New()
 	c.SetAccountStaleAfter(20 * time.Millisecond)
 	firstAt := time.Unix(100, 0)
 	secondAt := firstAt.Add(time.Second)
 	state := func(at time.Time, free string) model.AccountState {
 		return model.AccountState{
-			AccountID: model.AccountIDBitgetDefault,
-			Venue:     "BITGET",
+			AccountID: "T:bitget",
+			Venue:     "T",
 			Type:      model.AccountMargin,
 			Balances: []model.AccountBalance{{
-				AccountID: model.AccountIDBitgetDefault,
+				AccountID: "T:bitget",
 				Currency:  "USDT",
 				Total:     d("1000"),
 				Free:      d(free),
 				UpdatedAt: at,
 			}},
 			Reported: true,
-			EventID:  model.AccountStateEventID("BITGET", model.AccountIDBitgetDefault, at),
+			EventID:  model.AccountStateEventID("T", "T:bitget", at),
 			TsEvent:  at,
 			TsInit:   at,
 		}
 	}
 	account := &snapshotAccount{
-		hasAccountState: true,
 		accountStates: []model.AccountState{
 			state(firstAt, "900"),
 			state(secondAt, "800"),
 		},
 	}
-	mass := model.NewExecutionMassStatus("BITGET", model.AccountIDBitgetDefault, secondAt)
+	mass := model.NewExecutionMassStatus("T", "T:bitget", secondAt)
 	execution := &snapshotExec{mass: mass, massDelay: 35 * time.Millisecond}
 
-	report, err := New(account, execution, c).WithAccountID(model.AccountIDBitgetDefault).Run(context.Background())
+	report, err := newReconcilerWithAccountCapabilities(account, execution, c).WithAccountID("T:bitget").Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if account.accountStateCalls != 2 {
-		t.Fatalf("account state calls=%d, want initial snapshot plus post-recovery refresh", account.accountStateCalls)
+	if account.accountStateCalls != 1 {
+		t.Fatalf("account state calls=%d, want exactly one authoritative snapshot", account.accountStateCalls)
 	}
 	if report.AccountStatesApplied != 1 || report.BalancesUpdated != 1 {
 		t.Fatalf("report=%+v, post-recovery freshness maintenance must preserve one logical account reconciliation", report)
 	}
-	cached, ok := c.Account(model.AccountIDBitgetDefault)
+	cached, ok := c.Account("T:bitget")
 	if !ok {
 		t.Fatal("refreshed account missing")
 	}
-	if !cached.IsFresh(time.Now()) {
-		t.Fatalf("refreshed account is stale: %+v", cached.Freshness())
+	if cached.IsFresh(time.Now()) {
+		t.Fatalf("long recovery should expose stale evidence to the risk gate: %+v", cached.Freshness())
 	}
-	if got := cached.LastEvent().TsEvent; !got.Equal(secondAt) {
-		t.Fatalf("cached account event at=%s, want refreshed event %s", got, secondAt)
+	if got := cached.LastEvent().TsEvent; !got.Equal(firstAt) {
+		t.Fatalf("cached account event at=%s, want sole snapshot %s", got, firstAt)
 	}
-	if balance, ok := c.BalanceForAccount(model.AccountIDBitgetDefault, "USDT"); !ok || !balance.Free.Equal(d("800")) {
-		t.Fatalf("refreshed balance=(%+v,%v), want free=800", balance, ok)
+	if balance, ok := c.BalanceForAccount("T:bitget", "USDT"); !ok || !balance.Free.Equal(d("900")) {
+		t.Fatalf("sole snapshot balance=(%+v,%v), want free=900", balance, ok)
 	}
 }
 
@@ -589,12 +812,11 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 	ts := time.Unix(20, 0)
 	positionErr := errors.New("positions unavailable")
 	acct := &snapshotAccount{
-		hasAccountState: true,
 		positionReports: true,
 		positionErr:     positionErr,
 		accountState: model.AccountState{
-			AccountID: model.AccountIDBinanceDefault,
-			Venue:     "BINANCE",
+			AccountID: "T:acct",
+			Venue:     "T",
 			Type:      model.AccountMargin,
 			Balances: []model.AccountBalance{{
 				Currency: "USDT",
@@ -602,18 +824,18 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 				Free:     d("950"),
 			}},
 			Reported: true,
-			EventID:  model.AccountStateEventID("BINANCE", model.AccountIDBinanceDefault, ts),
+			EventID:  model.AccountStateEventID("T", "T:acct", ts),
 			TsEvent:  ts,
 			TsInit:   ts,
 		},
 	}
 
-	r := New(acct, nil, c)
+	r := newReconcilerWithAccountCapabilities(acct, nil, c)
 	_, err := r.Run(context.Background())
 	if !errors.Is(err, positionErr) {
 		t.Fatalf("run err=%v, want positions error", err)
 	}
-	cached, ok := c.Account(model.AccountIDBinanceDefault)
+	cached, ok := c.Account("T:acct")
 	if !ok {
 		t.Fatal("account state should be applied before positions fail")
 	}
@@ -624,19 +846,21 @@ func TestReconcileDoesNotMarkAccountReconciledWhenPositionsFail(t *testing.T) {
 
 func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t *testing.T) {
 	c := cache.New()
-	c.UpsertBalance(model.AccountBalance{Currency: "BTC", Total: d("1"), Available: d("1")})
+	c.UpsertBalance(model.AccountBalance{AccountID: "acct", Currency: "BTC", Total: d("1"), Free: d("1")})
 	c.UpsertPosition(model.Position{InstrumentID: spotBTC, Side: enums.PosNet, Quantity: d("1")})
 
+	balances := []model.AccountBalance{
+		{Currency: "BTC", Total: d("2"), Free: d("2")},
+		{Currency: "USDT", Total: d("800"), Free: d("800")},
+	}
 	acct := &snapshotAccount{
+		accountState:    authoritativeSnapshot("acct", time.Unix(1, 0), balances...),
 		positionReports: true,
-		balances: []model.AccountBalance{
-			{Currency: "BTC", Total: d("2"), Available: d("2")},
-			{Currency: "USDT", Total: d("800"), Available: d("800")},
-		},
-		positions: nil,
+		balances:        balances,
+		positions:       nil,
 	}
 
-	r := New(acct, nil, c)
+	r := newReconcilerWithAccountCapabilities(acct, nil, c)
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -644,10 +868,10 @@ func TestReconcileSpotBalancesWithEmptyPositionsDoesNotFabricateMarginPosition(t
 	if rep.BalancesUpdated != 2 || rep.PositionsUpdated != 0 || rep.PositionsCleared != 0 {
 		t.Fatalf("report=%+v, want balances=2 and no direct position mutation", rep)
 	}
-	if b, ok := c.Balance("BTC"); !ok || !b.Total.Equal(d("2")) || !b.Available.Equal(d("2")) {
+	if b, ok := c.Balance("BTC"); !ok || !b.Total.Equal(d("2")) || !b.Free.Equal(d("2")) {
 		t.Fatalf("BTC balance not reconciled: ok=%v balance=%+v", ok, b)
 	}
-	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(d("800")) || !b.Available.Equal(d("800")) {
+	if b, ok := c.Balance("USDT"); !ok || !b.Total.Equal(d("800")) || !b.Free.Equal(d("800")) {
 		t.Fatalf("USDT balance not reconciled: ok=%v balance=%+v", ok, b)
 	}
 	if p, ok := c.Position(spotBTC, enums.PosNet); !ok || !p.Quantity.Equal(d("1")) {

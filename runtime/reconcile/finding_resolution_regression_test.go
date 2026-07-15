@@ -1669,8 +1669,13 @@ func TestPositionMismatchResolutionRequiresCompleteCoveredPass(t *testing.T) {
 		{
 			name: "partial pass",
 			mutate: func(exec *snapshotExec) {
-				exec.mass = positionMass(t, "acct", d("1"), time.Unix(311, 0))
-				exec.mass.Partial = true
+				partial := positionMass(t, "acct", d("1"), time.Unix(311, 0))
+				exec.mass = nil
+				exec.massFn = func(query model.MassStatusQuery) *model.ExecutionMassStatus {
+					mass := typedCoverageMass(query, []model.InstrumentID{btc}, model.CoverageComplete, model.CoverageNotRequested, model.CoveragePartial)
+					mass.PositionReports = partial.Clone().PositionReports
+					return mass
+				}
 			},
 		},
 		{

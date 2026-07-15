@@ -174,13 +174,17 @@ var (
 	hyperliquidSpotCloseBuffer       = decimal.RequireFromString("0.995")
 )
 
+type accountStateSource interface {
+	AccountState(context.Context) (model.AccountState, error)
+}
+
 func hyperliquidSpotTestnetLifecycleSpec(
 	t *testing.T,
 	label, accountID string,
 	inst *model.Instrument,
 	book *model.OrderBook,
 	maxNotional decimal.Decimal,
-	reporter contract.AccountStateReporter,
+	reporter accountStateSource,
 ) runtimeaccept.OrderLifecycleSpec {
 	t.Helper()
 	if inst == nil || book == nil || len(book.Bids) == 0 || len(book.Asks) == 0 {

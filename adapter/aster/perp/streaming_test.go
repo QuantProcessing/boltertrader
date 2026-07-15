@@ -196,8 +196,8 @@ func TestPerpAccountUpdateEmitsOnlyBalanceAndPositionDeltas(t *testing.T) {
 	}
 	bal := events[0].(contract.BalanceEvent).Balance
 	assertDec(t, bal.Total, "10")
-	if !bal.Free.IsZero() || !bal.Available.IsZero() {
-		t.Fatalf("ACCOUNT_UPDATE manufactured free/available from cross wallet: %#v", bal)
+	if !bal.Free.IsZero() {
+		t.Fatalf("ACCOUNT_UPDATE manufactured free balance from cross wallet: %#v", bal)
 	}
 }
 

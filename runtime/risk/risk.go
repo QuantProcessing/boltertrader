@@ -49,11 +49,9 @@ type Engine struct {
 	reservations        map[uint64]submissionReservation
 	instrumentProvider  model.InstrumentProvider
 	requireAccountState bool
-	allowLegacyBalance  bool
 	now                 func() time.Time
-	productSupport      map[enums.InstrumentKind]riskProductSupport
+	productSupport      map[riskProductKey]riskProductSupport
 	productSupportReady bool
-	venueValidators     map[enums.InstrumentKind]contract.VenuePreTradeValidator
 }
 
 // defaultClientIDRetentionLimit is the bounded local idempotency horizon for
@@ -64,13 +62,12 @@ const defaultClientIDRetentionLimit = 100_000
 // New builds a risk Engine reading positions from c.
 func New(limits Limits, c *cache.Cache) *Engine {
 	return &Engine{
-		limits:          limits,
-		cache:           c,
-		seen:            make(map[string]struct{}),
-		clientIDLimit:   defaultClientIDRetentionLimit,
-		reservations:    make(map[uint64]submissionReservation),
-		now:             time.Now,
-		venueValidators: make(map[enums.InstrumentKind]contract.VenuePreTradeValidator),
+		limits:        limits,
+		cache:         c,
+		seen:          make(map[string]struct{}),
+		clientIDLimit: defaultClientIDRetentionLimit,
+		reservations:  make(map[uint64]submissionReservation),
+		now:           time.Now,
 	}
 }
 
@@ -110,53 +107,52 @@ func (e *Engine) WithClientIDRetentionLimit(limit int) *Engine {
 }
 
 type riskProductSupport struct {
-	trading      bool
-	account      bool
-	accountState bool
+	trading bool
+	account bool
 }
 
-// SetRuntimeCapabilities installs the product-support contract provided by the
-// runtime clients. When configured, every order must target an advertised
-// trading product, and account-state-backed risk also requires an account-state
-// capable account client for that product.
-func (e *Engine) SetRuntimeCapabilities(caps ...contract.Capabilities) {
+type riskProductKey struct {
+	venue string
+	kind  enums.InstrumentKind
+}
+
+// SetRuntimeCapabilities installs capability contracts with their client
+// provenance intact. A product advertised by an execution client cannot stand
+// in for a configured authoritative account client.
+func (e *Engine) SetRuntimeCapabilities(execution, account *contract.Capabilities) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.productSupportReady = true
-	e.productSupport = make(map[enums.InstrumentKind]riskProductSupport)
-	for _, cap := range caps {
-		for _, product := range cap.Products {
-			support := e.productSupport[product.Kind]
-			if product.Trading && cap.Trading.Submit {
+	e.productSupport = make(map[riskProductKey]riskProductSupport)
+	if execution != nil {
+		for _, product := range execution.Products {
+			key := riskProductKey{venue: execution.Venue, kind: product.Kind}
+			support := e.productSupport[key]
+			if product.Trading && execution.Trading.Submit {
 				support.trading = true
 			}
+			e.productSupport[key] = support
+		}
+	}
+	if account != nil {
+		for _, product := range account.Products {
+			key := riskProductKey{venue: account.Venue, kind: product.Kind}
+			support := e.productSupport[key]
 			if product.Account {
 				support.account = true
-				if cap.Reports.AccountStateSnapshots || cap.Streaming.AccountState {
-					support.accountState = true
-				}
 			}
-			e.productSupport[product.Kind] = support
+			e.productSupport[key] = support
 		}
 	}
 }
 
-// RequireAccountState makes pre-trade checks fail closed when no fresh account
-// state can be selected for the order's venue/product.
+// RequireAccountState makes risk-increasing orders fail closed until a matching
+// account client is configured, an authoritative reconciliation has completed,
+// and the selected account state remains fresh for the order's venue/product.
 func (e *Engine) RequireAccountState() *Engine {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.requireAccountState = true
-	return e
-}
-
-// AllowLegacyBalanceFallback explicitly enables the pre-account-state spot
-// balance path. It exists for adapters/tests that have not migrated to
-// AccountStateReporter yet; RequireAccountState still takes precedence.
-func (e *Engine) AllowLegacyBalanceFallback() *Engine {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.allowLegacyBalance = true
 	return e
 }
 
@@ -169,31 +165,6 @@ func (e *Engine) WithClock(now func() time.Time) *Engine {
 	defer e.mu.Unlock()
 	e.now = now
 	return e
-}
-
-// WithVenuePreTradeValidator registers the venue's authoritative capacity and
-// prepared-payload validator for the supplied product kinds. A nil validator
-// removes those registrations.
-func (e *Engine) WithVenuePreTradeValidator(validator contract.VenuePreTradeValidator, kinds ...enums.InstrumentKind) *Engine {
-	e.SetVenuePreTradeValidator(validator, kinds...)
-	return e
-}
-
-// SetVenuePreTradeValidator is the non-fluent registration surface used by
-// venue-neutral runtime wiring.
-func (e *Engine) SetVenuePreTradeValidator(validator contract.VenuePreTradeValidator, kinds ...enums.InstrumentKind) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.venueValidators == nil {
-		e.venueValidators = make(map[enums.InstrumentKind]contract.VenuePreTradeValidator)
-	}
-	for _, kind := range kinds {
-		if validator == nil {
-			delete(e.venueValidators, kind)
-			continue
-		}
-		e.venueValidators[kind] = validator
-	}
 }
 
 // Trip activates the kill switch: all subsequent orders are rejected.
@@ -217,106 +188,34 @@ func (e *Engine) Tripped() bool {
 	return e.tripped
 }
 
-// Check validates an order request against the limits, kill switch, instrument
-// minimums, and duplicate-client-id protection. It returns a wrapped
-// ErrRiskRejected on failure. inst may be nil (instrument minimums skipped).
-func (e *Engine) Check(req model.OrderRequest, inst *model.Instrument) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, configured := e.venueValidators[req.InstrumentID.Kind]; configured {
-		return fmt.Errorf("%w: product %s requires context-aware venue pre-trade validation", ErrRiskRejected, req.InstrumentID.Kind)
-	}
-	_, err := e.checkLocked(req, inst, false)
-	return err
-}
-
-// CheckContext performs the same local checks as Check and, for product kinds
-// with a registered venue validator, invokes that validator only after local
-// checks pass. The risk mutex is never held across validator I/O.
-func (e *Engine) CheckContext(ctx context.Context, req model.OrderRequest, inst *model.Instrument) (contract.PreTradeLease, error) {
-	lease, _, err := e.checkContext(ctx, req, inst, false)
-	return lease, err
-}
-
-// CheckSubmission performs context-aware risk validation and atomically holds
+// CheckSubmission performs local risk validation and atomically holds
 // the accepted request's local exposure until release is called. Exec uses this
-// additive surface to close the gap between the risk check and PendingNew cache
-// insertion without changing the legacy Check or CheckContext contracts.
+// surface to close the gap between the risk check and PendingNew cache insertion.
 func (e *Engine) CheckSubmission(
 	ctx context.Context,
 	req model.OrderRequest,
 	inst *model.Instrument,
-) (contract.PreTradeLease, func(), error) {
-	return e.checkContext(ctx, req, inst, true)
-}
-
-func (e *Engine) checkContext(
-	ctx context.Context,
-	req model.OrderRequest,
-	inst *model.Instrument,
-	reserveSubmission bool,
-) (contract.PreTradeLease, func(), error) {
+) (func(), error) {
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	e.mu.Lock()
-	validator, configured := e.venueValidators[req.InstrumentID.Kind]
-	reserved, err := e.checkLocked(req, inst, configured)
+	reserved, err := e.checkLocked(req, inst)
 	var release func()
-	if err == nil && (reserveSubmission || configured) {
+	if err == nil {
 		release = e.reserveSubmissionLocked(req, inst)
 	}
 	e.mu.Unlock()
 	if err != nil {
-		return nil, nil, err
-	}
-	if !configured {
-		return nil, release, nil
-	}
-	if !reserveSubmission && release != nil {
-		deferredRelease := release
-		defer deferredRelease()
-		release = nil
-	}
-
-	lease, validationErr := validator.ValidatePreTrade(ctx, req, inst)
-	if validationErr != nil {
-		if lease != nil {
-			lease.Release()
-		}
-		if release != nil {
-			release()
-		}
-		e.rollbackClientID(req.ClientID, reserved)
-		return nil, nil, validationErr
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		if lease != nil {
-			lease.Release()
-		}
-		if release != nil {
-			release()
-		}
+		release()
 		e.rollbackClientID(req.ClientID, reserved)
-		return nil, nil, err
+		return nil, err
 	}
-
-	// A kill switch tripped while the validator was in I/O still denies handoff.
-	e.mu.RLock()
-	tripped := e.tripped
-	e.mu.RUnlock()
-	if tripped {
-		if lease != nil {
-			lease.Release()
-		}
-		if release != nil {
-			release()
-		}
-		e.rollbackClientID(req.ClientID, reserved)
-		return nil, nil, fmt.Errorf("%w: kill switch active", ErrRiskRejected)
-	}
-	return lease, release, nil
+	return release, nil
 }
 
 func (e *Engine) reserveSubmissionLocked(req model.OrderRequest, inst *model.Instrument) func() {
@@ -357,7 +256,7 @@ func (e *Engine) rollbackClientID(clientID string, reserved bool) {
 
 // checkLocked performs only local/cache-backed checks. The caller must hold
 // e.mu for writing so duplicate client IDs can be reserved atomically.
-func (e *Engine) checkLocked(req model.OrderRequest, inst *model.Instrument, venueValidated bool) (bool, error) {
+func (e *Engine) checkLocked(req model.OrderRequest, inst *model.Instrument) (bool, error) {
 
 	if e.tripped {
 		return false, fmt.Errorf("%w: kill switch active", ErrRiskRejected)
@@ -387,7 +286,7 @@ func (e *Engine) checkLocked(req model.OrderRequest, inst *model.Instrument, ven
 			return false, fmt.Errorf("%w: order notional %s exceeds max %s", ErrRiskRejected, notional, lim)
 		}
 	}
-	if err := e.ensureProductSupported(req.InstrumentID.Kind); err != nil {
+	if err := e.ensureProductSupported(req); err != nil {
 		return false, err
 	}
 
@@ -406,11 +305,7 @@ func (e *Engine) checkLocked(req model.OrderRequest, inst *model.Instrument, ven
 		}
 	}
 
-	if venueValidated {
-		if err := e.checkVenueValidatedAccount(req, inst); err != nil {
-			return false, err
-		}
-	} else if req.InstrumentID.Kind == enums.KindSpot {
+	if req.InstrumentID.Kind == enums.KindSpot {
 		if inst == nil {
 			return false, fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
 		}
@@ -493,82 +388,13 @@ func (e *Engine) clientIDHasActiveOrder(clientID string) bool {
 	return false
 }
 
-func (e *Engine) checkVenueValidatedAccount(req model.OrderRequest, inst *model.Instrument) error {
-	if req.InstrumentID.Kind == enums.KindSpot && inst == nil {
-		return fmt.Errorf("%w: spot instrument metadata required for cash risk check", ErrRiskRejected)
-	}
-	acct, ok, err := e.accountForRequest(req)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
-	}
-	if req.InstrumentID.Kind == enums.KindSpot {
-		if acct.Type() != model.AccountCash && acct.Type() != model.AccountMargin {
-			return fmt.Errorf("%w: unsupported account type %s for spot order", ErrRiskRejected, acct.Type())
-		}
-	} else if acct.Type() != model.AccountMargin {
-		return fmt.Errorf("%w: unsupported account type %s for %s order", ErrRiskRejected, acct.Type(), req.InstrumentID.Kind)
-	}
-	return e.ensureFreshAccount(acct)
-}
-
 func (e *Engine) checkSpotBalance(req model.OrderRequest, inst *model.Instrument) error {
 	if acct, ok, err := e.accountForRequest(req); err != nil {
 		return err
 	} else if ok {
 		return e.checkSpotAccountBalance(req, inst, acct)
 	}
-	if e.requireAccountState || !e.allowLegacyBalance {
-		return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
-	}
-	return e.checkLegacySpotBalance(req, inst)
-}
-
-func (e *Engine) checkLegacySpotBalance(req model.OrderRequest, inst *model.Instrument) error {
-	mult := inst.ContractMultiplier
-	if !mult.IsPositive() {
-		mult = decimal.NewFromInt(1)
-	}
-	switch req.Side {
-	case enums.SideBuy:
-		if inst.Quote == "" {
-			return fmt.Errorf("%w: spot buy requires quote currency metadata for cash risk check", ErrRiskRejected)
-		}
-		if req.Price.IsZero() {
-			return fmt.Errorf("%w: spot buy requires a reference price for cash risk check", ErrRiskRejected)
-		}
-		reserved, err := e.workingSpotReservation(req, inst, "", time.Time{})
-		if err != nil {
-			return err
-		}
-		required := orderNotional(req, inst).Add(reserved)
-		available := decimal.Zero
-		if bal, ok := e.cache.Balance(inst.Quote); ok {
-			available = bal.FreeOrAvailable()
-		}
-		if required.GreaterThan(available) {
-			return fmt.Errorf("%w: insufficient %s cash: need %s, available %s", ErrRiskRejected, inst.Quote, required, available)
-		}
-	case enums.SideSell:
-		if inst.Base == "" {
-			return fmt.Errorf("%w: spot sell requires base currency metadata for cash risk check", ErrRiskRejected)
-		}
-		reserved, err := e.workingSpotReservation(req, inst, "", time.Time{})
-		if err != nil {
-			return err
-		}
-		required := req.Quantity.Mul(mult).Add(reserved)
-		available := decimal.Zero
-		if bal, ok := e.cache.Balance(inst.Base); ok {
-			available = bal.FreeOrAvailable()
-		}
-		if required.GreaterThan(available) {
-			return fmt.Errorf("%w: insufficient %s inventory: need %s, available %s", ErrRiskRejected, inst.Base, required, available)
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: no account state for venue %s", ErrRiskRejected, req.InstrumentID.Venue)
 }
 
 func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Instrument, acct accounting.Account) error {
@@ -577,6 +403,12 @@ func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Ins
 	}
 	if err := e.ensureFreshAccount(acct); err != nil {
 		return err
+	}
+	// Unified margin venues do not expose cash availability through Balance.Free
+	// consistently. Once authoritative readiness is proven, their capacity stays
+	// server-authoritative; only cash accounts use local Free reservations.
+	if acct.Type() == model.AccountMargin {
+		return nil
 	}
 	switch req.Side {
 	case enums.SideBuy:
@@ -595,7 +427,7 @@ func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Ins
 			return err
 		}
 		required := orderNotional(req, inst).Add(reserved)
-		free := balance.FreeOrAvailable()
+		free := balance.Free
 		if required.GreaterThan(free) {
 			return fmt.Errorf("%w: insufficient %s cash on account %s: need %s, free %s", ErrRiskRejected, inst.Quote, acct.ID(), required, free)
 		}
@@ -612,7 +444,7 @@ func (e *Engine) checkSpotAccountBalance(req model.OrderRequest, inst *model.Ins
 			return err
 		}
 		required := req.Quantity.Mul(contractMultiplier(inst)).Add(reserved)
-		free := balance.FreeOrAvailable()
+		free := balance.Free
 		if required.GreaterThan(free) {
 			return fmt.Errorf("%w: insufficient %s inventory on account %s: need %s, free %s", ErrRiskRejected, inst.Base, acct.ID(), required, free)
 		}
@@ -634,24 +466,6 @@ func (e *Engine) checkMarginAccount(req model.OrderRequest, inst *model.Instrume
 	if err := e.ensureFreshAccount(acct); err != nil {
 		return err
 	}
-	if req.Price.IsZero() {
-		return fmt.Errorf("%w: %s order requires a reference price for account risk check", ErrRiskRejected, req.InstrumentID.Kind)
-	}
-	ccy := marginCurrency(req.InstrumentID, inst)
-	if ccy == "" {
-		return fmt.Errorf("%w: missing margin currency metadata for %s", ErrRiskRejected, req.InstrumentID)
-	}
-	required := orderNotional(req, inst)
-	free, ok := acct.BalanceFree(ccy)
-	if ok && required.LessThanOrEqual(free) {
-		return nil
-	}
-	if !ok {
-		return fmt.Errorf("%w: missing free balance for %s on account %s", ErrRiskRejected, ccy, acct.ID())
-	}
-	if required.GreaterThan(free) {
-		return fmt.Errorf("%w: insufficient %s margin on account %s: need %s, free %s", ErrRiskRejected, ccy, acct.ID(), required, free)
-	}
 	return nil
 }
 
@@ -664,6 +478,9 @@ func (e *Engine) accountForRequest(req model.OrderRequest) (accounting.Account, 
 		if !ok {
 			return nil, false, fmt.Errorf("%w: no account state for account %s", ErrRiskRejected, req.AccountID)
 		}
+		if acct.Venue() != req.InstrumentID.Venue {
+			return nil, false, fmt.Errorf("%w: account %s venue %s does not match order venue %s", ErrRiskRejected, req.AccountID, acct.Venue(), req.InstrumentID.Venue)
+		}
 		return acct, true, nil
 	}
 	ids := e.cache.AccountIDsForVenue(req.InstrumentID.Venue)
@@ -671,6 +488,9 @@ func (e *Engine) accountForRequest(req model.OrderRequest) (accounting.Account, 
 		return nil, false, fmt.Errorf("%w: ambiguous account state for venue %s; account id required", ErrRiskRejected, req.InstrumentID.Venue)
 	}
 	acct, ok := e.cache.AccountForVenue(req.InstrumentID.Venue)
+	if ok && acct.Venue() != req.InstrumentID.Venue {
+		return nil, false, fmt.Errorf("%w: selected account %s venue %s does not match order venue %s", ErrRiskRejected, acct.ID(), acct.Venue(), req.InstrumentID.Venue)
+	}
 	return acct, ok, nil
 }
 
@@ -926,21 +746,33 @@ func riskBearingOrderStatus(status enums.OrderStatus) bool {
 	}
 }
 
-func (e *Engine) ensureProductSupported(kind enums.InstrumentKind) error {
+func (e *Engine) ensureProductSupported(req model.OrderRequest) error {
+	id := req.InstrumentID
+	requiresAccountSupport := id.Kind == enums.KindSpot || (e.requireAccountState && !req.ReduceOnly)
 	if !e.productSupportReady {
+		if requiresAccountSupport {
+			return fmt.Errorf("%w: runtime capabilities are not configured for account-state-backed risk", ErrRiskRejected)
+		}
+		if e.requireAccountState {
+			return fmt.Errorf("%w: runtime capabilities are not configured for trading risk", ErrRiskRejected)
+		}
 		return nil
 	}
-	support, ok := e.productSupport[kind]
+	support, ok := e.productSupport[riskProductKey{venue: id.Venue, kind: id.Kind}]
 	if !ok || !support.trading {
-		return fmt.Errorf("%w: unsupported product %s for trading", ErrRiskRejected, kind)
+		return fmt.Errorf("%w: unsupported product %s/%s for trading", ErrRiskRejected, id.Venue, id.Kind)
 	}
-	if e.requireAccountState && (!support.account || !support.accountState) {
-		return fmt.Errorf("%w: unsupported product %s for account-state-backed risk", ErrRiskRejected, kind)
+	if requiresAccountSupport && !support.account {
+		return fmt.Errorf("%w: unsupported product %s/%s for account-state-backed risk", ErrRiskRejected, id.Venue, id.Kind)
 	}
 	return nil
 }
 
 func (e *Engine) ensureFreshAccount(acct accounting.Account) error {
+	f := acct.Freshness()
+	if f.LastReconciledAt.IsZero() {
+		return fmt.Errorf("%w: account %s has no initial authoritative reconciliation", ErrRiskRejected, acct.ID())
+	}
 	now := time.Now
 	if e.now != nil {
 		now = e.now
@@ -948,7 +780,6 @@ func (e *Engine) ensureFreshAccount(acct accounting.Account) error {
 	if acct.IsFresh(now()) {
 		return nil
 	}
-	f := acct.Freshness()
 	return fmt.Errorf("%w: stale account state for %s age %s exceeds %s", ErrRiskRejected, acct.ID(), f.Age(now()), f.StaleAfter)
 }
 
@@ -961,27 +792,4 @@ func contractMultiplier(inst *model.Instrument) decimal.Decimal {
 		return inst.ContractMultiplier
 	}
 	return decimal.NewFromInt(1)
-}
-
-func marginCurrency(id model.InstrumentID, inst *model.Instrument) string {
-	if inst != nil {
-		if inst.Settle != "" {
-			return inst.Settle
-		}
-		if inst.Quote != "" {
-			return inst.Quote
-		}
-	}
-	quote := ""
-	for i := len(id.Symbol) - 1; i >= 0; i-- {
-		if id.Symbol[i] == '-' {
-			quote = id.Symbol[i+1:]
-			break
-		}
-	}
-	ok := quote != ""
-	if !ok {
-		return ""
-	}
-	return strings.ToUpper(quote)
 }

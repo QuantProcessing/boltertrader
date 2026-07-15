@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,24 @@ import (
 	"github.com/QuantProcessing/boltertrader/runtime/runtimetest"
 	"github.com/shopspring/decimal"
 )
+
+type cursorSequenceJournal struct {
+	*journal.MemoryJournal
+	cursors []journal.ReconciliationCursor
+}
+
+func (j *cursorSequenceJournal) LoadReconciliationCursors(context.Context) ([]journal.ReconciliationCursor, error) {
+	return append([]journal.ReconciliationCursor(nil), j.cursors...), nil
+}
+
+func mustCursorPayload(t *testing.T, cursor Cursor) string {
+	t.Helper()
+	payload, err := json.Marshal(cursor)
+	if err != nil {
+		t.Fatalf("marshal cursor: %v", err)
+	}
+	return string(payload)
+}
 
 func TestReconciliationIDsDeterministicAcrossRuns(t *testing.T) {
 	scope := ScopeKey{Venue: "T", AccountID: "acct"}
@@ -62,6 +81,129 @@ func TestJournalStateStoreCommitsAndLoadsCursor(t *testing.T) {
 	}
 	if got.LastReportID != cursor.LastReportID || got.LookbackFloor != cursor.LookbackFloor {
 		t.Fatalf("cursor=%+v, want %+v", got, cursor)
+	}
+}
+
+func TestJournalStateStoreLoadCursorRejectsCorruptTargetPayload(t *testing.T) {
+	scope := ScopeKey{Venue: "T", AccountID: "acct"}
+	valid := Cursor{Scope: scope, Stream: StreamOrders, LastReportID: "valid-before-corruption"}
+	j := &cursorSequenceJournal{
+		MemoryJournal: journal.NewMemory(),
+		cursors: []journal.ReconciliationCursor{
+			{
+				RecordID: "cursor-valid",
+				Scope:    scope.String(),
+				Stream:   string(StreamOrders),
+				Cursor:   mustCursorPayload(t, valid),
+			},
+			{
+				RecordID: "cursor-corrupt",
+				Scope:    scope.String(),
+				Stream:   string(StreamOrders),
+				Cursor:   "{not-json",
+			},
+		},
+	}
+
+	_, err := NewJournalStateStore(j).LoadCursor(context.Background(), scope, StreamOrders)
+	if err == nil {
+		t.Fatal("load cursor error=nil, want corrupt target cursor failure")
+	}
+	for _, detail := range []string{"cursor-corrupt", scope.String(), string(StreamOrders)} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("load cursor error=%q, want context %q", err, detail)
+		}
+	}
+}
+
+func TestJournalStateStoreLoadCursorRejectsTargetPayloadIdentityMismatch(t *testing.T) {
+	target := ScopeKey{Venue: "T", AccountID: "target"}
+	tests := []struct {
+		name    string
+		payload Cursor
+	}{
+		{
+			name:    "scope",
+			payload: Cursor{Scope: ScopeKey{Venue: "T", AccountID: "other"}, Stream: StreamOrders},
+		},
+		{
+			name:    "stream",
+			payload: Cursor{Scope: target, Stream: StreamPositions},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recordID := "cursor-identity-mismatch-" + tt.name
+			j := &cursorSequenceJournal{
+				MemoryJournal: journal.NewMemory(),
+				cursors: []journal.ReconciliationCursor{
+					{
+						RecordID: recordID,
+						Scope:    target.String(),
+						Stream:   string(StreamOrders),
+						Cursor:   mustCursorPayload(t, tt.payload),
+					},
+				},
+			}
+
+			_, err := NewJournalStateStore(j).LoadCursor(context.Background(), target, StreamOrders)
+			if err == nil {
+				t.Fatal("load cursor error=nil, want target payload identity mismatch failure")
+			}
+			for _, detail := range []string{recordID, target.String(), string(StreamOrders), "payload identity"} {
+				if !strings.Contains(err.Error(), detail) {
+					t.Fatalf("load cursor error=%q, want context %q", err, detail)
+				}
+			}
+		})
+	}
+}
+
+func TestJournalStateStoreLoadCursorIgnoresCorruptUnrelatedPayloadAndKeepsNewestMatch(t *testing.T) {
+	target := ScopeKey{Venue: "T", AccountID: "target"}
+	unrelated := ScopeKey{Venue: "T", AccountID: "unrelated"}
+	older := Cursor{Scope: target, Stream: StreamOrders, LastReportID: "older"}
+	newer := Cursor{Scope: target, Stream: StreamOrders, LastReportID: "newer"}
+	j := &cursorSequenceJournal{
+		MemoryJournal: journal.NewMemory(),
+		cursors: []journal.ReconciliationCursor{
+			{
+				RecordID: "cursor-older",
+				Scope:    target.String(),
+				Stream:   string(StreamOrders),
+				Cursor:   mustCursorPayload(t, older),
+			},
+			{
+				RecordID: "cursor-unrelated-corrupt",
+				Scope:    unrelated.String(),
+				Stream:   string(StreamOrders),
+				Cursor:   "{not-json",
+			},
+			{
+				RecordID: "cursor-newer",
+				Scope:    target.String(),
+				Stream:   string(StreamOrders),
+				Cursor:   mustCursorPayload(t, newer),
+			},
+			{
+				RecordID: "cursor-unrelated-valid-payload",
+				Scope:    unrelated.String(),
+				Stream:   string(StreamOrders),
+				Cursor: mustCursorPayload(t, Cursor{
+					Scope:        target,
+					Stream:       StreamOrders,
+					LastReportID: "must-be-ignored",
+				}),
+			},
+		},
+	}
+
+	got, err := NewJournalStateStore(j).LoadCursor(context.Background(), target, StreamOrders)
+	if err != nil {
+		t.Fatalf("load cursor: %v", err)
+	}
+	if got.LastReportID != newer.LastReportID {
+		t.Fatalf("last report id=%q, want newest matching cursor %q", got.LastReportID, newer.LastReportID)
 	}
 }
 
@@ -124,60 +266,57 @@ func TestReconcilerDoesNotRequestUnsupportedFillHistory(t *testing.T) {
 	}
 }
 
-func TestFillPartialWarningKeepsNextQueryAtSafeCursorFloor(t *testing.T) {
-	for _, warningCode := range []string{"FILL_REPORTS_PARTIAL", "FILL_REPORTS_LIMIT_REACHED"} {
-		t.Run(warningCode, func(t *testing.T) {
-			ctx := context.Background()
-			store := NewJournalStateStore(journal.NewMemory())
-			scope := ScopeKey{Venue: "T", AccountID: "acct"}
-			from := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-			if err := store.CommitCursor(ctx, Cursor{
-				Scope:              scope,
-				Stream:             StreamOrders,
-				LastSuccessfulPass: PassID(scope, from),
-				LastVenueTime:      from,
-				LastLocalApplyTime: from,
-				LookbackFloor:      from,
-			}); err != nil {
-				t.Fatalf("seed cursor: %v", err)
-			}
+func TestPartialFillCoverageKeepsNextQueryAtSafeCursorFloor(t *testing.T) {
+	ctx := context.Background()
+	store := NewJournalStateStore(journal.NewMemory())
+	scope := ScopeKey{Venue: "T", AccountID: "acct"}
+	from := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	if err := store.CommitCursor(ctx, Cursor{
+		Scope:              scope,
+		Stream:             StreamOrders,
+		LastSuccessfulPass: PassID(scope, from),
+		LastVenueTime:      from,
+		LastLocalApplyTime: from,
+		LookbackFloor:      from,
+	}); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
 
-			partialAt := from.Add(time.Hour)
-			partial := model.NewExecutionMassStatus("T", "acct", partialAt)
-			partial.Warnings = append(partial.Warnings, model.ReportWarning{
-				Code:    warningCode,
-				Message: "fill history did not cover the full requested window",
-			})
-			exec := &snapshotExec{mass: partial}
-			r := New(nil, exec, cache.New()).
-				WithAccountID("acct").
-				WithStateStore(store)
-			report, err := r.Run(ctx)
-			if err != nil {
-				t.Fatalf("partial run: %v", err)
-			}
-			if !report.FillsPartial {
-				t.Fatalf("partial report=%+v, want explicit fills-partial state", report)
-			}
-			cursor, err := store.LoadCursor(ctx, scope, StreamOrders)
-			if err != nil {
-				t.Fatalf("load partial cursor: %v", err)
-			}
-			if !cursor.FillsPartial {
-				t.Fatalf("cursor=%+v, want explicit fills-partial state", cursor)
-			}
+	partialAt := from.Add(time.Hour)
+	partial := model.NewExecutionMassStatus("T", "acct", partialAt)
+	partial.Warnings = append(partial.Warnings, model.ReportWarning{
+		Code:    "HISTORY_PAGE_NOTE",
+		Message: "diagnostic details do not control cursor safety",
+	})
+	exec := &snapshotExec{mass: partial, fillHistory: true, fillState: model.CoveragePartial}
+	r := New(nil, exec, cache.New()).
+		WithAccountID("acct").
+		WithStateStore(store)
+	report, err := r.Run(ctx)
+	if err != nil {
+		t.Fatalf("partial run: %v", err)
+	}
+	if !report.FillsPartial {
+		t.Fatalf("partial report=%+v, want explicit fills-partial state", report)
+	}
+	cursor, err := store.LoadCursor(ctx, scope, StreamOrders)
+	if err != nil {
+		t.Fatalf("load partial cursor: %v", err)
+	}
+	if report.CursorsCommitted != 0 || cursor.FillsPartial || !cursor.LastVenueTime.Equal(from) || !cursor.LookbackFloor.Equal(from) {
+		t.Fatalf("report=%+v cursor=%+v, incomplete evidence must preserve the prior safe cursor", report, cursor)
+	}
 
-			exec.mass = model.NewExecutionMassStatus("T", "acct", partialAt.Add(30*time.Minute))
-			if _, err := r.Run(ctx); err != nil {
-				t.Fatalf("retry run: %v", err)
-			}
-			if len(exec.queries) != 2 {
-				t.Fatalf("queries=%+v, want two mass-status queries", exec.queries)
-			}
-			if got := exec.queries[1].Since; !got.Equal(from) {
-				t.Fatalf("retry query since=%s, want prior safe fill floor %s", got, from)
-			}
-		})
+	exec.mass = model.NewExecutionMassStatus("T", "acct", partialAt.Add(30*time.Minute))
+	exec.fillState = model.CoverageComplete
+	if _, err := r.Run(ctx); err != nil {
+		t.Fatalf("retry run: %v", err)
+	}
+	if len(exec.queries) != 2 {
+		t.Fatalf("queries=%+v, want two mass-status queries", exec.queries)
+	}
+	if got := exec.queries[1].Since; !got.Equal(from) {
+		t.Fatalf("retry query since=%s, want prior safe fill floor %s", got, from)
 	}
 }
 
@@ -387,8 +526,9 @@ func TestAmbiguousSubmitResolvedByMassStatus(t *testing.T) {
 	fake := runtimetest.NewFakeExec()
 	fake.SetSubmitResult(nil, exec.ErrAmbiguousResult)
 	clk := clock.NewSimulatedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	engine := exec.New(fake, c, clk, "reconcile")
+	engine := exec.New(fake, c, clk, "reconcile").WithAccountID("acct")
 	req := model.OrderRequest{
+		AccountID:    "acct",
 		InstrumentID: btc,
 		ClientID:     "ambiguous-mass",
 		Side:         enums.SideBuy,
@@ -405,7 +545,7 @@ func TestAmbiguousSubmitResolvedByMassStatus(t *testing.T) {
 	}
 	accepted := model.Order{Request: req, VenueOrderID: "venue-ambiguous", Status: enums.StatusNew, CreatedAt: clk.Now(), UpdatedAt: clk.Now()}
 	fake.SetOrderStatusReports(accepted)
-	r := New(nil, fake, c).WithInFlightResolver(engine)
+	r := New(nil, fake, c).WithAccountID("acct").WithInFlightResolver(engine)
 	rep, err := r.Run(ctx)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -711,6 +851,7 @@ func TestDurableDuplicateFillResolvesReplayedInFlightIntent(t *testing.T) {
 	firstCache.UpsertOrder(seedOrder)
 	firstReport, err := New(nil, source, firstCache).
 		WithAccountID("acct").
+		WithClock(clock.NewSimulatedClock(generatedAt)).
 		WithStateStore(state).
 		Run(ctx)
 	if err != nil || firstReport.FillsApplied != 1 {
@@ -730,6 +871,7 @@ func TestDurableDuplicateFillResolvesReplayedInFlightIntent(t *testing.T) {
 		WithInFlightJournal(inflight)
 	secondReport, err := New(nil, source, replayCache).
 		WithAccountID("acct").
+		WithClock(clock.NewSimulatedClock(generatedAt)).
 		WithStateStore(state).
 		WithInFlightResolver(engine).
 		Run(ctx)
@@ -744,8 +886,9 @@ func TestDurableDuplicateFillResolvesReplayedInFlightIntent(t *testing.T) {
 func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	c := cache.New()
 	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	mass := model.NewExecutionMassStatus("T", "", generatedAt)
+	mass := model.NewExecutionMassStatus("T", "acct", generatedAt)
 	fill := model.Fill{
+		AccountID:    "acct",
 		InstrumentID: spotBTC,
 		VenueOrderID: "external-venue",
 		TradeID:      "external-trade",
@@ -754,10 +897,10 @@ func TestFillReportMaterializesExternalOrder(t *testing.T) {
 		Quantity:     d("2"),
 		Timestamp:    generatedAt,
 	}
-	if err := mass.AddFillReport(model.FillReport{Venue: "T", Fill: fill, ReportedAt: generatedAt}); err != nil {
+	if err := mass.AddFillReport(model.FillReport{Venue: "T", AccountID: "acct", Fill: fill, ReportedAt: generatedAt}); err != nil {
 		t.Fatalf("add fill: %v", err)
 	}
-	r := New(nil, &snapshotExec{mass: mass}, c)
+	r := New(nil, &snapshotExec{mass: mass}, c).WithAccountID("acct")
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -765,7 +908,7 @@ func TestFillReportMaterializesExternalOrder(t *testing.T) {
 	if rep.OrdersMaterialized != 1 || rep.FillsApplied != 1 {
 		t.Fatalf("report=%+v, want materialized=1 fills=1", rep)
 	}
-	order, ok := c.Order("external-external-venue-external-trade")
+	order, ok := c.OrderForAccount("acct", "external-acct-external-venue-external-trade")
 	if !ok {
 		t.Fatal("materialized external order missing")
 	}
@@ -1028,11 +1171,11 @@ func TestCumulativeSnapshotProgressUsesCanonicalOrderIdentity(t *testing.T) {
 func TestPartialScopeFailureKeepsMissingOrderOpenAndCommitsPartialCursor(t *testing.T) {
 	c := cache.New()
 	c.UpsertOrder(order("missing", btc, "1", enums.StatusNew))
-	generatedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	mass := model.NewExecutionMassStatus("T", "", generatedAt)
-	mass.Partial = true
 	store := NewJournalStateStore(journal.NewMemory())
-	r := New(nil, &snapshotExec{mass: mass}, c).WithStateStore(store)
+	exec := &snapshotExec{massFn: func(query model.MassStatusQuery) *model.ExecutionMassStatus {
+		return typedCoverageMass(query, []model.InstrumentID{btc}, model.CoveragePartial, model.CoverageNotRequested, model.CoverageNotRequested)
+	}}
+	r := New(nil, exec, c).WithAccountID("acct").WithStateStore(store)
 	rep, err := r.Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -1043,7 +1186,7 @@ func TestPartialScopeFailureKeepsMissingOrderOpenAndCommitsPartialCursor(t *test
 	if got, ok := c.Order("missing"); !ok || got.Status != enums.StatusNew {
 		t.Fatalf("missing order ok=%v order=%+v, want still NEW", ok, got)
 	}
-	cursor, err := store.LoadCursor(context.Background(), ScopeKey{Venue: "T"}, StreamOrders)
+	cursor, err := store.LoadCursor(context.Background(), ScopeKey{Venue: "T", AccountID: "acct"}, StreamOrders)
 	if err != nil {
 		t.Fatalf("load cursor: %v", err)
 	}
@@ -1069,10 +1212,11 @@ func TestAccountPositionMismatchIsAuditedWithoutOverwrite(t *testing.T) {
 	c := cache.New()
 	c.UpsertPosition(model.Position{InstrumentID: btc, Side: enums.PosNet, Quantity: d("1")})
 	acct := &snapshotAccount{
+		accountState:    authoritativeSnapshot("acct", time.Unix(1, 0)),
 		positionReports: true,
 		positions:       []model.Position{{InstrumentID: btc, Side: enums.PosNet, Quantity: d("2")}},
 	}
-	rep, err := New(acct, nil, c).Run(context.Background())
+	rep, err := newReconcilerWithAccountCapabilities(acct, nil, c).Run(context.Background())
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

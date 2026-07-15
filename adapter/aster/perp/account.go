@@ -41,7 +41,7 @@ func (c *accountClient) Capabilities() contract.Capabilities {
 	return contract.Capabilities{
 		Venue:     VenueName,
 		Products:  []contract.ProductCapability{{Kind: enums.KindPerp, Account: true}},
-		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true, AccountStateSnapshots: true},
+		Reports:   contract.ReportCapabilities{PositionReports: true, AccountBalanceSnapshots: true},
 		Streaming: contract.StreamCapabilities{Account: c.streaming, AccountState: false},
 	}
 }
@@ -152,7 +152,7 @@ func balancesFromResponse(account *sdkperp.AccountResponse, accountID string, fa
 	if len(account.Assets) == 0 {
 		free := dec(account.AvailableBalance)
 		total := firstNonZero(dec(account.TotalWalletBalance), dec(account.TotalMarginBalance), free)
-		return []model.AccountBalance{{AccountID: accountID, Currency: "USDT", Total: total, Free: free, Available: free, Locked: positiveSub(total, free), UpdatedAt: fallback}}
+		return []model.AccountBalance{{AccountID: accountID, Currency: "USDT", Total: total, Free: free, Locked: positiveSub(total, free), UpdatedAt: fallback}}
 	}
 	out := make([]model.AccountBalance, 0, len(account.Assets))
 	for _, asset := range account.Assets {
@@ -165,7 +165,7 @@ func balancesFromResponse(account *sdkperp.AccountResponse, accountID string, fa
 		}
 		free := dec(asset.AvailableBalance)
 		total := firstNonZero(dec(asset.WalletBalance), dec(asset.MarginBalance), free)
-		out = append(out, model.AccountBalance{AccountID: accountID, Currency: asset.Asset, Total: total, Free: free, Available: free, Locked: positiveSub(total, free), UpdatedAt: ts})
+		out = append(out, model.AccountBalance{AccountID: accountID, Currency: asset.Asset, Total: total, Free: free, Locked: positiveSub(total, free), UpdatedAt: ts})
 	}
 	return out
 }

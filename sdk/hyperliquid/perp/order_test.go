@@ -298,13 +298,122 @@ func TestClientSingleOrderMethodsRejectEmptyStatusesWithoutPanic(t *testing.T) {
 	status, err := client.PlaceOrder(context.Background(), order)
 	require.Nil(t, status)
 	require.ErrorContains(t, err, "no order status")
+	require.NotErrorIs(t, err, hyperliquid.ErrOrderRejected)
 	oid := int64(1)
 	status, err = client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
 	require.Nil(t, status)
 	require.ErrorContains(t, err, "no order status")
+	require.NotErrorIs(t, err, hyperliquid.ErrOrderRejected)
 	cancelStatus, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
 	require.Nil(t, cancelStatus)
 	require.ErrorContains(t, err, "no order status")
+	require.NotErrorIs(t, err, hyperliquid.ErrOrderRejected)
+}
+
+func TestClientSingleOrderMethodsKeepMalformedStatusesAmbiguous(t *testing.T) {
+	cloid := "client-1"
+	oid := int64(1)
+	order := PlaceOrderRequest{
+		AssetID: 1, IsBuy: true, Price: 10, Size: 0.1, ClientOrderID: &cloid,
+		OrderType: OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifGtc}},
+	}
+	tests := []struct {
+		name     string
+		response string
+		call     func(*Client) error
+	}{
+		{"place extra cardinality", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"client-1"}},{"resting":{"oid":2,"cloid":"client-1"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place empty shape", `{"status":"ok","response":{"type":"order","data":{"statuses":[{}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place invalid resting oid", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":0,"cloid":"client-1"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place malformed filled values", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":1,"totalSz":"bad","avgPx":"10"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"place cloid mismatch", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"other"}}]}}}`, func(client *Client) error { _, err := client.PlaceOrder(context.Background(), order); return err }},
+		{"modify extra cardinality", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"client-1"}},{"resting":{"oid":2,"cloid":"client-1"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify empty shape", `{"status":"ok","response":{"type":"order","data":{"statuses":[{}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify invalid filled oid", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":0,"totalSz":"1","avgPx":"10"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify malformed filled values", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":1,"totalSz":"1","avgPx":"bad"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"modify cloid mismatch", `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":1,"cloid":"other"}}]}}}`, func(client *Client) error {
+			_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: order})
+			return err
+		}},
+		{"cancel extra cardinality", `{"status":"ok","response":{"type":"default","data":{"statuses":["success","success"]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+		{"cancel arbitrary string", `{"status":"ok","response":{"type":"default","data":{"statuses":["unexpected"]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+		{"cancel malformed object", `{"status":"ok","response":{"type":"default","data":{"statuses":[{}]}}}`, func(client *Client) error {
+			_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.response))
+			}))
+			t.Cleanup(srv.Close)
+			base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+			base.BaseURL = srv.URL
+			err := test.call(NewClient(base))
+			require.Error(t, err)
+			require.NotErrorIs(t, err, hyperliquid.ErrOrderRejected)
+		})
+	}
+}
+
+func TestClientCancelAndModifyExposeTypedOrderRejection(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		call     func(*Client) error
+	}{
+		{
+			name:     "cancel",
+			response: `{"status":"ok","response":{"type":"default","data":{"statuses":[{"error":"Order was never placed"}]}}}`,
+			call: func(client *Client) error {
+				_, err := client.CancelOrder(context.Background(), CancelOrderRequest{AssetID: 1, OrderID: 1})
+				return err
+			},
+		},
+		{
+			name:     "modify",
+			response: `{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"Insufficient margin"}]}}}`,
+			call: func(client *Client) error {
+				oid := int64(1)
+				_, err := client.ModifyOrder(context.Background(), ModifyOrderRequest{Oid: &oid, Order: PlaceOrderRequest{
+					AssetID: 1, IsBuy: true, Price: 10, Size: 1,
+					OrderType: OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifGtc}},
+				}})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer srv.Close()
+			base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+			base.BaseURL = srv.URL
+			err := test.call(NewClient(base))
+			require.ErrorIs(t, err, hyperliquid.ErrOrderRejected)
+		})
+	}
 }
 
 func TestClient_ModifyOrder(t *testing.T) {

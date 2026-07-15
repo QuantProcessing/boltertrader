@@ -443,6 +443,70 @@ func (c *Cache) UpsertOrderSnapshot(o model.Order, observedAt time.Time) {
 	})
 }
 
+// MarkOrderUnknownIfUnchanged atomically applies an absence conclusion only
+// when the cached order is still the exact lifecycle candidate observed before
+// the authoritative request. A concurrent stream update or a replacement that
+// reuses an alias therefore wins without relying on venue event timestamps.
+func (c *Cache) MarkOrderUnknownIfUnchanged(expectedAccountID string, candidate model.Order) (bool, error) {
+	c.orderMu.Lock()
+	defer c.orderMu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	current, found, err := c.resolveOrderForFillLocked(expectedAccountID, model.Fill{
+		AccountID:    candidate.Request.AccountID,
+		InstrumentID: candidate.Request.InstrumentID,
+		ClientID:     candidate.Request.ClientID,
+		VenueOrderID: candidate.VenueOrderID,
+		Side:         candidate.Request.Side,
+	})
+	if err != nil || !found {
+		return false, err
+	}
+	if !sameReconciliationOrderCandidate(current, candidate, expectedAccountID) ||
+		isTerminal(current.Status) || current.Status == enums.StatusUnknown {
+		return false, nil
+	}
+	current.Status = enums.StatusUnknown
+	plan, err := c.prepareOrderUpsertLocked(current, func(_ model.Order, incoming model.Order) model.Order { return incoming })
+	if err != nil {
+		return false, err
+	}
+	c.applyOrderUpsertPlanLocked(plan)
+	return true, nil
+}
+
+func sameReconciliationOrderCandidate(current, candidate model.Order, fallbackAccountID string) bool {
+	currentAccount := current.Request.AccountID
+	if currentAccount == "" {
+		currentAccount = fallbackAccountID
+	}
+	candidateAccount := candidate.Request.AccountID
+	if candidateAccount == "" {
+		candidateAccount = fallbackAccountID
+	}
+	return currentAccount == candidateAccount &&
+		current.Request.InstrumentID == candidate.Request.InstrumentID &&
+		current.Request.ClientID == candidate.Request.ClientID &&
+		current.Request.Side == candidate.Request.Side &&
+		current.Request.Type == candidate.Request.Type &&
+		current.Request.TIF == candidate.Request.TIF &&
+		current.Request.Quantity.Equal(candidate.Request.Quantity) &&
+		current.Request.Price.Equal(candidate.Request.Price) &&
+		current.Request.TriggerPrice.Equal(candidate.Request.TriggerPrice) &&
+		current.Request.ActivationPrice.Equal(candidate.Request.ActivationPrice) &&
+		current.Request.TrailingOffsetBps.Equal(candidate.Request.TrailingOffsetBps) &&
+		current.Request.PositionSide == candidate.Request.PositionSide &&
+		current.Request.ReduceOnly == candidate.Request.ReduceOnly &&
+		current.VenueOrderID == candidate.VenueOrderID &&
+		current.Status == candidate.Status &&
+		current.FilledQty.Equal(candidate.FilledQty) &&
+		current.AvgFillPrice.Equal(candidate.AvgFillPrice) &&
+		current.CreatedAt.Equal(candidate.CreatedAt) &&
+		current.UpdatedAt.Equal(candidate.UpdatedAt) &&
+		current.RejectReason == candidate.RejectReason
+}
+
 func (c *Cache) upsertOrderLocked(o model.Order, merge func(model.Order, model.Order) model.Order) error {
 	plan, err := c.prepareOrderUpsertLocked(o, merge)
 	if err != nil {
@@ -651,9 +715,6 @@ func mergeReplacementRequest(base, incoming model.OrderRequest) model.OrderReque
 	}
 	if incoming.ReduceOnly {
 		out.ReduceOnly = true
-	}
-	if incoming.Venue != nil {
-		out.Venue = incoming.Venue
 	}
 	return out
 }
@@ -1122,7 +1183,6 @@ func (c *Cache) UpsertBalance(b model.AccountBalance) {
 func (c *Cache) ApplyBalance(b model.AccountBalance) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	b = b.Normalized()
 	k := balanceKey{accountID: b.AccountID, currency: b.Currency}
 	if existing, ok := c.balances[k]; ok && venueUpdateOlder(b.UpdatedAt, existing.UpdatedAt) {
 		return nil
@@ -1202,7 +1262,6 @@ func (c *Cache) ApplyAccountStateAt(state model.AccountState, appliedAt time.Tim
 		}
 	}
 	for _, bal := range acct.Balances() {
-		bal = bal.Normalized()
 		if bal.AccountID == "" {
 			bal.AccountID = state.AccountID
 		}

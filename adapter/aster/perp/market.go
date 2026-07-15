@@ -306,10 +306,6 @@ func (c *marketDataClient) FundingHistory(ctx context.Context, id model.Instrume
 	return out, nil
 }
 
-func (c *marketDataClient) OpenInterestHistory(context.Context, model.InstrumentID, model.OpenInterestHistoryQuery) ([]model.OpenInterestHistoryEntry, error) {
-	return nil, fmt.Errorf("aster perp: open-interest history is not supported: %w", errs.ErrNotSupported)
-}
-
 func fundingHistoryEntryFromSDK(id model.InstrumentID, symbol string, row sdkperp.FundingRateHistoryEntry, query model.FundingRateHistoryQuery) (model.FundingRateHistoryEntry, error) {
 	if row.Symbol != symbol {
 		return model.FundingRateHistoryEntry{}, fmt.Errorf("symbol mismatch %q for %q", row.Symbol, symbol)

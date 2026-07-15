@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	hlaccount "github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/account"
 	"github.com/QuantProcessing/boltertrader/adapter/hyperliquid/internal/cloid"
@@ -69,8 +70,28 @@ func rejectDerivativeOrderFields(req model.OrderRequest) error {
 	return nil
 }
 
-func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+func (c *executionClient) ValidateSubmit(req model.OrderRequest) error {
+	return c.validateOrderRequest(req)
+}
+
+func (c *executionClient) validateOrderRequest(req model.OrderRequest) error {
 	if err := rejectDerivativeOrderFields(req); err != nil {
+		return err
+	}
+	if _, err := c.scopedAccountID(req.AccountID); err != nil {
+		return err
+	}
+	var prospectiveCloid *string
+	if req.ClientID != "" {
+		value := cloid.ForClientID(req.ClientID)
+		prospectiveCloid = &value
+	}
+	_, err := c.placeOrderRequest(req, prospectiveCloid)
+	return err
+}
+
+func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*model.Order, error) {
+	if err := c.validateOrderRequest(req); err != nil {
 		return nil, err
 	}
 	accountID, err := c.scopedAccountID(req.AccountID)
@@ -78,7 +99,12 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 		return nil, err
 	}
 	req.AccountID = accountID
-	hlReq, err := c.placeOrderRequest(req)
+	var venueCloid *string
+	if req.ClientID != "" {
+		mapped := c.ids.VenueCloid(req.ClientID)
+		venueCloid = &mapped
+	}
+	hlReq, err := c.placeOrderRequest(req, venueCloid)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +124,7 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	return order, nil
 }
 
-func (c *executionClient) placeOrderRequest(req model.OrderRequest) (sdkspot.PlaceOrderRequest, error) {
+func (c *executionClient) placeOrderRequest(req model.OrderRequest, venueCloid *string) (sdkspot.PlaceOrderRequest, error) {
 	inst, err := c.instrument(req.InstrumentID)
 	if err != nil {
 		return sdkspot.PlaceOrderRequest{}, err
@@ -113,11 +139,6 @@ func (c *executionClient) placeOrderRequest(req model.OrderRequest) (sdkspot.Pla
 	tif, err := tifToHL(req.TIF)
 	if err != nil {
 		return sdkspot.PlaceOrderRequest{}, err
-	}
-	var venueCloid *string
-	if req.ClientID != "" {
-		mapped := c.ids.VenueCloid(req.ClientID)
-		venueCloid = &mapped
 	}
 	return sdkspot.PlaceOrderRequest{
 		AssetID:       *inst.AssetIndex,
@@ -170,6 +191,9 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 	}
 	_, err = c.rest.CancelOrder(ctx, sdkspot.CancelOrderRequest{AssetID: *inst.AssetIndex, OrderID: oid})
 	if err != nil {
+		if errors.Is(err, sdk.ErrOrderRejected) {
+			return errors.Join(contract.ErrVenueRejected, err)
+		}
 		return err
 	}
 	c.emitCanceled(id, venueOrderID)
@@ -252,6 +276,9 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	}
 	status, err := c.rest.ModifyOrder(ctx, req)
 	if err != nil {
+		if errors.Is(err, sdk.ErrOrderRejected) {
+			return nil, errors.Join(contract.ErrVenueRejected, err)
+		}
 		return nil, err
 	}
 	order := &model.Order{Request: request, VenueOrderID: venueOrderID, UpdatedAt: c.clk.Now()}
@@ -513,24 +540,124 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 }
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
-	accountID, ok := c.scopedReportAccountID(query.AccountID)
-	if !ok {
-		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+	accountID, err := c.scopedAccountID(query.AccountID)
+	if err != nil {
+		return nil, fmt.Errorf("hyperliquid spot: mass status account: %w", err)
 	}
-	query.AccountID = accountID
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != venueName {
+		return nil, fmt.Errorf("hyperliquid spot: mass status venue %q does not match %q", query.Venue, venueName)
+	}
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	mass.Partial = true
-	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
+	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter mass status does not provide authoritative fill or position history"})
+	mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	}
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	}
+
+	insts, ids, err := c.massStatusInstruments(query.InstrumentIDs)
 	if err != nil {
 		return nil, err
 	}
-	for _, report := range reports {
+	requestStart := c.clk.Now()
+	if len(insts) == 0 {
+		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, requestStart)
+		if query.IncludeFills {
+			from, through := massStatusFillInterval(query, c.clk.Now())
+			mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, accountID, query.ClientID, ids, from, through)
+		}
+		if query.IncludePositions {
+			mass.PositionsCoverage = model.NewSnapshotCoverage(model.CoverageComplete, accountID, query.ClientID, ids, c.clk.Now())
+		}
+		return validateMassStatusResult(mass, query, "hyperliquid spot")
+	}
+	if c.rest == nil {
+		mass.OpenOrdersCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+		return validateMassStatusResult(mass, query, "hyperliquid spot")
+	}
+	orders, err := c.rest.UserOpenOrders(ctx, c.rest.AccountAddr)
+	if err != nil {
+		mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageUnavailable, accountID, query.ClientID, ids, requestStart)
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: err.Error()})
+		return validateMassStatusResult(mass, query, "hyperliquid spot")
+	}
+	bySymbol := make(map[string]model.InstrumentID, len(insts))
+	for _, inst := range insts {
+		bySymbol[inst.VenueSymbol] = inst.ID
+	}
+	now := c.clk.Now()
+	for i := range orders {
+		id, selected := bySymbol[orders[i].Coin]
+		if !selected {
+			continue
+		}
+		order := c.rememberOrder(orderFromHL(&orders[i], id, accountID))
+		if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+			continue
+		}
+		report := model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}
 		if err := mass.AddOrderReport(report); err != nil {
 			return nil, err
 		}
+	}
+	state := model.CoverageComplete
+	if query.ClientID != "" {
+		state = model.CoveragePartial
+	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(state, accountID, query.ClientID, ids, requestStart)
+	return validateMassStatusResult(mass, query, "hyperliquid spot")
+}
+
+func massStatusFillInterval(query model.MassStatusQuery, fallbackThrough time.Time) (time.Time, time.Time) {
+	through := query.Until
+	if through.IsZero() {
+		through = fallbackThrough
+	}
+	from := query.Since
+	if from.IsZero() && query.Lookback > 0 && !query.Until.IsZero() {
+		from = query.Until.Add(-query.Lookback)
+	}
+	return from, through
+}
+
+func (c *executionClient) massStatusInstruments(requested []model.InstrumentID) ([]*model.Instrument, []model.InstrumentID, error) {
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("hyperliquid spot: instrument provider required for mass status")
+	}
+	var candidates []model.InstrumentID
+	if requested == nil {
+		for _, inst := range c.provider.All() {
+			if inst != nil && inst.ID.Kind == enums.KindSpot {
+				candidates = append(candidates, inst.ID)
+			}
+		}
+	} else {
+		candidates = model.NormalizeInstrumentIDs(requested)
+	}
+	ids := make([]model.InstrumentID, 0, len(candidates))
+	insts := make([]*model.Instrument, 0, len(candidates))
+	for _, id := range model.NormalizeInstrumentIDs(candidates) {
+		if id.Venue != venueName || id.Kind != enums.KindSpot || id.Symbol == "" {
+			return nil, nil, fmt.Errorf("hyperliquid spot: mass status instrument %s is outside execution scope", id)
+		}
+		inst, ok := c.provider.Instrument(id)
+		if !ok || inst == nil {
+			return nil, nil, fmt.Errorf("hyperliquid spot: unknown mass status instrument %s", id)
+		}
+		ids = append(ids, inst.ID)
+		insts = append(insts, inst)
+	}
+	return insts, model.NormalizeInstrumentIDs(ids), nil
+}
+
+func validateMassStatusResult(mass *model.ExecutionMassStatus, query model.MassStatusQuery, source string) (*model.ExecutionMassStatus, error) {
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, fmt.Errorf("%s: invalid mass status result: %w", source, err)
 	}
 	return mass, nil
 }

@@ -18,8 +18,8 @@ import (
 )
 
 func TestAccountIDIsCanonicalUnifiedPool(t *testing.T) {
-	if AccountIDUnified != model.AccountIDBitgetDefault {
-		t.Fatalf("AccountIDUnified=%q", AccountIDUnified)
+	if AccountIDUnified != "BITGET-001" {
+		t.Fatalf("AccountIDUnified=%q, want %q", AccountIDUnified, "BITGET-001")
 	}
 	if AccountIDForKind(enums.KindSpot) != AccountIDUnified || AccountIDForKind(enums.KindPerp) != AccountIDUnified {
 		t.Fatalf("Bitget unified account id must be shared across spot/perp")
@@ -255,7 +255,7 @@ func TestNormalizeBitgetCategoriesDefaultsEmptyList(t *testing.T) {
 
 func TestCapabilityRowsSplitSettlementCategories(t *testing.T) {
 	rows := CapabilityRows()
-	want := map[string]bool{"Spot cash": false, "USDT-linear Perp/SWAP": false, "USDC-linear Perp/SWAP": false}
+	want := map[string]bool{"Spot cash": false, "USDT-linear Perp/SWAP": true, "USDC-linear Perp/SWAP": true}
 	for _, row := range rows {
 		if row.Venue != VenueName || !row.AccountStateSnapshot {
 			t.Fatalf("unexpected row: %+v", row)
@@ -263,17 +263,26 @@ func TestCapabilityRowsSplitSettlementCategories(t *testing.T) {
 		if strings.EqualFold(strings.TrimSpace(row.FillReports), "unsupported") {
 			t.Fatalf("capability row still reports implemented fill history as unsupported: %+v", row)
 		}
-		if !strings.Contains(strings.ToLower(row.MassStatus), "fill") || !strings.Contains(strings.ToLower(row.MassStatus), "position") {
-			t.Fatalf("mass-status capability omits implemented fills/positions: %+v", row)
+		if !strings.Contains(strings.ToLower(row.MassStatus), "fill") {
+			t.Fatalf("mass-status capability omits implemented fills: %+v", row)
 		}
-		if _, ok := want[row.Product]; ok {
-			want[row.Product] = true
+		positions, ok := want[row.Product]
+		if !ok {
+			continue
 		}
+		if positions != strings.Contains(strings.ToLower(row.MassStatus), "position") {
+			t.Fatalf("product=%s mass-status position claim=%q, want positions=%v", row.Product, row.MassStatus, positions)
+		}
+		if positions && row.PositionReports != "account snapshot" {
+			t.Fatalf("product=%s position reports=%q, want account snapshot", row.Product, row.PositionReports)
+		}
+		if !positions && row.PositionReports != "unsupported" {
+			t.Fatalf("product=%s position reports=%q, want unsupported", row.Product, row.PositionReports)
+		}
+		delete(want, row.Product)
 	}
-	for product, seen := range want {
-		if !seen {
-			t.Fatalf("missing capability row for %s", product)
-		}
+	for product := range want {
+		t.Fatalf("missing capability row for %s", product)
 	}
 }
 

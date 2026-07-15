@@ -22,10 +22,9 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient  = (*executionClient)(nil)
+	_ contract.AccountClient    = (*accountClient)(nil)
+	_ contract.MarketDataClient = (*marketDataClient)(nil)
 )
 
 func TestAccountIDOverridePropagatesToClients(t *testing.T) {
@@ -112,7 +111,6 @@ func TestBinanceSpotInstrumentTranslation(t *testing.T) {
 		SizeStep:    d("0.0001"),
 		MinNotional: d("5"),
 		VenueSymbol: "ETHUSDT",
-		HasIntCode:  false,
 		HasAssetIdx: false,
 	}})
 }
@@ -249,7 +247,7 @@ func TestBinanceSpotSubmitImmediateFillEmitsFillEvent(t *testing.T) {
 		!fillEvent.Fill.Price.Equal(d("3001.00")) ||
 		!fillEvent.Fill.Quantity.Equal(d("0.0100")) ||
 		fillEvent.Fill.FeeCurrency != "BNB" ||
-		fillEvent.Fill.AccountID != model.AccountIDBinanceDefault {
+		fillEvent.Fill.AccountID != AccountIDDefault {
 		t.Fatalf("fill event=%+v", fillEvent.Fill)
 	}
 }
@@ -424,8 +422,8 @@ func TestBinanceSpotReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testin
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "BINANCE-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "BINANCE-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty BINANCE-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want fail-closed error", mass, err)
 	}
 	if called {
 		t.Fatal("mismatched account report crossed HTTP boundary")
@@ -449,7 +447,7 @@ func TestBinanceSpotAccountBalancesTranslation(t *testing.T) {
 	if len(bals) != 2 {
 		t.Fatalf("balances len=%d", len(bals))
 	}
-	if bals[0].Currency != "USDT" || !bals[0].Available.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
+	if bals[0].Currency != "USDT" || !bals[0].Free.Equal(d("100.5")) || !bals[0].Locked.Equal(d("2.25")) || !bals[0].Total.Equal(d("102.75")) {
 		t.Fatalf("balance[0]=%+v", bals[0])
 	}
 	if !bals[0].Free.Equal(d("100.5")) {
@@ -462,7 +460,7 @@ func TestBinanceSpotAccountBalancesTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDBinanceDefault || state.Venue != venueName || state.Type != model.AccountCash {
+	if state.AccountID != AccountIDDefault || state.Venue != venueName || state.Type != model.AccountCash {
 		t.Fatalf("account state identity/type=%+v", state)
 	}
 	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {
@@ -505,7 +503,7 @@ func TestBinanceSpotUserDataOrderUpdateTranslation(t *testing.T) {
 			t.Fatalf("resolve symbol=%q", sym)
 		}
 		return model.InstrumentID{Venue: venueName, Symbol: "ETH-USDT", Kind: enums.KindSpot}
-	}, model.AccountIDBinanceDefault)
+	}, AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("events len=%d, want order+fill", len(events))
 	}
@@ -516,7 +514,7 @@ func TestBinanceSpotUserDataOrderUpdateTranslation(t *testing.T) {
 	if oe.Order.Request.PositionSide != enums.PosNet || oe.Order.Request.ReduceOnly {
 		t.Fatalf("spot order leaked derivative fields: %+v", oe.Order.Request)
 	}
-	if oe.Order.Request.AccountID != model.AccountIDBinanceDefault {
+	if oe.Order.Request.AccountID != AccountIDDefault {
 		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
 	}
 	fe, ok := events[1].(contract.FillEvent)
@@ -526,7 +524,7 @@ func TestBinanceSpotUserDataOrderUpdateTranslation(t *testing.T) {
 	if fe.Fill.TradeID != "456" || !fe.Fill.Price.Equal(d("3000.00")) || fe.Fill.FeeCurrency != "BNB" {
 		t.Fatalf("fill=%+v", fe.Fill)
 	}
-	if fe.Fill.AccountID != model.AccountIDBinanceDefault {
+	if fe.Fill.AccountID != AccountIDDefault {
 		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
@@ -544,7 +542,7 @@ func TestBinanceSpotCancelUpdateKeepsOriginalClientOrderID(t *testing.T) {
 
 	events := execEventsFromExecutionReport(&ev, func(string) model.InstrumentID {
 		return model.InstrumentID{Venue: venueName, Symbol: "ETH-USDT", Kind: enums.KindSpot}
-	}, model.AccountIDBinanceDefault)
+	}, AccountIDDefault)
 	if len(events) != 1 {
 		t.Fatalf("events len=%d, want one order event", len(events))
 	}
@@ -558,7 +556,7 @@ func TestBinanceSpotCancelUpdateKeepsOriginalClientOrderID(t *testing.T) {
 	cache := runtimecache.New()
 	cache.UpsertOrder(model.Order{
 		Request: model.OrderRequest{
-			AccountID:    model.AccountIDBinanceDefault,
+			AccountID:    AccountIDDefault,
 			InstrumentID: orderEvent.Order.Request.InstrumentID,
 			ClientID:     "original-order-id",
 		},
@@ -587,7 +585,7 @@ func TestBinanceSpotUserDataBalanceUpdateTranslation(t *testing.T) {
 		},
 	}
 
-	events := accountEventsFromAccountPosition(&ev, model.AccountIDBinanceDefault)
+	events := accountEventsFromAccountPosition(&ev, AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("events len=%d", len(events))
 	}
@@ -595,10 +593,10 @@ func TestBinanceSpotUserDataBalanceUpdateTranslation(t *testing.T) {
 	if !ok {
 		t.Fatalf("events[0]=%T, want BalanceEvent", events[0])
 	}
-	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("100")) || !be.Balance.Free.Equal(d("99")) || !be.Balance.Available.Equal(d("99")) || !be.Balance.Locked.Equal(d("1")) {
+	if be.Balance.Currency != "USDT" || !be.Balance.Total.Equal(d("100")) || !be.Balance.Free.Equal(d("99")) || !be.Balance.Locked.Equal(d("1")) {
 		t.Fatalf("balance event=%+v", be.Balance)
 	}
-	if be.Balance.AccountID != model.AccountIDBinanceDefault {
+	if be.Balance.AccountID != AccountIDDefault {
 		t.Fatalf("balance account_id=%q", be.Balance.AccountID)
 	}
 }
@@ -610,8 +608,8 @@ func TestBinanceSpotContractCapabilities(t *testing.T) {
 	acct := newAccountClient(testREST(func(r *http.Request) (string, int) {
 		return `{"balances":[]}`, 200
 	}), provider, clock.NewRealClock())
-	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
-		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	if caps := acct.Capabilities(); !caps.Reports.AccountBalanceSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account capability flags=%+v, want balance snapshot true and account-state stream false", caps)
 	}
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{

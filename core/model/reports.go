@@ -53,6 +53,7 @@ type MassStatusQuery struct {
 	Venue            string
 	AccountID        string
 	ClientID         string
+	InstrumentIDs    []InstrumentID
 	Since            time.Time
 	Until            time.Time
 	Lookback         time.Duration
@@ -181,17 +182,19 @@ func PositionReportKey(accountID string, p Position) string {
 }
 
 type ExecutionMassStatus struct {
-	ReportID        ReportID
-	Venue           string
-	AccountID       string
-	ClientID        string
-	GeneratedAt     time.Time
-	Lookback        time.Duration
-	OrderReports    map[string]OrderStatusReport
-	FillReports     map[string][]FillReport
-	PositionReports map[string][]PositionReport
-	Partial         bool
-	Warnings        []ReportWarning
+	ReportID           ReportID
+	Venue              string
+	AccountID          string
+	ClientID           string
+	GeneratedAt        time.Time
+	Lookback           time.Duration
+	OrderReports       map[string]OrderStatusReport
+	FillReports        map[string][]FillReport
+	PositionReports    map[string][]PositionReport
+	OpenOrdersCoverage ReportCoverage
+	FillsCoverage      ReportCoverage
+	PositionsCoverage  ReportCoverage
+	Warnings           []ReportWarning
 }
 
 func NewExecutionMassStatus(venue, accountID string, generatedAt time.Time) *ExecutionMassStatus {
@@ -255,6 +258,9 @@ func (s ExecutionMassStatus) Clone() ExecutionMassStatus {
 	for k, v := range s.PositionReports {
 		out.PositionReports[k] = append([]PositionReport(nil), v...)
 	}
+	out.OpenOrdersCoverage = s.OpenOrdersCoverage.Clone()
+	out.FillsCoverage = s.FillsCoverage.Clone()
+	out.PositionsCoverage = s.PositionsCoverage.Clone()
 	out.Warnings = append([]ReportWarning(nil), s.Warnings...)
 	return out
 }

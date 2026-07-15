@@ -178,10 +178,6 @@ func (c *marketDataClient) OpenInterest(ctx context.Context, id model.Instrument
 	}, nil
 }
 
-func (c *marketDataClient) OpenInterestHistory(context.Context, model.InstrumentID, model.OpenInterestHistoryQuery) ([]model.OpenInterestHistoryEntry, error) {
-	return nil, fmt.Errorf("nado: open-interest history is not supported: %w", contract.ErrNotSupported)
-}
-
 func (c *marketDataClient) SubscribeBook(ctx context.Context, id model.InstrumentID) error {
 	if err := ctx.Err(); err != nil {
 		return err

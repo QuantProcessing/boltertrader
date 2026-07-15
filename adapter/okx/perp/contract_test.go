@@ -21,7 +21,6 @@ import (
 var (
 	_ contract.ExecutionClient               = (*executionClient)(nil)
 	_ contract.AccountClient                 = (*accountClient)(nil)
-	_ contract.AccountStateReporter          = (*accountClient)(nil)
 	_ contract.MarketDataClient              = (*marketDataClient)(nil)
 	_ contract.DerivativeReferenceDataClient = (*marketDataClient)(nil)
 	_ contract.OpenInterestClient            = (*marketDataClient)(nil)
@@ -73,8 +72,8 @@ func TestOKXPerpReportsRejectMismatchedAccountIDBeforeVenueRequest(t *testing.T)
 		t.Fatalf("mismatched account position reports=%+v err=%v, want empty nil", positions, err)
 	}
 	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{AccountID: "OKX-OTHER", IncludeFills: true, IncludePositions: true})
-	if err != nil || mass == nil || mass.AccountID != "OKX-OTHER" || len(mass.OrderReports) != 0 || len(mass.FillReports) != 0 || len(mass.PositionReports) != 0 {
-		t.Fatalf("mismatched account mass=%+v err=%v, want empty OKX-OTHER mass", mass, err)
+	if err == nil || mass != nil {
+		t.Fatalf("mismatched account mass=%+v err=%v, want fail-closed error", mass, err)
 	}
 	if called {
 		t.Fatal("mismatched account report crossed HTTP boundary")
@@ -173,7 +172,7 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenOrder), &o); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := execEventsFromOrder(&o, stubResolver{}, model.AccountIDOKXDefault)
+	events := execEventsFromOrder(&o, stubResolver{}, AccountIDDefault)
 	if len(events) != 2 {
 		t.Fatalf("want OrderEvent+FillEvent, got %d", len(events))
 	}
@@ -184,7 +183,7 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	if oe.Order.Request.InstrumentID.Symbol != "BTC-USDT" {
 		t.Errorf("instId not mapped to neutral symbol: %s", oe.Order.Request.InstrumentID.Symbol)
 	}
-	if oe.Order.Request.AccountID != model.AccountIDOKXDefault {
+	if oe.Order.Request.AccountID != AccountIDDefault {
 		t.Fatalf("order account_id=%q", oe.Order.Request.AccountID)
 	}
 	fe := events[1].(contract.FillEvent)
@@ -198,7 +197,7 @@ func TestGoldenOrderTranslation(t *testing.T) {
 	if !fe.Fill.Fee.Equal(dd("0.03")) {
 		t.Errorf("fee=%s, want 0.03 (abs)", fe.Fill.Fee)
 	}
-	if fe.Fill.AccountID != model.AccountIDOKXDefault {
+	if fe.Fill.AccountID != AccountIDDefault {
 		t.Fatalf("fill account_id=%q", fe.Fill.AccountID)
 	}
 }
@@ -215,7 +214,7 @@ func TestPrivateEventTranslationSkipsUnsupportedInverseSwap(t *testing.T) {
 		AccFillSz: "1",
 		FillSz:    "1",
 	}
-	if got := execEventsFromOrder(order, stubResolver{}, model.AccountIDOKXDefault); len(got) != 0 {
+	if got := execEventsFromOrder(order, stubResolver{}, AccountIDDefault); len(got) != 0 {
 		t.Fatalf("inverse SWAP order produced %d events, want 0", len(got))
 	}
 
@@ -225,7 +224,7 @@ func TestPrivateEventTranslationSkipsUnsupportedInverseSwap(t *testing.T) {
 		PosSide:  "net",
 		Pos:      "1",
 	}
-	if got := accountEventsFromPosition(position, stubResolver{}, model.AccountIDOKXDefault); len(got) != 0 {
+	if got := accountEventsFromPosition(position, stubResolver{}, AccountIDDefault); len(got) != 0 {
 		t.Fatalf("inverse SWAP position produced %d events, want 0", len(got))
 	}
 }
@@ -242,7 +241,7 @@ func TestShortPositionSignedNegative(t *testing.T) {
 	if err := json.Unmarshal([]byte(goldenShortPosition), &p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	events := accountEventsFromPosition(&p, stubResolver{}, model.AccountIDOKXDefault)
+	events := accountEventsFromPosition(&p, stubResolver{}, AccountIDDefault)
 	pe := events[0].(contract.PositionEvent)
 	// OKX reports pos as a positive magnitude with posSide=short; the model must
 	// carry a SIGNED quantity (negative for short).
@@ -255,7 +254,7 @@ func TestShortPositionSignedNegative(t *testing.T) {
 	if !pe.Position.UnrealizedPnL.Equal(dd("250")) {
 		t.Errorf("uPnL=%s, want 250", pe.Position.UnrealizedPnL)
 	}
-	if pe.Position.AccountID != model.AccountIDOKXDefault {
+	if pe.Position.AccountID != AccountIDDefault {
 		t.Fatalf("position account_id=%q", pe.Position.AccountID)
 	}
 }
@@ -283,7 +282,6 @@ func TestInstrumentParsing_PopulatesIntCode(t *testing.T) {
 		SizeStep:    dd("0.01"),
 		MinNotional: decimal.Zero,
 		VenueSymbol: "BTC-USDT-SWAP",
-		HasIntCode:  true,  // OKX populates VenueIntCode — the divergence
 		HasAssetIdx: false, // OKX is not asset-index keyed
 	}})
 }
@@ -577,8 +575,8 @@ func TestOKXPerpReferenceSnapshotAndOpenInterest(t *testing.T) {
 func TestPerpCapabilitySuite(t *testing.T) {
 	restOnly := newMarketDataClient(nil, nil, newInstrumentProvider(), clock.NewRealClock())
 	account := testOKXAccountClient(t, "isolated")
-	if caps := account.Capabilities(); !caps.Reports.AccountStateSnapshots || caps.Streaming.AccountState {
-		t.Fatalf("account state capability flags=%+v, want report snapshot true and stream false", caps)
+	if caps := account.Capabilities(); !caps.Reports.AccountBalanceSnapshots || caps.Streaming.AccountState {
+		t.Fatalf("account capability flags=%+v, want balance snapshot true and account-state stream false", caps)
 	}
 	if ref := restOnly.Capabilities().ReferenceData; !ref.CurrentFunding || !ref.CurrentMarkPrice || !ref.CurrentIndexPrice || !ref.CurrentOpenInterest {
 		t.Fatalf("reference capabilities incomplete: %+v", ref)
@@ -639,7 +637,7 @@ func TestOKXPerpAccountStateTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDOKXDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
+	if state.AccountID != AccountIDDefault || state.Venue != venueName || state.Type != model.AccountMargin || state.BaseCurrency != usdtSettlement {
 		t.Fatalf("account state identity=%+v", state)
 	}
 	if !state.Reported || state.EventID == "" || state.TsInit.IsZero() {

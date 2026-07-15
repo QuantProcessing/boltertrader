@@ -60,7 +60,7 @@ func TestHyperliquidPerpConfiguredHIP3UnifiedSnapshotsUseSpotFundingAndClearPosi
 		}
 		return `{}`, http.StatusOK
 	})
-	acct := newAccountClient(rest, provider, clock.NewSimulatedClock(time.Unix(1700000000, 0)), "cross", d("1"), sdk.AccountAbstractionUnifiedAccount, model.AccountIDHyperliquidDefault).
+	acct := newAccountClient(rest, provider, clock.NewSimulatedClock(time.Unix(1700000000, 0)), "cross", d("1"), sdk.AccountAbstractionUnifiedAccount, AccountIDDefault).
 		withHIP3Dexes([]string{" testdex ", "testdex", ""})
 
 	state, err := acct.AccountState(context.Background())
@@ -127,7 +127,7 @@ func TestHyperliquidPerpConfiguredHIP3StandardAccountStateRejectsSameCurrencyPoo
 		}
 		return `{}`, http.StatusOK
 	})
-	acct := newAccountClient(rest, provider, clock.NewRealClock(), "cross", d("1"), sdk.AccountAbstractionDefault, model.AccountIDHyperliquidDefault).
+	acct := newAccountClient(rest, provider, clock.NewRealClock(), "cross", d("1"), sdk.AccountAbstractionDefault, AccountIDDefault).
 		withHIP3Dexes([]string{"testdex"})
 
 	state, err := acct.AccountState(context.Background())
@@ -163,7 +163,7 @@ func TestHyperliquidPerpConfiguredHIP3SnapshotErrorsFailClosed(t *testing.T) {
 			}
 			return `{}`, http.StatusOK
 		})
-		return newAccountClient(rest, provider, clock.NewRealClock(), "cross", d("1"), sdk.AccountAbstractionDefault, model.AccountIDHyperliquidDefault).
+		return newAccountClient(rest, provider, clock.NewRealClock(), "cross", d("1"), sdk.AccountAbstractionDefault, AccountIDDefault).
 			withHIP3Dexes([]string{"testdex"})
 	}
 

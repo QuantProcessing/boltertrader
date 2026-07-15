@@ -32,8 +32,12 @@ func (s *mirrorStrategy) OnStop(*strategy.Context) { s.stops.Add(1) }
 func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clock.NewSimulatedClock(start)
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
+	fexec.SetAccountID("mirror")
+	fexec.SetInstruments(inst)
 	facct := runtimetest.NewFakeAccount()
+	facct.SetAccountID("mirror")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("mirror", model.AccountMargin, start))
 	obs := &recordingObserver{}
 	strat := &mirrorStrategy{}
 
@@ -89,7 +93,7 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 		FeeCurrency:  "USDT",
 		Timestamp:    start.Add(time.Second),
 	})
-	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("9999.9"), Available: d("9000"), UpdatedAt: start.Add(time.Second)})
+	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("9999.9"), Free: d("9000"), UpdatedAt: start.Add(time.Second)})
 	facct.EmitPosition(model.Position{InstrumentID: inst, Side: enums.PosNet, Quantity: d("2"), EntryPrice: d("100"), UpdatedAt: start.Add(time.Second)})
 	waitUntil(t, func() bool {
 		m := node.Metrics()
@@ -108,7 +112,7 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 	if got := node.Portfolio.Fees(); !got.Equal(d("0.1")) {
 		t.Fatalf("fees=%s, want 0.1", got)
 	}
-	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Total.Equal(d("9999.9")) || !b.Available.Equal(d("9000")) {
+	if b, ok := node.Cache.Balance("USDT"); !ok || !b.Total.Equal(d("9999.9")) || !b.Free.Equal(d("9000")) {
 		t.Fatalf("balance not mirrored: ok=%v balance=%+v", ok, b)
 	}
 	if p, ok := node.Cache.Position(inst, enums.PosNet); !ok || !p.Quantity.Equal(d("2")) || !p.EntryPrice.Equal(d("100")) {
@@ -139,8 +143,14 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 		Status:       enums.StatusNew,
 	}
 	node.Cache.UpsertOrder(gapOrder)
+	facct.SetAccountStateSnapshot(authoritativeAccountState(
+		"mirror",
+		model.AccountMargin,
+		start.Add(2*time.Second),
+		model.AccountBalance{Currency: "USDT", Total: d("9999.9"), Free: d("9000"), UpdatedAt: start.Add(2 * time.Second)},
+	))
 	facct.SetSnapshots(
-		[]model.AccountBalance{{Currency: "USDT", Total: d("9999.9"), Available: d("9000"), UpdatedAt: start.Add(2 * time.Second)}},
+		nil,
 		[]model.Position{{InstrumentID: inst, Side: enums.PosNet, Quantity: d("2"), EntryPrice: d("100"), UpdatedAt: start.Add(2 * time.Second)}},
 	)
 	fexec.SetOrderStatusReports()
@@ -183,7 +193,8 @@ func TestOfflineRuntimeMirrorAndBoundedReconcile(t *testing.T) {
 func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clock.NewSimulatedClock(start)
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
+	fexec.SetInstruments(inst)
 	facct := runtimetest.NewFakeAccount()
 	accountID := "FAKE:perp"
 	instMeta := &model.Instrument{
@@ -217,6 +228,8 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 		TsInit:   start,
 	}
 	facct.SetAccountStateSnapshot(state)
+	fexec.SetAccountID(accountID)
+	facct.SetAccountID(accountID)
 	facct.SetSnapshots(nil, []model.Position{{
 		AccountID:     accountID,
 		InstrumentID:  inst,
@@ -233,6 +246,7 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 		runtime.Clients{Execution: fexec, Account: facct},
 		clk,
 		"account-state",
+		runtime.WithAccountID(accountID),
 		runtime.WithAccountStaleAfter(10*time.Second),
 	)
 	// Position reconciliation is evidence-only: seed the stream-derived cache
@@ -287,10 +301,13 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 		t.Fatalf("portfolio net exposure=%v ok=%v, want %s=110", got, ok, inst)
 	}
 
-	engine := risk.New(risk.Limits{}, node.Cache).
+	engine := risk.New(risk.Limits{MaxOrderNotional: d("900")}, node.Cache).
 		WithClock(func() time.Time { return start.Add(2 * time.Second) }).
 		RequireAccountState()
-	if err := engine.Check(model.OrderRequest{
+	executionCaps := fexec.Capabilities()
+	accountCaps := facct.Capabilities()
+	engine.SetRuntimeCapabilities(&executionCaps, &accountCaps)
+	if err := checkSubmissionRisk(engine, model.OrderRequest{
 		ClientID:     "risk-pass",
 		InstrumentID: inst,
 		Side:         enums.SideBuy,
@@ -302,7 +319,7 @@ func TestOfflineAccountStateSnapshotReconcilesPortfolioAndRisk(t *testing.T) {
 	}, instMeta); err != nil {
 		t.Fatalf("fresh account risk check rejected valid order: %v", err)
 	}
-	err = engine.Check(model.OrderRequest{
+	err = checkSubmissionRisk(engine, model.OrderRequest{
 		ClientID:     "risk-reject",
 		InstrumentID: inst,
 		Side:         enums.SideBuy,

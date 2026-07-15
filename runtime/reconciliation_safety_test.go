@@ -4,8 +4,9 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/runtime"
@@ -20,18 +21,41 @@ type partialMassStatusExec struct {
 	mass    atomic.Pointer[model.ExecutionMassStatus]
 }
 
+func (f *partialMassStatusExec) Capabilities() contract.Capabilities {
+	caps := f.FakeExec.Capabilities()
+	if configured := f.mass.Load(); configured != nil && len(configured.FillReports) != 0 {
+		caps.Reports.FillHistory = true
+	}
+	return caps
+}
+
 func (f *partialMassStatusExec) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	mass, err := f.FakeExec.GenerateExecutionMassStatus(ctx, query)
 	if configured := f.mass.Load(); configured != nil {
-		copy := *configured
+		copy := configured.Clone()
+		copy.ClientID = query.ClientID
+		ids := make([]model.InstrumentID, 0, len(copy.FillReports))
+		for _, reports := range copy.FillReports {
+			for _, report := range reports {
+				ids = append(ids, report.Fill.InstrumentID)
+			}
+		}
+		ids = model.NormalizeInstrumentIDs(ids)
+		copy.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, copy.AccountID, query.ClientID, ids, query.Until)
+		if query.IncludeFills {
+			copy.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, copy.AccountID, query.ClientID, ids, query.Since, query.Until)
+		} else {
+			copy.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+		}
+		copy.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
 		mass = &copy
 	}
 	if mass != nil {
-		mass.Partial = f.partial.Load()
-		if mass.Partial {
+		if f.partial.Load() {
+			mass.OpenOrdersCoverage.State = model.CoveragePartial
 			mass.Warnings = append(mass.Warnings, model.ReportWarning{
-				Code:    "FILL_REPORTS_PARTIAL",
-				Message: "test fixture could not recover the complete fill window",
+				Code:    "SNAPSHOT_PAGE_NOTE",
+				Message: "diagnostic accompanies typed partial coverage",
 			})
 		}
 	}
@@ -123,26 +147,29 @@ func TestStartupPartialReconciliationNeverActivatesTrading(t *testing.T) {
 
 func TestBlockingReconciliationFindingDoesNotReactivateTrading(t *testing.T) {
 	fexec := &partialMassStatusExec{FakeExec: runtimetest.NewFakeExec()}
-	node := runtime.NewNode(runtime.Clients{Execution: fexec}, nil, "blocking")
+	fexec.SetAccountID("blocking")
+	clk := clock.NewRealClock()
+	node := runtime.NewNode(runtime.Clients{Execution: fexec}, clk, "blocking")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go node.Run(ctx)
 	waitNodeRunning(t, node)
 
-	generatedAt := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	generatedAt := clk.Now().UTC()
 	mass := model.NewExecutionMassStatus("FAKE", "blocking", generatedAt)
 	if err := mass.AddFillReport(model.FillReport{
 		Venue:      "FAKE",
 		AccountID:  "blocking",
 		ReportedAt: generatedAt,
 		Fill: model.Fill{
-			AccountID: "blocking",
-			ClientID:  "unknown-order",
-			TradeID:   "unmatched-fill",
-			Side:      enums.SideBuy,
-			Price:     decimal.NewFromInt(100),
-			Quantity:  decimal.NewFromInt(1),
-			Timestamp: generatedAt,
+			AccountID:    "blocking",
+			InstrumentID: model.InstrumentID{Venue: "FAKE", Symbol: "BTC-USDT", Kind: enums.KindPerp},
+			ClientID:     "unknown-order",
+			TradeID:      "unmatched-fill",
+			Side:         enums.SideBuy,
+			Price:        decimal.NewFromInt(100),
+			Quantity:     decimal.NewFromInt(1),
+			Timestamp:    generatedAt,
 		},
 	}); err != nil {
 		t.Fatalf("add fill report: %v", err)

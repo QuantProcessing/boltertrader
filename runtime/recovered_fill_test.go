@@ -251,8 +251,13 @@ type recoveredFillExec struct {
 func (e *recoveredFillExec) AccountID() string { return "acct" }
 
 func (e *recoveredFillExec) Capabilities() contract.Capabilities {
-	return contract.Capabilities{Venue: "RECOVERY"}
+	return contract.Capabilities{
+		Venue:   "RECOVERY",
+		Reports: contract.ReportCapabilities{FillHistory: true},
+	}
 }
+
+func (*recoveredFillExec) ValidateSubmit(model.OrderRequest) error { return nil }
 
 func (e *recoveredFillExec) Submit(context.Context, model.OrderRequest) (*model.Order, error) {
 	return nil, contract.ErrNotSupported
@@ -290,8 +295,22 @@ func (e *recoveredFillExec) GeneratePositionReports(context.Context, model.Posit
 	return nil, nil
 }
 
-func (e *recoveredFillExec) GenerateExecutionMassStatus(context.Context, model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+func (e *recoveredFillExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	clone := e.mass.Clone()
+	ids := make([]model.InstrumentID, 0, len(clone.FillReports))
+	for _, reports := range clone.FillReports {
+		for _, report := range reports {
+			ids = append(ids, report.Fill.InstrumentID)
+		}
+	}
+	ids = model.NormalizeInstrumentIDs(ids)
+	clone.ClientID = query.ClientID
+	clone.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, clone.AccountID, query.ClientID, ids, query.Until)
+	clone.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, clone.AccountID, query.ClientID, ids, query.Since, query.Until)
+	clone.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	if err := clone.ValidateFor(query); err != nil {
+		return nil, err
+	}
 	return &clone, nil
 }
 

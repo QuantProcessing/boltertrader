@@ -6,9 +6,10 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
-	"github.com/QuantProcessing/boltertrader/core/model"
 	sdk "github.com/QuantProcessing/boltertrader/sdk/lighter"
 )
+
+const AccountIDDefault = "LIGHTER-001"
 
 // Config configures a live Lighter adapter. Lighter exposes one unified account
 // index across spot and perps, so all adapter clients share the same account id.
@@ -68,7 +69,7 @@ func New(ctx context.Context, cfg Config) (*Adapter, error) {
 	}
 	accountID := cfg.AccountID
 	if accountID == "" {
-		accountID = model.AccountIDLighterDefault
+		accountID = AccountIDDefault
 	}
 
 	details, err := rest.GetOrderBookDetails(ctx, nil, nil)

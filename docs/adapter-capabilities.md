@@ -1,33 +1,38 @@
 # Adapter Capabilities
 
 This matrix is the live-only operating contract for the currently implemented
-adapter subset. Unsupported report surfaces must return `contract.ErrNotSupported`;
-open-only order reports must be treated as ambiguous absence during
-reconciliation.
+adapter subset. Unsupported report surfaces must return
+`contract.ErrNotSupported`. Reconciliation authority comes only from each
+domain's typed state and frozen scope; warnings are diagnostic. Complete
+open-order coverage can prove that a scoped cached order is no longer open, but
+it cannot invent a terminal cause or fill history.
+The `Mass status` column lists every report domain that the execution adapter
+can directly own in one mass-status response; account-only snapshots do not
+count as execution mass-status support.
 
 | Venue | Product | Market stream | Private order stream | Account stream | Account-state snapshot | Submit | Cancel | Modify | Order status reports | Fill reports | Position reports | Mass status | Single-order query | Open-only caveat | Latency timestamps | Acceptance target |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ASTER | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open-order mass status | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-spot |
-| ASTER | USDT-linear Perp | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-perp |
-| NADO | Spot no-borrow | yes | yes | yes | yes | yes | yes | no | open orders | matches | unsupported | open-order mass status | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-spot |
-| NADO | Perp | yes | yes | yes | yes | yes | yes | no | open orders | matches | account snapshot | open-order mass status | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-perp |
+| ASTER | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open orders, bounded fills | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-spot |
+| ASTER | USDT-linear Perp | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open orders, bounded fills, positions | venue order id | yes | runtime timestamps | make test-aster-testnet-runtime-perp |
+| NADO | Spot no-borrow | yes | yes | yes | yes | yes | yes | no | open orders | matches | unsupported | open orders, bounded fills | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-spot |
+| NADO | Perp | yes | yes | yes | yes | yes | yes | no | open orders | matches | account snapshot | open orders, bounded fills, positions | order digest | yes | runtime timestamps | make test-nado-testnet-runtime-perp |
 | BINANCE | USD-M Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | unsupported | yes | runtime timestamps | make test-binance-demo-runtime-perp |
 | BINANCE | Spot | yes | yes | yes | yes | yes | yes | no | open orders | unsupported | unsupported | open-order mass status | unsupported | yes | runtime timestamps | make test-binance-demo-runtime-spot |
 | OKX | USDT-linear SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | unsupported | yes | runtime timestamps | make test-okx-demo-runtime-perp |
 | OKX | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | unsupported | yes | runtime timestamps | make test-okx-demo-runtime-spot |
-| BYBIT | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-bybit-spot-acceptance |
-| BYBIT | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bybit-usdt-perp-acceptance |
-| BYBIT | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bybit-usdc-perp-acceptance |
-| BITGET | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-spot-acceptance |
-| BITGET | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdt-perp-acceptance |
-| BITGET | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-bitget-usdc-perp-acceptance |
-| GATE | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open-order mass status | venue order id | yes | runtime timestamps | make test-gate-spot-acceptance |
-| GATE | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-gate-usdt-perp-acceptance |
+| BYBIT | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | bounded execution history | unsupported | open orders, bounded fills | open order filter | yes | runtime timestamps | make test-bybit-spot-acceptance |
+| BYBIT | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | bounded execution history | account snapshot | open orders, bounded fills, positions | open order filter | yes | runtime timestamps | make test-bybit-usdt-perp-acceptance |
+| BYBIT | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | bounded execution history | account snapshot | open orders, bounded fills, positions | open order filter | yes | runtime timestamps | make test-bybit-usdc-perp-acceptance |
+| BITGET | Spot cash | yes | yes | yes | yes | yes | yes | yes | open orders | bounded 90-day trade history | unsupported | open orders, bounded fills | open order filter | yes | runtime timestamps | make test-bitget-spot-acceptance |
+| BITGET | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | bounded 90-day trade history | account snapshot | open orders, bounded fills, positions | open order filter | yes | runtime timestamps | make test-bitget-usdt-perp-acceptance |
+| BITGET | USDC-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | yes | open orders | bounded 90-day trade history | account snapshot | open orders, bounded fills, positions | open order filter | yes | runtime timestamps | make test-bitget-usdc-perp-acceptance |
+| GATE | Spot cash | yes | yes | yes | yes | yes | yes | no | open orders | my trades | unsupported | open orders, bounded fills | venue order id | yes | runtime timestamps | make test-gate-spot-acceptance |
+| GATE | USDT-linear Perp/SWAP | yes | yes | yes | yes | yes | yes | no | open orders | my trades | account snapshot | open orders, bounded fills, positions | venue order id | yes | runtime timestamps | make test-gate-usdt-perp-acceptance |
 | HYPERLIQUID | Spot cash | no | no | no | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-spot |
 | HYPERLIQUID | Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-perp |
 | HYPERLIQUID | HIP-3 Perp | yes | yes | yes | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | venue order id | yes | runtime timestamps | make test-hyperliquid-testnet-runtime-hip3 |
 | LIGHTER | Spot cash | no | no | no | yes | yes | yes | yes | open orders | unsupported | unsupported | open-order mass status | open order filter | yes | runtime timestamps | make test-lighter-testnet-runtime-spot |
-| LIGHTER | Perp | no | no | no | yes | yes | yes | yes | open orders | unsupported | account snapshot | open-order mass status | open order filter | yes | runtime timestamps | make test-lighter-testnet-runtime-perp |
+| LIGHTER | Perp | no | no | no | yes | yes | yes | yes | open orders | unsupported | account snapshot | open orders, positions | open order filter | yes | runtime timestamps | make test-lighter-testnet-runtime-perp |
 
 ## Non-Production Acceptance Scope
 
@@ -50,8 +55,8 @@ make test-bybit-bitget-acceptance
 Raw live `go test` runs skip when required Demo/Testnet credentials are absent.
 CEX rows use each venue's official non-production write surface: Demo Trading,
 paper trading, or Testnet. DEX rows use Testnet.
-Hyperliquid Testnet runtime acceptance requires a verified
-`contract.AccountStateReporter` snapshot before risk-increasing orders; API
+Hyperliquid Testnet runtime acceptance requires a verified mandatory
+`contract.AccountClient.AccountState` snapshot before risk-increasing orders; API
 wallet keys are resolved through Hyperliquid `userRole`, and
 `HYPERLIQUID_ACCOUNT_ADDRESS` should be the owner 0x user address when it differs
 from the signing key. Non-0x Hyperliquid account aliases are rejected before
@@ -69,15 +74,18 @@ are intentionally deferred until an official non-production path is proven.
 Aster rows use only the official V3 Testnet profiles and API-wallet EIP-712
 credentials. Symbols whose normalized venue symbol starts with `TEST` are never
 eligible for write acceptance. Nado rows share one unified-margin account;
-Spot is funded-only/no-borrow, while Perp admission uses the venue's exact
-documented max-order-size pre-trade query. Their aggregate targets
-are noskip-gated and require all read-only plus four adapter/runtime write rows
-per venue to execute and leave no test-owned orders or Perp exposure.
+Spot is funded-only/no-borrow, while venue capacity for both Spot and Perp is
+server-authoritative. Their aggregate targets are noskip-gated and require all
+read-only plus four adapter/runtime write rows per venue to execute and leave
+no test-owned orders or Perp exposure.
 
 The Nado rows describe implemented adapter capabilities. Submit remains
-fail-closed around local checks, documented venue capacity, exact prepared
-payload ownership, one-time execution, and reconciliation. Nado enters the
-accepted support set because all four Testnet write rows pass without skips.
+fail-closed around local validation, adapter-local signing and exact response
+identity, one-time execution, and reconciliation. Runtime invokes the same
+ordinary `ValidateSubmit`/optional-risk/`Submit` protocol used by other venues;
+there is no venue-capacity admission protocol. Historical Testnet results do
+not certify this converged tree; G008 must pass all four Nado write rows without
+skips on the frozen candidate.
 For isolated-only Perp products, discovery selects isolated execution and the
 adapter transfers conservative 1x opening margin; reduce-only closes add zero
 margin.
@@ -125,11 +133,12 @@ official Archive V1 contract documents current funding only.
 Bybit and Bitget rows are the first unified-account adapter/runtime slice for
 those venues. The offline contract proves SDK conversion, stream decoding,
 account-state safety envelopes, account-state reconciliation, portfolio/risk
-reads, and private stream subscription wiring. The current G010 evidence marks
-the first-stage Bybit Demo Trading and Bitget Demo/paper-trading rows accepted:
+reads, and private stream subscription wiring. Historical pre-convergence G010
+evidence exercised the first-stage Bybit Demo Trading and Bitget
+Demo/paper-trading rows:
 the runtime entrypoints verified live market data, authoritative account-state
 snapshots, risk fail-closed behavior, reconciliation into cache/portfolio,
 private stream startup, and a bounded resting-cancel plus IOC fill/close cleanup
-ladder. Future acceptance reruns remain noskip-gated and require real
-credentials, sufficient funding, valid endpoint profiles, and clean venue
-accounts.
+ladder. It does not certify this tree. G008 reruns both noskip-gated aggregates
+and requires real credentials, sufficient funding, valid endpoint profiles,
+and clean venue accounts.

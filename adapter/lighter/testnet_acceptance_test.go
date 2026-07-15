@@ -39,8 +39,8 @@ func TestLighterTestnetReadAcceptance(t *testing.T) {
 		testenv.SkipIfTransientLiveNetworkError(t, err, "Lighter Testnet account state")
 		t.Fatalf("account state: %v", err)
 	}
-	if state.AccountID != model.AccountIDLighterDefault {
-		t.Fatalf("account id=%q, want %q", state.AccountID, model.AccountIDLighterDefault)
+	if state.AccountID != AccountIDDefault {
+		t.Fatalf("account id=%q, want %q", state.AccountID, AccountIDDefault)
 	}
 	if err := state.Validate(); err != nil {
 		t.Fatalf("account state should validate: %v", err)
@@ -95,7 +95,7 @@ func runLighterTestnetWriteAcceptance(t *testing.T, kind enums.InstrumentKind, l
 		t.Fatalf("capture Lighter %s Testnet exposure baseline: %v", label, err)
 	}
 	clientID := newLighterAcceptanceClientID(label)
-	cleanup := newLighterRestingOrderCleanup(adapter.Execution, inst.ID, model.AccountIDLighterDefault, clientID, qty)
+	cleanup := newLighterRestingOrderCleanup(adapter.Execution, inst.ID, AccountIDDefault, clientID, qty)
 	defer func() {
 		if !cleanup.NeedsCleanup() && !cleanup.NeedsExposureCleanup() {
 			return
@@ -107,7 +107,7 @@ func runLighterTestnetWriteAcceptance(t *testing.T, kind enums.InstrumentKind, l
 		}
 	}()
 	order, err := adapter.Execution.Submit(ctx, model.OrderRequest{
-		AccountID:    model.AccountIDLighterDefault,
+		AccountID:    AccountIDDefault,
 		InstrumentID: inst.ID,
 		ClientID:     clientID,
 		Side:         enums.SideBuy,
@@ -295,8 +295,8 @@ func ensureLighterTestnetCollateral(t *testing.T, ctx context.Context, adapter *
 	required := qty.Mul(price)
 	for _, balance := range state.Balances {
 		if balance.Currency == "USDC" {
-			if balance.Available.LessThan(required) {
-				t.Skipf("skipping Lighter %s Testnet acceptance: available USDC %s below required notional %s", label, balance.Available, required)
+			if balance.Free.LessThan(required) {
+				t.Skipf("skipping Lighter %s Testnet acceptance: available USDC %s below required notional %s", label, balance.Free, required)
 			}
 			return
 		}

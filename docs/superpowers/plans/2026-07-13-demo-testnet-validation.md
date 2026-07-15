@@ -1,5 +1,11 @@
 # Demo/Testnet Safety Remediation and Validation Record
 
+> **Historical / non-certifying:** These results predate the 2026-07-15
+> runtime/adapter convergence candidate. They remain useful diagnostic history,
+> but they do not certify the current code or replace the nine serial,
+> noskip-gated G008 Demo/Testnet aggregates required by the 2026-07-15 PRD and
+> test specification.
+
 > **Execution rule:** credentialed writes are non-production only, globally serial, bounded by the configured notional envelope, and must not mutate pre-existing account state. Credentials, private keys, account addresses, proxy details, signatures, and signed payloads are never recorded in this artifact.
 
 **Goal:** make every configured Demo/Testnet target fail closed and obtain real read, adapter, runtime, private-stream, fill, close, and cleanup evidence where each venue's approved scope permits it.

@@ -168,9 +168,6 @@ func enrichNewerOrder(newer, older model.Order) model.Order {
 	if !out.Request.ReduceOnly && older.Request.ReduceOnly {
 		out.Request.ReduceOnly = true
 	}
-	if out.Request.Venue == nil {
-		out.Request.Venue = older.Request.Venue
-	}
 	if out.VenueOrderID == "" {
 		out.VenueOrderID = older.VenueOrderID
 	}
@@ -261,9 +258,6 @@ func MergeSnapshot(existing, incoming model.Order, observedAt time.Time) model.O
 	if !out.Request.ReduceOnly && existing.Request.ReduceOnly {
 		out.Request.ReduceOnly = true
 	}
-	if out.Request.Venue == nil {
-		out.Request.Venue = existing.Request.Venue
-	}
 	if out.VenueOrderID == "" {
 		out.VenueOrderID = existing.VenueOrderID
 	}
@@ -325,6 +319,5 @@ func requestIsSparse(req model.OrderRequest) bool {
 		req.TriggerPrice.IsZero() &&
 		req.ActivationPrice.IsZero() &&
 		req.TrailingOffsetBps.IsZero() &&
-		!req.ReduceOnly &&
-		req.Venue == nil
+		!req.ReduceOnly
 }

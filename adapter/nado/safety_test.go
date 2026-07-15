@@ -15,14 +15,14 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestNadoSubmitFailsClosedUntilPreparedValidationExists(t *testing.T) {
+func TestNadoSubmitFailsClosedWithoutSubmissionBackend(t *testing.T) {
 	provider := nadoTestProvider()
 	exec := newExecutionClient(nil, provider, clock.NewRealClock(), enums.KindSpot, AccountIDUnified)
 	spotID := model.InstrumentID{Venue: VenueName, Symbol: "ETH-USDT0", Kind: enums.KindSpot}
 	req := model.OrderRequest{
 		AccountID:    AccountIDUnified,
 		InstrumentID: spotID,
-		ClientID:     "not-prepared",
+		ClientID:     "backend-unavailable",
 		Side:         enums.SideBuy,
 		Type:         enums.TypeLimit,
 		TIF:          enums.TifGTC,
@@ -31,10 +31,10 @@ func TestNadoSubmitFailsClosedUntilPreparedValidationExists(t *testing.T) {
 		PositionSide: enums.PosNet,
 	}
 	if _, err := exec.Submit(context.Background(), req); !errors.Is(err, contract.ErrNotSupported) {
-		t.Fatalf("unprepared Submit err=%v, want ErrNotSupported", err)
+		t.Fatalf("Submit without backend err=%v, want ErrNotSupported", err)
 	}
 	if exec.Capabilities().Trading.Submit {
-		t.Fatal("Submit capability must remain false until Story 6 prepared validation is implemented")
+		t.Fatal("Submit capability must remain false without a configured submission backend")
 	}
 }
 
@@ -115,7 +115,7 @@ func TestNadoExecutionRejectsOutOfScopeOperationsBeforeTransport(t *testing.T) {
 	}
 }
 
-func TestNadoMassStatusSkipsInstrumentsOutsideConfiguredProductScope(t *testing.T) {
+func TestNadoMassStatusSkipsInstrumentsOutsideSelectedProductScope(t *testing.T) {
 	provider, err := newInstrumentProviderFromDiscovery(nadoTestProducts(), nadoTestSymbols(), []enums.InstrumentKind{enums.KindPerp})
 	if err != nil {
 		t.Fatal(err)

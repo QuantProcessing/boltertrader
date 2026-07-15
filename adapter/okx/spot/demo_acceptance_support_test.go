@@ -644,7 +644,7 @@ func closeOKXSpotDemoBaseDelta(ctx context.Context, adapter *Adapter, id model.I
 	if err != nil {
 		return nil, err
 	}
-	availableDelta := balances[spec.BaseCurrency].Available.Sub(startBaseAvailable)
+	availableDelta := balances[spec.BaseCurrency].Free.Sub(startBaseAvailable)
 	sellQty, err := demoSpotCloseQuantity(availableDelta, maxCloseQty, spec)
 	if err != nil {
 		return nil, err
@@ -761,7 +761,7 @@ func waitForDemoSpotBaseDeltaBelowStep(ctx context.Context, adapter *Adapter, sp
 	for {
 		balances, err := demoSpotBalances(ctx, adapter)
 		if err == nil {
-			lastDelta = balances[spec.BaseCurrency].Available.Sub(startBaseAvailable)
+			lastDelta = balances[spec.BaseCurrency].Free.Sub(startBaseAvailable)
 			state.SetBaseDelta(lastDelta)
 			if stable.Observe(lastDelta.Abs().LessThan(spec.SizeStep)) {
 				return nil

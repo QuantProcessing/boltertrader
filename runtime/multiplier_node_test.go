@@ -26,7 +26,8 @@ func TestWithRiskDefaultsToMarketInstrumentProvider(t *testing.T) {
 	market := &multiplierMarket{FakeMarket: runtimetest.NewFakeMarket(), provider: provider}
 	execution := runtimetest.NewFakeExec()
 	node := runtime.NewNode(runtime.Clients{Market: market, Execution: execution}, nil, "multiplier-risk")
-	runtime.WithRisk(risk.New(risk.Limits{MaxOrderNotional: decimal.NewFromInt(20)}, node.Cache), nil)(node)
+	riskEngine := risk.New(risk.Limits{MaxOrderNotional: decimal.NewFromInt(20)}, node.Cache).WithInstrumentProvider(provider)
+	runtime.WithRisk(riskEngine, nil)(node)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -93,7 +94,7 @@ func TestWithRiskBindsExplicitInstrumentProviderIntoPortfolio(t *testing.T) {
 		ContractMultiplier: decimal.RequireFromString("0.01"),
 	}}
 	node := runtime.NewNode(runtime.Clients{Execution: runtimetest.NewFakeExec()}, nil, "explicit-provider")
-	runtime.WithRisk(risk.New(risk.Limits{}, node.Cache), provider)(node)
+	runtime.WithRisk(risk.New(risk.Limits{}, node.Cache).WithInstrumentProvider(provider), provider)(node)
 
 	node.Portfolio.OnFill(model.Fill{
 		AccountID: "FAKE:perp", InstrumentID: id, Side: enums.SideBuy,

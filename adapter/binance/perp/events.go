@@ -85,7 +85,6 @@ func accountEventsFromUpdate(ev *sdkperp.AccountUpdateEvent, resolve symbolResol
 			Currency:  b.Asset,
 			Total:     dec(b.WalletBalance),
 			Free:      free,
-			Available: free,
 			UpdatedAt: ts,
 		}})
 	}

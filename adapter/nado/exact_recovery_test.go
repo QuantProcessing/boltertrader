@@ -18,7 +18,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-func TestNadoAmbiguousPreparedSubmitRetainsExactDigestCorrelation(t *testing.T) {
+func TestNadoAmbiguousSubmitRetainsExactDigestCorrelation(t *testing.T) {
 	const signedDigest = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	clk := clock.NewSimulatedClock(time.Date(2026, 7, 13, 2, 0, 0, 0, time.UTC))
 	var (
@@ -70,13 +70,11 @@ func TestNadoAmbiguousPreparedSubmitRetainsExactDigestCorrelation(t *testing.T) 
 		t.Fatal(err)
 	}
 	exec := newExecutionClient(rest, nadoTestProvider(), clk, enums.KindSpot, AccountIDUnified)
-	deps := &recordingPreTradeDeps{
-		sender:     sender,
-		maxSizeX18: "5000000000000000000",
+	deps := &recordingSubmissionDeps{
 		prepared:   preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", signedDigest),
 		executeErr: context.DeadlineExceeded,
 	}
-	exec.pretrade = deps
+	exec.submitter = deps
 	exec.reports = &recordingReportDeps{
 		sender: sender,
 		matches: &sdk.ArchiveMatchesResponse{
@@ -98,15 +96,10 @@ func TestNadoAmbiguousPreparedSubmitRetainsExactDigestCorrelation(t *testing.T) 
 	}
 
 	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
-	req.ClientID = " client-pretrade-1 "
+	req.ClientID = " client-submit-1 "
 	req.TIF = enums.TifIOC
-	lease, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err != nil {
-		t.Fatalf("ValidatePreTrade: %v", err)
-	}
-	defer lease.Release()
-	if order, submitErr := exec.SubmitPrepared(context.Background(), req); order != nil || !errors.Is(submitErr, context.DeadlineExceeded) {
-		t.Fatalf("SubmitPrepared order=%+v err=%v, want nil ambiguous timeout", order, submitErr)
+	if order, submitErr := exec.Submit(context.Background(), req); order != nil || !errors.Is(submitErr, context.DeadlineExceeded) {
+		t.Fatalf("Submit order=%+v err=%v, want nil ambiguous timeout", order, submitErr)
 	}
 	if deps.prepared.Digest != "" || deps.prepared.Signature != "" || deps.prepared.EncodedOrder != "" || deps.prepared.Request != nil {
 		t.Fatalf("prepared secrets were not redacted after ambiguous result: %+v", deps.prepared)
@@ -197,21 +190,14 @@ func TestNadoRejectsForeignResponseDigestAndRecoversSignedDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := newExecutionClient(rest, nadoTestProvider(), clk, enums.KindSpot, AccountIDUnified)
-	deps := &recordingPreTradeDeps{
-		sender:     sender,
-		maxSizeX18: "5000000000000000000",
-		prepared:   preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", signedDigest),
-		executed:   &sdk.PlaceOrderResponse{Digest: foreignDigest},
+	deps := &recordingSubmissionDeps{
+		prepared: preparedOrderForTest(1, "1000000000000000000", "2000000000000000000", signedDigest),
+		executed: &sdk.PlaceOrderResponse{Digest: foreignDigest},
 	}
-	exec.pretrade = deps
+	exec.submitter = deps
 	req := nadoTestOrderRequest(enums.KindSpot, enums.SideBuy)
 	req.TIF = enums.TifIOC
-	lease, err := exec.ValidatePreTrade(context.Background(), req, mustNadoInstrument(t, exec, req.InstrumentID))
-	if err != nil {
-		t.Fatalf("ValidatePreTrade: %v", err)
-	}
-	defer lease.Release()
-	order, submitErr := exec.SubmitPrepared(context.Background(), req)
+	order, submitErr := exec.Submit(context.Background(), req)
 	if order != nil || submitErr == nil || !strings.Contains(submitErr.Error(), "digest mismatch") {
 		t.Fatalf("foreign digest result order=%+v err=%v", order, submitErr)
 	}

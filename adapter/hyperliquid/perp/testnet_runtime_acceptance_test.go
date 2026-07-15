@@ -196,7 +196,7 @@ func requirePerpTestnetCollateral(t *testing.T, ctx context.Context, adapter *Ad
 	required := qty.Mul(price)
 	for _, balance := range state.Balances {
 		if strings.EqualFold(balance.Currency, currency) {
-			free := balance.FreeOrAvailable()
+			free := balance.Free
 			if free.LessThan(required) {
 				t.Fatalf("insufficient Hyperliquid %s Testnet collateral: account-state free %s %s below required notional %s", label, currency, free, required)
 			}

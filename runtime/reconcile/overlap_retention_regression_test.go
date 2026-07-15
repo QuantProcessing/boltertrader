@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/core/clock"
 	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
@@ -59,6 +60,7 @@ func TestCursorOverlapDeduplicationSurvivesFillRetentionEviction(t *testing.T) {
 	businessApplications := 0
 	r := New(nil, &snapshotExec{mass: mass, fillHistory: true}, c).
 		WithAccountID(accountID).
+		WithClock(clock.NewSimulatedClock(generatedAt)).
 		WithStateStore(store).
 		WithFillRetentionLimit(retentionLimit).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
@@ -138,6 +140,7 @@ func TestDefaultStateOverlapDeduplicationSurvivesFillRetentionEviction(t *testin
 	businessApplications := 0
 	r := New(nil, &snapshotExec{mass: mass, fillHistory: true}, c).
 		WithAccountID(accountID).
+		WithClock(clock.NewSimulatedClock(generatedAt)).
 		WithFillRetentionLimit(retentionLimit).
 		WithFillApplier(func(model.Fill, contract.EventMeta) FillApplyResult {
 			businessApplications++

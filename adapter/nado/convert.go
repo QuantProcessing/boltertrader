@@ -21,9 +21,6 @@ func orderRequestToNado(req model.OrderRequest, inst *model.Instrument, productI
 	if req.InstrumentID != inst.ID {
 		return sdk.ClientOrderInput{}, fmt.Errorf("nado: order instrument does not match resolved instrument")
 	}
-	if req.Venue != nil {
-		return sdk.ClientOrderInput{}, fmt.Errorf("nado: venue-specific order options are not supported: %w", contract.ErrNotSupported)
-	}
 	if !req.TriggerPrice.IsZero() || !req.ActivationPrice.IsZero() || !req.TrailingOffsetBps.IsZero() {
 		return sdk.ClientOrderInput{}, fmt.Errorf("nado: trigger, activation, and trailing order fields are not supported: %w", contract.ErrNotSupported)
 	}

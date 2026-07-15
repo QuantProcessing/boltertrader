@@ -66,8 +66,8 @@ func TestNadoSDKFixturesBackAdapterDiscoveryAndAccountMapping(t *testing.T) {
 	if len(state.Balances) != 2 {
 		t.Fatalf("balances len=%d: %+v", len(state.Balances), state.Balances)
 	}
-	if state.Balances[0].Free.IsPositive() || state.Balances[0].Available.IsPositive() {
-		t.Fatalf("Nado adapter must not invent currency free/available balance: %+v", state.Balances[0])
+	if !state.Balances[0].Free.IsZero() {
+		t.Fatalf("Nado adapter must not invent currency free balance: %+v", state.Balances[0])
 	}
 	if !state.Balances[1].Total.Equal(decimal.RequireFromString("-2")) || !state.Balances[1].Borrowed.Equal(decimal.RequireFromString("2")) {
 		t.Fatalf("negative signed spot balance must preserve total and borrowed magnitude: %+v", state.Balances[1])

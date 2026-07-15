@@ -239,7 +239,10 @@ func NewNode(clients Clients, clk clock.Clock, idPrefix string, opts ...Option) 
 	// Reconcile whatever authoritative sources exist: balances/positions from the
 	// account client, open orders from the execution client. Either may be nil.
 	if clients.Account != nil || clients.Execution != nil {
-		n.reconciler = reconcile.New(clients.Account, clients.Execution, c)
+		n.reconciler = reconcile.New(clients.Account, clients.Execution, c).WithClock(clk)
+		if clients.Account != nil {
+			n.reconciler.WithAccountCapabilities(clients.Account.Capabilities())
+		}
 		n.reconciler.WithLatencyRecorder(n.latency)
 		n.reconciler.WithFillApplier(n.applyRecoveredFill)
 		n.reconciler.WithFillSeeder(func(fill model.Fill) { n.fills.MarkApplied(fill) })
@@ -282,9 +285,6 @@ func clientMissingAccountIDProvider(name string, client interface{ Capabilities(
 		return "", false
 	}
 	venue := strings.TrimSpace(client.Capabilities().Venue)
-	if isTestRuntimeVenue(venue) {
-		return "", false
-	}
 	if venue == "" {
 		return fmt.Sprintf("%s client with empty venue", name), true
 	}
@@ -299,15 +299,6 @@ func venueClientMissingAccountIDProvider(clients Clients) (string, bool) {
 		return desc, true
 	}
 	return "", false
-}
-
-func isTestRuntimeVenue(venue string) bool {
-	switch strings.ToUpper(strings.TrimSpace(venue)) {
-	case "FAKE", "TEST", "T":
-		return true
-	default:
-		return false
-	}
 }
 
 func resolveRuntimeAccountID(clients Clients, expectedAccountID, fallbackAccountID string) (string, bool, error) {
@@ -378,28 +369,15 @@ func (n *TradingNode) accountIDReady() error {
 	return n.accountIDConfigErr
 }
 
-// WithRisk attaches a pre-trade risk gate to the execution engine. The provider
-// (typically the market client's InstrumentProvider) supplies instrument
-// minimums; it may be nil. No-op if the node has no execution client.
-func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
+// WithRisk attaches a generic submission-risk checker to the execution engine.
+// The provider (typically the market client's InstrumentProvider) supplies the
+// metadata passed to that checker and to Portfolio; it may be nil. Concrete
+// checker configuration remains the caller's responsibility. No-op if the node
+// has no execution client.
+func WithRisk(r exec.SubmissionRiskChecker, provider model.InstrumentProvider) Option {
 	return func(n *TradingNode) {
 		if provider == nil && n.clients.Market != nil {
 			provider = n.clients.Market.InstrumentProvider()
-		}
-		if aware, ok := r.(interface {
-			SetRuntimeCapabilities(...contract.Capabilities)
-		}); ok {
-			aware.SetRuntimeCapabilities(runtimeRiskCapabilities(n.clients)...)
-		}
-		if registrar, ok := r.(interface {
-			SetVenuePreTradeValidator(contract.VenuePreTradeValidator, ...enums.InstrumentKind)
-		}); ok {
-			if validator, ok := n.clients.Execution.(contract.VenuePreTradeValidator); ok {
-				kinds := executionSubmitKinds(n.clients.Execution.Capabilities())
-				if len(kinds) > 0 {
-					registrar.SetVenuePreTradeValidator(validator, kinds...)
-				}
-			}
 		}
 		if n.Exec != nil {
 			n.Exec.WithRisk(r, provider)
@@ -410,38 +388,26 @@ func WithRisk(r exec.RiskChecker, provider model.InstrumentProvider) Option {
 	}
 }
 
-func executionSubmitKinds(caps contract.Capabilities) []enums.InstrumentKind {
-	if !caps.Trading.Submit {
+// ExecutionCapabilities returns the execution client's capability declaration
+// with its client-role provenance intact. A nil result means no execution
+// client is configured.
+func (n *TradingNode) ExecutionCapabilities() *contract.Capabilities {
+	if n == nil || n.clients.Execution == nil {
 		return nil
 	}
-	seen := make(map[enums.InstrumentKind]struct{}, len(caps.Products))
-	kinds := make([]enums.InstrumentKind, 0, len(caps.Products))
-	for _, product := range caps.Products {
-		if !product.Trading || product.Kind == enums.KindUnknown {
-			continue
-		}
-		if _, ok := seen[product.Kind]; ok {
-			continue
-		}
-		seen[product.Kind] = struct{}{}
-		kinds = append(kinds, product.Kind)
-	}
-	return kinds
+	caps := n.clients.Execution.Capabilities()
+	return &caps
 }
 
-func runtimeRiskCapabilities(clients Clients) []contract.Capabilities {
-	caps := make([]contract.Capabilities, 0, 2)
-	if clients.Execution != nil {
-		caps = append(caps, clients.Execution.Capabilities())
+// AccountCapabilities returns the account client's capability declaration
+// with its client-role provenance intact. A nil result means no account client
+// is configured.
+func (n *TradingNode) AccountCapabilities() *contract.Capabilities {
+	if n == nil || n.clients.Account == nil {
+		return nil
 	}
-	if clients.Account != nil {
-		caps = append(caps, clients.Account.Capabilities())
-	}
-	return caps
-}
-
-func (n *TradingNode) RuntimeCapabilities() []contract.Capabilities {
-	return runtimeRiskCapabilities(n.clients)
+	caps := n.clients.Account.Capabilities()
+	return &caps
 }
 
 // WithObserver registers an observability sink that receives lifecycle, order,

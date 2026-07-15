@@ -75,6 +75,8 @@ func (*recoveredFillExec) Capabilities() contract.Capabilities {
 	}
 }
 
+func (*recoveredFillExec) ValidateSubmit(model.OrderRequest) error { return nil }
+
 func (*recoveredFillExec) Submit(context.Context, model.OrderRequest) (*model.Order, error) {
 	return nil, contract.ErrNotSupported
 }
@@ -111,15 +113,21 @@ func (*recoveredFillExec) GeneratePositionReports(context.Context, model.Positio
 	return nil, contract.ErrNotSupported
 }
 
-func (e *recoveredFillExec) GenerateExecutionMassStatus(context.Context, model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
+func (e *recoveredFillExec) GenerateExecutionMassStatus(_ context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	mass := model.NewExecutionMassStatus("CUSTOM", e.fill.AccountID, e.at)
-	err := mass.AddFillReport(model.FillReport{
+	if err := mass.AddFillReport(model.FillReport{
 		Venue:      "CUSTOM",
 		AccountID:  e.fill.AccountID,
 		Fill:       e.fill,
 		ReportedAt: e.at,
-	})
-	return mass, err
+	}); err != nil {
+		return nil, err
+	}
+	ids := []model.InstrumentID{e.fill.InstrumentID}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(model.CoverageComplete, e.fill.AccountID, query.ClientID, ids, query.Until)
+	mass.FillsCoverage = model.NewFillCoverage(model.CoverageComplete, e.fill.AccountID, query.ClientID, ids, query.Since, query.Until)
+	mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	return mass, mass.ValidateFor(query)
 }
 
 func (*recoveredFillExec) Events() <-chan contract.ExecEnvelope { return nil }

@@ -17,8 +17,11 @@ var spotInst = model.InstrumentID{Venue: "BT", Symbol: "BTC-USDT", Kind: enums.K
 func TestRuntimeSpotFlowMirrorsOrdersFillsAndBalances(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clock.NewSimulatedClock(start)
-	fexec := runtimetest.NewFakeExec()
+	fexec := runtimetest.NewFakeExec().WithClock(clk)
 	facct := runtimetest.NewFakeAccount()
+	fexec.SetAccountID("spot")
+	facct.SetAccountID("spot")
+	facct.SetAccountStateSnapshot(authoritativeAccountState("spot", model.AccountCash, start))
 	filled := make(chan model.Fill, 1)
 	node := runtime.NewNode(
 		runtime.Clients{Execution: fexec, Account: facct},
@@ -60,8 +63,8 @@ func TestRuntimeSpotFlowMirrorsOrdersFillsAndBalances(t *testing.T) {
 		FeeCurrency:  "USDT",
 		Timestamp:    start.Add(time.Second),
 	})
-	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("799.8"), Available: d("799.8"), UpdatedAt: start.Add(time.Second)})
-	facct.EmitBalance(model.AccountBalance{Currency: "BTC", Total: d("2"), Available: d("2"), UpdatedAt: start.Add(time.Second)})
+	facct.EmitBalance(model.AccountBalance{Currency: "USDT", Total: d("799.8"), Free: d("799.8"), UpdatedAt: start.Add(time.Second)})
+	facct.EmitBalance(model.AccountBalance{Currency: "BTC", Total: d("2"), Free: d("2"), UpdatedAt: start.Add(time.Second)})
 	waitFill(t, filled)
 	waitUntil(t, func() bool {
 		_, usdtOK := node.Cache.Balance("USDT")
@@ -73,11 +76,11 @@ func TestRuntimeSpotFlowMirrorsOrdersFillsAndBalances(t *testing.T) {
 		t.Fatalf("order not filled in cache: ok=%v order=%+v", ok, cached)
 	}
 	usdt, ok := node.Cache.Balance("USDT")
-	if !ok || !usdt.Total.Equal(d("799.8")) || !usdt.Available.Equal(d("799.8")) || !usdt.Locked.IsZero() {
+	if !ok || !usdt.Total.Equal(d("799.8")) || !usdt.Free.Equal(d("799.8")) || !usdt.Locked.IsZero() {
 		t.Fatalf("USDT cache balance=%+v ok=%v, want total=available=799.8 locked=0", usdt, ok)
 	}
 	btc, ok := node.Cache.Balance("BTC")
-	if !ok || !btc.Total.Equal(d("2")) || !btc.Available.Equal(d("2")) || !btc.Locked.IsZero() {
+	if !ok || !btc.Total.Equal(d("2")) || !btc.Free.Equal(d("2")) || !btc.Locked.IsZero() {
 		t.Fatalf("BTC cache balance=%+v ok=%v, want total=available=2 locked=0", btc, ok)
 	}
 	if got := len(node.Cache.Positions()); got != 0 {

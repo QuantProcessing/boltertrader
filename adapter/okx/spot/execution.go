@@ -3,6 +3,7 @@ package spot
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -36,7 +37,7 @@ func newExecutionClient(rest *okx.Client, provider *instrumentProvider, clk cloc
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDOKXDefault
+		accountID = AccountIDDefault
 	}
 	return &executionClient{
 		rest:      rest,
@@ -67,6 +68,46 @@ func checkAlgoSCode(ids []okx.AlgoOrderID) error {
 		}
 	}
 	return nil
+}
+
+func checkSingleSCode(action string, ids []okx.OrderId, wantOrderID, wantClientID string) (okx.OrderId, error) {
+	if len(ids) != 1 {
+		return okx.OrderId{}, fmt.Errorf("okx spot: %s returned %d result rows, want exactly one", action, len(ids))
+	}
+	result := ids[0]
+	if wantOrderID != "" && result.OrdId != wantOrderID {
+		return okx.OrderId{}, fmt.Errorf("okx spot: %s result order id %q does not match request %q", action, result.OrdId, wantOrderID)
+	}
+	if wantClientID != "" && result.ClOrdId != wantClientID {
+		return okx.OrderId{}, fmt.Errorf("okx spot: %s result client id %q does not match request %q", action, result.ClOrdId, wantClientID)
+	}
+	if err := checkSCode(ids); err != nil {
+		return okx.OrderId{}, err
+	}
+	if result.OrdId == "" {
+		return okx.OrderId{}, fmt.Errorf("okx spot: %s result missing order id", action)
+	}
+	return result, nil
+}
+
+func checkSingleAlgoSCode(action string, ids []okx.AlgoOrderID, wantAlgoID, wantClientID string) (okx.AlgoOrderID, error) {
+	if len(ids) != 1 {
+		return okx.AlgoOrderID{}, fmt.Errorf("okx spot: %s returned %d result rows, want exactly one", action, len(ids))
+	}
+	result := ids[0]
+	if wantAlgoID != "" && result.AlgoId != wantAlgoID {
+		return okx.AlgoOrderID{}, fmt.Errorf("okx spot: %s result algo id %q does not match request %q", action, result.AlgoId, wantAlgoID)
+	}
+	if wantClientID != "" && result.AlgoClOrdId != wantClientID {
+		return okx.AlgoOrderID{}, fmt.Errorf("okx spot: %s result client id %q does not match request %q", action, result.AlgoClOrdId, wantClientID)
+	}
+	if err := checkAlgoSCode(ids); err != nil {
+		return okx.AlgoOrderID{}, err
+	}
+	if result.AlgoId == "" {
+		return okx.AlgoOrderID{}, fmt.Errorf("okx spot: %s result missing algo id", action)
+	}
+	return result, nil
 }
 
 func (c *executionClient) instID(id model.InstrumentID) (string, error) {
@@ -129,13 +170,10 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("okx spot: empty order response")
-	}
-	if err := checkSCode(ids); err != nil {
+	oid, err := checkSingleSCode("place order", ids, "", req.ClientID)
+	if err != nil {
 		return nil, err
 	}
-	oid := ids[0]
 	now := c.clk.Now()
 	if req.ClientID == "" {
 		req.ClientID = oid.ClOrdId
@@ -217,13 +255,10 @@ func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
-		return nil, fmt.Errorf("okx spot: empty algo order response")
-	}
-	if err := checkAlgoSCode(ids); err != nil {
+	oid, err := checkSingleAlgoSCode("place algo order", ids, "", req.ClientID)
+	if err != nil {
 		return nil, err
 	}
-	oid := ids[0]
 	now := c.clk.Now()
 	if req.ClientID == "" {
 		req.ClientID = oid.AlgoClOrdId
@@ -248,19 +283,21 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 	}
 	if c.isKnownAlgo(venueOrderID) {
 		ids, err := c.rest.CancelAlgoOrders(ctx, []okx.AlgoCancelRequest{{InstId: instID, AlgoId: venueOrderID}})
-		if err == nil {
-			c.forgetAlgo(venueOrderID)
-		}
 		if err != nil {
 			return err
 		}
-		return checkAlgoSCode(ids)
+		if _, err := checkSingleAlgoSCode("cancel algo order", ids, venueOrderID, ""); err != nil {
+			return err
+		}
+		c.forgetAlgo(venueOrderID)
+		return nil
 	}
 	ids, err := c.rest.CancelOrder(ctx, instID, venueOrderID, "")
 	if err != nil {
 		return err
 	}
-	return checkSCode(ids)
+	_, err = checkSingleSCode("cancel order", ids, venueOrderID, "")
+	return err
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -309,16 +346,13 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 	if err != nil {
 		return nil, err
 	}
-	if err := checkSCode(ids); err != nil {
+	result, err := checkSingleSCode("modify order", ids, venueOrderID, "")
+	if err != nil {
 		return nil, err
-	}
-	vid := venueOrderID
-	if len(ids) > 0 {
-		vid = ids[0].OrdId
 	}
 	return &model.Order{
 		Request:      model.OrderRequest{AccountID: c.accountID, InstrumentID: id, PositionSide: enums.PosNet},
-		VenueOrderID: vid,
+		VenueOrderID: result.OrdId,
 		UpdatedAt:    c.clk.Now(),
 	}, nil
 }
@@ -392,24 +426,181 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("okx spot: mass status account %q does not match adapter account %q", query.AccountID, c.accountID)
 	}
 	accountID := c.accountID
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
+	ids, resolver, err := c.freezeMassStatusScope(query)
 	if err != nil {
 		return nil, err
 	}
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	mass.Partial = true
-	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
-	for _, report := range reports {
-		if err := mass.AddOrderReport(report); err != nil {
-			return nil, err
+	setOptionalUnsupportedCoverage(mass, query)
+
+	requestStartedAt := c.clk.Now()
+	instType := instTypeSpot
+	orders, regularErr := c.rest.GetOrders(ctx, &instType, nil)
+	algos, algoErr := c.rest.GetPendingAlgoOrders(ctx, instTypeSpot, "", "", "", "")
+	selected := instrumentIDSet(ids)
+	if regularErr == nil {
+		now := c.clk.Now()
+		for i := range orders {
+			order := orderFromOKX(&orders[i], resolver, accountID)
+			if _, ok := selected[order.Request.InstrumentID]; !ok || !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+				continue
+			}
+			if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}); err != nil {
+				return nil, err
+			}
 		}
 	}
+	if algoErr == nil {
+		now := c.clk.Now()
+		for i := range algos {
+			order := orderFromPendingAlgo(&algos[i], resolver, accountID)
+			if _, ok := selected[order.Request.InstrumentID]; !ok || !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}) {
+				continue
+			}
+			if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	state := model.CoverageComplete
+	switch {
+	case regularErr != nil && algoErr != nil:
+		state = model.CoverageUnavailable
+	case regularErr != nil || algoErr != nil || len(orders) >= okxPendingOrdersPageLimit || len(algos) >= okxPendingOrdersPageLimit:
+		state = model.CoveragePartial
+	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(state, accountID, query.ClientID, ids, requestStartedAt)
+	appendMassStatusWarning(mass, "OPEN_ORDERS", regularErr)
+	appendMassStatusWarning(mass, "ALGO_ORDERS", algoErr)
+	appendPendingOrdersSaturationWarning(mass, "REGULAR", len(orders), regularErr)
+	appendPendingOrdersSaturationWarning(mass, "ALGO", len(algos), algoErr)
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
 	return mass, nil
+}
+
+func (c *executionClient) freezeMassStatusScope(query model.MassStatusQuery) ([]model.InstrumentID, frozenInstResolver, error) {
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != venueName {
+		return nil, nil, fmt.Errorf("okx spot: mass status venue %q does not match %q", query.Venue, venueName)
+	}
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("okx spot: instrument provider required for mass status")
+	}
+	c.provider.mu.RLock()
+	defer c.provider.mu.RUnlock()
+	var ids []model.InstrumentID
+	explicitIDs := query.InstrumentIDs != nil
+	if explicitIDs {
+		ids = model.NormalizeInstrumentIDs(query.InstrumentIDs)
+	} else {
+		ids = make([]model.InstrumentID, 0, len(c.provider.all))
+		for _, instrument := range c.provider.all {
+			if instrument != nil {
+				ids = append(ids, instrument.ID)
+			}
+		}
+		ids = model.NormalizeInstrumentIDs(ids)
+	}
+	for _, id := range ids {
+		if id.Venue != venueName || id.Kind != enums.KindSpot || id.Symbol == "" {
+			return nil, nil, fmt.Errorf("okx spot: invalid mass status instrument %s", id)
+		}
+		if explicitIDs {
+			if instrument, ok := c.provider.byID[id.String()]; !ok || instrument == nil {
+				return nil, nil, fmt.Errorf("okx spot: unknown mass status instrument %s", id)
+			}
+		}
+	}
+	resolver := make(frozenInstResolver, len(c.provider.byInstID))
+	for instID, id := range c.provider.byInstID {
+		resolver[instID] = id
+	}
+	return ids, resolver, nil
+}
+
+type frozenInstResolver map[string]model.InstrumentID
+
+func (r frozenInstResolver) resolveInstID(instID string) model.InstrumentID {
+	if id, ok := r[instID]; ok {
+		return id
+	}
+	return model.InstrumentID{Venue: venueName, Symbol: instID, Kind: enums.KindSpot}
+}
+
+func setOptionalUnsupportedCoverage(mass *model.ExecutionMassStatus, query model.MassStatusQuery) {
+	if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+}
+
+func appendMassStatusWarning(mass *model.ExecutionMassStatus, code string, err error) {
+	if err != nil {
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: code + "_UNAVAILABLE", Message: err.Error()})
+	}
+}
+
+const okxPendingOrdersPageLimit = 100
+
+func appendPendingOrdersSaturationWarning(mass *model.ExecutionMassStatus, domain string, count int, err error) {
+	if err == nil && count >= okxPendingOrdersPageLimit {
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{
+			Code:    domain + "_ORDERS_SATURATED",
+			Message: fmt.Sprintf("okx spot: %s pending-order page reached %d-row cap; completeness is unproven", strings.ToLower(domain), okxPendingOrdersPageLimit),
+		})
+	}
+}
+
+func instrumentIDSet(ids []model.InstrumentID) map[model.InstrumentID]struct{} {
+	set := make(map[model.InstrumentID]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+func orderFromPendingAlgo(order *okx.AlgoOrder, resolver instResolver, accountID string) model.Order {
+	if order == nil {
+		return model.Order{}
+	}
+	orderType := enums.TypeStopMarket
+	price := firstNonZero(dec(order.OrderPx), dec(order.OrdPx))
+	if strings.EqualFold(order.OrdType, "move_order_stop") {
+		orderType = enums.TypeTrailingStopMarket
+	} else if price.IsPositive() {
+		orderType = enums.TypeStopLimit
+	}
+	clientID := order.AlgoClOrdId
+	if clientID == "" {
+		clientID = order.ClOrdId
+	}
+	status := statusFromOKX(order.State)
+	if status == enums.StatusUnknown {
+		status = enums.StatusNew
+	}
+	return model.Order{
+		Request: model.OrderRequest{
+			AccountID: accountID, InstrumentID: resolver.resolveInstID(order.InstId), ClientID: clientID,
+			Side: sideFromOKX(string(order.Side)), Type: orderType, TIF: enums.TifUnknown,
+			Quantity: dec(order.Sz), Price: price, TriggerPrice: dec(order.TriggerPx), PositionSide: enums.PosNet,
+		},
+		VenueOrderID: order.AlgoId,
+		Status:       status,
+		CreatedAt:    parseMillis(order.CTime),
+		UpdatedAt:    parseMillis(order.UTime),
+	}
 }
 
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }

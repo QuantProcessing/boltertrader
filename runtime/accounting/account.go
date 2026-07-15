@@ -167,7 +167,6 @@ func (a *baseAccount) Apply(state model.AccountState, appliedAt time.Time) error
 	a.last = copyState(state)
 	a.balances = make(map[string]model.AccountBalance, len(state.Balances))
 	for _, bal := range state.Balances {
-		bal = bal.Normalized()
 		if bal.AccountID == "" {
 			bal.AccountID = state.AccountID
 		}
@@ -184,7 +183,6 @@ func (a *baseAccount) Apply(state model.AccountState, appliedAt time.Time) error
 func (a *baseAccount) ApplyBalance(balance model.AccountBalance) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	balance = balance.Normalized()
 	if balance.AccountID == "" {
 		balance.AccountID = a.id
 	}
@@ -258,7 +256,7 @@ func (a *baseAccount) BalanceTotal(currency string) (decimal.Decimal, bool) {
 
 func (a *baseAccount) BalanceFree(currency string) (decimal.Decimal, bool) {
 	b, ok := a.Balance(currency)
-	return b.FreeOrAvailable(), ok
+	return b.Free, ok
 }
 
 func (a *baseAccount) BalanceLocked(currency string) (decimal.Decimal, bool) {

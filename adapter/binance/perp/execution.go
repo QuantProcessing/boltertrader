@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/QuantProcessing/boltertrader/core/clock"
@@ -37,7 +38,7 @@ func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk 
 		accountID = accountIDs[0]
 	}
 	if accountID == "" {
-		accountID = model.AccountIDBinanceDefault
+		accountID = AccountIDDefault
 	}
 	return &executionClient{
 		rest:      rest,
@@ -50,6 +51,18 @@ func newExecutionClient(rest *sdkperp.Client, provider *instrumentProvider, clk 
 }
 
 func (c *executionClient) AccountID() string { return c.accountID }
+
+func mapDefinitiveOrderRejection(err error) error {
+	if err == nil || !sdkperp.IsDefinitiveOrderRejection(err) {
+		return err
+	}
+	var apiErr *sdkperp.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	venueErr := errs.NewExchangeError(venueName, strconv.Itoa(apiErr.Code), apiErr.Message, contract.ErrVenueRejected)
+	return errors.Join(venueErr, err)
+}
 
 func (c *executionClient) venueSymbol(id model.InstrumentID) (string, error) {
 	inst, ok := c.provider.Instrument(id)
@@ -107,6 +120,9 @@ func (c *executionClient) Submit(ctx context.Context, req model.OrderRequest) (*
 
 	resp, err := c.rest.PlaceOrder(ctx, p)
 	if err != nil {
+		return nil, mapDefinitiveOrderRejection(err)
+	}
+	if err := validateRegularWriteResponse(resp, symbol, req.ClientID, 0, "submit"); err != nil {
 		return nil, err
 	}
 	order := orderFromResponse(resp, req)
@@ -179,6 +195,9 @@ func (c *executionClient) submitAlgo(ctx context.Context, req model.OrderRequest
 
 	resp, err := c.rest.NewAlgoOrder(ctx, p)
 	if err != nil {
+		return nil, mapDefinitiveOrderRejection(err)
+	}
+	if err := validateAlgoSubmitResponse(resp, symbol, req.ClientID); err != nil {
 		return nil, err
 	}
 	order := orderFromAlgoResponse(resp, req)
@@ -199,14 +218,25 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 		if err != nil {
 			return fmt.Errorf("binance: invalid algo order id %q: %w", venueOrderID, err)
 		}
-		_, err = c.rest.CancelAlgoOrder(ctx, sdkperp.AlgoOrderLookupParams{AlgoID: algoID})
-		if err == nil {
-			c.forgetAlgo(venueOrderID)
+		resp, err := c.rest.CancelAlgoOrder(ctx, sdkperp.AlgoOrderLookupParams{AlgoID: algoID})
+		if err != nil {
+			return mapDefinitiveOrderRejection(err)
 		}
-		return err
+		if err := validateAlgoCancelResponse(resp, algoID); err != nil {
+			return err
+		}
+		c.forgetAlgo(venueOrderID)
+		return nil
 	}
-	_, err = c.rest.CancelOrder(ctx, sdkperp.CancelOrderParams{Symbol: symbol, OrderID: venueOrderID})
-	return err
+	orderID, err := strconv.ParseInt(venueOrderID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("binance: invalid venue order id %q: %w", venueOrderID, err)
+	}
+	resp, err := c.rest.CancelOrder(ctx, sdkperp.CancelOrderParams{Symbol: symbol, OrderID: venueOrderID})
+	if err != nil {
+		return mapDefinitiveOrderRejection(err)
+	}
+	return validateRegularCancelResponse(resp, symbol, orderID)
 }
 
 func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) error {
@@ -214,9 +244,9 @@ func (c *executionClient) CancelAll(ctx context.Context, id model.InstrumentID) 
 	if err != nil {
 		return err
 	}
-	regularErr := c.rest.CancelAllOpenOrders(ctx, sdkperp.CancelAllOrdersParams{Symbol: symbol})
+	regularErr := mapDefinitiveOrderRejection(c.rest.CancelAllOpenOrders(ctx, sdkperp.CancelAllOrdersParams{Symbol: symbol}))
 	_, algoErr := c.rest.CancelAllOpenAlgoOrders(ctx, sdkperp.CancelAllOpenAlgoOrdersParams{Symbol: symbol})
-	return errors.Join(regularErr, algoErr)
+	return errors.Join(regularErr, mapDefinitiveOrderRejection(algoErr))
 }
 
 // Modify amends a resting order's price and/or quantity. Binance's amend
@@ -257,11 +287,77 @@ func (c *executionClient) Modify(ctx context.Context, id model.InstrumentID, ven
 		Price:    price.String(),
 	})
 	if err != nil {
+		return nil, mapDefinitiveOrderRejection(err)
+	}
+	if err := validateRegularWriteResponse(resp, symbol, existing.ClientOrderID, orderID, "modify"); err != nil {
 		return nil, err
 	}
 	order := orderFromResponse(resp, model.OrderRequest{AccountID: c.accountID, InstrumentID: id})
 	order.UpdatedAt = c.clk.Now()
 	return &order, nil
+}
+
+func validateRegularWriteResponse(resp *sdkperp.OrderResponse, symbol, clientID string, orderID int64, operation string) error {
+	if resp == nil {
+		return fmt.Errorf("binance: ambiguous %s response: missing order envelope", operation)
+	}
+	if resp.OrderID <= 0 || (orderID > 0 && resp.OrderID != orderID) {
+		return fmt.Errorf("binance: ambiguous %s response: order id %d does not match %d", operation, resp.OrderID, orderID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(resp.Symbol), symbol) {
+		return fmt.Errorf("binance: ambiguous %s response: symbol %q does not match %q", operation, resp.Symbol, symbol)
+	}
+	if clientID != "" && resp.ClientOrderID != clientID {
+		return fmt.Errorf("binance: ambiguous %s response: client id %q does not match %q", operation, resp.ClientOrderID, clientID)
+	}
+	status := statusFromBinance(resp.Status)
+	if status == enums.StatusUnknown || status == enums.StatusRejected {
+		return fmt.Errorf("binance: ambiguous %s response: unsupported status %q", operation, resp.Status)
+	}
+	return nil
+}
+
+func validateRegularCancelResponse(resp *sdkperp.OrderResponse, symbol string, orderID int64) error {
+	if err := validateRegularWriteResponse(resp, symbol, "", orderID, "cancel"); err != nil {
+		return err
+	}
+	if statusFromBinance(resp.Status) != enums.StatusCanceled {
+		return fmt.Errorf("binance: ambiguous cancel response: unsupported status %q", resp.Status)
+	}
+	return nil
+}
+
+func validateAlgoCancelResponse(resp *sdkperp.AlgoOrderCancelResponse, algoID int64) error {
+	if resp == nil {
+		return fmt.Errorf("binance: ambiguous algo cancel response: missing order envelope")
+	}
+	if resp.AlgoID <= 0 || resp.AlgoID != algoID {
+		return fmt.Errorf("binance: ambiguous algo cancel response: algo id %d does not match %d", resp.AlgoID, algoID)
+	}
+	if strings.TrimSpace(resp.Code) != "200" {
+		return fmt.Errorf("binance: ambiguous algo cancel response: unsupported result code %q", resp.Code)
+	}
+	return nil
+}
+
+func validateAlgoSubmitResponse(resp *sdkperp.AlgoOrderResponse, symbol, clientID string) error {
+	if resp == nil {
+		return fmt.Errorf("binance: ambiguous algo submit response: missing order envelope")
+	}
+	if resp.AlgoID <= 0 {
+		return fmt.Errorf("binance: ambiguous algo submit response: invalid algo id %d", resp.AlgoID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(resp.Symbol), symbol) {
+		return fmt.Errorf("binance: ambiguous algo submit response: symbol %q does not match %q", resp.Symbol, symbol)
+	}
+	if clientID != "" && resp.ClientAlgoID != clientID {
+		return fmt.Errorf("binance: ambiguous algo submit response: client id %q does not match %q", resp.ClientAlgoID, clientID)
+	}
+	status := algoStatusFromBinance(resp.AlgoStatus)
+	if status == enums.StatusUnknown || status == enums.StatusRejected {
+		return fmt.Errorf("binance: ambiguous algo submit response: unsupported status %q", resp.AlgoStatus)
+	}
+	return nil
 }
 
 func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID) ([]model.Order, error) {
@@ -355,24 +451,134 @@ func (c *executionClient) GeneratePositionReports(ctx context.Context, query mod
 
 func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query model.MassStatusQuery) (*model.ExecutionMassStatus, error) {
 	if query.AccountID != "" && query.AccountID != c.accountID {
-		return model.NewExecutionMassStatus(venueName, query.AccountID, c.clk.Now()), nil
+		return nil, fmt.Errorf("binance: mass status account %q does not match adapter account %q", query.AccountID, c.accountID)
 	}
 	accountID := c.accountID
-	reports, err := c.GenerateOrderStatusReports(ctx, model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true})
+	ids, resolver, err := c.freezeMassStatusInstrumentScope(query)
 	if err != nil {
 		return nil, err
 	}
 	mass := model.NewExecutionMassStatus(venueName, accountID, c.clk.Now())
 	mass.ClientID = query.ClientID
 	mass.Lookback = query.Lookback
-	mass.Partial = true
-	mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_ONLY", Message: "adapter can generate open-order status only; absent closed orders are ambiguous"})
-	for _, report := range reports {
+	if query.IncludeFills {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.FillsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+	if query.IncludePositions {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageUnavailable}
+	} else {
+		mass.PositionsCoverage = model.ReportCoverage{State: model.CoverageNotRequested}
+	}
+
+	requestStartedAt := c.clk.Now()
+	regularOrders, regularErr := c.rest.GetOpenOrders(ctx, "")
+	algoOrders, algoErr := c.rest.QueryOpenAlgoOrders(ctx, sdkperp.QueryOpenAlgoOrdersParams{AlgoType: "CONDITIONAL"})
+	state := model.CoverageComplete
+	switch {
+	case regularErr != nil && algoErr != nil:
+		state = model.CoverageUnavailable
+	case regularErr != nil || algoErr != nil:
+		state = model.CoveragePartial
+	}
+	mass.OpenOrdersCoverage = model.NewSnapshotCoverage(state, accountID, query.ClientID, ids, requestStartedAt)
+	if regularErr != nil {
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "OPEN_ORDERS_UNAVAILABLE", Message: regularErr.Error()})
+	}
+	if algoErr != nil {
+		mass.Warnings = append(mass.Warnings, model.ReportWarning{Code: "ALGO_ORDERS_UNAVAILABLE", Message: algoErr.Error()})
+	}
+	selected := instrumentIDSet(ids)
+	now := c.clk.Now()
+	statusQuery := model.OrderStatusReportQuery{AccountID: accountID, ClientID: query.ClientID, OpenOnly: true}
+	for i := range regularOrders {
+		id := resolver.resolve(regularOrders[i].Symbol)
+		if _, ok := selected[id]; !ok {
+			continue
+		}
+		order := orderFromResponse(&regularOrders[i], model.OrderRequest{AccountID: accountID, InstrumentID: id})
+		if !model.OrderMatchesStatusQuery(order, statusQuery) {
+			continue
+		}
+		report := model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}
 		if err := mass.AddOrderReport(report); err != nil {
 			return nil, err
 		}
 	}
+	for i := range algoOrders {
+		id := resolver.resolve(algoOrders[i].Symbol)
+		if _, ok := selected[id]; !ok {
+			continue
+		}
+		order := orderFromAlgoResponse(&algoOrders[i], model.OrderRequest{AccountID: accountID, InstrumentID: id})
+		if !model.OrderMatchesStatusQuery(order, statusQuery) {
+			continue
+		}
+		if err := mass.AddOrderReport(model.OrderStatusReport{Venue: venueName, AccountID: accountID, Order: order, ReportedAt: now}); err != nil {
+			return nil, err
+		}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		return nil, err
+	}
 	return mass, nil
+}
+
+func (c *executionClient) freezeMassStatusInstrumentScope(query model.MassStatusQuery) ([]model.InstrumentID, frozenVenueSymbolResolver, error) {
+	if venue := strings.TrimSpace(query.Venue); venue != "" && venue != venueName {
+		return nil, nil, fmt.Errorf("binance: mass status venue %q does not match %q", query.Venue, venueName)
+	}
+	if c.provider == nil {
+		return nil, nil, fmt.Errorf("binance: instrument provider required for mass status")
+	}
+	c.provider.mu.RLock()
+	defer c.provider.mu.RUnlock()
+	var ids []model.InstrumentID
+	explicitIDs := query.InstrumentIDs != nil
+	if explicitIDs {
+		ids = model.NormalizeInstrumentIDs(query.InstrumentIDs)
+	} else {
+		ids = make([]model.InstrumentID, 0, len(c.provider.all))
+		for _, instrument := range c.provider.all {
+			if instrument != nil {
+				ids = append(ids, instrument.ID)
+			}
+		}
+		ids = model.NormalizeInstrumentIDs(ids)
+	}
+	for _, id := range ids {
+		if id.Venue != venueName || id.Kind != enums.KindPerp || id.Symbol == "" {
+			return nil, nil, fmt.Errorf("binance: invalid mass status instrument %s", id)
+		}
+		if explicitIDs {
+			if instrument, ok := c.provider.byID[id.String()]; !ok || instrument == nil {
+				return nil, nil, fmt.Errorf("binance: unknown mass status instrument %s", id)
+			}
+		}
+	}
+	resolver := make(frozenVenueSymbolResolver, len(c.provider.bySymbol))
+	for symbol, id := range c.provider.bySymbol {
+		resolver[symbol] = id
+	}
+	return ids, resolver, nil
+}
+
+type frozenVenueSymbolResolver map[string]model.InstrumentID
+
+func (r frozenVenueSymbolResolver) resolve(symbol string) model.InstrumentID {
+	if id, ok := r[symbol]; ok {
+		return id
+	}
+	return model.InstrumentID{Venue: venueName, Symbol: symbol, Kind: enums.KindPerp}
+}
+
+func instrumentIDSet(ids []model.InstrumentID) map[model.InstrumentID]struct{} {
+	set := make(map[model.InstrumentID]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
 }
 
 func (c *executionClient) Events() <-chan contract.ExecEnvelope { return c.stream.C() }
@@ -391,7 +597,7 @@ func (c *executionClient) Close() error {
 // preserving the originating request where available.
 func orderFromResponse(r *sdkperp.OrderResponse, req model.OrderRequest) model.Order {
 	if req.AccountID == "" {
-		req.AccountID = model.AccountIDBinanceDefault
+		req.AccountID = AccountIDDefault
 	}
 	if req.ClientID == "" {
 		req.ClientID = r.ClientOrderID
@@ -410,7 +616,7 @@ func orderFromResponse(r *sdkperp.OrderResponse, req model.OrderRequest) model.O
 
 func orderFromAlgoResponse(r *sdkperp.AlgoOrderResponse, req model.OrderRequest) model.Order {
 	if req.AccountID == "" {
-		req.AccountID = model.AccountIDBinanceDefault
+		req.AccountID = AccountIDDefault
 	}
 	if req.ClientID == "" {
 		req.ClientID = r.ClientAlgoID

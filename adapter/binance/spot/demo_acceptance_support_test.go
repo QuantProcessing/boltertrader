@@ -686,7 +686,7 @@ func closeBinanceSpotDemoBaseDelta(ctx context.Context, adapter *Adapter, id mod
 	if err != nil {
 		return nil, err
 	}
-	availableDelta := balances[spec.BaseCurrency].Available.Sub(startBaseAvailable)
+	availableDelta := balances[spec.BaseCurrency].Free.Sub(startBaseAvailable)
 	if availableDelta.IsNegative() {
 		return nil, fmt.Errorf("refusing automatic close of negative %s inventory delta %s", spec.BaseCurrency, availableDelta)
 	}
@@ -751,7 +751,7 @@ func waitForDemoSpotBaseDeltaBelowStep(ctx context.Context, adapter *Adapter, sp
 	for {
 		balances, err := demoSpotBalances(ctx, adapter)
 		if err == nil {
-			lastDelta = balances[spec.BaseCurrency].Available.Sub(startBaseAvailable)
+			lastDelta = balances[spec.BaseCurrency].Free.Sub(startBaseAvailable)
 			if lastDelta.Abs().LessThan(spec.SizeStep) {
 				return nil
 			}

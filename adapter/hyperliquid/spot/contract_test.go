@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,10 +29,9 @@ import (
 )
 
 var (
-	_ contract.ExecutionClient      = (*executionClient)(nil)
-	_ contract.AccountClient        = (*accountClient)(nil)
-	_ contract.AccountStateReporter = (*accountClient)(nil)
-	_ contract.MarketDataClient     = (*marketDataClient)(nil)
+	_ contract.ExecutionClient  = (*executionClient)(nil)
+	_ contract.AccountClient    = (*accountClient)(nil)
+	_ contract.MarketDataClient = (*marketDataClient)(nil)
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -42,6 +42,76 @@ func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 func testSpotID() model.InstrumentID {
 	return model.InstrumentID{Venue: venueName, Symbol: "PURR-USDC", Kind: enums.KindSpot}
+}
+
+func TestHyperliquidSpotValidateSubmitIsPure(t *testing.T) {
+	client := newExecutionClient(nil, testProvider(t), clock.NewRealClock(), AccountIDDefault)
+	req := model.OrderRequest{
+		AccountID:    AccountIDDefault,
+		InstrumentID: testSpotID(),
+		ClientID:     "spot-validate-pure",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("2"),
+		Price:        d("1.01"),
+		PositionSide: enums.PosNet,
+	}
+
+	if err := client.ValidateSubmit(req); err != nil {
+		t.Fatalf("ValidateSubmit: %v", err)
+	}
+	if got := client.ids.VenueCloidForClient(req.ClientID); got != "" {
+		t.Fatalf("ValidateSubmit remembered cloid=%q, want no side effect", got)
+	}
+	prospective := cloid.ForClientID(req.ClientID)
+	if got := client.ids.ClientID(prospective, ""); got != prospective {
+		t.Fatalf("ValidateSubmit remembered client mapping=%q, want passthrough %q", got, prospective)
+	}
+}
+
+func TestHyperliquidSpotValidateSubmitTable(t *testing.T) {
+	client := newExecutionClient(nil, testProvider(t), clock.NewRealClock(), AccountIDDefault)
+	base := model.OrderRequest{
+		AccountID:    AccountIDDefault,
+		InstrumentID: testSpotID(),
+		ClientID:     "spot-validation-table",
+		Side:         enums.SideBuy,
+		Type:         enums.TypeLimit,
+		TIF:          enums.TifGTC,
+		Quantity:     d("2"),
+		Price:        d("1.01"),
+		PositionSide: enums.PosNet,
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*model.OrderRequest)
+		wantErr bool
+	}{
+		{name: "valid"},
+		{name: "unknown instrument", mutate: func(req *model.OrderRequest) { req.InstrumentID.Symbol = "UNKNOWN-USDC" }, wantErr: true},
+		{name: "invalid side", mutate: func(req *model.OrderRequest) { req.Side = enums.SideUnknown }, wantErr: true},
+		{name: "unsupported order type", mutate: func(req *model.OrderRequest) { req.Type = enums.TypeMarket }, wantErr: true},
+		{name: "unsupported tif", mutate: func(req *model.OrderRequest) { req.TIF = enums.TifFOK }, wantErr: true},
+		{name: "reduce only", mutate: func(req *model.OrderRequest) { req.ReduceOnly = true }, wantErr: true},
+		{name: "non-net position", mutate: func(req *model.OrderRequest) { req.PositionSide = enums.PosLong }, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := base
+			req.ClientID += "-" + tt.name
+			if tt.mutate != nil {
+				tt.mutate(&req)
+			}
+			err := client.ValidateSubmit(req)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateSubmit err=%v wantErr=%v", err, tt.wantErr)
+			}
+			if got := client.ids.VenueCloidForClient(req.ClientID); got != "" {
+				t.Fatalf("ValidateSubmit remembered cloid=%q", got)
+			}
+		})
+	}
 }
 
 func TestHyperliquidSpotGTXMapsToPostOnlyAlo(t *testing.T) {
@@ -109,7 +179,7 @@ func TestHyperliquidSpotContractCapabilities(t *testing.T) {
 	provider := testProvider(t)
 	rest := testREST(func(*http.Request, []byte) (string, int) { return `{}`, http.StatusOK })
 	market := newMarketDataClient(rest, provider, clock.NewRealClock())
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 	acct := newAccountClient(rest, clock.NewRealClock())
 
 	contracttest.RunSpotCapabilitySuite(t, contracttest.SpotCapabilitySuite{
@@ -154,8 +224,8 @@ func TestHyperliquidSpotContractCapabilities(t *testing.T) {
 	if market.Capabilities().Venue != venueName || exec.Capabilities().Venue != venueName || acct.Capabilities().Venue != venueName {
 		t.Fatal("capabilities must declare Hyperliquid venue")
 	}
-	if caps := acct.Capabilities(); !caps.Reports.AccountStateSnapshots {
-		t.Fatalf("account state snapshot capability=false, want true")
+	if caps := acct.Capabilities(); !caps.Reports.AccountBalanceSnapshots {
+		t.Fatalf("account balance snapshot capability=false, want true")
 	}
 }
 
@@ -191,7 +261,7 @@ func TestHyperliquidSpotAdapterPropagatesCanonicalAccountID(t *testing.T) {
 	}
 	defer adapter.Close()
 
-	const want = model.AccountIDHyperliquidDefault
+	const want = AccountIDDefault
 	if adapter.acct.accountID != want {
 		t.Fatalf("account client accountID=%q, want %q", adapter.acct.accountID, want)
 	}
@@ -323,7 +393,7 @@ func TestHyperliquidSpotAdapterResolvesAgentOwnerForConfiguredHexOwner(t *testin
 	if adapter.rest.AccountAddr != owner {
 		t.Fatalf("rest account address=%q, want owner %q", adapter.rest.AccountAddr, owner)
 	}
-	const wantAccountID = model.AccountIDHyperliquidDefault
+	const wantAccountID = AccountIDDefault
 	if adapter.acct.accountID != wantAccountID || adapter.exec.accountID != wantAccountID {
 		t.Fatalf("adapter account ids acct=%q exec=%q, want owner account id", adapter.acct.accountID, adapter.exec.accountID)
 	}
@@ -418,7 +488,7 @@ func TestHyperliquidSpotSubmitOrderRequestTranslation(t *testing.T) {
 		}
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":555,"cloid":"` + cloid.ForClientID("c-spot-1") + `","status":"open"}}]}}}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -432,7 +502,7 @@ func TestHyperliquidSpotSubmitOrderRequestTranslation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
-	if order.VenueOrderID != "555" || order.Status != enums.StatusNew || order.Request.AccountID != model.AccountIDHyperliquidDefault || order.Request.ClientID != "c-spot-1" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
+	if order.VenueOrderID != "555" || order.Status != enums.StatusNew || order.Request.AccountID != AccountIDDefault || order.Request.ClientID != "c-spot-1" || order.Request.PositionSide != enums.PosNet || order.Request.ReduceOnly {
 		t.Fatalf("order=%+v", order)
 	}
 }
@@ -445,7 +515,7 @@ func TestHyperliquidSpotFilledSubmitDoesNotEmitSyntheticEconomicFill(t *testing.
 		}
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"2","avgPx":"1.01","oid":777}}]}}}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 	req := model.OrderRequest{
 		InstrumentID: testSpotID(),
 		ClientID:     "filled-submit",
@@ -477,7 +547,7 @@ func TestHyperliquidSpotFilledSubmitThenSnapshotEmitsOnlyAuthoritativeFeeBearing
 	rest := testREST(func(r *http.Request, body []byte) (string, int) {
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"2","avgPx":"1.01","oid":777}}]}}}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(), ClientID: "private-fill", Side: enums.SideBuy,
@@ -498,7 +568,7 @@ func TestHyperliquidSpotFilledSubmitThenSnapshotEmitsOnlyAuthoritativeFeeBearing
 			Coin: "PURR/USDC", Px: "1.01", Sz: "2", Side: "B", Time: 1700000000123,
 			Oid: 777, Crossed: true, Fee: "-0.01", FeeToken: "USDC", Tid: 99,
 		}},
-	}, provider, model.AccountIDHyperliquidDefault) {
+	}, provider, AccountIDDefault) {
 		exec.emit(event)
 	}
 	select {
@@ -525,14 +595,14 @@ func TestHyperliquidSpotRuntimeCumulativeAckDoesNotDoubleCountSplitAuthoritative
 		}
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"1","avgPx":"1.04","oid":777}}]}}}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 	callbacks := make(chan model.Fill, 8)
 	envelopes := make(chan contract.ExecEnvelope, 8)
 	node := btruntime.NewNode(
 		btruntime.Clients{Execution: exec},
 		clock.NewRealClock(),
 		"hyperliquid-spot-cumulative-ack",
-		btruntime.WithAccountID(model.AccountIDHyperliquidDefault),
+		btruntime.WithAccountID(AccountIDDefault),
 		btruntime.WithOnFill(func(fill model.Fill) { callbacks <- fill }),
 		btruntime.WithOnExecEnvelope(func(env contract.ExecEnvelope) { envelopes <- env }),
 	)
@@ -548,7 +618,7 @@ func TestHyperliquidSpotRuntimeCumulativeAckDoesNotDoubleCountSplitAuthoritative
 	}
 
 	order, err := node.Exec.Submit(ctx, model.OrderRequest{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), ClientID: "partial-ack",
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), ClientID: "partial-ack",
 		Side: enums.SideBuy, Type: enums.TypeLimit, TIF: enums.TifIOC,
 		Quantity: d("2"), Price: d("1.1"), PositionSide: enums.PosNet,
 	})
@@ -568,7 +638,7 @@ func TestHyperliquidSpotRuntimeCumulativeAckDoesNotDoubleCountSplitAuthoritative
 		if fills.IsSnapshot {
 			flags |= contract.EventFlagFromSnapshot
 		}
-		for _, event := range execEventsFromUserFills(fills, provider, model.AccountIDHyperliquidDefault) {
+		for _, event := range execEventsFromUserFills(fills, provider, AccountIDDefault) {
 			exec.emitWithFlags(event, flags)
 		}
 	}
@@ -609,17 +679,17 @@ func TestHyperliquidSpotRuntimeCumulativeAckDoesNotDoubleCountSplitAuthoritative
 		t.Fatalf("snapshot envelopes=%d, want two duplicate snapshot tids", snapshotEnvelopes)
 	}
 
-	cached, ok := node.Cache.OrderForAccount(model.AccountIDHyperliquidDefault, order.Request.ClientID)
+	cached, ok := node.Cache.OrderForAccount(AccountIDDefault, order.Request.ClientID)
 	if !ok || !cached.FilledQty.Equal(d("1")) || !cached.AvgFillPrice.Equal(d("1.04")) {
 		t.Fatalf("cached order=%+v ok=%v, cumulative ack must not be incremented by real tids", cached, ok)
 	}
-	if got := node.Portfolio.NetQtyForAccount(model.AccountIDHyperliquidDefault, testSpotID(), enums.PosNet); !got.Equal(d("0.98")) {
+	if got := node.Portfolio.NetQtyForAccount(AccountIDDefault, testSpotID(), enums.PosNet); !got.Equal(d("0.98")) {
 		t.Fatalf("portfolio net base=%s, want 0.98 after 0.02 PURR fee", got)
 	}
-	if got := node.Portfolio.AvgPriceForAccount(model.AccountIDHyperliquidDefault, testSpotID(), enums.PosNet); !got.Equal(d("1.0612244897959184")) {
+	if got := node.Portfolio.AvgPriceForAccount(AccountIDDefault, testSpotID(), enums.PosNet); !got.Equal(d("1.0612244897959184")) {
 		t.Fatalf("portfolio avg price=%s, want fee-adjusted split-fill cost", got)
 	}
-	fees := node.Portfolio.FeesByCurrencyForAccount(model.AccountIDHyperliquidDefault)
+	fees := node.Portfolio.FeesByCurrencyForAccount(AccountIDDefault)
 	if !fees["USDC"].Equal(d("-0.01")) || !fees["PURR"].Equal(d("0.02")) {
 		t.Fatalf("fees=%v, want signed quote rebate and base fee once", fees)
 	}
@@ -641,7 +711,7 @@ func TestHyperliquidSpotSubmitRejectsMismatchedAccountID(t *testing.T) {
 		t.Fatalf("unexpected REST call for mismatched account id: %s", body)
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	_, err := exec.Submit(context.Background(), model.OrderRequest{
 		AccountID:    "HYPERLIQUID-OTHER",
@@ -663,7 +733,7 @@ func TestHyperliquidSpotSubmitMapsExplicitVenueRejection(t *testing.T) {
 	rest := testREST(func(r *http.Request, body []byte) (string, int) {
 		return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"Insufficient spot balance"}]}}}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(), ClientID: "rejected-spot", Side: enums.SideBuy,
@@ -671,6 +741,96 @@ func TestHyperliquidSpotSubmitMapsExplicitVenueRejection(t *testing.T) {
 	})
 	if order != nil || !errors.Is(err, contract.ErrVenueRejected) || !errors.Is(err, sdk.ErrOrderRejected) || !strings.Contains(err.Error(), "Insufficient spot balance") {
 		t.Fatalf("order=%+v err=%v, want preserved typed venue rejection", order, err)
+	}
+}
+
+func TestHyperliquidSpotCancelAndModifyMapOnlyTypedVenueRejections(t *testing.T) {
+	provider := testProvider(t)
+	for _, operation := range []string{"cancel", "modify"} {
+		t.Run(operation, func(t *testing.T) {
+			rest := testREST(func(r *http.Request, body []byte) (string, int) {
+				if r.URL.Path == "/info" {
+					return `{"status":"order","order":{"order":{"coin":"PURR/USDC","side":"B","limitPx":"1.01","sz":"2","oid":555,"timestamp":1700000000000,"origSz":"2","reduceOnly":false,"orderType":"Limit","tif":"Gtc","isTrigger":false,"triggerPx":"0"},"status":"open","statusTimestamp":1700000000000}}`, http.StatusOK
+				}
+				return `{"status":"ok","response":{"type":"default","data":{"statuses":[{"error":"Order was never placed"}]}}}`, http.StatusOK
+			})
+			exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
+			var err error
+			if operation == "cancel" {
+				err = exec.Cancel(context.Background(), testSpotID(), "555")
+			} else {
+				_, err = exec.Modify(context.Background(), testSpotID(), "555", d("1.02"), d("2"))
+			}
+			if !errors.Is(err, contract.ErrVenueRejected) || !errors.Is(err, sdk.ErrOrderRejected) {
+				t.Fatalf("err=%v, want typed venue rejection", err)
+			}
+		})
+	}
+}
+
+func TestHyperliquidSpotCommandAmbiguityMatrixDoesNotClaimVenueRejection(t *testing.T) {
+	provider := testProvider(t)
+	infoResponse := `{"status":"order","order":{"order":{"coin":"PURR/USDC","side":"B","limitPx":"1.01","sz":"2","oid":555,"timestamp":1700000000000,"origSz":"2","reduceOnly":false,"orderType":"Limit","tif":"Gtc","isTrigger":false,"triggerPx":"0"},"status":"open","statusTimestamp":1700000000000}}`
+	type outcome struct {
+		name      string
+		status    int
+		body      func(string) string
+		transport error
+	}
+	outcomes := []outcome{
+		{name: "timeout", transport: context.DeadlineExceeded},
+		{name: "http 5xx", status: http.StatusInternalServerError, body: func(string) string {
+			return `{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"server failure"}]}}}`
+		}},
+		{name: "malformed", status: http.StatusOK, body: func(string) string { return `{not-json` }},
+		{name: "non sentinel", status: http.StatusOK, body: func(operation string) string {
+			if operation == "cancel" {
+				return `{"status":"ok","response":{"type":"default","data":{"statuses":["unexpected"]}}}`
+			}
+			return `{"status":"err","response":"temporary"}`
+		}},
+	}
+	for _, operation := range []string{"submit", "cancel", "modify"} {
+		for _, result := range outcomes {
+			t.Run(operation+"/"+result.name, func(t *testing.T) {
+				rest := testREST(func(r *http.Request, _ []byte) (string, int) {
+					if r.URL.Path == "/info" {
+						return infoResponse, http.StatusOK
+					}
+					return result.body(operation), result.status
+				})
+				if result.transport != nil {
+					rest.Http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						if r.URL.Path == "/info" {
+							return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(infoResponse)), Header: make(http.Header), Request: r}, nil
+						}
+						return nil, result.transport
+					})}
+				}
+				exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
+				var err error
+				switch operation {
+				case "submit":
+					_, err = exec.Submit(context.Background(), model.OrderRequest{
+						InstrumentID: testSpotID(), ClientID: "ambiguous-spot", Side: enums.SideBuy,
+						Type: enums.TypeLimit, TIF: enums.TifGTC, Quantity: d("2"), Price: d("1.01"), PositionSide: enums.PosNet,
+					})
+				case "cancel":
+					err = exec.Cancel(context.Background(), testSpotID(), "555")
+				case "modify":
+					_, err = exec.Modify(context.Background(), testSpotID(), "555", d("1.02"), d("2"))
+				}
+				if err == nil {
+					t.Fatal("ambiguous command outcome unexpectedly succeeded")
+				}
+				if errors.Is(err, contract.ErrVenueRejected) {
+					t.Fatalf("err=%v, ambiguous command outcome must not claim venue rejection", err)
+				}
+				if result.transport != nil && !errors.Is(err, result.transport) {
+					t.Fatalf("err=%v, want preserved transport cause %v", err, result.transport)
+				}
+			})
+		}
 	}
 }
 
@@ -696,10 +856,10 @@ func TestHyperliquidSpotExactStatusByClientAndFillHistory(t *testing.T) {
 		}
 		return `{}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), ClientID: clientID,
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), ClientID: clientID,
 	})
 	if err != nil {
 		t.Fatalf("GenerateOrderStatusReport: %v", err)
@@ -708,7 +868,7 @@ func TestHyperliquidSpotExactStatusByClientAndFillHistory(t *testing.T) {
 		t.Fatalf("report=%+v", report)
 	}
 	fills, err := exec.GenerateFillReports(context.Background(), model.FillReportQuery{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), VenueOrderID: "777",
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), VenueOrderID: "777",
 	})
 	if err != nil {
 		t.Fatalf("GenerateFillReports: %v", err)
@@ -786,9 +946,9 @@ func TestHyperliquidSpotLifecycleRecoversFullyFilledLostSubmitByCloid(t *testing
 		}
 		return `{}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 	spec := runtimeaccept.OrderLifecycleSpec{
-		Label: "hyperliquid spot lost submit", Venue: venueName, AccountID: model.AccountIDHyperliquidDefault,
+		Label: "hyperliquid spot lost submit", Venue: venueName, AccountID: AccountIDDefault,
 		InstrumentID: testSpotID(), Quantity: d("2"), CloseQuantity: d("2"),
 		RestingPrice: d("0.5"), FillPrice: d("1.01"), ClosePrice: d("1.02"),
 		PositionSide: enums.PosNet, CloseAfterFill: true, PollInterval: time.Millisecond, CleanupTimeout: 100 * time.Millisecond,
@@ -811,10 +971,10 @@ func TestHyperliquidSpotUnknownExactStatusDoesNotRememberZeroIdentity(t *testing
 	rest := testREST(func(r *http.Request, body []byte) (string, int) {
 		return `{"status":"unknownOid"}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), VenueOrderID: "777",
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), VenueOrderID: "777",
 	})
 	if err != nil || report != nil || len(exec.orders) != 0 {
 		t.Fatalf("report=%+v err=%v orders=%v, want authoritative absence without remembered zero order", report, err, exec.orders)
@@ -827,7 +987,7 @@ func TestHyperliquidSpotOrderUpdatesPreservePostOnlyAndCumulativeFill(t *testing
 	events := execEventsFromOrderUpdate(sdk.WsOrderUpdate{Order: sdk.WsOrder{
 		Coin: "PURR/USDC", Side: "B", LimitPx: "1.01", Sz: "0.5", OrigSz: "2", Oid: 555,
 		Cliod: "c-spot-1", ReduceOnly: &reduceOnly, OrderType: "Limit", Tif: "Alo",
-	}, Status: sdk.StatusOpen}, provider, model.AccountIDHyperliquidDefault)
+	}, Status: sdk.StatusOpen}, provider, AccountIDDefault)
 	if len(events) != 1 {
 		t.Fatalf("events=%+v", events)
 	}
@@ -837,20 +997,20 @@ func TestHyperliquidSpotOrderUpdatesPreservePostOnlyAndCumulativeFill(t *testing
 	}
 	if malformed := execEventsFromOrderUpdate(sdk.WsOrderUpdate{Order: sdk.WsOrder{
 		Coin: "PURR/USDC", Side: "B", LimitPx: "1.01", Sz: "3", OrigSz: "2", Oid: 555,
-	}, Status: sdk.StatusOpen}, provider, model.AccountIDHyperliquidDefault); len(malformed) != 0 {
+	}, Status: sdk.StatusOpen}, provider, AccountIDDefault); len(malformed) != 0 {
 		t.Fatalf("malformed update emitted=%+v", malformed)
 	}
 }
 
 func TestHyperliquidSpotRememberOrderDoesNotDowngradeKnownSemantics(t *testing.T) {
-	exec := newExecutionClient(nil, testProvider(t), clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(nil, testProvider(t), clock.NewRealClock(), AccountIDDefault)
 	known := model.Order{Request: model.OrderRequest{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), ClientID: "runtime-client",
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), ClientID: "runtime-client",
 		Side: enums.SideBuy, Type: enums.TypeLimit, TIF: enums.TifIOC, Quantity: d("2"), Price: d("1.01"), PositionSide: enums.PosNet,
 	}, VenueOrderID: "555", Status: enums.StatusNew}
 	exec.rememberOrder(known)
 	update := model.Order{Request: model.OrderRequest{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(), Side: enums.SideBuy,
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(), Side: enums.SideBuy,
 		Quantity: d("2"), Price: d("1.01"), PositionSide: enums.PosNet,
 	}, VenueOrderID: "555", Status: enums.StatusFilled, FilledQty: d("2")}
 	merged := exec.rememberOrder(update)
@@ -864,10 +1024,10 @@ func TestHyperliquidSpotExactStatusRejectsMismatchedClientAndVenueIdentity(t *te
 	rest := testREST(func(r *http.Request, body []byte) (string, int) {
 		return `{"status":"order","order":{"order":{"coin":"PURR/USDC","side":"B","limitPx":"1.01","sz":"2","oid":777,"cloid":"` + cloid.ForClientID("other-client") + `","timestamp":1700000000000,"origSz":"2"},"status":"open","statusTimestamp":1700000001000}}`, http.StatusOK
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	report, err := exec.GenerateOrderStatusReport(context.Background(), model.SingleOrderStatusQuery{
-		AccountID: model.AccountIDHyperliquidDefault, InstrumentID: testSpotID(),
+		AccountID: AccountIDDefault, InstrumentID: testSpotID(),
 		ClientID: "expected-client", VenueOrderID: "777",
 	})
 	if report != nil || err == nil || !strings.Contains(err.Error(), "client identity mismatch") {
@@ -927,7 +1087,7 @@ func TestHyperliquidSpotCancelModifyAndOpenOrders(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	if err := exec.Cancel(context.Background(), testSpotID(), "555"); err != nil {
 		t.Fatalf("Cancel: %v", err)
@@ -942,20 +1102,38 @@ func TestHyperliquidSpotCancelModifyAndOpenOrders(t *testing.T) {
 	if !sawCancel || !sawModify || openCalls == 0 {
 		t.Fatalf("expected cancel/modify/open paths, got cancel=%v modify=%v openCalls=%d", sawCancel, sawModify, openCalls)
 	}
-	if len(open) != 1 || open[0].VenueOrderID != "555" || open[0].Request.AccountID != model.AccountIDHyperliquidDefault || open[0].Request.ClientID != cloid.ForClientID("c-spot-1") {
+	if len(open) != 1 || open[0].VenueOrderID != "555" || open[0].Request.AccountID != AccountIDDefault || open[0].Request.ClientID != cloid.ForClientID("c-spot-1") {
 		t.Fatalf("open orders=%+v", open)
 	}
-	mass, err := exec.GenerateExecutionMassStatus(context.Background(), model.MassStatusQuery{})
+	query := model.MassStatusQuery{}
+	mass, err := exec.GenerateExecutionMassStatus(context.Background(), query)
 	if err != nil {
 		t.Fatalf("GenerateExecutionMassStatus: %v", err)
 	}
-	if !mass.Partial || mass.AccountID != model.AccountIDHyperliquidDefault || len(mass.OrderReports) != 1 {
+	if mass.AccountID != AccountIDDefault || len(mass.OrderReports) != 1 {
 		t.Fatalf("mass=%+v", mass)
 	}
 	for _, report := range mass.OrderReports {
-		if report.AccountID != model.AccountIDHyperliquidDefault || report.Order.Request.AccountID != model.AccountIDHyperliquidDefault {
+		if report.AccountID != AccountIDDefault || report.Order.Request.AccountID != AccountIDDefault {
 			t.Fatalf("mass report account ids report=%q order=%q", report.AccountID, report.Order.Request.AccountID)
 		}
+	}
+	if err := mass.ValidateFor(query); err != nil {
+		t.Fatalf("typed coverage: %v", err)
+	}
+	if mass.OpenOrdersCoverage.State != model.CoverageComplete || mass.FillsCoverage.State != model.CoverageNotRequested || mass.PositionsCoverage.State != model.CoverageNotRequested {
+		t.Fatalf("coverage=%+v/%+v/%+v", mass.OpenOrdersCoverage, mass.FillsCoverage, mass.PositionsCoverage)
+	}
+	wantIDs := make([]model.InstrumentID, 0, len(provider.All()))
+	for _, inst := range provider.All() {
+		wantIDs = append(wantIDs, inst.ID)
+	}
+	wantIDs = model.NormalizeInstrumentIDs(wantIDs)
+	if open := mass.OpenOrdersCoverage.Scope; open.AccountID != AccountIDDefault || open.ClientID != "" || !slices.Equal(open.InstrumentIDs, wantIDs) || open.Through.IsZero() || !open.From.IsZero() {
+		t.Fatalf("open-order coverage scope=%+v, want account=%q ids=%v snapshot watermark", open, AccountIDDefault, wantIDs)
+	}
+	if !mass.FillsCoverage.Scope.IsZero() || !mass.PositionsCoverage.Scope.IsZero() {
+		t.Fatalf("not-requested scopes fills=%+v positions=%+v, want zero", mass.FillsCoverage.Scope, mass.PositionsCoverage.Scope)
 	}
 	if openCalls != 2 {
 		t.Fatalf("frontendOpenOrders calls=%d, want OpenOrders + single mass-status snapshot", openCalls)
@@ -972,7 +1150,7 @@ func TestHyperliquidSpotModifyFailsClosedForUnreconstructableTrigger(t *testing.
 		}
 		return `{"status":"order","order":{"order":{"coin":"PURR/USDC","side":"B","limitPx":"1.01","sz":"2","oid":555,"timestamp":1700000000000,"origSz":"2","reduceOnly":false,"orderType":"Stop Market","isTrigger":true,"triggerPx":"0.9"},"status":"open","statusTimestamp":1700000000000}}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 	order, err := exec.Modify(context.Background(), testSpotID(), "555", d("1.02"), decimal.Zero)
 	if order != nil || !errors.Is(err, contract.ErrNotSupported) || exchangeCalls != 0 {
 		t.Fatalf("order=%+v err=%v exchangeCalls=%d, want fail-closed before transport", order, err, exchangeCalls)
@@ -992,7 +1170,7 @@ func TestHyperliquidSpotOpenOrdersRestoresRuntimeClientIDFromMappedCloid(t *test
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	_, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -1035,7 +1213,7 @@ func TestHyperliquidSpotCancelEmitsCanceledOrderEvent(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	exec := newExecutionClient(rest, provider, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	exec := newExecutionClient(rest, provider, clock.NewRealClock(), AccountIDDefault)
 
 	order, err := exec.Submit(context.Background(), model.OrderRequest{
 		InstrumentID: testSpotID(),
@@ -1058,7 +1236,7 @@ func TestHyperliquidSpotCancelEmitsCanceledOrderEvent(t *testing.T) {
 		if !ok {
 			t.Fatalf("event=%T, want OrderEvent", env.Payload)
 		}
-		if oe.Order.Status != enums.StatusCanceled || oe.Order.Request.AccountID != model.AccountIDHyperliquidDefault || oe.Order.Request.ClientID != "c-spot-1" || oe.Order.VenueOrderID != "555" {
+		if oe.Order.Status != enums.StatusCanceled || oe.Order.Request.AccountID != AccountIDDefault || oe.Order.Request.ClientID != "c-spot-1" || oe.Order.VenueOrderID != "555" {
 			t.Fatalf("order event=%+v", oe.Order)
 		}
 		if env.Source != contract.SourceAdapterREST || !env.Flags.Has(contract.EventFlagSynthetic) {
@@ -1076,13 +1254,13 @@ func TestHyperliquidSpotBalancesAndMarginOps(t *testing.T) {
 		}
 		return `{"balances":[{"coin":"USDC","token":0,"hold":"1.5","total":"10","entryNtl":"0"}]}`, 200
 	})
-	acct := newAccountClient(rest, clock.NewRealClock(), model.AccountIDHyperliquidDefault)
+	acct := newAccountClient(rest, clock.NewRealClock(), AccountIDDefault)
 
 	balances, err := acct.Balances(context.Background())
 	if err != nil {
 		t.Fatalf("Balances: %v", err)
 	}
-	if len(balances) != 1 || balances[0].AccountID != model.AccountIDHyperliquidDefault || balances[0].Currency != "USDC" || !balances[0].Total.Equal(d("10")) || !balances[0].Available.Equal(d("8.5")) || !balances[0].Locked.Equal(d("1.5")) {
+	if len(balances) != 1 || balances[0].AccountID != AccountIDDefault || balances[0].Currency != "USDC" || !balances[0].Total.Equal(d("10")) || !balances[0].Free.Equal(d("8.5")) || !balances[0].Locked.Equal(d("1.5")) {
 		t.Fatalf("balances=%+v", balances)
 	}
 	if err := acct.SetLeverage(context.Background(), testSpotID(), d("2")); !errors.Is(err, contract.ErrNotSupported) {
@@ -1093,7 +1271,7 @@ func TestHyperliquidSpotBalancesAndMarginOps(t *testing.T) {
 	}
 }
 
-func TestHyperliquidSpotAccountStateReporterCombinesPerpAndSpot(t *testing.T) {
+func TestHyperliquidSpotAccountStateCombinesPerpAndSpot(t *testing.T) {
 	rest := testREST(func(r *http.Request, body []byte) (string, int) {
 		if r.Method != http.MethodPost || r.URL.Path != "/info" {
 			t.Fatalf("request=%s %s, want POST /info", r.Method, r.URL.Path)
@@ -1117,13 +1295,13 @@ func TestHyperliquidSpotAccountStateReporterCombinesPerpAndSpot(t *testing.T) {
 		}
 		return `{}`, 200
 	})
-	acct := newAccountClient(rest, clock.NewSimulatedClock(time.Unix(1700000000, 0)), model.AccountIDHyperliquidDefault)
+	acct := newAccountClient(rest, clock.NewSimulatedClock(time.Unix(1700000000, 0)), AccountIDDefault)
 
 	state, err := acct.AccountState(context.Background())
 	if err != nil {
 		t.Fatalf("AccountState: %v", err)
 	}
-	if state.AccountID != model.AccountIDHyperliquidDefault || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
+	if state.AccountID != AccountIDDefault || state.Type != model.AccountMargin || !state.Reported || state.EventID == "" || state.TsEvent.IsZero() || state.TsInit.IsZero() {
 		t.Fatalf("state=%+v", state)
 	}
 	if len(state.Balances) != 2 || state.Balances[0].Currency != "USDC" || !state.Balances[0].Free.Equal(d("8.5")) || state.Balances[1].Currency != "PURR" {
