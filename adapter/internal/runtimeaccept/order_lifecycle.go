@@ -538,6 +538,7 @@ func RunRuntimeOrderLifecycle(ctx context.Context, node *btruntime.TradingNode, 
 		if err := node.Exec.Cancel(ctx, resting.Request.ClientID); err != nil {
 			return nil, fmt.Errorf("%s runtime cancel resting order %s: %w", spec.label(), resting.VenueOrderID, err)
 		}
+		restingTracked.canceledVenueOrderID = resting.VenueOrderID
 		if err := WaitForOrderStatus(ctx, node, resting.Request.ClientID, enums.StatusCanceled); err != nil {
 			return nil, fmt.Errorf("%s runtime cache did not observe resting cancel: %w", spec.label(), err)
 		}
@@ -1317,7 +1318,6 @@ func waitForTrackedOrdersSettled(ctx context.Context, exec contract.ExecutionCli
 		return fmt.Errorf("execution client is required for exact lifecycle order reconciliation")
 	}
 	absentObservations := make(map[string]int, len(orders))
-	canceledVenueIDs := make(map[string]string, len(orders))
 	fillStableObservations := make(map[string]int, len(orders))
 	lastFillQty := make(map[string]decimal.Decimal, len(orders))
 	fillQtyObserved := make(map[string]bool, len(orders))
@@ -1335,6 +1335,8 @@ func waitForTrackedOrdersSettled(ctx context.Context, exec contract.ExecutionCli
 		if !pending {
 			return nil
 		}
+		attemptedVenueIDs := make(map[string]string, len(orders))
+		canceledVenueIDs := make(map[string]string, len(orders))
 		callCtx, cancel := spec.pollCallContext(ctx)
 		open, openErr := exec.OpenOrders(callCtx, spec.InstrumentID)
 		cancel()
@@ -1347,9 +1349,10 @@ func waitForTrackedOrdersSettled(ctx context.Context, exec contract.ExecutionCli
 				continue
 			}
 			cancelExact := func() {
-				if !cancelOpen || tracked.venueOrderID == "" || canceledVenueIDs[tracked.clientID] == tracked.venueOrderID || tracked.canceledVenueOrderID == tracked.venueOrderID {
+				if !cancelOpen || tracked.venueOrderID == "" || attemptedVenueIDs[tracked.clientID] == tracked.venueOrderID || canceledVenueIDs[tracked.clientID] == tracked.venueOrderID || tracked.canceledVenueOrderID == tracked.venueOrderID {
 					return
 				}
+				attemptedVenueIDs[tracked.clientID] = tracked.venueOrderID
 				callCtx, callCancel := spec.pollCallContext(ctx)
 				cancelErr := exec.Cancel(callCtx, spec.InstrumentID, tracked.venueOrderID)
 				callCancel()
@@ -1394,7 +1397,7 @@ func waitForTrackedOrdersSettled(ctx context.Context, exec contract.ExecutionCli
 			// A previously acknowledged cancel is enough to avoid blind duplicate
 			// requests. Exact open-order evidence proves the venue still considers
 			// the order live, so permit one bounded retry in this reconciliation
-			// pass. canceledVenueIDs then suppresses further retries in the pass.
+			// poll. The per-poll maps suppress further retries until fresh evidence.
 			if openMatch != nil && canceledVenueIDs[tracked.clientID] == "" {
 				tracked.canceledVenueOrderID = ""
 			}

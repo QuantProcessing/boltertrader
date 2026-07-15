@@ -46,6 +46,9 @@ func TestAdapterOrderLifecyclePlacesCancelsFillsAndCloses(t *testing.T) {
 	if len(exec.submits) != 3 {
 		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
 	}
+	if exec.cancelCalls != 1 {
+		t.Fatalf("cancel calls=%d, want one acknowledged adapter resting cancel", exec.cancelCalls)
+	}
 	if got := exec.submits[0]; got.Side != enums.SideBuy || got.TIF != enums.TifGTX || got.Price.String() != "49000" {
 		t.Fatalf("resting submit=%+v", got)
 	}
@@ -1599,6 +1602,29 @@ func TestCleanupCancelsExactOrderBeforeMalformedEvidenceFailure(t *testing.T) {
 	}
 }
 
+func TestCleanupAttemptsFailedExactCancelOncePerPoll(t *testing.T) {
+	spec := terminalFilledLifecycleSpec()
+	tracker := newLifecycleOrderTracker()
+	tracked := tracker.add("rest")
+	tracked.request = model.OrderRequest{
+		AccountID: spec.AccountID, ClientID: tracked.clientID, InstrumentID: spec.InstrumentID,
+		Side: enums.SideBuy, Type: enums.TypeLimit, TIF: enums.TifGTX,
+		Quantity: spec.Quantity, Price: spec.RestingPrice, PositionSide: enums.PosNet,
+	}
+	tracked.venueOrderID = "failed-cancel-venue"
+	spec.PollInterval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	exec := &failedCancelPollExec{cancelPoll: cancel, stopAfterPoll: 2}
+
+	err := waitForTrackedOrdersSettled(ctx, exec, spec, tracker, []*trackedLifecycleOrder{tracked}, true)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForTrackedOrdersSettled err=%v, want canceled poll", err)
+	}
+	if len(exec.cancelPolls) != 2 || exec.cancelPolls[0] != 1 || exec.cancelPolls[1] != 2 {
+		t.Fatalf("cancel polls=%v, want one failed exact cancel attempt in each of two polls", exec.cancelPolls)
+	}
+}
+
 func TestCleanupBindsAndCancelsDiscoveredVenueIdentityBeforeMalformedStatusFailure(t *testing.T) {
 	for _, mode := range []string{"status_overfill_discovered_venue", "status_overfill_discovered_venue_omitted_quantity"} {
 		t.Run(mode, func(t *testing.T) {
@@ -2122,6 +2148,9 @@ func TestRuntimeOrderLifecycleUsesTradingNodeExecution(t *testing.T) {
 	}
 	if len(exec.submits) != 3 {
 		t.Fatalf("submits=%d, want resting/fill/close: %+v", len(exec.submits), exec.submits)
+	}
+	if exec.cancelCalls != 1 {
+		t.Fatalf("cancel calls=%d, want one acknowledged runtime resting cancel", exec.cancelCalls)
 	}
 	if got := exec.submits[0].AccountID; got != "TEST:unified" {
 		t.Fatalf("runtime submit account id=%q", got)
@@ -2676,6 +2705,7 @@ func TestRuntimeOrderLifecycleDoesNotCloseBeforeOpeningFillReachesPortfolio(t *t
 type recordingLifecycleExec struct {
 	submits            []model.OrderRequest
 	cancelVenueOrderID string
+	cancelCalls        int
 }
 
 func (e *recordingLifecycleExec) AccountID() string { return "TEST:unified" }
@@ -3909,6 +3939,7 @@ func (e *recordingLifecycleExec) Submit(_ context.Context, req model.OrderReques
 
 func (e *recordingLifecycleExec) Cancel(_ context.Context, _ model.InstrumentID, venueOrderID string) error {
 	e.cancelVenueOrderID = venueOrderID
+	e.cancelCalls++
 	return nil
 }
 
@@ -4028,6 +4059,35 @@ type malformedCleanupEvidenceExec struct {
 	tracked  *trackedLifecycleOrder
 	spec     OrderLifecycleSpec
 	canceled []string
+}
+
+type failedCancelPollExec struct {
+	recordingLifecycleExec
+	cancelPoll    context.CancelFunc
+	stopAfterPoll int
+	poll          int
+	cancelPolls   []int
+}
+
+func (e *failedCancelPollExec) Cancel(context.Context, model.InstrumentID, string) error {
+	e.cancelPolls = append(e.cancelPolls, e.poll)
+	return errors.New("cancel unavailable")
+}
+
+func (e *failedCancelPollExec) OpenOrders(context.Context, model.InstrumentID) ([]model.Order, error) {
+	e.poll++
+	return nil, nil
+}
+
+func (*failedCancelPollExec) GenerateOrderStatusReport(context.Context, model.SingleOrderStatusQuery) (*model.OrderStatusReport, error) {
+	return nil, nil
+}
+
+func (e *failedCancelPollExec) GenerateFillReports(context.Context, model.FillReportQuery) ([]model.FillReport, error) {
+	if e.poll >= e.stopAfterPoll {
+		e.cancelPoll()
+	}
+	return nil, nil
 }
 
 func (e *malformedCleanupEvidenceExec) Cancel(_ context.Context, _ model.InstrumentID, venueOrderID string) error {
