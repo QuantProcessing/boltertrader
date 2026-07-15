@@ -64,6 +64,7 @@ func execEventsFromFuturesOrderMessage(msg *gatesdk.FuturesOrderMessage, resolve
 	if msg == nil {
 		return nil
 	}
+	eventAt := firstNonZeroTime(timeFromMillis(msg.TimeMS), timeFromSeconds(msg.Time))
 	out := make([]contract.ExecEvent, 0, len(msg.Orders))
 	for _, record := range msg.Orders {
 		id := resolve(record.Contract)
@@ -78,7 +79,7 @@ func execEventsFromFuturesOrderMessage(msg *gatesdk.FuturesOrderMessage, resolve
 				continue
 			}
 		}
-		order := orderFromGateFuturesRecord(record, id, accountID, positionSide)
+		order := orderFromGateFuturesStreamRecord(record, id, accountID, eventAt, positionSide)
 		order.FilledQty = decimal.Zero
 		order.AvgFillPrice = decimal.Zero
 		out = append(out, contract.OrderEvent{Order: order})

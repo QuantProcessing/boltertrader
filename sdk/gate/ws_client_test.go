@@ -107,11 +107,11 @@ func TestMyFuturesTradeAcceptsStringEncodedIntegers(t *testing.T) {
 }
 
 func TestDecodeFuturesPrivateMessagesAcceptsTestnetNumberEncodings(t *testing.T) {
-	order, err := DecodeFuturesOrderMessage([]byte(`{"channel":"futures.orders","event":"update","result":[{"id":"1","user":"42","contract":"BTC_USDT","size":"1","left":"0","price":50000.5,"fill_price":50001.5,"mkfr":-0.0001,"tkfr":0.0005}]}`))
+	order, err := DecodeFuturesOrderMessage([]byte(`{"channel":"futures.orders","event":"update","result":[{"id":"1","user":"42","contract":"BTC_USDT","size":"1","left":"0","price":50000.5,"fill_price":50001.5,"mkfr":-0.0001,"tkfr":0.0005,"create_time":1628736847,"create_time_ms":1628736847325,"update_time":1541505434123}]}`))
 	if err != nil {
 		t.Fatalf("DecodeFuturesOrderMessage: %v", err)
 	}
-	if len(order.Orders) != 1 || order.Orders[0].ID != 1 || order.Orders[0].User != 42 || order.Orders[0].FillPrice != "50001.5" || order.Orders[0].MKFR != "-0.0001" {
+	if len(order.Orders) != 1 || order.Orders[0].ID != 1 || order.Orders[0].User != 42 || order.Orders[0].FillPrice != "50001.5" || order.Orders[0].MKFR != "-0.0001" || order.Orders[0].CreateTime != "1628736847" || order.Orders[0].CreateTimeMS != "1628736847325" || order.Orders[0].UpdateTime != "1541505434123" {
 		t.Fatalf("orders=%+v, want flexible number encodings", order.Orders)
 	}
 

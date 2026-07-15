@@ -335,7 +335,7 @@ func orderFromGateFuturesAction(resp *gatesdk.FuturesOrder, req model.OrderReque
 	return order
 }
 
-func orderFromGateFuturesRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string, positionSides ...enums.PositionSide) model.Order {
+func orderFromGateFuturesBaseRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string, positionSides ...enums.PositionSide) model.Order {
 	positionSide := positionSideFromGate(record.Size)
 	if len(positionSides) > 0 {
 		positionSide = positionSides[0]
@@ -358,9 +358,29 @@ func orderFromGateFuturesRecord(record gatesdk.FuturesOrder, id model.Instrument
 		Status:       orderStatusFromGate(record.Status, record.FinishAs),
 		FilledQty:    filledFuturesQty(record.Size, record.Left),
 		AvgFillPrice: dec(record.FillPrice),
-		CreatedAt:    timeFromSecondsString(string(record.CreateTime)),
-		UpdatedAt:    timeFromSecondsString(string(record.UpdateTime)),
 	}
+}
+
+func orderFromGateFuturesRESTRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string, positionSides ...enums.PositionSide) model.Order {
+	order := orderFromGateFuturesBaseRecord(record, id, accountID, positionSides...)
+	order.CreatedAt = timeFromSecondsString(string(record.CreateTime))
+	order.UpdatedAt = timeFromSecondsString(string(record.UpdateTime))
+	return order
+}
+
+func orderFromGateFuturesStreamRecord(record gatesdk.FuturesOrder, id model.InstrumentID, accountID string, eventAt time.Time, positionSides ...enums.PositionSide) model.Order {
+	order := orderFromGateFuturesBaseRecord(record, id, accountID, positionSides...)
+	order.CreatedAt = firstNonZeroTime(
+		timeFromMillisString(string(record.CreateTimeMS)),
+		timeFromSecondsString(string(record.CreateTime)),
+		eventAt,
+	)
+	order.UpdatedAt = firstNonZeroTime(
+		timeFromMillisString(string(record.UpdateTime)),
+		eventAt,
+		order.CreatedAt,
+	)
+	return order
 }
 
 func futuresOrderTypeFromGate(record gatesdk.FuturesOrder) enums.OrderType {

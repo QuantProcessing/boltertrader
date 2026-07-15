@@ -457,6 +457,57 @@ func TestGateUSDTPerpMarketSnapshotsAndPrivateEvents(t *testing.T) {
 	}
 }
 
+func TestGateFuturesOrderTimestampsKeepRESTAndWebSocketUnitsDistinct(t *testing.T) {
+	provider := gateFullTestProvider()
+	resolve := provider.resolveVenueSymbol
+	wantCreated := time.Unix(1_628_736_847, 325_000_000)
+	wantUpdated := time.Unix(1_541_505_434, 123_000_000)
+
+	msg, err := gatesdk.DecodeFuturesOrderMessage([]byte(`{"time":1541505435,"time_ms":1541505435000,"channel":"futures.orders","event":"update","result":[{"id":456,"text":"t-perp-client-1","contract":"BTC_USDT","size":1,"left":1,"price":"50000","tif":"gtc","status":"open","create_time":1628736847,"create_time_ms":1628736847325,"update_time":1541505434123}]}`))
+	if err != nil {
+		t.Fatalf("DecodeFuturesOrderMessage: %v", err)
+	}
+	events := execEventsFromFuturesOrderMessage(msg, resolve, AccountIDUnified)
+	if len(events) != 1 {
+		t.Fatalf("events=%+v, want one order event", events)
+	}
+	streamOrder := events[0].(contract.OrderEvent).Order
+	if !streamOrder.CreatedAt.Equal(wantCreated) || !streamOrder.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("stream timestamps created=%s updated=%s, want %s and %s", streamOrder.CreatedAt, streamOrder.UpdatedAt, wantCreated, wantUpdated)
+	}
+	if _, err := json.Marshal(streamOrder.UpdatedAt); err != nil {
+		t.Fatalf("stream updated_at must remain journal-serializable: %v", err)
+	}
+
+	restOrder := orderFromGateFuturesRESTRecord(gatesdk.FuturesOrder{
+		ID:         456,
+		Contract:   "BTC_USDT",
+		Size:       1,
+		Left:       1,
+		Price:      "50000",
+		Status:     "open",
+		CreateTime: "1628736847.325",
+		UpdateTime: "1541505434.123",
+	}, model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}, AccountIDUnified)
+	if !restOrder.CreatedAt.Equal(wantCreated) || !restOrder.UpdatedAt.Equal(wantUpdated) {
+		t.Fatalf("REST timestamps created=%s updated=%s, want %s and %s", restOrder.CreatedAt, restOrder.UpdatedAt, wantCreated, wantUpdated)
+	}
+
+	fallbackMsg, err := gatesdk.DecodeFuturesOrderMessage([]byte(`{"time":1700000000,"time_ms":1700000000123,"channel":"futures.orders","event":"update","result":[{"id":457,"text":"t-perp-client-2","contract":"BTC_USDT","size":1,"left":1,"price":"50000","tif":"gtc","status":"open"}]}`))
+	if err != nil {
+		t.Fatalf("DecodeFuturesOrderMessage fallback: %v", err)
+	}
+	fallbackEvents := execEventsFromFuturesOrderMessage(fallbackMsg, resolve, AccountIDUnified)
+	if len(fallbackEvents) != 1 {
+		t.Fatalf("fallback events=%+v, want one order event", fallbackEvents)
+	}
+	fallbackOrder := fallbackEvents[0].(contract.OrderEvent).Order
+	wantFallback := time.UnixMilli(1_700_000_000_123)
+	if !fallbackOrder.CreatedAt.Equal(wantFallback) || !fallbackOrder.UpdatedAt.Equal(wantFallback) {
+		t.Fatalf("fallback timestamps created=%s updated=%s, want envelope time %s", fallbackOrder.CreatedAt, fallbackOrder.UpdatedAt, wantFallback)
+	}
+}
+
 func TestGateReferenceSnapshotKeepsTickerZeroFundingRate(t *testing.T) {
 	id := model.InstrumentID{Venue: VenueName, Symbol: "BTC-USDT", Kind: enums.KindPerp}
 	receivedAt := time.Date(2026, 7, 9, 9, 0, 0, 0, time.UTC)

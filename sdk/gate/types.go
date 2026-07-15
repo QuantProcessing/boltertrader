@@ -311,6 +311,7 @@ type FuturesOrder struct {
 	IsClose      bool         `json:"is_close,omitempty"`
 	IsReduceOnly bool         `json:"is_reduce_only,omitempty"`
 	CreateTime   NumberString `json:"create_time,omitempty"`
+	CreateTimeMS NumberString `json:"create_time_ms,omitempty"`
 	UpdateTime   NumberString `json:"update_time,omitempty"`
 }
 

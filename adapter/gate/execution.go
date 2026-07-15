@@ -192,7 +192,7 @@ func (c *executionClient) Cancel(ctx context.Context, id model.InstrumentID, ven
 			}
 			resp, err := c.rest.CancelFuturesOrder(ctx, gatesdk.SettleUSDT, orderID)
 			if err == nil && resp != nil {
-				c.emit(contract.OrderEvent{Order: orderFromGateFuturesRecord(*resp, inst.ID, c.accountID, c.futuresOrderPositionSide(*resp))})
+				c.emit(contract.OrderEvent{Order: orderFromGateFuturesRESTRecord(*resp, inst.ID, c.accountID, c.futuresOrderPositionSide(*resp))})
 			}
 			return gateCommandError("cancel futures order", err)
 		}
@@ -246,7 +246,7 @@ func (c *executionClient) OpenOrders(ctx context.Context, id model.InstrumentID)
 			}
 			out := make([]model.Order, 0, len(records))
 			for _, record := range records {
-				out = append(out, orderFromGateFuturesRecord(record, id, c.accountID, c.futuresOrderPositionSide(record)))
+				out = append(out, orderFromGateFuturesRESTRecord(record, id, c.accountID, c.futuresOrderPositionSide(record)))
 			}
 			return out, nil
 		}
@@ -283,7 +283,7 @@ func (c *executionClient) GenerateOrderStatusReports(ctx context.Context, query 
 		}
 		for _, record := range records {
 			id := c.provider.resolveReportInstrument(query.InstrumentID, record.Contract)
-			order := orderFromGateFuturesRecord(record, id, c.accountID, c.futuresOrderPositionSide(record))
+			order := orderFromGateFuturesRESTRecord(record, id, c.accountID, c.futuresOrderPositionSide(record))
 			if model.OrderMatchesStatusQuery(order, query) {
 				out = append(out, model.OrderStatusReport{Venue: VenueName, AccountID: c.accountID, Order: order, ReportedAt: now})
 			}
@@ -339,7 +339,7 @@ func (c *executionClient) GenerateOrderStatusReport(ctx context.Context, query m
 			return nil, err
 		}
 		id := c.provider.resolveReportInstrument(query.InstrumentID, record.Contract)
-		order := orderFromGateFuturesRecord(*record, id, c.accountID, c.futuresOrderPositionSide(*record))
+		order := orderFromGateFuturesRESTRecord(*record, id, c.accountID, c.futuresOrderPositionSide(*record))
 		if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{
 			InstrumentID: query.InstrumentID,
 			AccountID:    query.AccountID,
@@ -567,7 +567,7 @@ func (c *executionClient) GenerateExecutionMassStatus(ctx context.Context, query
 					if _, ok := selectorSet[id.String()]; !ok {
 						continue
 					}
-					order := orderFromGateFuturesRecord(record, id, c.accountID, frozen.futuresOrderPositionSide(record))
+					order := orderFromGateFuturesRESTRecord(record, id, c.accountID, frozen.futuresOrderPositionSide(record))
 					if !model.OrderMatchesStatusQuery(order, model.OrderStatusReportQuery{AccountID: c.accountID, ClientID: query.ClientID, OpenOnly: true}) {
 						continue
 					}
