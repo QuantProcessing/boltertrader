@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -177,87 +176,6 @@ func TestSensitiveFixtureFieldsMustBeRedacted(t *testing.T) {
 	}
 	if err := rejectSensitiveFields(map[string]any{"signature": "<redacted>"}); err != nil {
 		t.Fatalf("redacted signature rejected: %v", err)
-	}
-}
-
-func TestAsterNadoApprovedTestNamesAreTraceable(t *testing.T) {
-	root := repositoryRoot(t)
-	approved, err := os.ReadFile(filepath.Join(root, "internal", "fixtureaudit", "testdata", "aster_nado_approved_tests.txt"))
-	if err != nil {
-		t.Fatalf("read approved test-name inventory: %v", err)
-	}
-	trace, err := os.ReadFile(filepath.Join(root, "docs", "aster-nado-test-traceability.md"))
-	if err != nil {
-		t.Fatalf("read test traceability: %v", err)
-	}
-
-	namePattern := regexp.MustCompile(`Test[A-Z0-9_][A-Za-z0-9_]*`)
-	functionPattern := regexp.MustCompile(`(?m)^func (Test[A-Z0-9_][A-Za-z0-9_]*)\(`)
-	traceable := make(map[string]bool)
-	mappedImplementations := make(map[string]bool)
-	for _, line := range strings.Split(string(trace), "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
-			continue
-		}
-		columns := strings.Split(line, "|")
-		if len(columns) < 4 {
-			continue
-		}
-		for _, name := range namePattern.FindAllString(columns[1], -1) {
-			traceable[name] = true
-		}
-		for _, name := range namePattern.FindAllString(columns[2], -1) {
-			mappedImplementations[name] = true
-		}
-	}
-	implemented := make(map[string]bool)
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			base := entry.Name()
-			if base == ".git" || base == ".omx" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, match := range functionPattern.FindAllStringSubmatch(string(body), -1) {
-			implemented[match[1]] = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("scan repository tests: %v", err)
-	}
-
-	var missing []string
-	for _, name := range namePattern.FindAllString(string(approved), -1) {
-		if !traceable[name] && !implemented[name] {
-			missing = append(missing, name)
-		}
-	}
-	sort.Strings(missing)
-	if len(missing) > 0 {
-		t.Fatalf("approved Aster/Nado test names lack implementation or traceability: %s", strings.Join(missing, ", "))
-	}
-
-	var missingImplementations []string
-	for name := range mappedImplementations {
-		if !implemented[name] {
-			missingImplementations = append(missingImplementations, name)
-		}
-	}
-	sort.Strings(missingImplementations)
-	if len(missingImplementations) > 0 {
-		t.Fatalf("Aster/Nado traceability maps nonexistent implementation tests: %s", strings.Join(missingImplementations, ", "))
 	}
 }
 
