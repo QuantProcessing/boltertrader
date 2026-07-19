@@ -468,11 +468,40 @@ func DecodeFillMessage(payload []byte) (*WSFillMessage, error) {
 }
 
 func DecodeAccountMessage(payload []byte) (*WSAccountMessage, error) {
-	var msg WSAccountMessage
-	if err := json.Unmarshal(payload, &msg); err != nil {
+	var envelope struct {
+		Arg    WSArg             `json:"arg"`
+		Action string            `json:"action"`
+		Data   []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return nil, err
 	}
-	return &msg, nil
+	msg := &WSAccountMessage{
+		Arg:    envelope.Arg,
+		Action: envelope.Action,
+	}
+	for _, raw := range envelope.Data {
+		var shape struct {
+			Coin json.RawMessage `json:"coin"`
+		}
+		if err := json.Unmarshal(raw, &shape); err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(shape.Coin)), "[") {
+			var assets []AccountAsset
+			if err := json.Unmarshal(shape.Coin, &assets); err != nil {
+				return nil, err
+			}
+			msg.Data = append(msg.Data, assets...)
+			continue
+		}
+		var asset AccountAsset
+		if err := json.Unmarshal(raw, &asset); err != nil {
+			return nil, err
+		}
+		msg.Data = append(msg.Data, asset)
+	}
+	return msg, nil
 }
 
 func NewPrivateWSClient() *PrivateWSClient {
@@ -843,10 +872,21 @@ func redactWSLoginArgs(args []wsLoginArgs) []wsLoginArgs {
 }
 
 func (c *PrivateWSClient) sendRequest(id string, req any) ([]byte, error) {
-	return c.sendRequestWithTimeout(id, req, c.requestTimeout)
+	return c.sendRequestContext(context.Background(), id, req)
 }
 
 func (c *PrivateWSClient) sendRequestWithTimeout(id string, req any, timeout time.Duration) ([]byte, error) {
+	return c.sendRequestContextWithTimeout(context.Background(), id, req, timeout)
+}
+
+func (c *PrivateWSClient) sendRequestContext(ctx context.Context, id string, req any) ([]byte, error) {
+	return c.sendRequestContextWithTimeout(ctx, id, req, c.requestTimeout)
+}
+
+func (c *PrivateWSClient) sendRequestContextWithTimeout(ctx context.Context, id string, req any, timeout time.Duration) ([]byte, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("bitget private ws: context is required")
+	}
 	ch := make(chan []byte, 1)
 
 	c.pendingMu.Lock()
@@ -871,6 +911,8 @@ func (c *PrivateWSClient) sendRequestWithTimeout(id string, req any, timeout tim
 		return resp, nil
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("bitget private ws: request timeout")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

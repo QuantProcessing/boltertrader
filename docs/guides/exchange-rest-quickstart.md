@@ -80,11 +80,26 @@ Generic inference preserves the product method set at compile time.
 | LIP | Lighter | Perp | `LighterPerpConfig` |
 | HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` |
 | HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` |
+| BYS | Bybit | Spot | `BybitSpotConfig` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` |
+| GTS | Gate | Spot | `GateSpotConfig` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` |
+| ATS | Aster | Spot | `AsterSpotConfig` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` |
 
 Binance constructors take API key and secret. OKX constructors also take a
 passphrase. Lighter constructors take a private key, account index, and API key
 index. Hyperliquid constructors take a private key. Every constructor also
 accepts `factory.Option` values.
+Bybit and Gate constructors take an API key and secret; Bitget also takes a
+passphrase. Aster takes the user address, API-wallet private key, and optional
+expected signer address. Nado takes a private key and subaccount name.
 
 | Venue | Non-production environment | Live environment |
 | --- | --- | --- |
@@ -92,6 +107,11 @@ accepts `factory.Option` values.
 | OKX | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
 | Lighter | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
 | Hyperliquid | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Bybit | `factory.EnvironmentDemo` or `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Bitget | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
+| Gate | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Aster | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Nado | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
 
 `factory.WithEndpoint` and `factory.WithWebSocketEndpoint` override REST and
 WebSocket endpoints. `factory.WithHTTPClient` installs the HTTP client used by
@@ -126,6 +146,11 @@ Spot clients have no position, funding, leverage, margin-mode, or reduce-only
 surface. Perp clients add account summary, positions, funding, and leverage
 methods.
 
+For Nado Perp, `SetLeverage` validates the request and returns success with
+`Leverage.Effective=0`; Nado has no instrument leverage setter, so its backend
+risk engine determines the actual leverage. The method remains in the common
+interface.
+
 ## WebSocket method surface
 
 Call `client.WebSocket()` to get the lazy WebSocket facet. Constructing the
@@ -152,6 +177,11 @@ Each watch returns `exchange.Subscription[T]` with `ID`, `Events`, `Status`,
 `Errors`, and `Close`. Public and private stream coverage is detailed in
 [Exchange WebSocket V1 operation matrix](../reference/exchange-ws-v1-operation-matrix.md).
 
+Nado also keeps `WatchMarkPrice` in this common interface, but the call returns
+a nil subscription and `exchange.ErrUnsupported` because the venue has no
+mark-price WebSocket stream. This is an expected, tested result; use Nado's REST
+price data when a mark price is required.
+
 ## Order request shapes
 
 `PlaceOrder` accepts `exchange.PlaceOrderRequest` for both REST and WebSocket
@@ -169,8 +199,10 @@ Every `PlaceOrder` requires `ClientOrderID` as a positive decimal `uint48`
 string without a leading zero (`1` through `281474976710655`). It is
 round-tripped when the selected row returns it. The portable `CancelOrder`
 locator is `OrderID`; client-order-ID-only cancel is not a shared guarantee
-across all eight rows. `OrderID` must be a positive decimal `int64` string
-without a leading zero.
+across all twenty rows. `OrderID` is the opaque identifier returned by the
+selected venue row: numeric venues require a canonical positive decimal
+`int64` string without a leading zero, while Nado requires its lowercase
+`0x`-prefixed 32-byte order digest.
 
 ```go
 market := exchange.PlaceOrderRequest{
@@ -367,6 +399,18 @@ current external acceptance status is:
 | LIP | Passed | Lighter Testnet perp row passed external acceptance. |
 | HLS | Passed | Hyperliquid Testnet spot row passed external acceptance. |
 | HLP | Passed | Hyperliquid Testnet standard perp row passed external acceptance. |
+| BYS | Passed | Bybit Demo spot row passed full external acceptance. |
+| BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
+| BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
+| BGS | Passed | Bitget Demo spot row passed full external acceptance. |
+| BGU | Passed | Bitget Demo USDT-linear perp row passed full external acceptance. |
+| BGC | Passed | Bitget Demo USDC-linear perp row passed full external acceptance with native `BTCPERP`. |
+| GTS | Passed | Gate Testnet spot row passed full external acceptance. |
+| GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
+| ATS | Passed | Aster Testnet spot row passed full external acceptance. |
+| ATP | Passed | Aster perp row passed with Testnet writes/private streams and production read-only funding REST/WebSocket reference data. |
+| NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
+| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0`, and `WatchMarkPrice` returned `ErrUnsupported`. |
 
 Use Demo/Testnet only with dedicated credentials, explicit symbols, explicit
 notional bounds, serial execution, and terminal cleanup evidence. A Demo/Testnet

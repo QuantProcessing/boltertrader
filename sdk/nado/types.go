@@ -795,8 +795,12 @@ type ArchiveOrdersRequest struct {
 }
 
 type OrdersByDigestsQuery struct {
-	Digests []string `json:"digests"`
-	Limit   int      `json:"limit"`
+	Digests     []string `json:"digests,omitempty"`
+	Subaccounts []string `json:"subaccounts,omitempty"`
+	ProductIds  []int64  `json:"product_ids,omitempty"`
+	MaxTime     int64    `json:"max_time,omitempty"`
+	Idx         string   `json:"idx,omitempty"`
+	Limit       int      `json:"limit"`
 }
 
 type ArchiveOrdersResponse struct {

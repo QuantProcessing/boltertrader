@@ -16,6 +16,7 @@ const (
 	KindPermission         ErrorKind = "permission"
 	KindRateLimit          ErrorKind = "rate_limit"
 	KindNotFound           ErrorKind = "not_found"
+	KindUnsupported        ErrorKind = "unsupported"
 	KindVenueRejected      ErrorKind = "venue_rejected"
 	KindTransport          ErrorKind = "transport"
 	KindAmbiguousOutcome   ErrorKind = "ambiguous_outcome"
@@ -33,6 +34,7 @@ var (
 	ErrPermission         = errorSentinel{kind: KindPermission}
 	ErrRateLimit          = errorSentinel{kind: KindRateLimit}
 	ErrNotFound           = errorSentinel{kind: KindNotFound}
+	ErrUnsupported        = errorSentinel{kind: KindUnsupported}
 	ErrVenueRejected      = errorSentinel{kind: KindVenueRejected}
 	ErrTransport          = errorSentinel{kind: KindTransport}
 	ErrAmbiguousOutcome   = errorSentinel{kind: KindAmbiguousOutcome}

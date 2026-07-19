@@ -20,6 +20,9 @@ type WsAccountClient struct {
 	mu            sync.RWMutex
 	listenKey     string
 	userStreamURL func(string) string
+
+	executionReportCallbacks []func(*ExecutionReportEvent)
+	accountPositionCallbacks []func(*AccountPositionEvent)
 }
 
 func NewWsAccountClient(ctx context.Context, profile astercommon.Profile, security *astercommon.SecurityContext) (*WsAccountClient, error) {
@@ -38,6 +41,7 @@ func NewWsAccountClient(ctx context.Context, profile astercommon.Profile, securi
 	}
 	transport.Handler = client.handleMessage
 	client.StreamMgr.SetRenewHandler(client.handleListenKeyRenewed)
+	client.registerHandlers()
 	return client, nil
 }
 
@@ -105,32 +109,51 @@ func (c *WsAccountClient) handleMessage(message []byte) {
 	c.CallSubscription(header.EventType, message)
 }
 
+func (c *WsAccountClient) registerHandlers() {
+	c.SetHandler("executionReport", c.handleExecutionReport)
+	c.SetHandler("outboundAccountPosition", c.handleAccountPosition)
+}
+
 func (c *WsAccountClient) SubscribeExecutionReport(handler func(*ExecutionReportEvent)) {
-	if handler == nil {
-		c.SetHandler("executionReport", nil)
-		return
-	}
-	c.SetHandler("executionReport", func(data []byte) error {
-		var event ExecutionReportEvent
-		if err := json.Unmarshal(data, &event); err != nil {
-			return err
-		}
-		handler(&event)
-		return nil
-	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.executionReportCallbacks = append(c.executionReportCallbacks, handler)
 }
 
 func (c *WsAccountClient) SubscribeAccountPosition(handler func(*AccountPositionEvent)) {
-	if handler == nil {
-		c.SetHandler("outboundAccountPosition", nil)
-		return
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.accountPositionCallbacks = append(c.accountPositionCallbacks, handler)
+}
+
+func (c *WsAccountClient) handleExecutionReport(data []byte) error {
+	var event ExecutionReportEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
 	}
-	c.SetHandler("outboundAccountPosition", func(data []byte) error {
-		var event AccountPositionEvent
-		if err := json.Unmarshal(data, &event); err != nil {
-			return err
+	c.mu.RLock()
+	callbacks := append([]func(*ExecutionReportEvent){}, c.executionReportCallbacks...)
+	c.mu.RUnlock()
+	for _, callback := range callbacks {
+		if callback != nil {
+			callback(&event)
 		}
-		handler(&event)
-		return nil
-	})
+	}
+	return nil
+}
+
+func (c *WsAccountClient) handleAccountPosition(data []byte) error {
+	var event AccountPositionEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return err
+	}
+	c.mu.RLock()
+	callbacks := append([]func(*AccountPositionEvent){}, c.accountPositionCallbacks...)
+	c.mu.RUnlock()
+	for _, callback := range callbacks {
+		if callback != nil {
+			callback(&event)
+		}
+	}
+	return nil
 }

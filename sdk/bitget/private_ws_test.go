@@ -59,6 +59,22 @@ func TestDecodeAccountMessage(t *testing.T) {
 	}
 }
 
+func TestDecodeAccountMessageFlattensOfficialUTACoinList(t *testing.T) {
+	msg, err := DecodeAccountMessage([]byte(`{"arg":{"instType":"UTA","topic":"account"},"action":"snapshot","data":[{"totalEquity":"4976919.05","coin":[{"coin":"ETH","balance":"0.9992","available":"0.9992","locked":"0","equity":"0.9992","usdValue":"2488.667472"},{"coin":"USDT","balance":"354411.45536458","available":"344282.65536458","locked":"10128.8","equity":"344282.65536458","usdValue":"343866.07335159"}]}]}`))
+	if err != nil {
+		t.Fatalf("DecodeAccountMessage: %v", err)
+	}
+	if len(msg.Data) != 2 {
+		t.Fatalf("account assets = %d, want 2: %+v", len(msg.Data), msg.Data)
+	}
+	if msg.Data[0].Coin != "ETH" || msg.Data[0].USDValue != "2488.667472" {
+		t.Fatalf("unexpected ETH asset: %+v", msg.Data[0])
+	}
+	if msg.Data[1].Coin != "USDT" || msg.Data[1].Locked != "10128.8" || msg.Data[1].USDValue != "343866.07335159" {
+		t.Fatalf("unexpected USDT asset: %+v", msg.Data[1])
+	}
+}
+
 func TestDecodePositionMessagePreservesUTAPositionFields(t *testing.T) {
 	msg, err := DecodePositionMessage([]byte(`{"arg":{"instType":"UTA","topic":"position"},"action":"snapshot","data":[{"symbol":"BTCUSDT","marginCoin":"USDT","posSide":"short","holdMode":"one_way_mode","size":"0.01","unrealisedPnl":"1.25"}]}`))
 	if err != nil {

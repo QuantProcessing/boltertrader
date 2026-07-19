@@ -26,6 +26,18 @@ or `runtime/*` as its implementation dependencies.
 | LIP | Lighter | Perp | `LighterPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 | HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 | HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| BYS | Bybit | Spot | `BybitSpotConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| GTS | Gate | Spot | `GateSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| ATS | Aster | Spot | `AsterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 
 `factory.New` requires one explicit environment, validates credentials and
 endpoint options locally, redacts credentials in formatting, and performs no
@@ -36,24 +48,31 @@ network I/O during construction.
 Legend: `A` means admitted on the product row. `N/A` means absent from that
 product interface at compile time.
 
-| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Instruments | `MarketREST` | A | A | A | A | A | A | A | A |
-| OrderBook | `MarketREST` | A | A | A | A | A | A | A | A |
-| Candles | `MarketREST` | A | A | A | A | A | A | A | A |
-| PublicTrades | `MarketREST` | A | A | A | A | A | A | A | A |
-| PlaceOrder | `OrderREST` | A | A | A | A | A | A | A | A |
-| CancelOrder | `OrderREST` | A | A | A | A | A | A | A | A |
-| OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A |
-| OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A |
-| Fills | `OrderREST` | A | A | A | A | A | A | A | A |
-| Balances | account REST | A | A | A | A | A | A | A | A |
-| SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A |
-| PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| Positions | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| FundingRate | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| FundingRateHistory | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| SetLeverage | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
+| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Instruments | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OrderBook | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Candles | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| PublicTrades | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| PlaceOrder | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| CancelOrder | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Fills | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Balances | account REST | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A | A | N/A | N/A | A | N/A | N/A | A | N/A | A | N/A | A | N/A |
+| PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| Positions | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| FundingRate | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| FundingRateHistory | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| SetLeverage | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+
+Nado keeps `SetLeverage` in the common Perp REST surface. Nado does not expose
+an instrument leverage setter: the method validates the context, instrument,
+and positive requested value, then returns success with `Leverage.Effective=0`.
+The zero value means no venue-side leverage setting was applied; Nado's backend
+risk engine determines actual leverage from account, position, and product risk
+state.
 
 ## Order parameter matrix
 
@@ -80,8 +99,10 @@ Common validation rules:
   `uint48` string with no leading zero (`1` through `281474976710655`).
 - Spot rejects `ReduceOnly`.
 - The portable `CancelOrderRequest` locator is `OrderID`. Client-order-ID-only
-  cancel is not part of the shared eight-row guarantee. `OrderID` must be a
-  positive decimal `int64` string without a leading zero.
+  cancel is not part of the shared twenty-row guarantee. `OrderID` is the
+  venue-issued opaque identifier returned by this API. Numeric venues require
+  a canonical positive decimal `int64` string without a leading zero; Nado
+  requires its canonical lowercase `0x`-prefixed 32-byte order digest.
 
 ## Page and history semantics
 
@@ -112,7 +133,7 @@ returned order ID, client order ID, or transaction hash before reconciliation.
 
 The public sentinel kinds are `ErrInvalidConfig`, `ErrInvalidRequest`,
 `ErrAuthentication`, `ErrPermission`, `ErrRateLimit`, `ErrNotFound`,
-`ErrVenueRejected`, `ErrTransport`, `ErrAmbiguousOutcome`,
+`ErrUnsupported`, `ErrVenueRejected`, `ErrTransport`, `ErrAmbiguousOutcome`,
 `ErrMalformedResponse`, `ErrCanceled`, `ErrDeadlineExceeded`,
 `ErrSubscriptionGap`, and `ErrSubscriptionClosed`.
 
@@ -148,6 +169,18 @@ environment certification. Current acceptance certification is:
 | LIP | Passed | Lighter Testnet perp row passed external acceptance. |
 | HLS | Passed | Hyperliquid Testnet spot row passed external acceptance. |
 | HLP | Passed | Hyperliquid Testnet standard perp row passed external acceptance. |
+| BYS | Passed | Bybit Demo spot row passed full external acceptance. |
+| BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
+| BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
+| BGS | Passed | Bitget Demo spot row passed full external acceptance. |
+| BGU | Passed | Bitget Demo USDT-linear perp row passed full external acceptance. |
+| BGC | Passed | Bitget Demo USDC-linear perp row passed full external acceptance with native `BTCPERP`. |
+| GTS | Passed | Gate Testnet spot row passed full external acceptance. |
+| GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
+| ATS | Passed | Aster Testnet spot row passed full external acceptance. |
+| ATP | Passed | Aster perp row passed with Testnet writes/private streams and production read-only funding REST/WebSocket reference data. |
+| NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
+| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0`, and `WatchMarkPrice` returned `ErrUnsupported`. |
 
 This matrix does not claim live validation has passed beyond the acceptance
 status table.

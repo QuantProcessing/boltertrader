@@ -228,11 +228,11 @@ func TestExternalAcceptanceLedgerBuildsExpectedCellTotals(t *testing.T) {
 	manifest := loadExternalAcceptanceManifest(t)
 	ledger := buildExternalAcceptanceLedger(t, manifest)
 
-	if got := ledger.PublicAPICellCount(); got != 196 {
-		t.Fatalf("public API cell count = %d, want 196", got)
+	if got := ledger.PublicAPICellCount(); got != 497 {
+		t.Fatalf("public API cell count = %d, want 497", got)
 	}
-	if got := ledger.ParameterCaseCellCount(); got != 180 {
-		t.Fatalf("parameter-case cell count = %d, want 180", got)
+	if got := ledger.ParameterCaseCellCount(); got != 451 {
+		t.Fatalf("parameter-case cell count = %d, want 451", got)
 	}
 
 	for _, cell := range []externalOperationCell{
@@ -240,6 +240,11 @@ func TestExternalAcceptanceLedgerBuildsExpectedCellTotals(t *testing.T) {
 		{RowCode: "BNP", Transport: "websocket", Method: "WatchFundingRate"},
 		{RowCode: "HLS", Transport: "rest", Method: "SpotAccount"},
 		{RowCode: "HLP", Transport: "websocket", Method: "WatchPositions"},
+		{RowCode: "BYS", Transport: "websocket", Method: "PlaceOrder"},
+		{RowCode: "BGC", Transport: "rest", Method: "FundingRateHistory"},
+		{RowCode: "GTU", Transport: "rest", Method: "SetLeverage"},
+		{RowCode: "ATS", Transport: "websocket", Method: "WatchBalances"},
+		{RowCode: "NDP", Transport: "websocket", Method: "WatchFundingRate"},
 	} {
 		if !ledger.ExpectOperation(cell) {
 			t.Fatalf("ledger does not expect operation cell %#v", cell)
@@ -333,9 +338,13 @@ func TestExternalRowCoverageMarksOperationsAndParameterCasesIdempotently(t *test
 	}
 }
 
-func TestOwnedOrderJournalCleansUpOnlyTrackedPositivePortableOrderIDs(t *testing.T) {
+func TestOwnedOrderJournalCleansUpOnlyTrackedPortableNativeOrderIDs(t *testing.T) {
+	const nadoDigest = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const bybitUUID = "cf55eb56-0853-4d3f-945e-17ddd6059a89"
 	journal := newOwnedOrderJournal()
 	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: "101", State: exchange.AckResting})
+	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: nadoDigest, State: exchange.AckResting})
+	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: bybitUUID, State: exchange.AckResting})
 	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: "client-202", State: exchange.AckResting})
 	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: "0", State: exchange.AckResting})
 	journal.TrackPlacement(exchange.OrderAcknowledgement{OrderID: "", ClientOrderID: "303", State: exchange.AckResting})
@@ -343,14 +352,16 @@ func TestOwnedOrderJournalCleansUpOnlyTrackedPositivePortableOrderIDs(t *testing
 
 	client := &fakeOrderCleanupClient{
 		open: map[string]exchange.Order{
-			"101": {OrderID: "101", Status: "open"},
-			"999": {OrderID: "999", Status: "open"},
+			"101":      {OrderID: "101", Status: "open"},
+			nadoDigest: {OrderID: nadoDigest, Status: "open"},
+			bybitUUID:  {OrderID: bybitUUID, Status: "open"},
+			"999":      {OrderID: "999", Status: "open"},
 		},
 	}
 	if err := journal.Cleanup(context.Background(), client, "BTC-USDT"); err != nil {
 		t.Fatalf("cleanup failed: %v", err)
 	}
-	if got, want := client.canceledIDs, []string{"101"}; !sameStrings(got, want) {
+	if got, want := client.canceledIDs, []string{"101", nadoDigest, bybitUUID}; !sameStrings(got, want) {
 		t.Fatalf("canceled order IDs = %v, want %v", got, want)
 	}
 	if !client.openOrderIDs()["999"] {
@@ -624,6 +635,74 @@ func TestSpotExposureCleanupRejectsRejectedAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSpotExposureCleanupAcceptsUntradableGateCommissionDust(t *testing.T) {
+	baseline := []exchange.Balance{{Asset: "ETH", Total: decimal.NewFromInt(1)}}
+	client := &fakeSpotAcceptanceCleanupClient{
+		balances: []exchange.Balance{{Asset: "ETH", Total: decimal.RequireFromString("1.0002934")}},
+		book: exchange.OrderBook{
+			Bids: []exchange.BookLevel{{Price: decimal.RequireFromString("1272.70")}},
+			Asks: []exchange.BookLevel{{Price: decimal.RequireFromString("1272.80")}},
+		},
+	}
+	instrument := exchange.Instrument{
+		Symbol:            "ETH-USDT",
+		BaseAsset:         "ETH",
+		QuantityIncrement: decimal.RequireFromString("0.0001"),
+		MinNotional: exchange.OptionalDecimal{
+			Value: decimal.NewFromInt(3),
+			Valid: true,
+		},
+	}
+
+	if err := cleanupSpotAcceptanceExposure(
+		context.Background(),
+		exchangeAcceptanceRow{code: "GTS", product: exchange.ProductSpot},
+		client,
+		instrument,
+		baseline,
+		newOwnedOrderJournal(),
+	); err != nil {
+		t.Fatalf("commission dust cleanup: %v", err)
+	}
+	if client.placeRequest.Instrument != "" {
+		t.Fatalf("untradable commission dust produced cleanup order %+v", client.placeRequest)
+	}
+}
+
+func TestSpotExposureCleanupSkipsAnyResidualBelowVenueMinimum(t *testing.T) {
+	baseline := []exchange.Balance{{Asset: "ETH", Total: decimal.NewFromInt(1)}}
+	client := &fakeSpotAcceptanceCleanupClient{
+		balances: []exchange.Balance{{Asset: "ETH", Total: decimal.RequireFromString("1.001")}},
+		book: exchange.OrderBook{
+			Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(2500)}},
+			Asks: []exchange.BookLevel{{Price: decimal.RequireFromString("2500.10")}},
+		},
+	}
+	instrument := exchange.Instrument{
+		Symbol:            "ETH-USDT",
+		BaseAsset:         "ETH",
+		QuantityIncrement: decimal.RequireFromString("0.0001"),
+		MinNotional: exchange.OptionalDecimal{
+			Value: decimal.NewFromInt(5),
+			Valid: true,
+		},
+	}
+
+	if err := cleanupSpotAcceptanceExposure(
+		context.Background(),
+		exchangeAcceptanceRow{code: "GTS", product: exchange.ProductSpot},
+		client,
+		instrument,
+		baseline,
+		newOwnedOrderJournal(),
+	); err != nil {
+		t.Fatalf("untradable residual cleanup: %v", err)
+	}
+	if client.placeRequest.Instrument != "" {
+		t.Fatalf("untradable residual produced cleanup order %+v", client.placeRequest)
+	}
+}
+
 func TestPerpExposureCleanupRestoresShortBaselineWithCorrectReduceOnlyPolicy(t *testing.T) {
 	instrument := exchange.Instrument{
 		Symbol:            "ETH-USDT",
@@ -858,6 +937,112 @@ func TestApproxFiftyQuoteSizingFailsWhenFiftyQuoteNotTradable(t *testing.T) {
 	}
 }
 
+func TestAcceptanceSizingUsesVenueMinimumWithinExplicitSafetyCap(t *testing.T) {
+	instrument := exchange.Instrument{
+		Symbol:            "USDC-USDT0",
+		PriceIncrement:    decimal.RequireFromString("0.0001"),
+		QuantityIncrement: decimal.RequireFromString("0.0001"),
+		MinQuantity:       decimal.RequireFromString("0.0001"),
+		MinNotional: exchange.OptionalDecimal{
+			Value: decimal.RequireFromString("100"),
+			Valid: true,
+		},
+	}
+	book := exchange.OrderBook{
+		Asks: []exchange.BookLevel{{Price: decimal.RequireFromString("1.0006"), Quantity: decimal.RequireFromString("1000")}},
+	}
+
+	size, err := sizeAcceptanceQuoteOrder(
+		instrument,
+		book,
+		exchange.SideBuy,
+		decimal.RequireFromString("50"),
+		decimal.RequireFromString("100"),
+	)
+	if err != nil {
+		t.Fatalf("venue-minimum sizing failed: %v", err)
+	}
+	notional := size.Price.Mul(size.Quantity)
+	if notional.LessThan(instrument.MinNotional.Value) {
+		t.Fatalf("notional = %s below venue minimum %s", notional, instrument.MinNotional.Value)
+	}
+	if notional.GreaterThan(decimal.RequireFromString("100").Add(size.Price.Mul(instrument.QuantityIncrement))) {
+		t.Fatalf("notional = %s exceeds the explicit cap plus one rounding step", notional)
+	}
+}
+
+func TestAcceptanceRestingSizingUsesSubmittedLimitPriceForVenueMinimum(t *testing.T) {
+	instrument := exchange.Instrument{
+		Symbol:            "USDC-USDT0",
+		PriceIncrement:    decimal.RequireFromString("0.0001"),
+		QuantityIncrement: decimal.RequireFromString("0.0001"),
+		MinQuantity:       decimal.RequireFromString("0.0001"),
+		MinNotional: exchange.OptionalDecimal{
+			Value: decimal.RequireFromString("100"),
+			Valid: true,
+		},
+	}
+	price := decimal.RequireFromString("0.98")
+	size, err := sizeAcceptanceQuoteOrderAtPrice(
+		instrument,
+		price,
+		decimal.RequireFromString("50"),
+		decimal.RequireFromString("100"),
+	)
+	if err != nil {
+		t.Fatalf("resting venue-minimum sizing failed: %v", err)
+	}
+	if got := price.Mul(size.Quantity); got.LessThan(instrument.MinNotional.Value) {
+		t.Fatalf("submitted notional = %s below venue minimum %s", got, instrument.MinNotional.Value)
+	}
+}
+
+func TestAcceptanceSizingUsesNextContractWithinExplicitSafetyCap(t *testing.T) {
+	instrument := exchange.Instrument{
+		Symbol:            "BTC-USDT",
+		PriceIncrement:    decimal.RequireFromString("0.1"),
+		QuantityIncrement: decimal.NewFromInt(1),
+		MinQuantity:       decimal.NewFromInt(1),
+	}
+	price := decimal.RequireFromString("44.20836")
+	size, err := sizeAcceptanceQuoteOrderAtPrice(
+		instrument,
+		price,
+		decimal.NewFromInt(50),
+		decimal.NewFromInt(100),
+	)
+	if err != nil {
+		t.Fatalf("coarse-contract sizing failed: %v", err)
+	}
+	if !size.Quantity.Equal(decimal.NewFromInt(2)) {
+		t.Fatalf("quantity = %s, want 2 contracts", size.Quantity)
+	}
+	if notional := price.Mul(size.Quantity); notional.GreaterThan(decimal.NewFromInt(100)) {
+		t.Fatalf("notional = %s exceeds explicit cap", notional)
+	}
+}
+
+func TestSelectAcceptanceInstrumentAcceptsNativeUSDCPerpAlias(t *testing.T) {
+	instrument := exchange.Instrument{
+		Symbol:      "BTC-USDC",
+		BaseAsset:   "BTC",
+		QuoteAsset:  "USDC",
+		SettleAsset: "USDC",
+		Product:     exchange.ProductPerp,
+	}
+	got, err := selectAcceptanceInstrument(
+		[]exchange.Instrument{instrument},
+		exchange.ProductPerp,
+		"BTCPERP",
+	)
+	if err != nil {
+		t.Fatalf("select native USDC perp alias: %v", err)
+	}
+	if got.Symbol != instrument.Symbol {
+		t.Fatalf("selected instrument=%+v, want %+v", got, instrument)
+	}
+}
+
 func TestAcceptanceOrderCasePlanCoversEveryValidManifestBranch(t *testing.T) {
 	for _, transport := range []string{"rest", "ws"} {
 		spot := acceptanceOrderCases(exchange.ProductSpot, transport)
@@ -896,5 +1081,41 @@ func TestSpotCleanupSkipsFeeDustAndUntradableResiduals(t *testing.T) {
 	}
 	if !spotDeltaRequiresCleanup(decimal.RequireFromString("0.003"), step, minNotional, price) {
 		t.Fatal("tradable residual above tolerance should be cleaned")
+	}
+}
+
+func TestSpotFeeToleranceAcceptsGateUntradableCommissionDust(t *testing.T) {
+	if !spotBalanceWithinFeeTolerance(
+		decimal.RequireFromString("0.0002934"),
+		decimal.RequireFromString("0.0001"),
+		decimal.RequireFromString("1272.70"),
+	) {
+		t.Fatal("Gate commission dust worth less than 0.50 quote was rejected")
+	}
+}
+
+func TestAcceptanceSubscriptionTimeoutAllowsBitgetDemoDepthRecovery(t *testing.T) {
+	if got := acceptanceSubscriptionTimeout("BGS/WatchOrderBook"); got != 120*time.Second {
+		t.Fatalf("Bitget order book timeout = %s, want 120s", got)
+	}
+	if got := acceptanceSubscriptionTimeout("GTU/WatchOrderBook"); got != 45*time.Second {
+		t.Fatalf("default order book timeout = %s, want 45s", got)
+	}
+	if got := acceptanceSubscriptionTimeout("BGS/WatchCandles"); got != 75*time.Second {
+		t.Fatalf("candle timeout = %s, want 75s", got)
+	}
+}
+
+func TestAcceptanceIOCPriceUsesBoundedCrossingOffset(t *testing.T) {
+	instrument := exchange.Instrument{PriceIncrement: decimal.RequireFromString("0.1")}
+	book := exchange.OrderBook{
+		Bids: []exchange.BookLevel{{Price: decimal.RequireFromString("99.0"), Quantity: decimal.RequireFromString("1")}},
+		Asks: []exchange.BookLevel{{Price: decimal.RequireFromString("101.0"), Quantity: decimal.RequireFromString("1")}},
+	}
+	if got := acceptanceIOCPrice(instrument, book, exchange.SideBuy); !got.Equal(decimal.RequireFromString("102.1")) {
+		t.Fatalf("buy IOC price = %s", got)
+	}
+	if got := acceptanceIOCPrice(instrument, book, exchange.SideSell); !got.Equal(decimal.RequireFromString("98.0")) {
+		t.Fatalf("sell IOC price = %s", got)
 	}
 }

@@ -28,6 +28,41 @@ func check() {
 	))
 	var typed exchange.PerpClient = client
 	_, _ = typed.Positions(context.Background(), exchange.PositionsRequest{})
+
+	var spot exchange.SpotClient
+	var perp exchange.PerpClient
+	spot, _ = factory.New(factory.BybitSpotConfig("key", "secret", factory.WithEnvironment(factory.EnvironmentLive)))
+	perp, _ = factory.New(factory.BybitUSDTPerpConfig("key", "secret", factory.WithEnvironment(factory.EnvironmentLive)))
+	perp, _ = factory.New(factory.BybitUSDCPerpConfig("key", "secret", factory.WithEnvironment(factory.EnvironmentLive)))
+	spot, _ = factory.New(factory.BitgetSpotConfig("key", "secret", "passphrase", factory.WithEnvironment(factory.EnvironmentLive)))
+	perp, _ = factory.New(factory.BitgetUSDTPerpConfig("key", "secret", "passphrase", factory.WithEnvironment(factory.EnvironmentLive)))
+	perp, _ = factory.New(factory.BitgetUSDCPerpConfig("key", "secret", "passphrase", factory.WithEnvironment(factory.EnvironmentLive)))
+	spot, _ = factory.New(factory.GateSpotConfig("key", "secret", factory.WithEnvironment(factory.EnvironmentLive)))
+	perp, _ = factory.New(factory.GateUSDTPerpConfig("key", "secret", factory.WithEnvironment(factory.EnvironmentLive)))
+	spot, _ = factory.New(factory.AsterSpotConfig(
+		"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+		"0000000000000000000000000000000000000000000000000000000000000001",
+		"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+		factory.WithEnvironment(factory.EnvironmentLive),
+	))
+	perp, _ = factory.New(factory.AsterUSDTPerpConfig(
+		"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+		"0000000000000000000000000000000000000000000000000000000000000001",
+		"0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf",
+		factory.WithEnvironment(factory.EnvironmentLive),
+	))
+	spot, _ = factory.New(factory.NadoSpotConfig(
+		"0000000000000000000000000000000000000000000000000000000000000001",
+		"default",
+		factory.WithEnvironment(factory.EnvironmentLive),
+	))
+	perp, _ = factory.New(factory.NadoUSDT0PerpConfig(
+		"0000000000000000000000000000000000000000000000000000000000000001",
+		"default",
+		factory.WithEnvironment(factory.EnvironmentLive),
+	))
+	_ = spot
+	_ = perp
 }
 `
 	runCompileFixture(t, root, "positive_perp", positive, true, "")

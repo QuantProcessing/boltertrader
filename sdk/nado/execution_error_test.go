@@ -10,9 +10,11 @@ func TestGatewayApplicationErrorClassifiesOnlyConclusiveExecutionCodes(t *testin
 		"place_order", "cancel_orders", "cancel_product_orders", "cancel_and_place",
 		"execute_place_order", "execute_cancel_orders", "execute_cancel_and_place",
 	} {
-		rejected := NewGatewayApplicationError(2001, "product is not active", requestType)
-		if !errors.Is(rejected, ErrExecutionRejected) {
-			t.Errorf("request_type=%q err=%v, want ErrExecutionRejected", requestType, rejected)
+		for _, code := range []int{2000, 2001, 2094} {
+			rejected := NewGatewayApplicationError(code, "command validation failed", requestType)
+			if !errors.Is(rejected, ErrExecutionRejected) {
+				t.Errorf("request_type=%q code=%d err=%v, want ErrExecutionRejected", requestType, code, rejected)
+			}
 		}
 	}
 	for _, err := range []error{

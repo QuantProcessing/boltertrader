@@ -26,6 +26,18 @@ Matrix-Review: `APPROVE`
 | LIP | Lighter | Perp | `LighterPerpConfig` | `exchange.PerpWebSocket` |
 | HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` | `exchange.SpotWebSocket` |
 | HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` | `exchange.PerpWebSocket` |
+| BYS | Bybit | Spot | `BybitSpotConfig` | `exchange.SpotWebSocket` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` | `exchange.PerpWebSocket` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` | `exchange.PerpWebSocket` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` | `exchange.SpotWebSocket` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` | `exchange.PerpWebSocket` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` | `exchange.PerpWebSocket` |
+| GTS | Gate | Spot | `GateSpotConfig` | `exchange.SpotWebSocket` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` | `exchange.PerpWebSocket` |
+| ATS | Aster | Spot | `AsterSpotConfig` | `exchange.SpotWebSocket` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` | `exchange.PerpWebSocket` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` | `exchange.SpotWebSocket` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` | `exchange.PerpWebSocket` |
 
 `factory.New` 在本地构造 facet。调用 `client.WebSocket()` 是 lazy 的，不执行
 network I/O。
@@ -35,24 +47,30 @@ network I/O。
 Legend：`A` 表示该 product row 已准入。`N/A` 表示该 product interface 在
 compile time 不包含该 method。
 
-| Operation | Event type | Scope | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WatchOrderBook | `BookEvent` | public market stream | A | A | A | A | A | A | A | A |
-| WatchBBO | `BBOEvent` | public market stream | A | A | A | A | A | A | A | A |
-| WatchPublicTrades | `PublicTradeEvent` | public market stream | A | A | A | A | A | A | A | A |
-| WatchCandles | `CandleEvent` | public market stream | A | A | A | A | A | A | A | A |
-| WatchOrders | `OrderEvent` | private account stream | A | A | A | A | A | A | A | A |
-| WatchFills | `FillEvent` | private account stream | A | A | A | A | A | A | A | A |
-| WatchBalances | `BalanceEvent` | private account-wide stream | A | A | A | A | A | A | A | A |
-| PlaceOrder | `OrderAcknowledgement` | private command | A | A | A | A | A | A | A | A |
-| CancelOrder | `OrderAcknowledgement` | private command | A | A | A | A | A | A | A | A |
-| WatchPositions | `PositionEvent` | private Perp account stream | N/A | A | N/A | A | N/A | A | N/A | A |
-| WatchMarkPrice | `MarkPriceEvent` | public Perp reference stream | N/A | A | N/A | A | N/A | A | N/A | A |
-| WatchFundingRate | `FundingRateEvent` | public Perp reference stream | N/A | A | N/A | A | N/A | A | N/A | A |
-| Close | error return | facet lifecycle | A | A | A | A | A | A | A | A |
+| Operation | Event type | Scope | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| WatchOrderBook | `BookEvent` | public market stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchBBO | `BBOEvent` | public market stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchPublicTrades | `PublicTradeEvent` | public market stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchCandles | `CandleEvent` | public market stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchOrders | `OrderEvent` | private account stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchFills | `FillEvent` | private account stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchBalances | `BalanceEvent` | private account-wide stream | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| PlaceOrder | `OrderAcknowledgement` | private command | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| CancelOrder | `OrderAcknowledgement` | private command | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| WatchPositions | `PositionEvent` | private Perp account stream | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| WatchMarkPrice | `MarkPriceEvent` | public Perp reference stream | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| WatchFundingRate | `FundingRateEvent` | public Perp reference stream | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| Close | error return | facet lifecycle | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 
 `PerpWebSocket` embeds Spot WebSocket method set，并额外提供 positions、mark
 price 与 funding-rate stream。`SpotWebSocket` 不暴露 Perp-only stream。
+
+Nado 将 `WatchMarkPrice` 保留在公共 Perp WebSocket interface 中，便于调用方
+跨 venue 使用同一套 API。由于 Nado 不提供 mark-price subscription，NDP
+实现会立即返回 nil subscription 与 `ErrUnsupported`。`WatchFundingRate`
+仍是实际 Nado stream；mark-price data 可通过 normalized Perp REST read
+获取。
 
 ## Watch Request
 
@@ -113,10 +131,16 @@ request 与 acknowledgement contract：
 - `ClientOrderID` 必填，并与 REST 使用相同的 positive decimal `uint48` string
   （`1` 至 `281474976710655`，且不带 leading zero）；
 - portable `CancelOrder` locator 是 `OrderID`；client-order-ID-only cancel 是
-  不属于共享 eight-row guarantee；`OrderID` 必须是不带 leading zero 的
-  positive decimal `int64` string；
+  不属于共享 twenty-row guarantee；`OrderID` 是所选 venue row 返回的 opaque
+  identifier。数值型 venue 要求不带 leading zero 的 canonical positive
+  decimal `int64` string；Nado 要求 lowercase `0x` 前缀的 32-byte order digest；
 - ambiguous send 会在可能已经发送但没有权威结果时，返回 ambiguous
   acknowledgement 与 `exchange.ErrAmbiguousOutcome`。
+
+底层 transport 保持 venue-truthful。Aster 官方只提供 WebSocket 行情与用户数据
+stream，下单和撤单通过签名 REST endpoint 完成，因此 Aster 的 WebSocket facade
+方法会有意复用同一个 credentialed REST command path。其他产品行在交易所提供
+原生 WebSocket trade command 时使用该原生能力。
 
 ## Demo/Testnet 验收
 
@@ -127,9 +151,9 @@ make test-exchange-offline
 ```
 
 Public stream smoke test 可在 caller 提供显式 environment configuration 时连接
-non-production 或 public endpoint。Private stream 与 WebSocket order command
-需要 credential。`PlaceOrder` 与 `CancelOrder` 会在 Demo/Testnet 修改真实的
-non-production exchange state。
+non-production 或 public endpoint。Private stream 与 order command 需要
+credential。`PlaceOrder` 与 `CancelOrder` 会在 Demo/Testnet 修改真实的
+non-production exchange state，其中包括 Aster 官方 REST command fallback。
 
 本 matrix 中的 capability cell 表示 implemented/admitted support，不等于
 external environment certification。当前 acceptance certification 如下：
@@ -144,5 +168,17 @@ external environment certification。当前 acceptance certification 如下：
 | LIP | Passed | Lighter Testnet perp row 已通过 external acceptance。 |
 | HLS | Passed | Hyperliquid Testnet spot row 已通过 external acceptance。 |
 | HLP | Passed | Hyperliquid Testnet standard perp row 已通过 external acceptance。 |
+| BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
+| BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
+| BGS | Passed | Bitget Demo Spot row 已通过 full external acceptance。 |
+| BGU | Passed | Bitget Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BGC | Passed | Bitget Demo USDC-linear Perp row 使用原生 `BTCPERP` 通过 full external acceptance。 |
+| GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
+| GTU | Passed | Gate Testnet USDT-settled Perp row 已通过 full external acceptance。 |
+| ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
+| ATP | Passed | Aster Perp row 使用 Testnet 写操作/私有流和 production 只读 funding REST/WebSocket reference data 通过验收。 |
+| NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
+| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，`WatchMarkPrice` 返回 `ErrUnsupported`。 |
 
 除 acceptance status table 外，本 matrix 不声称 live validation 已通过。

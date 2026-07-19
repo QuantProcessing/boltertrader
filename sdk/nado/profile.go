@@ -35,9 +35,10 @@ var endpointKinds = []EndpointKind{
 }
 
 type Profile struct {
-	environment Environment
-	chainID     int64
-	endpoints   map[EndpointKind]string
+	environment   Environment
+	chainID       int64
+	endpoints     map[EndpointKind]string
+	allowOverride bool
 }
 
 func NewProfile(environment Environment) (Profile, error) {
@@ -68,6 +69,29 @@ func (p Profile) SubscriptionsWSURL() string { return p.Endpoint(EndpointSubscri
 
 func (p Profile) TriggerURL() string { return p.Endpoint(EndpointTrigger) }
 
+func (p Profile) WithEndpointOverrides(overrides map[EndpointKind]string) (Profile, error) {
+	if p.endpoints == nil {
+		p.endpoints = make(map[EndpointKind]string)
+	}
+	cloned := make(map[EndpointKind]string, len(p.endpoints))
+	for kind, endpoint := range p.endpoints {
+		cloned[kind] = endpoint
+	}
+	for kind, endpoint := range overrides {
+		if endpoint != "" {
+			cloned[kind] = endpoint
+		}
+	}
+	p.endpoints = cloned
+	p.allowOverride = true
+	for _, kind := range endpointKinds {
+		if err := validateEndpointURL(kind, p.Endpoint(kind)); err != nil {
+			return Profile{}, err
+		}
+	}
+	return p, nil
+}
+
 func (p Profile) Validate() error {
 	official, err := officialProfile(p.environment)
 	if err != nil {
@@ -76,9 +100,17 @@ func (p Profile) Validate() error {
 	if p.chainID != official.chainID {
 		return fmt.Errorf("nado profile: chain id %d does not match %s", p.chainID, p.environment)
 	}
-	for _, kind := range endpointKinds {
-		if err := official.ValidateEndpoint(kind, p.Endpoint(kind)); err != nil {
-			return err
+	if p.allowOverride {
+		for _, kind := range endpointKinds {
+			if err := validateEndpointURL(kind, p.Endpoint(kind)); err != nil {
+				return err
+			}
+		}
+	} else {
+		for _, kind := range endpointKinds {
+			if err := official.ValidateEndpoint(kind, p.Endpoint(kind)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -95,6 +127,14 @@ func (p Profile) ValidateEndpoint(kind EndpointKind, rawURL string) error {
 	}
 	if rawURL != expected {
 		return fmt.Errorf("nado profile: %s endpoint override is not allowed for %s", kind, p.environment)
+	}
+	return nil
+}
+
+func validateEndpointURL(kind EndpointKind, rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("nado profile: invalid %s endpoint", kind)
 	}
 	return nil
 }

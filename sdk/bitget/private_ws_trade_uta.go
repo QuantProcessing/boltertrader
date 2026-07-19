@@ -1,8 +1,8 @@
 package sdk
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -36,16 +36,30 @@ type utaTradeAck struct {
 }
 
 func (c *PrivateWSClient) PlaceUTAOrderWS(req *PlaceOrderRequest) (*PlaceOrderResponse, error) {
-	resp, err := c.sendUTATradeRequest("place-order", req.Category, map[string]any{
-		"symbol":      req.Symbol,
-		"orderType":   req.OrderType,
-		"qty":         req.Qty,
-		"price":       req.Price,
-		"side":        req.Side,
-		"timeInForce": req.TimeInForce,
-		"clientOid":   req.ClientOID,
-		"reduceOnly":  normalizeUTAWSBool(req.ReduceOnly),
-		"marginMode":  req.MarginMode,
+	return c.PlaceUTAOrderWSContext(context.Background(), req)
+}
+
+func (c *PrivateWSClient) PlaceUTAOrderWSContext(ctx context.Context, req *PlaceOrderRequest) (*PlaceOrderResponse, error) {
+	resp, err := c.sendUTATradeRequest(ctx, "place-order", req.Category, map[string]any{
+		"symbol":       req.Symbol,
+		"orderType":    req.OrderType,
+		"qty":          req.Qty,
+		"price":        req.Price,
+		"side":         req.Side,
+		"timeInForce":  req.TimeInForce,
+		"clientOid":    req.ClientOID,
+		"reduceOnly":   normalizeUTAWSBool(req.ReduceOnly),
+		"posSide":      req.PosSide,
+		"stpMode":      req.STPMode,
+		"tpTriggerBy":  req.TPTriggerBy,
+		"slTriggerBy":  req.SLTriggerBy,
+		"takeprofit":   req.TakeProfit,
+		"stoploss":     req.StopLoss,
+		"tpOrderType":  req.TPOrderType,
+		"slOrderType":  req.SLOrderType,
+		"tpLimitPrice": req.TPLimitPrice,
+		"slLimitPrice": req.SLLimitPrice,
+		"marginMode":   req.MarginMode,
 	})
 	if err != nil {
 		return nil, err
@@ -55,7 +69,11 @@ func (c *PrivateWSClient) PlaceUTAOrderWS(req *PlaceOrderRequest) (*PlaceOrderRe
 }
 
 func (c *PrivateWSClient) CancelUTAOrderWS(req *CancelOrderRequest) (*CancelOrderResponse, error) {
-	resp, err := c.sendUTATradeRequest("cancel-order", req.Category, map[string]any{
+	return c.CancelUTAOrderWSContext(context.Background(), req)
+}
+
+func (c *PrivateWSClient) CancelUTAOrderWSContext(ctx context.Context, req *CancelOrderRequest) (*CancelOrderResponse, error) {
+	resp, err := c.sendUTATradeRequest(ctx, "cancel-order", req.Category, map[string]any{
 		"orderId":   req.OrderID,
 		"clientOid": req.ClientOID,
 	})
@@ -66,7 +84,7 @@ func (c *PrivateWSClient) CancelUTAOrderWS(req *CancelOrderRequest) (*CancelOrde
 	return &CancelOrderResponse{OrderID: ack.OrderID, ClientOID: ack.ClientOID}, nil
 }
 
-func (c *PrivateWSClient) sendUTATradeRequest(topic, category string, params map[string]any) (*utaTradeResponse, error) {
+func (c *PrivateWSClient) sendUTATradeRequest(ctx context.Context, topic, category string, params map[string]any) (*utaTradeResponse, error) {
 	id := strconv.FormatInt(time.Now().UnixNano(), 10)
 	req := utaTradeRequest{
 		Op:       "trade",
@@ -76,7 +94,7 @@ func (c *PrivateWSClient) sendUTATradeRequest(topic, category string, params map
 		Args:     []map[string]any{pruneUTATradeArgs(params)},
 	}
 
-	respBytes, err := c.sendRequest(id, req)
+	respBytes, err := c.sendRequestContext(ctx, id, req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +104,7 @@ func (c *PrivateWSClient) sendUTATradeRequest(topic, category string, params map
 		return nil, err
 	}
 	if !isWSSuccessCode(resp.Code) {
-		return nil, fmt.Errorf("bitget private ws: %s failed: %s %s", topic, resp.Code, resp.Msg)
+		return nil, newResponseError("private websocket "+topic, string(resp.Code), "venue rejected request")
 	}
 	return &resp, nil
 }

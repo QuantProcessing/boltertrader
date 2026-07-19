@@ -35,7 +35,7 @@ authority.
 | Nado Testnet | `NADO_TESTNET_PRIVATE_KEY` | `BOLTER_ENABLE_NADO_TESTNET_WRITES` |
 | Binance Demo | `BINANCE_DEMO_API_KEY`, `BINANCE_DEMO_API_SECRET` | `BOLTER_ENABLE_BINANCE_DEMO_WRITES` |
 | OKX Demo | `OKX_DEMO_API_KEY`, `OKX_DEMO_API_SECRET`, `OKX_DEMO_API_PASSPHRASE` | `BOLTER_ENABLE_OKX_DEMO_WRITES` |
-| Bybit Demo Trading | `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` | `BOLTER_ENABLE_BYBIT_DEMO_WRITES` |
+| Bybit Testnet | `BYBIT_TESTNET_API_KEY`, `BYBIT_TESTNET_API_SECRET` | `BOLTER_ENABLE_BYBIT_TESTNET_WRITES` |
 | Bitget Demo/PAP | `BITGET_DEMO_API_KEY`, `BITGET_DEMO_SECRET_KEY`, `BITGET_DEMO_PASSPHRASE` | `BOLTER_ENABLE_BITGET_DEMO_WRITES` |
 | Gate Testnet | `GATE_TESTNET_API_KEY`, `GATE_TESTNET_API_SECRET` | `BOLTER_ENABLE_GATE_TESTNET_WRITES` |
 | Hyperliquid Testnet | `HYPERLIQUID_TESTNET_PK` | `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES` |
@@ -57,7 +57,7 @@ the variable is empty.
 | Nado Testnet | `NADO_TESTNET_SUBACCOUNT_NAME=default`; `NADO_TESTNET_SPOT_SYMBOL` and `NADO_TESTNET_PERP_SYMBOL` default to auto selection | `NADO_TESTNET_MAX_NOTIONAL_USDT0=100` |
 | Binance Demo | `BINANCE_DEMO_SYMBOL=ETH-USDT` | `BINANCE_DEMO_MAX_NOTIONAL_USDT=100`; `BINANCE_DEMO_ORDER_QTY=0` means auto-sized |
 | OKX Demo | `OKX_DEMO_SPOT_SYMBOL=ETH-USDT`; `OKX_DEMO_PERP_SYMBOL=ETH-USDT-SWAP` | `OKX_DEMO_MAX_NOTIONAL_USDT=100` |
-| Bybit Demo Trading | `BYBIT_DEMO_SYMBOL=BTCUSDT`; `BYBIT_DEMO_USDT_PERP_SYMBOL=BTCUSDT`; `BYBIT_DEMO_USDC_PERP_SYMBOL=BTCPERP` | `BYBIT_DEMO_MAX_NOTIONAL_USDT=100`; `BYBIT_DEMO_MAX_NOTIONAL_USDC=100` |
+| Bybit Testnet | `BYBIT_TESTNET_SYMBOL=BTCUSDT`; `BYBIT_TESTNET_USDT_PERP_SYMBOL=BTCUSDT`; `BYBIT_TESTNET_USDC_PERP_SYMBOL=BTCPERP` | `BYBIT_TESTNET_MAX_NOTIONAL_USDT=100`; `BYBIT_TESTNET_MAX_NOTIONAL_USDC=100` |
 | Bitget Demo/PAP | `BITGET_DEMO_SYMBOL=BTCUSDT`; `BITGET_DEMO_USDT_PERP_SYMBOL=BTCUSDT`; `BITGET_DEMO_USDC_PERP_SYMBOL=BTCPERP` | `BITGET_DEMO_MAX_NOTIONAL_USDT=100`; `BITGET_DEMO_MAX_NOTIONAL_USDC=100` |
 | Gate Testnet | `GATE_TESTNET_SPOT_SYMBOL=ETH_USDT`; `GATE_TESTNET_USDT_PERP_SYMBOL=BTC_USDT` | `GATE_TESTNET_MAX_NOTIONAL_USDT=100` |
 | Hyperliquid Testnet | `HYPERLIQUID_ACCOUNT_ADDRESS` identifies the owner when an agent/API-wallet key signs; `HYPERLIQUID_TESTNET_SPOT_SYMBOL` and `HYPERLIQUID_TESTNET_PERP_SYMBOL` default to auto selection; `HYPERLIQUID_TESTNET_HIP3_SYMBOL` must be dex-qualified for HIP-3 | `HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC=100` |
@@ -84,9 +84,12 @@ write target to production.
 
 - Binance selects its built-in Demo REST/WS profile and has no acceptance
   endpoint override variable.
-- Bybit selects its built-in **Demo Trading** profile. `BYBIT_TESTNET_API_KEY`
-  and `BYBIT_TESTNET_API_SECRET` identify a different environment and are
-  explicitly rejected as substitutes for Demo credentials.
+- Bybit external acceptance selects its built-in **Testnet** profile
+  (`https://api-testnet.bybit.com`, `wss://stream-testnet.bybit.com/v5/public/*`,
+  `wss://stream-testnet.bybit.com/v5/private`, and
+  `wss://stream-testnet.bybit.com/v5/trade`). `BYBIT_DEMO_API_KEY` and
+  `BYBIT_DEMO_API_SECRET` identify a different environment and are explicitly
+  rejected as substitutes for Testnet credentials.
 - Hyperliquid and Lighter select built-in Testnet profiles and expose no
   acceptance endpoint override variable.
 

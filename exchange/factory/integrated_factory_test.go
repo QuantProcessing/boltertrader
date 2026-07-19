@@ -9,7 +9,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 )
 
-func TestAllEightConfigsRejectMissingCredentialsLocally(t *testing.T) {
+func TestAllTwentyConfigsRejectMissingCredentialsLocally(t *testing.T) {
 	transport := new(countingTransport)
 	option := WithHTTPClient(&http.Client{Transport: transport})
 	environment := WithEnvironment(EnvironmentLive)
@@ -73,6 +73,90 @@ func TestAllEightConfigsRejectMissingCredentialsLocally(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "BYS",
+			run: func() error {
+				_, err := New(BybitSpotConfig("", "secret", option, environment))
+				return err
+			},
+		},
+		{
+			name: "BYU",
+			run: func() error {
+				_, err := New(BybitUSDTPerpConfig("key", "", option, environment))
+				return err
+			},
+		},
+		{
+			name: "BYC",
+			run: func() error {
+				_, err := New(BybitUSDCPerpConfig("", "secret", option, environment))
+				return err
+			},
+		},
+		{
+			name: "BGS",
+			run: func() error {
+				_, err := New(BitgetSpotConfig("", "secret", "passphrase", option, environment))
+				return err
+			},
+		},
+		{
+			name: "BGU",
+			run: func() error {
+				_, err := New(BitgetUSDTPerpConfig("key", "", "passphrase", option, environment))
+				return err
+			},
+		},
+		{
+			name: "BGC",
+			run: func() error {
+				_, err := New(BitgetUSDCPerpConfig("key", "secret", "", option, environment))
+				return err
+			},
+		},
+		{
+			name: "GTS",
+			run: func() error {
+				_, err := New(GateSpotConfig("", "secret", option, environment))
+				return err
+			},
+		},
+		{
+			name: "GTU",
+			run: func() error {
+				_, err := New(GateUSDTPerpConfig("key", "", option, environment))
+				return err
+			},
+		},
+		{
+			name: "ATS",
+			run: func() error {
+				_, err := New(AsterSpotConfig("", testEVMPrivateKey, testEVMAddress, option, environment))
+				return err
+			},
+		},
+		{
+			name: "ATP",
+			run: func() error {
+				_, err := New(AsterUSDTPerpConfig(testEVMAddress, "", testEVMAddress, option, environment))
+				return err
+			},
+		},
+		{
+			name: "NDS",
+			run: func() error {
+				_, err := New(NadoSpotConfig("", "default", option, environment))
+				return err
+			},
+		},
+		{
+			name: "NDP",
+			run: func() error {
+				_, err := New(NadoUSDT0PerpConfig("", "default", option, environment))
+				return err
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -88,7 +172,7 @@ func TestAllEightConfigsRejectMissingCredentialsLocally(t *testing.T) {
 	}
 }
 
-func TestAllEightConfigsConstructConcurrentlyWithoutIO(t *testing.T) {
+func TestAllTwentyConfigsConstructConcurrentlyWithoutIO(t *testing.T) {
 	transport := new(countingTransport)
 	option := WithHTTPClient(&http.Client{Transport: transport})
 	environment := WithEnvironment(EnvironmentLive)
@@ -152,6 +236,90 @@ func TestAllEightConfigsConstructConcurrentlyWithoutIO(t *testing.T) {
 				return constructionResult(client, err)
 			},
 		},
+		{
+			name: "BYS",
+			run: func() error {
+				client, err := New(BybitSpotConfig("key", "secret", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "BYU",
+			run: func() error {
+				client, err := New(BybitUSDTPerpConfig("key", "secret", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "BYC",
+			run: func() error {
+				client, err := New(BybitUSDCPerpConfig("key", "secret", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "BGS",
+			run: func() error {
+				client, err := New(BitgetSpotConfig("key", "secret", "passphrase", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "BGU",
+			run: func() error {
+				client, err := New(BitgetUSDTPerpConfig("key", "secret", "passphrase", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "BGC",
+			run: func() error {
+				client, err := New(BitgetUSDCPerpConfig("key", "secret", "passphrase", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "GTS",
+			run: func() error {
+				client, err := New(GateSpotConfig("key", "secret", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "GTU",
+			run: func() error {
+				client, err := New(GateUSDTPerpConfig("key", "secret", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "ATS",
+			run: func() error {
+				client, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "ATP",
+			run: func() error {
+				client, err := New(AsterUSDTPerpConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "NDS",
+			run: func() error {
+				client, err := New(NadoSpotConfig(testEVMPrivateKey, "default", option, environment))
+				return constructionResult(client, err)
+			},
+		},
+		{
+			name: "NDP",
+			run: func() error {
+				client, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, "default", option, environment))
+				return constructionResult(client, err)
+			},
+		},
 	}
 
 	const copies = 8
@@ -179,7 +347,7 @@ func TestAllEightConfigsConstructConcurrentlyWithoutIO(t *testing.T) {
 	}
 }
 
-func TestAllEightConfigsExposeLazyWebSocketFacets(t *testing.T) {
+func TestAllTwentyConfigsExposeLazyWebSocketFacets(t *testing.T) {
 	options := []Option{
 		WithEnvironment(EnvironmentLive),
 		WithWebSocketEndpoint("ws://127.0.0.1:1/ws"),
@@ -189,12 +357,24 @@ func TestAllEightConfigsExposeLazyWebSocketFacets(t *testing.T) {
 		OKXSpotConfig("key", "secret", "passphrase", options...),
 		LighterSpotConfig(testLighterPrivateKey, 1, 2, options...),
 		HyperliquidSpotConfig(testHyperliquidPrivateKey, options...),
+		BybitSpotConfig("key", "secret", options...),
+		BitgetSpotConfig("key", "secret", "passphrase", options...),
+		GateSpotConfig("key", "secret", options...),
+		AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, options...),
+		NadoSpotConfig(testEVMPrivateKey, "default", options...),
 	}
 	perpConfigs := []Config[exchange.PerpClient]{
 		BinanceUSDPerpConfig("key", "secret", options...),
 		OKXUSDTPerpConfig("key", "secret", "passphrase", options...),
 		LighterPerpConfig(testLighterPrivateKey, 1, 2, options...),
 		HyperliquidPerpConfig(testHyperliquidPrivateKey, options...),
+		BybitUSDTPerpConfig("key", "secret", options...),
+		BybitUSDCPerpConfig("key", "secret", options...),
+		BitgetUSDTPerpConfig("key", "secret", "passphrase", options...),
+		BitgetUSDCPerpConfig("key", "secret", "passphrase", options...),
+		GateUSDTPerpConfig("key", "secret", options...),
+		AsterUSDTPerpConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, options...),
+		NadoUSDT0PerpConfig(testEVMPrivateKey, "default", options...),
 	}
 	for _, config := range spotConfigs {
 		client, err := New(config)

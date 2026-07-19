@@ -198,9 +198,11 @@ func (c *WsAccountClient) connectAndRestore() (*websocket.Conn, error) {
 }
 
 func (c *WsAccountClient) connect(ctx context.Context) (*websocket.Conn, error) {
-	conn, _, err := websocket.Dial(ctx, c.url, &websocket.DialOptions{
-		CompressionMode: 1,
-	})
+	options, err := coderDialOptionsForURL(c.url)
+	if err != nil {
+		return nil, err
+	}
+	conn, _, err := websocket.Dial(ctx, c.url, options)
 	if err != nil {
 		return nil, err
 	}
@@ -1077,6 +1079,19 @@ func (c *WsAccountClient) UnsubscribeOrders(productId *int64) error {
 	}
 	params := StreamParams{
 		Type:       "order_update",
+		ProductId:  productId,
+		Subaccount: sender,
+	}
+	return c.Unsubscribe(params)
+}
+
+func (c *WsAccountClient) UnsubscribeFills(productId *int64) error {
+	sender := c.getSender()
+	if sender == "" {
+		return nil
+	}
+	params := StreamParams{
+		Type:       "fill",
 		ProductId:  productId,
 		Subaccount: sender,
 	}

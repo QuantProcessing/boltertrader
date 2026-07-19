@@ -85,6 +85,16 @@ func TestDecodeSpotUserTradeMessageAcceptsNumericTradeID(t *testing.T) {
 	}
 }
 
+func TestSpotPublicTradeAcceptsNumericTradeIDAndTimestamps(t *testing.T) {
+	var trade Trade
+	if err := json.Unmarshal([]byte(`{"id":12345,"currency_pair":"ETH_USDT","side":"buy","amount":"0.001","price":"2000","create_time":1700000000,"create_time_ms":1700000000123}`), &trade); err != nil {
+		t.Fatalf("Unmarshal Trade: %v", err)
+	}
+	if trade.ID != "12345" || trade.CreateTime != "1700000000" || trade.CreateTimeMS != "1700000000123" {
+		t.Fatalf("trade=%+v, want flexible public trade identifiers and timestamps", trade)
+	}
+}
+
 func TestDecodeSpotBalanceMessageAcceptsStringTimestamp(t *testing.T) {
 	payload := []byte(`{"time":1,"channel":"spot.balances","event":"update","result":[{"timestamp":"1700000000","timestamp_ms":1700000000123,"user":"42","currency":"ETH","total":"1","available":"1"}]}`)
 	msg, err := DecodeSpotBalanceMessage(payload)
@@ -150,7 +160,7 @@ func TestWSSubscribeRequestOmitsEmptyPayload(t *testing.T) {
 }
 
 func TestWSKeyKeepsPayloadSpecificSubscriptionsDistinct(t *testing.T) {
-	if got, want := wsKey(ChannelSpotOrderBook, []string{"BTC_USDT", "100ms"}), "spot.order_book|BTC_USDT,100ms"; got != want {
+	if got, want := wsKey(ChannelSpotOrderBook, []string{"BTC_USDT", "5", "100ms"}), "spot.order_book|BTC_USDT,5,100ms"; got != want {
 		t.Fatalf("key=%q want %q", got, want)
 	}
 	if got, want := wsKey(ChannelSpotOrderBook, nil), ChannelSpotOrderBook; got != want {

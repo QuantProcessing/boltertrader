@@ -8,10 +8,15 @@ import (
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 	binancespot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
+	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
+	bybit "github.com/QuantProcessing/boltertrader/sdk/bybit"
+	gate "github.com/QuantProcessing/boltertrader/sdk/gate"
 	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	lighter "github.com/QuantProcessing/boltertrader/sdk/lighter"
+	nado "github.com/QuantProcessing/boltertrader/sdk/nado"
 	okx "github.com/QuantProcessing/boltertrader/sdk/okx"
 )
 
@@ -30,6 +35,16 @@ func TestAllVenueQueryNormalizersRedactUnderlyingErrors(t *testing.T) {
 		{name: "lighter perp", err: lighterNormalizeErr(exchange.ProductPerp, "Positions", raw)},
 		{name: "hyperliquid spot", err: hlNormalizeQueryErr(exchange.ProductSpot, "Balances", raw, nil)},
 		{name: "hyperliquid perp", err: hlNormalizeQueryErr(exchange.ProductPerp, "Positions", raw, nil)},
+		{name: "bybit spot", err: normErr(clientMeta{venue: exchange.VenueBybit, product: exchange.ProductSpot}, "Balances", raw)},
+		{name: "bybit perp", err: normErr(clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp}, "Positions", raw)},
+		{name: "bitget spot", err: normErr(clientMeta{venue: exchange.VenueBitget, product: exchange.ProductSpot}, "Balances", raw)},
+		{name: "bitget perp", err: normErr(clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp}, "Positions", raw)},
+		{name: "gate spot", err: gateNormalizeErr(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "Balances", raw)},
+		{name: "gate perp", err: gateNormalizeErr(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "Positions", raw)},
+		{name: "aster spot", err: asterNormalizeErr(exchange.ProductSpot, "Balances", raw)},
+		{name: "aster perp", err: asterNormalizeErr(exchange.ProductPerp, "Positions", raw)},
+		{name: "nado spot", err: (&nadoBase{meta: clientMeta{venue: exchange.VenueNado, product: exchange.ProductSpot}}).normalize("Balances", raw)},
+		{name: "nado perp", err: (&nadoBase{meta: clientMeta{venue: exchange.VenueNado, product: exchange.ProductPerp}}).normalize("Positions", raw)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -115,6 +130,140 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 					&hyperliquid.OrderRejectedError{Reason: canary},
 					nil,
 				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "bybit spot",
+			run: func() outcome {
+				ack, err := commandAck(
+					clientMeta{venue: exchange.VenueBybit, product: exchange.ProductSpot},
+					"PlaceOrder",
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&bybit.ResponseError{Operation: "PlaceOrder", Code: 10016, Message: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "bybit perp",
+			run: func() outcome {
+				ack, err := commandAck(
+					clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp},
+					"PlaceOrder",
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&bybit.ResponseError{Operation: "PlaceOrder", Code: 10016, Message: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "bitget spot",
+			run: func() outcome {
+				ack, err := commandAck(
+					clientMeta{venue: exchange.VenueBitget, product: exchange.ProductSpot},
+					"PlaceOrder",
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&bitget.ResponseError{Operation: "PlaceOrder", Code: "50000", Message: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "bitget perp",
+			run: func() outcome {
+				ack, err := commandAck(
+					clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp},
+					"PlaceOrder",
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&bitget.ResponseError{Operation: "PlaceOrder", Code: "50000", Message: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "gate spot",
+			run: func() outcome {
+				ack, err := gateCommandErr(
+					clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot},
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&gate.APIError{StatusCode: http.StatusBadRequest, Label: "INVALID_ARGUMENT", Message: canary, Body: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "gate perp",
+			run: func() outcome {
+				ack, err := gateCommandErr(
+					clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp},
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					&gate.APIError{StatusCode: http.StatusBadRequest, Label: "INVALID_ARGUMENT", Message: canary, Body: canary},
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "aster spot",
+			run: func() outcome {
+				ack, err := asterCommandAck(
+					exchange.ProductSpot,
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/order", -1102, canary),
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "aster perp",
+			run: func() outcome {
+				ack, err := asterCommandAck(
+					exchange.ProductPerp,
+					exchange.OrderOperationPlace,
+					"BTC-USDT",
+					"",
+					"1",
+					astercommon.NewVenueError(http.StatusBadRequest, http.MethodPost, "/order", -1102, canary),
+				)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "nado spot",
+			run: func() outcome {
+				base := &nadoBase{meta: clientMeta{venue: exchange.VenueNado, product: exchange.ProductSpot}}
+				ack := baseAck(base.meta, exchange.OrderOperationPlace, "BTC-USDT", "", "1")
+				err := base.mutationError("PlaceOrder", nado.NewGatewayApplicationError(2001, canary, "place_order"), &ack)
+				return outcome{ack: ack, err: err}
+			},
+		},
+		{
+			name: "nado perp",
+			run: func() outcome {
+				base := &nadoBase{meta: clientMeta{venue: exchange.VenueNado, product: exchange.ProductPerp}}
+				ack := baseAck(base.meta, exchange.OrderOperationPlace, "BTC-USDT", "", "1")
+				err := base.mutationError("PlaceOrder", nado.NewGatewayApplicationError(2001, canary, "place_order"), &ack)
 				return outcome{ack: ack, err: err}
 			},
 		},

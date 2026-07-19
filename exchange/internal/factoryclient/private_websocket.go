@@ -30,6 +30,15 @@ type spotWebSocket struct {
 	private *privateWebSocket
 }
 
+func (socket *spotWebSocket) String() string {
+	if socket == nil || socket.publicWebSocket == nil {
+		return "exchange/factory.WebSocket{nil, credentials:redacted}"
+	}
+	return fmt.Sprintf("exchange/factory.WebSocket{venue:%q, product:%q, credentials:redacted}", socket.meta.venue, socket.meta.product)
+}
+
+func (socket *spotWebSocket) GoString() string { return socket.String() }
+
 func newSpotWebSocket(public *publicWebSocket, backend privateWSBackend) *spotWebSocket {
 	return &spotWebSocket{
 		publicWebSocket: public,
@@ -486,8 +495,34 @@ func validatePrivateCancelOrder(request exchange.CancelOrderRequest) error {
 		return errors.New("instrument is required and must not have surrounding whitespace")
 	}
 	orderID, err := strconv.ParseInt(request.OrderID, 10, 64)
-	if err != nil || orderID <= 0 || strconv.FormatInt(orderID, 10) != request.OrderID {
-		return errors.New("order id must be a positive decimal int64")
+	if err == nil && orderID > 0 && strconv.FormatInt(orderID, 10) == request.OrderID {
+		return nil
 	}
-	return nil
+	if validNadoOrderID(request.OrderID) {
+		return nil
+	}
+	if validUUIDOrderID(request.OrderID) {
+		return nil
+	}
+	return errors.New("order id must use the canonical venue-issued format")
+}
+
+func validUUIDOrderID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if (character < '0' || character > '9') &&
+			(character < 'a' || character > 'f') &&
+			(character < 'A' || character > 'F') {
+			return false
+		}
+	}
+	return true
 }

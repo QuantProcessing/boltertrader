@@ -62,6 +62,35 @@ type OrderUpdate struct {
 	Reason    OrderUpdateReason `json:"reason"`
 }
 
+func (update *OrderUpdate) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Type      string            `json:"type"`
+		Timestamp string            `json:"timestamp"`
+		ProductId int64             `json:"product_id"`
+		Digest    string            `json:"digest"`
+		Id        json.RawMessage   `json:"id,omitempty"`
+		Amount    string            `json:"amount"`
+		Reason    OrderUpdateReason `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	id, err := decodeStringOrNumber(aux.Id, "id")
+	if err != nil {
+		return err
+	}
+	*update = OrderUpdate{
+		Type:      aux.Type,
+		Timestamp: aux.Timestamp,
+		ProductId: aux.ProductId,
+		Digest:    aux.Digest,
+		Id:        id,
+		Amount:    aux.Amount,
+		Reason:    aux.Reason,
+	}
+	return nil
+}
+
 // Use Ticker struct from types.go for BestBidOffer if compatible
 // Use Trade struct from types.go
 // Use OrderBook struct from types.go

@@ -14,6 +14,19 @@ func (c *Client) ListSpotAccounts(ctx context.Context, currency string) ([]SpotA
 	return out, err
 }
 
+func (c *Client) GetUnifiedMode(ctx context.Context) (*UnifiedMode, error) {
+	var out UnifiedMode
+	err := c.getPrivate(ctx, "/unified/unified_mode", nil, &out)
+	return &out, err
+}
+
+func (c *Client) GetUnifiedAccount(ctx context.Context, currency string) (*UnifiedAccount, error) {
+	query := map[string]string{"currency": currency}
+	var out UnifiedAccount
+	err := c.getPrivate(ctx, "/unified/accounts", query, &out)
+	return &out, err
+}
+
 func (c *Client) CreateSpotOrder(ctx context.Context, order Order) (*Order, error) {
 	var out Order
 	err := c.postPrivate(ctx, "/spot/orders", order, &out)

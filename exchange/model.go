@@ -15,6 +15,11 @@ const (
 	VenueOKX         Venue = "okx"
 	VenueLighter     Venue = "lighter"
 	VenueHyperliquid Venue = "hyperliquid"
+	VenueBybit       Venue = "bybit"
+	VenueBitget      Venue = "bitget"
+	VenueGate        Venue = "gate"
+	VenueAster       Venue = "aster"
+	VenueNado        Venue = "nado"
 )
 
 type Product string
@@ -333,7 +338,9 @@ type SetLeverageRequest struct {
 
 type Leverage struct {
 	Instrument string `json:"instrument,omitempty"`
-	Effective  int    `json:"effective"`
+	// Effective is the leverage confirmed by the venue. Zero means the venue
+	// accepted the call but does not expose an instrument leverage setting.
+	Effective int `json:"effective"`
 }
 
 func isPortableClientOrderID(value string) bool {

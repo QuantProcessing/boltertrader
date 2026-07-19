@@ -127,9 +127,11 @@ func (c *WsMarketClient) connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	conn, _, err := websocket.Dial(ctx, c.url, &websocket.DialOptions{
-		CompressionMode: 1,
-	})
+	options, err := coderDialOptionsForURL(c.url)
+	if err != nil {
+		return err
+	}
+	conn, _, err := websocket.Dial(ctx, c.url, options)
 	if err != nil {
 		return err
 	}

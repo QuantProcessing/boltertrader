@@ -278,7 +278,7 @@ func (journal *ownedOrderJournal) TrackPlacement(ack exchange.OrderAcknowledgeme
 }
 
 func (journal *ownedOrderJournal) TrackOrderID(orderID string) {
-	if isPositivePortableOrderID(orderID) {
+	if isPortableNativeOrderID(orderID) {
 		journal.orderIDs[orderID] = struct{}{}
 	}
 }
@@ -300,7 +300,7 @@ func (journal *ownedOrderJournal) Cleanup(ctx context.Context, client orderClean
 	}
 	for _, order := range page.Orders {
 		if journal.Owns(order) {
-			if !isPositivePortableOrderID(order.OrderID) {
+			if !isPortableNativeOrderID(order.OrderID) {
 				return fmt.Errorf("owned open order has nonportable native id %q", order.OrderID)
 			}
 			journal.TrackOrderID(order.OrderID)
@@ -361,6 +361,41 @@ func isPositivePortableOrderID(value string) bool {
 	}
 	parsed, err := strconv.ParseInt(value, 10, 64)
 	return err == nil && parsed > 0
+}
+
+func isPortableNativeOrderID(value string) bool {
+	if isPositivePortableOrderID(value) {
+		return true
+	}
+	if len(value) == 36 {
+		for index, char := range value {
+			if index == 8 || index == 13 || index == 18 || index == 23 {
+				if char != '-' {
+					return false
+				}
+				continue
+			}
+			if !isHexCharacter(char) {
+				return false
+			}
+		}
+		return true
+	}
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	for _, char := range value[2:] {
+		if !isHexCharacter(char) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexCharacter(char rune) bool {
+	return (char >= '0' && char <= '9') ||
+		(char >= 'a' && char <= 'f') ||
+		(char >= 'A' && char <= 'F')
 }
 
 func isTerminalAckState(state exchange.OrderAckState) bool {
@@ -433,6 +468,16 @@ func sizeApproxQuoteOrder(
 	side exchange.Side,
 	target decimal.Decimal,
 ) (approxOrderSize, error) {
+	return sizeAcceptanceQuoteOrder(instrument, book, side, target, decimal.Zero)
+}
+
+func sizeAcceptanceQuoteOrder(
+	instrument exchange.Instrument,
+	book exchange.OrderBook,
+	side exchange.Side,
+	target decimal.Decimal,
+	maxNotional decimal.Decimal,
+) (approxOrderSize, error) {
 	price, err := executablePrice(book, side)
 	if err != nil {
 		return approxOrderSize{}, err
@@ -441,8 +486,36 @@ func sizeApproxQuoteOrder(
 	if !price.IsPositive() {
 		return approxOrderSize{}, errors.New("rounded price is not positive")
 	}
+	return sizeAcceptanceQuoteOrderAtPrice(instrument, price, target, maxNotional)
+}
 
-	quantity := roundDownToStep(target.Div(price), instrument.QuantityIncrement)
+func sizeAcceptanceQuoteOrderAtPrice(
+	instrument exchange.Instrument,
+	price decimal.Decimal,
+	target decimal.Decimal,
+	maxNotional decimal.Decimal,
+) (approxOrderSize, error) {
+	if !price.IsPositive() {
+		return approxOrderSize{}, errors.New("order price must be positive")
+	}
+	effectiveTarget := target
+	useVenueMinimum := instrument.MinNotional.Valid && instrument.MinNotional.Value.GreaterThan(target)
+	if useVenueMinimum {
+		if !maxNotional.IsPositive() {
+			return approxOrderSize{}, fmt.Errorf("approximately %s quote notional is below min notional %s", target, instrument.MinNotional.Value)
+		}
+		effectiveTarget = instrument.MinNotional.Value
+	}
+
+	quantity := roundDownToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+	if useVenueMinimum {
+		quantity = roundUpToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+	} else if maxNotional.IsPositive() && price.Mul(quantity).LessThan(target.Mul(decimal.RequireFromString("0.90"))) {
+		nextQuantity := roundUpToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+		if price.Mul(nextQuantity).LessThanOrEqual(maxNotional) {
+			quantity = nextQuantity
+		}
+	}
 	if quantity.LessThan(instrument.MinQuantity) {
 		quantity = instrument.MinQuantity
 	}
@@ -458,8 +531,14 @@ func sizeApproxQuoteOrder(
 	if notional.LessThan(target.Mul(decimal.RequireFromString("0.90"))) {
 		return approxOrderSize{}, fmt.Errorf("rounded notional %s is too far below approximately %s", notional, target)
 	}
-	if notional.GreaterThan(target.Mul(decimal.RequireFromString("1.10"))) {
+	if !maxNotional.IsPositive() && notional.GreaterThan(target.Mul(decimal.RequireFromString("1.10"))) {
 		return approxOrderSize{}, fmt.Errorf("minimum tradable notional %s is too far above approximately %s", notional, target)
+	}
+	if maxNotional.IsPositive() {
+		roundingAllowance := price.Mul(instrument.QuantityIncrement)
+		if notional.GreaterThan(maxNotional.Add(roundingAllowance)) {
+			return approxOrderSize{}, fmt.Errorf("minimum tradable notional %s exceeds configured maximum %s", notional, maxNotional)
+		}
 	}
 	return approxOrderSize{Price: price, Quantity: quantity}, nil
 }

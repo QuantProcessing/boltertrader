@@ -65,7 +65,11 @@ func (c *baseWsClient) connect(explicit bool) error {
 
 	ctx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
-	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, endpoint, nil)
+	dialer, err := gorillaDialerForURL(endpoint)
+	if err != nil {
+		return err
+	}
+	conn, resp, err := dialer.DialContext(ctx, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w %v", err, resp)
 	}

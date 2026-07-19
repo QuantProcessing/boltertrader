@@ -47,7 +47,7 @@ func (transport *hyperliquidAccountCaptureTransport) RoundTrip(request *http.Req
 	}, nil
 }
 
-func TestEightKnownConfigsInferAndConstructProductClients(t *testing.T) {
+func TestTwentyKnownConfigsInferAndConstructProductClients(t *testing.T) {
 	transport := new(countingTransport)
 	httpClient := &http.Client{Transport: transport}
 	options := []Option{
@@ -75,6 +75,30 @@ func TestEightKnownConfigsInferAndConstructProductClients(t *testing.T) {
 	spot, err = New(HyperliquidSpotConfig(testHyperliquidPrivateKey, optionsWithEnvironment(options, EnvironmentLive)...))
 	requireConstructed(t, spot, err)
 	perp, err = New(HyperliquidPerpConfig(testHyperliquidPrivateKey, optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	spot, err = New(BybitSpotConfig("key", "secret", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, spot, err)
+	perp, err = New(BybitUSDTPerpConfig("key", "secret", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	perp, err = New(BybitUSDCPerpConfig("key", "secret", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	spot, err = New(BitgetSpotConfig("key", "secret", "passphrase", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, spot, err)
+	perp, err = New(BitgetUSDTPerpConfig("key", "secret", "passphrase", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	perp, err = New(BitgetUSDCPerpConfig("key", "secret", "passphrase", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	spot, err = New(GateSpotConfig("key", "secret", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, spot, err)
+	perp, err = New(GateUSDTPerpConfig("key", "secret", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	spot, err = New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, spot, err)
+	perp, err = New(AsterUSDTPerpConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, perp, err)
+	spot, err = New(NadoSpotConfig(testEVMPrivateKey, "default", optionsWithEnvironment(options, EnvironmentLive)...))
+	requireConstructed(t, spot, err)
+	perp, err = New(NadoUSDT0PerpConfig(testEVMPrivateKey, "default", optionsWithEnvironment(options, EnvironmentLive)...))
 	requireConstructed(t, perp, err)
 
 	if got := transport.requests.Load(); got != 0 {
@@ -157,6 +181,54 @@ func TestAccountAddressOptionIsRejectedByConfigsWithoutAddressIdentity(t *testin
 		}},
 		{name: "Lighter Perp", run: func() error {
 			_, err := New(LighterPerpConfig(testLighterPrivateKey, 1, 2, environment, option))
+			return err
+		}},
+		{name: "Bybit Spot", run: func() error {
+			_, err := New(BybitSpotConfig("key", "secret", environment, option))
+			return err
+		}},
+		{name: "Bybit USDT Perp", run: func() error {
+			_, err := New(BybitUSDTPerpConfig("key", "secret", environment, option))
+			return err
+		}},
+		{name: "Bybit USDC Perp", run: func() error {
+			_, err := New(BybitUSDCPerpConfig("key", "secret", environment, option))
+			return err
+		}},
+		{name: "Bitget Spot", run: func() error {
+			_, err := New(BitgetSpotConfig("key", "secret", "passphrase", environment, option))
+			return err
+		}},
+		{name: "Bitget USDT Perp", run: func() error {
+			_, err := New(BitgetUSDTPerpConfig("key", "secret", "passphrase", environment, option))
+			return err
+		}},
+		{name: "Bitget USDC Perp", run: func() error {
+			_, err := New(BitgetUSDCPerpConfig("key", "secret", "passphrase", environment, option))
+			return err
+		}},
+		{name: "Gate Spot", run: func() error {
+			_, err := New(GateSpotConfig("key", "secret", environment, option))
+			return err
+		}},
+		{name: "Gate Perp", run: func() error {
+			_, err := New(GateUSDTPerpConfig("key", "secret", environment, option))
+			return err
+		}},
+		{name: "Aster Spot", run: func() error {
+			_, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, environment, option))
+			return err
+		}},
+		{name: "Aster Perp", run: func() error {
+			_, err := New(AsterUSDTPerpConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, environment, option))
+			return err
+		}},
+		{name: "Nado Spot", run: func() error {
+			_, err := New(NadoSpotConfig(testEVMPrivateKey, "default", environment, option))
+			return err
+		}},
+		{name: "Nado Perp", run: func() error {
+			_, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, "default", environment, option))
 			return err
 		}},
 	}

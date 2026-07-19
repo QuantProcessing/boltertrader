@@ -2,7 +2,9 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,106 @@ func TestPrivateWSTradeUTACompanion_PruneTradeArgs(t *testing.T) {
 	}
 	if _, ok := args["nil"]; ok {
 		t.Fatalf("expected nil value to be pruned: %#v", args)
+	}
+}
+
+func TestPrivateWSTradeUTACommandHonorsContextAfterConnect(t *testing.T) {
+	clientConn, peer := bitgetPrivateWSPair(t)
+	client := NewPrivateWSClient().WithCredentials("key", "secret", "passphrase")
+	client.requestTimeout = 10 * time.Second
+	client.mu.Lock()
+	client.conn = clientConn
+	client.authenticated = true
+	client.mu.Unlock()
+	defer client.Close()
+	defer peer.Close()
+	go client.readLoop(clientConn, make(chan error, 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.PlaceUTAOrderWSContext(ctx, &PlaceOrderRequest{
+			Category:    "spot",
+			Symbol:      "BTCUSDT",
+			Qty:         "1",
+			Side:        "buy",
+			OrderType:   "limit",
+			Price:       "100",
+			TimeInForce: "gtc",
+			PosSide:     "short",
+		})
+		result <- err
+	}()
+
+	var request utaTradeRequest
+	if err := peer.ReadJSON(&request); err != nil {
+		t.Fatalf("read UTA trade request: %v", err)
+	}
+	if request.Op != "trade" || request.Topic != "place-order" {
+		t.Fatalf("trade request = %+v", request)
+	}
+	if len(request.Args) != 1 || request.Args[0]["posSide"] != "short" {
+		t.Fatalf("trade args = %#v, want hedge position side", request.Args)
+	}
+	if _, exists := request.Args[0]["reduceOnly"]; exists {
+		t.Fatalf("trade args assign reduceOnly with hedge position side: %#v", request.Args)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("PlaceUTAOrderWS error = %v, want context.Canceled", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("PlaceUTAOrderWS did not return promptly after context cancellation")
+	}
+}
+
+func TestPrivateWSTradeUTAReturnsTypedRedactedVenueError(t *testing.T) {
+	clientConn, peer := bitgetPrivateWSPair(t)
+	client := NewPrivateWSClient().WithCredentials("key", "secret", "passphrase")
+	client.mu.Lock()
+	client.conn = clientConn
+	client.authenticated = true
+	client.mu.Unlock()
+	defer client.Close()
+	defer peer.Close()
+	go client.readLoop(clientConn, make(chan error, 1))
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.PlaceUTAOrderWSContext(context.Background(), &PlaceOrderRequest{
+			Category:  "usdt-futures",
+			Symbol:    "BTCUSDT",
+			Qty:       "1",
+			Side:      "buy",
+			OrderType: "market",
+			PosSide:   "long",
+		})
+		result <- err
+	}()
+
+	var request utaTradeRequest
+	if err := peer.ReadJSON(&request); err != nil {
+		t.Fatalf("read UTA trade request: %v", err)
+	}
+	const venueMessage = "SENTINEL_PRIVATE_WS_MESSAGE"
+	if err := peer.WriteJSON(map[string]any{
+		"event": "trade",
+		"id":    request.ID,
+		"topic": request.Topic,
+		"code":  "25236",
+		"msg":   venueMessage,
+	}); err != nil {
+		t.Fatalf("write UTA trade response: %v", err)
+	}
+	err := <-result
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) || responseErr.Code != "25236" {
+		t.Fatalf("error=%v (%T), want typed response code 25236", err, err)
+	}
+	if strings.Contains(err.Error(), venueMessage) {
+		t.Fatalf("private WS response leaked venue message: %v", err)
 	}
 }
 

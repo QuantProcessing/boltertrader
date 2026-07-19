@@ -53,6 +53,15 @@ const (
 	BybitDemoMaxNotionalUSDTEnv = "BYBIT_DEMO_MAX_NOTIONAL_USDT"
 	BybitDemoMaxNotionalUSDCEnv = "BYBIT_DEMO_MAX_NOTIONAL_USDC"
 
+	BybitTestnetAPIKeyEnv          = "BYBIT_TESTNET_API_KEY"
+	BybitTestnetAPISecretEnv       = "BYBIT_TESTNET_API_SECRET"
+	BybitTestnetEnableWriteEnv     = "BOLTER_ENABLE_BYBIT_TESTNET_WRITES"
+	BybitTestnetSpotSymbolEnv      = "BYBIT_TESTNET_SYMBOL"
+	BybitTestnetUSDTPerpSymbolEnv  = "BYBIT_TESTNET_USDT_PERP_SYMBOL"
+	BybitTestnetUSDCPerpSymbolEnv  = "BYBIT_TESTNET_USDC_PERP_SYMBOL"
+	BybitTestnetMaxNotionalUSDTEnv = "BYBIT_TESTNET_MAX_NOTIONAL_USDT"
+	BybitTestnetMaxNotionalUSDCEnv = "BYBIT_TESTNET_MAX_NOTIONAL_USDC"
+
 	BybitDefaultMaxNotionalUSDT = "100"
 	BybitDefaultMaxNotionalUSDC = "100"
 	BybitDefaultSpotSymbol      = "BTCUSDT"
@@ -145,6 +154,8 @@ const (
 	AsterTestnetPerpUserWSURLEnv         = "ASTER_TESTNET_PERP_USER_WS_URL"
 
 	AsterTestnetDefaultMaxNotionalUSDT = "100"
+	AsterTestnetDefaultSpotSymbol      = "BTCUSDT"
+	AsterTestnetDefaultPerpSymbol      = "BTCUSDT"
 
 	NadoTestnetPrivateKeyEnv         = "NADO_TESTNET_PRIVATE_KEY"
 	NadoTestnetSubaccountNameEnv     = "NADO_TESTNET_SUBACCOUNT_NAME"
@@ -162,6 +173,8 @@ const (
 
 	NadoTestnetDefaultSubaccount       = "default"
 	NadoTestnetDefaultMaxNotionalUSDT0 = "100"
+	NadoTestnetDefaultSpotSymbol       = "USDC-USDT0"
+	NadoTestnetDefaultPerpSymbol       = "ETH-PERP-USDT0"
 )
 
 type OKXDemoConfig struct {
@@ -187,6 +200,18 @@ type BybitEndpointProfile struct {
 }
 
 type BybitDemoConfig struct {
+	APIKey          string
+	APISecret       string
+	MaxNotionalUSDT decimal.Decimal
+	MaxNotionalUSDC decimal.Decimal
+	SpotSymbol      string
+	USDTPerpSymbol  string
+	USDCPerpSymbol  string
+	Profile         BybitEndpointProfile
+	ProxyURL        string
+}
+
+type BybitTestnetConfig struct {
 	APIKey          string
 	APISecret       string
 	MaxNotionalUSDT decimal.Decimal
@@ -411,6 +436,25 @@ func (c BybitDemoConfig) String() string {
 }
 
 func (c BybitDemoConfig) GoString() string {
+	return c.String()
+}
+
+func (c BybitTestnetConfig) String() string {
+	return fmt.Sprintf(
+		"BybitTestnetConfig{APIKey:%s APISecret:%s MaxNotionalUSDT:%s MaxNotionalUSDC:%s SpotSymbol:%q USDTPerpSymbol:%q USDCPerpSymbol:%q Profile:%+v ProxyURL:%q}",
+		redactSecret(c.APIKey),
+		redactSecret(c.APISecret),
+		c.MaxNotionalUSDT,
+		c.MaxNotionalUSDC,
+		c.SpotSymbol,
+		c.USDTPerpSymbol,
+		c.USDCPerpSymbol,
+		redactBybitEndpointProfile(c.Profile),
+		redactURL(c.ProxyURL),
+	)
+}
+
+func (c BybitTestnetConfig) GoString() string {
 	return c.String()
 }
 
@@ -699,6 +743,27 @@ func RequireBybitDemoWrite(t testing.TB) BybitDemoConfig {
 	cfg, err := BybitDemoConfigFromEnv()
 	if err != nil {
 		t.Fatalf("Bybit Demo write gate enabled but environment is invalid: %v", err)
+	}
+	return cfg
+}
+
+func RequireBybitTestnetWrite(t testing.TB) BybitTestnetConfig {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping: Bybit Testnet write test excluded by -short")
+	}
+	if os.Getenv(BybitTestnetEnableWriteEnv) != "1" {
+		t.Skipf("skipping Bybit Testnet write test: set %s=1 to enable real Testnet writes", BybitTestnetEnableWriteEnv)
+	}
+	if err := LoadRepoEnv(); err != nil {
+		t.Fatalf("load repo .env: %v", err)
+	}
+	cfg, err := BybitTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("Bybit Testnet write gate enabled but environment is invalid: %v", err)
+	}
+	if !cfg.Profile.SupportsWSTrade || cfg.Profile.TradeWSURL == "" {
+		t.Fatalf("Bybit Testnet write profile must support WS Trade: %+v", cfg.Profile)
 	}
 	return cfg
 }
@@ -994,8 +1059,8 @@ func asterTestnetConfigFromEnv(requireCredentials bool) (AsterTestnetConfig, err
 		SignerPrivateKey:      strings.TrimSpace(os.Getenv(AsterTestnetSignerPrivateKeyEnv)),
 		ExpectedSignerAddress: strings.TrimSpace(os.Getenv(AsterTestnetExpectedSignerAddressEnv)),
 		MaxNotionalUSDT:       maxNotional,
-		SpotSymbol:            strings.TrimSpace(os.Getenv(AsterTestnetSpotSymbolEnv)),
-		PerpSymbol:            strings.TrimSpace(os.Getenv(AsterTestnetPerpSymbolEnv)),
+		SpotSymbol:            envOrDefault(AsterTestnetSpotSymbolEnv, AsterTestnetDefaultSpotSymbol),
+		PerpSymbol:            envOrDefault(AsterTestnetPerpSymbolEnv, AsterTestnetDefaultPerpSymbol),
 		SpotProfile:           spotProfile,
 		PerpProfile:           perpProfile,
 		ProxyURL:              proxyURL,
@@ -1046,8 +1111,8 @@ func nadoTestnetConfigFromEnv(requireCredentials bool) (NadoTestnetConfig, error
 		PrivateKey:       strings.TrimSpace(os.Getenv(NadoTestnetPrivateKeyEnv)),
 		Subaccount:       envOrDefault(NadoTestnetSubaccountNameEnv, NadoTestnetDefaultSubaccount),
 		MaxNotionalUSDT0: maxNotional,
-		SpotSymbol:       strings.TrimSpace(os.Getenv(NadoTestnetSpotSymbolEnv)),
-		PerpSymbol:       strings.TrimSpace(os.Getenv(NadoTestnetPerpSymbolEnv)),
+		SpotSymbol:       envOrDefault(NadoTestnetSpotSymbolEnv, NadoTestnetDefaultSpotSymbol),
+		PerpSymbol:       envOrDefault(NadoTestnetPerpSymbolEnv, NadoTestnetDefaultPerpSymbol),
 		Profile:          profile,
 		ProxyURL:         proxyURL,
 	}, nil
@@ -1079,7 +1144,7 @@ func LighterTestnetReadConfigFromEnv() (LighterTestnetConfig, error) {
 func BybitDemoConfigFromEnv() (BybitDemoConfig, error) {
 	missing := missingEnv(BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv)
 	if len(missing) > 0 {
-		if hasAnyEnv("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET") {
+		if hasAnyEnv(BybitTestnetAPIKeyEnv, BybitTestnetAPISecretEnv) {
 			return BybitDemoConfig{}, fmt.Errorf("missing required env %s; BYBIT_TESTNET_* credentials are a separate Bybit Testnet scope and are not accepted for Bybit Demo Trading, use %s and %s", strings.Join(missing, ", "), BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv)
 		}
 		return BybitDemoConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
@@ -1110,6 +1175,46 @@ func BybitDemoConfigFromEnv() (BybitDemoConfig, error) {
 			PublicLinearWSURL: "wss://stream.bybit.com/v5/public/linear",
 			PrivateWSURL:      "wss://stream-demo.bybit.com/v5/private",
 			SupportsWSTrade:   false,
+		},
+		ProxyURL: proxyURL,
+	}, nil
+}
+
+func BybitTestnetConfigFromEnv() (BybitTestnetConfig, error) {
+	missing := missingEnv(BybitTestnetAPIKeyEnv, BybitTestnetAPISecretEnv)
+	if len(missing) > 0 {
+		if hasAnyEnv(BybitDemoAPIKeyEnv, BybitDemoAPISecretEnv) {
+			return BybitTestnetConfig{}, fmt.Errorf("missing required env %s; BYBIT_DEMO_* credentials are a separate Bybit Demo Trading scope and are not accepted for Bybit Testnet, use %s and %s", strings.Join(missing, ", "), BybitTestnetAPIKeyEnv, BybitTestnetAPISecretEnv)
+		}
+		return BybitTestnetConfig{}, fmt.Errorf("missing required env %s", strings.Join(missing, ", "))
+	}
+	maxUSDT, err := parsePositiveDecimalEnv(BybitTestnetMaxNotionalUSDTEnv, BybitDefaultMaxNotionalUSDT)
+	if err != nil {
+		return BybitTestnetConfig{}, err
+	}
+	maxUSDC, err := parsePositiveDecimalEnv(BybitTestnetMaxNotionalUSDCEnv, BybitDefaultMaxNotionalUSDC)
+	if err != nil {
+		return BybitTestnetConfig{}, err
+	}
+	proxyURL, err := proxyURLFromEnv()
+	if err != nil {
+		return BybitTestnetConfig{}, err
+	}
+	return BybitTestnetConfig{
+		APIKey:          os.Getenv(BybitTestnetAPIKeyEnv),
+		APISecret:       os.Getenv(BybitTestnetAPISecretEnv),
+		MaxNotionalUSDT: maxUSDT,
+		MaxNotionalUSDC: maxUSDC,
+		SpotSymbol:      envOrDefault(BybitTestnetSpotSymbolEnv, BybitDefaultSpotSymbol),
+		USDTPerpSymbol:  envOrDefault(BybitTestnetUSDTPerpSymbolEnv, BybitDefaultUSDTPerpSymbol),
+		USDCPerpSymbol:  envOrDefault(BybitTestnetUSDCPerpSymbolEnv, BybitDefaultUSDCPerpSymbol),
+		Profile: BybitEndpointProfile{
+			RESTBaseURL:       "https://api-testnet.bybit.com",
+			PublicSpotWSURL:   "wss://stream-testnet.bybit.com/v5/public/spot",
+			PublicLinearWSURL: "wss://stream-testnet.bybit.com/v5/public/linear",
+			PrivateWSURL:      "wss://stream-testnet.bybit.com/v5/private",
+			TradeWSURL:        "wss://stream-testnet.bybit.com/v5/trade",
+			SupportsWSTrade:   true,
 		},
 		ProxyURL: proxyURL,
 	}, nil
@@ -1457,11 +1562,23 @@ func BybitDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 
+func BybitTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
 func BitgetDemoHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 
 func GateTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
+func AsterTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
+	return proxiedHTTPClient(timeout)
+}
+
+func NadoTestnetHTTPClient(timeout time.Duration) (*http.Client, error) {
 	return proxiedHTTPClient(timeout)
 }
 

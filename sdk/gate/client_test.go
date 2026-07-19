@@ -83,6 +83,40 @@ func TestClientSignsPrivateGetWithGateHeaders(t *testing.T) {
 	}
 }
 
+func TestClientReadsUnifiedModeAndBalances(t *testing.T) {
+	client := NewClient().WithBaseURL("https://example.test/api/v4").WithCredentials("key", "secret")
+	client.WithHTTPClient(testHTTPClient(t, func(req *http.Request) (int, string) {
+		switch req.URL.Path {
+		case "/api/v4/unified/unified_mode":
+			return http.StatusOK, `{"mode":"multi_currency"}`
+		case "/api/v4/unified/accounts":
+			if req.URL.RawQuery != "currency=USDT" {
+				t.Fatalf("unexpected unified account query %q", req.URL.RawQuery)
+			}
+			return http.StatusOK, `{"balances":{"USDT":{"available":"110","freeze":"2","equity":"112"}}}`
+		default:
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+			return http.StatusNotFound, `{}`
+		}
+	}))
+
+	mode, err := client.GetUnifiedMode(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Mode != "multi_currency" {
+		t.Fatalf("mode=%q, want multi_currency", mode.Mode)
+	}
+	account, err := client.GetUnifiedAccount(context.Background(), "USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	balance, ok := account.Balances["USDT"]
+	if !ok || balance.Available != "110" || balance.Freeze != "2" || balance.Equity != "112" {
+		t.Fatalf("unexpected unified account: %+v", account)
+	}
+}
+
 func TestClientCreateSpotOrderPostsOfficialBody(t *testing.T) {
 	client := NewClient().WithBaseURL("https://example.test/api/v4").WithCredentials("key", "secret")
 	client.WithHTTPClient(testHTTPClient(t, func(req *http.Request) (int, string) {

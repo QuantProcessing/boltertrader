@@ -102,7 +102,7 @@ func (c *Client) ListFuturesTrades(ctx context.Context, settle, contract string,
 	return out, err
 }
 
-func (c *Client) ListFuturesCandlesticks(ctx context.Context, settle, contract, interval string, limit int) ([]Candlestick, error) {
+func (c *Client) ListFuturesCandlesticks(ctx context.Context, settle, contract, interval string, limit int) ([]FuturesCandlestick, error) {
 	query := map[string]string{
 		"contract": contract,
 		"interval": interval,
@@ -110,7 +110,7 @@ func (c *Client) ListFuturesCandlesticks(ctx context.Context, settle, contract, 
 	if limit > 0 {
 		query["limit"] = strconv.Itoa(limit)
 	}
-	var out []Candlestick
+	var out []FuturesCandlestick
 	err := c.get(ctx, futuresPath(settle, "candlesticks"), query, &out)
 	return out, err
 }

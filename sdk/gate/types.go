@@ -81,13 +81,57 @@ type Trade struct {
 	Price        string `json:"price"`
 }
 
+func (t *Trade) UnmarshalJSON(data []byte) error {
+	type wireTrade Trade
+	base := wireTrade(*t)
+	decoded := struct {
+		ID           NumberString `json:"id"`
+		CreateTime   NumberString `json:"create_time"`
+		CreateTimeMS NumberString `json:"create_time_ms"`
+		*wireTrade
+	}{wireTrade: &base}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	base.ID = string(decoded.ID)
+	base.CreateTime = string(decoded.CreateTime)
+	base.CreateTimeMS = string(decoded.CreateTimeMS)
+	*t = Trade(base)
+	return nil
+}
+
 type Candlestick []NumberString
+
+type FuturesCandlestick struct {
+	Time   NumberString `json:"t"`
+	Volume NumberString `json:"v"`
+	Close  NumberString `json:"c"`
+	High   NumberString `json:"h"`
+	Low    NumberString `json:"l"`
+	Open   NumberString `json:"o"`
+	Sum    NumberString `json:"sum"`
+}
 
 type SpotAccount struct {
 	Currency  string `json:"currency"`
 	Available string `json:"available"`
 	Locked    string `json:"locked"`
 	UpdateID  int64  `json:"update_id"`
+}
+
+type UnifiedMode struct {
+	Mode string `json:"mode"`
+}
+
+type UnifiedBalance struct {
+	Available string `json:"available"`
+	Freeze    string `json:"freeze"`
+	Borrowed  string `json:"borrowed"`
+	Equity    string `json:"equity"`
+}
+
+type UnifiedAccount struct {
+	Balances map[string]UnifiedBalance `json:"balances"`
 }
 
 type Order struct {
@@ -192,11 +236,11 @@ type FuturesOrderBookItem struct {
 }
 
 type FuturesTrade struct {
-	ID         int64  `json:"id"`
-	CreateTime int64  `json:"create_time"`
-	Contract   string `json:"contract"`
-	Size       int64  `json:"size"`
-	Price      string `json:"price"`
+	ID         int64        `json:"id"`
+	CreateTime NumberString `json:"create_time"`
+	Contract   string       `json:"contract"`
+	Size       NumberString `json:"size"`
+	Price      string       `json:"price"`
 }
 
 type FuturesAccount struct {

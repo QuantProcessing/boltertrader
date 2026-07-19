@@ -121,6 +121,15 @@ type perpWebSocket struct {
 	closeErr       error
 }
 
+func (socket *perpWebSocket) String() string {
+	if socket == nil || socket.spotWebSocket == nil {
+		return "exchange/factory.WebSocket{nil, credentials:redacted}"
+	}
+	return socket.spotWebSocket.String()
+}
+
+func (socket *perpWebSocket) GoString() string { return socket.String() }
+
 func newPerpWebSocket(meta clientMeta, backend perpWSBackend, privateBackend ...perpPrivateWSBackend) *perpWebSocket {
 	var private perpPrivateWSBackend
 	if len(privateBackend) > 0 {

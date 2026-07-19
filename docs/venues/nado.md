@@ -30,8 +30,10 @@ funded inventory and does not borrow.
 Nado requires a `ClientID`. It accepts limit and market orders in net position
 mode; market orders require IOC semantics. Supported limit TIF values are
 GTC/default, IOC, FOK, and GTX/post-only. Spot rejects `ReduceOnly`; Perp supports
-it. Trigger, activation, trailing fields, leverage mutation, and margin-mode
-mutation are unsupported.
+it. Trigger, activation, trailing fields, and margin-mode mutation are unsupported.
+`SetLeverage` stays in the common Perp REST surface, but Nado treats it as a
+validated no-op: the call succeeds and returns `Leverage.Effective=0` because the
+backend risk engine determines the actual leverage.
 
 Order submission does not accept or require a `max_order_size` parameter. The
 Nado SDK keeps `GetMaxOrderSize` as a separate raw query for API fidelity, but
@@ -84,6 +86,11 @@ Perp exposes current funding, mark, index, and oracle price through REST plus
 partial funding WS updates. Current OI is read directly from `all_products` and
 is not cached by the runtime. Funding history is not advertised. Spot has no
 derivative-reference surface.
+
+`WatchMarkPrice` stays in the common Perp WebSocket surface for API symmetry,
+but Nado does not provide a mark-price subscription and returns
+`ErrUnsupported` immediately. Use the REST mark/index/oracle price surface when
+you need Nado reference prices.
 
 ## Verification commands
 

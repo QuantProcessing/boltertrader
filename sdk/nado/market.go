@@ -93,7 +93,7 @@ func (c *Client) GetTrades(ctx context.Context, tickerID string, limit *int, max
 		q.Set("max_trade_id", strconv.FormatInt(*maxTradeID, 10))
 	}
 	var trades []TradeV2
-	if err := c.QueryGatewayV2(ctx, "/trades", q, &trades); err != nil {
+	if err := c.QueryArchiveV2(ctx, "/trades", q, &trades); err != nil {
 		return nil, err
 	}
 	return trades, nil

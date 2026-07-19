@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestPublicSurfaceManifestDefinesEightProductRows(t *testing.T) {
+func TestPublicSurfaceManifestDefinesTwentyProductRows(t *testing.T) {
 	manifest := loadPublicSurfaceManifest(t, repositoryRoot(t))
 	rows := productRowsByCode(t, manifest.ProductRows)
 
@@ -22,6 +22,18 @@ func TestPublicSurfaceManifestDefinesEightProductRows(t *testing.T) {
 		"LIP": {Venue: "Lighter", Product: "Perp", FactoryConfig: "LighterPerpConfig", AcceptanceTarget: "test-exchange-lighter-testnet-perp"},
 		"HLS": {Venue: "Hyperliquid", Product: "Spot", FactoryConfig: "HyperliquidSpotConfig", AcceptanceTarget: "test-exchange-hyperliquid-testnet-spot"},
 		"HLP": {Venue: "Hyperliquid", Product: "Standard Perp", FactoryConfig: "HyperliquidPerpConfig", AcceptanceTarget: "test-exchange-hyperliquid-testnet-perp"},
+		"BYS": {Venue: "Bybit", Product: "Spot", FactoryConfig: "BybitSpotConfig", AcceptanceTarget: "test-exchange-bybit-demo-spot"},
+		"BYU": {Venue: "Bybit", Product: "USDT-linear Perp", FactoryConfig: "BybitUSDTPerpConfig", AcceptanceTarget: "test-exchange-bybit-demo-usdt-perp"},
+		"BYC": {Venue: "Bybit", Product: "USDC-linear Perp", FactoryConfig: "BybitUSDCPerpConfig", AcceptanceTarget: "test-exchange-bybit-demo-usdc-perp"},
+		"BGS": {Venue: "Bitget", Product: "Spot", FactoryConfig: "BitgetSpotConfig", AcceptanceTarget: "test-exchange-bitget-demo-spot"},
+		"BGU": {Venue: "Bitget", Product: "USDT-linear Perp", FactoryConfig: "BitgetUSDTPerpConfig", AcceptanceTarget: "test-exchange-bitget-demo-usdt-perp"},
+		"BGC": {Venue: "Bitget", Product: "USDC-linear Perp", FactoryConfig: "BitgetUSDCPerpConfig", AcceptanceTarget: "test-exchange-bitget-demo-usdc-perp"},
+		"GTS": {Venue: "Gate", Product: "Spot", FactoryConfig: "GateSpotConfig", AcceptanceTarget: "test-exchange-gate-testnet-spot"},
+		"GTU": {Venue: "Gate", Product: "USDT-settled Perp", FactoryConfig: "GateUSDTPerpConfig", AcceptanceTarget: "test-exchange-gate-testnet-usdt-perp"},
+		"ATS": {Venue: "Aster", Product: "Spot", FactoryConfig: "AsterSpotConfig", AcceptanceTarget: "test-exchange-aster-testnet-spot"},
+		"ATP": {Venue: "Aster", Product: "USDT-linear Perp", FactoryConfig: "AsterUSDTPerpConfig", AcceptanceTarget: "test-exchange-aster-testnet-usdt-perp"},
+		"NDS": {Venue: "Nado", Product: "USDT0 Spot", FactoryConfig: "NadoSpotConfig", AcceptanceTarget: "test-exchange-nado-testnet-spot"},
+		"NDP": {Venue: "Nado", Product: "USDT0-settled Perp", FactoryConfig: "NadoUSDT0PerpConfig", AcceptanceTarget: "test-exchange-nado-testnet-usdt0-perp"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("manifest product rows = %d, want %d: %v", len(rows), len(want), mapKeys(rows))
@@ -104,6 +116,18 @@ func TestPublicSurfaceManifestDefinesAcceptanceTargets(t *testing.T) {
 		"test-exchange-lighter-testnet-perp":     {Env: "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeLighterPerpTestnetAcceptance$"},
 		"test-exchange-hyperliquid-testnet-spot": {Env: "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeHyperliquidSpotTestnetAcceptance$"},
 		"test-exchange-hyperliquid-testnet-perp": {Env: "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeHyperliquidPerpTestnetAcceptance$"},
+		"test-exchange-bybit-demo-spot":          {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitSpotDemoAcceptance$"},
+		"test-exchange-bybit-demo-usdt-perp":     {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitUSDTPerpDemoAcceptance$"},
+		"test-exchange-bybit-demo-usdc-perp":     {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitUSDCPerpDemoAcceptance$"},
+		"test-exchange-bitget-demo-spot":         {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetSpotDemoAcceptance$"},
+		"test-exchange-bitget-demo-usdt-perp":    {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetUSDTPerpDemoAcceptance$"},
+		"test-exchange-bitget-demo-usdc-perp":    {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetUSDCPerpDemoAcceptance$"},
+		"test-exchange-gate-testnet-spot":        {Env: "BOLTER_ENABLE_GATE_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeGateSpotTestnetAcceptance$"},
+		"test-exchange-gate-testnet-usdt-perp":   {Env: "BOLTER_ENABLE_GATE_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeGateUSDTPerpTestnetAcceptance$"},
+		"test-exchange-aster-testnet-spot":       {Env: "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeAsterSpotTestnetAcceptance$"},
+		"test-exchange-aster-testnet-usdt-perp":  {Env: "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeAsterUSDTPerpTestnetAcceptance$"},
+		"test-exchange-nado-testnet-spot":        {Env: "BOLTER_ENABLE_NADO_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeNadoSpotTestnetAcceptance$"},
+		"test-exchange-nado-testnet-usdt0-perp":  {Env: "BOLTER_ENABLE_NADO_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeNadoUSDT0PerpTestnetAcceptance$"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("acceptance target count = %d, want %d: %v", len(got), len(want), mapKeys(got))
@@ -135,11 +159,25 @@ func TestPublicSurfaceManifestDefinesAcceptanceStatus(t *testing.T) {
 		"LIP": "passed",
 		"HLS": "passed",
 		"HLP": "passed",
+		"BYS": "passed",
+		"BYU": "passed",
+		"BYC": "passed",
+		"BGS": "passed",
+		"BGU": "passed",
+		"BGC": "passed",
+		"GTS": "passed",
+		"GTU": "passed",
+		"ATS": "passed",
+		"ATP": "passed",
+		"NDS": "passed",
+		"NDP": "passed",
 	}
 	allowedStatus := map[string]bool{
 		"passed":         true,
 		"waived":         true,
 		"not_applicable": true,
+		"pending":        true,
+		"blocked":        true,
 	}
 	requiredLISReason := []string{
 		"Lighter Testnet ETH/USDC and LIT/USDC",
@@ -156,7 +194,7 @@ func TestPublicSurfaceManifestDefinesAcceptanceStatus(t *testing.T) {
 			}
 			got := row.Acceptance
 			if !allowedStatus[got.Status] {
-				t.Fatalf("row %s acceptance status %q is not one of passed, waived, not_applicable", code, got.Status)
+				t.Fatalf("row %s acceptance status %q is not recognized", code, got.Status)
 			}
 			if got.Status != want {
 				t.Fatalf("row %s acceptance status = %q, want %q", code, got.Status, want)
@@ -259,6 +297,11 @@ func TestPublicSurfaceManifestDefinesOperationsForEveryInterfaceMethod(t *testin
 					"TestOpenAPIOKXRESTExecutionMatrix",
 					"TestOpenAPILighterRESTExecutionMatrix",
 					"TestOpenAPIHyperliquidRESTExecutionMatrix",
+					"TestOpenAPIBybitRESTExecutionMatrix",
+					"TestOpenAPIBitgetRESTExecutionMatrix",
+					"TestOpenAPIGateRESTExecutionMatrix",
+					"TestOpenAPIAsterRESTExecutionMatrix",
+					"TestOpenAPINadoRESTExecutionMatrix",
 				} {
 					if !stringSliceContains(got.Tests, testName) {
 						t.Fatalf("REST operation %s missing execution matrix test %s", id, testName)
@@ -266,7 +309,7 @@ func TestPublicSurfaceManifestDefinesOperationsForEveryInterfaceMethod(t *testin
 				}
 			}
 			if got.Transport == "websocket" {
-				for _, venue := range []string{"Binance", "OKX", "Lighter", "Hyperliquid"} {
+				for _, venue := range []string{"Binance", "OKX", "Lighter", "Hyperliquid", "Bybit", "Bitget", "Gate", "Aster", "Nado"} {
 					if !stringSliceContainsSubstring(got.Tests, venue) {
 						t.Fatalf("WebSocket operation %s missing venue test for %s: %v", id, venue, got.Tests)
 					}
@@ -424,7 +467,7 @@ func requiredLocalOperations(rows map[string]exchangeProductRow) map[string]exch
 	all := cellsForSupport(rows, true, true)
 	spot := cellsForSupport(rows, true, false)
 	perp := cellsForSupport(rows, false, true)
-	tests := []string{"TestEightKnownConfigsInferAndConstructProductClients", "TestAllEightConfigsConstructConcurrentlyWithoutIO"}
+	tests := []string{"TestTwentyKnownConfigsInferAndConstructProductClients", "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"}
 	operations := map[string]exchangeOperation{
 		"local.factory.New":                   {ID: "local.factory.New", Method: "New", Transport: "local", Spot: true, Perp: true, Effect: "lifecycle", Credentials: "constructor credentials only", FundingRequirement: "none", ExpectedEvent: "typed product client", Cleanup: "Close constructed client", ExternalCells: all, Tests: tests},
 		"local.factory.WithAccountAddress":    {ID: "local.factory.WithAccountAddress", Method: "WithAccountAddress", Transport: "local", Spot: true, Perp: true, Effect: "lifecycle", Credentials: "account address only", FundingRequirement: "none", ExpectedEvent: "Hyperliquid account identity override", Cleanup: "none", ExternalCells: []string{"HLP", "HLS"}, Tests: []string{"TestHyperliquidAccountAddressOptionIsExplicitAndValidatedLocally", "TestHyperliquidAccountAddressOptionReachesAccountScopedSDKRequests"}},
@@ -432,10 +475,10 @@ func requiredLocalOperations(rows map[string]exchangeProductRow) map[string]exch
 		"local.factory.WithEndpoint":          {ID: "local.factory.WithEndpoint", Method: "WithEndpoint", Transport: "local", Spot: true, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "REST endpoint override", Cleanup: "none", ExternalCells: all, Tests: tests},
 		"local.factory.WithWebSocketEndpoint": {ID: "local.factory.WithWebSocketEndpoint", Method: "WithWebSocketEndpoint", Transport: "local", Spot: true, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "WebSocket endpoint override", Cleanup: "none", ExternalCells: all, Tests: tests},
 		"local.factory.WithHTTPClient":        {ID: "local.factory.WithHTTPClient", Method: "WithHTTPClient", Transport: "local", Spot: true, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "HTTP client override", Cleanup: "none", ExternalCells: all, Tests: tests},
-		"local.SpotClient.WebSocket":          {ID: "local.SpotClient.WebSocket", Method: "WebSocket", Transport: "local", Spot: true, Perp: false, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "SpotWebSocket facet", Cleanup: "Close facet or client", ExternalCells: spot, Tests: []string{"TestAllEightConfigsExposeLazyWebSocketFacets", "TestWebSocketFacetMethodSets"}},
-		"local.PerpClient.WebSocket":          {ID: "local.PerpClient.WebSocket", Method: "WebSocket", Transport: "local", Spot: false, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "PerpWebSocket facet", Cleanup: "Close facet or client", ExternalCells: perp, Tests: []string{"TestAllEightConfigsExposeLazyWebSocketFacets", "TestWebSocketFacetMethodSets"}},
-		"local.SpotClient.Close":              {ID: "local.SpotClient.Close", Method: "Close", Transport: "local", Spot: true, Perp: false, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "closed client", Cleanup: "idempotent close", ExternalCells: spot, Tests: []string{"TestAllEightConfigsExposeLazyWebSocketFacets", "TestPublicWebSocketContextAndClientCloseAreIdempotent"}},
-		"local.PerpClient.Close":              {ID: "local.PerpClient.Close", Method: "Close", Transport: "local", Spot: false, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "closed client", Cleanup: "idempotent close", ExternalCells: perp, Tests: []string{"TestAllEightConfigsExposeLazyWebSocketFacets", "TestPublicWebSocketContextAndClientCloseAreIdempotent"}},
+		"local.SpotClient.WebSocket":          {ID: "local.SpotClient.WebSocket", Method: "WebSocket", Transport: "local", Spot: true, Perp: false, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "SpotWebSocket facet", Cleanup: "Close facet or client", ExternalCells: spot, Tests: []string{"TestAllTwentyConfigsExposeLazyWebSocketFacets", "TestWebSocketFacetMethodSets"}},
+		"local.PerpClient.WebSocket":          {ID: "local.PerpClient.WebSocket", Method: "WebSocket", Transport: "local", Spot: false, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "PerpWebSocket facet", Cleanup: "Close facet or client", ExternalCells: perp, Tests: []string{"TestAllTwentyConfigsExposeLazyWebSocketFacets", "TestWebSocketFacetMethodSets"}},
+		"local.SpotClient.Close":              {ID: "local.SpotClient.Close", Method: "Close", Transport: "local", Spot: true, Perp: false, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "closed client", Cleanup: "idempotent close", ExternalCells: spot, Tests: []string{"TestAllTwentyConfigsExposeLazyWebSocketFacets", "TestPublicWebSocketContextAndClientCloseAreIdempotent"}},
+		"local.PerpClient.Close":              {ID: "local.PerpClient.Close", Method: "Close", Transport: "local", Spot: false, Perp: true, Effect: "lifecycle", Credentials: "none", FundingRequirement: "none", ExpectedEvent: "closed client", Cleanup: "idempotent close", ExternalCells: perp, Tests: []string{"TestAllTwentyConfigsExposeLazyWebSocketFacets", "TestPublicWebSocketContextAndClientCloseAreIdempotent"}},
 	}
 	constructors := map[string]struct {
 		support [2]bool
@@ -449,6 +492,18 @@ func requiredLocalOperations(rows map[string]exchangeProductRow) map[string]exch
 		"local.factory.LighterPerpConfig":     {[2]bool{false, true}, []string{"LIP"}},
 		"local.factory.HyperliquidSpotConfig": {[2]bool{true, false}, []string{"HLS"}},
 		"local.factory.HyperliquidPerpConfig": {[2]bool{false, true}, []string{"HLP"}},
+		"local.factory.BybitSpotConfig":       {[2]bool{true, false}, []string{"BYS"}},
+		"local.factory.BybitUSDTPerpConfig":   {[2]bool{false, true}, []string{"BYU"}},
+		"local.factory.BybitUSDCPerpConfig":   {[2]bool{false, true}, []string{"BYC"}},
+		"local.factory.BitgetSpotConfig":      {[2]bool{true, false}, []string{"BGS"}},
+		"local.factory.BitgetUSDTPerpConfig":  {[2]bool{false, true}, []string{"BGU"}},
+		"local.factory.BitgetUSDCPerpConfig":  {[2]bool{false, true}, []string{"BGC"}},
+		"local.factory.GateSpotConfig":        {[2]bool{true, false}, []string{"GTS"}},
+		"local.factory.GateUSDTPerpConfig":    {[2]bool{false, true}, []string{"GTU"}},
+		"local.factory.AsterSpotConfig":       {[2]bool{true, false}, []string{"ATS"}},
+		"local.factory.AsterUSDTPerpConfig":   {[2]bool{false, true}, []string{"ATP"}},
+		"local.factory.NadoSpotConfig":        {[2]bool{true, false}, []string{"NDS"}},
+		"local.factory.NadoUSDT0PerpConfig":   {[2]bool{false, true}, []string{"NDP"}},
 	}
 	for id, constructor := range constructors {
 		method := strings.TrimPrefix(id, "local.factory.")

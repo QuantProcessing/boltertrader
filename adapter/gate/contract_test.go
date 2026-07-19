@@ -562,9 +562,12 @@ func TestGateUSDTPerpMarketSnapshotsAndPrivateEvents(t *testing.T) {
 	if !oi.OpenInterest.Equal(d("42")) || oi.Unit != "contracts" {
 		t.Fatalf("unexpected futures OI: %+v", oi)
 	}
-	trades := tradesFromPayload(perpID, []byte(`{"time":1700000000,"channel":"futures.trades","event":"update","result":[{"id":99,"create_time":1700000000,"contract":"BTC_USDT","size":-2,"price":"50000"}]}`), time.Time{})
+	trades := tradesFromPayload(perpID, []byte(`{"time":1700000000,"channel":"futures.trades","event":"update","result":[{"id":99,"create_time":"1700000000.125","contract":"BTC_USDT","size":"-2","price":"50000"}]}`), time.Time{})
 	if len(trades) != 1 || trades[0].AggressorSide != enums.SideSell || !trades[0].Quantity.Equal(d("2")) {
 		t.Fatalf("unexpected futures trades: %+v", trades)
+	}
+	if got, want := trades[0].Timestamp, time.Unix(1700000000, 125_000_000); !got.Equal(want) {
+		t.Fatalf("futures trade timestamp=%s, want %s", got, want)
 	}
 
 	resolve := provider.resolveVenueSymbol
@@ -770,7 +773,7 @@ func newGateSpotServer(t *testing.T) *httptest.Server {
 		case "/futures/usdt/order_book":
 			writeJSON(t, w, map[string]any{"id": 8, "current": 1783484986.964, "update": 1783484986.705, "bids": []any{map[string]any{"p": "49999", "s": 2}}, "asks": []any{map[string]any{"p": "50001", "s": 1}}})
 		case "/futures/usdt/candlesticks":
-			writeJSON(t, w, [][]string{{"1700000000", "3", "50001", "50002", "49999", "50000"}})
+			writeJSON(t, w, []any{map[string]any{"t": "1700000000", "v": "3", "c": "50001", "h": "50002", "l": "49999", "o": "50000", "sum": "150003"}})
 		case "/futures/usdt/orders":
 			switch r.Method {
 			case http.MethodPost:

@@ -231,6 +231,16 @@ func assertSpotLikePerpReadMatrix(t *testing.T, ctx context.Context, client exch
 }
 
 func assertPerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+	start := time.UnixMilli(1719990000000)
+	assertPerpLifecycleMatrixWithFundingRequest(t, ctx, client, instrument, exchange.FundingRateHistoryRequest{
+		Instrument: instrument,
+		Start:      start,
+		End:        start.Add(4 * time.Hour),
+		Limit:      10,
+	})
+}
+
+func assertPerpLifecycleMatrixWithFundingRequest(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string, fundingRequest exchange.FundingRateHistoryRequest) {
 	t.Helper()
 	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 || rows.Page.Limit != 1 {
 		t.Fatalf("OpenOrders: rows=%d err=%v", len(rows.Orders), err)
@@ -255,8 +265,7 @@ func assertPerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchang
 	if row, err := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument}); err != nil || !row.Rate.Equal(decimal.RequireFromString("0.0001")) {
 		t.Fatalf("FundingRate: rate=%s err=%v", row.Rate, err)
 	}
-	start := time.UnixMilli(1719990000000)
-	if rows, err := client.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{Instrument: instrument, Start: start, End: start.Add(4 * time.Hour), Limit: 10}); err != nil || len(rows.Rates) != 1 {
+	if rows, err := client.FundingRateHistory(ctx, fundingRequest); err != nil || len(rows.Rates) != 1 {
 		t.Fatalf("FundingRateHistory: rows=%d err=%v", len(rows.Rates), err)
 	}
 	if row, err := client.SetLeverage(ctx, exchange.SetLeverageRequest{Instrument: instrument, Leverage: 5}); err != nil || row.Effective != 5 {

@@ -110,6 +110,40 @@ type PublicTrade struct {
 	Time   string `json:"time"`
 }
 
+func (trade *PublicTrade) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ExecID      string       `json:"execId"`
+		ExecIDShort string       `json:"i"`
+		Symbol      string       `json:"symbol"`
+		SymbolShort string       `json:"s"`
+		Price       string       `json:"price"`
+		PriceShort  string       `json:"p"`
+		Size        string       `json:"size"`
+		SizeShort   string       `json:"v"`
+		Side        string       `json:"side"`
+		SideShort   string       `json:"S"`
+		Time        NumberString `json:"time"`
+		TimeShort   NumberString `json:"T"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	trade.ExecID = publicTradeField(wire.ExecID, wire.ExecIDShort)
+	trade.Symbol = publicTradeField(wire.Symbol, wire.SymbolShort)
+	trade.Price = publicTradeField(wire.Price, wire.PriceShort)
+	trade.Size = publicTradeField(wire.Size, wire.SizeShort)
+	trade.Side = publicTradeField(wire.Side, wire.SideShort)
+	trade.Time = publicTradeField(string(wire.Time), string(wire.TimeShort))
+	return nil
+}
+
+func publicTradeField(long, short string) string {
+	if long != "" {
+		return long
+	}
+	return short
+}
+
 type KlinesResult struct {
 	Category string   `json:"category"`
 	Symbol   string   `json:"symbol"`

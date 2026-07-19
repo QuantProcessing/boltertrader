@@ -224,3 +224,29 @@ func (c *Client) GetOrdersByDigests(ctx context.Context, digests []string) (*Arc
 	}
 	return &resp, nil
 }
+
+func (c *Client) GetArchiveOrders(ctx context.Context, subaccount string, productIDs []int64, maxTime int64, idx string, limit int) (*ArchiveOrdersResponse, error) {
+	subaccount = strings.TrimSpace(subaccount)
+	if subaccount == "" {
+		return nil, fmt.Errorf("nado archive orders: subaccount is required")
+	}
+	if len(productIDs) == 0 {
+		return nil, fmt.Errorf("nado archive orders: product_ids are required")
+	}
+	req := ArchiveOrdersRequest{Orders: OrdersByDigestsQuery{
+		Subaccounts: []string{subaccount},
+		ProductIds:  productIDs,
+		MaxTime:     maxTime,
+		Idx:         strings.TrimSpace(idx),
+		Limit:       limit,
+	}}
+	data, err := c.QueryArchiveV1(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	var resp ArchiveOrdersResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

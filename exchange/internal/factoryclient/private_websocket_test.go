@@ -449,6 +449,28 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	if cancelAck.Operation != exchange.OrderOperationCancel || cancelAck.OrderID != "99" {
 		t.Fatalf("cancel ack = %+v", cancelAck)
 	}
+	nadoDigest := "0x1111111111111111111111111111111111111111111111111111111111111111"
+	cancelAck, err = socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
+		Instrument: "ETH-USDT0",
+		OrderID:    nadoDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelAck.Operation != exchange.OrderOperationCancel || cancelAck.OrderID != nadoDigest {
+		t.Fatalf("digest cancel ack = %+v", cancelAck)
+	}
+	bybitUUID := "cf55eb56-0853-4d3f-945e-17ddd6059a89"
+	cancelAck, err = socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
+		Instrument: "BTC-USDT",
+		OrderID:    bybitUUID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelAck.Operation != exchange.OrderOperationCancel || cancelAck.OrderID != bybitUUID {
+		t.Fatalf("UUID cancel ack = %+v", cancelAck)
+	}
 	if _, err := socket.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: "ETH-USDC", OrderID: "99"}); !errors.Is(err, exchange.ErrInvalidRequest) {
 		t.Fatalf("nil CancelOrder context error = %v, want invalid request", err)
 	}
@@ -466,8 +488,8 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 			t.Errorf("CancelOrder order id %q error = %v, want invalid request", orderID, err)
 		}
 	}
-	if privateBackend.cancelCalls != 1 {
-		t.Fatalf("invalid cancel requests reached backend; calls = %d, want 1 valid call", privateBackend.cancelCalls)
+	if privateBackend.cancelCalls != 3 {
+		t.Fatalf("invalid cancel requests reached backend; calls = %d, want 3 valid calls", privateBackend.cancelCalls)
 	}
 }
 

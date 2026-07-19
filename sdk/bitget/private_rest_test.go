@@ -40,6 +40,30 @@ func TestOrderCommandsReturnTypedResponseError(t *testing.T) {
 	}
 }
 
+func TestOrderCommandsDecodeHTTPErrorCodeWithoutLeakingResponseMessage(t *testing.T) {
+	const responseSecret = "SENTINEL_BITGET_HTTP_ERROR_MESSAGE"
+	client := NewClient().WithCredentials("key", "secret", "passphrase").WithBaseURL("https://example.test").WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader(`{"code":"40017","msg":"` + responseSecret + `"}`)),
+			Header:     make(http.Header),
+		}, nil
+	})})
+	_, err := client.PlaceOrder(context.Background(), &PlaceOrderRequest{})
+	var responseErr *ResponseError
+	if !errors.As(err, &responseErr) || responseErr.Code != "40017" {
+		t.Fatalf("error=%v (%T), want typed response error code 40017", err, err)
+	}
+	if strings.Contains(err.Error(), responseSecret) {
+		t.Fatalf("HTTP response error leaked venue message: %v", err)
+	}
+	for _, safeContext := range []string{http.MethodPost, "/api/v3/trade/place-order", "400", "response_bytes="} {
+		if !strings.Contains(err.Error(), safeContext) {
+			t.Fatalf("HTTP response error %q missing safe context %q", err, safeContext)
+		}
+	}
+}
+
 func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 	tests := []struct {
 		name string

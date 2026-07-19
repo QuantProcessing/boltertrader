@@ -96,6 +96,36 @@ func TestSpotExecutionReportLifecycleFixtures(t *testing.T) {
 	}
 }
 
+func TestSpotExecutionReportSupportsMultipleSubscribers(t *testing.T) {
+	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	client, err := NewWsAccountClient(context.Background(), profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	first := make(chan *ExecutionReportEvent, 1)
+	second := make(chan *ExecutionReportEvent, 1)
+	client.SubscribeExecutionReport(func(event *ExecutionReportEvent) { first <- event })
+	client.SubscribeExecutionReport(func(event *ExecutionReportEvent) { second <- event })
+
+	client.handleMessage(readSpotFixture(t, "execution_report.json"))
+
+	for name, events := range map[string]<-chan *ExecutionReportEvent{
+		"first":  first,
+		"second": second,
+	} {
+		select {
+		case event := <-events:
+			if event.OrderID != 10001 {
+				t.Fatalf("%s subscriber event = %+v", name, event)
+			}
+		default:
+			t.Fatalf("%s subscriber did not receive execution report", name)
+		}
+	}
+}
+
 func TestUserStreamManagerRenewsAfterKeepAliveFailureAndStopsOnce(t *testing.T) {
 	var mu sync.Mutex
 	postCount := 0

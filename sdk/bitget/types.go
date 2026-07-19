@@ -122,8 +122,10 @@ type OrderRecord struct {
 	AvgPrice     string      `json:"avgPrice"`
 	Fee          string      `json:"fee"`
 	TotalProfit  string      `json:"totalProfit"`
-	CreatedTime  string      `json:"cTime"`
-	UpdatedTime  string      `json:"uTime"`
+	CreatedTime  string      `json:"createdTime"`
+	UpdatedTime  string      `json:"updatedTime"`
+	CTime        string      `json:"cTime"`
+	UTime        string      `json:"uTime"`
 	DelegateType string      `json:"delegateType"`
 	StpMode      string      `json:"stpMode"`
 	FeeDetail    []FeeDetail `json:"feeDetail"`
@@ -167,6 +169,7 @@ type AccountAsset struct {
 	Locked    string `json:"locked"`
 	Equity    string `json:"equity"`
 	USDTValue string `json:"usdtValue"`
+	USDValue  string `json:"usdValue"`
 	Bonus     string `json:"bonus"`
 }
 
@@ -371,6 +374,38 @@ type PublicFill struct {
 	Timestamp  string `json:"ts"`
 }
 
+func (p *PublicFill) UnmarshalJSON(data []byte) error {
+	type publicFill PublicFill
+	var raw struct {
+		publicFill
+		V3ExecID    string `json:"i"`
+		V3Price     string `json:"p"`
+		V3Size      string `json:"v"`
+		V3Side      string `json:"S"`
+		V3Timestamp string `json:"T"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*p = PublicFill(raw.publicFill)
+	if p.ExecID == "" {
+		p.ExecID = raw.V3ExecID
+	}
+	if p.Price == "" {
+		p.Price = raw.V3Price
+	}
+	if p.Size == "" {
+		p.Size = raw.V3Size
+	}
+	if p.Side == "" {
+		p.Side = raw.V3Side
+	}
+	if p.Timestamp == "" {
+		p.Timestamp = raw.V3Timestamp
+	}
+	return nil
+}
+
 // OpenInterest matches /api/v2/mix/market/open-interest data.
 type OpenInterest struct {
 	List []OpenInterestEntry `json:"openInterestList"`
@@ -402,6 +437,22 @@ type CurrentFundRateEntry struct {
 type Candle [7]NumberString
 
 func (c *Candle) UnmarshalJSON(data []byte) error {
+	if strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		var row struct {
+			Start    NumberString `json:"start"`
+			Open     NumberString `json:"open"`
+			High     NumberString `json:"high"`
+			Low      NumberString `json:"low"`
+			Close    NumberString `json:"close"`
+			Volume   NumberString `json:"volume"`
+			Turnover NumberString `json:"turnover"`
+		}
+		if err := json.Unmarshal(data, &row); err != nil {
+			return err
+		}
+		*c = Candle{row.Start, row.Open, row.High, row.Low, row.Close, row.Volume, row.Turnover}
+		return nil
+	}
 	var raw []NumberString
 	if err := jsonArrayUnmarshal(data, &raw); err != nil {
 		return err

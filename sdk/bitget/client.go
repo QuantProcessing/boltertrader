@@ -109,7 +109,7 @@ func (c *Client) getInternal(ctx context.Context, path string, query map[string]
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return newHTTPStatusError(http.MethodGet, u.EscapedPath(), resp.StatusCode, len(bodyBytes))
+		return newHTTPStatusErrorWithBody(http.MethodGet, u.EscapedPath(), resp.StatusCode, bodyBytes)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
@@ -140,7 +140,7 @@ func (c *Client) postPrivate(ctx context.Context, path string, body any, out any
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return newHTTPStatusError(http.MethodPost, req.URL.EscapedPath(), resp.StatusCode, len(bodyBytes))
+		return newHTTPStatusErrorWithBody(http.MethodPost, req.URL.EscapedPath(), resp.StatusCode, bodyBytes)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(out)
@@ -166,6 +166,23 @@ func newHTTPStatusError(method, path string, statusCode, responseBytes int) erro
 		return fmt.Errorf("%s: %w", message, sdkcore.ErrRateLimited)
 	}
 	return errors.New(message)
+}
+
+func newHTTPStatusErrorWithBody(method, path string, statusCode int, body []byte) error {
+	if statusCode == http.StatusTooManyRequests {
+		return newHTTPStatusError(method, path, statusCode, len(body))
+	}
+	var envelope struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && envelope.Code != "" {
+		return &ResponseError{
+			Operation: fmt.Sprintf("%s %s returned %d (response_bytes=%d)", method, path, statusCode, len(body)),
+			Code:      envelope.Code,
+			Message:   "venue rejected request",
+		}
+	}
+	return newHTTPStatusError(method, path, statusCode, len(body))
 }
 
 func newTransportError(method, path string, err error) error {

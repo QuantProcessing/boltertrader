@@ -76,6 +76,35 @@ func TestClientRoutesEveryRESTSurfaceThroughProfile(t *testing.T) {
 	}
 }
 
+func TestGetTradesUsesArchiveV2Endpoint(t *testing.T) {
+	profile, err := NewProfile(EnvironmentTestnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := NewClient(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requestedURL string
+	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestedURL = request.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`[]`)),
+			Request:    request,
+		}, nil
+	})})
+	limit := 10
+	if _, err := client.GetTrades(context.Background(), "WETH_USDT0", &limit, nil); err != nil {
+		t.Fatalf("GetTrades: %v", err)
+	}
+	want := profile.ArchiveV2URL() + "/trades?limit=10&ticker_id=WETH_USDT0"
+	if requestedURL != want {
+		t.Fatalf("GetTrades URL = %q, want %q", requestedURL, want)
+	}
+}
+
 func TestClientRejectsRedirectWithoutFollowing(t *testing.T) {
 	profile, _ := NewProfile(EnvironmentTestnet)
 	client, err := NewClient(profile)

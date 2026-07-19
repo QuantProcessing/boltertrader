@@ -278,6 +278,176 @@ func HyperliquidPerpConfig(privateKey string, options ...Option) Config[exchange
 	})
 }
 
+// BybitSpotConfig returns a typed ticket for a Bybit Spot client.
+func BybitSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange.SpotClient] {
+	return spotConfig("bybit-spot", options, func(settings settings) error {
+		if err := requireEnvironment("bybit spot", settings.environment, EnvironmentLive, EnvironmentDemo, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials("bybit spot", apiKey, secretKey)
+	}, func(settings settings) exchange.SpotClient {
+		return factoryclient.NewBybitSpot(apiKey, secretKey, factorySettings(settings))
+	})
+}
+
+// BybitUSDTPerpConfig returns a typed ticket for a Bybit USDT-linear Perp client.
+func BybitUSDTPerpConfig(apiKey, secretKey string, options ...Option) Config[exchange.PerpClient] {
+	return bybitPerpConfig("bybit-usdt-perp", "USDT", apiKey, secretKey, options)
+}
+
+// BybitUSDCPerpConfig returns a typed ticket for a Bybit USDC-linear Perp client.
+func BybitUSDCPerpConfig(apiKey, secretKey string, options ...Option) Config[exchange.PerpClient] {
+	return bybitPerpConfig("bybit-usdc-perp", "USDC", apiKey, secretKey, options)
+}
+
+func bybitPerpConfig(name, settleCoin, apiKey, secretKey string, options []Option) Config[exchange.PerpClient] {
+	return perpConfig(name, options, func(settings settings) error {
+		if err := requireEnvironment(name, settings.environment, EnvironmentLive, EnvironmentDemo, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials(name, apiKey, secretKey)
+	}, func(settings settings) exchange.PerpClient {
+		return factoryclient.NewBybitLinearPerp(apiKey, secretKey, settleCoin, factorySettings(settings))
+	})
+}
+
+// BitgetSpotConfig returns a typed ticket for a Bitget Spot client.
+func BitgetSpotConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.SpotClient] {
+	return spotConfig("bitget-spot", options, func(settings settings) error {
+		if err := requireEnvironment("bitget spot", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials("bitget spot", apiKey, secretKey, passphrase)
+	}, func(settings settings) exchange.SpotClient {
+		return factoryclient.NewBitgetSpot(apiKey, secretKey, passphrase, factorySettings(settings))
+	})
+}
+
+// BitgetUSDTPerpConfig returns a typed ticket for a Bitget USDT-linear Perp client.
+func BitgetUSDTPerpConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.PerpClient] {
+	return bitgetPerpConfig("bitget-usdt-perp", "USDT-FUTURES", apiKey, secretKey, passphrase, options)
+}
+
+// BitgetUSDCPerpConfig returns a typed ticket for a Bitget USDC-linear Perp client.
+func BitgetUSDCPerpConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.PerpClient] {
+	return bitgetPerpConfig("bitget-usdc-perp", "USDC-FUTURES", apiKey, secretKey, passphrase, options)
+}
+
+func bitgetPerpConfig(name, productType, apiKey, secretKey, passphrase string, options []Option) Config[exchange.PerpClient] {
+	return perpConfig(name, options, func(settings settings) error {
+		if err := requireEnvironment(name, settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials(name, apiKey, secretKey, passphrase)
+	}, func(settings settings) exchange.PerpClient {
+		return factoryclient.NewBitgetPerp(apiKey, secretKey, passphrase, productType, factorySettings(settings))
+	})
+}
+
+// GateSpotConfig returns a typed ticket for a Gate Spot client.
+func GateSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange.SpotClient] {
+	return spotConfig("gate-spot", options, func(settings settings) error {
+		if err := requireEnvironment("gate spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials("gate spot", apiKey, secretKey)
+	}, func(settings settings) exchange.SpotClient {
+		return factoryclient.NewGateSpot(apiKey, secretKey, factorySettings(settings))
+	})
+}
+
+// GateUSDTPerpConfig returns a typed ticket for a Gate USDT-settled Perp client.
+func GateUSDTPerpConfig(apiKey, secretKey string, options ...Option) Config[exchange.PerpClient] {
+	return perpConfig("gate-usdt-perp", options, func(settings settings) error {
+		if err := requireEnvironment("gate usdt perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNonEmptyCredentials("gate usdt perp", apiKey, secretKey)
+	}, func(settings settings) exchange.PerpClient {
+		return factoryclient.NewGateUSDTPerp(apiKey, secretKey, factorySettings(settings))
+	})
+}
+
+// AsterSpotConfig returns a typed ticket for an Aster Spot client.
+func AsterSpotConfig(userAddress, apiWalletPrivateKey, expectedSigner string, options ...Option) Config[exchange.SpotClient] {
+	return spotConfig("aster-spot", options, func(settings settings) error {
+		if err := requireEnvironment("aster spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireAsterCredentials("aster spot", userAddress, apiWalletPrivateKey, expectedSigner)
+	}, func(settings settings) exchange.SpotClient {
+		return factoryclient.NewAsterSpot(userAddress, apiWalletPrivateKey, expectedSigner, factorySettings(settings))
+	})
+}
+
+// AsterUSDTPerpConfig returns a typed ticket for an Aster USDT-linear Perp client.
+func AsterUSDTPerpConfig(userAddress, apiWalletPrivateKey, expectedSigner string, options ...Option) Config[exchange.PerpClient] {
+	return perpConfig("aster-usdt-perp", options, func(settings settings) error {
+		if err := requireEnvironment("aster usdt perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireAsterCredentials("aster usdt perp", userAddress, apiWalletPrivateKey, expectedSigner)
+	}, func(settings settings) exchange.PerpClient {
+		return factoryclient.NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner, factorySettings(settings))
+	})
+}
+
+// NadoSpotConfig returns a typed ticket for a Nado USDT0 Spot client.
+func NadoSpotConfig(privateKey, subaccount string, options ...Option) Config[exchange.SpotClient] {
+	subaccount = strings.TrimSpace(subaccount)
+	return spotConfig("nado-spot", options, func(settings settings) error {
+		if err := requireEnvironment("nado spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNadoCredentials("nado spot", privateKey, subaccount)
+	}, func(settings settings) exchange.SpotClient {
+		return factoryclient.NewNadoSpot(privateKey, subaccount, factorySettings(settings))
+	})
+}
+
+// NadoUSDT0PerpConfig returns a typed ticket for a Nado USDT0-settled Perp client.
+func NadoUSDT0PerpConfig(privateKey, subaccount string, options ...Option) Config[exchange.PerpClient] {
+	subaccount = strings.TrimSpace(subaccount)
+	return perpConfig("nado-usdt0-perp", options, func(settings settings) error {
+		if err := requireEnvironment("nado usdt0 perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
+			return err
+		}
+		if err := rejectUnsupportedAccountAddress(settings); err != nil {
+			return err
+		}
+		return requireNadoCredentials("nado usdt0 perp", privateKey, subaccount)
+	}, func(settings settings) exchange.PerpClient {
+		return factoryclient.NewNadoUSDT0Perp(privateKey, subaccount, factorySettings(settings))
+	})
+}
+
 func spotConfig(name string, options []Option, validate func(settings) error, build func(settings) exchange.SpotClient) Config[exchange.SpotClient] {
 	return Config[exchange.SpotClient]{
 		name:     name,
@@ -347,6 +517,44 @@ func requireHyperliquidPrivateKey(scope, privateKey string) error {
 	}
 	if _, err := crypto.HexToECDSA(privateKey); err != nil {
 		return invalidConfig(scope + " private key must be a valid secp256k1 scalar")
+	}
+	return nil
+}
+
+func requireAsterCredentials(scope, userAddress, privateKey, expectedSigner string) error {
+	if !ethcommon.IsHexAddress(strings.TrimSpace(userAddress)) ||
+		ethcommon.HexToAddress(userAddress) == (ethcommon.Address{}) {
+		return invalidConfig(scope + " user address must be a non-zero 20-byte hex address")
+	}
+	if err := requireHyperliquidPrivateKey(scope, privateKey); err != nil {
+		return err
+	}
+	if strings.TrimSpace(expectedSigner) == "" {
+		return nil
+	}
+	if !ethcommon.IsHexAddress(strings.TrimSpace(expectedSigner)) ||
+		ethcommon.HexToAddress(expectedSigner) == (ethcommon.Address{}) {
+		return invalidConfig(scope + " expected signer must be a non-zero 20-byte hex address")
+	}
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKey), "0x"))
+	if err != nil {
+		return invalidConfig(scope + " private key must be a valid secp256k1 scalar")
+	}
+	if crypto.PubkeyToAddress(key.PublicKey) != ethcommon.HexToAddress(expectedSigner) {
+		return invalidConfig(scope + " derived signer does not match expected signer")
+	}
+	return nil
+}
+
+func requireNadoCredentials(scope, privateKey, subaccount string) error {
+	if err := requireHyperliquidPrivateKey(scope, privateKey); err != nil {
+		return err
+	}
+	if subaccount == "" {
+		return invalidConfig(scope + " subaccount is required")
+	}
+	if len([]byte(subaccount)) > 12 {
+		return invalidConfig(scope + " subaccount must not exceed 12 bytes")
 	}
 	return nil
 }

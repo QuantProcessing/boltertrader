@@ -356,6 +356,535 @@
         "status": "passed",
         "reason": "Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row."
       }
+    },
+    {
+      "code": "BYS",
+      "venue": "Bybit",
+      "product": "Spot",
+      "factory_config": "BybitSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bybit_openapi_test.go",
+        "exchange/internal/factoryclient/bybit_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bybit-demo-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bybit Demo spot row passed full external acceptance."
+      }
+    },
+    {
+      "code": "BYU",
+      "venue": "Bybit",
+      "product": "USDT-linear Perp",
+      "factory_config": "BybitUSDTPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bybit_openapi_test.go",
+        "exchange/internal/factoryclient/bybit_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bybit-demo-usdt-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bybit Demo USDT-linear perp row passed full external acceptance."
+      }
+    },
+    {
+      "code": "BYC",
+      "venue": "Bybit",
+      "product": "USDC-linear Perp",
+      "factory_config": "BybitUSDCPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bybit_openapi_test.go",
+        "exchange/internal/factoryclient/bybit_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bybit-demo-usdc-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bybit Demo USDC-linear perp row passed full external acceptance."
+      }
+    },
+    {
+      "code": "BGS",
+      "venue": "Bitget",
+      "product": "Spot",
+      "factory_config": "BitgetSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bitget_openapi_test.go",
+        "exchange/internal/factoryclient/bitget_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bitget-demo-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bitget Demo spot row passed full external acceptance."
+      }
+    },
+    {
+      "code": "BGU",
+      "venue": "Bitget",
+      "product": "USDT-linear Perp",
+      "factory_config": "BitgetUSDTPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bitget_openapi_test.go",
+        "exchange/internal/factoryclient/bitget_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bitget-demo-usdt-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bitget Demo USDT-linear perp row passed full external acceptance."
+      }
+    },
+    {
+      "code": "BGC",
+      "venue": "Bitget",
+      "product": "USDC-linear Perp",
+      "factory_config": "BitgetUSDCPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/bitget_openapi_test.go",
+        "exchange/internal/factoryclient/bitget_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-bitget-demo-usdc-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Bitget Demo USDC-linear perp row passed full external acceptance with native BTCPERP."
+      }
+    },
+    {
+      "code": "GTS",
+      "venue": "Gate",
+      "product": "Spot",
+      "factory_config": "GateSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/gate_openapi_test.go",
+        "exchange/internal/factoryclient/gate_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-gate-testnet-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Gate Testnet spot row passed full external acceptance."
+      }
+    },
+    {
+      "code": "GTU",
+      "venue": "Gate",
+      "product": "USDT-settled Perp",
+      "factory_config": "GateUSDTPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/gate_openapi_test.go",
+        "exchange/internal/factoryclient/gate_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-gate-testnet-usdt-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Gate Testnet USDT-settled perp row passed full external acceptance."
+      }
+    },
+    {
+      "code": "ATS",
+      "venue": "Aster",
+      "product": "Spot",
+      "factory_config": "AsterSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/aster_openapi_test.go",
+        "exchange/internal/factoryclient/aster_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-aster-testnet-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Aster Testnet spot row passed full external acceptance."
+      }
+    },
+    {
+      "code": "ATP",
+      "venue": "Aster",
+      "product": "USDT-linear Perp",
+      "factory_config": "AsterUSDTPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/aster_openapi_test.go",
+        "exchange/internal/factoryclient/aster_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-aster-testnet-usdt-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Aster perp row passed with Testnet writes and private streams plus production read-only funding REST and WebSocket reference data."
+      }
+    },
+    {
+      "code": "NDS",
+      "venue": "Nado",
+      "product": "USDT0 Spot",
+      "factory_config": "NadoSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/nado_openapi_test.go",
+        "exchange/internal/factoryclient/nado_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-nado-testnet-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Nado Testnet USDT0 spot row passed full external acceptance."
+      }
+    },
+    {
+      "code": "NDP",
+      "venue": "Nado",
+      "product": "USDT0-settled Perp",
+      "factory_config": "NadoUSDT0PerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/nado_openapi_test.go",
+        "exchange/internal/factoryclient/nado_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-nado-testnet-usdt0-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Nado Testnet USDT0 perp row passed full external acceptance; SetLeverage returned the documented backend-managed Effective=0 and WatchMarkPrice returned ErrUnsupported."
+      }
     }
   ],
   "rest_methods": [
@@ -521,12 +1050,24 @@
       "expected_event": "[]Instrument",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -536,7 +1077,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -552,12 +1098,24 @@
       "expected_event": "OrderBook",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -567,7 +1125,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -583,12 +1146,24 @@
       "expected_event": "CandlePage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -598,7 +1173,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -614,12 +1194,24 @@
       "expected_event": "PublicTradePage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -629,7 +1221,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -645,12 +1242,24 @@
       "expected_event": "",
       "cleanup": "cancel open orders and reconcile fills/exposure",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -661,7 +1270,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -677,12 +1291,24 @@
       "expected_event": "",
       "cleanup": "verify no residual open order for target reference",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -693,7 +1319,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -709,12 +1340,24 @@
       "expected_event": "OrderPage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -724,7 +1367,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -740,12 +1388,24 @@
       "expected_event": "OrderPage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -755,7 +1415,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -771,12 +1436,24 @@
       "expected_event": "FillPage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -786,7 +1463,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -802,12 +1484,24 @@
       "expected_event": "[]Balance",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -817,7 +1511,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -833,9 +1532,14 @@
       "expected_event": "SpotAccount",
       "cleanup": "none",
       "external_cells": [
+        "ATS",
+        "BGS",
         "BNS",
+        "BYS",
+        "GTS",
         "HLS",
         "LIS",
+        "NDS",
         "OXS"
       ],
       "tests": [
@@ -844,7 +1548,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -860,9 +1569,16 @@
       "expected_event": "PerpAccount",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -871,7 +1587,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -887,9 +1608,16 @@
       "expected_event": "[]Position",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -898,7 +1626,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -914,9 +1647,16 @@
       "expected_event": "FundingRate",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -925,7 +1665,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -941,9 +1686,16 @@
       "expected_event": "FundingRatePage",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -952,7 +1704,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -968,9 +1725,16 @@
       "expected_event": "",
       "cleanup": "restore documented leverage if acceptance mutates it",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -979,7 +1743,12 @@
         "TestOpenAPIBinanceRESTExecutionMatrix",
         "TestOpenAPIOKXRESTExecutionMatrix",
         "TestOpenAPILighterRESTExecutionMatrix",
-        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
       ]
     },
     {
@@ -995,12 +1764,24 @@
       "expected_event": "BookEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1011,7 +1792,12 @@
         "TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5",
         "TestOKXPublicWSBackendSurfacesRawDecodeErrorsForEveryPublicStream",
         "TestLighterOrderBookDetectsNonceGapAndResynchronizes",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1027,12 +1813,24 @@
       "expected_event": "BBOEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1043,7 +1841,12 @@
         "TestOKXPublicWSBackendNormalizesBBOAndTrades",
         "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
         "TestLighterStartBBOWaitsForFirstValidEventAndMapsTicker",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1059,12 +1862,24 @@
       "expected_event": "PublicTradeEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1075,7 +1890,12 @@
         "TestOKXPublicWSBackendNormalizesBBOAndTrades",
         "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
         "TestLighterPublicTradesAndPerpReferenceMapping",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1091,12 +1911,24 @@
       "expected_event": "CandleEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1107,7 +1939,12 @@
         "TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes",
         "TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle",
         "TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1123,12 +1960,24 @@
       "expected_event": "OrderEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1141,7 +1990,12 @@
         "TestLighterPrivateWSBackendStreamsAndCommands",
         "TestLighterPrivateWSBackendSpotStreamsAndCancel",
         "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1157,12 +2011,24 @@
       "expected_event": "FillEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1175,7 +2041,12 @@
         "TestLighterPrivateWSBackendStreamsAndCommands",
         "TestLighterPrivateWSBackendSpotStreamsAndCancel",
         "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1191,12 +2062,24 @@
       "expected_event": "BalanceEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1210,7 +2093,12 @@
         "TestLighterPrivateWSBackendStreamsAndCommands",
         "TestLighterPrivateWSBackendSpotStreamsAndCancel",
         "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1226,12 +2114,24 @@
       "expected_event": "",
       "cleanup": "cancel open orders and reconcile fills/exposure",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1244,7 +2144,12 @@
         "TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch",
         "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
         "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
-        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1260,12 +2165,24 @@
       "expected_event": "",
       "cleanup": "verify no residual open order for target reference",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1280,7 +2197,12 @@
         "TestLighterPrivateWSBackendSpotStreamsAndCancel",
         "TestLighterPrivateWSBackendCancelRejectsMissingOrderIDWithoutNativeCall",
         "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1296,9 +2218,16 @@
       "expected_event": "PositionEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -1307,7 +2236,12 @@
         "TestBinancePrivateWSPerpStreamsCommandsAndPositions",
         "TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose",
         "TestLighterPrivateWSBackendSharesAccountWidePositions",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1323,9 +2257,16 @@
       "expected_event": "MarkPriceEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -1333,7 +2274,12 @@
         "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
         "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
         "TestLighterPublicTradesAndPerpReferenceMapping",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1349,9 +2295,16 @@
       "expected_event": "FundingRateEvent",
       "cleanup": "close subscription",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -1359,7 +2312,12 @@
         "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
         "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
         "TestLighterPublicTradesAndPerpReferenceMapping",
-        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1375,12 +2333,24 @@
       "expected_event": "closed subscriptions",
       "cleanup": "idempotently closes websocket backend",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1393,7 +2363,12 @@
         "TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose",
         "TestLighterPrivateWSBackendStreamsAndCommands",
         "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
-        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod",
+        "TestBybitWebSocketExercisesEveryExposedMethod",
+        "TestBitgetWebSocketExercisesEveryExposedMethod",
+        "TestGateWebSocketExercisesEveryExposedMethod",
+        "TestAsterWebSocketExercisesEveryExposedMethod",
+        "TestNadoWebSocketExercisesEveryExposedMethod"
       ]
     },
     {
@@ -1409,18 +2384,30 @@
       "expected_event": "typed product client",
       "cleanup": "Close constructed client",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1457,18 +2444,30 @@
       "expected_event": "environment-bound config",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1484,18 +2483,30 @@
       "expected_event": "REST endpoint override",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1511,18 +2522,30 @@
       "expected_event": "WebSocket endpoint override",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1538,18 +2561,30 @@
       "expected_event": "HTTP client override",
       "cleanup": "none",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1565,13 +2600,18 @@
       "expected_event": "SpotWebSocket facet",
       "cleanup": "Close facet or client",
       "external_cells": [
+        "ATS",
+        "BGS",
         "BNS",
+        "BYS",
+        "GTS",
         "HLS",
         "LIS",
+        "NDS",
         "OXS"
       ],
       "tests": [
-        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestAllTwentyConfigsExposeLazyWebSocketFacets",
         "TestWebSocketFacetMethodSets"
       ]
     },
@@ -1588,13 +2628,20 @@
       "expected_event": "PerpWebSocket facet",
       "cleanup": "Close facet or client",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
-        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestAllTwentyConfigsExposeLazyWebSocketFacets",
         "TestWebSocketFacetMethodSets"
       ]
     },
@@ -1611,13 +2658,18 @@
       "expected_event": "closed client",
       "cleanup": "idempotent close",
       "external_cells": [
+        "ATS",
+        "BGS",
         "BNS",
+        "BYS",
+        "GTS",
         "HLS",
         "LIS",
+        "NDS",
         "OXS"
       ],
       "tests": [
-        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestAllTwentyConfigsExposeLazyWebSocketFacets",
         "TestPublicWebSocketContextAndClientCloseAreIdempotent"
       ]
     },
@@ -1634,13 +2686,20 @@
       "expected_event": "closed client",
       "cleanup": "idempotent close",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
-        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestAllTwentyConfigsExposeLazyWebSocketFacets",
         "TestPublicWebSocketContextAndClientCloseAreIdempotent"
       ]
     },
@@ -1660,8 +2719,8 @@
         "BNS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1680,8 +2739,8 @@
         "BNP"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1700,8 +2759,8 @@
         "OXS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1720,8 +2779,8 @@
         "OXP"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1740,8 +2799,8 @@
         "LIS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1760,8 +2819,8 @@
         "LIP"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1780,8 +2839,8 @@
         "HLS"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     },
     {
@@ -1800,8 +2859,248 @@
         "HLP"
       ],
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients",
-        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BybitSpotConfig",
+      "method": "BybitSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BYS"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BybitUSDTPerpConfig",
+      "method": "BybitUSDTPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BYU"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BybitUSDCPerpConfig",
+      "method": "BybitUSDCPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BYC"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BitgetSpotConfig",
+      "method": "BitgetSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BGS"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BitgetUSDTPerpConfig",
+      "method": "BitgetUSDTPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BGU"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BitgetUSDCPerpConfig",
+      "method": "BitgetUSDCPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BGC"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.GateSpotConfig",
+      "method": "GateSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "GTS"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.GateUSDTPerpConfig",
+      "method": "GateUSDTPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "GTU"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.AsterSpotConfig",
+      "method": "AsterSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "ATS"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.AsterUSDTPerpConfig",
+      "method": "AsterUSDTPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "ATP"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.NadoSpotConfig",
+      "method": "NadoSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "NDS"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.NadoUSDT0PerpConfig",
+      "method": "NadoUSDT0PerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "NDP"
+      ],
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients",
+        "TestAllTwentyConfigsConstructConcurrentlyWithoutIO"
       ]
     }
   ],
@@ -1816,12 +3115,24 @@
       "expected_ack": "AcceptedPending, ImmediatelyFilled, Rejected, or Ambiguous",
       "cleanup": "reconcile fills and exposure; no resting order expected",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1849,12 +3160,24 @@
       "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "cancel resting order and verify no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1882,12 +3205,24 @@
       "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "reconcile fills and exposure; cancel any unexpected residual order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1915,12 +3250,24 @@
       "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "cancel resting order and verify no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1948,12 +3295,24 @@
       "expected_ack": "OrderAcknowledgement preserves client order correlation",
       "cleanup": "use returned OrderID for cleanup; verify ClientOrderID correlation",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -1981,9 +3340,16 @@
       "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "restore flat or documented baseline exposure",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -2010,12 +3376,24 @@
       "expected_ack": "AcceptedPending, ImmediatelyFilled, Rejected, or Ambiguous",
       "cleanup": "reconcile fills and exposure; no resting order expected",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2043,12 +3421,24 @@
       "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "cancel resting order and verify no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2076,12 +3466,24 @@
       "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "reconcile fills and exposure; cancel any unexpected residual order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2109,12 +3511,24 @@
       "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "cancel resting order and verify no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2142,12 +3556,24 @@
       "expected_ack": "OrderAcknowledgement preserves client order correlation",
       "cleanup": "use returned OrderID for cleanup; verify ClientOrderID correlation",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2175,9 +3601,16 @@
       "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
       "cleanup": "restore flat or documented baseline exposure",
       "external_cells": [
+        "ATP",
+        "BGC",
+        "BGU",
         "BNP",
+        "BYC",
+        "BYU",
+        "GTU",
         "HLP",
         "LIP",
+        "NDP",
         "OXP"
       ],
       "tests": [
@@ -2204,12 +3637,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2228,12 +3673,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2252,12 +3709,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2276,9 +3745,14 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATS",
+        "BGS",
         "BNS",
+        "BYS",
+        "GTS",
         "HLS",
         "LIS",
+        "NDS",
         "OXS"
       ],
       "tests": [
@@ -2296,12 +3770,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2320,12 +3806,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2344,12 +3842,24 @@
       "expected_ack": "Canceled, AcceptedPending, Rejected, or Ambiguous",
       "cleanup": "verify the returned OrderID has no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2370,12 +3880,24 @@
       "expected_ack": "Canceled, AcceptedPending, Rejected, or Ambiguous",
       "cleanup": "verify the returned OrderID has no residual open order",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2400,12 +3922,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2423,12 +3957,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before network send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2446,12 +3992,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before WebSocket command send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2469,12 +4027,24 @@
       "expected_ack": "local ErrInvalidRequest before send",
       "cleanup": "none; request must fail before WebSocket command send",
       "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
         "BNP",
         "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
         "HLP",
         "HLS",
         "LIP",
         "LIS",
+        "NDP",
+        "NDS",
         "OXP",
         "OXS"
       ],
@@ -2549,6 +4119,78 @@
       "env": "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1",
       "package": "./exchange/...",
       "test_selector": "^TestExchangeHyperliquidPerpTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-bybit-demo-spot",
+      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBybitSpotDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-bybit-demo-usdt-perp",
+      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBybitUSDTPerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-bybit-demo-usdc-perp",
+      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBybitUSDCPerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-bitget-demo-spot",
+      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBitgetSpotDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-bitget-demo-usdt-perp",
+      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBitgetUSDTPerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-bitget-demo-usdc-perp",
+      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBitgetUSDCPerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-gate-testnet-spot",
+      "env": "BOLTER_ENABLE_GATE_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeGateSpotTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-gate-testnet-usdt-perp",
+      "env": "BOLTER_ENABLE_GATE_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeGateUSDTPerpTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-aster-testnet-spot",
+      "env": "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeAsterSpotTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-aster-testnet-usdt-perp",
+      "env": "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeAsterUSDTPerpTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-nado-testnet-spot",
+      "env": "BOLTER_ENABLE_NADO_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeNadoSpotTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-nado-testnet-usdt0-perp",
+      "env": "BOLTER_ENABLE_NADO_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeNadoUSDT0PerpTestnetAcceptance$"
     }
   ],
   "symbols": [
@@ -2786,6 +4428,14 @@
     },
     {
       "id": "exchange.ErrTransport",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrUnsupported",
       "kind": "var",
       "coverage": "contract",
       "tests": [
@@ -3082,6 +4732,14 @@
     },
     {
       "id": "exchange.KindTransport",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindUnsupported",
       "kind": "const",
       "coverage": "contract",
       "tests": [
@@ -3956,6 +5614,46 @@
       ]
     },
     {
+      "id": "exchange.VenueBybit",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueBitget",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueGate",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueAster",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueNado",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
       "id": "exchange.WatchAccountRequest",
       "kind": "type",
       "coverage": "contract",
@@ -4001,7 +5699,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4009,7 +5707,103 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BybitSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BybitUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BybitUSDCPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BitgetSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BitgetUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BitgetUSDCPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.GateSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.GateUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.AsterSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.AsterUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.NadoSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.NadoUSDT0PerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4017,7 +5811,7 @@
       "kind": "type",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4025,7 +5819,7 @@
       "kind": "method",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4033,7 +5827,7 @@
       "kind": "method",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4041,7 +5835,7 @@
       "kind": "type",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4049,7 +5843,7 @@
       "kind": "const",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4057,7 +5851,7 @@
       "kind": "const",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4065,7 +5859,7 @@
       "kind": "const",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4073,7 +5867,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4081,7 +5875,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4089,7 +5883,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4097,7 +5891,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4105,7 +5899,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4113,7 +5907,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4121,7 +5915,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4129,7 +5923,7 @@
       "kind": "type",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4146,7 +5940,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4154,7 +5948,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4162,7 +5956,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -4170,7 +5964,7 @@
       "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestEightKnownConfigsInferAndConstructProductClients"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     }
   ]

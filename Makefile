@@ -5,7 +5,7 @@
 .PHONY: test-reference-data-offline test-reference-data-read test-binance-demo-reference-data-read test-okx-demo-reference-data-read test-bybit-demo-reference-data-read test-bitget-demo-reference-data-read test-gate-testnet-reference-data-read test-hyperliquid-testnet-reference-data-read test-lighter-testnet-reference-data-read test-aster-testnet-reference-data-read test-nado-testnet-reference-data-read
 .PHONY: test-aster-testnet test-aster-testnet-read test-aster-testnet-spot-read test-aster-testnet-perp-read test-aster-testnet-spot test-aster-testnet-runtime-spot test-aster-testnet-perp test-aster-testnet-runtime-perp test-aster-testnet-acceptance
 .PHONY: test-nado-testnet test-nado-testnet-read test-nado-testnet-spot-read test-nado-testnet-perp-read test-nado-testnet-spot test-nado-testnet-runtime-spot test-nado-testnet-perp test-nado-testnet-runtime-perp test-nado-testnet-acceptance test-aster-nado-testnet-acceptance
-.PHONY: test-exchange-offline test-exchange-race test-exchange-redaction test-exchange-quality test-exchange-acceptance test-exchange-external-acceptance test-exchange-binance-demo-acceptance test-exchange-binance-demo-spot test-exchange-binance-demo-perp test-exchange-okx-demo-acceptance test-exchange-okx-demo-spot test-exchange-okx-demo-perp test-exchange-lighter-testnet-acceptance test-exchange-lighter-testnet-spot test-exchange-lighter-testnet-perp test-exchange-hyperliquid-testnet-acceptance test-exchange-hyperliquid-testnet-spot test-exchange-hyperliquid-testnet-perp
+.PHONY: test-exchange-offline test-exchange-race test-exchange-redaction test-exchange-quality test-exchange-acceptance test-exchange-external-acceptance test-exchange-binance-demo-acceptance test-exchange-binance-demo-spot test-exchange-binance-demo-perp test-exchange-okx-demo-acceptance test-exchange-okx-demo-spot test-exchange-okx-demo-perp test-exchange-lighter-testnet-acceptance test-exchange-lighter-testnet-spot test-exchange-lighter-testnet-perp test-exchange-hyperliquid-testnet-acceptance test-exchange-hyperliquid-testnet-spot test-exchange-hyperliquid-testnet-perp test-exchange-bybit-demo-acceptance test-exchange-bybit-demo-spot test-exchange-bybit-demo-usdt-perp test-exchange-bybit-demo-usdc-perp test-exchange-bitget-demo-acceptance test-exchange-bitget-demo-spot test-exchange-bitget-demo-usdt-perp test-exchange-bitget-demo-usdc-perp test-exchange-gate-testnet-acceptance test-exchange-gate-testnet-spot test-exchange-gate-testnet-usdt-perp test-exchange-aster-testnet-acceptance test-exchange-aster-testnet-spot test-exchange-aster-testnet-usdt-perp test-exchange-nado-testnet-acceptance test-exchange-nado-testnet-spot test-exchange-nado-testnet-usdt0-perp
 
 .NOTPARALLEL:
 
@@ -37,11 +37,11 @@ test-exchange-race:
 	go test -race ./exchange/... -count=1
 
 test-exchange-redaction:
-	go test -short ./exchange/... -run 'Test(ConfigFormattingRedactsCredentials|ConstructedClientFormattingRedactsCredentials|AllVenueQueryNormalizersRedactUnderlyingErrors|AllVenueMutationNormalizersRedactVenueMessages|NormalizedErrorKindsAndMetadata)$$' -count=1
+	go test -short ./exchange/... -run 'Test(ConfigFormattingRedactsCredentials|ConstructedClientFormattingRedactsCredentials|ExpandedConstructedClientFormattingRedactsCredentials|AllVenueQueryNormalizersRedactUnderlyingErrors|AllVenueMutationNormalizersRedactVenueMessages|NormalizedErrorKindsAndMetadata)$$' -count=1
 
 test-exchange-quality: test-exchange-offline test-exchange-redaction test-exchange-race
 
-test-exchange-acceptance: test-exchange-binance-demo-acceptance test-exchange-okx-demo-acceptance test-exchange-lighter-testnet-acceptance test-exchange-hyperliquid-testnet-acceptance
+test-exchange-acceptance: test-exchange-binance-demo-acceptance test-exchange-okx-demo-acceptance test-exchange-lighter-testnet-acceptance test-exchange-hyperliquid-testnet-acceptance test-exchange-bybit-demo-acceptance test-exchange-bitget-demo-acceptance test-exchange-gate-testnet-acceptance test-exchange-aster-testnet-acceptance test-exchange-nado-testnet-acceptance
 
 test-exchange-external-acceptance: test-exchange-acceptance
 
@@ -76,6 +76,52 @@ test-exchange-hyperliquid-testnet-spot:
 
 test-exchange-hyperliquid-testnet-perp:
 	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeHyperliquidPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-exchange-bybit-demo-acceptance: test-exchange-bybit-demo-spot test-exchange-bybit-demo-usdt-perp test-exchange-bybit-demo-usdc-perp
+
+test-exchange-bybit-demo-spot:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-bybit-demo-usdt-perp:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitUSDTPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-bybit-demo-usdc-perp:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitUSDCPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-bitget-demo-acceptance: test-exchange-bitget-demo-spot test-exchange-bitget-demo-usdt-perp test-exchange-bitget-demo-usdc-perp
+
+test-exchange-bitget-demo-spot:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-bitget-demo-usdt-perp:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetUSDTPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-bitget-demo-usdc-perp:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetUSDCPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-gate-testnet-acceptance: test-exchange-gate-testnet-spot test-exchange-gate-testnet-usdt-perp
+
+test-exchange-gate-testnet-spot:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeGateSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-gate-testnet-usdt-perp:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeGateUSDTPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-aster-testnet-acceptance: test-exchange-aster-testnet-spot test-exchange-aster-testnet-usdt-perp
+
+test-exchange-aster-testnet-spot:
+	BOLTER_ENABLE_ASTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeAsterSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-aster-testnet-usdt-perp:
+	BOLTER_ENABLE_ASTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeAsterUSDTPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-nado-testnet-acceptance: test-exchange-nado-testnet-spot test-exchange-nado-testnet-usdt0-perp
+
+test-exchange-nado-testnet-spot:
+	BOLTER_ENABLE_NADO_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeNadoSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-exchange-nado-testnet-usdt0-perp:
+	BOLTER_ENABLE_NADO_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeNadoUSDT0PerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
 
 test-reference-data-offline:
 	go test -short ./core/model ./core/contract ./runtime/cache ./runtime ./runtime/runtimetest ./adapter/internal/runtimeaccept ./adapter/binance/perp ./adapter/okx/perp ./adapter/bybit ./adapter/bitget ./adapter/gate ./adapter/hyperliquid/perp ./adapter/lighter ./adapter/aster/perp ./adapter/nado ./sdk/nado -run 'Reference|OpenInterest|Capabilit' -count=1

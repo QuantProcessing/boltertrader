@@ -28,6 +28,18 @@ Matrix-Review: `APPROVE`
 | LIP | Lighter | Perp | `LighterPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 | HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 | HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| BYS | Bybit | Spot | `BybitSpotConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
+| GTS | Gate | Spot | `GateSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| ATS | Aster | Spot | `AsterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
 
 `factory.New` 要求一个显式 environment，本地验证 credential 和 endpoint
 option，格式化时 redacts credential，并且构造期间不执行 network I/O。
@@ -37,24 +49,30 @@ option，格式化时 redacts credential，并且构造期间不执行 network I
 Legend：`A` 表示该 product row 已准入。`N/A` 表示该 product interface 在
 compile time 不包含该 method。
 
-| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Instruments | `MarketREST` | A | A | A | A | A | A | A | A |
-| OrderBook | `MarketREST` | A | A | A | A | A | A | A | A |
-| Candles | `MarketREST` | A | A | A | A | A | A | A | A |
-| PublicTrades | `MarketREST` | A | A | A | A | A | A | A | A |
-| PlaceOrder | `OrderREST` | A | A | A | A | A | A | A | A |
-| CancelOrder | `OrderREST` | A | A | A | A | A | A | A | A |
-| OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A |
-| OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A |
-| Fills | `OrderREST` | A | A | A | A | A | A | A | A |
-| Balances | account REST | A | A | A | A | A | A | A | A |
-| SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A |
-| PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| Positions | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| FundingRate | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| FundingRateHistory | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
-| SetLeverage | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A |
+| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Instruments | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OrderBook | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Candles | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| PublicTrades | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| PlaceOrder | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| CancelOrder | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Fills | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| Balances | account REST | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A | A | N/A | N/A | A | N/A | N/A | A | N/A | A | N/A | A | N/A |
+| PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| Positions | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| FundingRate | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| FundingRateHistory | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+| SetLeverage | `PerpREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
+
+Nado 将 `SetLeverage` 保留在公共 Perp REST surface 中。Nado 不提供
+instrument 级杠杆 setter：该 method 会校验 context、instrument 与正数
+leverage 请求，然后成功返回 `Leverage.Effective=0`。零值表示没有应用
+venue-side 杠杆设置；实际杠杆由 Nado 后端 risk engine 根据账户、仓位与产品
+风险状态计算。
 
 ## Order Parameter Matrix
 
@@ -81,8 +99,10 @@ Common validation rule：
   decimal `uint48` string（`1` 至 `281474976710655`）。
 - Spot 拒绝 `ReduceOnly`。
 - Portable `CancelOrderRequest` locator 是 `OrderID`。Client-order-ID-only
-  cancel 不属于共享 eight-row guarantee。`OrderID` 必须是不带 leading zero 的
-  positive decimal `int64` string。
+  cancel 不属于共享 twenty-row guarantee。`OrderID` 是本 API 返回的 venue-issued
+  opaque identifier：数值型 venue 要求不带 leading zero 的 canonical positive
+  decimal `int64` string；Nado 要求 canonical lowercase `0x` 前缀的 32-byte
+  order digest。
 
 ## Page 与 History Semantics
 
@@ -112,7 +132,7 @@ Ambiguous command outcome 会与 `exchange.ErrAmbiguousOutcome` 配对。Reconci
 
 Public sentinel kind 包括 `ErrInvalidConfig`、`ErrInvalidRequest`、
 `ErrAuthentication`、`ErrPermission`、`ErrRateLimit`、`ErrNotFound`、
-`ErrVenueRejected`、`ErrTransport`、`ErrAmbiguousOutcome`、
+`ErrUnsupported`、`ErrVenueRejected`、`ErrTransport`、`ErrAmbiguousOutcome`、
 `ErrMalformedResponse`、`ErrCanceled`、`ErrDeadlineExceeded`、
 `ErrSubscriptionGap` 与 `ErrSubscriptionClosed`。
 
@@ -148,5 +168,17 @@ external environment certification。当前 acceptance certification 如下：
 | LIP | Passed | Lighter Testnet perp row 已通过 external acceptance。 |
 | HLS | Passed | Hyperliquid Testnet spot row 已通过 external acceptance。 |
 | HLP | Passed | Hyperliquid Testnet standard perp row 已通过 external acceptance。 |
+| BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
+| BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
+| BGS | Passed | Bitget Demo Spot row 已通过 full external acceptance。 |
+| BGU | Passed | Bitget Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BGC | Passed | Bitget Demo USDC-linear Perp row 使用原生 `BTCPERP` 通过 full external acceptance。 |
+| GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
+| GTU | Passed | Gate Testnet USDT-settled Perp row 已通过 full external acceptance。 |
+| ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
+| ATP | Passed | Aster Perp row 使用 Testnet 写操作/私有流和 production 只读 funding REST/WebSocket reference data 通过验收。 |
+| NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
+| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，`WatchMarkPrice` 返回 `ErrUnsupported`。 |
 
 除 acceptance status table 外，本 matrix 不声称 live validation 已通过。

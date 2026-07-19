@@ -109,7 +109,11 @@ func TestDocsMatchExchangeManifest(t *testing.T) {
 func TestOperationMatricesMatchExchangeManifest(t *testing.T) {
 	root := repositoryRoot(t)
 	surface := loadPublicSurfaceManifest(t, root)
-	productCodes := []string{"BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP"}
+	productCodes := []string{
+		"BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP",
+		"BYS", "BYU", "BYC", "BGS", "BGU", "BGC", "GTS", "GTU",
+		"ATS", "ATP", "NDS", "NDP",
+	}
 
 	tests := []struct {
 		name      string
@@ -120,7 +124,7 @@ func TestOperationMatricesMatchExchangeManifest(t *testing.T) {
 	}{
 		{
 			name:      "REST",
-			header:    "| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP |",
+			header:    "| Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |",
 			baseCells: 2,
 			paths: []string{
 				filepath.Join(root, "docs", "reference", "exchange-rest-v1-operation-matrix.md"),
@@ -130,7 +134,7 @@ func TestOperationMatricesMatchExchangeManifest(t *testing.T) {
 		},
 		{
 			name:      "WebSocket",
-			header:    "| Operation | Event type | Scope | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP |",
+			header:    "| Operation | Event type | Scope | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |",
 			baseCells: 3,
 			paths: []string{
 				filepath.Join(root, "docs", "reference", "exchange-ws-v1-operation-matrix.md"),

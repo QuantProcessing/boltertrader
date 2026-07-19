@@ -73,18 +73,26 @@ func (c *marketDataClient) Bars(ctx context.Context, id model.InstrumentID, inte
 	if err != nil {
 		return nil, err
 	}
-	var rows []gatesdk.Candlestick
 	if inst.ID.Kind == enums.KindPerp {
-		rows, err = c.rest.ListFuturesCandlesticks(ctx, gatesdk.SettleUSDT, inst.VenueSymbol, interval, limit)
-	} else {
-		rows, err = c.rest.ListSpotCandlesticks(ctx, inst.VenueSymbol, interval, limit)
+		rows, err := c.rest.ListFuturesCandlesticks(ctx, gatesdk.SettleUSDT, inst.VenueSymbol, interval, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]model.Bar, 0, len(rows))
+		for _, row := range rows {
+			if bar, ok := barFromGateFuturesCandle(id, interval, row); ok {
+				out = append(out, bar)
+			}
+		}
+		return out, nil
 	}
+	rows, err := c.rest.ListSpotCandlesticks(ctx, inst.VenueSymbol, interval, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]model.Bar, 0, len(rows))
 	for _, row := range rows {
-		if bar, ok := barFromGateCandle(id, interval, row); ok {
+		if bar, ok := barFromGateSpotCandle(id, interval, row); ok {
 			out = append(out, bar)
 		}
 	}
@@ -283,7 +291,7 @@ func futuresBookLevels(raw []gatesdk.FuturesOrderBookItem) []model.BookLevel {
 	return out
 }
 
-func barFromGateCandle(id model.InstrumentID, interval string, row gatesdk.Candlestick) (model.Bar, bool) {
+func barFromGateSpotCandle(id model.InstrumentID, interval string, row gatesdk.Candlestick) (model.Bar, bool) {
 	if len(row) < 6 || row[0] == "" {
 		return model.Bar{}, false
 	}
@@ -297,6 +305,22 @@ func barFromGateCandle(id model.InstrumentID, interval string, row gatesdk.Candl
 		Close:        dec(string(row[2])),
 		Volume:       dec(string(row[1])),
 		OpenTime:     openTime,
+	}, true
+}
+
+func barFromGateFuturesCandle(id model.InstrumentID, interval string, row gatesdk.FuturesCandlestick) (model.Bar, bool) {
+	if row.Time == "" {
+		return model.Bar{}, false
+	}
+	return model.Bar{
+		InstrumentID: id,
+		Interval:     interval,
+		Open:         dec(string(row.Open)),
+		High:         dec(string(row.High)),
+		Low:          dec(string(row.Low)),
+		Close:        dec(string(row.Close)),
+		Volume:       dec(string(row.Volume)),
+		OpenTime:     timeFromSecondsString(string(row.Time)),
 	}, true
 }
 
@@ -337,6 +361,12 @@ func tradesFromPayload(id model.InstrumentID, payload []byte, fallback time.Time
 	env, err := gatesdk.DecodeWSEnvelope(payload)
 	if err != nil || len(env.Result) == 0 {
 		return nil
+	}
+	switch env.Channel {
+	case gatesdk.ChannelSpotTrade:
+		return spotTradesFromPayload(id, env, fallback)
+	case gatesdk.ChannelFuturesTrade:
+		return futuresTradesFromPayload(id, env, fallback)
 	}
 	if out := spotTradesFromPayload(id, env, fallback); len(out) > 0 {
 		return out
@@ -381,16 +411,28 @@ func futuresTradesFromPayload(id model.InstrumentID, env *gatesdk.WSEnvelope, fa
 	}
 	out := make([]model.TradeTick, 0, len(trades))
 	for _, row := range trades {
+		size := dec(string(row.Size))
 		out = append(out, model.TradeTick{
 			InstrumentID:  id,
 			Price:         dec(row.Price),
-			Quantity:      decimal.NewFromInt(row.Size).Abs(),
-			AggressorSide: sideFromSignedSize(row.Size),
+			Quantity:      size.Abs(),
+			AggressorSide: sideFromSignedDecimal(size),
 			TradeID:       strconv.FormatInt(row.ID, 10),
-			Timestamp:     firstNonZeroTime(timeFromSeconds(row.CreateTime), timeFromMillis(env.TimeMS), timeFromSeconds(env.Time), fallback),
+			Timestamp:     firstNonZeroTime(timeFromSecondsString(string(row.CreateTime)), timeFromMillis(env.TimeMS), timeFromSeconds(env.Time), fallback),
 		})
 	}
 	return out
+}
+
+func sideFromSignedDecimal(value decimal.Decimal) enums.OrderSide {
+	switch value.Sign() {
+	case -1:
+		return enums.SideSell
+	case 1:
+		return enums.SideBuy
+	default:
+		return enums.SideUnknown
+	}
 }
 
 func referenceFromGateFutures(id model.InstrumentID, ticker *gatesdk.FuturesTicker, contract *gatesdk.Contract, receivedAt time.Time) model.DerivativeReferenceSnapshot {

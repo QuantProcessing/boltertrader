@@ -54,6 +54,18 @@ func openAPIRows(transport http.RoundTripper) []openAPIRow {
 		{name: "lighter/perp", product: exchange.ProductPerp, client: NewLighterPerp(openAPILighterPrivateKey, 7, 2, testnet)},
 		{name: "hyperliquid/spot", product: exchange.ProductSpot, client: NewHyperliquidSpot(openAPITestPrivateKey, testnet)},
 		{name: "hyperliquid/perp", product: exchange.ProductPerp, client: NewHyperliquidPerp(openAPITestPrivateKey, testnet)},
+		{name: "bybit/spot", product: exchange.ProductSpot, client: NewBybitSpot("", "", settings)},
+		{name: "bybit/usdt-perp", product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDT", settings)},
+		{name: "bybit/usdc-perp", product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDC", settings)},
+		{name: "bitget/spot", product: exchange.ProductSpot, client: NewBitgetSpot("", "", "", settings)},
+		{name: "bitget/usdt-perp", product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDT-FUTURES", settings)},
+		{name: "bitget/usdc-perp", product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDC-FUTURES", settings)},
+		{name: "gate/spot", product: exchange.ProductSpot, client: NewGateSpot("", "", testnet)},
+		{name: "gate/usdt-perp", product: exchange.ProductPerp, client: NewGateUSDTPerp("", "", testnet)},
+		{name: "aster/spot", product: exchange.ProductSpot, client: NewAsterSpot("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
+		{name: "aster/usdt-perp", product: exchange.ProductPerp, client: NewAsterUSDTPerp("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
+		{name: "nado/spot", product: exchange.ProductSpot, client: NewNadoSpot(openAPITestPrivateKey, "default", testnet)},
+		{name: "nado/usdt0-perp", product: exchange.ProductPerp, client: NewNadoUSDT0Perp(openAPITestPrivateKey, "default", testnet)},
 	}
 }
 

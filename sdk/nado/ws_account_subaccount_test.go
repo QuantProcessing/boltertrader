@@ -8,6 +8,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOrderUpdateAcceptsOfficialNumericClientID(t *testing.T) {
+	var update OrderUpdate
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"type":"order_update",
+		"timestamp":"1695081920633151000",
+		"product_id":5,
+		"digest":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"amount":"0",
+		"reason":"filled",
+		"id":100
+	}`), &update))
+	require.Equal(t, "100", update.Id)
+}
+
 func TestWsAccountClientSubscribeOrdersUsesConfiguredSubaccount(t *testing.T) {
 	t.Parallel()
 

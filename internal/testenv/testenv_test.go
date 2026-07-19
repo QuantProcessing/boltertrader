@@ -283,6 +283,18 @@ func TestBybitDemoEnvContractConstants(t *testing.T) {
 	}
 }
 
+func TestBybitTestnetEnvContractConstants(t *testing.T) {
+	if BybitTestnetAPIKeyEnv != "BYBIT_TESTNET_API_KEY" {
+		t.Fatalf("BybitTestnetAPIKeyEnv=%q", BybitTestnetAPIKeyEnv)
+	}
+	if BybitTestnetAPISecretEnv != "BYBIT_TESTNET_API_SECRET" {
+		t.Fatalf("BybitTestnetAPISecretEnv=%q", BybitTestnetAPISecretEnv)
+	}
+	if BybitTestnetEnableWriteEnv != "BOLTER_ENABLE_BYBIT_TESTNET_WRITES" {
+		t.Fatalf("BybitTestnetEnableWriteEnv=%q", BybitTestnetEnableWriteEnv)
+	}
+}
+
 func TestRequireBybitDemoWriteRequiresExplicitEnableFlag(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-write gate test excluded by -short")
@@ -303,6 +315,28 @@ func TestRequireBybitDemoWriteRequiresExplicitEnableFlag(t *testing.T) {
 
 	t.Setenv(BybitDemoEnableWriteEnv, "1")
 	_ = RequireBybitDemoWrite(t)
+}
+
+func TestRequireBybitTestnetWriteRequiresExplicitEnableFlag(t *testing.T) {
+	if testing.Short() {
+		t.Skip("live-write gate test excluded by -short")
+	}
+	setBybitTestnetCredentials(t)
+	clearBybitTestnetOptionalEnv(t)
+	t.Setenv(BybitTestnetEnableWriteEnv, "")
+
+	skipped := false
+	t.Run("skip", func(t *testing.T) {
+		defer func() { skipped = t.Skipped() }()
+		_ = RequireBybitTestnetWrite(t)
+		t.Fatal("expected Bybit Testnet writes to require an explicit enable flag")
+	})
+	if !skipped {
+		t.Fatal("expected RequireBybitTestnetWrite to skip without its explicit enable flag")
+	}
+
+	t.Setenv(BybitTestnetEnableWriteEnv, "1")
+	_ = RequireBybitTestnetWrite(t)
 }
 
 func TestBybitDemoConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
@@ -330,6 +364,31 @@ func TestBybitDemoConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
 	}
 }
 
+func TestBybitTestnetConfigFromEnvDefaultsSafetyEnvelope(t *testing.T) {
+	setBybitTestnetCredentials(t)
+	clearBybitTestnetOptionalEnv(t)
+
+	cfg, err := BybitTestnetConfigFromEnv()
+	if err != nil {
+		t.Fatalf("BybitTestnetConfigFromEnv: %v", err)
+	}
+	if cfg.Profile.RESTBaseURL != "https://api-testnet.bybit.com" {
+		t.Fatalf("testnet rest=%q", cfg.Profile.RESTBaseURL)
+	}
+	if cfg.Profile.PublicSpotWSURL != "wss://stream-testnet.bybit.com/v5/public/spot" {
+		t.Fatalf("testnet spot ws=%q", cfg.Profile.PublicSpotWSURL)
+	}
+	if cfg.Profile.PublicLinearWSURL != "wss://stream-testnet.bybit.com/v5/public/linear" {
+		t.Fatalf("testnet linear ws=%q", cfg.Profile.PublicLinearWSURL)
+	}
+	if cfg.Profile.PrivateWSURL != "wss://stream-testnet.bybit.com/v5/private" {
+		t.Fatalf("testnet private ws=%q", cfg.Profile.PrivateWSURL)
+	}
+	if !cfg.Profile.SupportsWSTrade || cfg.Profile.TradeWSURL != "wss://stream-testnet.bybit.com/v5/trade" {
+		t.Fatalf("Bybit Testnet must expose WS Trade: %+v", cfg.Profile)
+	}
+}
+
 func TestRequireBybitDemoWriteRejectsProductionCredentials(t *testing.T) {
 	t.Setenv("BYBIT_API_KEY", "prod-key")
 	t.Setenv("BYBIT_API_SECRET", "prod-secret")
@@ -346,6 +405,21 @@ func TestRequireBybitDemoWriteRejectsProductionCredentials(t *testing.T) {
 	})
 	if !skipped {
 		t.Fatalf("expected subtest to skip")
+	}
+}
+
+func TestBybitTestnetConfigRejectsDemoCredentialScope(t *testing.T) {
+	t.Setenv(BybitDemoAPIKeyEnv, "demo-key")
+	t.Setenv(BybitDemoAPISecretEnv, "demo-secret")
+	clearBybitTestnetCredentials(t)
+	clearBybitTestnetOptionalEnv(t)
+
+	_, err := BybitTestnetConfigFromEnv()
+	if err == nil {
+		t.Fatalf("expected BybitTestnetConfigFromEnv to reject Demo credentials")
+	}
+	if !strings.Contains(err.Error(), "BYBIT_TESTNET") || !strings.Contains(err.Error(), "BYBIT_DEMO") {
+		t.Fatalf("expected error to identify Testnet/Demo credential mismatch, got %v", err)
 	}
 }
 
@@ -469,6 +543,9 @@ func TestBitgetDemoConfigDefaultsToPAPTradingProfile(t *testing.T) {
 	}
 	if cfg.Profile.PrivateWSURL != "wss://wspap.bitget.com/v3/ws/private" {
 		t.Fatalf("demo private ws=%q", cfg.Profile.PrivateWSURL)
+	}
+	if cfg.USDCPerpSymbol != "BTCPERP" {
+		t.Fatalf("demo USDC perp symbol=%q, want official Bitget symbol BTCPERP", cfg.USDCPerpSymbol)
 	}
 }
 
@@ -1340,7 +1417,7 @@ func TestAsterTestnetReadConfigUsesOfficialProfilesAndDefaults(t *testing.T) {
 	if cfg.PerpProfile.RESTURL != "https://fapi.asterdex-testnet.com" || cfg.PerpProfile.ChainID != 714 {
 		t.Fatalf("perp profile=%+v", cfg.PerpProfile)
 	}
-	if cfg.MaxNotionalUSDT.String() != "100" || cfg.SpotSymbol != "" || cfg.PerpSymbol != "" {
+	if cfg.MaxNotionalUSDT.String() != "100" || cfg.SpotSymbol != AsterTestnetDefaultSpotSymbol || cfg.PerpSymbol != AsterTestnetDefaultPerpSymbol {
 		t.Fatalf("defaults=%+v", cfg)
 	}
 }
@@ -1751,6 +1828,28 @@ func clearBybitDemoOptionalEnv(t *testing.T) {
 	t.Setenv(BybitDemoSpotSymbolEnv, "")
 	t.Setenv(BybitDemoUSDTPerpSymbolEnv, "")
 	t.Setenv(BybitDemoUSDCPerpSymbolEnv, "")
+	t.Setenv("PROXY", "")
+}
+
+func setBybitTestnetCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitTestnetAPIKeyEnv, "testnet-key")
+	t.Setenv(BybitTestnetAPISecretEnv, "testnet-secret")
+}
+
+func clearBybitTestnetCredentials(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitTestnetAPIKeyEnv, "")
+	t.Setenv(BybitTestnetAPISecretEnv, "")
+}
+
+func clearBybitTestnetOptionalEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv(BybitTestnetMaxNotionalUSDTEnv, "")
+	t.Setenv(BybitTestnetMaxNotionalUSDCEnv, "")
+	t.Setenv(BybitTestnetSpotSymbolEnv, "")
+	t.Setenv(BybitTestnetUSDTPerpSymbolEnv, "")
+	t.Setenv(BybitTestnetUSDCPerpSymbolEnv, "")
 	t.Setenv("PROXY", "")
 }
 

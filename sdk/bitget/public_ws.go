@@ -39,6 +39,7 @@ type WSArg struct {
 	InstType string `json:"instType"`
 	Topic    string `json:"topic,omitempty"`
 	Symbol   string `json:"symbol,omitempty"`
+	Interval string `json:"interval,omitempty"`
 	Channel  string `json:"channel,omitempty"`
 	InstID   string `json:"instId,omitempty"`
 }
@@ -219,7 +220,7 @@ func (c *PublicWSClient) readLoop(conn *websocket.Conn) {
 		if err := json.Unmarshal(payload, &env); err != nil {
 			continue
 		}
-		if env.Event == "error" || (env.Arg.Topic == "" && env.Arg.Channel == "") {
+		if env.Event != "" || (env.Arg.Topic == "" && env.Arg.Channel == "") {
 			continue
 		}
 

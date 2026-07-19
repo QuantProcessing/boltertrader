@@ -49,27 +49,57 @@ func (c *TradeWSClient) WithCredentials(apiKey, secretKey string) *TradeWSClient
 }
 
 func (c *TradeWSClient) PlaceOrder(ctx context.Context, req PlaceOrderRequest) error {
-	return c.sendTradeOp(ctx, "order.create", req)
+	_, err := c.PlaceOrderWithResponse(ctx, req)
+	return err
+}
+
+func (c *TradeWSClient) PlaceOrderWithResponse(ctx context.Context, req PlaceOrderRequest) (*OrderActionResponse, error) {
+	resp, err := c.sendTradeOp(ctx, "order.create", req)
+	if err != nil {
+		return nil, err
+	}
+	result := &OrderActionResponse{OrderID: resp.Data.OrderID, OrderLinkID: resp.Data.OrderLinkID}
+	if err := validateOrderActionResult("trade ws place order", result, "", req.OrderLinkID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *TradeWSClient) BatchPlaceOrders(ctx context.Context, req BatchPlaceOrdersRequest) error {
-	return c.sendTradeOp(ctx, "order.create-batch", req)
+	_, err := c.sendTradeOp(ctx, "order.create-batch", req)
+	return err
 }
 
 func (c *TradeWSClient) CancelOrder(ctx context.Context, req CancelOrderRequest) error {
-	return c.sendTradeOp(ctx, "order.cancel", req)
+	_, err := c.CancelOrderWithResponse(ctx, req)
+	return err
+}
+
+func (c *TradeWSClient) CancelOrderWithResponse(ctx context.Context, req CancelOrderRequest) (*OrderActionResponse, error) {
+	resp, err := c.sendTradeOp(ctx, "order.cancel", req)
+	if err != nil {
+		return nil, err
+	}
+	result := &OrderActionResponse{OrderID: resp.Data.OrderID, OrderLinkID: resp.Data.OrderLinkID}
+	if err := validateOrderActionResult("trade ws cancel order", result, req.OrderID, req.OrderLinkID); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (c *TradeWSClient) BatchCancelOrders(ctx context.Context, req BatchCancelOrdersRequest) error {
-	return c.sendTradeOp(ctx, "order.cancel-batch", req)
+	_, err := c.sendTradeOp(ctx, "order.cancel-batch", req)
+	return err
 }
 
 func (c *TradeWSClient) AmendOrder(ctx context.Context, req AmendOrderRequest) error {
-	return c.sendTradeOp(ctx, "order.amend", req)
+	_, err := c.sendTradeOp(ctx, "order.amend", req)
+	return err
 }
 
 func (c *TradeWSClient) BatchAmendOrders(ctx context.Context, req BatchAmendOrdersRequest) error {
-	return c.sendTradeOp(ctx, "order.amend-batch", req)
+	_, err := c.sendTradeOp(ctx, "order.amend-batch", req)
+	return err
 }
 
 func (c *TradeWSClient) Close() error {
@@ -101,6 +131,10 @@ type tradeResponse struct {
 	RetCode int    `json:"retCode"`
 	RetMsg  string `json:"retMsg"`
 	Op      string `json:"op"`
+	Data    struct {
+		OrderID     string `json:"orderId"`
+		OrderLinkID string `json:"orderLinkId"`
+	} `json:"data"`
 }
 
 func (c *TradeWSClient) Connect(ctx context.Context) error {
@@ -152,9 +186,12 @@ func (c *TradeWSClient) sendAuthLocked() error {
 	})
 }
 
-func (c *TradeWSClient) sendTradeOp(ctx context.Context, op string, arg any) error {
+func (c *TradeWSClient) sendTradeOp(ctx context.Context, op string, arg any) (*tradeResponse, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("bybit trade ws: context is required")
+	}
 	if err := c.Connect(ctx); err != nil {
-		return err
+		return nil, err
 	}
 
 	reqID := fmt.Sprintf("req-%d", c.reqSeq.Add(1))
@@ -170,17 +207,17 @@ func (c *TradeWSClient) sendTradeOp(ctx context.Context, op string, arg any) err
 
 	payload, err := c.sendRequest(ctx, reqID, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var resp tradeResponse
 	if err := json.Unmarshal(payload, &resp); err != nil {
-		return err
+		return nil, err
 	}
 	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit trade ws: %s failed: %d %s", op, resp.RetCode, resp.RetMsg)
+		return nil, newResponseError("trade ws "+op, resp.RetCode, resp.RetMsg)
 	}
-	return nil
+	return &resp, nil
 }
 
 func (c *TradeWSClient) sendRequest(ctx context.Context, reqID string, req tradeRequest) ([]byte, error) {

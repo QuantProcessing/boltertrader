@@ -20,6 +20,7 @@ func TestNormalizedErrorKindsAndMetadata(t *testing.T) {
 		{KindPermission, ErrPermission},
 		{KindRateLimit, ErrRateLimit},
 		{KindNotFound, ErrNotFound},
+		{KindUnsupported, ErrUnsupported},
 		{KindVenueRejected, ErrVenueRejected},
 		{KindTransport, ErrTransport},
 		{KindAmbiguousOutcome, ErrAmbiguousOutcome},

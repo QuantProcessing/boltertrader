@@ -28,12 +28,13 @@ const (
 )
 
 type Profile struct {
-	environment Environment
-	product     Product
-	restURL     string
-	publicWSURL string
-	userWSURL   string
-	chainID     int64
+	environment   Environment
+	product       Product
+	restURL       string
+	publicWSURL   string
+	userWSURL     string
+	chainID       int64
+	allowOverride bool
 }
 
 func NewProfile(environment Environment, product Product) (Profile, error) {
@@ -101,18 +102,53 @@ func (p Profile) UserWSURL() string { return p.userWSURL }
 
 func (p Profile) ChainID() int64 { return p.chainID }
 
-func (p Profile) Validate() error {
-	official, err := NewProfile(p.environment, p.product)
-	if err != nil {
-		return err
+func (p Profile) WithEndpointOverrides(restURL, publicWSURL, userWSURL string) (Profile, error) {
+	if restURL != "" {
+		p.restURL = restURL
 	}
+	if publicWSURL != "" {
+		p.publicWSURL = publicWSURL
+	}
+	if userWSURL != "" {
+		p.userWSURL = userWSURL
+	}
+	p.allowOverride = true
 	for kind, endpoint := range map[EndpointKind]string{
 		EndpointREST:     p.restURL,
 		EndpointPublicWS: p.publicWSURL,
 		EndpointUserWS:   p.userWSURL,
 	} {
-		if err := official.ValidateEndpoint(kind, endpoint); err != nil {
-			return err
+		if err := validateEndpointURL(kind, endpoint); err != nil {
+			return Profile{}, err
+		}
+	}
+	return p, nil
+}
+
+func (p Profile) Validate() error {
+	official, err := NewProfile(p.environment, p.product)
+	if err != nil {
+		return err
+	}
+	if p.allowOverride {
+		for kind, endpoint := range map[EndpointKind]string{
+			EndpointREST:     p.restURL,
+			EndpointPublicWS: p.publicWSURL,
+			EndpointUserWS:   p.userWSURL,
+		} {
+			if err := validateEndpointURL(kind, endpoint); err != nil {
+				return err
+			}
+		}
+	} else {
+		for kind, endpoint := range map[EndpointKind]string{
+			EndpointREST:     p.restURL,
+			EndpointPublicWS: p.publicWSURL,
+			EndpointUserWS:   p.userWSURL,
+		} {
+			if err := official.ValidateEndpoint(kind, endpoint); err != nil {
+				return err
+			}
 		}
 	}
 	if p.chainID != official.chainID {
@@ -139,6 +175,14 @@ func (p Profile) ValidateEndpoint(kind EndpointKind, rawURL string) error {
 	}
 	if rawURL != expected {
 		return fmt.Errorf("aster profile: %s endpoint override is not allowed for %s/%s", kind, p.environment, p.product)
+	}
+	return nil
+}
+
+func validateEndpointURL(kind EndpointKind, rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("aster profile: invalid %s endpoint", kind)
 	}
 	return nil
 }

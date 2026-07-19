@@ -56,8 +56,13 @@ func isExecutionRequestType(requestType string) bool {
 }
 
 func isConclusiveExecutionRejectionCode(code int) bool {
-	// The inactive-product response is fixture-locked as a terminal command
-	// rejection. Other application codes remain ambiguous until their command
-	// semantics are independently proven.
-	return code == 2001
+	// These validation codes have been observed from the official gateway
+	// before command acceptance: invalid price grid (2000), inactive product
+	// (2001), and below-minimum order size (2094).
+	switch code {
+	case 2000, 2001, 2094:
+		return true
+	default:
+		return false
+	}
 }

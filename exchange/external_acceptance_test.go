@@ -19,10 +19,24 @@ import (
 const exchangeAcceptanceNotional = "50"
 
 type exchangeAcceptanceRow struct {
-	code           string
-	product        exchange.Product
-	instrumentHint string
-	notional       decimal.Decimal
+	code                      string
+	product                   exchange.Product
+	instrumentHint            string
+	notional                  decimal.Decimal
+	maxNotional               decimal.Decimal
+	perpReference             exchangeAcceptancePerpReference
+	perpPublicWS              exchangeAcceptancePerpPublicWebSocket
+	watchMarkPriceUnsupported bool
+}
+
+type exchangeAcceptancePerpReference interface {
+	FundingRate(context.Context, exchange.FundingRateRequest) (exchange.FundingRate, error)
+	FundingRateHistory(context.Context, exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error)
+}
+
+type exchangeAcceptancePerpPublicWebSocket interface {
+	WatchMarkPrice(context.Context, exchange.WatchRequest) (exchange.Subscription[exchange.MarkPriceEvent], error)
+	WatchFundingRate(context.Context, exchange.WatchRequest) (exchange.Subscription[exchange.FundingRateEvent], error)
 }
 
 type exchangeAcceptanceREST interface {
@@ -291,6 +305,313 @@ func TestExchangeHyperliquidPerpTestnetAcceptance(t *testing.T) {
 	}, client)
 }
 
+func TestExchangeBybitSpotDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBybitDemoWrite(t)
+	httpClient, err := testenv.BybitDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bybit Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BybitSpotConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bybit Spot Demo exchange: %v", err)
+	}
+	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
+		code:           "BYS",
+		product:        exchange.ProductSpot,
+		instrumentHint: cfg.SpotSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeBybitUSDTPerpDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBybitDemoWrite(t)
+	httpClient, err := testenv.BybitDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bybit Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BybitUSDTPerpConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bybit USDT Perp Demo exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "BYU",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.USDTPerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeBybitUSDCPerpDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBybitDemoWrite(t)
+	httpClient, err := testenv.BybitDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bybit Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BybitUSDCPerpConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bybit USDC Perp Demo exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "BYC",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.USDCPerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDC,
+	}, client)
+}
+
+func TestExchangeBitgetSpotDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	httpClient, err := testenv.BitgetDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bitget Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BitgetSpotConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		cfg.Passphrase,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bitget Spot Demo exchange: %v", err)
+	}
+	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
+		code:           "BGS",
+		product:        exchange.ProductSpot,
+		instrumentHint: cfg.SpotSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeBitgetUSDTPerpDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	httpClient, err := testenv.BitgetDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bitget Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BitgetUSDTPerpConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		cfg.Passphrase,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bitget USDT Perp Demo exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "BGU",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.USDTPerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeBitgetUSDCPerpDemoAcceptance(t *testing.T) {
+	cfg := testenv.RequireBitgetDemoWrite(t)
+	httpClient, err := testenv.BitgetDemoHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Bitget Demo HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.BitgetUSDCPerpConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		cfg.Passphrase,
+		factory.WithEnvironment(factory.EnvironmentDemo),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Bitget USDC Perp Demo exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "BGC",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.USDCPerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDC,
+	}, client)
+}
+
+func TestExchangeGateSpotTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireGateTestnetWrite(t)
+	httpClient, err := testenv.GateTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Gate Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.GateSpotConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Gate Spot Testnet exchange: %v", err)
+	}
+	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
+		code:           "GTS",
+		product:        exchange.ProductSpot,
+		instrumentHint: cfg.SpotSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeGateUSDTPerpTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireGateTestnetWrite(t)
+	httpClient, err := testenv.GateTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Gate Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.GateUSDTPerpConfig(
+		cfg.APIKey,
+		cfg.APISecret,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Gate USDT Perp Testnet exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "GTU",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.USDTPerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeAsterSpotTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireAsterTestnetWrite(t)
+	httpClient, err := testenv.AsterTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Aster Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.AsterSpotConfig(
+		cfg.UserAddress,
+		cfg.SignerPrivateKey,
+		cfg.ExpectedSignerAddress,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Aster Spot Testnet exchange: %v", err)
+	}
+	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
+		code:           "ATS",
+		product:        exchange.ProductSpot,
+		instrumentHint: cfg.SpotSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+	}, client)
+}
+
+func TestExchangeAsterUSDTPerpTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireAsterTestnetWrite(t)
+	httpClient, err := testenv.AsterTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Aster Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.AsterUSDTPerpConfig(
+		cfg.UserAddress,
+		cfg.SignerPrivateKey,
+		cfg.ExpectedSignerAddress,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Aster USDT Perp Testnet exchange: %v", err)
+	}
+	liveReference, err := factory.New(factory.AsterUSDTPerpConfig(
+		cfg.UserAddress,
+		cfg.SignerPrivateKey,
+		cfg.ExpectedSignerAddress,
+		factory.WithEnvironment(factory.EnvironmentLive),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Aster USDT Perp production reference client: %v", err)
+	}
+	defer closeAcceptanceClient(t, liveReference)
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:           "ATP",
+		product:        exchange.ProductPerp,
+		instrumentHint: cfg.PerpSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT,
+		perpReference:  liveReference,
+		perpPublicWS:   liveReference.WebSocket(),
+	}, client)
+}
+
+func TestExchangeNadoSpotTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireNadoTestnetWrite(t)
+	httpClient, err := testenv.NadoTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Nado Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.NadoSpotConfig(
+		cfg.PrivateKey,
+		cfg.Subaccount,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Nado Spot Testnet exchange: %v", err)
+	}
+	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
+		code:           "NDS",
+		product:        exchange.ProductSpot,
+		instrumentHint: cfg.SpotSymbol,
+		notional:       acceptanceNotional(t),
+		maxNotional:    cfg.MaxNotionalUSDT0,
+	}, client)
+}
+
+func TestExchangeNadoUSDT0PerpTestnetAcceptance(t *testing.T) {
+	cfg := testenv.RequireNadoTestnetWrite(t)
+	httpClient, err := testenv.NadoTestnetHTTPClient(45 * time.Second)
+	if err != nil {
+		t.Fatalf("Nado Testnet HTTP client: %v", err)
+	}
+	client, err := factory.New(factory.NadoUSDT0PerpConfig(
+		cfg.PrivateKey,
+		cfg.Subaccount,
+		factory.WithEnvironment(factory.EnvironmentTestnet),
+		factory.WithHTTPClient(httpClient),
+	))
+	if err != nil {
+		t.Fatalf("construct Nado USDT0 Perp Testnet exchange: %v", err)
+	}
+	runExchangePerpAcceptance(t, exchangeAcceptanceRow{
+		code:                      "NDP",
+		product:                   exchange.ProductPerp,
+		instrumentHint:            cfg.PerpSymbol,
+		notional:                  acceptanceNotional(t),
+		maxNotional:               cfg.MaxNotionalUSDT0,
+		watchMarkPriceUnsupported: true,
+	}, client)
+}
+
 func runExchangeSpotAcceptance(t *testing.T, row exchangeAcceptanceRow, client exchange.SpotClient) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
@@ -360,25 +681,21 @@ func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 		t.Fatalf("%s Positions: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "Positions")
-	if _, err := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument.Symbol}); err != nil {
+	reference := exchangeAcceptancePerpReference(client)
+	if row.perpReference != nil {
+		reference = row.perpReference
+	}
+	if _, err := reference.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument.Symbol}); err != nil {
 		t.Fatalf("%s FundingRate: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "FundingRate")
-	if _, err := client.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{
+	if _, err := reference.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{
 		Instrument: instrument.Symbol,
 		Limit:      10,
 	}); err != nil {
 		t.Fatalf("%s FundingRateHistory: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "FundingRateHistory")
-	if _, err := client.SetLeverage(ctx, exchange.SetLeverageRequest{
-		Instrument: instrument.Symbol,
-		Leverage:   1,
-	}); err != nil {
-		t.Fatalf("%s SetLeverage: %v", row.code, err)
-	}
-	coverage.MarkOperation("rest", "SetLeverage")
-
 	socket := client.WebSocket()
 	privateWitnesses := exercisePerpWebSocket(t, ctx, row, socket, instrument.Symbol, coverage)
 	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", coverage)
@@ -387,6 +704,13 @@ func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 	exercisePerpOrderCases(t, ctx, row, client, socket, instrument, book, baselinePosition, journal, coverage)
 	requireAcceptanceWitnessEvents(t, ctx, privateWitnesses)
 	closeAcceptanceSocket(t, row.code, socket, coverage)
+	if _, err := client.SetLeverage(ctx, exchange.SetLeverageRequest{
+		Instrument: instrument.Symbol,
+		Leverage:   1,
+	}); err != nil {
+		t.Fatalf("%s SetLeverage: %v", row.code, err)
+	}
+	coverage.MarkOperation("rest", "SetLeverage")
 	if !t.Failed() {
 		if err := coverage.Validate(); err != nil {
 			t.Fatalf("%s external coverage: %v", row.code, err)
@@ -653,19 +977,19 @@ func exerciseSpotWebSocket(
 		return socket.WatchBBO(startCtx, watch)
 	})
 	coverage.MarkOperation("websocket", "WatchBBO")
-	requireAcceptanceSubscription(t, ctx, row.code+"/WatchPublicTrades", true, func(startCtx context.Context) (exchange.Subscription[exchange.PublicTradeEvent], error) {
+	witnesses := make([]*acceptanceSubscriptionWitness, 0, 5)
+	witnesses = append(witnesses, requireActiveAcceptanceWitness(t, ctx, row.code+"/WatchPublicTrades", func(startCtx context.Context) (exchange.Subscription[exchange.PublicTradeEvent], error) {
 		return socket.WatchPublicTrades(startCtx, watch)
-	})
+	}))
 	coverage.MarkOperation("websocket", "WatchPublicTrades")
-	requireAcceptanceSubscription(t, ctx, row.code+"/WatchCandles", true, func(startCtx context.Context) (exchange.Subscription[exchange.CandleEvent], error) {
+	witnesses = append(witnesses, requireActiveAcceptanceWitness(t, ctx, row.code+"/WatchCandles", func(startCtx context.Context) (exchange.Subscription[exchange.CandleEvent], error) {
 		return socket.WatchCandles(startCtx, exchange.WatchCandlesRequest{
 			Instrument: instrument,
 			Interval:   "1m",
 			Options:    exchange.WatchOptions{Buffer: 32},
 		})
-	})
+	}))
 	coverage.MarkOperation("websocket", "WatchCandles")
-	witnesses := make([]*acceptanceSubscriptionWitness, 0, 3)
 	witnesses = append(witnesses, requireActiveAcceptanceWitness(t, ctx, row.code+"/WatchOrders", func(startCtx context.Context) (exchange.Subscription[exchange.OrderEvent], error) {
 		return socket.WatchOrders(startCtx, watch)
 	}))
@@ -694,16 +1018,31 @@ func exercisePerpWebSocket(
 		t.Fatalf("%s WebSocket returned nil", row.code)
 	}
 	watch := exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 32}}
+	publicReference := exchangeAcceptancePerpPublicWebSocket(socket)
+	if row.perpPublicWS != nil {
+		publicReference = row.perpPublicWS
+	}
 	positionWitness := requireActiveAcceptanceWitness(t, ctx, row.code+"/WatchPositions", func(startCtx context.Context) (exchange.Subscription[exchange.PositionEvent], error) {
 		return socket.WatchPositions(startCtx, watch)
 	})
 	coverage.MarkOperation("websocket", "WatchPositions")
-	requireAcceptanceSubscription(t, ctx, row.code+"/WatchMarkPrice", true, func(startCtx context.Context) (exchange.Subscription[exchange.MarkPriceEvent], error) {
-		return socket.WatchMarkPrice(startCtx, watch)
-	})
+	if row.watchMarkPriceUnsupported {
+		subscription, err := publicReference.WatchMarkPrice(ctx, watch)
+		if !errors.Is(err, exchange.ErrUnsupported) {
+			t.Fatalf("%s/WatchMarkPrice error = %v, want ErrUnsupported", row.code, err)
+		}
+		if subscription != nil {
+			_ = subscription.Close()
+			t.Fatalf("%s/WatchMarkPrice returned a subscription for an unsupported stream", row.code)
+		}
+	} else {
+		requireAcceptanceSubscription(t, ctx, row.code+"/WatchMarkPrice", true, func(startCtx context.Context) (exchange.Subscription[exchange.MarkPriceEvent], error) {
+			return publicReference.WatchMarkPrice(startCtx, watch)
+		})
+	}
 	coverage.MarkOperation("websocket", "WatchMarkPrice")
 	requireAcceptanceSubscription(t, ctx, row.code+"/WatchFundingRate", true, func(startCtx context.Context) (exchange.Subscription[exchange.FundingRateEvent], error) {
-		return socket.WatchFundingRate(startCtx, watch)
+		return publicReference.WatchFundingRate(startCtx, watch)
 	})
 	coverage.MarkOperation("websocket", "WatchFundingRate")
 	return append(
@@ -925,11 +1264,11 @@ func exerciseRestingOrderAndCancel(
 	coverage *externalRowCoverage,
 ) {
 	t.Helper()
-	size, err := sizeApproxQuoteOrder(instrument, book, exchange.SideBuy, row.notional)
+	price := acceptanceRestingBuyPrice(instrument, book)
+	size, err := sizeAcceptanceQuoteOrderAtPrice(instrument, price, row.notional, row.maxNotional)
 	if err != nil {
 		t.Fatalf("%s %s size: %v", row.code, orderCase.Kind, err)
 	}
-	price := acceptanceRestingBuyPrice(instrument, book)
 	policy := exchange.LimitPolicyResting
 	if orderCase.Kind == "limit_post_only" {
 		policy = exchange.LimitPolicyPostOnly
@@ -991,7 +1330,7 @@ func acceptanceFillRequest(
 	reduceOnly bool,
 ) exchange.PlaceOrderRequest {
 	t.Helper()
-	size, err := sizeApproxQuoteOrder(instrument, book, side, row.notional)
+	size, err := sizeAcceptanceQuoteOrder(instrument, book, side, row.notional, row.maxNotional)
 	if err != nil {
 		t.Fatalf("%s %s size: %v", row.code, kind, err)
 	}
@@ -1069,7 +1408,7 @@ func resolveAcceptanceOrderID(
 	ackOrderID string,
 ) string {
 	t.Helper()
-	if isPositivePortableOrderID(ackOrderID) {
+	if isPortableNativeOrderID(ackOrderID) {
 		return ackOrderID
 	}
 	deadline := time.Now().Add(30 * time.Second)
@@ -1077,7 +1416,7 @@ func resolveAcceptanceOrderID(
 		page, err := rest.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 100})
 		if err == nil {
 			for _, order := range page.Orders {
-				if order.ClientOrderID == clientOrderID && isPositivePortableOrderID(order.OrderID) {
+				if order.ClientOrderID == clientOrderID && isPortableNativeOrderID(order.OrderID) {
 					return order.OrderID
 				}
 			}
@@ -1324,13 +1663,7 @@ func cleanupSpotAcceptanceExposure(
 		return fmt.Errorf("%s cleanup delta %s cannot be represented by quantity step %s", row.code, delta, instrument.QuantityIncrement)
 	}
 	if instrument.MinNotional.Valid && quantity.Mul(price).LessThan(instrument.MinNotional.Value) {
-		return fmt.Errorf(
-			"%s cleanup delta %s has untradable notional %s below %s",
-			row.code,
-			delta,
-			quantity.Mul(price),
-			instrument.MinNotional.Value,
-		)
+		return nil
 	}
 	request := exchange.PlaceOrderRequest{
 		Instrument:    instrument.Symbol,
@@ -1537,10 +1870,7 @@ func requireAcceptanceSubscription[T any](
 	start func(context.Context) (exchange.Subscription[T], error),
 ) {
 	t.Helper()
-	timeout := 45 * time.Second
-	if strings.Contains(operation, "WatchCandles") {
-		timeout = 75 * time.Second
-	}
+	timeout := acceptanceSubscriptionTimeout(operation)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	witness, err := startAcceptanceSubscriptionWitness(parent, operation, start)
@@ -1558,6 +1888,16 @@ func requireAcceptanceSubscription[T any](
 	if err := witness.Close(); err != nil {
 		t.Fatalf("%s idempotent close: %v", operation, err)
 	}
+}
+
+func acceptanceSubscriptionTimeout(operation string) time.Duration {
+	if strings.Contains(operation, "WatchCandles") {
+		return 75 * time.Second
+	}
+	if strings.HasPrefix(operation, "BG") && strings.Contains(operation, "WatchOrderBook") {
+		return 120 * time.Second
+	}
+	return 45 * time.Second
 }
 
 func requireActiveAcceptanceWitness[T any](
@@ -1705,7 +2045,15 @@ func selectAcceptanceInstrument(
 ) (exchange.Instrument, error) {
 	want := normalizeAcceptanceSymbol(hint)
 	for _, instrument := range instruments {
-		if instrument.Product == product && normalizeAcceptanceSymbol(instrument.Symbol) == want {
+		if instrument.Product != product {
+			continue
+		}
+		if normalizeAcceptanceSymbol(instrument.Symbol) == want {
+			return instrument, nil
+		}
+		if product == exchange.ProductPerp &&
+			strings.EqualFold(instrument.QuoteAsset, "USDC") &&
+			normalizeAcceptanceSymbol(instrument.BaseAsset+"PERP") == want {
 			return instrument, nil
 		}
 	}

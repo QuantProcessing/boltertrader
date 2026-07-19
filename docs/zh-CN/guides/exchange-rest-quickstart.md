@@ -78,11 +78,26 @@ inference 会在 compile time 保留 product method set。
 | LIP | Lighter | Perp | `LighterPerpConfig` |
 | HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` |
 | HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` |
+| BYS | Bybit | Spot | `BybitSpotConfig` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` |
+| GTS | Gate | Spot | `GateSpotConfig` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` |
+| ATS | Aster | Spot | `AsterSpotConfig` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` |
 
 Binance constructor 接受 API key 与 secret。OKX constructor 还接受 passphrase。
 Lighter constructor 接受 private key、account index 与 API key index。
 Hyperliquid constructor 接受 private key。所有 constructor 也都接受
 `factory.Option` value。
+Bybit 与 Gate constructor 接受 API key 和 secret；Bitget 还接受 passphrase。
+Aster 接受 user address、API-wallet private key 与可选 expected signer address。
+Nado 接受 private key 与 subaccount name。
 
 | Venue | Non-production environment | Live environment |
 | --- | --- | --- |
@@ -90,6 +105,11 @@ Hyperliquid constructor 接受 private key。所有 constructor 也都接受
 | OKX | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
 | Lighter | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
 | Hyperliquid | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Bybit | `factory.EnvironmentDemo` or `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Bitget | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
+| Gate | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Aster | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+| Nado | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
 
 `factory.WithEndpoint` 与 `factory.WithWebSocketEndpoint` 分别覆盖 REST 与
 WebSocket endpoint。`factory.WithHTTPClient` 安装 REST method 使用的 HTTP
@@ -123,6 +143,11 @@ Spot client 没有 position、funding、leverage、margin-mode 或 reduce-only
 surface。Perp client 增加 account summary、positions、funding 和 leverage
 method。
 
+Nado Perp 的 `SetLeverage` 会校验请求并成功返回
+`Leverage.Effective=0`。Nado 没有 instrument 级杠杆 setter，实际杠杆由后端
+risk engine 根据账户、仓位与产品风险状态计算；该 method 仍保留在公共交集
+interface 中。
+
 ## WebSocket Method Surface
 
 调用 `client.WebSocket()` 获取 lazy WebSocket facet。构造 client 和获取 facet
@@ -148,6 +173,11 @@ method。
 `Errors` 与 `Close`。Public 与 private stream coverage 见
 [Exchange WebSocket V1 operation matrix](../reference/exchange-ws-v1-operation-matrix.md)。
 
+Nado 同样保留公共 interface 中的 `WatchMarkPrice`，但因为平台没有
+mark-price WebSocket stream，调用会立即返回 nil subscription 与
+`exchange.ErrUnsupported`。这是经过测试的预期结果；需要 mark price 时请使用
+Nado REST price data。
+
 ## Order Request Shape
 
 REST 与 WebSocket command 的 `PlaceOrder` 都接受
@@ -165,8 +195,10 @@ REST 与 WebSocket command 的 `PlaceOrder` 都接受
 每个 `PlaceOrder` 都必须提供 `ClientOrderID`，其值必须是不带 leading zero
 的 positive decimal `uint48` string（`1` 至 `281474976710655`）；所选 row
 返回它时，exchange 会 round-trip。Portable `CancelOrder` locator 是 `OrderID`；
-client-order-ID-only cancel 不是八行共享保证。`OrderID` 必须是不带 leading
-zero 的 positive decimal `int64` string。
+client-order-ID-only cancel 不是二十行共享保证。`OrderID` 是所选 venue row
+返回的 opaque identifier：数值型 venue 要求不带 leading zero 的 canonical
+positive decimal `int64` string；Nado 要求 lowercase `0x` 前缀的 32-byte
+order digest。
 
 ```go
 market := exchange.PlaceOrderRequest{
@@ -358,6 +390,18 @@ acceptance status 如下：
 | LIP | Passed | Lighter Testnet perp row 已通过 external acceptance。 |
 | HLS | Passed | Hyperliquid Testnet spot row 已通过 external acceptance。 |
 | HLP | Passed | Hyperliquid Testnet standard perp row 已通过 external acceptance。 |
+| BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
+| BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
+| BGS | Passed | Bitget Demo Spot row 已通过 full external acceptance。 |
+| BGU | Passed | Bitget Demo USDT-linear Perp row 已通过 full external acceptance。 |
+| BGC | Passed | Bitget Demo USDC-linear Perp row 使用原生 `BTCPERP` 通过 full external acceptance。 |
+| GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
+| GTU | Passed | Gate Testnet USDT-settled perp row 已通过 full external acceptance。 |
+| ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
+| ATP | Passed | Aster Perp row 使用 Testnet 写操作/私有流和 production 只读 funding REST/WebSocket reference data 通过验收。 |
+| NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
+| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，`WatchMarkPrice` 返回 `ErrUnsupported`。 |
 
 只使用专用 credential、显式 symbol、显式 notional bound、serial execution 与
 terminal cleanup evidence 来执行 Demo/Testnet。Demo/Testnet success 不代表
