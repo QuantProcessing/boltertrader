@@ -2,6 +2,8 @@ package lighter
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +22,32 @@ func TestClient_GetAccountActiveOrders(t *testing.T) {
 	}
 }
 
+func TestClientGetAccountActiveOrdersPreservesEnvelopeCodeWithoutMessage(t *testing.T) {
+	const secret = "active-orders-secret-canary"
+	client := NewClient().WithCredentials(strings.Repeat("01", 40), 66, 7)
+	client.BaseURL = "https://lighter.test"
+	client.HTTPClient = &http.Client{Transport: lighterOrderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":429,"message":"active-orders-secret-canary"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+
+	_, err := client.GetAccountActiveOrders(context.Background(), 101)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want APIError", err)
+	}
+	if apiErr.Code != http.StatusTooManyRequests {
+		t.Fatalf("code = %d, want %d", apiErr.Code, http.StatusTooManyRequests)
+	}
+	if apiErr.Message != "" || strings.Contains(err.Error(), secret) {
+		t.Fatalf("envelope error exposed venue message: %v", err)
+	}
+}
+
 func TestClient_GetNextNonce(t *testing.T) {
 	nonce, err := newLivePrivateClient(t).GetNextNonce(context.Background())
 	if err != nil {
@@ -27,6 +55,106 @@ func TestClient_GetNextNonce(t *testing.T) {
 	}
 	if nonce < 0 {
 		t.Fatalf("unexpected nonce: %d", nonce)
+	}
+}
+
+func TestClientGetNextNonceRequiresExplicitInRangeInteger(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing", body: `{"code":200}`},
+		{name: "null", body: `{"code":200,"nonce":null}`},
+		{name: "string", body: `{"code":200,"nonce":"1"}`},
+		{name: "negative", body: `{"code":200,"nonce":-1}`},
+		{name: "maximum", body: `{"code":200,"nonce":9223372036854775807}`},
+		{name: "non-200 envelope", body: `{"code":0,"message":"nonce-secret-canary","nonce":1}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := NewClient()
+			client.BaseURL = "https://lighter.test"
+			client.HTTPClient = &http.Client{Transport: lighterOrderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader(test.body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})}
+			_, err := client.GetNextNonce(context.Background())
+			if !errors.Is(err, ErrMalformedResponse) {
+				t.Fatalf("err = %v, want malformed response", err)
+			}
+			if strings.Contains(err.Error(), "nonce-secret-canary") {
+				t.Fatal("malformed nonce error echoed the venue message")
+			}
+			if calls != 1 {
+				t.Fatalf("HTTP calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestClientGetNextNonceRejectsCachedMaxInt64(t *testing.T) {
+	calls := 0
+	client := NewClient()
+	client.BaseURL = "https://lighter.test"
+	client.HTTPClient = &http.Client{Transport: lighterOrderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body := `{"code":200,"nonce":9223372036854775806}`
+		if calls == 2 {
+			body = `{"code":200,"nonce":7}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	first, err := client.GetNextNonce(context.Background())
+	if err != nil {
+		t.Fatalf("first GetNextNonce: %v", err)
+	}
+	_, err = client.GetNextNonce(context.Background())
+	if !errors.Is(err, ErrMalformedResponse) {
+		t.Fatalf("second err = %v, want malformed response", err)
+	}
+	third, err := client.GetNextNonce(context.Background())
+	if err != nil {
+		t.Fatalf("third GetNextNonce: %v", err)
+	}
+	if first != int64(^uint64(0)>>1)-1 || third != 7 || calls != 2 {
+		t.Fatalf("nonces = %d, %d; HTTP calls = %d", first, third, calls)
+	}
+}
+
+func TestClientGetNextNonceAcceptsExplicitZero(t *testing.T) {
+	calls := 0
+	client := NewClient()
+	client.BaseURL = "https://lighter.test"
+	client.HTTPClient = &http.Client{Transport: lighterOrderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"code":200,"nonce":0}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	first, err := client.GetNextNonce(context.Background())
+	if err != nil {
+		t.Fatalf("first GetNextNonce: %v", err)
+	}
+	second, err := client.GetNextNonce(context.Background())
+	if err != nil {
+		t.Fatalf("second GetNextNonce: %v", err)
+	}
+	if first != 0 || second != 1 || calls != 1 {
+		t.Fatalf("nonces = %d, %d; HTTP calls = %d", first, second, calls)
 	}
 }
 

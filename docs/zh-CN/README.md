@@ -24,6 +24,7 @@
 
 ## 指南
 
+- [统一交易所 API 快速入门](guides/exchange-rest-quickstart.md)
 - [编写策略](guides/strategies.md)
 - [构建 runtime node](guides/runtime-node.md)
 - [市场与 reference data](guides/market-reference-data.md)
@@ -45,6 +46,8 @@
 ## 能力与参考
 
 - [Runtime adapter 能力矩阵](adapter-capabilities.md)
+- [Exchange REST V1 operation matrix](reference/exchange-rest-v1-operation-matrix.md)
+- [Exchange WebSocket V1 operation matrix](reference/exchange-ws-v1-operation-matrix.md)
 - [Unsupported、Deferred（延期）和 SDK-only surface](reference/unsupported.md)
 - [测试与认证](reference/testing.md)
 - [配置](reference/configuration.md)

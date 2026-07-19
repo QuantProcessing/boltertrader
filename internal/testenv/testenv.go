@@ -128,7 +128,7 @@ const (
 
 	LighterTestnetDefaultMaxNotionalUSDC = "100"
 	LighterTestnetDefaultSpotSymbol      = "ETH-USDC"
-	LighterTestnetDefaultPerpSymbol      = "ETH-USDC"
+	LighterTestnetDefaultPerpSymbol      = "ETH"
 
 	AsterTestnetUserAddressEnv           = "ASTER_TESTNET_USER_ADDRESS"
 	AsterTestnetSignerPrivateKeyEnv      = "ASTER_TESTNET_SIGNER_PRIVATE_KEY"

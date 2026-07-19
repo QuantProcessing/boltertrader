@@ -3,12 +3,120 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	hyperliquid "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	"github.com/shopspring/decimal"
 )
+
+func (c *Client) PlaceMarketOrder(ctx context.Context, req MarketOrderRequest) (*OrderStatus, error) {
+	if c.PrivateKey == nil {
+		return nil, hyperliquid.ErrCredentialsRequired
+	}
+	if err := validateMarketOrderRequest(ctx, req.Coin, req.Size); err != nil {
+		return nil, err
+	}
+
+	meta, err := c.GetSpotMeta(ctx)
+	if err != nil {
+		return nil, hyperliquid.NewMarketReferenceError(classifyReferenceError(err), err)
+	}
+	assetID, sizeDecimals, ok := spotMarketIdentity(meta, req.Coin)
+	if !ok {
+		return nil, hyperliquid.NewMarketReferenceError(
+			hyperliquid.ErrMarketReferenceMalformed,
+			fmt.Errorf("coin not found in spot metadata"),
+		)
+	}
+	mids, err := c.AllMids(ctx)
+	if err != nil {
+		return nil, hyperliquid.NewMarketReferenceError(classifyReferenceError(err), err)
+	}
+	mid, err := strconv.ParseFloat(mids[req.Coin], 64)
+	if err != nil {
+		return nil, hyperliquid.NewMarketReferenceError(hyperliquid.ErrMarketReferenceMalformed, err)
+	}
+	price, err := hyperliquid.ProtectedMarketPrice(mid, req.IsBuy, true, sizeDecimals)
+	if err != nil {
+		return nil, hyperliquid.NewMarketReferenceError(hyperliquid.ErrMarketReferenceMalformed, err)
+	}
+
+	status, err := c.PlaceOrder(ctx, PlaceOrderRequest{
+		AssetID:       assetID,
+		IsBuy:         req.IsBuy,
+		Price:         price,
+		Size:          req.Size,
+		OrderType:     OrderType{Limit: &OrderTypeLimit{Tif: hyperliquid.TifIoc}},
+		ClientOrderID: req.ClientOrderID,
+	})
+	if err != nil {
+		if isDefiniteMarketOrderError(err) {
+			return nil, err
+		}
+		return nil, hyperliquid.NewMutationOutcomeUnknown(err)
+	}
+	return status, nil
+}
+
+func spotMarketIdentity(meta *SpotMeta, coin string) (int, int, bool) {
+	if meta == nil {
+		return 0, 0, false
+	}
+	tokenDecimals := make(map[int]int, len(meta.Tokens))
+	for _, token := range meta.Tokens {
+		tokenDecimals[token.Index] = token.SzDecimals
+	}
+	for _, market := range meta.Universe {
+		if market.Name != coin || len(market.Tokens) != 2 {
+			continue
+		}
+		sizeDecimals, ok := tokenDecimals[market.Tokens[0]]
+		if !ok || market.Index < 0 || sizeDecimals < 0 || sizeDecimals > 8 {
+			return 0, 0, false
+		}
+		return 10000 + market.Index, sizeDecimals, true
+	}
+	return 0, 0, false
+}
+
+func validateMarketOrderRequest(ctx context.Context, coin string, size float64) error {
+	if ctx == nil {
+		return hyperliquid.ValidationError{Field: "context", Message: "must not be nil"}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(coin) == "" {
+		return hyperliquid.ValidationError{Field: "coin", Message: "must not be empty"}
+	}
+	if math.IsNaN(size) || math.IsInf(size, 0) || size <= 0 {
+		return hyperliquid.ValidationError{Field: "size", Message: "must be positive and finite"}
+	}
+	return nil
+}
+
+func classifyReferenceError(err error) error {
+	var syntax *json.SyntaxError
+	var valueType *json.UnmarshalTypeError
+	if errors.As(err, &syntax) || errors.As(err, &valueType) {
+		return hyperliquid.ErrMarketReferenceMalformed
+	}
+	return hyperliquid.ErrMarketReferenceUnavailable
+}
+
+func isDefiniteMarketOrderError(err error) bool {
+	if errors.Is(err, hyperliquid.ErrCredentialsRequired) ||
+		errors.Is(err, hyperliquid.ErrOrderRejected) {
+		return true
+	}
+	var validation hyperliquid.ValidationError
+	var apiError *hyperliquid.APIError
+	return errors.As(err, &validation) || errors.As(err, &apiError)
+}
 
 func (c *Client) UserOpenOrders(ctx context.Context, user string) ([]Order, error) {
 	req := map[string]string{

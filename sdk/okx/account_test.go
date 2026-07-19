@@ -145,6 +145,38 @@ func TestClient_SetLeverage(t *testing.T) {
 	}
 }
 
+func TestClientSetLeverageAcceptsStringLeverResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v5/account/set-leverage" {
+			t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload["lever"] != float64(1) {
+			t.Fatalf("request lever = %#v, want numeric 1", payload["lever"])
+		}
+		_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"instId":"ETH-USDT-SWAP","lever":"1","mgnMode":"cross","posSide":""}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithBaseURL(server.URL)
+	rows, err := client.SetLeverage(context.Background(), SetLeverage{
+		InstId:  "ETH-USDT-SWAP",
+		Lever:   1,
+		MgnMode: "cross",
+	})
+	if err != nil {
+		t.Fatalf("SetLeverage string lever response: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Lever != 1 {
+		t.Fatalf("SetLeverage response = %+v, want effective leverage 1", rows)
+	}
+}
+
 func TestClient_GetTradeFee(t *testing.T) {
 	got, err := newLivePrivateClient(t).GetTradeFee(context.Background(), "SPOT", nil)
 	if err != nil {

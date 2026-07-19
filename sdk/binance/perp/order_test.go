@@ -303,6 +303,48 @@ func TestClient_MyTrades(t *testing.T) {
 	}
 }
 
+func TestClient_MyTradesDecodesFuturesBuyerAndMakerFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/fapi/v1/userTrades" {
+			t.Fatalf("path=%s, want /fapi/v1/userTrades", r.URL.Path)
+		}
+		if r.URL.Query().Get("symbol") != "ETHUSDT" {
+			t.Fatalf("symbol=%q, want ETHUSDT", r.URL.Query().Get("symbol"))
+		}
+		_, _ = w.Write([]byte(`[{
+			"symbol":"ETHUSDT",
+			"id":303800894,
+			"orderId":13684814918,
+			"price":"1840.15",
+			"qty":"0.012",
+			"commission":"0.011",
+			"commissionAsset":"USDT",
+			"time":1784336690108,
+			"buyer":true,
+			"maker":true,
+			"side":"BUY",
+			"positionSide":"BOTH",
+			"realizedPnl":"0"
+		}]`))
+	}))
+	defer server.Close()
+
+	client := NewClient().
+		WithBaseURL(server.URL).
+		WithCredentials("key", "secret").
+		WithRateLimiter(nil)
+	trades, err := client.MyTrades(context.Background(), "ETHUSDT", 100, 0, 0, 0)
+	if err != nil {
+		t.Fatalf("MyTrades: %v", err)
+	}
+	if len(trades) != 1 {
+		t.Fatalf("trades=%d, want 1", len(trades))
+	}
+	if !trades[0].IsBuyer || !trades[0].IsMaker {
+		t.Fatalf("trade buyer=%v maker=%v, want true/true", trades[0].IsBuyer, trades[0].IsMaker)
+	}
+}
+
 func assertQueryValue(t *testing.T, got, want, name string) {
 	t.Helper()
 	if got != want {

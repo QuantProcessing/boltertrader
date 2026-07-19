@@ -2,7 +2,10 @@ package okx
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/url"
+	"strconv"
 )
 
 // GetAccountBalance retrieves the account balance.
@@ -58,6 +61,45 @@ func (c *Client) SetPositionMode(ctx context.Context, posMode string) ([]Positio
 // mgnMode: isolated or cross
 func (c *Client) SetLeverage(ctx context.Context, params SetLeverage) ([]SetLeverage, error) {
 	return Request[SetLeverage](c, ctx, MethodPost, "/api/v5/account/set-leverage", params, true)
+}
+
+func (params *SetLeverage) UnmarshalJSON(data []byte) error {
+	var response struct {
+		Lever   json.RawMessage `json:"lever"`
+		MgnMode string          `json:"mgnMode"`
+		InstId  string          `json:"instId"`
+		PosSide string          `json:"posSide"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return err
+	}
+	leverage, err := okxLeverageInt(response.Lever)
+	if err != nil {
+		return err
+	}
+	*params = SetLeverage{
+		Lever:   leverage,
+		MgnMode: response.MgnMode,
+		InstId:  response.InstId,
+		PosSide: response.PosSide,
+	}
+	return nil
+}
+
+func okxLeverageInt(raw json.RawMessage) (int, error) {
+	var numeric int
+	if err := json.Unmarshal(raw, &numeric); err == nil {
+		return numeric, nil
+	}
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return 0, fmt.Errorf("invalid leverage response: %w", err)
+	}
+	value, err := strconv.Atoi(encoded)
+	if err != nil {
+		return 0, fmt.Errorf("invalid leverage response: %w", err)
+	}
+	return value, nil
 }
 
 // GetTradeFee retrieves the trade fee rates.

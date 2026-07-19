@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+var wsOrderResponseTimeout = 10 * time.Second
+
 // WsOrderRequest represents the structure for placing/cancelling orders via WS.
 type WsOrderOp struct {
 	Id   string        `json:"id"` // Request ID
@@ -82,51 +84,30 @@ func (c *WSClient) PlaceOrderWS(req *OrderRequest) (*OrderId, error) {
 
 	conn := c.currentConnection()
 	if err := c.ensureReadyConnection(conn); err != nil {
-		return nil, err
+		return nil, newWSPreSendError(err)
 	}
 	// Create channel for response
 	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	if err := c.writeReadyJSONOn(conn, op); err != nil {
+	if err := c.writeReadyMutationJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 
 	// Wait for response
 	select {
 	case msg := <-successCh:
-		// Parse result
-		var resp struct {
-			Code string    `json:"code"`
-			Msg  string    `json:"msg"`
-			Data []OrderId `json:"data"`
+		result, err := parseWSActionResponse("order", msg)
+		if err != nil {
+			return result, err
 		}
-		if err := json.Unmarshal(msg, &resp); err != nil {
-			return nil, fmt.Errorf("failed to parse WS response: %w", err)
-		}
-		// Double check code (though SuccessCh implies Success in handleMessage logic?
-		// handleMessage checks code!=0. But let's be safe)
-		if resp.Code != "0" {
-			return nil, fmt.Errorf("okx ws error: code=%s msg=%s data=%v", resp.Code, resp.Msg, resp.Data)
-		}
-		if len(resp.Data) > 0 {
-			if err := validateWSActionResult("order", resp.Data[0]); err != nil {
-				return &resp.Data[0], err
-			}
-			return &resp.Data[0], nil
-		}
-		return nil, nil // No data but success?
+		return result, nil
 
 	case msg := <-errorCh:
-		var resp struct {
-			Code string `json:"code"`
-			Msg  string `json:"msg"`
-		}
-		json.Unmarshal(msg, &resp)
-		return nil, fmt.Errorf("okx ws error: code=%s msg=%s", resp.Code, string(msg))
+		return nil, parseWSActionError("order", msg)
 
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for order response")
+	case <-time.After(wsOrderResponseTimeout):
+		return nil, newWSOutcomeUnknownError(fmt.Errorf("timeout waiting for order response"))
 	}
 }
 
@@ -150,49 +131,30 @@ func (c *WSClient) CancelOrderWS(instIdCode int64, ordId, clOrdId *string) (*Ord
 
 	conn := c.currentConnection()
 	if err := c.ensureReadyConnection(conn); err != nil {
-		return nil, err
+		return nil, newWSPreSendError(err)
 	}
 	// Create channel for response
 	successCh, errorCh := c.addPendingRequestOn(idInt, conn)
 	defer c.RemovePendingRequest(idInt)
 
-	if err := c.writeReadyJSONOn(conn, op); err != nil {
+	if err := c.writeReadyMutationJSONOn(conn, op); err != nil {
 		return nil, err
 	}
 
 	// Wait for response
 	select {
 	case msg := <-successCh:
-		// Parse result
-		var resp struct {
-			Code string    `json:"code"`
-			Msg  string    `json:"msg"`
-			Data []OrderId `json:"data"`
+		result, err := parseWSActionResponse("cancel", msg)
+		if err != nil {
+			return result, err
 		}
-		if err := json.Unmarshal(msg, &resp); err != nil {
-			return nil, fmt.Errorf("failed to parse WS response: %w", err)
-		}
-		if resp.Code != "0" {
-			return nil, fmt.Errorf("okx ws error: code=%s msg=%s", resp.Code, resp.Msg)
-		}
-		if len(resp.Data) > 0 {
-			if err := validateWSActionResult("cancel", resp.Data[0]); err != nil {
-				return &resp.Data[0], err
-			}
-			return &resp.Data[0], nil
-		}
-		return nil, nil // Success
+		return result, nil
 
 	case msg := <-errorCh:
-		var resp struct {
-			Code string `json:"code"`
-			Msg  string `json:"msg"`
-		}
-		json.Unmarshal(msg, &resp)
-		return nil, fmt.Errorf("okx ws error: code=%s msg=%s", resp.Code, resp.Msg)
+		return nil, parseWSActionError("cancel", msg)
 
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for cancel response")
+	case <-time.After(wsOrderResponseTimeout):
+		return nil, newWSOutcomeUnknownError(fmt.Errorf("timeout waiting for cancel response"))
 	}
 }
 
@@ -349,7 +311,42 @@ func validateWSActionResult(action string, result OrderId) error {
 		return nil
 	}
 	if result.SubCode != "" {
-		return fmt.Errorf("okx ws %s rejected: sCode=%s subCode=%s sMsg=%s", action, result.SCode, result.SubCode, result.SMsg)
+		return &APIError{Code: result.SCode, Message: result.SMsg, Details: "subCode=" + result.SubCode}
 	}
-	return fmt.Errorf("okx ws %s rejected: sCode=%s sMsg=%s", action, result.SCode, result.SMsg)
+	return &APIError{Code: result.SCode, Message: result.SMsg}
+}
+
+func parseWSActionResponse(action string, msg []byte) (*OrderId, error) {
+	var resp struct {
+		Code string    `json:"code"`
+		Msg  string    `json:"msg"`
+		Data []OrderId `json:"data"`
+	}
+	if err := json.Unmarshal(msg, &resp); err != nil {
+		return nil, newWSMalformedResponseError(action, "invalid JSON envelope")
+	}
+	if resp.Code != "0" {
+		return nil, &APIError{Code: resp.Code, Message: resp.Msg}
+	}
+	if len(resp.Data) != 1 {
+		return nil, newWSMalformedResponseError(action, "data must contain exactly one item")
+	}
+	if err := validateWSActionResult(action, resp.Data[0]); err != nil {
+		return &resp.Data[0], err
+	}
+	return &resp.Data[0], nil
+}
+
+func parseWSActionError(action string, msg []byte) error {
+	var resp struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(msg, &resp); err != nil {
+		return newWSMalformedResponseError(action, "invalid error envelope")
+	}
+	if resp.Code == "" {
+		return newWSMalformedResponseError(action, "error code is required")
+	}
+	return &APIError{Code: resp.Code, Message: resp.Msg}
 }

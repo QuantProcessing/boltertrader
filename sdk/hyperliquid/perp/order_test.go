@@ -175,6 +175,102 @@ func TestClient_PlaceOrder(t *testing.T) {
 	require.NotNil(t, status)
 }
 
+func TestClientPlaceMarketOrderUsesPerpPrecisionReduceOnlyAndIOC(t *testing.T) {
+	var calls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: perpMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		switch calls.Add(1) {
+		case 1:
+			return perpMarketResponse(req, `{"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":50}]}`), nil
+		case 2:
+			return perpMarketResponse(req, `{"BTC":"65000.123"}`), nil
+		case 3:
+			if !strings.Contains(string(body), `"a":0`) ||
+				!strings.Contains(string(body), `"p":"61750"`) ||
+				!strings.Contains(string(body), `"r":true`) ||
+				!strings.Contains(string(body), `"t":{"limit":{"tif":"Ioc"}}`) {
+				t.Fatalf("unexpected protected perp market action: %s", body)
+			}
+			return perpMarketResponse(req, `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"0.01","avgPx":"64000","oid":8}}]}}}`), nil
+		default:
+			t.Fatalf("unexpected request %d", calls.Load())
+		}
+		return nil, nil
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "BTC", IsBuy: false, Size: 0.01, ReduceOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("PlaceMarketOrder: %v", err)
+	}
+	if status == nil || status.Filled == nil || status.Filled.Oid != 8 || calls.Load() != 3 {
+		t.Fatalf("status=%+v calls=%d", status, calls.Load())
+	}
+}
+
+func TestClientPlaceMarketOrderMalformedPerpReferenceNeverSendsAction(t *testing.T) {
+	var exchangeCalls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: perpMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/exchange" {
+			exchangeCalls.Add(1)
+		}
+		return perpMarketResponse(req, `{"universe":[]}`), nil
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "BTC", IsBuy: true, Size: 0.01,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrMarketReferenceMalformed) {
+		t.Fatalf("status=%+v err=%v, want malformed reference", status, err)
+	}
+	if exchangeCalls.Load() != 0 {
+		t.Fatalf("exchange sends=%d, want zero", exchangeCalls.Load())
+	}
+}
+
+func TestClientPlaceMarketOrderPerpPostSendUnknownIsAmbiguous(t *testing.T) {
+	var calls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(strings.Repeat("01", 32), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: perpMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return perpMarketResponse(req, `{"universe":[{"name":"BTC","szDecimals":5,"maxLeverage":50}]}`), nil
+		case 2:
+			return perpMarketResponse(req, `{"BTC":"65000"}`), nil
+		default:
+			return nil, io.ErrUnexpectedEOF
+		}
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "BTC", IsBuy: true, Size: 0.01,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrMutationOutcomeUnknown) {
+		t.Fatalf("status=%+v err=%v, want ambiguous mutation", status, err)
+	}
+}
+
+type perpMarketRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn perpMarketRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func perpMarketResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}
+}
+
 func TestClient_PlaceOrdersBuildsBatchAction(t *testing.T) {
 	var seenBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

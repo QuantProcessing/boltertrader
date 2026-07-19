@@ -33,6 +33,40 @@ func TestDecodeWebData2MessageFiltersAccountIdentity(t *testing.T) {
 	}
 }
 
+func TestDecodePrivateAccountMessagesSurfaceMatchingPayloadErrors(t *testing.T) {
+	const user = "0x000000000000000000000000000000000000dEaD"
+
+	if _, err := decodeOrderUpdatesMessage(json.RawMessage(`{"bad":"shape"}`)); err == nil {
+		t.Fatal("malformed orderUpdates payload was silently dropped")
+	}
+	updates, err := decodeOrderUpdatesMessage(json.RawMessage(`[]`))
+	if err != nil || updates == nil {
+		t.Fatalf("valid empty orderUpdates snapshot updates=%v err=%v", updates, err)
+	}
+
+	if _, matched, err := decodeUserFillsMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000beef","fills":"bad"}`), user); matched || err != nil {
+		t.Fatalf("other user matched=%v err=%v, want ignored", matched, err)
+	}
+	if _, matched, err := decodeUserFillsMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000dead","fills":"bad"}`), user); !matched || err == nil {
+		t.Fatalf("matching malformed fills matched=%v err=%v, want observable decode error", matched, err)
+	}
+	fills, matched, err := decodeUserFillsMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000dead","fills":[]}`), user)
+	if err != nil || !matched || fills.Fills == nil {
+		t.Fatalf("valid empty fills snapshot fills=%+v matched=%v err=%v", fills, matched, err)
+	}
+
+	if _, matched, err := decodeClearinghouseStateMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000beef","dex":"","clearinghouseState":{"assetPositions":"bad"}}`), user, ""); matched || err != nil {
+		t.Fatalf("other user clearinghouse matched=%v err=%v, want ignored", matched, err)
+	}
+	if _, matched, err := decodeClearinghouseStateMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000dead","dex":"","clearinghouseState":{"assetPositions":"bad"}}`), user, ""); !matched || err == nil {
+		t.Fatalf("matching malformed clearinghouse matched=%v err=%v, want observable decode error", matched, err)
+	}
+	state, matched, err := decodeClearinghouseStateMessage(json.RawMessage(`{"user":"0x000000000000000000000000000000000000dead","dex":"","clearinghouseState":{"assetPositions":[]}}`), user, "")
+	if err != nil || !matched || state.AssetPositions == nil {
+		t.Fatalf("valid empty clearinghouse snapshot state=%+v matched=%v err=%v", state, matched, err)
+	}
+}
+
 func TestSubscribeUserEventsUsesOfficialRequestAndUserResponseChannel(t *testing.T) {
 	requests := make(chan hyperliquid.WsSubscribeRequest, 1)
 	upgrader := websocket.Upgrader{}

@@ -3,7 +3,7 @@ package lighter
 import "testing"
 
 func TestErrorsCompanion_SentinelErrors(t *testing.T) {
-	if ErrInvalidSignature == nil || ErrOrderNotFound == nil {
+	if ErrInvalidSignature == nil || ErrOrderNotFound == nil || ErrMalformedResponse == nil {
 		t.Fatal("expected sentinel errors")
 	}
 }

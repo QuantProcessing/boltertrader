@@ -1,9 +1,12 @@
 package lighter
 
-import "fmt"
+import "errors"
 
 // Common error types
 var (
-	ErrInvalidSignature = fmt.Errorf("invalid signature")
-	ErrOrderNotFound    = fmt.Errorf("order not found")
+	ErrInvalidSignature  = errors.New("invalid signature")
+	ErrOrderNotFound     = errors.New("order not found")
+	ErrOrderRejected     = errors.New("order rejected")
+	ErrWSOutcomeUnknown  = errors.New("websocket transaction outcome is unknown")
+	ErrMalformedResponse = errors.New("malformed response")
 )

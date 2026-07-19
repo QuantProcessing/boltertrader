@@ -5,6 +5,8 @@ import (
 	"net/http"
 )
 
+var ErrWSOutcomeUnknown = errors.New("binance spot ws-api outcome unknown after request write")
+
 // APIError represents a Binance API error
 type APIError struct {
 	Code       int    `json:"code"`

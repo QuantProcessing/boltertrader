@@ -194,6 +194,9 @@ func TestLighterTestnetConfigFromEnvDefaultsMaxNotionalAndSymbols(t *testing.T) 
 	if cfg.SpotSymbol != LighterTestnetDefaultSpotSymbol || cfg.PerpSymbol != LighterTestnetDefaultPerpSymbol {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
+	if cfg.SpotSymbol != "ETH-USDC" || cfg.PerpSymbol != "ETH" {
+		t.Fatalf("Lighter Testnet defaults = spot:%q perp:%q, want ETH-USDC and ETH", cfg.SpotSymbol, cfg.PerpSymbol)
+	}
 	if strings.Contains(cfg.String(), "test-private") {
 		t.Fatalf("config String leaked private key: %s", cfg.String())
 	}

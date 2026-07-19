@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -42,10 +43,10 @@ func (c *Client) GetAccountActiveOrders(ctx context.Context, marketId int) (*Acc
 
 	var res AccountActiveOrdersResponse
 	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: invalid active-orders response", ErrMalformedResponse)
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get active orders: %s", res.Msg)
+		return nil, &APIError{Code: int(res.Code)}
 	}
 	return &res, nil
 }
@@ -57,6 +58,10 @@ func (c *Client) GetNextNonce(ctx context.Context) (int64, error) {
 
 	if c.nonceInit {
 		nonce := c.nonce
+		if nonce == math.MaxInt64 {
+			c.nonceInit = false
+			return 0, fmt.Errorf("%w: next-nonce cache exhausted", ErrMalformedResponse)
+		}
 		c.nonce++
 		return nonce, nil
 	}
@@ -81,18 +86,22 @@ func (c *Client) GetNextNonce(ctx context.Context) (int64, error) {
 	var res struct {
 		Code  int    `json:"code"`
 		Msg   string `json:"message"`
-		Nonce int64  `json:"nonce"`
+		Nonce *int64 `json:"nonce"`
 	}
 	if err := json.Unmarshal(data, &res); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("%w: invalid next-nonce response", ErrMalformedResponse)
 	}
 	if res.Code != 200 {
-		return 0, fmt.Errorf("failed to get nonce: %s", res.Msg)
+		return 0, fmt.Errorf("%w: invalid next-nonce response code", ErrMalformedResponse)
 	}
+	if res.Nonce == nil || *res.Nonce < 0 || *res.Nonce == math.MaxInt64 {
+		return 0, fmt.Errorf("%w: invalid next-nonce field", ErrMalformedResponse)
+	}
+	nonce := *res.Nonce
 
-	c.nonce = res.Nonce + 1
+	c.nonce = nonce + 1
 	c.nonceInit = true
-	return res.Nonce, nil
+	return nonce, nil
 }
 
 // GetAccount fetches account information
@@ -123,10 +132,10 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountResponse, error) {
 
 	var res AccountResponse
 	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: invalid account response", ErrMalformedResponse)
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get account: %s", res.Msg)
+		return nil, fmt.Errorf("%w: invalid account response code", ErrMalformedResponse)
 	}
 	return &res, nil
 }
@@ -241,7 +250,7 @@ func (c *Client) GetTrades(ctx context.Context, req TradesRequest) (*TradesRespo
 		return nil, err
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get trades: %s", res.Msg)
+		return nil, fmt.Errorf("%w: invalid trades response code", ErrMalformedResponse)
 	}
 	return &res, nil
 }

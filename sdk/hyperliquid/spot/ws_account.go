@@ -10,22 +10,33 @@ import (
 
 // SubscribeOrderUpdates
 func (c *WebsocketClient) SubscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate)) error {
-	return c.subscribeOrderUpdates(user, handler, false)
+	return c.subscribeOrderUpdates(user, handler, nil, false)
 }
 
 func (c *WebsocketClient) SubscribeOrderUpdatesConfirmed(user string, handler func([]hyperliquid.WsOrderUpdate)) error {
-	return c.subscribeOrderUpdates(user, handler, true)
+	return c.subscribeOrderUpdates(user, handler, nil, true)
 }
 
-func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate), confirmed bool) error {
+func (c *WebsocketClient) SubscribeOrderUpdatesWithErrors(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error)) error {
+	return c.subscribeOrderUpdates(user, handler, onDecodeError, false)
+}
+
+func (c *WebsocketClient) SubscribeOrderUpdatesConfirmedWithErrors(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error)) error {
+	return c.subscribeOrderUpdates(user, handler, onDecodeError, true)
+}
+
+func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error), confirmed bool) error {
 	sub := map[string]string{
 		"type": "orderUpdates",
 		"user": user,
 	}
 
 	wrapped := func(msg hyperliquid.WsMessage) {
-		var data []hyperliquid.WsOrderUpdate
-		if err := json.Unmarshal(msg.Data, &data); err != nil {
+		data, err := decodeOrderUpdatesMessage(msg.Data)
+		if err != nil {
+			if onDecodeError != nil {
+				onDecodeError(err)
+			}
 			return
 		}
 		handler(data)
@@ -38,14 +49,22 @@ func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hype
 
 // SubscribeUserFills
 func (c *WebsocketClient) SubscribeUserFills(user string, handler func(hyperliquid.WsUserFills)) error {
-	return c.subscribeUserFills(user, handler, false)
+	return c.subscribeUserFills(user, handler, nil, false)
 }
 
 func (c *WebsocketClient) SubscribeUserFillsConfirmed(user string, handler func(hyperliquid.WsUserFills)) error {
-	return c.subscribeUserFills(user, handler, true)
+	return c.subscribeUserFills(user, handler, nil, true)
 }
 
-func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliquid.WsUserFills), confirmed bool) error {
+func (c *WebsocketClient) SubscribeUserFillsWithErrors(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error)) error {
+	return c.subscribeUserFills(user, handler, onDecodeError, false)
+}
+
+func (c *WebsocketClient) SubscribeUserFillsConfirmedWithErrors(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error)) error {
+	return c.subscribeUserFills(user, handler, onDecodeError, true)
+}
+
+func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error), confirmed bool) error {
 	sub := map[string]any{
 		"type":            "userFills",
 		"user":            user,
@@ -53,18 +72,54 @@ func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliqu
 	}
 
 	wrapped := func(msg hyperliquid.WsMessage) {
-		var data hyperliquid.WsUserFills
-		if err := json.Unmarshal(msg.Data, &data); err != nil {
+		data, matched, err := decodeUserFillsMessage(msg.Data, user)
+		if !matched {
 			return
 		}
-		if strings.EqualFold(data.User, user) {
-			handler(data)
+		if err != nil {
+			if onDecodeError != nil {
+				onDecodeError(err)
+			}
+			return
 		}
+		handler(data)
 	}
 	if confirmed {
 		return c.SubscribeConfirmed("userFills", sub, wrapped)
 	}
 	return c.Subscribe("userFills", sub, wrapped)
+}
+
+func decodeOrderUpdatesMessage(raw json.RawMessage) ([]hyperliquid.WsOrderUpdate, error) {
+	var data []hyperliquid.WsOrderUpdate
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("decode orderUpdates payload: %w", err)
+	}
+	return data, nil
+}
+
+func decodeUserFillsMessage(raw json.RawMessage, user string) (hyperliquid.WsUserFills, bool, error) {
+	var envelope struct {
+		User  string          `json:"user"`
+		Fills json.RawMessage `json:"fills"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills envelope: %w", err)
+	}
+	if strings.TrimSpace(envelope.User) == "" {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills envelope: user is required")
+	}
+	if !strings.EqualFold(envelope.User, user) {
+		return hyperliquid.WsUserFills{}, false, nil
+	}
+	if len(envelope.Fills) == 0 || string(envelope.Fills) == "null" {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills payload: fills is required")
+	}
+	var data hyperliquid.WsUserFills
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills payload: %w", err)
+	}
+	return data, true, nil
 }
 
 // SubscribeSpotState subscribes to authoritative Spot balance updates. The

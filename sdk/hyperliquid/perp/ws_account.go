@@ -2,6 +2,7 @@ package perp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
@@ -9,22 +10,33 @@ import (
 
 // SubscribeOrderUpdates
 func (c *WebsocketClient) SubscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate)) error {
-	return c.subscribeOrderUpdates(user, handler, false)
+	return c.subscribeOrderUpdates(user, handler, nil, false)
 }
 
 func (c *WebsocketClient) SubscribeOrderUpdatesConfirmed(user string, handler func([]hyperliquid.WsOrderUpdate)) error {
-	return c.subscribeOrderUpdates(user, handler, true)
+	return c.subscribeOrderUpdates(user, handler, nil, true)
 }
 
-func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate), confirmed bool) error {
+func (c *WebsocketClient) SubscribeOrderUpdatesWithErrors(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error)) error {
+	return c.subscribeOrderUpdates(user, handler, onDecodeError, false)
+}
+
+func (c *WebsocketClient) SubscribeOrderUpdatesConfirmedWithErrors(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error)) error {
+	return c.subscribeOrderUpdates(user, handler, onDecodeError, true)
+}
+
+func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hyperliquid.WsOrderUpdate), onDecodeError func(error), confirmed bool) error {
 	sub := map[string]string{
 		"type": "orderUpdates",
 		"user": user,
 	}
 
 	wrapped := func(msg hyperliquid.WsMessage) {
-		var data []hyperliquid.WsOrderUpdate
-		if err := json.Unmarshal(msg.Data, &data); err != nil {
+		data, err := decodeOrderUpdatesMessage(msg.Data)
+		if err != nil {
+			if onDecodeError != nil {
+				onDecodeError(err)
+			}
 			return
 		}
 		handler(data)
@@ -37,14 +49,22 @@ func (c *WebsocketClient) subscribeOrderUpdates(user string, handler func([]hype
 
 // SubscribeUserFills
 func (c *WebsocketClient) SubscribeUserFills(user string, handler func(hyperliquid.WsUserFills)) error {
-	return c.subscribeUserFills(user, handler, false)
+	return c.subscribeUserFills(user, handler, nil, false)
 }
 
 func (c *WebsocketClient) SubscribeUserFillsConfirmed(user string, handler func(hyperliquid.WsUserFills)) error {
-	return c.subscribeUserFills(user, handler, true)
+	return c.subscribeUserFills(user, handler, nil, true)
 }
 
-func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliquid.WsUserFills), confirmed bool) error {
+func (c *WebsocketClient) SubscribeUserFillsWithErrors(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error)) error {
+	return c.subscribeUserFills(user, handler, onDecodeError, false)
+}
+
+func (c *WebsocketClient) SubscribeUserFillsConfirmedWithErrors(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error)) error {
+	return c.subscribeUserFills(user, handler, onDecodeError, true)
+}
+
+func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliquid.WsUserFills), onDecodeError func(error), confirmed bool) error {
 	sub := map[string]any{
 		"type":            "userFills",
 		"user":            user,
@@ -52,13 +72,17 @@ func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliqu
 	}
 
 	wrapped := func(msg hyperliquid.WsMessage) {
-		var data hyperliquid.WsUserFills
-		if err := json.Unmarshal(msg.Data, &data); err != nil {
+		data, matched, err := decodeUserFillsMessage(msg.Data, user)
+		if !matched {
 			return
 		}
-		if strings.EqualFold(data.User, user) {
-			handler(data)
+		if err != nil {
+			if onDecodeError != nil {
+				onDecodeError(err)
+			}
+			return
 		}
+		handler(data)
 	}
 	if confirmed {
 		return c.SubscribeConfirmed("userFills", sub, wrapped)
@@ -66,17 +90,57 @@ func (c *WebsocketClient) subscribeUserFills(user string, handler func(hyperliqu
 	return c.Subscribe("userFills", sub, wrapped)
 }
 
+func decodeOrderUpdatesMessage(raw json.RawMessage) ([]hyperliquid.WsOrderUpdate, error) {
+	var data []hyperliquid.WsOrderUpdate
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("decode orderUpdates payload: %w", err)
+	}
+	return data, nil
+}
+
+func decodeUserFillsMessage(raw json.RawMessage, user string) (hyperliquid.WsUserFills, bool, error) {
+	var envelope struct {
+		User  string          `json:"user"`
+		Fills json.RawMessage `json:"fills"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills envelope: %w", err)
+	}
+	if strings.TrimSpace(envelope.User) == "" {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills envelope: user is required")
+	}
+	if !strings.EqualFold(envelope.User, user) {
+		return hyperliquid.WsUserFills{}, false, nil
+	}
+	if len(envelope.Fills) == 0 || string(envelope.Fills) == "null" {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills payload: fills is required")
+	}
+	var data hyperliquid.WsUserFills
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return hyperliquid.WsUserFills{}, true, fmt.Errorf("decode userFills payload: %w", err)
+	}
+	return data, true, nil
+}
+
 // SubscribeClearinghouseState subscribes to the current per-dex account state.
 // An empty dex selects Hyperliquid's canonical perp dex.
 func (c *WebsocketClient) SubscribeClearinghouseState(user, dex string, handler func(PerpPosition)) error {
-	return c.subscribeClearinghouseState(user, dex, handler, false)
+	return c.subscribeClearinghouseState(user, dex, handler, nil, false)
 }
 
 func (c *WebsocketClient) SubscribeClearinghouseStateConfirmed(user, dex string, handler func(PerpPosition)) error {
-	return c.subscribeClearinghouseState(user, dex, handler, true)
+	return c.subscribeClearinghouseState(user, dex, handler, nil, true)
 }
 
-func (c *WebsocketClient) subscribeClearinghouseState(user, dex string, handler func(PerpPosition), confirmed bool) error {
+func (c *WebsocketClient) SubscribeClearinghouseStateWithErrors(user, dex string, handler func(PerpPosition), onDecodeError func(error)) error {
+	return c.subscribeClearinghouseState(user, dex, handler, onDecodeError, false)
+}
+
+func (c *WebsocketClient) SubscribeClearinghouseStateConfirmedWithErrors(user, dex string, handler func(PerpPosition), onDecodeError func(error)) error {
+	return c.subscribeClearinghouseState(user, dex, handler, onDecodeError, true)
+}
+
+func (c *WebsocketClient) subscribeClearinghouseState(user, dex string, handler func(PerpPosition), onDecodeError func(error), confirmed bool) error {
 	sub := map[string]string{
 		"type": "clearinghouseState",
 		"user": user,
@@ -84,23 +148,47 @@ func (c *WebsocketClient) subscribeClearinghouseState(user, dex string, handler 
 	}
 
 	wrapped := func(msg hyperliquid.WsMessage) {
-		var data struct {
-			User               string       `json:"user"`
-			Dex                string       `json:"dex"`
-			ClearinghouseState PerpPosition `json:"clearinghouseState"`
-		}
-		if err := json.Unmarshal(msg.Data, &data); err != nil {
+		state, matched, err := decodeClearinghouseStateMessage(msg.Data, user, dex)
+		if !matched {
 			return
 		}
-		if !strings.EqualFold(data.User, user) || data.Dex != dex {
+		if err != nil {
+			if onDecodeError != nil {
+				onDecodeError(err)
+			}
 			return
 		}
-		handler(data.ClearinghouseState)
+		handler(state)
 	}
 	if confirmed {
 		return c.SubscribeConfirmed("clearinghouseState", sub, wrapped)
 	}
 	return c.Subscribe("clearinghouseState", sub, wrapped)
+}
+
+func decodeClearinghouseStateMessage(raw json.RawMessage, user, dex string) (PerpPosition, bool, error) {
+	var envelope struct {
+		User               string          `json:"user"`
+		Dex                string          `json:"dex"`
+		ClearinghouseState json.RawMessage `json:"clearinghouseState"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return PerpPosition{}, true, fmt.Errorf("decode clearinghouseState envelope: %w", err)
+	}
+	if strings.TrimSpace(envelope.User) == "" {
+		return PerpPosition{}, true, fmt.Errorf("decode clearinghouseState envelope: user is required")
+	}
+	if !strings.EqualFold(envelope.User, user) || envelope.Dex != dex {
+		return PerpPosition{}, false, nil
+	}
+	if len(envelope.ClearinghouseState) == 0 || string(envelope.ClearinghouseState) == "null" {
+		return PerpPosition{}, true, fmt.Errorf("decode clearinghouseState payload: clearinghouseState is required")
+	}
+	var state PerpPosition
+	if err := json.Unmarshal(envelope.ClearinghouseState, &state); err != nil {
+		return PerpPosition{}, true, fmt.Errorf("decode clearinghouseState payload: %w", err)
+	}
+	return state, true, nil
 }
 
 // SubscribeUserEvents

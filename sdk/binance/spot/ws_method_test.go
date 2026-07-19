@@ -3,8 +3,13 @@ package spot
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func requireWSNotConnected(t *testing.T, err error) {
@@ -48,6 +53,16 @@ func TestWSClient_Close(t *testing.T) {
 	client.Close()
 	if !client.isClosed {
 		t.Fatal("expected client to be marked closed")
+	}
+}
+
+func TestWsMarketClientWithEndpointProfileUsesProfileURL(t *testing.T) {
+	profile := EndpointProfile{WSBaseURL: "wss://profile.test/ws"}
+	client := NewWsMarketClientWithEndpointProfile(context.Background(), profile)
+	t.Cleanup(client.Close)
+
+	if client.WsClient.URL != profile.WSBaseURL {
+		t.Fatalf("unexpected websocket URL: %s", client.WsClient.URL)
 	}
 }
 
@@ -375,4 +390,134 @@ func TestWsAPIClient_ModifyOrderWS(t *testing.T) {
 func TestWsAPIClient_CancelOrderWS(t *testing.T) {
 	_, err := NewWsAPIClient(context.Background()).CancelOrderWS("api-key", "secret", "BTCUSDT", 1, "", "req-1")
 	requireWSNotConnected(t, err)
+}
+
+func TestWsAPIClient_PlaceOrderWSReturnsTypedAPIError(t *testing.T) {
+	wsURL := newSpotWSServer(t, func(conn *websocket.Conn, _ *http.Request) {
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"req-1","status":400,"error":{"code":-1013,"msg":"secret venue rejection"}}`))
+	})
+	client := NewWsAPIClient(context.Background()).WithURL(wsURL + "/ws")
+	defer client.Close()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	_, err := client.PlaceOrderWS("api-key", "secret", PlaceOrderParams{
+		Symbol: "BTCUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Quantity: "1", Price: "100",
+	}, "req-1")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != -1013 || apiErr.Message != "secret venue rejection" || apiErr.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("expected typed APIError, got %#v / %v", apiErr, err)
+	}
+}
+
+func TestWsAPIClient_CancelOrderWSReturnsTypedAPIError(t *testing.T) {
+	wsURL := newSpotWSServer(t, func(conn *websocket.Conn, _ *http.Request) {
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"id":"req-1","status":400,"error":{"code":-2011,"msg":"secret cancel rejection"}}`))
+	})
+	client := NewWsAPIClient(context.Background()).WithURL(wsURL + "/ws")
+	defer client.Close()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	_, err := client.CancelOrderWS("api-key", "secret", "BTCUSDT", 1, "", "req-1")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != -2011 || apiErr.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("expected typed cancel APIError, got %#v / %v", apiErr, err)
+	}
+}
+
+func TestWsAPIClient_PlaceAndCancelOrderWSPostSendUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*WsAPIClient) error
+	}{
+		{
+			name: "place",
+			run: func(client *WsAPIClient) error {
+				_, err := client.PlaceOrderWS("api-key", "secret", PlaceOrderParams{
+					Symbol: "BTCUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Quantity: "1", Price: "100",
+				}, "req-1")
+				return err
+			},
+		},
+		{
+			name: "cancel",
+			run: func(client *WsAPIClient) error {
+				_, err := client.CancelOrderWS("api-key", "secret", "BTCUSDT", 1, "", "req-1")
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wrote := make(chan struct{}, 1)
+			wsURL := newSpotWSServer(t, func(conn *websocket.Conn, _ *http.Request) {
+				defer conn.Close()
+				_, _, _ = conn.ReadMessage()
+				wrote <- struct{}{}
+			})
+			client := NewWsAPIClient(context.Background()).WithURL(wsURL + "/ws")
+			client.RequestTimeout = 20 * time.Millisecond
+			client.ReconnectWait = time.Hour
+			defer client.Close()
+			if err := client.Connect(); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+
+			err := tc.run(client)
+			if !errors.Is(err, ErrWSOutcomeUnknown) {
+				t.Fatalf("expected ErrWSOutcomeUnknown, got %v", err)
+			}
+			select {
+			case <-wrote:
+			default:
+				t.Fatal("server did not observe request write")
+			}
+		})
+	}
+}
+
+func TestWsAPIClient_OrderWSWriteErrorAfterSocketSelectedIsUnknown(t *testing.T) {
+	wsURL := newSpotWSServer(t, func(conn *websocket.Conn, _ *http.Request) {
+		defer conn.Close()
+		time.Sleep(time.Second)
+	})
+	client := NewWsAPIClient(context.Background()).WithURL(wsURL + "/ws")
+	client.RequestTimeout = time.Second
+	client.ReconnectWait = time.Hour
+	defer client.Close()
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	client.Mu.Lock()
+	conn := client.Conn
+	if conn == nil {
+		client.Mu.Unlock()
+		t.Fatal("expected connected socket")
+	}
+	_ = conn.Close()
+	client.Mu.Unlock()
+	time.Sleep(20 * time.Millisecond)
+	client.Mu.Lock()
+	client.Conn = conn
+	client.Mu.Unlock()
+
+	_, err := client.PlaceOrderWS("api-key", "secret", PlaceOrderParams{
+		Symbol: "BTCUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTC", Quantity: "1", Price: "100",
+	}, "req-1")
+	if !errors.Is(err, ErrWSOutcomeUnknown) {
+		t.Fatalf("expected ErrWSOutcomeUnknown for write error after socket selection, got %v", err)
+	}
+}
+
+func TestWsAPIClient_OrderWSMalformedResponseUsesStablePrefix(t *testing.T) {
+	_, err := decodeWSAPIResult[OrderResponse]([]byte(`{`))
+	if err == nil || !strings.Contains(err.Error(), "failed to unmarshal response") {
+		t.Fatalf("malformed error = %v, want stable unmarshal prefix", err)
+	}
 }

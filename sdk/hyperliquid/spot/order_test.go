@@ -180,6 +180,150 @@ func TestClient_PlaceOrder(t *testing.T) {
 	}
 }
 
+func TestClientPlaceMarketOrderUsesFreshMidAndProtectedIOC(t *testing.T) {
+	var calls []string
+	base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: spotMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(req.Body)
+		calls = append(calls, string(body))
+		switch len(calls) {
+		case 1:
+			return spotMarketResponse(req, `{"tokens":[{"name":"PURR","szDecimals":2,"index":1},{"name":"USDC","szDecimals":6,"index":0}],"universe":[{"name":"PURR/USDC","index":7,"tokens":[1,0]}]}`), nil
+		case 2:
+			return spotMarketResponse(req, `{"PURR/USDC":"123.456789"}`), nil
+		case 3:
+			if !strings.Contains(string(body), `"a":10007`) ||
+				!strings.Contains(string(body), `"p":"129.63"`) ||
+				!strings.Contains(string(body), `"t":{"limit":{"tif":"Ioc"}}`) {
+				t.Fatalf("unexpected protected market action: %s", body)
+			}
+			return spotMarketResponse(req, `{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"totalSz":"1","avgPx":"125","oid":7}}]}}}`), nil
+		default:
+			t.Fatalf("unexpected request %d: %s", len(calls), body)
+		}
+		return nil, nil
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin:  "PURR/USDC",
+		IsBuy: true,
+		Size:  1,
+	})
+	if err != nil {
+		t.Fatalf("PlaceMarketOrder: %v", err)
+	}
+	if status == nil || status.Filled == nil || status.Filled.Oid != 7 || len(calls) != 3 {
+		t.Fatalf("status=%+v calls=%d", status, len(calls))
+	}
+}
+
+func TestClientPlaceMarketOrderReferenceFailureNeverSendsAction(t *testing.T) {
+	var exchangeCalls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: spotMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/exchange" {
+			exchangeCalls.Add(1)
+		}
+		return spotMarketResponse(req, `{"tokens":[],"universe":[]}`), nil
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "PURR/USDC", IsBuy: true, Size: 1,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrMarketReferenceMalformed) {
+		t.Fatalf("status=%+v err=%v, want malformed reference", status, err)
+	}
+	if exchangeCalls.Load() != 0 {
+		t.Fatalf("exchange sends=%d, want zero", exchangeCalls.Load())
+	}
+}
+
+func TestClientPlaceMarketOrderReferenceTransportFailureNeverSendsAction(t *testing.T) {
+	var exchangeCalls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: spotMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/exchange" {
+			exchangeCalls.Add(1)
+		}
+		return nil, io.ErrClosedPipe
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "PURR/USDC", IsBuy: true, Size: 1,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrMarketReferenceUnavailable) {
+		t.Fatalf("status=%+v err=%v, want unavailable reference", status, err)
+	}
+	if exchangeCalls.Load() != 0 {
+		t.Fatalf("exchange sends=%d, want zero", exchangeCalls.Load())
+	}
+}
+
+func TestClientPlaceMarketOrderPostSendUnknownIsAmbiguous(t *testing.T) {
+	var calls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: spotMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return spotMarketResponse(req, `{"tokens":[{"name":"PURR","szDecimals":2,"index":1},{"name":"USDC","szDecimals":6,"index":0}],"universe":[{"name":"PURR/USDC","index":7,"tokens":[1,0]}]}`), nil
+		case 2:
+			return spotMarketResponse(req, `{"PURR/USDC":"10"}`), nil
+		default:
+			return nil, io.ErrUnexpectedEOF
+		}
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "PURR/USDC", IsBuy: false, Size: 1,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrMutationOutcomeUnknown) {
+		t.Fatalf("status=%+v err=%v, want ambiguous mutation", status, err)
+	}
+}
+
+func TestClientPlaceMarketOrderDefiniteVenueRejectIsNotAmbiguous(t *testing.T) {
+	var calls atomic.Int32
+	base := hyperliquid.NewClient().WithCredentials(hyperliquidPrivateKeyForLocalSigning(), nil)
+	base.BaseURL = "https://hyperliquid.test"
+	base.Http = &http.Client{Transport: spotMarketRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch calls.Add(1) {
+		case 1:
+			return spotMarketResponse(req, `{"tokens":[{"name":"PURR","szDecimals":2,"index":1},{"name":"USDC","szDecimals":6,"index":0}],"universe":[{"name":"PURR/USDC","index":7,"tokens":[1,0]}]}`), nil
+		case 2:
+			return spotMarketResponse(req, `{"PURR/USDC":"10"}`), nil
+		default:
+			return spotMarketResponse(req, `{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"Insufficient spot balance"}]}}}`), nil
+		}
+	})}
+
+	status, err := NewClient(base).PlaceMarketOrder(context.Background(), MarketOrderRequest{
+		Coin: "PURR/USDC", IsBuy: true, Size: 1,
+	})
+	if status != nil || !errors.Is(err, hyperliquid.ErrOrderRejected) ||
+		errors.Is(err, hyperliquid.ErrMutationOutcomeUnknown) {
+		t.Fatalf("status=%+v err=%v, want definite rejection", status, err)
+	}
+}
+
+type spotMarketRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn spotMarketRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func spotMarketResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}
+}
+
 func TestClient_PlaceOrdersBuildsBatchAction(t *testing.T) {
 	var seenBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

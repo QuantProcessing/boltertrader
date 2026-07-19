@@ -123,6 +123,24 @@ type WsTradeEvent struct {
 	LiquidationTrades []Trade `json:"liquidation_trades"`
 }
 
+type WsCandle struct {
+	OpenTime    int64       `json:"t"`
+	Open        json.Number `json:"o"`
+	High        json.Number `json:"h"`
+	Low         json.Number `json:"l"`
+	Close       json.Number `json:"c"`
+	Volume      json.Number `json:"v"`
+	QuoteVolume json.Number `json:"V"`
+	LastTradeID int64       `json:"i"`
+}
+
+type WsCandleEvent struct {
+	Channel   string     `json:"channel"`
+	Type      string     `json:"type"`
+	Timestamp int64      `json:"timestamp"`
+	Candles   []WsCandle `json:"candles"`
+}
+
 // WsHeightEvent represents blockchain height updates
 type WsHeightEvent struct {
 	Channel   string `json:"channel"`

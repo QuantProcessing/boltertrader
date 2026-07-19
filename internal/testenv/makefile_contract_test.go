@@ -63,6 +63,104 @@ func TestDemoAcceptanceRecipesRejectSkippedTests(t *testing.T) {
 	}
 }
 
+func TestExchangeOfflineTargetIsPhony(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	phony := make(map[string]bool)
+	for _, line := range strings.Split(makefile, "\n") {
+		if !strings.HasPrefix(line, ".PHONY:") {
+			continue
+		}
+		for _, target := range strings.Fields(strings.TrimPrefix(line, ".PHONY:")) {
+			phony[target] = true
+		}
+	}
+	if !phony["test-exchange-offline"] {
+		t.Error("Makefile .PHONY declarations are missing test-exchange-offline")
+	}
+}
+
+func TestExchangeOfflineRecipeRunsShortSuite(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	const want = "test-exchange-offline:\n\tgo test -short ./exchange/... -count=1"
+	if got := makeTargetBlock(t, makefile, "test-exchange-offline"); got != want {
+		t.Fatalf("test-exchange-offline recipe mismatch\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestExchangeQualityRecipesRunRaceAndRedactionGates(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	for target, want := range map[string]string{
+		"test-exchange-race":      "test-exchange-race:\n\tgo test -race ./exchange/... -count=1",
+		"test-exchange-redaction": "test-exchange-redaction:\n\tgo test -short ./exchange/... -run 'Test(ConfigFormattingRedactsCredentials|ConstructedClientFormattingRedactsCredentials|AllVenueQueryNormalizersRedactUnderlyingErrors|AllVenueMutationNormalizersRedactVenueMessages|NormalizedErrorKindsAndMetadata)$$' -count=1",
+		"test-exchange-quality":   "test-exchange-quality: test-exchange-offline test-exchange-redaction test-exchange-race",
+	} {
+		t.Run(target, func(t *testing.T) {
+			if got := makeTargetBlock(t, makefile, target); got != want {
+				t.Fatalf("%s recipe mismatch\ngot:\n%s\nwant:\n%s", target, got, want)
+			}
+		})
+	}
+}
+
+func TestExchangeAcceptanceRecipesUseExactProductRowSelectors(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	for target, contract := range map[string]struct {
+		env      string
+		selector string
+	}{
+		"test-exchange-binance-demo-spot":        {"BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", "-run '^TestExchangeBinanceSpotDemoAcceptance$$'"},
+		"test-exchange-binance-demo-perp":        {"BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", "-run '^TestExchangeBinancePerpDemoAcceptance$$'"},
+		"test-exchange-okx-demo-spot":            {"BOLTER_ENABLE_OKX_DEMO_WRITES=1", "-run '^TestExchangeOKXSpotDemoAcceptance$$'"},
+		"test-exchange-okx-demo-perp":            {"BOLTER_ENABLE_OKX_DEMO_WRITES=1", "-run '^TestExchangeOKXPerpDemoAcceptance$$'"},
+		"test-exchange-lighter-testnet-spot":     {"BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", "-run '^TestExchangeLighterSpotTestnetAcceptance$$'"},
+		"test-exchange-lighter-testnet-perp":     {"BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", "-run '^TestExchangeLighterPerpTestnetAcceptance$$'"},
+		"test-exchange-hyperliquid-testnet-spot": {"BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", "-run '^TestExchangeHyperliquidSpotTestnetAcceptance$$'"},
+		"test-exchange-hyperliquid-testnet-perp": {"BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", "-run '^TestExchangeHyperliquidPerpTestnetAcceptance$$'"},
+	} {
+		t.Run(target, func(t *testing.T) {
+			block := makeTargetBlock(t, makefile, target)
+			for _, want := range []string{
+				contract.env,
+				"go run ./internal/testenv/cmd/noskipgotest -- -v",
+				contract.selector,
+				"./exchange/...",
+				"-count=1",
+				"-timeout=6m",
+			} {
+				if !strings.Contains(block, want) {
+					t.Fatalf("%s recipe missing %q\nblock:\n%s", target, want, block)
+				}
+			}
+		})
+	}
+}
+
+func TestExchangeAcceptanceAggregateRunsAllProductRowsSerially(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	block := makeTargetBlock(t, makefile, "test-exchange-acceptance")
+	wantLine := "test-exchange-acceptance: test-exchange-binance-demo-acceptance test-exchange-okx-demo-acceptance test-exchange-lighter-testnet-acceptance test-exchange-hyperliquid-testnet-acceptance"
+	if block != wantLine {
+		t.Fatalf("test-exchange-acceptance aggregate mismatch\ngot:\n%s\nwant:\n%s", block, wantLine)
+	}
+}
+
+func TestExchangeAcceptanceVenueAggregatesAndExternalAlias(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	for target, want := range map[string]string{
+		"test-exchange-binance-demo-acceptance":        "test-exchange-binance-demo-acceptance: test-exchange-binance-demo-spot test-exchange-binance-demo-perp",
+		"test-exchange-okx-demo-acceptance":            "test-exchange-okx-demo-acceptance: test-exchange-okx-demo-spot test-exchange-okx-demo-perp",
+		"test-exchange-lighter-testnet-acceptance":     "test-exchange-lighter-testnet-acceptance: test-exchange-lighter-testnet-spot test-exchange-lighter-testnet-perp",
+		"test-exchange-hyperliquid-testnet-acceptance": "test-exchange-hyperliquid-testnet-acceptance: test-exchange-hyperliquid-testnet-spot test-exchange-hyperliquid-testnet-perp",
+		"test-exchange-external-acceptance":            "test-exchange-external-acceptance: test-exchange-acceptance",
+	} {
+		t.Run(target, func(t *testing.T) {
+			if got := makeTargetBlock(t, makefile, target); got != want {
+				t.Fatalf("%s aggregate mismatch\ngot:\n%s\nwant:\n%s", target, got, want)
+			}
+		})
+	}
+}
+
 func TestLighterAcceptanceRecipesUseExactSelectors(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	for target, selector := range map[string]string{
@@ -195,48 +293,56 @@ codex-serial-probe-a codex-serial-probe-b:
 func TestCredentialedWriteRecipesReserveCleanupTimeout(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	minimums := map[string]time.Duration{
-		"test-binance-demo-perp":                5 * time.Minute,
-		"test-binance-demo-runtime-perp":        6 * time.Minute,
-		"test-binance-demo-spot":                5 * time.Minute,
-		"test-binance-demo-runtime-spot":        6 * time.Minute,
-		"test-okx-demo-spot":                    5 * time.Minute,
-		"test-okx-demo-runtime-spot":            6 * time.Minute,
-		"test-okx-demo-perp":                    5 * time.Minute,
-		"test-okx-demo-runtime-perp":            6 * time.Minute,
-		"test-bybit-demo-spot":                  5 * time.Minute,
-		"test-bybit-demo-runtime-spot":          6 * time.Minute,
-		"test-bybit-demo-usdt-perp":             5 * time.Minute,
-		"test-bybit-demo-runtime-usdt-perp":     6 * time.Minute,
-		"test-bybit-demo-usdc-perp":             5 * time.Minute,
-		"test-bybit-demo-runtime-usdc-perp":     6 * time.Minute,
-		"test-bitget-demo-spot":                 5 * time.Minute,
-		"test-bitget-demo-runtime-spot":         6 * time.Minute,
-		"test-bitget-demo-usdt-perp":            5 * time.Minute,
-		"test-bitget-demo-runtime-usdt-perp":    6 * time.Minute,
-		"test-bitget-demo-usdc-perp":            5 * time.Minute,
-		"test-bitget-demo-runtime-usdc-perp":    6 * time.Minute,
-		"test-gate-testnet-spot":                5 * time.Minute,
-		"test-gate-testnet-runtime-spot":        6 * time.Minute,
-		"test-gate-testnet-usdt-perp":           5 * time.Minute,
-		"test-gate-testnet-runtime-usdt-perp":   6 * time.Minute,
-		"test-hyperliquid-testnet-spot":         5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-spot": 6 * time.Minute,
-		"test-hyperliquid-testnet-perp":         5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-perp": 6 * time.Minute,
-		"test-hyperliquid-testnet-hip3-write":   5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-hip3": 6 * time.Minute,
-		"test-lighter-testnet-spot":             5 * time.Minute,
-		"test-lighter-testnet-runtime-spot":     6 * time.Minute,
-		"test-lighter-testnet-perp":             5 * time.Minute,
-		"test-lighter-testnet-runtime-perp":     6 * time.Minute,
-		"test-aster-testnet-spot":               5 * time.Minute,
-		"test-aster-testnet-runtime-spot":       6 * time.Minute,
-		"test-aster-testnet-perp":               5 * time.Minute,
-		"test-aster-testnet-runtime-perp":       6 * time.Minute,
-		"test-nado-testnet-spot":                5 * time.Minute,
-		"test-nado-testnet-runtime-spot":        6 * time.Minute,
-		"test-nado-testnet-perp":                5 * time.Minute,
-		"test-nado-testnet-runtime-perp":        6 * time.Minute,
+		"test-binance-demo-perp":                 5 * time.Minute,
+		"test-binance-demo-runtime-perp":         6 * time.Minute,
+		"test-binance-demo-spot":                 5 * time.Minute,
+		"test-binance-demo-runtime-spot":         6 * time.Minute,
+		"test-exchange-binance-demo-spot":        6 * time.Minute,
+		"test-exchange-binance-demo-perp":        6 * time.Minute,
+		"test-exchange-okx-demo-spot":            6 * time.Minute,
+		"test-exchange-okx-demo-perp":            6 * time.Minute,
+		"test-exchange-lighter-testnet-spot":     6 * time.Minute,
+		"test-exchange-lighter-testnet-perp":     6 * time.Minute,
+		"test-exchange-hyperliquid-testnet-spot": 6 * time.Minute,
+		"test-exchange-hyperliquid-testnet-perp": 6 * time.Minute,
+		"test-okx-demo-spot":                     5 * time.Minute,
+		"test-okx-demo-runtime-spot":             6 * time.Minute,
+		"test-okx-demo-perp":                     5 * time.Minute,
+		"test-okx-demo-runtime-perp":             6 * time.Minute,
+		"test-bybit-demo-spot":                   5 * time.Minute,
+		"test-bybit-demo-runtime-spot":           6 * time.Minute,
+		"test-bybit-demo-usdt-perp":              5 * time.Minute,
+		"test-bybit-demo-runtime-usdt-perp":      6 * time.Minute,
+		"test-bybit-demo-usdc-perp":              5 * time.Minute,
+		"test-bybit-demo-runtime-usdc-perp":      6 * time.Minute,
+		"test-bitget-demo-spot":                  5 * time.Minute,
+		"test-bitget-demo-runtime-spot":          6 * time.Minute,
+		"test-bitget-demo-usdt-perp":             5 * time.Minute,
+		"test-bitget-demo-runtime-usdt-perp":     6 * time.Minute,
+		"test-bitget-demo-usdc-perp":             5 * time.Minute,
+		"test-bitget-demo-runtime-usdc-perp":     6 * time.Minute,
+		"test-gate-testnet-spot":                 5 * time.Minute,
+		"test-gate-testnet-runtime-spot":         6 * time.Minute,
+		"test-gate-testnet-usdt-perp":            5 * time.Minute,
+		"test-gate-testnet-runtime-usdt-perp":    6 * time.Minute,
+		"test-hyperliquid-testnet-spot":          5 * time.Minute,
+		"test-hyperliquid-testnet-runtime-spot":  6 * time.Minute,
+		"test-hyperliquid-testnet-perp":          5 * time.Minute,
+		"test-hyperliquid-testnet-runtime-perp":  6 * time.Minute,
+		"test-hyperliquid-testnet-hip3-write":    5 * time.Minute,
+		"test-hyperliquid-testnet-runtime-hip3":  6 * time.Minute,
+		"test-lighter-testnet-spot":              5 * time.Minute,
+		"test-lighter-testnet-runtime-spot":      6 * time.Minute,
+		"test-lighter-testnet-perp":              5 * time.Minute,
+		"test-lighter-testnet-runtime-perp":      6 * time.Minute,
+		"test-aster-testnet-spot":                5 * time.Minute,
+		"test-aster-testnet-runtime-spot":        6 * time.Minute,
+		"test-aster-testnet-perp":                5 * time.Minute,
+		"test-aster-testnet-runtime-perp":        6 * time.Minute,
+		"test-nado-testnet-spot":                 5 * time.Minute,
+		"test-nado-testnet-runtime-spot":         6 * time.Minute,
+		"test-nado-testnet-perp":                 5 * time.Minute,
+		"test-nado-testnet-runtime-perp":         6 * time.Minute,
 	}
 	timeoutPattern := regexp.MustCompile(`(?:^|\s)-timeout=([^\s]+)`)
 	discovered := make(map[string]struct{})

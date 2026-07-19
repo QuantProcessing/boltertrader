@@ -157,6 +157,32 @@ func (c *Client) GetOrders(ctx context.Context, instType, instId *string) ([]Ord
 	return Request[Order](c, ctx, MethodGet, path, nil, true)
 }
 
+// GetOrderHistory retrieves completed or otherwise terminal orders from the
+// venue's bounded recent history window.
+func (c *Client) GetOrderHistory(ctx context.Context, instType string, instId *string, after, before string, limit int) ([]Order, error) {
+	params := url.Values{}
+	if instType != "" {
+		params.Add("instType", instType)
+	}
+	if instId != nil {
+		params.Add("instId", *instId)
+	}
+	if after != "" {
+		params.Add("after", after)
+	}
+	if before != "" {
+		params.Add("before", before)
+	}
+	if limit > 0 {
+		params.Add("limit", strconv.Itoa(limit))
+	}
+	path := "/api/v5/trade/orders-history"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	return Request[Order](c, ctx, MethodGet, path, nil, true)
+}
+
 // GetSpreadOrders retrieves pending OKX Nitro spread orders.
 func (c *Client) GetSpreadOrders(ctx context.Context, sprdId *string) ([]SpreadOrder, error) {
 	params := url.Values{}

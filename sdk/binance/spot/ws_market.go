@@ -19,13 +19,28 @@ type WsMarketClient struct {
 }
 
 func NewWsMarketClient(ctx context.Context) *WsMarketClient {
+	return NewWsMarketClientWithEndpointProfile(ctx, ProductionEndpoints)
+}
+
+func NewDemoWsMarketClient(ctx context.Context) *WsMarketClient {
+	return NewWsMarketClientWithEndpointProfile(ctx, DemoEndpoints)
+}
+
+func NewWsMarketClientWithEndpointProfile(ctx context.Context, profile EndpointProfile) *WsMarketClient {
 	client := &WsMarketClient{
-		WsClient: NewWSClient(ctx, WSBaseURL),
+		WsClient: NewWSClient(ctx, endpointOrDefaultSpot(profile.WSBaseURL, WSBaseURL)),
 	}
 	client.WsClient.Logger = zap.NewNop().Sugar().Named("binance-spot-market")
 	client.Handler = client.handleMessage
 	client.manager = newBinanceSpotWSStreamManager(ctx, client.WsClient, client.handleMessage)
 	return client
+}
+
+func endpointOrDefaultSpot(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 func (c *WsMarketClient) Connect() error {

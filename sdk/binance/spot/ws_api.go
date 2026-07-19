@@ -30,6 +30,7 @@ type WsAPIClient struct {
 	PendingMu       sync.Mutex
 	Done            chan struct{}
 	ReconnectWait   time.Duration
+	RequestTimeout  time.Duration
 	Logger          *zap.SugaredLogger
 	Debug           bool
 	isClosed        bool
@@ -55,6 +56,7 @@ func NewWsAPIClient(ctx context.Context) *WsAPIClient {
 		PendingRequests: make(map[string]chan []byte),
 		Done:            make(chan struct{}),
 		ReconnectWait:   1 * time.Second,
+		RequestTimeout:  10 * time.Second,
 		Logger:          zap.NewNop().Sugar().Named("binance-spot-api"),
 		Debug:           os.Getenv("DEBUG") == "true" || os.Getenv("DEBUG") == "1",
 		ctx:             ctx,
@@ -338,19 +340,30 @@ func (c *WsAPIClient) SendRequest(id string, req interface{}) ([]byte, error) {
 		c.PendingMu.Unlock()
 	}()
 
-	if err := c.writeJSON(req); err != nil {
+	sent, err := c.writeJSON(req)
+	if err != nil {
+		if sent {
+			return nil, fmt.Errorf("%w: %v", ErrWSOutcomeUnknown, err)
+		}
 		return nil, err
 	}
 
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("request timeout")
+	case <-time.After(c.requestTimeout()):
+		return nil, fmt.Errorf("%w", ErrWSOutcomeUnknown)
 	}
 }
 
-func (c *WsAPIClient) writeJSON(v interface{}) error {
+func (c *WsAPIClient) requestTimeout() time.Duration {
+	if c.RequestTimeout > 0 {
+		return c.RequestTimeout
+	}
+	return 10 * time.Second
+}
+
+func (c *WsAPIClient) writeJSON(v interface{}) (bool, error) {
 	c.WriteMu.Lock()
 	defer c.WriteMu.Unlock()
 
@@ -359,14 +372,14 @@ func (c *WsAPIClient) writeJSON(v interface{}) error {
 	c.Mu.Unlock()
 
 	if conn == nil {
-		return fmt.Errorf("websocket not connected")
+		return false, fmt.Errorf("websocket not connected")
 	}
 
 	if c.Debug {
 		c.Logger.Debugw("Sending", "request_type", wsDebugRequestSummary(v))
 	}
 
-	return conn.WriteJSON(v)
+	return true, conn.WriteJSON(v)
 }
 
 func wsDebugRequestSummary(v interface{}) string {

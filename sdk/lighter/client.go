@@ -43,6 +43,9 @@ type Client struct {
 	ChainId      uint32
 	KeyManager   common.KeyManager
 
+	clockMu sync.RWMutex
+	now     func() time.Time
+
 	nonce     int64
 	nonceMu   sync.Mutex
 	nonceInit bool
@@ -54,6 +57,7 @@ func NewClient() *Client {
 		HTTPClient: http.DefaultClient,
 		Logger:     zap.NewNop().Sugar().Named("lighter-rest"),
 		ChainId:    MainnetChainID,
+		now:        time.Now,
 	}
 }
 
@@ -74,6 +78,28 @@ func (c *Client) WithBaseURL(baseURL string) *Client {
 		c.BaseURL = baseURL
 	}
 	return c
+}
+
+// WithClock configures the client-local clock used to timestamp signed create
+// and cancel transactions. Clock reads and updates are synchronized.
+func (c *Client) WithClock(now func() time.Time) *Client {
+	if now == nil {
+		return c
+	}
+	c.clockMu.Lock()
+	c.now = now
+	c.clockMu.Unlock()
+	return c
+}
+
+func (c *Client) nowTime() time.Time {
+	c.clockMu.RLock()
+	now := c.now
+	c.clockMu.RUnlock()
+	if now == nil {
+		return time.Now()
+	}
+	return now()
 }
 
 func (c *Client) WithCredentials(privateKey string, accountIndex int64, keyIndex uint8) *Client {

@@ -3,6 +3,7 @@ package okx
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,44 @@ func TestClient_PlaceOrder(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatalf("unexpected place response: %+v", got)
 	}
+}
+
+func TestClientGetOrderHistoryUsesTerminalOrdersEndpoint(t *testing.T) {
+	client := NewClient().
+		WithCredentials("key", "secret", "pass").
+		WithBaseURL("https://okx.test").
+		WithHTTPClient(&http.Client{Transport: okxHistoryRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			query := req.URL.Query()
+			if req.Method != http.MethodGet || req.URL.Path != "/api/v5/trade/orders-history" ||
+				query.Get("instType") != "SPOT" || query.Get("instId") != "BTC-USDT" ||
+				query.Get("after") != "100" || query.Get("before") != "200" || query.Get("limit") != "10" {
+				t.Fatalf("unexpected order history request: %s %s?%s", req.Method, req.URL.Path, req.URL.RawQuery)
+			}
+			if req.Header.Get("OK-ACCESS-KEY") != "key" {
+				t.Fatal("order history request was not authenticated")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"0","msg":"","data":[{"instId":"BTC-USDT","ordId":"7","clOrdId":"9","state":"filled","ordType":"market","side":"buy","sz":"0.01","accFillSz":"0.01","avgPx":"65000","cTime":"1700000000000","uTime":"1700000000100"}]}`)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		})})
+	instrument := "BTC-USDT"
+
+	orders, err := client.GetOrderHistory(context.Background(), "SPOT", &instrument, "100", "200", 10)
+	if err != nil {
+		t.Fatalf("GetOrderHistory: %v", err)
+	}
+	if len(orders) != 1 || orders[0].OrdId != "7" || orders[0].State != "filled" || orders[0].OrdType != OrderTypeMarket {
+		t.Fatalf("unexpected order history: %+v", orders)
+	}
+}
+
+type okxHistoryRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn okxHistoryRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 func TestClient_PlaceAlgoOrderBuildsPrivateRequest(t *testing.T) {

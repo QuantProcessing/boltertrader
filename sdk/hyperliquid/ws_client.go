@@ -858,6 +858,12 @@ func (c *WebsocketClient) handleSubscriptionResponse(conn *websocket.Conn, data 
 			c.failSubscriptionAcks(conn, fmt.Errorf("decode acknowledged subscription: %w", err))
 			return
 		}
+		if response.Method == "unsubscribe" {
+			// Unsubscribe is fire-and-forget in this client. A delayed
+			// confirmation can share the same payload key as a new subscribe;
+			// it must not consume or reject the new subscribe waiter.
+			return
+		}
 		if response.Method != "" && response.Method != "subscribe" {
 			err = fmt.Errorf("unexpected subscription acknowledgement method %q", response.Method)
 		} else if response.Success != nil && !*response.Success {
@@ -1011,12 +1017,24 @@ func subscriptionKey(subscription any) string {
 func normalizeSubscriptionIdentity(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
-		if subscriptionType, _ := typed["type"].(string); subscriptionType == "spotState" {
+		subscriptionType, _ := typed["type"].(string)
+		if subscriptionType == "spotState" {
 			if alias, ok := typed["ignorePortfolioMargin"]; ok {
 				if _, hasOfficialField := typed["isPortfolioMargin"]; !hasOfficialField {
 					typed["isPortfolioMargin"] = alias
 					delete(typed, "ignorePortfolioMargin")
 				}
+			}
+		}
+		if subscriptionType == "l2Book" {
+			if value, exists := typed["nSigFigs"]; exists && value == nil {
+				delete(typed, "nSigFigs")
+			}
+			if value, exists := typed["mantissa"]; exists && value == nil {
+				delete(typed, "mantissa")
+			}
+			if value, exists := typed["fast"]; exists && value == false {
+				delete(typed, "fast")
 			}
 		}
 		for key, child := range typed {

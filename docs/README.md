@@ -25,6 +25,7 @@ configuration, and test semantics.
 
 ## Guides
 
+- [Unified exchange API quickstart](guides/exchange-rest-quickstart.md)
 - [Writing strategies](guides/strategies.md)
 - [Building a runtime node](guides/runtime-node.md)
 - [Market and reference data](guides/market-reference-data.md)
@@ -46,6 +47,8 @@ configuration, and test semantics.
 ## Capability and reference
 
 - [Runtime adapter capability matrix](adapter-capabilities.md)
+- [Exchange REST V1 operation matrix](reference/exchange-rest-v1-operation-matrix.md)
+- [Exchange WebSocket V1 operation matrix](reference/exchange-ws-v1-operation-matrix.md)
 - [Unsupported, deferred, and SDK-only surfaces](reference/unsupported.md)
 - [Testing and certification](reference/testing.md)
 - [Configuration](reference/configuration.md)

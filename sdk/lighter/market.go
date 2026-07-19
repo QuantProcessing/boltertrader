@@ -40,13 +40,13 @@ func (c *Client) getJSON(ctx context.Context, path string, params url.Values, au
 		return err
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("http error %d: %s", resp.StatusCode, string(data))
+		return fmt.Errorf("http error %d", resp.StatusCode)
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("empty response body from %s", path)
+		return fmt.Errorf("%w: empty response body", ErrMalformedResponse)
 	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("unmarshal error: %w, code: %d, body: %s", err, resp.StatusCode, string(data))
+		return fmt.Errorf("%w: invalid JSON response", ErrMalformedResponse)
 	}
 	return nil
 }
@@ -115,10 +115,10 @@ func (c *Client) GetOrderBookDetails(ctx context.Context, marketId *int, filter 
 
 	var res OrderBookDetailsResponse
 	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, fmt.Errorf("unmarshal error: %w, code: %d, body: %s", err, resp.StatusCode, string(data))
+		return nil, fmt.Errorf("%w: invalid order-book-details response", ErrMalformedResponse)
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get order book details: %s", res.Msg)
+		return nil, fmt.Errorf("%w: invalid order-book-details response code", ErrMalformedResponse)
 	}
 	return &res, nil
 }
@@ -205,10 +205,10 @@ func (c *Client) GetOrderBookOrders(ctx context.Context, marketId int, limit int
 
 	var res OrderBookOrdersResponse
 	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: invalid order-book-orders response", ErrMalformedResponse)
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get order book orders: %s", res.Msg)
+		return nil, fmt.Errorf("%w: invalid order-book-orders response code", ErrMalformedResponse)
 	}
 	return &res, nil
 }
@@ -323,7 +323,7 @@ func (c *Client) GetCandlesticks(ctx context.Context, marketId int, resolution s
 		return nil, err
 	}
 	if res.Code != 200 {
-		return nil, fmt.Errorf("failed to get candlesticks: %s", res.Msg)
+		return nil, fmt.Errorf("%w: invalid candlesticks response code", ErrMalformedResponse)
 	}
 	return &res, nil
 }

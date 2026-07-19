@@ -111,6 +111,127 @@ func TestSubscriptionKeyKeepsNonIdentityFieldsCaseSensitive(t *testing.T) {
 	}
 }
 
+func TestSubscriptionKeyNormalizesL2BookServerDefaultFields(t *testing.T) {
+	request := map[string]any{
+		"type": "l2Book",
+		"coin": "@1",
+	}
+	acknowledged := map[string]any{
+		"type":     "l2Book",
+		"coin":     "@1",
+		"nSigFigs": nil,
+		"mantissa": nil,
+		"fast":     false,
+	}
+
+	if got, want := subscriptionKey(acknowledged), subscriptionKey(request); got != want {
+		t.Fatalf("l2Book server defaults changed acknowledgement key\ngot:  %s\nwant: %s", got, want)
+	}
+
+	for name, configured := range map[string]map[string]any{
+		"significant figures": {"type": "l2Book", "coin": "@1", "nSigFigs": float64(5)},
+		"mantissa":            {"type": "l2Book", "coin": "@1", "mantissa": float64(2)},
+		"fast":                {"type": "l2Book", "coin": "@1", "fast": true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if subscriptionKey(configured) == subscriptionKey(request) {
+				t.Fatalf("l2Book key collapsed meaningful %s configuration", name)
+			}
+		})
+	}
+}
+
+func TestWrappedL2BookSubscriptionResponseMatchesServerDefaultFields(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := NewWebsocketClient(ctx)
+	conn := &websocket.Conn{}
+	client.Mu.Lock()
+	client.Conn = conn
+	client.Mu.Unlock()
+
+	request := map[string]any{"type": "l2Book", "coin": "@1"}
+	waiter, err := client.registerSubscriptionAck(conn, subscriptionKey(request))
+	if err != nil {
+		t.Fatalf("register subscription acknowledgement: %v", err)
+	}
+	data, err := json.Marshal(map[string]any{
+		"method": "subscribe",
+		"subscription": map[string]any{
+			"type":     "l2Book",
+			"coin":     "@1",
+			"nSigFigs": nil,
+			"mantissa": nil,
+			"fast":     false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal subscription acknowledgement: %v", err)
+	}
+
+	client.handleSubscriptionResponse(conn, data)
+	select {
+	case result := <-waiter:
+		if result != nil {
+			t.Fatalf("subscription acknowledgement result: %v", result)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("l2Book server-default acknowledgement did not satisfy waiter")
+	}
+	client.Mu.Lock()
+	client.Conn = nil
+	client.Mu.Unlock()
+}
+
+func TestDelayedUnsubscribeResponseCannotConsumeNewSubscribeWaiter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := NewWebsocketClient(ctx)
+	conn := &websocket.Conn{}
+	client.Mu.Lock()
+	client.Conn = conn
+	client.Mu.Unlock()
+
+	subscription := map[string]any{"type": "l2Book", "coin": "@1"}
+	waiter, err := client.registerSubscriptionAck(conn, subscriptionKey(subscription))
+	if err != nil {
+		t.Fatalf("register new subscribe acknowledgement: %v", err)
+	}
+	unsubscribeData, err := json.Marshal(map[string]any{
+		"method":       "unsubscribe",
+		"subscription": subscription,
+	})
+	if err != nil {
+		t.Fatalf("marshal delayed unsubscribe response: %v", err)
+	}
+	client.handleSubscriptionResponse(conn, unsubscribeData)
+	select {
+	case result := <-waiter:
+		t.Fatalf("delayed unsubscribe response consumed new subscribe waiter: %v", result)
+	default:
+	}
+
+	subscribeData, err := json.Marshal(map[string]any{
+		"method":       "subscribe",
+		"subscription": subscription,
+	})
+	if err != nil {
+		t.Fatalf("marshal subscribe response: %v", err)
+	}
+	client.handleSubscriptionResponse(conn, subscribeData)
+	select {
+	case result := <-waiter:
+		if result != nil {
+			t.Fatalf("new subscribe acknowledgement result: %v", result)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("new subscribe acknowledgement did not satisfy waiter")
+	}
+	client.Mu.Lock()
+	client.Conn = nil
+	client.Mu.Unlock()
+}
+
 func TestSubscriptionKeyNormalizesSpotStatePortfolioMarginACKAlias(t *testing.T) {
 	request := map[string]any{
 		"type":              "spotState",

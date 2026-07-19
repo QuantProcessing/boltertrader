@@ -28,6 +28,18 @@ type TxError struct {
 	Message string `json:"message"`
 }
 
+// WSCommandOutcome records the mutation send boundary without exposing raw
+// venue payloads. Sent means the complete WebSocket frame write succeeded.
+type WSCommandOutcome struct {
+	TransactionHash string
+	Sent            bool
+	Code            int
+}
+
+func (outcome WSCommandOutcome) Accepted() bool {
+	return outcome.Sent && outcome.Code == 200 && outcome.TransactionHash != ""
+}
+
 // IsSuccess returns true if the response indicates success
 func (r *TxResponse) IsSuccess() bool {
 	return r.Code == 200
@@ -62,7 +74,10 @@ type txMsgData struct {
 // sendTx sends a transaction via WebSocket and waits for the server to acknowledge.
 // The server echoes back the request ID, allowing us to match request → response.
 // This validates the order at the gateway level; WatchOrders confirms execution.
-func (c *WebsocketClient) sendTx(ctx context.Context, requestID string, txType int, txInfo interface{}) (*TxResponse, error) {
+func (c *WebsocketClient) sendTx(ctx context.Context, requestID string, txType int, txInfo interface{}) (*TxResponse, bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	// Register for response before sending
 	respChan := c.RegisterPendingRequest(requestID)
 	defer c.UnregisterPendingRequest(requestID)
@@ -77,27 +92,40 @@ func (c *WebsocketClient) sendTx(ctx context.Context, requestID string, txType i
 	}
 
 	if err := c.Send(msg); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Wait for gateway response
+	timeout := c.TxResponseTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	select {
-	case resp := <-respChan:
-		return resp, nil
+	case resp, ok := <-respChan:
+		if !ok || resp == nil {
+			return nil, true, ErrWSOutcomeUnknown
+		}
+		return resp, true, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(10 * time.Second):
+		return nil, true, ctx.Err()
+	case <-time.After(timeout):
 		c.Logger.Warnw("tx response timeout", "requestID", requestID)
-		// Return nil response — order may still succeed, WatchOrders will confirm
-		return nil, nil
+		return nil, true, ErrWSOutcomeUnknown
 	}
 }
 
 // PlaceOrder places a new order via WebSocket
 func (c *WebsocketClient) PlaceOrder(ctx context.Context, client *Client, req CreateOrderRequest) (string, error) {
+	outcome, err := c.PlaceOrderOutcome(ctx, client, req)
+	return outcome.TransactionHash, err
+}
+
+// PlaceOrderOutcome preserves gateway rejection and post-send ambiguity for
+// callers that need truthful mutation acknowledgement semantics.
+func (c *WebsocketClient) PlaceOrderOutcome(ctx context.Context, client *Client, req CreateOrderRequest) (WSCommandOutcome, error) {
 	nonce, err := client.GetNextNonce(ctx)
 	if err != nil {
-		return "", err
+		return WSCommandOutcome{}, err
 	}
 
 	info := &CreateOrderInfo{
@@ -119,12 +147,12 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, client *Client, req Cr
 
 	hash, err := HashCreateOrder(client.ChainId, info)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash order: %w", err)
+		return WSCommandOutcome{}, fmt.Errorf("failed to hash order: %w", err)
 	}
 
 	signature, err := client.KeyManager.Sign(hash, p2.NewPoseidon2())
 	if err != nil {
-		return "", fmt.Errorf("failed to sign order: %w", err)
+		return WSCommandOutcome{}, fmt.Errorf("failed to sign order: %w", err)
 	}
 
 	type OrderPayload struct {
@@ -140,24 +168,33 @@ func (c *WebsocketClient) PlaceOrder(ctx context.Context, client *Client, req Cr
 	}
 
 	requestID := fmt.Sprintf("order_%s", ethCommon.Bytes2Hex(hash)[:8])
+	outcome := WSCommandOutcome{TransactionHash: ethCommon.Bytes2Hex(hash)}
 
-	resp, err := c.sendTx(ctx, requestID, TxTypeCreateOrder, payload)
+	resp, sent, err := c.sendTx(ctx, requestID, TxTypeCreateOrder, payload)
+	outcome.Sent = sent
 	if err != nil {
-		return ethCommon.Bytes2Hex(hash), err
+		return outcome, err
 	}
-	if resp != nil && !resp.IsSuccess() {
+	outcome.Code = resp.Code
+	if !resp.IsSuccess() {
 		client.InvalidateNonce()
-		return ethCommon.Bytes2Hex(hash), fmt.Errorf("order rejected: %s", resp.Error())
+		return outcome, fmt.Errorf("%w: code=%d", ErrOrderRejected, resp.Code)
 	}
 
-	return ethCommon.Bytes2Hex(hash), nil
+	return outcome, nil
 }
 
 // CancelOrder cancels an order via WebSocket
 func (c *WebsocketClient) CancelOrder(ctx context.Context, client *Client, req CancelOrderRequest) (string, error) {
+	outcome, err := c.CancelOrderOutcome(ctx, client, req)
+	return outcome.TransactionHash, err
+}
+
+// CancelOrderOutcome is the cancel counterpart of PlaceOrderOutcome.
+func (c *WebsocketClient) CancelOrderOutcome(ctx context.Context, client *Client, req CancelOrderRequest) (WSCommandOutcome, error) {
 	nonce, err := client.GetNextNonce(ctx)
 	if err != nil {
-		return "", err
+		return WSCommandOutcome{}, err
 	}
 
 	info := &CancelOrderInfo{
@@ -171,12 +208,12 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, client *Client, req C
 
 	hash, err := HashCancelOrder(client.ChainId, info)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash cancel: %w", err)
+		return WSCommandOutcome{}, fmt.Errorf("failed to hash cancel: %w", err)
 	}
 
 	signature, err := client.KeyManager.Sign(hash, p2.NewPoseidon2())
 	if err != nil {
-		return "", fmt.Errorf("failed to sign cancel: %w", err)
+		return WSCommandOutcome{}, fmt.Errorf("failed to sign cancel: %w", err)
 	}
 
 	type CancelPayload struct {
@@ -192,17 +229,20 @@ func (c *WebsocketClient) CancelOrder(ctx context.Context, client *Client, req C
 	}
 
 	requestID := fmt.Sprintf("cancel_%s", ethCommon.Bytes2Hex(hash)[:8])
+	outcome := WSCommandOutcome{TransactionHash: ethCommon.Bytes2Hex(hash)}
 
-	resp, err := c.sendTx(ctx, requestID, TxTypeCancelOrder, payload)
+	resp, sent, err := c.sendTx(ctx, requestID, TxTypeCancelOrder, payload)
+	outcome.Sent = sent
 	if err != nil {
-		return ethCommon.Bytes2Hex(hash), err
+		return outcome, err
 	}
-	if resp != nil && !resp.IsSuccess() {
+	outcome.Code = resp.Code
+	if !resp.IsSuccess() {
 		client.InvalidateNonce()
-		return ethCommon.Bytes2Hex(hash), fmt.Errorf("cancel rejected: %s", resp.Error())
+		return outcome, fmt.Errorf("%w: code=%d", ErrOrderRejected, resp.Code)
 	}
 
-	return ethCommon.Bytes2Hex(hash), nil
+	return outcome, nil
 }
 
 // ModifyOrder modifies an order via WebSocket
@@ -239,7 +279,7 @@ func (c *WebsocketClient) ModifyOrder(ctx context.Context, client *Client, req M
 
 	requestID := fmt.Sprintf("modify_%s", ethCommon.Bytes2Hex(hash)[:8])
 
-	resp, err := c.sendTx(ctx, requestID, TxTypeModifyOrder, info)
+	resp, _, err := c.sendTx(ctx, requestID, TxTypeModifyOrder, info)
 	if err != nil {
 		return ethCommon.Bytes2Hex(hash), err
 	}
@@ -291,7 +331,7 @@ func (c *WebsocketClient) CancelAllOrders(ctx context.Context, client *Client, r
 
 	requestID := fmt.Sprintf("cancelall_%s", ethCommon.Bytes2Hex(hash)[:8])
 
-	resp, err := c.sendTx(ctx, requestID, TxTypeCancelAllOrders, payload)
+	resp, _, err := c.sendTx(ctx, requestID, TxTypeCancelAllOrders, payload)
 	if err != nil {
 		return ethCommon.Bytes2Hex(hash), err
 	}

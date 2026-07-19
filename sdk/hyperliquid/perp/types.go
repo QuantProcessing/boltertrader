@@ -19,6 +19,16 @@ type PlaceOrderRequest struct {
 	OrderType     OrderType
 }
 
+// MarketOrderRequest is the official SDK-style protected IOC operation. Asset
+// id and precision are resolved from fresh Perp metadata inside the SDK.
+type MarketOrderRequest struct {
+	Coin          string
+	IsBuy         bool
+	Size          float64
+	ReduceOnly    bool
+	ClientOrderID *string
+}
+
 type OrderType struct {
 	Limit   *OrderTypeLimit
 	Trigger *OrderTypeTrigger

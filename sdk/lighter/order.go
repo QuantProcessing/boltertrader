@@ -50,7 +50,7 @@ func (c *Client) BuildCreateOrderTx(ctx context.Context, req CreateOrderRequest)
 		TriggerPrice:     req.TriggerPrice,
 		OrderExpiry:      req.OrderExpiry,
 		Nonce:            nonce,
-		ExpiredAt:        time.Now().Add(time.Hour * 24 * 28).UnixMilli(), // Default expiry
+		ExpiredAt:        c.nowTime().Add(time.Hour * 24 * 28).UnixMilli(), // Default expiry
 	}
 
 	hash, err := HashCreateOrder(c.ChainId, info)
@@ -102,7 +102,7 @@ func (c *Client) CancelOrder(ctx context.Context, req CancelOrderRequest) (*Canc
 		MarketIndex:  uint32(req.MarketId),
 		Index:        req.OrderId,
 		Nonce:        nonce,
-		ExpiredAt:    time.Now().Add(time.Hour * 24 * 7).UnixMilli(),
+		ExpiredAt:    c.nowTime().Add(time.Hour * 24 * 7).UnixMilli(),
 	}
 
 	hash, err := HashCancelOrder(c.ChainId, info)

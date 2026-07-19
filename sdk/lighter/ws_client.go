@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,20 +59,26 @@ type WebsocketClient struct {
 	WriteMu sync.Mutex
 	// Subscriptions maps channel name -> subscription (auth + handler)
 	Subscriptions map[string]*subscription
+	// unsubscribeWaiters serializes unsubscribe -> resubscribe per channel.
+	unsubscribeWaiters map[string]chan struct{}
 	// PendingRequests maps request ID -> response channel for transaction tracking
 	PendingRequests map[string]chan *TxResponse
 	pendingMu       sync.RWMutex
 	Logger          *zap.SugaredLogger
 
 	// Reconnect logic
-	ReconnectWait time.Duration
+	ReconnectWait     time.Duration
+	TxResponseTimeout time.Duration
 
 	// Error handling
 	OnError func(error)
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	config WSConfig
+	ctx                context.Context
+	cancel             context.CancelFunc
+	config             WSConfig
+	reconnectStarted   func(error)
+	reconnectRecovered func()
+	subscriptionAuth   func(string) (*string, error)
 }
 
 func NewWebsocketClient(ctx context.Context) *WebsocketClient {
@@ -96,15 +103,17 @@ func NewWebsocketClientWithConfig(ctx context.Context, cfg WSConfig) *WebsocketC
 	}
 
 	return &WebsocketClient{
-		URL:             cfg.URL,
-		Subscriptions:   make(map[string]*subscription),
-		PendingRequests: make(map[string]chan *TxResponse),
-		Logger:          zap.NewNop().Sugar().Named("lighter"),
-		ReconnectWait:   cfg.ReconnectWait,
-		OnError:         func(err error) {},
-		ctx:             ctx,
-		cancel:          cancel,
-		config:          cfg,
+		URL:                cfg.URL,
+		Subscriptions:      make(map[string]*subscription),
+		unsubscribeWaiters: make(map[string]chan struct{}),
+		PendingRequests:    make(map[string]chan *TxResponse),
+		Logger:             zap.NewNop().Sugar().Named("lighter"),
+		ReconnectWait:      cfg.ReconnectWait,
+		TxResponseTimeout:  10 * time.Second,
+		OnError:            func(err error) {},
+		ctx:                ctx,
+		cancel:             cancel,
+		config:             cfg,
 	}
 }
 
@@ -125,6 +134,34 @@ func (c *WebsocketClient) WithURL(url string) *WebsocketClient {
 		c.config.URL = url
 	}
 	return c
+}
+
+// SetErrorHandler configures the asynchronous transport and decode error hook.
+func (c *WebsocketClient) SetErrorHandler(handler func(error)) {
+	if handler == nil {
+		handler = func(error) {}
+	}
+	c.Mu.Lock()
+	c.OnError = handler
+	c.Mu.Unlock()
+}
+
+// SetReconnectHooks configures connection-loss and subscription-replay hooks.
+// Recovered is invoked after all retained subscriptions have been written to
+// the replacement connection. Lighter does not provide subscription ACKs.
+func (c *WebsocketClient) SetReconnectHooks(started func(error), recovered func()) {
+	c.Mu.Lock()
+	c.reconnectStarted = started
+	c.reconnectRecovered = recovered
+	c.Mu.Unlock()
+}
+
+// SetSubscriptionAuthProvider refreshes authentication immediately before
+// replaying authenticated subscriptions on a replacement connection.
+func (c *WebsocketClient) SetSubscriptionAuthProvider(provider func(string) (*string, error)) {
+	c.Mu.Lock()
+	c.subscriptionAuth = provider
+	c.Mu.Unlock()
 }
 
 func (c *WebsocketClient) Connect() error {
@@ -173,6 +210,7 @@ func (c *WebsocketClient) Close() {
 }
 
 func (c *WebsocketClient) readLoop() {
+	var disconnectErr error
 	defer func() {
 		// Clean up connection
 		c.Mu.Lock()
@@ -184,6 +222,7 @@ func (c *WebsocketClient) readLoop() {
 
 		// Trigger reconnect if not manually canceled
 		if c.ctx.Err() == nil {
+			c.notifyReconnectStarted(disconnectErr)
 			c.reconnect()
 		}
 	}()
@@ -200,6 +239,7 @@ func (c *WebsocketClient) readLoop() {
 			}
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
+				disconnectErr = err
 				// Check if intentionally closed
 				if c.ctx.Err() != nil {
 					c.Logger.Debug("Read loop stopping due to context cancellation")
@@ -211,12 +251,14 @@ func (c *WebsocketClient) readLoop() {
 				} else {
 					c.Logger.Debugw("websocket read error", "error", err)
 				}
+				c.reportError(err)
 				return
 			}
 			// Extend read deadline on any message received
 			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			if err := c.handleIncomingFrame(messageType, message); err != nil {
 				c.Logger.Errorw("failed to handle websocket frame", "error", err)
+				c.reportError(err)
 			}
 		}
 	}
@@ -233,6 +275,7 @@ func (c *WebsocketClient) pingLoop() {
 		case <-ticker.C:
 			if err := c.sendPing(); err != nil {
 				c.Logger.Errorw("websocket ping error", "error", err)
+				c.reportError(err)
 				return
 			}
 			c.Logger.Debugw("websocket ping sent")
@@ -250,44 +293,106 @@ func (c *WebsocketClient) reconnect() {
 	}
 
 	// After successful reconnect, re-subscribe all existing channels
-	c.resubscribeAll()
+	if err := c.resubscribeAll(); err != nil {
+		c.Logger.Errorw("failed to restore websocket subscriptions", "error", err)
+		c.reportError(err)
+		return
+	}
+	c.notifyReconnectRecovered()
 }
 
 // resubscribeAll re-sends subscribe requests for all stored subscriptions.
 // It does NOT change the in-memory Subscriptions map; it only restores
 // server-side state after reconnect.
-func (c *WebsocketClient) resubscribeAll() {
+func (c *WebsocketClient) resubscribeAll() error {
 	c.Mu.RLock()
 	subsSnapshot := make(map[string]*subscription, len(c.Subscriptions))
 	for ch, sub := range c.Subscriptions {
 		subsSnapshot[ch] = sub
 	}
+	authProvider := c.subscriptionAuth
 	c.Mu.RUnlock()
 
+	var firstErr error
 	for ch, sub := range subsSnapshot {
 		params := map[string]string{
 			"channel": ch,
 			"type":    "subscribe",
 		}
 		if sub.authToken != nil {
-			params["auth"] = *sub.authToken
+			authToken := copyStringPointer(sub.authToken)
+			if authProvider != nil {
+				refreshed, err := authProvider(ch)
+				if err != nil || refreshed == nil || strings.TrimSpace(*refreshed) == "" {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("refresh websocket subscription authentication for %s", ch)
+					}
+					continue
+				}
+				authToken = copyStringPointer(refreshed)
+				c.Mu.Lock()
+				if current := c.Subscriptions[ch]; current == sub {
+					current.authToken = copyStringPointer(refreshed)
+				}
+				c.Mu.Unlock()
+			}
+			params["auth"] = *authToken
 		}
 		if err := c.Send(params); err != nil {
 			c.Logger.Errorw("failed to resubscribe channel", "channel", ch, "error", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("restore websocket subscription %s", ch)
+			}
 		} else {
 			c.Logger.Infow("resubscribed channel", "channel", ch)
 		}
 	}
+	return firstErr
 }
 
 func (c *WebsocketClient) HandleMessage(message []byte) {
 	if err := c.handleIncomingFrame(websocket.TextMessage, message); err != nil {
 		c.Logger.Errorw("failed to handle websocket message", "error", err)
+		c.reportError(err)
+	}
+}
+
+func (c *WebsocketClient) reportError(err error) {
+	if err == nil {
+		return
+	}
+	c.Mu.RLock()
+	handler := c.OnError
+	c.Mu.RUnlock()
+	if handler != nil {
+		handler(err)
+	}
+}
+
+func (c *WebsocketClient) notifyReconnectStarted(err error) {
+	c.Mu.RLock()
+	hook := c.reconnectStarted
+	c.Mu.RUnlock()
+	if hook != nil {
+		hook(err)
+	}
+}
+
+func (c *WebsocketClient) notifyReconnectRecovered() {
+	c.Mu.RLock()
+	hook := c.reconnectRecovered
+	c.Mu.RUnlock()
+	if hook != nil {
+		hook()
 	}
 }
 
 // Subscribe registers a handler for a channel.
 func (c *WebsocketClient) Subscribe(channel string, authToken *string, handler func([]byte)) error {
+	channel = strings.ReplaceAll(channel, ":", "/")
+	if err := c.waitForUnsubscribes(); err != nil {
+		return err
+	}
 	if err := c.registerRawSubscription(channel, authToken, handler); err != nil {
 		return err
 	}
@@ -303,15 +408,65 @@ func (c *WebsocketClient) Subscribe(channel string, authToken *string, handler f
 }
 
 func (c *WebsocketClient) Unsubscribe(channel string) error {
+	channel = strings.ReplaceAll(channel, ":", "/")
+	waiter := make(chan struct{})
 	c.Mu.Lock()
 	delete(c.Subscriptions, channel)
+	c.unsubscribeWaiters[channel] = waiter
 	c.Mu.Unlock()
 
-	// docs do not show this action
-	return c.Send(map[string]string{
+	if err := c.Send(map[string]string{
 		"channel": channel,
 		"type":    "unsubscribe",
-	})
+	}); err != nil {
+		c.completeUnsubscribe(channel)
+		return err
+	}
+	return nil
+}
+
+func (c *WebsocketClient) waitForUnsubscribes() error {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	for {
+		c.Mu.RLock()
+		pending := make(map[string]chan struct{}, len(c.unsubscribeWaiters))
+		for channel, waiter := range c.unsubscribeWaiters {
+			pending[channel] = waiter
+		}
+		c.Mu.RUnlock()
+		if len(pending) == 0 {
+			return nil
+		}
+		for channel, waiter := range pending {
+			select {
+			case <-waiter:
+			case <-c.ctx.Done():
+				return c.ctx.Err()
+			case <-timer.C:
+				c.Mu.Lock()
+				if c.unsubscribeWaiters[channel] == waiter {
+					delete(c.unsubscribeWaiters, channel)
+				}
+				c.Mu.Unlock()
+				return fmt.Errorf("unsubscribe acknowledgement timeout for channel %s", channel)
+			}
+		}
+	}
+}
+
+func (c *WebsocketClient) completeUnsubscribe(channel string) {
+	channel = strings.ReplaceAll(channel, ":", "/")
+	c.Mu.Lock()
+	waiter := c.unsubscribeWaiters[channel]
+	if waiter != nil {
+		delete(c.unsubscribeWaiters, channel)
+	}
+	c.Mu.Unlock()
+	if waiter != nil {
+		close(waiter)
+	}
 }
 
 func (c *WebsocketClient) Send(v any) error {
@@ -404,6 +559,10 @@ func (c *WebsocketClient) handleIncomingFrame(messageType int, payload []byte) e
 		}
 		return nil
 	}
+	if env.Type == "unsubscribed" || strings.HasPrefix(env.Type, "unsubscribed/") {
+		c.completeUnsubscribe(env.Channel)
+		return nil
+	}
 
 	return c.dispatchEnvelope(env, normalized)
 }
@@ -421,6 +580,13 @@ func (c *WebsocketClient) decodeEnvelope(messageType int, payload []byte) (*Enve
 		decoded, err = decodeMsgpackPayload(payload)
 		if err == nil {
 			normalized, err = json.Marshal(decoded)
+		} else {
+			msgpackErr := err
+			normalized = payload
+			if jsonErr := json.Unmarshal(payload, &decoded); jsonErr != nil {
+				return nil, nil, msgpackErr
+			}
+			err = nil
 		}
 	default:
 		return nil, nil, fmt.Errorf("unsupported websocket message type %d", messageType)
@@ -492,6 +658,17 @@ func (c *WebsocketClient) dispatchEnvelope(env *Envelope, normalized []byte) err
 	c.Mu.RLock()
 	sub, ok := c.Subscriptions[channel]
 	c.Mu.RUnlock()
+	if !ok && strings.HasPrefix(channel, "account_orders/") && strings.Count(channel, "/") == 1 {
+		var accountEnvelope struct {
+			Account int64 `json:"account"`
+		}
+		if err := json.Unmarshal(normalized, &accountEnvelope); err == nil {
+			requestChannel := channel + "/" + strconv.FormatInt(accountEnvelope.Account, 10)
+			c.Mu.RLock()
+			sub, ok = c.Subscriptions[requestChannel]
+			c.Mu.RUnlock()
+		}
+	}
 	if !ok {
 		return nil
 	}

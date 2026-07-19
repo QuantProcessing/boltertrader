@@ -564,8 +564,8 @@ type Trade struct {
 	Commission      string `json:"commission"`
 	CommissionAsset string `json:"commissionAsset"`
 	Time            int64  `json:"time"`
-	IsBuyer         bool   `json:"isBuyer"`
-	IsMaker         bool   `json:"isMaker"`
+	IsBuyer         bool   `json:"buyer"`
+	IsMaker         bool   `json:"maker"`
 	PositionSide    string `json:"positionSide"`
 	RealizedPnl     string `json:"realizedPnl"`
 }

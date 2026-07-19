@@ -46,6 +46,12 @@ func (c *WebsocketClient) SubscribeTrades(marketId int, cb func([]byte)) error {
 	return c.Subscribe(channel, nil, cb)
 }
 
+// SubscribeCandle subscribes to live OHLCV updates for a market and resolution.
+func (c *WebsocketClient) SubscribeCandle(marketId int, resolution string, cb func([]byte)) error {
+	channel := fmt.Sprintf("candle/%d/%s", marketId, resolution)
+	return c.Subscribe(channel, nil, cb)
+}
+
 // SubscribeHeight subscribes to blockchain height updates
 func (c *WebsocketClient) SubscribeHeight(cb func([]byte)) error {
 	channel := "height"
@@ -81,5 +87,10 @@ func (c *WebsocketClient) UnsubscribeSpotMarketStats(marketId int) error {
 
 func (c *WebsocketClient) UnsubscribeTrades(marketId int) error {
 	channel := fmt.Sprintf("trade/%d", marketId)
+	return c.Unsubscribe(channel)
+}
+
+func (c *WebsocketClient) UnsubscribeCandle(marketId int, resolution string) error {
+	channel := fmt.Sprintf("candle/%d/%s", marketId, resolution)
 	return c.Unsubscribe(channel)
 }

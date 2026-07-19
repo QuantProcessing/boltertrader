@@ -1,0 +1,4177 @@
+{
+  "schema_version": 2,
+  "product_rows": [
+    {
+      "code": "BNS",
+      "venue": "Binance",
+      "product": "Spot",
+      "factory_config": "BinanceSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/binance_public_websocket_test.go",
+        "exchange/internal/factoryclient/binance_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-binance-demo-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Binance Demo spot external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "BNP",
+      "venue": "Binance",
+      "product": "USD-M Perp",
+      "factory_config": "BinanceUSDPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/binance_public_websocket_test.go",
+        "exchange/internal/factoryclient/binance_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-binance-demo-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "OXS",
+      "venue": "OKX",
+      "product": "Spot",
+      "factory_config": "OKXSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/okx_public_websocket_test.go",
+        "exchange/internal/factoryclient/okx_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-okx-demo-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "OXP",
+      "venue": "OKX",
+      "product": "USDT-linear SWAP",
+      "factory_config": "OKXUSDTPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/okx_public_websocket_test.go",
+        "exchange/internal/factoryclient/okx_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-okx-demo-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "LIS",
+      "venue": "Lighter",
+      "product": "Spot",
+      "factory_config": "LighterSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/lighter_public_websocket_test.go",
+        "exchange/internal/factoryclient/lighter_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-lighter-testnet-spot",
+      "acceptance": {
+        "status": "waived",
+        "reason": "Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; user accepted waiver, and no synthetic liquidity/self-trade was used."
+      }
+    },
+    {
+      "code": "LIP",
+      "venue": "Lighter",
+      "product": "Perp",
+      "factory_config": "LighterPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/lighter_public_websocket_test.go",
+        "exchange/internal/factoryclient/lighter_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-lighter-testnet-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "HLS",
+      "venue": "Hyperliquid",
+      "product": "Spot",
+      "factory_config": "HyperliquidSpotConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PlaceOrder",
+        "PublicTrades",
+        "SpotAccount"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
+        "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-hyperliquid-testnet-spot",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    },
+    {
+      "code": "HLP",
+      "venue": "Hyperliquid",
+      "product": "Standard Perp",
+      "factory_config": "HyperliquidPerpConfig",
+      "rest_methods": [
+        "Balances",
+        "CancelOrder",
+        "Candles",
+        "Fills",
+        "FundingRate",
+        "FundingRateHistory",
+        "Instruments",
+        "OpenOrders",
+        "OrderBook",
+        "OrderHistory",
+        "PerpAccount",
+        "PlaceOrder",
+        "Positions",
+        "PublicTrades",
+        "SetLeverage"
+      ],
+      "websocket_methods": [
+        "CancelOrder",
+        "Close",
+        "PlaceOrder",
+        "WatchBBO",
+        "WatchBalances",
+        "WatchCandles",
+        "WatchFills",
+        "WatchFundingRate",
+        "WatchMarkPrice",
+        "WatchOrderBook",
+        "WatchOrders",
+        "WatchPositions",
+        "WatchPublicTrades"
+      ],
+      "fixtures": [
+        "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
+        "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
+      ],
+      "acceptance_target": "test-exchange-hyperliquid-testnet-perp",
+      "acceptance": {
+        "status": "passed",
+        "reason": "Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row."
+      }
+    }
+  ],
+  "rest_methods": [
+    {
+      "method": "Instruments",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "OrderBook",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "Candles",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "PublicTrades",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "PlaceOrder",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "CancelOrder",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "OpenOrders",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "OrderHistory",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "Fills",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "Balances",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "SpotAccount",
+      "spot": true,
+      "perp": false
+    },
+    {
+      "method": "PerpAccount",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "Positions",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "FundingRate",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "FundingRateHistory",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "SetLeverage",
+      "spot": false,
+      "perp": true
+    }
+  ],
+  "websocket_methods": [
+    {
+      "method": "WatchOrderBook",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchBBO",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchPublicTrades",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchCandles",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchOrders",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchFills",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchBalances",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "PlaceOrder",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "CancelOrder",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "WatchPositions",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "WatchMarkPrice",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "WatchFundingRate",
+      "spot": false,
+      "perp": true
+    },
+    {
+      "method": "Close",
+      "spot": true,
+      "perp": true
+    }
+  ],
+  "operations": [
+    {
+      "id": "rest.Instruments",
+      "method": "Instruments",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "[]Instrument",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.OrderBook",
+      "method": "OrderBook",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "OrderBook",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.Candles",
+      "method": "Candles",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "CandlePage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestRESTPageRequestShapesRemainBoundedAndTyped",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.PublicTrades",
+      "method": "PublicTrades",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "PublicTradePage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestRESTPageRequestShapesRemainBoundedAndTyped",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.PlaceOrder",
+      "method": "PlaceOrder",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "mutation",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "OrderAcknowledgement",
+      "expected_event": "",
+      "cleanup": "cancel open orders and reconcile fills/exposure",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestOrderAcknowledgementStates",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.CancelOrder",
+      "method": "CancelOrder",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "mutation",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "existing order reference for acceptance",
+      "expected_ack": "OrderAcknowledgement",
+      "expected_event": "",
+      "cleanup": "verify no residual open order for target reference",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestOrderAcknowledgementStates",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.OpenOrders",
+      "method": "OpenOrders",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "OrderPage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.OrderHistory",
+      "method": "OrderHistory",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "OrderPage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestRESTPageRequestShapesRemainBoundedAndTyped",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.Fills",
+      "method": "Fills",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "FillPage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.Balances",
+      "method": "Balances",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "[]Balance",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.SpotAccount",
+      "method": "SpotAccount",
+      "transport": "rest",
+      "spot": true,
+      "perp": false,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "SpotAccount",
+      "cleanup": "none",
+      "external_cells": [
+        "BNS",
+        "HLS",
+        "LIS",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.PerpAccount",
+      "method": "PerpAccount",
+      "transport": "rest",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "PerpAccount",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.Positions",
+      "method": "Positions",
+      "transport": "rest",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "[]Position",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.FundingRate",
+      "method": "FundingRate",
+      "transport": "rest",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "FundingRate",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.FundingRateHistory",
+      "method": "FundingRateHistory",
+      "transport": "rest",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "FundingRatePage",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestRESTPageRequestShapesRemainBoundedAndTyped",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.SetLeverage",
+      "method": "SetLeverage",
+      "transport": "rest",
+      "spot": false,
+      "perp": true,
+      "effect": "mutation",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "perp account with leverage permission",
+      "expected_ack": "Leverage",
+      "expected_event": "",
+      "cleanup": "restore documented leverage if acceptance mutates it",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "ws.WatchOrderBook",
+      "method": "WatchOrderBook",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "BookEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5",
+        "TestOKXPublicWSBackendSurfacesRawDecodeErrorsForEveryPublicStream",
+        "TestLighterOrderBookDetectsNonceGapAndResynchronizes",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchBBO",
+      "method": "WatchBBO",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "BBOEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePublicWSBackendNormalizesBBOAndTrades",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPublicWSBackendNormalizesBBOAndTrades",
+        "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
+        "TestLighterStartBBOWaitsForFirstValidEventAndMapsTicker",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchPublicTrades",
+      "method": "WatchPublicTrades",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "PublicTradeEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePublicWSBackendNormalizesBBOAndTrades",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPublicWSBackendNormalizesBBOAndTrades",
+        "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
+        "TestLighterPublicTradesAndPerpReferenceMapping",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchCandles",
+      "method": "WatchCandles",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "CandleEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePublicWSBackendCandlesAndMalformedErrors",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes",
+        "TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle",
+        "TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchOrders",
+      "method": "WatchOrders",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "OrderEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated",
+        "TestBinancePrivateWSSpotStreamsNormalizeAndFilter",
+        "TestBinancePrivateWSPerpStreamsCommandsAndPositions",
+        "TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel",
+        "TestLighterPrivateWSBackendStreamsAndCommands",
+        "TestLighterPrivateWSBackendSpotStreamsAndCancel",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchFills",
+      "method": "WatchFills",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "FillEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated",
+        "TestBinancePrivateWSSpotStreamsNormalizeAndFilter",
+        "TestBinancePrivateWSPerpStreamsCommandsAndPositions",
+        "TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel",
+        "TestLighterPrivateWSBackendStreamsAndCommands",
+        "TestLighterPrivateWSBackendSpotStreamsAndCancel",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchBalances",
+      "method": "WatchBalances",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "BalanceEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketBalancesAreAccountWide",
+        "TestBinancePrivateWSSpotStreamsNormalizeAndFilter",
+        "TestBinancePrivateWSPerpStreamsCommandsAndPositions",
+        "TestOKXPrivateWSBackend_SpotBalancesNormalizeAccountChannel",
+        "TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose",
+        "TestLighterPrivateWSBackendStreamsAndCommands",
+        "TestLighterPrivateWSBackendSpotStreamsAndCancel",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.PlaceOrder",
+      "method": "PlaceOrder",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "mutation",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "OrderAcknowledgement",
+      "expected_event": "",
+      "cleanup": "cancel open orders and reconcile fills/exposure",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestOrderAcknowledgementStates",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "ws.CancelOrder",
+      "method": "CancelOrder",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "mutation",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "existing order reference for acceptance",
+      "expected_ack": "OrderAcknowledgement",
+      "expected_event": "",
+      "cleanup": "verify no residual open order for target reference",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestOrderAcknowledgementStates",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches",
+        "TestBinancePrivateWSPerpCancelUsesPortableOrderID",
+        "TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendSpotStreamsAndCancel",
+        "TestLighterPrivateWSBackendCancelRejectsMissingOrderIDWithoutNativeCall",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchPositions",
+      "method": "WatchPositions",
+      "transport": "websocket",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "private key or API credentials",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "PositionEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestPerpWebSocketPositionsArePerpOnlyAndInstrumentKeyed",
+        "TestBinancePrivateWSPerpStreamsCommandsAndPositions",
+        "TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose",
+        "TestLighterPrivateWSBackendSharesAccountWidePositions",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchMarkPrice",
+      "method": "WatchMarkPrice",
+      "transport": "websocket",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "MarkPriceEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
+        "TestLighterPublicTradesAndPerpReferenceMapping",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.WatchFundingRate",
+      "method": "WatchFundingRate",
+      "transport": "websocket",
+      "spot": false,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; stream is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "FundingRateEvent",
+      "cleanup": "close subscription",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
+        "TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream",
+        "TestLighterPublicTradesAndPerpReferenceMapping",
+        "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "ws.Close",
+      "method": "Close",
+      "transport": "websocket",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "closed subscriptions",
+      "cleanup": "idempotently closes websocket backend",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestStreamLifecycleStatesAreExplicit",
+        "TestPublicWebSocketContextAndClientCloseAreIdempotent",
+        "TestPrivateWebSocketCloseCancelsPendingStartupWithoutDeadlockAndIsIdempotent",
+        "TestBinancePrivateWSSpotConnectSingleflightAndCloseRace",
+        "TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose",
+        "TestLighterPrivateWSBackendStreamsAndCommands",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "local.factory.New",
+      "method": "New",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed product client",
+      "cleanup": "Close constructed client",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.WithAccountAddress",
+      "method": "WithAccountAddress",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "account address only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "Hyperliquid account identity override",
+      "cleanup": "none",
+      "external_cells": [
+        "HLP",
+        "HLS"
+      ],
+      "tests": [
+        "TestHyperliquidAccountAddressOptionIsExplicitAndValidatedLocally",
+        "TestHyperliquidAccountAddressOptionReachesAccountScopedSDKRequests"
+      ]
+    },
+    {
+      "id": "local.factory.WithEnvironment",
+      "method": "WithEnvironment",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "environment-bound config",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.WithEndpoint",
+      "method": "WithEndpoint",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "REST endpoint override",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.WithWebSocketEndpoint",
+      "method": "WithWebSocketEndpoint",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "WebSocket endpoint override",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.WithHTTPClient",
+      "method": "WithHTTPClient",
+      "transport": "local",
+      "spot": true,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "HTTP client override",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.SpotClient.WebSocket",
+      "method": "WebSocket",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "SpotWebSocket facet",
+      "cleanup": "Close facet or client",
+      "external_cells": [
+        "BNS",
+        "HLS",
+        "LIS",
+        "OXS"
+      ],
+      "tests": [
+        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "local.PerpClient.WebSocket",
+      "method": "WebSocket",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "PerpWebSocket facet",
+      "cleanup": "Close facet or client",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "local.SpotClient.Close",
+      "method": "Close",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "closed client",
+      "cleanup": "idempotent close",
+      "external_cells": [
+        "BNS",
+        "HLS",
+        "LIS",
+        "OXS"
+      ],
+      "tests": [
+        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestPublicWebSocketContextAndClientCloseAreIdempotent"
+      ]
+    },
+    {
+      "id": "local.PerpClient.Close",
+      "method": "Close",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "closed client",
+      "cleanup": "idempotent close",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestAllEightConfigsExposeLazyWebSocketFacets",
+        "TestPublicWebSocketContextAndClientCloseAreIdempotent"
+      ]
+    },
+    {
+      "id": "local.factory.BinanceSpotConfig",
+      "method": "BinanceSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BNS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.BinanceUSDPerpConfig",
+      "method": "BinanceUSDPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "BNP"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.OKXSpotConfig",
+      "method": "OKXSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "OXS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.OKXUSDTPerpConfig",
+      "method": "OKXUSDTPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "OXP"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.LighterSpotConfig",
+      "method": "LighterSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "LIS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.LighterPerpConfig",
+      "method": "LighterPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "LIP"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.HyperliquidSpotConfig",
+      "method": "HyperliquidSpotConfig",
+      "transport": "local",
+      "spot": true,
+      "perp": false,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "HLS"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    },
+    {
+      "id": "local.factory.HyperliquidPerpConfig",
+      "method": "HyperliquidPerpConfig",
+      "transport": "local",
+      "spot": false,
+      "perp": true,
+      "effect": "lifecycle",
+      "credentials": "constructor credentials only",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "typed config",
+      "cleanup": "none",
+      "external_cells": [
+        "HLP"
+      ],
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients",
+        "TestAllEightConfigsConstructConcurrentlyWithoutIO"
+      ]
+    }
+  ],
+  "parameter_cases": [
+    {
+      "id": "place_order.rest.market",
+      "operation_id": "rest.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "AcceptedPending, ImmediatelyFilled, Rejected, or Ambiguous",
+      "cleanup": "reconcile fills and exposure; no resting order expected",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.rest.limit_resting",
+      "operation_id": "rest.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "cancel resting order and verify no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.rest.limit_ioc",
+      "operation_id": "rest.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "reconcile fills and exposure; cancel any unexpected residual order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.rest.limit_post_only",
+      "operation_id": "rest.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "cancel resting order and verify no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.rest.client_order_id",
+      "operation_id": "rest.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "OrderAcknowledgement preserves client order correlation",
+      "cleanup": "use returned OrderID for cleanup; verify ClientOrderID correlation",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.rest.perp_reduce_only",
+      "operation_id": "rest.PlaceOrder",
+      "spot": false,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "restore flat or documented baseline exposure",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.market",
+      "operation_id": "ws.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "AcceptedPending, ImmediatelyFilled, Rejected, or Ambiguous",
+      "cleanup": "reconcile fills and exposure; no resting order expected",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.limit_resting",
+      "operation_id": "ws.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "cancel resting order and verify no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.limit_ioc",
+      "operation_id": "ws.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "reconcile fills and exposure; cancel any unexpected residual order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.limit_post_only",
+      "operation_id": "ws.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "Resting, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "cancel resting order and verify no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.client_order_id",
+      "operation_id": "ws.PlaceOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "OrderAcknowledgement preserves client order correlation",
+      "cleanup": "use returned OrderID for cleanup; verify ClientOrderID correlation",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.ws.perp_reduce_only",
+      "operation_id": "ws.PlaceOrder",
+      "spot": false,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "funded non-production account for acceptance",
+      "expected_ack": "ImmediatelyFilled, PartiallyFilled, Rejected, AcceptedPending, or Ambiguous",
+      "cleanup": "restore flat or documented baseline exposure",
+      "external_cells": [
+        "BNP",
+        "HLP",
+        "LIP",
+        "OXP"
+      ],
+      "tests": [
+        "TestOpenAPIOrderParameterMatrix",
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendPlaceOrderRequestMapping",
+        "TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches"
+      ]
+    },
+    {
+      "id": "place_order.invalid.market_price_or_policy",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "place_order.invalid.limit_missing_price_or_policy",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "place_order.invalid.non_positive_quantity",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "place_order.invalid.spot_reduce_only",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": false,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNS",
+        "HLS",
+        "LIS",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "place_order.invalid.missing_client_order_id",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestPlaceOrderRequestValidation"
+      ]
+    },
+    {
+      "id": "place_order.invalid.bad_client_order_id",
+      "operation_id": "local.PlaceOrder.Validate",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork",
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "cancel_order.rest.order_id",
+      "operation_id": "rest.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "existing owned order reference for acceptance",
+      "expected_ack": "Canceled, AcceptedPending, Rejected, or Ambiguous",
+      "cleanup": "verify the returned OrderID has no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "cancel_order.ws.order_id",
+      "operation_id": "ws.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "private key or API credentials",
+      "funding_requirement": "existing owned order reference for acceptance",
+      "expected_ack": "Canceled, AcceptedPending, Rejected, or Ambiguous",
+      "cleanup": "verify the returned OrderID has no residual open order",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches",
+        "TestBinancePrivateWSPerpCancelUsesPortableOrderID",
+        "TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch",
+        "TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch",
+        "TestLighterPrivateWSBackendStreamsAndCommands",
+        "TestLighterPrivateWSBackendSpotStreamsAndCancel",
+        "TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod",
+        "TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod"
+      ]
+    },
+    {
+      "id": "cancel_order.rest.invalid_missing_order_id",
+      "operation_id": "rest.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPICancelOrderRejectsNonPortableOrderIDBeforeNetwork"
+      ]
+    },
+    {
+      "id": "cancel_order.rest.invalid_nonportable_order_id",
+      "operation_id": "rest.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before network send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestOpenAPICancelOrderRejectsNonPortableOrderIDBeforeNetwork"
+      ]
+    },
+    {
+      "id": "cancel_order.ws.invalid_missing_order_id",
+      "operation_id": "ws.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before WebSocket command send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements"
+      ]
+    },
+    {
+      "id": "cancel_order.ws.invalid_nonportable_order_id",
+      "operation_id": "ws.CancelOrder",
+      "spot": true,
+      "perp": true,
+      "credentials": "none",
+      "funding_requirement": "none",
+      "expected_ack": "local ErrInvalidRequest before send",
+      "cleanup": "none; request must fail before WebSocket command send",
+      "external_cells": [
+        "BNP",
+        "BNS",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements"
+      ]
+    }
+  ],
+  "deferred": [
+    "BatchOrders",
+    "CancelAll",
+    "ExactOrder",
+    "MarginMode",
+    "ModifyOrder",
+    "ReferenceData",
+    "Ticker"
+  ],
+  "acknowledgements": [
+    "AcceptedPending",
+    "Ambiguous",
+    "Canceled",
+    "ImmediatelyFilled",
+    "PartiallyFilled",
+    "Rejected",
+    "Resting"
+  ],
+  "acceptance_targets": [
+    {
+      "target": "test-exchange-binance-demo-spot",
+      "env": "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBinanceSpotDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-binance-demo-perp",
+      "env": "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeBinancePerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-okx-demo-spot",
+      "env": "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeOKXSpotDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-okx-demo-perp",
+      "env": "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeOKXPerpDemoAcceptance$"
+    },
+    {
+      "target": "test-exchange-lighter-testnet-spot",
+      "env": "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeLighterSpotTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-lighter-testnet-perp",
+      "env": "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeLighterPerpTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-hyperliquid-testnet-spot",
+      "env": "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeHyperliquidSpotTestnetAcceptance$"
+    },
+    {
+      "target": "test-exchange-hyperliquid-testnet-perp",
+      "env": "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1",
+      "package": "./exchange/...",
+      "test_selector": "^TestExchangeHyperliquidPerpTestnetAcceptance$"
+    }
+  ],
+  "symbols": [
+    {
+      "id": "exchange.AckAcceptedPending",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckAmbiguous",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckCanceled",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckImmediatelyFilled",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckPartiallyFilled",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckRejected",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.AckResting",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.BBOEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Balance",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.BalanceEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.BookEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.BookLevel",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.CancelOrderRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Candle",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.CandleEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.CandlePage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.CandlesRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.ErrAmbiguousOutcome",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrAuthentication",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrCanceled",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrDeadlineExceeded",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrInvalidConfig",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrInvalidRequest",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrMalformedResponse",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrNotFound",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrPermission",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrRateLimit",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrSubscriptionClosed",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.ErrSubscriptionGap",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.ErrTransport",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrVenueRejected",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.Error",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.Error.Details",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.Error.Error",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.Error.Is",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.Error.Kind",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrorDetails",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrorKind",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.EventDelta",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.EventKind",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.EventSnapshot",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Fill",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FillEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.FillPage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FillsRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FundingRateEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.FundingRate",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FundingRateHistoryRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
+      "id": "exchange.FundingRatePage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FundingRateRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.GapPhase",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.GapRecovered",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.GapStarted",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.Instrument",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.KindAmbiguousOutcome",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindAuthentication",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindCanceled",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindDeadlineExceeded",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindInvalidConfig",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindInvalidRequest",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindMalformedResponse",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindNotFound",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindPermission",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindRateLimit",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindSubscriptionClosed",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.KindSubscriptionGap",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.KindTransport",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindVenueRejected",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.LimitPolicy",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.LimitPolicyIOC",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.LimitPolicyPostOnly",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.LimitPolicyResting",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Liquidity",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.LiquidityMaker",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.LiquidityTaker",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.MarkPriceEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST.Candles",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST.Instruments",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST.OrderBook",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST.PublicTrades",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.NewError",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.OpenOrdersRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OptionalDecimal",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Order",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderAckState",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.OrderAcknowledgement",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.OrderAcknowledgement.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.OrderBook",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderBookRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderOperation",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderOperationCancel",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderOperationPlace",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderHistoryRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
+      "id": "exchange.OrderPage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST.CancelOrder",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST.Fills",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST.OpenOrders",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST.OrderHistory",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderREST.PlaceOrder",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.OrderType",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderTypeLimit",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.OrderTypeMarket",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PageInfo",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PerpAccount",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PerpAccountREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpAccountREST.Balances",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpAccountREST.PerpAccount",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpAccountREST.Positions",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpClient",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpClient.Close",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpClient.WebSocket",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpREST.FundingRate",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpREST.FundingRateHistory",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpREST.SetLeverage",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpWebSocket",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpWebSocket.WatchFundingRate",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpWebSocket.WatchMarkPrice",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PerpWebSocket.WatchPositions",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PlaceOrderRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PlaceOrderRequest.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Position",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PositionEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PositionsRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Product",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.ProductPerp",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.ProductSpot",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PublicTradeEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.PublicTrade",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PublicTradePage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PublicTradesRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
+      "id": "exchange.Side",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.SideBuy",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.SideSell",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.SetLeverageRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.Leverage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.SpotAccount",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.SpotAccountREST",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotAccountREST.Balances",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotAccountREST.SpotAccount",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotClient",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotClient.Close",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotClient.WebSocket",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.CancelOrder",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.Close",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.PlaceOrder",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchBBO",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchBalances",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketBalancesAreAccountWide"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchCandles",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchFills",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchOrderBook",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchOrders",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchPublicTrades",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.StreamStatusEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestSubscriptionExposesTypedLifecycleStatus"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionActive",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionClosed",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionConnecting",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionGap",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionResyncing",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.SubscriptionState",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestStreamLifecycleStatesAreExplicit"
+      ]
+    },
+    {
+      "id": "exchange.Subscription",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Close",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Errors",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Events",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.ID",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Status",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestSubscriptionExposesTypedLifecycleStatus"
+      ]
+    },
+    {
+      "id": "exchange.Venue",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.VenueBinance",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.VenueHyperliquid",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.VenueLighter",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.VenueOKX",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.WatchAccountRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets",
+        "TestSpotWebSocketBalancesAreAccountWide"
+      ]
+    },
+    {
+      "id": "exchange.WatchCandlesRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.WatchOptions",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.WatchRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.errorSentinel.Error",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange/factory.BinanceSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.BinanceUSDPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.Config",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.Config.GoString",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.Config.String",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.Environment",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.EnvironmentDemo",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.EnvironmentLive",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.EnvironmentTestnet",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.HyperliquidPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.HyperliquidSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.LighterPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.LighterSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.New",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.OKXSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.OKXUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.Option",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithAccountAddress",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestHyperliquidAccountAddressOptionIsExplicitAndValidatedLocally",
+        "TestHyperliquidAccountAddressOptionReachesAccountScopedSDKRequests"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithEndpoint",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithEnvironment",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithHTTPClient",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithWebSocketEndpoint",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestEightKnownConfigsInferAndConstructProductClients"
+      ]
+    }
+  ]
+}

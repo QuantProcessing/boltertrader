@@ -2,12 +2,35 @@ package lighter
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestClientGetJSONHTTPErrorRedactsBody(t *testing.T) {
+	const secret = "http-error-secret-canary"
+	client := NewClient()
+	client.BaseURL = "https://lighter.test"
+	client.HTTPClient = &http.Client{Transport: lighterOrderRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(strings.NewReader(`{"message":"http-error-secret-canary"}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})}
+	_, err := client.GetCandlesticks(context.Background(), 1, "1m", 1, 2, 1)
+	if err == nil {
+		t.Fatal("expected HTTP error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("HTTP error echoed the response body")
+	}
+}
 
 func TestClient_GetFundingRateUsesLighterExchangeRow(t *testing.T) {
 	t.Parallel()

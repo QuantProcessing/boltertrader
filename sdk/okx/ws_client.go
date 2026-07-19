@@ -870,6 +870,24 @@ func (c *WSClient) writeReadyJSONOn(conn *websocket.Conn, value any) error {
 	return c.ensureCurrentConnection(conn)
 }
 
+func (c *WSClient) writeReadyMutationJSONOn(conn *websocket.Conn, value any) error {
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return newWSPreSendError(err)
+	}
+	c.WriteMu.Lock()
+	defer c.WriteMu.Unlock()
+	if err := c.ensureReadyConnection(conn); err != nil {
+		return newWSPreSendError(err)
+	}
+	if err := conn.WriteJSON(value); err != nil {
+		return newWSOutcomeUnknownError(err)
+	}
+	if err := c.ensureCurrentConnection(conn); err != nil {
+		return newWSOutcomeUnknownError(err)
+	}
+	return nil
+}
+
 func (c *WSClient) dropConnection(conn *websocket.Conn) {
 	if conn == nil {
 		return

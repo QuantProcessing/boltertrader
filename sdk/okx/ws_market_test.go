@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -60,6 +61,12 @@ func TestWSClient_SubscribeOrderBook(t *testing.T) {
 func TestWSClient_SubscribeOrderBookDepthSelectsOKXChannel(t *testing.T) {
 	client := newLocalPublicOKXWSClient(t)
 
+	if err := client.SubscribeOrderBookDepth(okxSpotInstID, 5, func(*OrderBook, string) {}); err != nil {
+		t.Fatalf("SubscribeOrderBookDepth(5): %v", err)
+	}
+	if client.Subs[WsSubscribeArgs{Channel: "books5", InstId: okxSpotInstID}] == nil {
+		t.Fatalf("expected books5 subscription to be registered")
+	}
 	if err := client.SubscribeOrderBookDepth(okxSpotInstID, 50, func(*OrderBook, string) {}); err != nil {
 		t.Fatalf("SubscribeOrderBookDepth(50): %v", err)
 	}
@@ -74,6 +81,16 @@ func TestWSClient_SubscribeOrderBookDepthSelectsOKXChannel(t *testing.T) {
 	}
 	if _, err := OrderBookChannel(25); err == nil {
 		t.Fatalf("expected unsupported depth to error")
+	}
+}
+
+func TestOrderBookChannelSupportsNativeBooks5(t *testing.T) {
+	channel, err := OrderBookChannel(5)
+	if err != nil {
+		t.Fatalf("OrderBookChannel(5): %v", err)
+	}
+	if channel != "books5" {
+		t.Fatalf("OrderBookChannel(5) = %q, want books5", channel)
 	}
 }
 
@@ -96,6 +113,134 @@ func TestWSClient_SubscribeCandles(t *testing.T) {
 	}
 	if client.Subs[WsSubscribeArgs{Channel: "candle1m", InstId: okxSpotInstID}] == nil {
 		t.Fatalf("expected candles subscription to be registered")
+	}
+}
+
+func TestWSClient_SubscribeCandlesWithErrorSurfacesMalformedPayload(t *testing.T) {
+	errCh := make(chan error, 1)
+
+	handler := candlePushHandler(func(Candle) {
+		t.Fatal("unexpected candle callback for malformed payload")
+	}, func(err error) {
+		errCh <- err
+	})
+	handler([]byte(`{"arg":{"channel":"candle1m","instId":"BTC-USDT"},"data":{`))
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "unmarshal candles") {
+			t.Fatalf("error = %v, want unmarshal candles", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected malformed payload error callback")
+	}
+}
+
+func TestWSClient_SubscribeCandlesWithErrorKeepsLegacyHandlerBehavior(t *testing.T) {
+	candleCh := make(chan Candle, 1)
+	errCh := make(chan error, 1)
+
+	handler := candlePushHandler(func(candle Candle) {
+		candleCh <- candle
+	}, func(err error) {
+		errCh <- err
+	})
+	handler([]byte(`{"arg":{"channel":"candle1m","instId":"BTC-USDT"},"data":[["1700000000000","1","2","0.5","1.5","10","20","30","1"]]}`))
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	case candle := <-candleCh:
+		if candle[0] != "1700000000000" || candle[8] != "1" {
+			t.Fatalf("candle = %+v", candle)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("expected candle callback")
+	}
+}
+
+func TestWSClient_PublicMarketWithErrorHandlersSurfaceMalformedPayloads(t *testing.T) {
+	client := newLocalPublicOKXWSClient(t)
+	malformed := []byte(`{"arg":{"channel":"broken"},"data":{`)
+
+	tests := []struct {
+		name      string
+		args      WsSubscribeArgs
+		subscribe func(func(error)) error
+		want      string
+	}{
+		{
+			name: "ticker",
+			args: WsSubscribeArgs{Channel: "tickers", InstId: okxSpotInstID},
+			subscribe: func(onError func(error)) error {
+				return client.SubscribeTickerWithError(okxSpotInstID, func(*Ticker) {
+					t.Fatal("unexpected ticker callback for malformed payload")
+				}, onError)
+			},
+			want: "unmarshal ticker",
+		},
+		{
+			name: "order book",
+			args: WsSubscribeArgs{Channel: "books5", InstId: okxSpotInstID},
+			subscribe: func(onError func(error)) error {
+				return client.SubscribeOrderBookDepthWithError(okxSpotInstID, 5, func(*OrderBook, string) {
+					t.Fatal("unexpected order book callback for malformed payload")
+				}, onError)
+			},
+			want: "unmarshal order book",
+		},
+		{
+			name: "trades",
+			args: WsSubscribeArgs{Channel: "trades", InstId: okxSpotInstID},
+			subscribe: func(onError func(error)) error {
+				return client.SubscribeTradesWithError(okxSpotInstID, func(*PublicTrade) {
+					t.Fatal("unexpected trade callback for malformed payload")
+				}, onError)
+			},
+			want: "unmarshal trades",
+		},
+		{
+			name: "funding rate",
+			args: WsSubscribeArgs{Channel: "funding-rate", InstId: okxSwapInstID},
+			subscribe: func(onError func(error)) error {
+				return client.SubscribeFundingRateWithError(okxSwapInstID, func(*FundingRate) {
+					t.Fatal("unexpected funding callback for malformed payload")
+				}, onError)
+			},
+			want: "unmarshal funding rate",
+		},
+		{
+			name: "mark price",
+			args: WsSubscribeArgs{Channel: "mark-price", InstId: okxSwapInstID},
+			subscribe: func(onError func(error)) error {
+				return client.SubscribeMarkPriceWithError(okxSwapInstID, func(*MarkPrice) {
+					t.Fatal("unexpected mark callback for malformed payload")
+				}, onError)
+			},
+			want: "unmarshal mark price",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			errCh := make(chan error, 1)
+			if err := test.subscribe(func(err error) { errCh <- err }); err != nil {
+				t.Fatalf("subscribe: %v", err)
+			}
+			handler := client.Subs[test.args]
+			if handler == nil {
+				t.Fatalf("subscription %+v was not registered", test.args)
+			}
+			handler(malformed)
+			select {
+			case err := <-errCh:
+				if err == nil || !strings.Contains(err.Error(), test.want) {
+					t.Fatalf("error = %v, want %q", err, test.want)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("expected malformed payload error callback")
+			}
+		})
 	}
 }
 

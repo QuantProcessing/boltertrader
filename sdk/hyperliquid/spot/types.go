@@ -15,6 +15,15 @@ type PlaceOrderRequest struct {
 	ClientOrderID *string
 }
 
+// MarketOrderRequest is the official SDK-style protected IOC operation. Asset
+// id and precision are resolved from fresh Spot metadata inside the SDK.
+type MarketOrderRequest struct {
+	Coin          string
+	IsBuy         bool
+	Size          float64
+	ClientOrderID *string
+}
+
 type PlaceOrderResponse struct {
 	Statuses []OrderStatus `json:"statuses"`
 }

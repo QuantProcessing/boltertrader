@@ -57,20 +57,11 @@ func (c *WsAPIClient) PlaceOrderWS(apiKey, secretKey string, p PlaceOrderParams,
 		return nil, err
 	}
 
-	var resp struct {
-		Result OrderResponse `json:"result"`
-		Error  *struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(respData, &resp); err != nil {
+	resp, err := decodeWSAPIResult[OrderResponse](respData)
+	if err != nil {
 		return nil, err
 	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("API error: code=%d, msg=%s", resp.Error.Code, resp.Error.Msg)
-	}
-	return &resp.Result, nil
+	return resp, nil
 }
 
 // Modify Order WS
@@ -128,20 +119,11 @@ func (c *WsAPIClient) ModifyOrderWS(apiKey, secretKey string, p CancelReplaceOrd
 		return nil, err
 	}
 
-	var resp struct {
-		Result CancelReplaceOrderResponse `json:"result"`
-		Error  *struct {
-			Code int    `json:"code"`
-			Msg  string `json:"msg"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(respData, &resp); err != nil {
+	resp, err := decodeWSAPIResult[CancelReplaceOrderResponse](respData)
+	if err != nil {
 		return nil, err
 	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("API error: code=%d, msg=%s", resp.Error.Code, resp.Error.Msg)
-	}
-	return &resp.Result, nil
+	return resp, nil
 }
 
 // Cancel Order WS
@@ -177,18 +159,27 @@ func (c *WsAPIClient) CancelOrderWS(apiKey, secretKey string, symbol string, ord
 		return nil, err
 	}
 
+	resp, err := decodeWSAPIResult[OrderResponse](respData)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func decodeWSAPIResult[T any](data []byte) (*T, error) {
 	var resp struct {
-		Result OrderResponse `json:"result"`
+		Status int `json:"status"`
+		Result T   `json:"result"`
 		Error  *struct {
 			Code int    `json:"code"`
 			Msg  string `json:"msg"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(respData, &resp); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	if resp.Error != nil {
-		return nil, fmt.Errorf("API error: code=%d, msg=%s", resp.Error.Code, resp.Error.Msg)
+		return nil, &APIError{Code: resp.Error.Code, Message: resp.Error.Msg, HTTPStatus: resp.Status}
 	}
 	return &resp.Result, nil
 }
