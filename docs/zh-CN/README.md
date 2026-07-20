@@ -15,6 +15,10 @@
 - [Hyperliquid Perp Testnet](getting-started/dex-testnet.md)
 - [离线 runtime](getting-started/offline-runtime.md)
 
+## Exchange API
+
+- [独立统一交易所 API](exchange/README.md)
+
 ## 概念
 
 - [架构与边界](concepts/architecture.md)

@@ -14,6 +14,8 @@ or adapters.
 - No credentials: run the [offline runtime walkthrough](docs/getting-started/offline-runtime.md).
 - CEX non-production validation: use [Binance Spot Demo](docs/getting-started/cex-demo.md).
 - DEX non-production validation: use [Hyperliquid Perp Testnet](docs/getting-started/dex-testnet.md).
+- Building directly on venue SDKs: use the standalone
+  [Unified exchange API](docs/exchange/README.md).
 - Looking for a topic or venue: open the [documentation index](docs/README.md).
 
 ## Architecture in one minute

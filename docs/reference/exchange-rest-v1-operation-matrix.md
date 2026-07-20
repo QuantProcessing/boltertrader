@@ -161,14 +161,14 @@ environment certification. Current acceptance certification is:
 
 | Row | Acceptance status | Reason |
 | --- | --- | --- |
-| BNS | Passed | Binance Demo spot row passed external acceptance. |
-| BNP | Passed | Binance Demo USD-M perp row passed external acceptance. |
-| OXS | Passed | OKX Demo spot row passed external acceptance. |
-| OXP | Passed | OKX Demo USDT-linear SWAP row passed external acceptance. |
-| LIS | Waived | Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; the user accepted the waiver, and no synthetic liquidity/self-trade was used. |
-| LIP | Passed | Lighter Testnet perp row passed external acceptance. |
-| HLS | Passed | Hyperliquid Testnet spot row passed external acceptance. |
-| HLP | Passed | Hyperliquid Testnet standard perp row passed external acceptance. |
+| BNS | Passed | Binance Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
+| BNP | Passed | Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row. |
+| OXS | Passed | OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
+| OXP | Passed | OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row. |
+| LIS | Waived | Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; user accepted waiver, and no synthetic liquidity/self-trade was used. |
+| LIP | Passed | Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row. |
+| HLS | Passed | Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row. |
+| HLP | Passed | Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row. |
 | BYS | Passed | Bybit Demo spot row passed full external acceptance. |
 | BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
 | BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
@@ -178,9 +178,9 @@ environment certification. Current acceptance certification is:
 | GTS | Passed | Gate Testnet spot row passed full external acceptance. |
 | GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
 | ATS | Passed | Aster Testnet spot row passed full external acceptance. |
-| ATP | Passed | Aster perp row passed with Testnet writes/private streams and production read-only funding REST/WebSocket reference data. |
+| ATP | Passed | Aster perp row passed with Testnet writes and private streams plus production read-only funding REST and WebSocket reference data. |
 | NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
-| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0`, and `WatchMarkPrice` returned `ErrUnsupported`. |
+| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0` and `WatchMarkPrice` returned `ErrUnsupported`. |
 
 This matrix does not claim live validation has passed beyond the acceptance
 status table.

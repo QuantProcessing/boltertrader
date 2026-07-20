@@ -9,52 +9,59 @@ import (
 	"testing"
 )
 
-type quickstartRow struct {
+type documentedProductRow struct {
 	Venue         string
 	Product       string
 	FactoryConfig string
+}
+
+type documentedAcceptance struct {
+	Status string
+	Reason string
 }
 
 type operationMatrix map[string]map[string]string
 
 func TestDocsMatchExchangeManifest(t *testing.T) {
 	root := repositoryRoot(t)
-	paths := []string{
-		filepath.Join(root, "docs", "guides", "exchange-rest-quickstart.md"),
-		filepath.Join(root, "docs", "zh-CN", "guides", "exchange-rest-quickstart.md"),
-	}
-
-	type quickstartManifest struct {
-		Rows             map[string]quickstartRow
-		RESTMethods      map[string][2]string
-		WebSocketMethods map[string][2]string
-		Acknowledgements []string
-	}
-
 	surface := loadPublicSurfaceManifest(t, root)
-	manifests := make([]quickstartManifest, 0, len(paths))
-	for _, path := range paths {
+	wantRows := productRowsForDocs(t, surface.ProductRows)
+	documentPaths := []struct {
+		path      string
+		header    string
+		canonical bool
+	}{
+		{
+			path:      filepath.Join(root, "docs", "reference", "exchange-rest-v1-operation-matrix.md"),
+			header:    "| Row | Venue | Product | Factory config | Non-production environment | Live environment |",
+			canonical: true,
+		},
+		{
+			path:   filepath.Join(root, "docs", "zh-CN", "reference", "exchange-rest-v1-operation-matrix.md"),
+			header: "| Row | Venue | Product | Factory config | Non-production environment | Live environment |",
+		},
+		{
+			path:      filepath.Join(root, "docs", "reference", "exchange-ws-v1-operation-matrix.md"),
+			header:    "| Row | Venue | Product | Factory config | WebSocket facet |",
+			canonical: true,
+		},
+		{
+			path:   filepath.Join(root, "docs", "zh-CN", "reference", "exchange-ws-v1-operation-matrix.md"),
+			header: "| Row | Venue | Product | Factory config | WebSocket facet |",
+		},
+	}
+	for _, documentPath := range documentPaths {
+		path := documentPath.path
 		data, err := os.ReadFile(path)
 		if err != nil {
-			t.Fatalf("read quickstart %s: %v", path, err)
+			t.Fatalf("read exchange matrix %s: %v", path, err)
 		}
-		document := string(data)
-		manifests = append(manifests, quickstartManifest{
-			Rows:             parseQuickstartRows(t, path, document),
-			RESTMethods:      parseQuickstartMethods(t, path, document, "| Method | Spot | Perp |"),
-			WebSocketMethods: parseQuickstartMethods(t, path, document, "| Method | SpotWebSocket | PerpWebSocket | Scope |"),
-			Acknowledgements: parseQuickstartFirstColumn(
-				t,
-				path,
-				document,
-				"| Acknowledgement | Meaning |",
-			),
-		})
+		gotRows := parseDocumentedProductRows(t, path, string(data), documentPath.header)
+		if !reflect.DeepEqual(gotRows, wantRows) {
+			t.Errorf("%s product rows = %#v, want manifest rows %#v", path, gotRows, wantRows)
+		}
 	}
 
-	wantRows := productRowsForDocs(t, surface.ProductRows)
-	wantRESTMethods := methodSupportForDocs(surface.RESTMethods)
-	wantWebSocketMethods := methodSupportForDocs(surface.WebSocketMethods)
 	wantAcknowledgements := append([]string(nil), surface.Acknowledgements...)
 	sort.Strings(wantAcknowledgements)
 	publicAcknowledgements := []string{
@@ -74,35 +81,52 @@ func TestDocsMatchExchangeManifest(t *testing.T) {
 			publicAcknowledgements,
 		)
 	}
-
-	for index, manifest := range manifests {
-		path := paths[index]
-		for code, want := range wantRows {
-			got, ok := manifest.Rows[code]
-			if !ok {
-				t.Errorf("%s missing product row %s", path, code)
-				continue
-			}
-			if got != want {
-				t.Errorf("%s row %s = %#v, want %#v", path, code, got, want)
-			}
+	for _, path := range []string{
+		filepath.Join(root, "docs", "reference", "exchange-rest-v1-operation-matrix.md"),
+		filepath.Join(root, "docs", "zh-CN", "reference", "exchange-rest-v1-operation-matrix.md"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read REST operation matrix %s: %v", path, err)
 		}
-		if len(manifest.Rows) != len(wantRows) {
-			t.Errorf("%s has %d product rows, want %d: %#v", path, len(manifest.Rows), len(wantRows), manifest.Rows)
-		}
-		if !reflect.DeepEqual(manifest.RESTMethods, wantRESTMethods) {
-			t.Errorf("%s REST method manifest = %#v, want %#v", path, manifest.RESTMethods, wantRESTMethods)
-		}
-		if !reflect.DeepEqual(manifest.WebSocketMethods, wantWebSocketMethods) {
-			t.Errorf("%s WebSocket method manifest = %#v, want %#v", path, manifest.WebSocketMethods, wantWebSocketMethods)
-		}
-		if !reflect.DeepEqual(manifest.Acknowledgements, wantAcknowledgements) {
-			t.Errorf("%s acknowledgement manifest = %v, want %v", path, manifest.Acknowledgements, wantAcknowledgements)
+		got := parseDocumentedAcknowledgements(t, path, string(data))
+		if !reflect.DeepEqual(got, wantAcknowledgements) {
+			t.Errorf("%s acknowledgement inventory = %v, want manifest %v", path, got, wantAcknowledgements)
 		}
 	}
 
-	if !reflect.DeepEqual(manifests[0], manifests[1]) {
-		t.Errorf("English and zh-CN quickstart manifests differ:\nEnglish: %#v\nzh-CN: %#v", manifests[0], manifests[1])
+	wantAcceptance := acceptanceForDocs(surface.ProductRows)
+	for _, documentPath := range documentPaths {
+		data, err := os.ReadFile(documentPath.path)
+		if err != nil {
+			t.Fatalf("read exchange matrix %s: %v", documentPath.path, err)
+		}
+		got := parseDocumentedAcceptance(t, documentPath.path, string(data))
+		for code, want := range wantAcceptance {
+			row, ok := got[code]
+			if !ok {
+				t.Errorf("%s missing acceptance row %s", documentPath.path, code)
+				continue
+			}
+			if row.Status != want.Status {
+				t.Errorf("%s acceptance row %s status = %q, want %q", documentPath.path, code, row.Status, want.Status)
+			}
+			if row.Reason == "" {
+				t.Errorf("%s acceptance row %s has empty reason", documentPath.path, code)
+			}
+			if documentPath.canonical && normalizeMarkdownProse(row.Reason) != want.Reason {
+				t.Errorf(
+					"%s acceptance row %s reason = %q, want canonical manifest reason %q",
+					documentPath.path,
+					code,
+					row.Reason,
+					want.Reason,
+				)
+			}
+		}
+		if len(got) != len(wantAcceptance) {
+			t.Errorf("%s has %d acceptance rows, want %d: %#v", documentPath.path, len(got), len(wantAcceptance), got)
+		}
 	}
 }
 
@@ -228,19 +252,24 @@ func parseOperationMatrix(
 	return matrix
 }
 
-func parseQuickstartRows(t *testing.T, path, document string) map[string]quickstartRow {
+func parseDocumentedProductRows(
+	t *testing.T,
+	path string,
+	document string,
+	header string,
+) map[string]documentedProductRow {
 	t.Helper()
-	rows := parseMarkdownTable(t, path, document, "| Row | Venue | Product | Factory config |")
-	manifest := make(map[string]quickstartRow, len(rows))
+	rows := parseMarkdownTable(t, path, document, header)
+	manifest := make(map[string]documentedProductRow, len(rows))
 	for _, row := range rows {
-		if len(row) != 4 {
-			t.Fatalf("%s product row has %d cells, want 4: %v", path, len(row), row)
+		if len(row) < 4 {
+			t.Fatalf("%s product row has %d cells, want at least 4: %v", path, len(row), row)
 		}
 		code := markdownIdentifier(row[0])
 		if _, duplicate := manifest[code]; duplicate {
 			t.Fatalf("%s has duplicate product row %s", path, code)
 		}
-		manifest[code] = quickstartRow{
+		manifest[code] = documentedProductRow{
 			Venue:         markdownIdentifier(row[1]),
 			Product:       markdownIdentifier(row[2]),
 			FactoryConfig: markdownIdentifier(row[3]),
@@ -249,38 +278,48 @@ func parseQuickstartRows(t *testing.T, path, document string) map[string]quickst
 	return manifest
 }
 
-func parseQuickstartMethods(t *testing.T, path, document, header string) map[string][2]string {
+func parseDocumentedAcknowledgements(t *testing.T, path, document string) []string {
 	t.Helper()
-	rows := parseMarkdownTable(t, path, document, header)
-	manifest := make(map[string][2]string, len(rows))
-	for _, row := range rows {
-		if len(row) < 3 {
-			t.Fatalf("%s method row has %d cells, want at least 3: %v", path, len(row), row)
-		}
-		method := markdownIdentifier(row[0])
-		if _, duplicate := manifest[method]; duplicate {
-			t.Fatalf("%s has duplicate method row %s", path, method)
-		}
-		manifest[method] = [2]string{
-			strings.ToLower(markdownIdentifier(row[1])),
-			strings.ToLower(markdownIdentifier(row[2])),
-		}
-	}
-	return manifest
-}
-
-func parseQuickstartFirstColumn(t *testing.T, path, document, header string) []string {
-	t.Helper()
-	rows := parseMarkdownTable(t, path, document, header)
-	values := make([]string, 0, len(rows))
+	rows := parseMarkdownTable(t, path, document, "| State | Meaning |")
+	states := make([]string, 0, len(rows))
 	for _, row := range rows {
 		if len(row) != 2 {
-			t.Fatalf("%s table %q row has %d cells, want 2: %v", path, header, len(row), row)
+			t.Fatalf("%s acknowledgement row has %d cells, want 2: %v", path, len(row), row)
 		}
-		values = append(values, markdownIdentifier(row[0]))
+		state := markdownIdentifier(row[0])
+		state = strings.TrimPrefix(state, "Ack")
+		if state == "" {
+			t.Fatalf("%s has empty acknowledgement state: %v", path, row)
+		}
+		states = append(states, state)
 	}
-	sort.Strings(values)
-	return values
+	sort.Strings(states)
+	return states
+}
+
+func parseDocumentedAcceptance(t *testing.T, path, document string) map[string]documentedAcceptance {
+	t.Helper()
+	rows := parseMarkdownTable(t, path, document, "| Row | Acceptance status | Reason |")
+	statuses := make(map[string]documentedAcceptance, len(rows))
+	for _, row := range rows {
+		if len(row) != 3 {
+			t.Fatalf("%s acceptance row has %d cells, want 3: %v", path, len(row), row)
+		}
+		code := markdownIdentifier(row[0])
+		if _, duplicate := statuses[code]; duplicate {
+			t.Fatalf("%s has duplicate acceptance row %s", path, code)
+		}
+		status := strings.ToLower(markdownIdentifier(row[1]))
+		if status == "" {
+			t.Fatalf("%s acceptance row %s has empty status", path, code)
+		}
+		reason := markdownIdentifier(row[2])
+		if reason == "" {
+			t.Fatalf("%s acceptance row %s has empty reason", path, code)
+		}
+		statuses[code] = documentedAcceptance{Status: status, Reason: reason}
+	}
+	return statuses
 }
 
 func parseMarkdownTable(t *testing.T, path, document, header string) [][]string {
@@ -322,14 +361,14 @@ func markdownIdentifier(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func productRowsForDocs(t *testing.T, rows []exchangeProductRow) map[string]quickstartRow {
+func productRowsForDocs(t *testing.T, rows []exchangeProductRow) map[string]documentedProductRow {
 	t.Helper()
-	manifest := make(map[string]quickstartRow, len(rows))
+	manifest := make(map[string]documentedProductRow, len(rows))
 	for _, row := range rows {
 		if _, duplicate := manifest[row.Code]; duplicate {
 			t.Fatalf("duplicate public surface product row %s", row.Code)
 		}
-		manifest[row.Code] = quickstartRow{
+		manifest[row.Code] = documentedProductRow{
 			Venue:         row.Venue,
 			Product:       row.Product,
 			FactoryConfig: row.FactoryConfig,
@@ -338,19 +377,19 @@ func productRowsForDocs(t *testing.T, rows []exchangeProductRow) map[string]quic
 	return manifest
 }
 
-func methodSupportForDocs(rows []exchangeMethodSupport) map[string][2]string {
-	manifest := make(map[string][2]string, len(rows))
+func acceptanceForDocs(rows []exchangeProductRow) map[string]documentedAcceptance {
+	manifest := make(map[string]documentedAcceptance, len(rows))
 	for _, row := range rows {
-		manifest[row.Method] = [2]string{yesNo(row.Spot), yesNo(row.Perp)}
+		manifest[row.Code] = documentedAcceptance{
+			Status: strings.ToLower(row.Acceptance.Status),
+			Reason: row.Acceptance.Reason,
+		}
 	}
 	return manifest
 }
 
-func yesNo(value bool) string {
-	if value {
-		return "yes"
-	}
-	return "no"
+func normalizeMarkdownProse(value string) string {
+	return strings.ReplaceAll(value, "`", "")
 }
 
 func acknowledgementName(state OrderAckState) string {

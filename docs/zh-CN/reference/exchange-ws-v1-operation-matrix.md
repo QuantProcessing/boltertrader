@@ -138,7 +138,7 @@ request 与 acknowledgement contract：
   acknowledgement 与 `exchange.ErrAmbiguousOutcome`。
 
 底层 transport 保持 venue-truthful。Aster 官方只提供 WebSocket 行情与用户数据
-stream，下单和撤单通过签名 REST endpoint 完成，因此 Aster 的 WebSocket facade
+stream，下单和撤单通过签名 REST endpoint 完成，因此 Aster 的 WebSocket facet
 方法会有意复用同一个 credentialed REST command path。其他产品行在交易所提供
 原生 WebSocket trade command 时使用该原生能力。
 
@@ -160,14 +160,14 @@ external environment certification。当前 acceptance certification 如下：
 
 | Row | Acceptance status | Reason |
 | --- | --- | --- |
-| BNS | Passed | Binance Demo spot row 已通过 external acceptance。 |
-| BNP | Passed | Binance Demo USD-M perp row 已通过 external acceptance。 |
-| OXS | Passed | OKX Demo spot row 已通过 external acceptance。 |
-| OXP | Passed | OKX Demo USDT-linear SWAP row 已通过 external acceptance。 |
-| LIS | Waived | Lighter Testnet ETH/USDC 与 LIT/USDC 是 platform-provided one-sided books；user accepted waiver，且未使用 synthetic liquidity/self-trade。 |
-| LIP | Passed | Lighter Testnet perp row 已通过 external acceptance。 |
-| HLS | Passed | Hyperliquid Testnet spot row 已通过 external acceptance。 |
-| HLP | Passed | Hyperliquid Testnet standard perp row 已通过 external acceptance。 |
+| BNS | Passed | Binance Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| BNP | Passed | Binance Demo USD-M perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| OXS | Passed | OKX Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| OXP | Passed | OKX Demo USDT-linear SWAP 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| LIS | Waived | Lighter Testnet ETH/USDC 与 LIT/USDC 是 platform-provided one-sided books；user 已接受 waiver，且未使用 synthetic liquidity/self-trade。 |
+| LIP | Passed | Lighter Testnet perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| HLS | Passed | Hyperliquid Testnet spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
+| HLP | Passed | Hyperliquid Testnet standard perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
 | BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
 | BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
 | BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
@@ -177,8 +177,8 @@ external environment certification。当前 acceptance certification 如下：
 | GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
 | GTU | Passed | Gate Testnet USDT-settled Perp row 已通过 full external acceptance。 |
 | ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
-| ATP | Passed | Aster Perp row 使用 Testnet 写操作/私有流和 production 只读 funding REST/WebSocket reference data 通过验收。 |
+| ATP | Passed | Aster Perp row 使用 Testnet 写操作与私有流，并结合 production 只读 funding REST 与 WebSocket reference data 通过验收。 |
 | NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
-| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，`WatchMarkPrice` 返回 `ErrUnsupported`。 |
+| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，并且 `WatchMarkPrice` 返回 `ErrUnsupported`。 |
 
 除 acceptance status table 外，本 matrix 不声称 live validation 已通过。

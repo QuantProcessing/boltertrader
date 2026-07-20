@@ -24,6 +24,7 @@ validation has passed.
 This complete example constructs Binance Spot with the built-in Demo profile and
 performs only public instrument discovery:
 
+<!-- exchange-doc-example:compile -->
 ```go
 package main
 
@@ -65,122 +66,36 @@ secrets, passphrases, private keys, signatures, or signed payloads in source,
 logs, fixtures, or version control. The exact shared names and loading rules are
 owned by [Configuration](../reference/configuration.md).
 
-## Factory rows
+## Choose a client
 
-Choose exactly one typed construction ticket and pass it to `factory.New`.
-Generic inference preserves the product method set at compile time.
+Choose one typed construction ticket and pass it to `factory.New`. Generic
+inference preserves the Spot or Perp method set at compile time. The
+[REST operation matrix](../reference/exchange-rest-v1-operation-matrix.md)
+owns the exact twenty product rows, factory constructors, environment profiles,
+REST methods, acknowledgement states, and external acceptance status.
 
-| Row | Venue | Product | Factory config |
-| --- | --- | --- | --- |
-| BNS | Binance | Spot | `BinanceSpotConfig` |
-| BNP | Binance | USD-M Perp | `BinanceUSDPerpConfig` |
-| OXS | OKX | Spot | `OKXSpotConfig` |
-| OXP | OKX | USDT-linear SWAP | `OKXUSDTPerpConfig` |
-| LIS | Lighter | Spot | `LighterSpotConfig` |
-| LIP | Lighter | Perp | `LighterPerpConfig` |
-| HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` |
-| HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` |
-| BYS | Bybit | Spot | `BybitSpotConfig` |
-| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` |
-| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` |
-| BGS | Bitget | Spot | `BitgetSpotConfig` |
-| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` |
-| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` |
-| GTS | Gate | Spot | `GateSpotConfig` |
-| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` |
-| ATS | Aster | Spot | `AsterSpotConfig` |
-| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` |
-| NDS | Nado | USDT0 Spot | `NadoSpotConfig` |
-| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` |
-
-Binance constructors take API key and secret. OKX constructors also take a
-passphrase. Lighter constructors take a private key, account index, and API key
-index. Hyperliquid constructors take a private key. Every constructor also
-accepts `factory.Option` values.
-Bybit and Gate constructors take an API key and secret; Bitget also takes a
-passphrase. Aster takes the user address, API-wallet private key, and optional
-expected signer address. Nado takes a private key and subaccount name.
-
-| Venue | Non-production environment | Live environment |
-| --- | --- | --- |
-| Binance | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
-| OKX | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
-| Lighter | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
-| Hyperliquid | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
-| Bybit | `factory.EnvironmentDemo` or `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
-| Bitget | `factory.EnvironmentDemo` | `factory.EnvironmentLive` |
-| Gate | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
-| Aster | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
-| Nado | `factory.EnvironmentTestnet` | `factory.EnvironmentLive` |
+Account identity, position mode, margin mode, leverage behavior, and
+venue-specific order caveats differ by exchange. Read
+[Venue differences and account modes](../reference/exchange-venues-and-account-modes.md)
+before sending private requests. In particular, the common interface does not
+imply that every venue exposes a native setter for every account dimension.
 
 `factory.WithEndpoint` and `factory.WithWebSocketEndpoint` override REST and
 WebSocket endpoints. `factory.WithHTTPClient` installs the HTTP client used by
 REST methods. These options are advanced test/construction hooks; never redirect
 a non-production write to a production endpoint.
 
-## REST method surface
-
-The public method set is the compile-time contract, not a runtime capability
-guess.
-
-| Method | Spot | Perp |
-| --- | --- | --- |
-| Instruments | yes | yes |
-| OrderBook | yes | yes |
-| Candles | yes | yes |
-| PublicTrades | yes | yes |
-| PlaceOrder | yes | yes |
-| CancelOrder | yes | yes |
-| OpenOrders | yes | yes |
-| OrderHistory | yes | yes |
-| Fills | yes | yes |
-| Balances | yes | yes |
-| SpotAccount | yes | no |
-| PerpAccount | no | yes |
-| Positions | no | yes |
-| FundingRate | no | yes |
-| FundingRateHistory | no | yes |
-| SetLeverage | no | yes |
-
-Spot clients have no position, funding, leverage, margin-mode, or reduce-only
-surface. Perp clients add account summary, positions, funding, and leverage
-methods.
-
-For Nado Perp, `SetLeverage` validates the request and returns success with
-`Leverage.Effective=0`; Nado has no instrument leverage setter, so its backend
-risk engine determines the actual leverage. The method remains in the common
-interface.
-
-## WebSocket method surface
+## Use the WebSocket facet
 
 Call `client.WebSocket()` to get the lazy WebSocket facet. Constructing the
 client and retrieving the facet does not connect; the first watch or WebSocket
 command starts the relevant backend.
 
-| Method | SpotWebSocket | PerpWebSocket | Scope |
-| --- | --- | --- | --- |
-| WatchOrderBook | yes | yes | public market stream |
-| WatchBBO | yes | yes | public market stream |
-| WatchPublicTrades | yes | yes | public market stream |
-| WatchCandles | yes | yes | public market stream |
-| WatchOrders | yes | yes | private account stream |
-| WatchFills | yes | yes | private account stream |
-| WatchBalances | yes | yes | private account stream; account-wide |
-| PlaceOrder | yes | yes | private WebSocket command |
-| CancelOrder | yes | yes | private WebSocket command |
-| WatchPositions | no | yes | private Perp account stream |
-| WatchMarkPrice | no | yes | public Perp reference stream |
-| WatchFundingRate | no | yes | public Perp reference stream |
-| Close | yes | yes | closes the WebSocket facet |
-
 Each watch returns `exchange.Subscription[T]` with `ID`, `Events`, `Status`,
-`Errors`, and `Close`. Public and private stream coverage is detailed in
-[Exchange WebSocket V1 operation matrix](../reference/exchange-ws-v1-operation-matrix.md).
-
-Nado also keeps `WatchMarkPrice` in this common interface, but the call returns
-a nil subscription and `exchange.ErrUnsupported` because the venue has no
-mark-price WebSocket stream. This is an expected, tested result; use Nado's REST
-price data when a mark price is required.
+`Errors`, and `Close`. The
+[WebSocket operation matrix](../reference/exchange-ws-v1-operation-matrix.md)
+owns the exact public/private stream and command inventory for every product
+row, including documented `exchange.ErrUnsupported` results.
 
 ## Order request shapes
 
@@ -237,6 +152,7 @@ example `ETH-USDT`, not the native Binance form `ETHUSDT`. Set
 `LIGHTER_TESTNET_PERP_SYMBOL` explicitly to a known testnet market symbol for
 the configured account.
 
+<!-- exchange-doc-example:compile -->
 ```go
 package main
 
@@ -341,19 +257,11 @@ default to `1024` when zero and must be between `0` and `65536`.
 
 ## Acknowledgement and ambiguity
 
-`PlaceOrder` and `CancelOrder` return `exchange.OrderAcknowledgement`. A successful
-HTTP, WebSocket, or venue envelope alone is not enough to infer a terminal order
-state.
-
-| Acknowledgement | Meaning |
-| --- | --- |
-| AcceptedPending | The venue accepted the command or transaction handoff, but resting, fill, or cancellation is not yet proven |
-| Resting | The native response proves that the order is resting |
-| PartiallyFilled | The native response proves a positive partial fill |
-| ImmediatelyFilled | The native response proves an immediate fill |
-| Canceled | The native response proves cancellation and preserves a correlation reference |
-| Rejected | The venue definitively rejected the command |
-| Ambiguous | A send may have occurred, but no authoritative result is available |
+`PlaceOrder` and `CancelOrder` return `exchange.OrderAcknowledgement`. A
+successful HTTP, WebSocket, or venue envelope alone is not enough to infer a
+terminal order state. The
+[REST operation matrix](../reference/exchange-rest-v1-operation-matrix.md#acknowledgement-states)
+owns the exact acknowledgement-state inventory.
 
 `PartiallyFilled` requires a positive filled quantity. `Canceled` requires an
 order reference, client order ID, or transaction hash. `Resting` is invalid for
@@ -385,32 +293,9 @@ invoked. `PlaceOrder` and `CancelOrder`, including WebSocket commands, mutate
 real non-production exchange state even when they target Demo or Testnet.
 
 Capability support and external environment certification are separate. The
-REST and WebSocket matrices show implemented/admitted capability cells; they do
-not by themselves certify that the current Demo/Testnet environment passed. The
-current external acceptance status is:
-
-| Row | Acceptance status | Reason |
-| --- | --- | --- |
-| BNS | Passed | Binance Demo spot row passed external acceptance. |
-| BNP | Passed | Binance Demo USD-M perp row passed external acceptance. |
-| OXS | Passed | OKX Demo spot row passed external acceptance. |
-| OXP | Passed | OKX Demo USDT-linear SWAP row passed external acceptance. |
-| LIS | Waived | Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; the user accepted the waiver, and no synthetic liquidity/self-trade was used. |
-| LIP | Passed | Lighter Testnet perp row passed external acceptance. |
-| HLS | Passed | Hyperliquid Testnet spot row passed external acceptance. |
-| HLP | Passed | Hyperliquid Testnet standard perp row passed external acceptance. |
-| BYS | Passed | Bybit Demo spot row passed full external acceptance. |
-| BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
-| BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
-| BGS | Passed | Bitget Demo spot row passed full external acceptance. |
-| BGU | Passed | Bitget Demo USDT-linear perp row passed full external acceptance. |
-| BGC | Passed | Bitget Demo USDC-linear perp row passed full external acceptance with native `BTCPERP`. |
-| GTS | Passed | Gate Testnet spot row passed full external acceptance. |
-| GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
-| ATS | Passed | Aster Testnet spot row passed full external acceptance. |
-| ATP | Passed | Aster perp row passed with Testnet writes/private streams and production read-only funding REST/WebSocket reference data. |
-| NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
-| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0`, and `WatchMarkPrice` returned `ErrUnsupported`. |
+REST and WebSocket matrices own the current per-row acceptance status and
+reason; capability cells alone do not certify that the current Demo/Testnet
+environment passed.
 
 Use Demo/Testnet only with dedicated credentials, explicit symbols, explicit
 notional bounds, serial execution, and terminal cleanup evidence. A Demo/Testnet

@@ -13,6 +13,8 @@ adapter 中，同时为策略提供统一的、与 venue 无关的 runtime。run
 - 没有凭证：运行[离线 runtime 演练](docs/zh-CN/getting-started/offline-runtime.md)。
 - CEX 非生产验证：使用 [Binance Spot Demo](docs/zh-CN/getting-started/cex-demo.md)。
 - DEX 非生产验证：使用 [Hyperliquid Perp Testnet](docs/zh-CN/getting-started/dex-testnet.md)。
+- 直接基于 venue SDK 构建：使用独立的
+  [统一交易所 API](docs/zh-CN/exchange/README.md)。
 - 查找某个主题或 venue：打开[文档索引](docs/zh-CN/README.md)。
 
 ## 一分钟了解架构

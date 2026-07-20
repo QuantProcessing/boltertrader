@@ -16,6 +16,10 @@ configuration, and test semantics.
 - [Hyperliquid Perp Testnet](getting-started/dex-testnet.md)
 - [Offline runtime](getting-started/offline-runtime.md)
 
+## Exchange API
+
+- [Standalone unified exchange API](exchange/README.md)
+
 ## Concepts
 
 - [Architecture and boundaries](concepts/architecture.md)
