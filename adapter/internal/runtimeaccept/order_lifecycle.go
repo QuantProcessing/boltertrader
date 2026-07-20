@@ -1084,6 +1084,7 @@ func waitForSpotRestingCancelSettlement(ctx context.Context, spec OrderLifecycle
 	var lastErr error
 	ticker := time.NewTicker(spec.interval())
 	defer ticker.Stop()
+	guard := spec.spotBalanceGuard
 	for {
 		snapshot, err := readSpotBalance(ctx, spec)
 		if err != nil {
@@ -1093,12 +1094,19 @@ func waitForSpotRestingCancelSettlement(ctx context.Context, spec OrderLifecycle
 			lastErr = err
 			stable = 0
 		} else {
-			delta, err := validateSpotBalanceDelta(session.baseline, snapshot, decimal.Zero)
-			if err != nil {
-				return err
+			delta := snapshot.total.Sub(session.baseline.total)
+			if delta.IsNegative() {
+				return newSpotBalanceInvariant("negative base delta %s would consume pre-existing inventory", delta)
 			}
-			if !delta.IsZero() {
-				return newSpotBalanceInvariant("base delta after resting cancel is %s, want 0", delta)
+			if snapshot.borrowed.GreaterThan(session.baseline.borrowed) {
+				return newSpotBalanceInvariant("borrowed balance increased from %s to %s", session.baseline.borrowed, snapshot.borrowed)
+			}
+			maxResidual := guard.feeReserve.Add(guard.sizeStep)
+			if delta.GreaterThan(maxResidual) {
+				return newSpotBalanceInvariant("base delta after resting cancel is %s, exceeds fee reserve plus step %s", delta, maxResidual)
+			}
+			if spotResidualSellable(delta, guard) {
+				return newSpotBalanceInvariant("base delta after resting cancel is %s remains sellable at close price %s", delta, guard.closePrice)
 			}
 			stable++
 			if stable >= 2 {

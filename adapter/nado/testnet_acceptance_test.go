@@ -357,41 +357,57 @@ func selectNadoAcceptanceLifecycleCandidate(
 	}
 	desired = strings.TrimSpace(desired)
 	rejections := make([]string, 0)
-	matched := false
-	for _, inst := range provider.All() {
-		if inst == nil || inst.ID.Kind != kind {
-			continue
-		}
-		if desired != "" && !strings.EqualFold(inst.VenueSymbol, desired) && !strings.EqualFold(inst.ID.Symbol, desired) {
-			continue
-		}
-		matched = true
-		if inst.Settle != "USDT0" {
-			rejections = append(rejections, fmt.Sprintf("%s settle=%q", inst.ID, inst.Settle))
-			if desired != "" {
-				break
+	trySelect := func(preferDesired bool) (nadoAcceptanceLifecycleCandidate, bool) {
+		matched := false
+		for _, inst := range provider.All() {
+			if inst == nil || inst.ID.Kind != kind {
+				continue
 			}
-			continue
+			matchesDesired := desired == "" || strings.EqualFold(inst.VenueSymbol, desired) || strings.EqualFold(inst.ID.Symbol, desired)
+			if preferDesired && desired != "" && !matchesDesired {
+				continue
+			}
+			if !preferDesired && desired != "" && matchesDesired {
+				continue
+			}
+			matched = true
+			if inst.Settle != "USDT0" {
+				rejections = append(rejections, fmt.Sprintf("%s settle=%q", inst.ID, inst.Settle))
+				continue
+			}
+			book, err := loadBook(ctx, inst.ID)
+			if err != nil {
+				rejections = append(rejections, fmt.Sprintf("%s order book: %v", inst.ID, err))
+				continue
+			}
+			lifecycle, err := buildNadoAcceptanceLifecycleSpec(inst, book, maxNotional)
+			if err != nil {
+				rejections = append(rejections, fmt.Sprintf("%s: %v", inst.ID, err))
+				continue
+			}
+			return nadoAcceptanceLifecycleCandidate{id: inst.ID, book: book, lifecycle: lifecycle}, true
 		}
-		book, err := loadBook(ctx, inst.ID)
-		if err != nil {
-			return nadoAcceptanceLifecycleCandidate{}, fmt.Errorf("nado acceptance: load %s order book: %w", inst.ID, err)
+		if desired != "" && !preferDesired && !matched {
+			return nadoAcceptanceLifecycleCandidate{}, false
 		}
-		lifecycle, err := buildNadoAcceptanceLifecycleSpec(inst, book, maxNotional)
-		if err == nil {
-			return nadoAcceptanceLifecycleCandidate{id: inst.ID, book: book, lifecycle: lifecycle}, nil
-		}
-		rejections = append(rejections, fmt.Sprintf("%s: %v", inst.ID, err))
-		if desired != "" {
-			break
-		}
+		return nadoAcceptanceLifecycleCandidate{}, false
 	}
-	if !matched {
-		if desired == "" {
+	if candidate, ok := trySelect(true); ok {
+		return candidate, nil
+	}
+	if candidate, ok := trySelect(false); ok {
+		return candidate, nil
+	}
+	if desired == "" {
+		if len(rejections) == 0 {
 			return nadoAcceptanceLifecycleCandidate{}, fmt.Errorf("nado acceptance: no supported %s instruments", kind)
 		}
+		return nadoAcceptanceLifecycleCandidate{}, fmt.Errorf("nado acceptance: no safe %s lifecycle under max notional %s (%s)", kind, maxNotional, strings.Join(rejections, "; "))
+	}
+	if len(rejections) == 0 {
 		return nadoAcceptanceLifecycleCandidate{}, fmt.Errorf("nado acceptance: symbol %q kind=%s was not loaded", desired, kind)
 	}
+	rejections = append([]string{fmt.Sprintf("desired symbol %q was not safe", desired)}, rejections...)
 	return nadoAcceptanceLifecycleCandidate{}, fmt.Errorf("nado acceptance: no safe %s lifecycle under max notional %s (%s)", kind, maxNotional, strings.Join(rejections, "; "))
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/adapter/internal/runtimeaccept"
 	"github.com/QuantProcessing/boltertrader/core/clock"
+	"github.com/QuantProcessing/boltertrader/core/contract"
 	"github.com/QuantProcessing/boltertrader/core/enums"
 	"github.com/QuantProcessing/boltertrader/core/model"
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
@@ -96,6 +97,9 @@ func runGateAcceptance(t *testing.T, label string, cfg testenv.GateTestnetConfig
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		t.Fatalf("%s empty book for %s: %+v", label, symbol, book)
 	}
+	if err := ensureGateInstrumentNoOpenOrders(ctx, adapter.Execution, id); err != nil {
+		t.Fatalf("%s open-order cleanup: %v", label, err)
+	}
 	lifecycle := gateAcceptanceLifecycleSpec(t, adapter, label, id, book, cfg.MaxNotionalUSDT)
 	state, err := adapter.acct.AccountState(ctx)
 	if err != nil {
@@ -135,6 +139,9 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 	}
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		t.Fatalf("%s empty book for %s: %+v", label, symbol, book)
+	}
+	if err := ensureGateInstrumentNoOpenOrders(ctx, adapter.Execution, id); err != nil {
+		t.Fatalf("%s open-order cleanup: %v", label, err)
 	}
 	lifecycle := gateAcceptanceLifecycleSpec(t, adapter, label, id, book, cfg.MaxNotionalUSDT)
 	node := btruntime.NewNode(
@@ -185,6 +192,39 @@ func runGateRuntimeAcceptance(t *testing.T, label string, cfg testenv.GateTestne
 		t.Fatalf("%s final account states applied=%d, want 1: %+v", label, finalReport.AccountStatesApplied, finalReport)
 	}
 	runtimeaccept.AssertAccountStateReady(t, node, AccountIDUnified, accountType, kind)
+}
+
+func ensureGateInstrumentNoOpenOrders(ctx context.Context, exec contract.ExecutionClient, id model.InstrumentID) error {
+	if exec == nil {
+		return nil
+	}
+	orders, err := exec.OpenOrders(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(orders) == 0 {
+		return nil
+	}
+	for _, order := range orders {
+		if order.VenueOrderID == "" {
+			continue
+		}
+		if err := exec.Cancel(ctx, id, order.VenueOrderID); err != nil {
+			return err
+		}
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		orders, err = exec.OpenOrders(ctx, id)
+		if err != nil {
+			return err
+		}
+		if len(orders) == 0 {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("still found %d open orders after cleanup", len(orders))
 }
 
 type gateAcceptancePrivateStreamProbe struct {

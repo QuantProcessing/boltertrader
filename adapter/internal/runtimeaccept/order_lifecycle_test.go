@@ -180,6 +180,40 @@ func TestGuardedSpotFullFillKeepsConfiguredCloseQuantityAtTickBoundary(t *testin
 	}
 }
 
+func TestWaitForSpotRestingCancelSettlementAllowsFeeDust(t *testing.T) {
+	reporter := &sequenceAccountStateSource{states: []model.AccountState{
+		spotBalanceState("TEST:unified", "TEST", "BTC", "10", "0"),
+		spotBalanceState("TEST:unified", "TEST", "BTC", "10.0005617970965358", "0"),
+		spotBalanceState("TEST:unified", "TEST", "BTC", "10.0005617970965358", "0"),
+	}}
+	spec := ConfigureSpotBalanceGuard(OrderLifecycleSpec{
+		Label:          "fee-dust resting cancel",
+		Venue:          "TEST",
+		AccountID:      "TEST:unified",
+		InstrumentID:   model.InstrumentID{Venue: "TEST", Symbol: "BTC-USDT", Kind: enums.KindSpot},
+		Quantity:       decimal.RequireFromString("0.01"),
+		CloseQuantity:  decimal.RequireFromString("0.009"),
+		RestingPrice:   decimal.RequireFromString("49000"),
+		FillPrice:      decimal.RequireFromString("51000"),
+		ClosePrice:     decimal.RequireFromString("50000"),
+		PositionSide:   enums.PosNet,
+		CloseAfterFill: true,
+		PollInterval:   time.Millisecond,
+		CleanupTimeout: 20 * time.Millisecond,
+	}, reporter, "BTC", decimal.RequireFromString("0.001"), decimal.RequireFromString("0.001"), decimal.NewFromInt(100), decimal.RequireFromString("0.001"))
+	session := &spotBalanceSession{
+		baseline: spotBalanceSnapshot{
+			total:    decimal.RequireFromString("10"),
+			borrowed: decimal.Zero,
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := waitForSpotRestingCancelSettlement(ctx, spec, session); err != nil {
+		t.Fatalf("waitForSpotRestingCancelSettlement: %v", err)
+	}
+}
+
 func TestAdapterSpotOrderLifecycleRejectsScaledPartialCloseBelowVenueMinimum(t *testing.T) {
 	tests := []struct {
 		name        string

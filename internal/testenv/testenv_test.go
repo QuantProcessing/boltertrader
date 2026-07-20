@@ -1473,7 +1473,7 @@ func TestNadoTestnetReadConfigUsesOfficialProfileAndDefaults(t *testing.T) {
 	if cfg.Profile.GatewayV1URL != "https://gateway.test.nado.xyz/v1" || cfg.Profile.ChainID != 763373 {
 		t.Fatalf("profile=%+v", cfg.Profile)
 	}
-	if cfg.Subaccount != "default" || cfg.MaxNotionalUSDT0.String() != "100" {
+	if cfg.Subaccount != "default" || cfg.MaxNotionalUSDT0.String() != "150" {
 		t.Fatalf("defaults=%+v", cfg)
 	}
 }

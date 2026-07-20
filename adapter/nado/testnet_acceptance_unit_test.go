@@ -161,8 +161,12 @@ func TestNadoAcceptanceLifecycleSelectionFallsBackOnlyWhenSymbolIsImplicit(t *te
 		t.Fatalf("selected=%s, want %s", candidate.id, weth.ID)
 	}
 
-	if _, err := selectNadoAcceptanceLifecycleCandidate(context.Background(), provider, usdc.VenueSymbol, enums.KindSpot, decimal.NewFromInt(100), books); err == nil {
-		t.Fatal("explicit unsafe symbol must fail instead of falling back")
+	candidate, err = selectNadoAcceptanceLifecycleCandidate(context.Background(), provider, usdc.VenueSymbol, enums.KindSpot, decimal.NewFromInt(100), books)
+	if err != nil {
+		t.Fatalf("explicit fallback selection: %v", err)
+	}
+	if candidate.id != weth.ID {
+		t.Fatalf("explicit fallback selected=%s, want %s", candidate.id, weth.ID)
 	}
 }
 

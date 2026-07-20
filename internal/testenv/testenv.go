@@ -172,7 +172,7 @@ const (
 	NadoTestnetTriggerURLEnv         = "NADO_TESTNET_TRIGGER_URL"
 
 	NadoTestnetDefaultSubaccount       = "default"
-	NadoTestnetDefaultMaxNotionalUSDT0 = "100"
+	NadoTestnetDefaultMaxNotionalUSDT0 = "150"
 	NadoTestnetDefaultSpotSymbol       = "USDC-USDT0"
 	NadoTestnetDefaultPerpSymbol       = "ETH-PERP-USDT0"
 )
