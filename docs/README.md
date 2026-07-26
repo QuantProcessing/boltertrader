@@ -9,6 +9,17 @@ configuration, and test semantics.
 
 [Back to the project README](../README.md)
 
+## Choose a product path
+
+- [Direct unified exchange API](exchange/README.md) for normalized in-process
+  clients.
+- [Exchange Gateway](guides/exchange-gateway.md) for a resident service that
+  centralizes accounts, Catalog, durable orders, reconciliation, and private
+  events.
+- [Runtime node](guides/runtime-node.md) for one strategy's stateful execution.
+
+These are peer paths for different requirements; none replaces another.
+
 ## Getting started
 
 - [Prerequisites](getting-started/prerequisites.md)
@@ -19,6 +30,7 @@ configuration, and test semantics.
 ## Exchange API
 
 - [Standalone unified exchange API](exchange/README.md)
+- [Exchange Gateway](guides/exchange-gateway.md)
 
 ## Concepts
 

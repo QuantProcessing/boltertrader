@@ -51,6 +51,8 @@ compile time 不包含该 method。
 
 | Operation | Interface | BNS | BNP | OXS | OXP | LIS | LIP | HLS | HLP | BYS | BYU | BYC | BGS | BGU | BGC | GTS | GTU | ATS | ATP | NDS | NDP |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ResolveInstrument | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| RefreshInstruments | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | Instruments | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | OrderBook | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | Candles | `MarketREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
@@ -60,6 +62,7 @@ compile time 不包含该 method。
 | OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | Fills | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
+| LookupExactOrder | `ExactOrderLookup` | A | A | A | A | A | A | A | A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Balances | account REST | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A | A | N/A | N/A | A | N/A | N/A | A | N/A | A | N/A | A | N/A |
 | PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |
@@ -164,7 +167,7 @@ external environment certification。当前 acceptance certification 如下：
 | BNP | Passed | Binance Demo USD-M perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
 | OXS | Passed | OKX Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
 | OXP | Passed | OKX Demo USDT-linear SWAP 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| LIS | Waived | Lighter Testnet ETH/USDC 与 LIT/USDC 是 platform-provided one-sided books；user 已接受 waiver，且未使用 synthetic liquidity/self-trade。 |
+| LIS | Waived | Lighter Testnet Spot 的结构就是单边盘口。用户已明确批准 live-write waiver：串行 target 会验证 REST 读取、账户访问、单边订单簿流、其余公共/私有订阅激活和非法请求边界，且不会发送 live order mutation；WatchBBO、exact lookup 与写路径保持显式豁免或只由 fixture 证明，网关继续保持该行 not write-ready。 |
 | LIP | Passed | Lighter Testnet perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
 | HLS | Passed | Hyperliquid Testnet spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
 | HLP | Passed | Hyperliquid Testnet standard perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |

@@ -118,17 +118,18 @@ func (client *fakeOKXPrivateWSClient) Unsubscribe(args okx.WsSubscribeArgs) erro
 
 func TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel(t *testing.T) {
 	ws := &fakeOKXPrivateWSClient{}
-	backend := newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+	instrument := okxPrivateTestInstrument(exchange.ProductSpot)
+	backend := newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 
 	var orders []exchange.OrderEvent
-	stopOrders, err := backend.StartOrders(context.Background(), "BTC-USDT", streamCallbacks[exchange.OrderEvent]{
+	stopOrders, err := backend.StartOrders(context.Background(), instrument, streamCallbacks[exchange.OrderEvent]{
 		Event: func(event exchange.OrderEvent) { orders = append(orders, event) },
 	})
 	if err != nil {
 		t.Fatalf("StartOrders: %v", err)
 	}
 	var fills []exchange.FillEvent
-	stopFills, err := backend.StartFills(context.Background(), "BTC-USDT", streamCallbacks[exchange.FillEvent]{
+	stopFills, err := backend.StartFills(context.Background(), instrument, streamCallbacks[exchange.FillEvent]{
 		Event: func(event exchange.FillEvent) { fills = append(fills, event) },
 	})
 	if err != nil {
@@ -201,11 +202,13 @@ func TestOKXPrivateWSBackend_OrdersAndFillsShareOrdersChannel(t *testing.T) {
 
 func TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose(t *testing.T) {
 	ws := &fakeOKXPrivateWSClient{}
+	instrument := okxPrivateTestInstrument(exchange.ProductPerp)
 	backend := newOKXPerpPrivateWSBackendWithClient(
+		okxPrivateTestMeta(exchange.ProductPerp),
 		ws,
 		fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT-SWAP": 2001}),
 		fakeOKXPerpMetaLoader(map[string]okxContractMeta{
-			"BTC-USDT-SWAP": {contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
+			"BTC-USDT-SWAP": {instrument: instrument, contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
 		}),
 	)
 
@@ -220,7 +223,7 @@ func TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose(t *testing.T) {
 	}
 	var positions []exchange.PositionEvent
 	var positionErrors []error
-	stopPositions, err := backend.StartPositions(context.Background(), "BTC-USDT-SWAP", streamCallbacks[exchange.PositionEvent]{
+	stopPositions, err := backend.StartPositions(context.Background(), instrument, streamCallbacks[exchange.PositionEvent]{
 		Event: func(event exchange.PositionEvent) { positions = append(positions, event) },
 		Error: func(err error) { positionErrors = append(positionErrors, err) },
 	})
@@ -247,7 +250,7 @@ func TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose(t *testing.T) {
 		t.Fatalf("unexpected balances: %#v", balances)
 	}
 	if len(positions) != 1 || len(positions[0].Positions) != 1 || !positions[0].Positions[0].Quantity.Equal(decimal.RequireFromString("0.02")) {
-		t.Fatalf("unexpected positions: %#v", positions)
+		t.Fatalf("unexpected positions: %#v errors=%v", positions, positionErrors)
 	}
 	if len(balanceErrors) != 1 || !errors.Is(balanceErrors[0], exchange.ErrMalformedResponse) {
 		t.Fatalf("expected normalized balance error, got %#v", balanceErrors)
@@ -281,7 +284,7 @@ func TestOKXPrivateWSBackend_BalancesPositionsErrorsAndClose(t *testing.T) {
 
 func TestOKXPrivateWSBackend_SpotBalancesNormalizeAccountChannel(t *testing.T) {
 	ws := &fakeOKXPrivateWSClient{}
-	backend := newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+	backend := newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 
 	var balances []exchange.BalanceEvent
 	stopBalances, err := backend.StartBalances(context.Background(), streamCallbacks[exchange.BalanceEvent]{
@@ -317,11 +320,13 @@ func TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch(t *test
 		placeResult:  &okx.OrderId{OrdId: "900", ClOrdId: "77", SCode: "0"},
 		cancelResult: &okx.OrderId{OrdId: "900", ClOrdId: "77", SCode: "0"},
 	}
+	instrument := okxPrivateTestInstrument(exchange.ProductPerp)
 	backend := newOKXPerpPrivateWSBackendWithClient(
+		okxPrivateTestMeta(exchange.ProductPerp),
 		ws,
 		fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT-SWAP": 2001}),
 		fakeOKXPerpMetaLoader(map[string]okxContractMeta{
-			"BTC-USDT-SWAP": {contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
+			"BTC-USDT-SWAP": {instrument: instrument, contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
 		}),
 	)
 
@@ -383,7 +388,7 @@ func TestOKXPrivateWSBackend_WSCommandsNormalizeEveryPortableOrderBranch(t *test
 	}
 
 	ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT-SWAP",
+		Instrument: instrument,
 		OrderID:    "900",
 	})
 	if err != nil {
@@ -403,7 +408,8 @@ func TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch(t *
 		placeResult:  &okx.OrderId{OrdId: "901", ClOrdId: "88", SCode: "0"},
 		cancelResult: &okx.OrderId{OrdId: "901", ClOrdId: "88", SCode: "0"},
 	}
-	backend := newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+	instrument := okxPrivateTestInstrument(exchange.ProductSpot)
+	backend := newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 
 	cases := []struct {
 		name       string
@@ -467,7 +473,7 @@ func TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch(t *
 
 	ws.cancelResult = &okx.OrderId{OrdId: "901", ClOrdId: "88", SCode: "0"}
 	ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		OrderID:    "901",
 	})
 	if err != nil {
@@ -484,7 +490,7 @@ func TestOKXPrivateWSBackend_SpotWSCommandsNormalizeEveryPortableOrderBranch(t *
 
 func okxPrivateTestPlace(orderType exchange.OrderType, policy exchange.LimitPolicy, price decimal.Decimal, reduceOnly bool) exchange.PlaceOrderRequest {
 	return exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT-SWAP",
+		Instrument:    okxPrivateTestInstrument(exchange.ProductPerp),
 		ClientOrderID: "77",
 		Side:          exchange.SideBuy,
 		Type:          orderType,
@@ -497,7 +503,7 @@ func okxPrivateTestPlace(orderType exchange.OrderType, policy exchange.LimitPoli
 
 func okxPrivateSpotTestPlace(orderType exchange.OrderType, policy exchange.LimitPolicy, price decimal.Decimal) exchange.PlaceOrderRequest {
 	return exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    okxPrivateTestInstrument(exchange.ProductSpot),
 		ClientOrderID: "88",
 		Side:          exchange.SideBuy,
 		Type:          orderType,
@@ -514,12 +520,37 @@ func stringPtrValue(value *string) string {
 	return *value
 }
 
+func okxPrivateTestMeta(product exchange.Product) clientMeta {
+	instrument := okxPrivateTestInstrument(product)
+	scope := exchange.CatalogScope{
+		Venue:       exchange.VenueOKX,
+		Environment: exchange.EnvironmentDemo,
+		Product:     product,
+		Settlement:  instrument.Identity.SettleAsset,
+	}
+	catalog := exchange.NewMemoryCatalog(exchange.StaticInstrumentLoader{
+		Snapshot: exchange.InstrumentSnapshot{
+			SchemaVersion: 1,
+			Scope:         scope,
+			Instruments:   []exchange.Instrument{instrument},
+		},
+	}, nil)
+	return clientMeta{venue: exchange.VenueOKX, product: product, catalog: catalog, catalogScope: scope}
+}
+
+func okxPrivateTestInstrument(product exchange.Product) exchange.Instrument {
+	if product == exchange.ProductPerp {
+		return okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	}
+	return okxCatalogTestInstrument(exchange.ProductSpot, "BTC", "USDT", "1001", decimal.RequireFromString("0.0001"))
+}
+
 func fakeOKXInstrumentCodeLoader(values map[string]int64) okxInstrumentCodeLoader {
-	return func(ctx context.Context, operation, instrument string) (int64, error) {
+	return func(ctx context.Context, operation string, instrument exchange.Instrument) (int64, error) {
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		code, ok := values[instrument]
+		code, ok := values[instrument.Identity.NativeSymbol]
 		if !ok {
 			return 0, okxInvalid(exchange.ProductPerp, operation, "missing instrument code")
 		}
@@ -528,11 +559,11 @@ func fakeOKXInstrumentCodeLoader(values map[string]int64) okxInstrumentCodeLoade
 }
 
 func fakeOKXPerpMetaLoader(values map[string]okxContractMeta) okxPerpMetaLoader {
-	return func(ctx context.Context, instrument string) (okxContractMeta, error) {
+	return func(ctx context.Context, instrument exchange.Instrument) (okxContractMeta, error) {
 		if err := ctx.Err(); err != nil {
 			return okxContractMeta{}, err
 		}
-		meta, ok := values[instrument]
+		meta, ok := values[instrument.Identity.NativeSymbol]
 		if !ok {
 			return okxContractMeta{}, okxInvalid(exchange.ProductPerp, "test", "missing perp meta")
 		}
@@ -544,9 +575,10 @@ func TestOKXPrivateWSBackend_CommandErrorsMapToAmbiguousAndRejected(t *testing.T
 	ws := &fakeOKXPrivateWSClient{
 		placeErr: errors.New("timeout waiting for order response"),
 	}
-	backend := newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+	instrument := okxPrivateTestInstrument(exchange.ProductSpot)
+	backend := newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 	_, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    instrument,
 		ClientOrderID: "77",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -559,7 +591,7 @@ func TestOKXPrivateWSBackend_CommandErrorsMapToAmbiguousAndRejected(t *testing.T
 	ws.placeErr = nil
 	ws.placeResult = &okx.OrderId{OrdId: "900", ClOrdId: "77", SCode: "51000"}
 	ack, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    instrument,
 		ClientOrderID: "77",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -570,7 +602,7 @@ func TestOKXPrivateWSBackend_CommandErrorsMapToAmbiguousAndRejected(t *testing.T
 	}
 
 	ws.cancelErr = errors.New("timeout waiting for cancel response")
-	_, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "900"})
+	_, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: instrument, OrderID: "900"})
 	if !errors.Is(err, exchange.ErrAmbiguousOutcome) {
 		t.Fatalf("expected ambiguous cancel error, got %v", err)
 	}
@@ -591,20 +623,22 @@ func TestOKXPrivateWSBackend_PostSendAmbiguousForEveryProductAndCommand(t *testi
 			outcomeErr := fmt.Errorf("%w: secret socket detail", okx.ErrWSOutcomeUnknown)
 			ws := &fakeOKXPrivateWSClient{}
 			var backend privateWSBackend
-			instrument := "BTC-USDT"
+			instrument := okxPrivateTestInstrument(tc.product)
+			native := instrument.Identity.NativeSymbol
 			if tc.product == exchange.ProductSpot {
 				backend = newOKXSpotPrivateWSBackendWithClient(
+					okxPrivateTestMeta(exchange.ProductSpot),
 					ws,
-					fakeOKXInstrumentCodeLoader(map[string]int64{instrument: 1001}),
+					fakeOKXInstrumentCodeLoader(map[string]int64{native: 1001}),
 					nil,
 				)
 			} else {
-				instrument = "BTC-USDT-SWAP"
 				backend = newOKXPerpPrivateWSBackendWithClient(
+					okxPrivateTestMeta(exchange.ProductPerp),
 					ws,
-					fakeOKXInstrumentCodeLoader(map[string]int64{instrument: 2001}),
+					fakeOKXInstrumentCodeLoader(map[string]int64{native: 2001}),
 					fakeOKXPerpMetaLoader(map[string]okxContractMeta{
-						instrument: {contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
+						native: {instrument: instrument, contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
 					}),
 				)
 			}
@@ -660,20 +694,18 @@ func TestOKXPrivateWSBackend_CommandPreSendFailuresDoNotSend(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := &fakeOKXPrivateWSClient{connectErr: errors.New("secret dial detail")}
 			var backend privateWSBackend
+			instrument := okxPrivateTestInstrument(tc.product)
 			if tc.product == exchange.ProductSpot {
-				backend = newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+				backend = newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 			} else {
 				backend = newOKXPerpPrivateWSBackendWithClient(
+					okxPrivateTestMeta(exchange.ProductPerp),
 					ws,
 					fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT-SWAP": 2001}),
 					fakeOKXPerpMetaLoader(map[string]okxContractMeta{
-						"BTC-USDT-SWAP": {contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
+						"BTC-USDT-SWAP": {instrument: instrument, contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
 					}),
 				)
-			}
-			instrument := "BTC-USDT"
-			if tc.product == exchange.ProductPerp {
-				instrument = "BTC-USDT-SWAP"
 			}
 			var ack exchange.OrderAcknowledgement
 			var err error
@@ -784,16 +816,16 @@ func TestOKXPrivateWSBackend_CommandRejectedAndMalformedRowsPreserveBoundaries(t
 		t.Run(tc.name, func(t *testing.T) {
 			ws := &fakeOKXPrivateWSClient{}
 			var backend privateWSBackend
-			instrument := "BTC-USDT"
+			instrument := okxPrivateTestInstrument(tc.product)
 			if tc.product == exchange.ProductSpot {
-				backend = newOKXSpotPrivateWSBackendWithClient(ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
+				backend = newOKXSpotPrivateWSBackendWithClient(okxPrivateTestMeta(exchange.ProductSpot), ws, fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT": 1001}), nil)
 			} else {
-				instrument = "BTC-USDT-SWAP"
 				backend = newOKXPerpPrivateWSBackendWithClient(
+					okxPrivateTestMeta(exchange.ProductPerp),
 					ws,
 					fakeOKXInstrumentCodeLoader(map[string]int64{"BTC-USDT-SWAP": 2001}),
 					fakeOKXPerpMetaLoader(map[string]okxContractMeta{
-						"BTC-USDT-SWAP": {contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
+						"BTC-USDT-SWAP": {instrument: instrument, contractValue: decimal.RequireFromString("0.01"), contractIncrement: decimal.NewFromInt(1)},
 					}),
 				)
 			}

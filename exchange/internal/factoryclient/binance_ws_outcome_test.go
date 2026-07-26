@@ -7,10 +7,11 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 	binancespot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
+	"github.com/shopspring/decimal"
 )
 
 func TestBinanceSpotCommandAckMapsWSOutcomeUnknownToAmbiguous(t *testing.T) {
-	ack, err := binanceSpotCommandAck("BTC/USDT", exchange.OrderOperationPlace, "PlaceOrder", "", "client-1", binancespot.ErrWSOutcomeUnknown)
+	ack, err := binanceSpotCommandAck(binanceCatalogTestInstrument(exchange.ProductSpot, "BTC", "USDT", "", decimal.RequireFromString("0.001")), exchange.OrderOperationPlace, "PlaceOrder", "", "client-1", binancespot.ErrWSOutcomeUnknown)
 	if !errors.Is(err, exchange.ErrAmbiguousOutcome) {
 		t.Fatalf("error = %v, want ErrAmbiguousOutcome", err)
 	}
@@ -20,7 +21,7 @@ func TestBinanceSpotCommandAckMapsWSOutcomeUnknownToAmbiguous(t *testing.T) {
 }
 
 func TestBinancePerpCommandErrorAckSeparatesWSUnknownFromPreSendTransport(t *testing.T) {
-	base := binancePerpAck(exchange.OrderOperationPlace, "ETH/USDT:USDT", "", "client-1")
+	base := binancePerpAck(exchange.OrderOperationPlace, binancePerpETHUSDTInstrument(), "", "client-1")
 
 	ack, err := binancePerpCommandErrorAck("PlaceOrder", base, binanceperp.ErrWSOutcomeUnknown)
 	if !errors.Is(err, exchange.ErrAmbiguousOutcome) || ack.State != exchange.AckAmbiguous {
@@ -39,7 +40,7 @@ func TestBinancePerpCommandErrorAckSeparatesWSUnknownFromPreSendTransport(t *tes
 func TestBinanceCommandAckMapsMalformedMutationResponse(t *testing.T) {
 	malformed := errors.New("failed to unmarshal response: invalid character")
 
-	ack, err := binanceSpotCommandAck("BTC/USDT", exchange.OrderOperationPlace, "PlaceOrder", "", "client-1", malformed)
+	ack, err := binanceSpotCommandAck(binanceCatalogTestInstrument(exchange.ProductSpot, "BTC", "USDT", "", decimal.RequireFromString("0.001")), exchange.OrderOperationPlace, "PlaceOrder", "", "client-1", malformed)
 	if !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("spot malformed ack=%+v err=%v, want ErrMalformedResponse", ack, err)
 	}
@@ -47,7 +48,7 @@ func TestBinanceCommandAckMapsMalformedMutationResponse(t *testing.T) {
 		t.Fatalf("spot malformed ack=%+v, want no acknowledgement", ack)
 	}
 
-	ack, err = binancePerpCommandErrorAck("PlaceOrder", binancePerpAck(exchange.OrderOperationPlace, "ETH/USDT:USDT", "", "client-1"), malformed)
+	ack, err = binancePerpCommandErrorAck("PlaceOrder", binancePerpAck(exchange.OrderOperationPlace, binancePerpETHUSDTInstrument(), "", "client-1"), malformed)
 	if !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("perp malformed ack=%+v err=%v, want ErrMalformedResponse", ack, err)
 	}

@@ -33,6 +33,53 @@ type lighterMarketMeta struct {
 	quoteScale decimal.Decimal
 }
 
+type lighterInstrumentLoader struct {
+	product  exchange.Product
+	settings Settings
+}
+
+func NewLighterInstrumentLoader(product exchange.Product, settings Settings) exchange.InstrumentLoader {
+	return lighterInstrumentLoader{product: product, settings: settings}
+}
+
+func (loader lighterInstrumentLoader) LoadInstruments(ctx context.Context, scope exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
+	sdk := lighter.NewClient()
+	if loader.settings.Environment == "testnet" {
+		sdk.WithEnvironment(lighter.EnvironmentTestnet)
+	} else {
+		sdk.WithEnvironment(lighter.EnvironmentMainnet)
+	}
+	if loader.settings.Endpoint != "" {
+		sdk.WithBaseURL(loader.settings.Endpoint)
+	}
+	sdk.HTTPClient = lighterTrackedHTTPClient(loader.settings.HTTPClient)
+	res, err := sdk.GetOrderBookDetails(ctx, nil, nil)
+	if err != nil {
+		return exchange.InstrumentSnapshot{}, lighterNormalizeErr(loader.product, "InstrumentCatalog.Load", err)
+	}
+	marketType := lighterSpot
+	if loader.product == exchange.ProductPerp {
+		marketType = lighterPerp
+	}
+	metas, _, err := lighterBuildMetas(res, loader.product, marketType)
+	if err != nil {
+		return exchange.InstrumentSnapshot{}, lighterMalformed(loader.product, "InstrumentCatalog.Load", err.Error())
+	}
+	instruments := make([]exchange.Instrument, 0, len(metas))
+	for _, meta := range metas {
+		instruments = append(instruments, meta.instrument)
+	}
+	sort.Slice(instruments, func(i, j int) bool {
+		return instruments[i].Identity.Symbol < instruments[j].Identity.Symbol
+	})
+	return exchange.InstrumentSnapshot{
+		SchemaVersion: 1,
+		Scope:         scope,
+		Instruments:   instruments,
+		LoadedAt:      time.Now().UTC(),
+	}, nil
+}
+
 func (client *lighterSpotClient) Instruments(ctx context.Context) ([]exchange.Instrument, error) {
 	metas, err := client.lighterMetas(ctx, "Instruments", exchange.ProductSpot, lighterSpot)
 	if err != nil {
@@ -42,7 +89,7 @@ func (client *lighterSpotClient) Instruments(ctx context.Context) ([]exchange.In
 	for _, meta := range metas {
 		out = append(out, meta.instrument)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity.Symbol < out[j].Identity.Symbol })
 	return out, nil
 }
 
@@ -85,7 +132,10 @@ func (client *lighterSpotClient) CancelOrder(ctx context.Context, req exchange.C
 }
 
 func (client *lighterSpotClient) OpenOrders(ctx context.Context, req exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
-	meta, err := client.lighterMeta(ctx, "OpenOrders", exchange.ProductSpot, lighterSpot, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, lighterInvalid(exchange.ProductSpot, "OpenOrders", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "OpenOrders", exchange.ProductSpot, lighterSpot, *req.Instrument)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -93,7 +143,10 @@ func (client *lighterSpotClient) OpenOrders(ctx context.Context, req exchange.Op
 }
 
 func (client *lighterSpotClient) Fills(ctx context.Context, req exchange.FillsRequest) (exchange.FillPage, error) {
-	meta, err := client.lighterMeta(ctx, "Fills", exchange.ProductSpot, lighterSpot, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.FillPage{}, lighterInvalid(exchange.ProductSpot, "Fills", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "Fills", exchange.ProductSpot, lighterSpot, *req.Instrument)
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -125,7 +178,7 @@ func (client *lighterPerpClient) Instruments(ctx context.Context) ([]exchange.In
 	for _, meta := range metas {
 		out = append(out, meta.instrument)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity.Symbol < out[j].Identity.Symbol })
 	return out, nil
 }
 
@@ -168,7 +221,10 @@ func (client *lighterPerpClient) CancelOrder(ctx context.Context, req exchange.C
 }
 
 func (client *lighterPerpClient) OpenOrders(ctx context.Context, req exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
-	meta, err := client.lighterMeta(ctx, "OpenOrders", exchange.ProductPerp, lighterPerp, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, lighterInvalid(exchange.ProductPerp, "OpenOrders", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "OpenOrders", exchange.ProductPerp, lighterPerp, *req.Instrument)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -176,7 +232,10 @@ func (client *lighterPerpClient) OpenOrders(ctx context.Context, req exchange.Op
 }
 
 func (client *lighterPerpClient) Fills(ctx context.Context, req exchange.FillsRequest) (exchange.FillPage, error) {
-	meta, err := client.lighterMeta(ctx, "Fills", exchange.ProductPerp, lighterPerp, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.FillPage{}, lighterInvalid(exchange.ProductPerp, "Fills", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "Fills", exchange.ProductPerp, lighterPerp, *req.Instrument)
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -216,16 +275,19 @@ func (client *lighterPerpClient) PerpAccount(ctx context.Context) (exchange.Perp
 }
 
 func (client *lighterPerpClient) Positions(ctx context.Context, req exchange.PositionsRequest) ([]exchange.Position, error) {
-	metas, err := client.lighterMetas(ctx, "Positions", exchange.ProductPerp, lighterPerp)
+	metadata, err := client.lighterMetadata(ctx, "Positions", exchange.ProductPerp, lighterPerp)
 	if err != nil {
 		return nil, err
 	}
 	var requested lighterMarketMeta
-	if req.Instrument != "" {
+	if req.Instrument != nil {
+		if err := validateLighterInstrument(exchange.ProductPerp, *req.Instrument); err != nil {
+			return nil, lighterInvalid(exchange.ProductPerp, "Positions", err.Error())
+		}
 		var ok bool
-		requested, ok = metas[req.Instrument]
-		if !ok {
-			return nil, lighterInvalid(exchange.ProductPerp, "Positions", "instrument is not present in Lighter perp metadata")
+		requested, ok = metadata.bySymbol[req.Instrument.Identity.Symbol]
+		if !ok || requested.instrument.Identity.NativeSymbol != req.Instrument.Identity.NativeSymbol || requested.instrument.Identity.NativeID != req.Instrument.Identity.NativeID {
+			return nil, lighterUnknownInstrument(exchange.ProductPerp, "Positions")
 		}
 	}
 	account, err := lighterAccount(ctx, client.sdk, exchange.ProductPerp, "Positions")
@@ -234,7 +296,7 @@ func (client *lighterPerpClient) Positions(ctx context.Context, req exchange.Pos
 	}
 	out := make([]exchange.Position, 0, len(account.Positions))
 	for _, row := range account.Positions {
-		meta, ok := client.state.byID[row.MarketId]
+		meta, ok := metadata.byID[row.MarketId]
 		if !ok || meta.marketType != lighterPerp {
 			return nil, lighterMalformed(exchange.ProductPerp, "Positions", "unknown or mixed position market")
 		}
@@ -242,7 +304,7 @@ func (client *lighterPerpClient) Positions(ctx context.Context, req exchange.Pos
 		if err != nil {
 			return nil, lighterMalformed(exchange.ProductPerp, "Positions", err.Error())
 		}
-		if req.Instrument != "" && row.MarketId != requested.marketID {
+		if req.Instrument != nil && row.MarketId != requested.marketID {
 			continue
 		}
 		if pos.Quantity.IsZero() {
@@ -254,29 +316,57 @@ func (client *lighterPerpClient) Positions(ctx context.Context, req exchange.Pos
 }
 
 func (client *lighterSpotClient) lighterMetas(ctx context.Context, operation string, product exchange.Product, marketType string) (map[string]lighterMarketMeta, error) {
-	return lighterMetas(ctx, client.sdk, client.state, operation, product, marketType)
+	metadata, err := lighterLoadMetadata(ctx, client.sdk, client.state, operation, product, marketType)
+	if err != nil {
+		return nil, err
+	}
+	return metadata.bySymbol, nil
 }
 
 func (client *lighterPerpClient) lighterMetas(ctx context.Context, operation string, product exchange.Product, marketType string) (map[string]lighterMarketMeta, error) {
-	return lighterMetas(ctx, client.sdk, client.state, operation, product, marketType)
-}
-
-func (client *lighterSpotClient) lighterMeta(ctx context.Context, operation string, product exchange.Product, marketType, instrument string) (lighterMarketMeta, error) {
-	return lighterMeta(ctx, client.sdk, client.state, operation, product, marketType, instrument)
-}
-
-func (client *lighterPerpClient) lighterMeta(ctx context.Context, operation string, product exchange.Product, marketType, instrument string) (lighterMarketMeta, error) {
-	return lighterMeta(ctx, client.sdk, client.state, operation, product, marketType, instrument)
-}
-
-func lighterMetas(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string) (map[string]lighterMarketMeta, error) {
-	if err := lighterReady(ctx, product, operation, sdk); err != nil {
+	metadata, err := client.lighterMetadata(ctx, operation, product, marketType)
+	if err != nil {
 		return nil, err
+	}
+	return metadata.bySymbol, nil
+}
+
+func (client *lighterPerpClient) lighterMetadata(ctx context.Context, operation string, product exchange.Product, marketType string) (lighterMetadataSnapshot, error) {
+	return lighterLoadMetadata(ctx, client.sdk, client.state, operation, product, marketType)
+}
+
+func (client *lighterSpotClient) lighterMeta(ctx context.Context, operation string, product exchange.Product, marketType string, instrument exchange.Instrument) (lighterMarketMeta, error) {
+	return lighterMeta(ctx, client.sdk, client.state, operation, product, marketType, instrument)
+}
+
+func (client *lighterPerpClient) lighterMeta(ctx context.Context, operation string, product exchange.Product, marketType string, instrument exchange.Instrument) (lighterMarketMeta, error) {
+	return lighterMeta(ctx, client.sdk, client.state, operation, product, marketType, instrument)
+}
+
+type lighterMetadataSnapshot struct {
+	bySymbol map[string]lighterMarketMeta
+	byID     map[int]lighterMarketMeta
+}
+
+func lighterLoadMetadata(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string) (lighterMetadataSnapshot, error) {
+	if err := lighterReady(ctx, product, operation, sdk); err != nil {
+		return lighterMetadataSnapshot{}, err
+	}
+	if state.meta.catalog != nil && state.meta.catalogScope != (exchange.CatalogScope{}) {
+		snapshot, err := state.meta.catalog.Snapshot(ctx, state.meta.catalogScope)
+		if err != nil {
+			return lighterMetadataSnapshot{}, withExchangeOperation(err, operation)
+		}
+		metas, byID, err := lighterMetasFromSnapshot(snapshot, product, marketType)
+		if err != nil {
+			return lighterMetadataSnapshot{}, lighterMalformed(product, operation, err.Error())
+		}
+		return lighterMetadataSnapshot{bySymbol: metas, byID: byID}, nil
 	}
 	for {
 		state.cacheMu.Lock()
 		if state.metas != nil {
-			cached := state.metas
+			cached := lighterMetadataSnapshot{bySymbol: state.metas, byID: state.byID}
 			state.cacheMu.Unlock()
 			return cached, nil
 		}
@@ -291,21 +381,21 @@ func lighterMetas(ctx context.Context, sdk *lighter.Client, state *lighterRESTSt
 		select {
 		case <-loading:
 		case <-ctx.Done():
-			return nil, lighterContextErr(product, operation, ctx.Err())
+			return lighterMetadataSnapshot{}, lighterContextErr(product, operation, ctx.Err())
 		}
 	}
 }
 
-func lighterLoadMetas(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string, loading chan struct{}) (map[string]lighterMarketMeta, error) {
+func lighterLoadMetas(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string, loading chan struct{}) (lighterMetadataSnapshot, error) {
 	res, err := sdk.GetOrderBookDetails(ctx, nil, nil)
 	if err != nil {
 		lighterClearLoading(state, loading)
-		return nil, lighterNormalizeErr(product, operation, err)
+		return lighterMetadataSnapshot{}, lighterNormalizeErr(product, operation, err)
 	}
 	metas, byID, err := lighterBuildMetas(res, product, marketType)
 	if err != nil {
 		lighterClearLoading(state, loading)
-		return nil, lighterMalformed(product, operation, err.Error())
+		return lighterMetadataSnapshot{}, lighterMalformed(product, operation, err.Error())
 	}
 	state.cacheMu.Lock()
 	state.metas = metas
@@ -315,7 +405,42 @@ func lighterLoadMetas(ctx context.Context, sdk *lighter.Client, state *lighterRE
 		close(loading)
 	}
 	state.cacheMu.Unlock()
-	return metas, nil
+	return lighterMetadataSnapshot{bySymbol: metas, byID: byID}, nil
+}
+
+func lighterMetasFromSnapshot(snapshot exchange.InstrumentSnapshot, product exchange.Product, marketType string) (map[string]lighterMarketMeta, map[int]lighterMarketMeta, error) {
+	metas := make(map[string]lighterMarketMeta, len(snapshot.Instruments))
+	byID := make(map[int]lighterMarketMeta, len(snapshot.Instruments))
+	for _, instrument := range snapshot.Instruments {
+		if err := validateLighterInstrument(product, instrument); err != nil {
+			return nil, nil, err
+		}
+		id, err := strconv.Atoi(instrument.Identity.NativeID)
+		if err != nil || id < 0 {
+			return nil, nil, errors.New("invalid Lighter native market id")
+		}
+		priceScale, sizeScale, quoteScale, err := lighterScalesFromInstrument(instrument)
+		if err != nil {
+			return nil, nil, err
+		}
+		meta := lighterMarketMeta{
+			instrument: instrument,
+			marketID:   id,
+			marketType: marketType,
+			priceScale: priceScale,
+			sizeScale:  sizeScale,
+			quoteScale: quoteScale,
+		}
+		if _, exists := metas[instrument.Identity.Symbol]; exists {
+			return nil, nil, errors.New("duplicate Lighter symbol")
+		}
+		if _, exists := byID[id]; exists {
+			return nil, nil, errors.New("duplicate Lighter market id")
+		}
+		metas[instrument.Identity.Symbol] = meta
+		byID[id] = meta
+	}
+	return metas, byID, nil
 }
 
 func lighterClearLoading(state *lighterRESTState, loading chan struct{}) {
@@ -327,19 +452,47 @@ func lighterClearLoading(state *lighterRESTState, loading chan struct{}) {
 	state.cacheMu.Unlock()
 }
 
-func lighterMeta(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType, instrument string) (lighterMarketMeta, error) {
-	if strings.TrimSpace(instrument) == "" || strings.TrimSpace(instrument) != instrument {
-		return lighterMarketMeta{}, lighterInvalid(product, operation, "instrument is required and must not have surrounding whitespace")
+func lighterMeta(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string, instrument exchange.Instrument) (lighterMarketMeta, error) {
+	if err := validateLighterInstrument(product, instrument); err != nil {
+		return lighterMarketMeta{}, lighterInvalid(product, operation, err.Error())
 	}
-	metas, err := lighterMetas(ctx, sdk, state, operation, product, marketType)
+	metadata, err := lighterLoadMetadata(ctx, sdk, state, operation, product, marketType)
 	if err != nil {
 		return lighterMarketMeta{}, err
 	}
-	meta, ok := metas[instrument]
+	meta, ok := metadata.bySymbol[instrument.Identity.Symbol]
 	if !ok {
-		return lighterMarketMeta{}, lighterInvalid(product, operation, "instrument is not present in Lighter metadata")
+		return lighterMarketMeta{}, lighterUnknownInstrument(product, operation)
+	}
+	if meta.instrument.Identity.NativeSymbol != instrument.Identity.NativeSymbol ||
+		meta.instrument.Identity.NativeID != instrument.Identity.NativeID {
+		return lighterMarketMeta{}, lighterUnknownInstrument(product, operation)
 	}
 	return meta, nil
+}
+
+func lighterOptionalMeta(ctx context.Context, sdk *lighter.Client, state *lighterRESTState, operation string, product exchange.Product, marketType string, instrument *exchange.Instrument) (lighterMarketMeta, bool, error) {
+	if instrument == nil {
+		return lighterMarketMeta{}, false, nil
+	}
+	meta, err := lighterMeta(ctx, sdk, state, operation, product, marketType, *instrument)
+	return meta, true, err
+}
+
+func validateLighterInstrument(product exchange.Product, instrument exchange.Instrument) error {
+	if err := instrument.Validate(); err != nil {
+		return err
+	}
+	if instrument.Identity.Venue != exchange.VenueLighter {
+		return errors.New("instrument venue does not match Lighter")
+	}
+	if instrument.Identity.Product != product {
+		return errors.New("instrument product does not match Lighter client")
+	}
+	if strings.TrimSpace(instrument.Identity.NativeID) == "" {
+		return errors.New("instrument native id is required")
+	}
+	return nil
 }
 
 func lighterBuildMetas(res *lighter.OrderBookDetailsResponse, product exchange.Product, marketType string) (map[string]lighterMarketMeta, map[int]lighterMarketMeta, error) {
@@ -391,20 +544,33 @@ func lighterBuildMetas(res *lighter.OrderBookDetailsResponse, product exchange.P
 			}
 		}
 		base, quote := lighterAssets(row.Symbol, product)
-		inst := exchange.Instrument{
-			Symbol:            row.Symbol,
-			BaseAsset:         base,
-			QuoteAsset:        quote,
-			Product:           product,
-			PriceIncrement:    priceInc,
-			QuantityIncrement: qtyInc,
-			MinQuantity:       minQty,
-			MinNotional:       minNotional,
-		}
+		settle := ""
 		if product == exchange.ProductPerp {
-			inst.SettleAsset = quote
+			settle = quote
 		}
-		meta := lighterMarketMeta{instrument: inst, marketID: row.MarketId, marketType: marketType, priceScale: decimal.New(1, int32(priceDecimals)), sizeScale: decimal.New(1, int32(sizeDecimals)), quoteScale: decimal.New(1, int32(quoteDecimals))}
+		inst := newInstrument(
+			lighterVenue,
+			product,
+			row.Symbol,
+			base,
+			quote,
+			settle,
+			row.Symbol,
+			strconv.Itoa(row.MarketId),
+			priceInc,
+			qtyInc,
+			minQty,
+			minNotional,
+			oneContract(),
+		)
+		inst.Encoding.PriceScale = lighterEncodingScale(priceDecimals)
+		inst.Encoding.QuantityScale = lighterEncodingScale(sizeDecimals)
+		inst.Encoding.QuoteScale = lighterEncodingScale(quoteDecimals)
+		priceScale, sizeScale, quoteScale, err := lighterScalesFromInstrument(inst)
+		if err != nil {
+			return nil, nil, err
+		}
+		meta := lighterMarketMeta{instrument: inst, marketID: row.MarketId, marketType: marketType, priceScale: priceScale, sizeScale: sizeScale, quoteScale: quoteScale}
 		if _, exists := metas[row.Symbol]; exists {
 			return nil, nil, errors.New("duplicate market symbol")
 		}
@@ -415,6 +581,28 @@ func lighterBuildMetas(res *lighter.OrderBookDetailsResponse, product exchange.P
 		byID[row.MarketId] = meta
 	}
 	return metas, byID, nil
+}
+
+func lighterEncodingScale(decimals uint8) exchange.OptionalInt {
+	scale := int64(1)
+	for i := uint8(0); i < decimals; i++ {
+		scale *= 10
+	}
+	return exchange.OptionalInt{Value: scale, Valid: true}
+}
+
+func lighterScalesFromInstrument(instrument exchange.Instrument) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
+	encoding := instrument.Encoding
+	if !encoding.PriceScale.Valid || encoding.PriceScale.Value <= 0 {
+		return decimal.Zero, decimal.Zero, decimal.Zero, errors.New("instrument price scale is required")
+	}
+	if !encoding.QuantityScale.Valid || encoding.QuantityScale.Value <= 0 {
+		return decimal.Zero, decimal.Zero, decimal.Zero, errors.New("instrument quantity scale is required")
+	}
+	if !encoding.QuoteScale.Valid || encoding.QuoteScale.Value <= 0 {
+		return decimal.Zero, decimal.Zero, decimal.Zero, errors.New("instrument quote scale is required")
+	}
+	return decimal.NewFromInt(encoding.PriceScale.Value), decimal.NewFromInt(encoding.QuantityScale.Value), decimal.NewFromInt(encoding.QuoteScale.Value), nil
 }
 
 func lighterMetaDecimals(primary, fallback uint8) (uint8, error) {
@@ -447,7 +635,7 @@ func lighterOrderBook(ctx context.Context, sdk *lighter.Client, product exchange
 	if err != nil {
 		return exchange.OrderBook{}, lighterMalformed(product, operation, err.Error())
 	}
-	return exchange.OrderBook{Instrument: meta.instrument.Symbol, Bids: bids, Asks: asks, Page: exchange.PageInfo{Limit: limit}}, nil
+	return exchange.OrderBook{Instrument: meta.instrument, Bids: bids, Asks: asks, Page: exchange.PageInfo{Limit: limit}}, nil
 }
 
 func lighterCandles(ctx context.Context, sdk *lighter.Client, product exchange.Product, meta lighterMarketMeta, req exchange.CandlesRequest) (exchange.CandlePage, error) {
@@ -543,9 +731,9 @@ func lighterPlace(ctx context.Context, sdk *lighter.Client, state *lighterRESTSt
 	native := lighterPlaceRequest(meta, req, price, qty, clientID, isAsk)
 	resp, err := sdk.PlaceOrder(trackedCtx, native)
 	if err != nil {
-		return lighterCommandErr(product, exchange.OrderOperationPlace, meta.instrument.Symbol, "", req.ClientOrderID, err, sdk, tracker)
+		return lighterCommandErr(product, exchange.OrderOperationPlace, meta.instrument, "", req.ClientOrderID, err, sdk, tracker)
 	}
-	ack, err := lighterCommandAck(product, "PlaceOrder", exchange.OrderOperationPlace, meta.instrument.Symbol, "", req.ClientOrderID, resp.Code, resp.Message, resp.TxHash, sdk, tracker)
+	ack, err := lighterCommandAck(product, "PlaceOrder", exchange.OrderOperationPlace, meta.instrument, "", req.ClientOrderID, resp.Code, resp.Message, resp.TxHash, sdk, tracker)
 	ack.OrderType = req.Type
 	if err != nil {
 		return ack, err
@@ -573,9 +761,9 @@ func lighterCancel(ctx context.Context, sdk *lighter.Client, state *lighterRESTS
 	trackedCtx, tracker := lighterWithSendTracker(ctx)
 	resp, err := sdk.CancelOrder(trackedCtx, lighter.CancelOrderRequest{MarketId: meta.marketID, OrderId: orderID})
 	if err != nil {
-		return lighterCommandErr(product, exchange.OrderOperationCancel, meta.instrument.Symbol, req.OrderID, "", err, sdk, tracker)
+		return lighterCommandErr(product, exchange.OrderOperationCancel, meta.instrument, req.OrderID, "", err, sdk, tracker)
 	}
-	return lighterCommandAck(product, "CancelOrder", exchange.OrderOperationCancel, meta.instrument.Symbol, req.OrderID, "", resp.Code, resp.Message, resp.TxHash, sdk, tracker)
+	return lighterCommandAck(product, "CancelOrder", exchange.OrderOperationCancel, meta.instrument, req.OrderID, "", resp.Code, resp.Message, resp.TxHash, sdk, tracker)
 }
 
 func lighterEnterCommand(ctx context.Context, product exchange.Product, operation string, state *lighterRESTState) error {
@@ -741,13 +929,13 @@ func lighterValidatePlace(product exchange.Product, meta lighterMarketMeta, req 
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("quantity must align to Lighter size tick: %w", err)
 	}
-	if product == exchange.ProductSpot && req.Quantity.LessThan(meta.instrument.MinQuantity) {
+	if product == exchange.ProductSpot && req.Quantity.LessThan(meta.instrument.Rules.MinQuantity) {
 		return 0, 0, 0, errors.New("quantity is below minimum")
 	}
-	if product == exchange.ProductPerp && req.Quantity.LessThan(meta.instrument.MinQuantity) {
+	if product == exchange.ProductPerp && req.Quantity.LessThan(meta.instrument.Rules.MinQuantity) {
 		return 0, 0, 0, errors.New("quantity is below minimum")
 	}
-	if req.Type == exchange.OrderTypeLimit && meta.instrument.MinNotional.Valid && req.Quantity.Mul(req.LimitPrice).LessThan(meta.instrument.MinNotional.Value) {
+	if req.Type == exchange.OrderTypeLimit && meta.instrument.Rules.MinNotional.Valid && req.Quantity.Mul(req.LimitPrice).LessThan(meta.instrument.Rules.MinNotional.Value) {
 		return 0, 0, 0, errors.New("notional is below minimum")
 	}
 	return price, qty, clientID, nil
@@ -763,9 +951,9 @@ func lighterValidateCancel(req exchange.CancelOrderRequest) (int64, error) {
 	return id, nil
 }
 
-func lighterCommandAck(product exchange.Product, operation string, op exchange.OrderOperation, instrument, orderID, clientOrderID string, code int32, msg, txHash string, sdk *lighter.Client, tracker *lighterSendTracker) (exchange.OrderAcknowledgement, error) {
+func lighterCommandAck(product exchange.Product, operation string, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, code int32, msg, txHash string, sdk *lighter.Client, tracker *lighterSendTracker) (exchange.OrderAcknowledgement, error) {
 	txHash = strings.TrimSpace(txHash)
-	ack := exchange.OrderAcknowledgement{Venue: lighterVenue, Product: product, Operation: op, Instrument: instrument, OrderID: orderID, ClientOrderID: clientOrderID, VenueCode: strconv.FormatInt(int64(code), 10), TransactionHash: txHash}
+	ack := exchange.OrderAcknowledgement{Venue: lighterVenue, Product: product, Operation: op, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientOrderID, VenueCode: strconv.FormatInt(int64(code), 10), TransactionHash: txHash}
 	if code == 200 && txHash != "" {
 		ack.State = exchange.AckAcceptedPending
 		return ack, ack.Validate()
@@ -794,8 +982,8 @@ func lighterCommandAck(product exchange.Product, operation string, op exchange.O
 	return ack, exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{Venue: lighterVenue, Product: product, Operation: operation, Code: ack.VenueCode, SafeMessage: "Lighter rejected order command"})
 }
 
-func lighterCommandErr(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientOrderID string, err error, sdk *lighter.Client, tracker *lighterSendTracker) (exchange.OrderAcknowledgement, error) {
-	ack := exchange.OrderAcknowledgement{Venue: lighterVenue, Product: product, Operation: op, State: exchange.AckAmbiguous, Instrument: instrument, OrderID: orderID, ClientOrderID: clientOrderID}
+func lighterCommandErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error, sdk *lighter.Client, tracker *lighterSendTracker) (exchange.OrderAcknowledgement, error) {
+	ack := exchange.OrderAcknowledgement{Venue: lighterVenue, Product: product, Operation: op, State: exchange.AckAmbiguous, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientOrderID}
 	operation := lighterCommandOperation(op)
 	began, status := false, 0
 	if tracker != nil {
@@ -946,7 +1134,7 @@ func lighterOrder(row *lighter.Order, meta lighterMarketMeta) (exchange.Order, e
 	if row.IsAsk {
 		side = exchange.SideSell
 	}
-	return exchange.Order{Instrument: meta.instrument.Symbol, OrderID: strconv.FormatInt(row.OrderIndex, 10), ClientOrderID: lighterOrderClientID(row.ClientOrderIndex), Side: side, Type: orderType, Quantity: qty, LimitPrice: price, LimitPolicy: limitPolicy, ReduceOnly: row.ReduceOnly, Filled: filled, Status: string(row.Status), CreatedAt: created, UpdatedAt: updated}, nil
+	return exchange.Order{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, OrderID: strconv.FormatInt(row.OrderIndex, 10), ClientOrderID: lighterOrderClientID(row.ClientOrderIndex), Side: side, Type: orderType, Quantity: qty, LimitPrice: price, LimitPolicy: limitPolicy, ReduceOnly: row.ReduceOnly, Filled: filled, Status: string(row.Status), CreatedAt: created, UpdatedAt: updated}, nil
 }
 
 func lighterOrderOutsideExchangeSubset(row *lighter.Order) bool {
@@ -1002,7 +1190,7 @@ func lighterFill(row lighter.Trade, meta lighterMarketMeta, accountID int64) (ex
 	if orderID <= 0 {
 		return exchange.Fill{}, errors.New("fill order id must be positive")
 	}
-	return exchange.Fill{Instrument: meta.instrument.Symbol, OrderID: strconv.FormatInt(orderID, 10), ClientOrderID: lighterOrderClientID(clientID), FillID: strconv.FormatInt(row.TradeId, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: "USDC", Liquidity: liq, Time: lighterUnixMillis(row.Timestamp)}, nil
+	return exchange.Fill{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, OrderID: strconv.FormatInt(orderID, 10), ClientOrderID: lighterOrderClientID(clientID), FillID: strconv.FormatInt(row.TradeId, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: "USDC", Liquidity: liq, Time: lighterUnixMillis(row.Timestamp)}, nil
 }
 
 func lighterPosition(row *lighter.Position, meta lighterMarketMeta) (exchange.Position, error) {
@@ -1042,7 +1230,7 @@ func lighterPosition(row *lighter.Position, meta lighterMarketMeta) (exchange.Po
 	if !qty.IsZero() {
 		mark = value.Div(qty.Abs())
 	}
-	return exchange.Position{Instrument: meta.instrument.Symbol, Side: side, Quantity: qty, EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, MarginUsed: margin}, nil
+	return exchange.Position{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, Side: side, Quantity: qty, EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, MarginUsed: margin}, nil
 }
 
 func lighterBidLevels(rows []lighter.Bid) ([]exchange.BookLevel, error) {
@@ -1349,6 +1537,15 @@ func lighterInvalid(product exchange.Product, operation, msg string) error {
 
 func lighterMalformed(product exchange.Product, operation, msg string) error {
 	return exchange.NewError(exchange.KindMalformedResponse, exchange.ErrorDetails{Venue: lighterVenue, Product: product, Operation: operation, SafeMessage: msg})
+}
+
+func lighterUnknownInstrument(product exchange.Product, operation string) error {
+	return exchange.NewError(exchange.KindMetadataResolution, exchange.ErrorDetails{
+		Venue:       lighterVenue,
+		Product:     product,
+		Operation:   operation,
+		SafeMessage: "unknown Lighter native instrument identity",
+	})
 }
 
 func lighterContextErr(product exchange.Product, operation string, err error) error {

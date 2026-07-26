@@ -15,11 +15,12 @@ import (
 func TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
 	backend := newOKXSpotWSBackendWithClient(ws)
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
 	if ws.connectCalls != 0 {
 		t.Fatal("constructor connected websocket")
 	}
 	var got exchange.BookEvent
-	stop, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	stop, err := backend.StartOrderBook(context.Background(), instrument, streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) { got = event },
 	})
 	if err != nil {
@@ -37,7 +38,7 @@ func TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5(t *testing.T) {
 		Ts:   "1700000000000",
 	}, "snapshot")
 	if got.Kind != exchange.EventSnapshot ||
-		got.Instrument != "ETH-USDT" ||
+		got.Instrument.Identity.NativeSymbol != "ETH-USDT" ||
 		!got.Bids[0].Quantity.Equal(decimal.NewFromInt(2)) ||
 		!got.Asks[0].Price.Equal(decimal.RequireFromString("101.2")) {
 		t.Fatalf("book event = %+v", got)
@@ -53,8 +54,9 @@ func TestOKXPublicWSBackendIsLazyConnectsOnceAndUsesBooks5(t *testing.T) {
 func TestOKXPublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
 	backend := newOKXSpotWSBackendWithClient(ws)
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
 	var bbo exchange.BBOEvent
-	if _, err := backend.StartBBO(context.Background(), "ETH-USDT", streamCallbacks[exchange.BBOEvent]{
+	if _, err := backend.StartBBO(context.Background(), instrument, streamCallbacks[exchange.BBOEvent]{
 		Event: func(event exchange.BBOEvent) { bbo = event },
 	}); err != nil {
 		t.Fatalf("StartBBO: %v", err)
@@ -67,7 +69,7 @@ func TestOKXPublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 		AskSz:  "4.5",
 		Ts:     "1700000000001",
 	})
-	if bbo.Instrument != "ETH-USDT" ||
+	if bbo.Instrument.Identity.NativeSymbol != "ETH-USDT" ||
 		!bbo.Bid.Quantity.Equal(decimal.RequireFromString("2.3")) ||
 		!bbo.Ask.Price.Equal(decimal.RequireFromString("100.2")) ||
 		bbo.Time.UnixMilli() != 1700000000001 {
@@ -75,7 +77,7 @@ func TestOKXPublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 	}
 
 	var trade exchange.PublicTradeEvent
-	if _, err := backend.StartPublicTrades(context.Background(), "ETH-USDT", streamCallbacks[exchange.PublicTradeEvent]{
+	if _, err := backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{
 		Event: func(event exchange.PublicTradeEvent) { trade = event },
 	}); err != nil {
 		t.Fatalf("StartPublicTrades: %v", err)
@@ -98,22 +100,26 @@ func TestOKXPublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 
 func TestOKXPublicWSBackendSurfacesRawDecodeErrorsForEveryPublicStream(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
-	backend := newOKXPerpWSBackendWithClient(ws, func(context.Context, string) (okxContractMeta, error) {
+	instrument := okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	backend := newOKXPerpWSBackendWithClient(ws, func(_ context.Context, got exchange.Instrument) (okxContractMeta, error) {
+		if got.Identity.NativeSymbol != instrument.Identity.NativeSymbol {
+			t.Fatalf("meta instrument = %+v", got.Identity)
+		}
 		return okxContractMeta{contractValue: decimal.NewFromInt(1)}, nil
 	})
 	var got []error
 	callback := func(err error) { got = append(got, err) }
 
-	if _, err := backend.StartOrderBook(context.Background(), "BTC-USDT-SWAP", streamCallbacks[exchange.BookEvent]{Error: callback}); err != nil {
+	if _, err := backend.StartOrderBook(context.Background(), instrument, streamCallbacks[exchange.BookEvent]{Error: callback}); err != nil {
 		t.Fatalf("StartOrderBook: %v", err)
 	}
-	if _, err := backend.StartBBO(context.Background(), "BTC-USDT-SWAP", streamCallbacks[exchange.BBOEvent]{Error: callback}); err != nil {
+	if _, err := backend.StartBBO(context.Background(), instrument, streamCallbacks[exchange.BBOEvent]{Error: callback}); err != nil {
 		t.Fatalf("StartBBO: %v", err)
 	}
-	if _, err := backend.StartPublicTrades(context.Background(), "BTC-USDT-SWAP", streamCallbacks[exchange.PublicTradeEvent]{Error: callback}); err != nil {
+	if _, err := backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{Error: callback}); err != nil {
 		t.Fatalf("StartPublicTrades: %v", err)
 	}
-	if _, err := backend.StartReference(context.Background(), "BTC-USDT-SWAP", streamCallbacks[perpReferenceEvent]{Error: callback}); err != nil {
+	if _, err := backend.StartReference(context.Background(), instrument, streamCallbacks[perpReferenceEvent]{Error: callback}); err != nil {
 		t.Fatalf("StartReference: %v", err)
 	}
 
@@ -136,11 +142,15 @@ func TestOKXPublicWSBackendSurfacesRawDecodeErrorsForEveryPublicStream(t *testin
 
 func TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
-	backend := newOKXPerpWSBackendWithClient(ws, func(context.Context, string) (okxContractMeta, error) {
-		return okxContractMeta{contractValue: decimal.RequireFromString("0.01")}, nil
+	instrument := okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	backend := newOKXPerpWSBackendWithClient(ws, func(_ context.Context, got exchange.Instrument) (okxContractMeta, error) {
+		if got.Identity.NativeSymbol != instrument.Identity.NativeSymbol {
+			t.Fatalf("meta instrument = %+v", got.Identity)
+		}
+		return okxContractMeta{instrument: got, contractValue: decimal.RequireFromString("0.01")}, nil
 	})
 	var trade exchange.PublicTradeEvent
-	if _, err := backend.StartPublicTrades(context.Background(), "BTC-USDT-SWAP", streamCallbacks[exchange.PublicTradeEvent]{
+	if _, err := backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{
 		Event: func(event exchange.PublicTradeEvent) { trade = event },
 	}); err != nil {
 		t.Fatalf("StartPublicTrades: %v", err)
@@ -158,7 +168,7 @@ func TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream(t *testing.
 	}
 
 	var references []perpReferenceEvent
-	if _, err := backend.StartReference(context.Background(), "BTC-USDT-SWAP", streamCallbacks[perpReferenceEvent]{
+	if _, err := backend.StartReference(context.Background(), instrument, streamCallbacks[perpReferenceEvent]{
 		Event: func(event perpReferenceEvent) { references = append(references, event) },
 	}); err != nil {
 		t.Fatalf("StartReference: %v", err)
@@ -185,6 +195,120 @@ func TestOKXPerpWSBackendAppliesContractMultiplierAndReferenceStream(t *testing.
 	}
 }
 
+func TestOKXPublicWSRejectsInvalidInstrumentBeforeConnectOrSubscribe(t *testing.T) {
+	spot := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
+	spot.Identity.Venue = exchange.VenueBinance
+	perp := okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	perp.Identity.SettleAsset = "USDC"
+
+	tests := []struct {
+		name       string
+		instrument exchange.Instrument
+		start      func(*okxPublicWSBackend, exchange.Instrument) (func() error, error)
+		candle     bool
+	}{
+		{
+			name:       "spot order book",
+			instrument: spot,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartOrderBook(context.Background(), instrument, streamCallbacks[exchange.BookEvent]{})
+			},
+		},
+		{
+			name:       "spot bbo",
+			instrument: spot,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartBBO(context.Background(), instrument, streamCallbacks[exchange.BBOEvent]{})
+			},
+		},
+		{
+			name:       "spot public trades",
+			instrument: spot,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{})
+			},
+		},
+		{
+			name:       "spot candles",
+			instrument: spot,
+			candle:     true,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartCandles(context.Background(), instrument, "1m", streamCallbacks[exchange.CandleEvent]{})
+			},
+		},
+		{
+			name:       "perp order book",
+			instrument: perp,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartOrderBook(context.Background(), instrument, streamCallbacks[exchange.BookEvent]{})
+			},
+		},
+		{
+			name:       "perp bbo",
+			instrument: perp,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartBBO(context.Background(), instrument, streamCallbacks[exchange.BBOEvent]{})
+			},
+		},
+		{
+			name:       "perp public trades",
+			instrument: perp,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{})
+			},
+		},
+		{
+			name:       "perp candles",
+			instrument: perp,
+			candle:     true,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartCandles(context.Background(), instrument, "1m", streamCallbacks[exchange.CandleEvent]{})
+			},
+		},
+		{
+			name:       "perp reference",
+			instrument: perp,
+			start: func(backend *okxPublicWSBackend, instrument exchange.Instrument) (func() error, error) {
+				return backend.StartReference(context.Background(), instrument, streamCallbacks[perpReferenceEvent]{})
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ws := newFakeOKXPublicWSClient()
+			candleWS := newFakeOKXPublicWSClient()
+			backend := &okxPublicWSBackend{
+				meta:           clientMeta{venue: exchange.VenueOKX, product: test.instrument.Identity.Product},
+				ws:             ws,
+				candleWS:       candleWS,
+				statusHandlers: make(map[*okxWSStatusRegistration]struct{}),
+				perpMeta: func(context.Context, exchange.Instrument) (okxContractMeta, error) {
+					t.Fatal("perp metadata loader ran before instrument validation")
+					return okxContractMeta{}, nil
+				},
+			}
+			if !test.candle {
+				backend.candleWS = nil
+			}
+
+			stop, err := test.start(backend, test.instrument)
+			if stop != nil {
+				t.Fatalf("invalid instrument returned stop function")
+			}
+			if !errors.Is(err, exchange.ErrInvalidRequest) {
+				t.Fatalf("error = %v, want ErrInvalidRequest", err)
+			}
+			if ws.connectCalls != 0 || candleWS.connectCalls != 0 {
+				t.Fatalf("connect calls = public:%d candle:%d, want zero", ws.connectCalls, candleWS.connectCalls)
+			}
+			if ws.subscribeCount()+candleWS.subscribeCount() != 0 {
+				t.Fatalf("subscribe count = public:%d candle:%d, want zero", ws.subscribeCount(), candleWS.subscribeCount())
+			}
+		})
+	}
+}
+
 func TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes(t *testing.T) {
 	cases := map[string]string{
 		"1m":  "candle1m",
@@ -200,8 +324,9 @@ func TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes(t *testi
 		t.Run(interval, func(t *testing.T) {
 			ws := newFakeOKXPublicWSClient()
 			backend := newOKXSpotWSBackendWithClient(ws)
+			instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
 			var got exchange.CandleEvent
-			stop, err := backend.StartCandles(context.Background(), "ETH-USDT", interval, streamCallbacks[exchange.CandleEvent]{
+			stop, err := backend.StartCandles(context.Background(), instrument, interval, streamCallbacks[exchange.CandleEvent]{
 				Event: func(event exchange.CandleEvent) { got = event },
 			})
 			if err != nil {
@@ -211,7 +336,7 @@ func TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes(t *testi
 				t.Fatalf("candle channels = %v, want %s", ws.candleChannels, channel)
 			}
 			ws.emitCandle(okx.Candle{"1700000000000", "100", "102", "99", "101", "2.5", "250", "252.5", "1"})
-			if got.Instrument != "ETH-USDT" ||
+			if got.Instrument.Identity.NativeSymbol != "ETH-USDT" ||
 				got.Interval != interval ||
 				got.Candle.OpenTime.UnixMilli() != 1700000000000 ||
 				got.Candle.CloseTime.Sub(got.Candle.OpenTime) <= 0 ||
@@ -233,8 +358,9 @@ func TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes(t *testi
 func TestOKXPublicWSBackendStartsCandlesOnBusinessSocket(t *testing.T) {
 	publicWS := newFakeOKXPublicWSClient()
 	businessWS := newFakeOKXPublicWSClient()
-	backend := newOKXSpotWSBackendWithClients(publicWS, businessWS)
-	stop, err := backend.StartCandles(context.Background(), "ETH-USDT", "1m", streamCallbacks[exchange.CandleEvent]{})
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
+	backend := newOKXSpotWSBackendWithClients(clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot}, publicWS, businessWS)
+	stop, err := backend.StartCandles(context.Background(), instrument, "1m", streamCallbacks[exchange.CandleEvent]{})
 	if err != nil {
 		t.Fatalf("StartCandles: %v", err)
 	}
@@ -299,7 +425,8 @@ func assertOKXDemoBusinessSocket(t *testing.T, product string, backend *okxPubli
 func TestOKXPublicWSBackendStartCandlesRejectsUnsupportedAndMalformed(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
 	backend := newOKXSpotWSBackendWithClient(ws)
-	if _, err := backend.StartCandles(context.Background(), "ETH-USDT", "3m", streamCallbacks[exchange.CandleEvent]{}); err == nil {
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
+	if _, err := backend.StartCandles(context.Background(), instrument, "3m", streamCallbacks[exchange.CandleEvent]{}); err == nil {
 		t.Fatalf("StartCandles unsupported interval succeeded")
 	}
 	if len(ws.candleChannels) != 0 {
@@ -307,7 +434,7 @@ func TestOKXPublicWSBackendStartCandlesRejectsUnsupportedAndMalformed(t *testing
 	}
 
 	var gotErr error
-	if _, err := backend.StartCandles(context.Background(), "ETH-USDT", "1m", streamCallbacks[exchange.CandleEvent]{
+	if _, err := backend.StartCandles(context.Background(), instrument, "1m", streamCallbacks[exchange.CandleEvent]{
 		Error: func(err error) { gotErr = err },
 	}); err != nil {
 		t.Fatalf("StartCandles: %v", err)
@@ -324,12 +451,13 @@ func TestOKXPublicWSBackendStartCandlesRejectsUnsupportedAndMalformed(t *testing
 
 func TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
-	backend := newOKXPerpWSBackendWithClient(ws, func(context.Context, string) (okxContractMeta, error) {
-		return okxContractMeta{contractValue: decimal.RequireFromString("0.01")}, nil
+	instrument := okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	backend := newOKXPerpWSBackendWithClient(ws, func(_ context.Context, got exchange.Instrument) (okxContractMeta, error) {
+		return okxContractMeta{instrument: got, contractValue: decimal.RequireFromString("0.01")}, nil
 	})
 	var statuses []backendStatus
 	var got exchange.CandleEvent
-	if _, err := backend.StartCandles(context.Background(), "BTC-USDT-SWAP", "1h", streamCallbacks[exchange.CandleEvent]{
+	if _, err := backend.StartCandles(context.Background(), instrument, "1h", streamCallbacks[exchange.CandleEvent]{
 		Event:  func(event exchange.CandleEvent) { got = event },
 		Status: func(status backendStatus) { statuses = append(statuses, status) },
 	}); err != nil {
@@ -348,7 +476,7 @@ func TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle(t *test
 		t.Fatalf("statuses = %+v", statuses)
 	}
 	ws.emitCandle(okx.Candle{"1700000000000", "50000", "50100", "49900", "50050", "3", "0.03", "1501.5", "0"})
-	if got.Instrument != "BTC-USDT-SWAP" ||
+	if got.Instrument.Identity.NativeSymbol != "BTC-USDT-SWAP" ||
 		got.Interval != "1h" ||
 		!got.Candle.Volume.Equal(decimal.RequireFromString("0.03")) ||
 		got.Candle.Complete {
@@ -359,9 +487,10 @@ func TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle(t *test
 func TestOKXPublicWSBackendReconnectStatusMarksNextBookResync(t *testing.T) {
 	ws := newFakeOKXPublicWSClient()
 	backend := newOKXSpotWSBackendWithClient(ws)
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
 	var statuses []backendStatus
 	var book exchange.BookEvent
-	if _, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	if _, err := backend.StartOrderBook(context.Background(), instrument, streamCallbacks[exchange.BookEvent]{
 		Event:  func(event exchange.BookEvent) { book = event },
 		Status: func(status backendStatus) { statuses = append(statuses, status) },
 	}); err != nil {
@@ -416,14 +545,15 @@ func TestOKXPublicWSBackendConcurrentTopicsSharePendingConnect(t *testing.T) {
 		release:               make(chan struct{}),
 	}
 	backend := newOKXSpotWSBackendWithClient(ws)
+	instrument := okxCatalogTestInstrument(exchange.ProductSpot, "ETH", "USDT", "1001", decimal.RequireFromString("0.0001"))
 	results := make(chan error, 2)
 	go func() {
-		_, err := backend.StartBBO(context.Background(), "ETH-USDT", streamCallbacks[exchange.BBOEvent]{})
+		_, err := backend.StartBBO(context.Background(), instrument, streamCallbacks[exchange.BBOEvent]{})
 		results <- err
 	}()
 	<-ws.entered
 	go func() {
-		_, err := backend.StartPublicTrades(context.Background(), "ETH-USDT", streamCallbacks[exchange.PublicTradeEvent]{})
+		_, err := backend.StartPublicTrades(context.Background(), instrument, streamCallbacks[exchange.PublicTradeEvent]{})
 		results <- err
 	}()
 	select {
@@ -553,6 +683,23 @@ func (client *fakeOKXPublicWSClient) SubscribeFundingRateWithError(_ string, han
 func (client *fakeOKXPublicWSClient) Unsubscribe(args okx.WsSubscribeArgs) error {
 	client.unsubscribed = append(client.unsubscribed, args)
 	return nil
+}
+
+func (client *fakeOKXPublicWSClient) subscribeCount() int {
+	count := len(client.bookDepths) + len(client.candleChannels)
+	if client.tickerHandler != nil || client.tickerError != nil {
+		count++
+	}
+	if client.tradeHandler != nil || client.tradeError != nil {
+		count++
+	}
+	if client.markHandler != nil || client.markError != nil {
+		count++
+	}
+	if client.fundingHandler != nil || client.fundingError != nil {
+		count++
+	}
+	return count
 }
 
 func (client *fakeOKXPublicWSClient) emitBook(book *okx.OrderBook, action string) {

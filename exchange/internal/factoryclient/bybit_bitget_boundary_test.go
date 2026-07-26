@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
 	"github.com/shopspring/decimal"
 )
 
@@ -21,16 +22,19 @@ func TestBybitBitgetValidRESTRequestsRejectNilContextBeforeNetwork(t *testing.T)
 	}
 	for name, client := range spotClients {
 		t.Run(name+"/spot", func(t *testing.T) {
+			venue := exchange.Venue(name)
+			instrument := bybitBitgetTestInstrument(venue, exchange.ProductSpot, "BTC-USDT")
+			instrumentPtr := &instrument
 			assertNilContextInvalid(t, map[string]error{
 				"Instruments":  errorFromSlice(client.Instruments(nil)),
-				"OrderBook":    errorFromValue(client.OrderBook(nil, exchange.OrderBookRequest{Instrument: "BTC-USDT", Limit: 5})),
-				"Candles":      errorFromValue(client.Candles(nil, exchange.CandlesRequest{Instrument: "BTC-USDT", Interval: "1m", Limit: 1})),
-				"PublicTrades": errorFromValue(client.PublicTrades(nil, exchange.PublicTradesRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"PlaceOrder":   errorFromValue(client.PlaceOrder(nil, validBoundaryOrder(exchange.ProductSpot, "BTC-USDT"))),
-				"CancelOrder":  errorFromValue(client.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "11"})),
-				"OpenOrders":   errorFromValue(client.OpenOrders(nil, exchange.OpenOrdersRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"OrderHistory": errorFromValue(client.OrderHistory(nil, exchange.OrderHistoryRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"Fills":        errorFromValue(client.Fills(nil, exchange.FillsRequest{Instrument: "BTC-USDT", Limit: 1})),
+				"OrderBook":    errorFromValue(client.OrderBook(nil, exchange.OrderBookRequest{Instrument: instrument, Limit: 5})),
+				"Candles":      errorFromValue(client.Candles(nil, exchange.CandlesRequest{Instrument: instrument, Interval: "1m", Limit: 1})),
+				"PublicTrades": errorFromValue(client.PublicTrades(nil, exchange.PublicTradesRequest{Instrument: instrument, Limit: 1})),
+				"PlaceOrder":   errorFromValue(client.PlaceOrder(nil, validBoundaryOrder(instrument))),
+				"CancelOrder":  errorFromValue(client.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: instrument, OrderID: "11"})),
+				"OpenOrders":   errorFromValue(client.OpenOrders(nil, exchange.OpenOrdersRequest{Instrument: instrumentPtr, Limit: 1})),
+				"OrderHistory": errorFromValue(client.OrderHistory(nil, exchange.OrderHistoryRequest{Instrument: instrumentPtr, Limit: 1})),
+				"Fills":        errorFromValue(client.Fills(nil, exchange.FillsRequest{Instrument: instrumentPtr, Limit: 1})),
 				"Balances":     errorFromSlice(client.Balances(nil)),
 				"SpotAccount":  errorFromValue(client.SpotAccount(nil)),
 			})
@@ -43,22 +47,25 @@ func TestBybitBitgetValidRESTRequestsRejectNilContextBeforeNetwork(t *testing.T)
 	}
 	for name, client := range perpClients {
 		t.Run(name+"/perp", func(t *testing.T) {
+			venue := exchange.Venue(name)
+			instrument := bybitBitgetTestInstrument(venue, exchange.ProductPerp, "BTC-USDT")
+			instrumentPtr := &instrument
 			assertNilContextInvalid(t, map[string]error{
 				"Instruments":        errorFromSlice(client.Instruments(nil)),
-				"OrderBook":          errorFromValue(client.OrderBook(nil, exchange.OrderBookRequest{Instrument: "BTC-USDT", Limit: 5})),
-				"Candles":            errorFromValue(client.Candles(nil, exchange.CandlesRequest{Instrument: "BTC-USDT", Interval: "1m", Limit: 1})),
-				"PublicTrades":       errorFromValue(client.PublicTrades(nil, exchange.PublicTradesRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"PlaceOrder":         errorFromValue(client.PlaceOrder(nil, validBoundaryOrder(exchange.ProductPerp, "BTC-USDT"))),
-				"CancelOrder":        errorFromValue(client.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "11"})),
-				"OpenOrders":         errorFromValue(client.OpenOrders(nil, exchange.OpenOrdersRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"OrderHistory":       errorFromValue(client.OrderHistory(nil, exchange.OrderHistoryRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"Fills":              errorFromValue(client.Fills(nil, exchange.FillsRequest{Instrument: "BTC-USDT", Limit: 1})),
+				"OrderBook":          errorFromValue(client.OrderBook(nil, exchange.OrderBookRequest{Instrument: instrument, Limit: 5})),
+				"Candles":            errorFromValue(client.Candles(nil, exchange.CandlesRequest{Instrument: instrument, Interval: "1m", Limit: 1})),
+				"PublicTrades":       errorFromValue(client.PublicTrades(nil, exchange.PublicTradesRequest{Instrument: instrument, Limit: 1})),
+				"PlaceOrder":         errorFromValue(client.PlaceOrder(nil, validBoundaryOrder(instrument))),
+				"CancelOrder":        errorFromValue(client.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: instrument, OrderID: "11"})),
+				"OpenOrders":         errorFromValue(client.OpenOrders(nil, exchange.OpenOrdersRequest{Instrument: instrumentPtr, Limit: 1})),
+				"OrderHistory":       errorFromValue(client.OrderHistory(nil, exchange.OrderHistoryRequest{Instrument: instrumentPtr, Limit: 1})),
+				"Fills":              errorFromValue(client.Fills(nil, exchange.FillsRequest{Instrument: instrumentPtr, Limit: 1})),
 				"Balances":           errorFromSlice(client.Balances(nil)),
 				"PerpAccount":        errorFromValue(client.PerpAccount(nil)),
-				"Positions":          errorFromSlice(client.Positions(nil, exchange.PositionsRequest{Instrument: "BTC-USDT"})),
-				"FundingRate":        errorFromValue(client.FundingRate(nil, exchange.FundingRateRequest{Instrument: "BTC-USDT"})),
-				"FundingRateHistory": errorFromValue(client.FundingRateHistory(nil, exchange.FundingRateHistoryRequest{Instrument: "BTC-USDT", Limit: 1})),
-				"SetLeverage":        errorFromValue(client.SetLeverage(nil, exchange.SetLeverageRequest{Instrument: "BTC-USDT", Leverage: 2})),
+				"Positions":          errorFromSlice(client.Positions(nil, exchange.PositionsRequest{Instrument: instrumentPtr})),
+				"FundingRate":        errorFromValue(client.FundingRate(nil, exchange.FundingRateRequest{Instrument: instrument})),
+				"FundingRateHistory": errorFromValue(client.FundingRateHistory(nil, exchange.FundingRateHistoryRequest{Instrument: instrument, Limit: 1})),
+				"SetLeverage":        errorFromValue(client.SetLeverage(nil, exchange.SetLeverageRequest{Instrument: instrument, Leverage: 2})),
 			})
 		})
 	}
@@ -78,12 +85,12 @@ func TestBybitBitgetPerpClientsRejectQuoteSettlementMismatch(t *testing.T) {
 	tests := []struct {
 		name       string
 		client     exchange.PerpClient
-		instrument string
+		instrument exchange.Instrument
 	}{
-		{name: "bybit/usdt", client: NewBybitLinearPerp("key", "secret", "USDT", settings), instrument: "BTC-USDC"},
-		{name: "bybit/usdc", client: NewBybitLinearPerp("key", "secret", "USDC", settings), instrument: "BTC-USDT"},
-		{name: "bitget/usdt", client: NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings), instrument: "BTC-USDC"},
-		{name: "bitget/usdc", client: NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings), instrument: "BTC-USDT"},
+		{name: "bybit/usdt", client: NewBybitLinearPerp("key", "secret", "USDT", settings), instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDC")},
+		{name: "bybit/usdc", client: NewBybitLinearPerp("key", "secret", "USDC", settings), instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")},
+		{name: "bitget/usdt", client: NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings), instrument: bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDC")},
+		{name: "bitget/usdc", client: NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", settings), instrument: bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -91,7 +98,7 @@ func TestBybitBitgetPerpClientsRejectQuoteSettlementMismatch(t *testing.T) {
 			if !errors.Is(err, exchange.ErrInvalidRequest) {
 				t.Fatalf("REST quote mismatch error = %v, want ErrInvalidRequest", err)
 			}
-			_, err = test.client.WebSocket().PlaceOrder(context.Background(), validBoundaryOrder(exchange.ProductPerp, test.instrument))
+			_, err = test.client.WebSocket().PlaceOrder(context.Background(), validBoundaryOrder(test.instrument))
 			if !errors.Is(err, exchange.ErrInvalidRequest) {
 				t.Fatalf("WS quote mismatch error = %v, want ErrInvalidRequest", err)
 			}
@@ -102,25 +109,102 @@ func TestBybitBitgetPerpClientsRejectQuoteSettlementMismatch(t *testing.T) {
 	}
 }
 
+func TestBitgetFillsUsesVenueSymbolFilterBeforePagination(t *testing.T) {
+	instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	settings := Settings{
+		Endpoint:    "https://openapi.invalid",
+		Environment: "demo",
+		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Path != "/api/v3/trade/fills" {
+				return bitgetData(`{}`), nil
+			}
+			query := request.URL.Query()
+			if got := query.Get("symbol"); got != "BTCUSDT" {
+				return openAPIJSONResponse(`{"code":"40001","msg":"missing venue-side symbol filter: ` + got + `","data":{}}`), nil
+			}
+			if got := query.Get("cursor"); got != "" {
+				return openAPIJSONResponse(`{"code":"40002","msg":"unexpected second page: ` + got + `","data":{}}`), nil
+			}
+			return bitgetData(`{"list":[{"orderId":"10","clientOid":"100","execId":"e1","symbol":"BTCUSDT","side":"buy","execPrice":"99","execQty":"1","feeDetail":[{"feeCoin":"USDT","fee":"0.01"}],"execTime":"1720000000000"}],"cursor":"next"}`), nil
+		})},
+	}
+	settings = bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
+
+	page, err := client.Fills(context.Background(), exchange.FillsRequest{Instrument: &instrument, Limit: 1})
+	if err != nil {
+		t.Fatalf("Fills: %v", err)
+	}
+	if len(page.Fills) != 1 || page.Fills[0].NativeSymbol != "BTCUSDT" || !page.Page.HasMore {
+		t.Fatalf("fills page = %+v", page)
+	}
+}
+
+func TestConvertBitgetPositionsPreservesNegativePnLAndSkipsZeroQuantity(t *testing.T) {
+	descriptor := exchange.SourceDescriptor{Name: "bitget-position-test", Endpoint: "https://identity.invalid", WebSocketEndpoint: "wss://identity.invalid/ws", Transport: "test"}
+	scope := exchange.CatalogScope{Venue: exchange.VenueBitget, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, EndpointFingerprint: descriptor.Fingerprint()}
+	catalog := exchange.NewDefaultMemoryCatalog()
+	if err := catalog.RegisterSource(scope, descriptor, exchange.StaticInstrumentLoader{Snapshot: exchange.InstrumentSnapshot{SchemaVersion: 1, Scope: scope, Instruments: []exchange.Instrument{{
+		Identity: exchange.InstrumentIdentity{
+			Venue:        exchange.VenueBitget,
+			Product:      exchange.ProductPerp,
+			Symbol:       "BTC-USDT",
+			BaseAsset:    "BTC",
+			QuoteAsset:   "USDT",
+			SettleAsset:  "USDT",
+			NativeSymbol: "BTCUSDT",
+			NativeID:     "btc-native-id",
+		},
+		Rules: exchange.InstrumentRules{
+			PriceIncrement:    decimal.RequireFromString("0.1"),
+			QuantityIncrement: decimal.RequireFromString("0.001"),
+			MinQuantity:       decimal.RequireFromString("0.001"),
+		},
+	}}}}); err != nil {
+		t.Fatalf("RegisterSource: %v", err)
+	}
+	if _, err := catalog.Refresh(context.Background(), scope); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	meta := clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp, catalog: catalog, catalogScope: scope}
+	rows := []bitget.PositionRecord{
+		{Symbol: "ETHUSDT", PosSide: "long", Qty: "0", AverageOpenPrice: "99", UnrealisedPnl: "0"},
+		{Symbol: "BTCUSDT", PosSide: "long", Qty: "1", AverageOpenPrice: "99", MarkPrice: "100", LiquidationPrice: "50", Leverage: "5", UnrealisedPnl: "-1.25"},
+	}
+
+	positions, err := convertBitgetPositions(context.Background(), meta, "Positions", rows, "")
+	if err != nil {
+		t.Fatalf("convertBitgetPositions: %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("positions = %+v, want one non-zero row", positions)
+	}
+	if !positions[0].UnrealizedPnL.Equal(decimal.RequireFromString("-1.25")) {
+		t.Fatalf("unrealized pnl = %s, want -1.25", positions[0].UnrealizedPnL)
+	}
+}
+
 func TestBybitUSDCNormalizedInstrumentUsesNativePerpetualSymbol(t *testing.T) {
 	client := NewBybitLinearPerp("key", "secret", "USDC", Settings{}).(*bybitPerpClient)
-	native, canonical, err := client.symbols("BTC-USDC", "OrderBook")
+	instrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDC")
+	native, canonical, err := client.symbols(instrument, "OrderBook")
 	if err != nil {
 		t.Fatalf("symbols: %v", err)
 	}
-	if native != "BTCPERP" || canonical != "BTC-USDC" {
-		t.Fatalf("symbols = (%q, %q), want (BTCPERP, BTC-USDC)", native, canonical)
+	if native != "BTCPERP" || canonical.Identity.Symbol != "BTC-USDC" {
+		t.Fatalf("symbols = (%q, %q), want (BTCPERP, BTC-USDC)", native, canonical.Identity.Symbol)
 	}
 }
 
 func TestBitgetUSDCNormalizedInstrumentUsesNativePerpetualSymbol(t *testing.T) {
 	client := NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", Settings{}).(*bitgetPerpClient)
-	native, canonical, err := client.symbols("BTC-USDC", "OrderBook")
+	instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDC")
+	native, canonical, err := client.symbols(instrument, "OrderBook")
 	if err != nil {
 		t.Fatalf("symbols: %v", err)
 	}
-	if native != "BTCPERP" || canonical != "BTC-USDC" {
-		t.Fatalf("symbols = (%q, %q), want (BTCPERP, BTC-USDC)", native, canonical)
+	if native != "BTCPERP" || canonical.Identity.Symbol != "BTC-USDC" {
+		t.Fatalf("symbols = (%q, %q), want (BTCPERP, BTC-USDC)", native, canonical.Identity.Symbol)
 	}
 }
 
@@ -136,7 +220,8 @@ func TestFundingHistoryRequestSemanticsAreTruthful(t *testing.T) {
 		})
 		start := time.UnixMilli(1719990000000)
 		end := start.Add(time.Hour)
-		if _, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: "BTC-USDT", Start: start, End: end, Limit: 7}); err != nil {
+		instrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
+		if _, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: instrument, Start: start, End: end, Limit: 7}); err != nil {
 			t.Fatalf("FundingRateHistory: %v", err)
 		}
 		for _, want := range []string{"startTime=1719990000000", "endTime=1719993600000", "limit=7"} {
@@ -144,7 +229,7 @@ func TestFundingHistoryRequestSemanticsAreTruthful(t *testing.T) {
 				t.Fatalf("Bybit funding query %q missing %q", query, want)
 			}
 		}
-		_, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: "BTC-USDT", Cursor: "next"})
+		_, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: instrument, Cursor: "next"})
 		if !errors.Is(err, exchange.ErrInvalidRequest) {
 			t.Fatalf("Bybit cursor error = %v, want ErrInvalidRequest", err)
 		}
@@ -154,10 +239,11 @@ func TestFundingHistoryRequestSemanticsAreTruthful(t *testing.T) {
 		transport := &noSendTransport{}
 		client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}})
 		start := time.UnixMilli(1719990000000)
+		instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
 		for name, request := range map[string]exchange.FundingRateHistoryRequest{
-			"start":  {Instrument: "BTC-USDT", Start: start},
-			"end":    {Instrument: "BTC-USDT", End: start.Add(time.Hour)},
-			"cursor": {Instrument: "BTC-USDT", Cursor: "next"},
+			"start":  {Instrument: instrument, Start: start},
+			"end":    {Instrument: instrument, End: start.Add(time.Hour)},
+			"cursor": {Instrument: instrument, Cursor: "next"},
 		} {
 			t.Run(name, func(t *testing.T) {
 				_, err := client.FundingRateHistory(context.Background(), request)
@@ -181,7 +267,7 @@ func TestRequiredRESTTimestampsReturnMalformedResponse(t *testing.T) {
 			name: "bybit order book",
 			call: func(transport http.RoundTripper) error {
 				client := NewBybitSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}})
-				_, err := client.OrderBook(context.Background(), exchange.OrderBookRequest{Instrument: "BTC-USDT"})
+				_, err := client.OrderBook(context.Background(), exchange.OrderBookRequest{Instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT")})
 				return err
 			},
 		},
@@ -189,7 +275,7 @@ func TestRequiredRESTTimestampsReturnMalformedResponse(t *testing.T) {
 			name: "bitget public trade",
 			call: func(transport http.RoundTripper) error {
 				client := NewBitgetSpot("key", "secret", "passphrase", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}})
-				_, err := client.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: "BTC-USDT"})
+				_, err := client.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductSpot, "BTC-USDT")})
 				return err
 			},
 		},
@@ -197,7 +283,7 @@ func TestRequiredRESTTimestampsReturnMalformedResponse(t *testing.T) {
 			name: "bybit candle",
 			call: func(transport http.RoundTripper) error {
 				client := NewBybitSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}})
-				_, err := client.Candles(context.Background(), exchange.CandlesRequest{Instrument: "BTC-USDT", Interval: "1m"})
+				_, err := client.Candles(context.Background(), exchange.CandlesRequest{Instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT"), Interval: "1m"})
 				return err
 			},
 		},
@@ -224,14 +310,15 @@ func TestRequiredRESTTimestampsReturnMalformedResponse(t *testing.T) {
 
 func TestWebSocketReferenceRejectsMalformedRequiredTimestamps(t *testing.T) {
 	meta := clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp}
-	_, err := strictReference(meta, "WatchReference", "BTC-USDT", "100", "0.0001", "", "bad", time.UnixMilli(1720000000000))
+	instrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
+	_, err := strictReference(meta, "WatchReference", instrument, "100", "0.0001", "", "bad", time.UnixMilli(1720000000000))
 	assertExchangeErrorKind(t, err, exchange.KindMalformedResponse)
 
-	_, err = strictReference(meta, "WatchReference", "BTC-USDT", "100", "", "", "", time.Time{})
+	_, err = strictReference(meta, "WatchReference", instrument, "100", "", "", "", time.Time{})
 	assertExchangeErrorKind(t, err, exchange.KindMalformedResponse)
 }
 
-func validBoundaryOrder(product exchange.Product, instrument string) exchange.PlaceOrderRequest {
+func validBoundaryOrder(instrument exchange.Instrument) exchange.PlaceOrderRequest {
 	return exchange.PlaceOrderRequest{
 		Instrument:    instrument,
 		ClientOrderID: "401",
@@ -240,7 +327,7 @@ func validBoundaryOrder(product exchange.Product, instrument string) exchange.Pl
 		Quantity:      decimal.NewFromInt(1),
 		LimitPrice:    decimal.NewFromInt(100),
 		LimitPolicy:   exchange.LimitPolicyResting,
-		ReduceOnly:    product == exchange.ProductPerp,
+		ReduceOnly:    instrument.Identity.Product == exchange.ProductPerp,
 	}
 }
 

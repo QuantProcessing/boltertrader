@@ -546,6 +546,7 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 
 	got, err := client.GetFills(context.Background(), GetFillsRequest{
 		Category: bitgetPerpCategory,
+		Symbol:   "BTCUSDT",
 		OrderID:  "100",
 		Limit:    "100",
 	})
@@ -558,10 +559,31 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 	if seenPath != "/api/v3/trade/fills" {
 		t.Fatalf("unexpected path: %s", seenPath)
 	}
-	for _, want := range []string{"category=USDT-FUTURES", "orderId=100", "limit=100"} {
+	for _, want := range []string{"category=USDT-FUTURES", "symbol=BTCUSDT", "orderId=100", "limit=100"} {
 		if !strings.Contains(seenQuery, want) {
 			t.Fatalf("expected query to contain %s, got %s", want, seenQuery)
 		}
+	}
+}
+
+func TestClient_GetFillsOmitsEmptySymbolQuery(t *testing.T) {
+	var seenQuery string
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenQuery = req.URL.RawQuery
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{"list":[],"cursor":""}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	if _, err := client.GetFills(context.Background(), GetFillsRequest{Category: bitgetPerpCategory}); err != nil {
+		t.Fatalf("GetFills: %v", err)
+	}
+	if strings.Contains(seenQuery, "symbol=") {
+		t.Fatalf("empty symbol should be omitted from query, got %s", seenQuery)
 	}
 }
 

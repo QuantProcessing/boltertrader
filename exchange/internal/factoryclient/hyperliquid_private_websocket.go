@@ -193,7 +193,7 @@ type hyperliquidPrivateWSBackend struct {
 	base *hyperliquid.WebsocketClient
 	user string
 
-	resolve func(context.Context, string, string) (hyperliquidMarketMeta, error)
+	resolve func(context.Context, string, exchange.Instrument) (hyperliquidMarketMeta, error)
 	mid     func(context.Context, string) (float64, error)
 
 	spot *hyperliquidspot.WebsocketClient
@@ -317,7 +317,7 @@ func (backend *hyperliquidPrivateWSBackend) ensureConnected(operation string) er
 
 func (backend *hyperliquidPrivateWSBackend) StartOrders(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.OrderEvent],
 ) (func() error, error) {
 	const operation = "WatchOrders"
@@ -325,7 +325,8 @@ func (backend *hyperliquidPrivateWSBackend) StartOrders(
 	if err != nil {
 		return nil, err
 	}
-	removeLifecycle := backend.lifecycle.Register("orders:"+instrument, callbacks.Status, nil)
+	key := websocketInstrumentKey(instrument)
+	removeLifecycle := backend.lifecycle.Register("orders:"+key, callbacks.Status, nil)
 	stop, err := backend.orders.add(
 		ctx,
 		backend.nextSinkKey("orders"),
@@ -378,7 +379,7 @@ func (backend *hyperliquidPrivateWSBackend) StartOrders(
 
 func (backend *hyperliquidPrivateWSBackend) StartFills(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.FillEvent],
 ) (func() error, error) {
 	const operation = "WatchFills"
@@ -386,7 +387,8 @@ func (backend *hyperliquidPrivateWSBackend) StartFills(
 	if err != nil {
 		return nil, err
 	}
-	removeLifecycle := backend.lifecycle.Register("fills:"+instrument, callbacks.Status, nil)
+	key := websocketInstrumentKey(instrument)
+	removeLifecycle := backend.lifecycle.Register("fills:"+key, callbacks.Status, nil)
 	stop, err := backend.fills.add(
 		ctx,
 		backend.nextSinkKey("fills"),
@@ -483,7 +485,7 @@ func (backend *hyperliquidPrivateWSBackend) StartBalances(
 
 func (backend *hyperliquidPrivateWSBackend) StartPositions(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PositionEvent],
 ) (func() error, error) {
 	const operation = "WatchPositions"
@@ -494,7 +496,8 @@ func (backend *hyperliquidPrivateWSBackend) StartPositions(
 	if err != nil {
 		return nil, err
 	}
-	removeLifecycle := backend.lifecycle.Register("positions:"+instrument, callbacks.Status, nil)
+	key := websocketInstrumentKey(instrument)
+	removeLifecycle := backend.lifecycle.Register("positions:"+key, callbacks.Status, nil)
 	stop, err := backend.state.add(
 		ctx,
 		backend.nextSinkKey("positions"),
@@ -839,7 +842,7 @@ func hyperliquidPrivateOrderEvent(meta hyperliquidMarketMeta, update hyperliquid
 	case "Market":
 		orderType = exchange.OrderTypeMarket
 	default:
-		return exchange.OrderEvent{}, hlMalformed(meta.instrument.Product, "WatchOrders", "unsupported Hyperliquid order type")
+		return exchange.OrderEvent{}, hlMalformed(meta.instrument.Identity.Product, "WatchOrders", "unsupported Hyperliquid order type")
 	}
 	order, err := hlOrder(meta, row.Coin, row.Side, row.LimitPx, row.Sz, row.OrigSz, row.Oid, row.Cliod, row.Timestamp, update.StatusTimestamp, "Limit", string(row.Tif), row.ReduceOnly != nil && *row.ReduceOnly, false)
 	if err != nil {
@@ -883,7 +886,7 @@ func hyperliquidPerpPositionEvent(meta hyperliquidMarketMeta, state hyperliquidp
 		if pos.Coin != meta.nativeCoin {
 			continue
 		}
-		normalized, err := hlPosition(meta, pos.Szi, pos.EntryPx, pos.UnrealizedPnl, pos.LiquidationPx, pos.MarginUsed, pos.Leverage.Value)
+		normalized, err := hlPosition(meta, pos.Szi, pos.PositionValue, pos.EntryPx, pos.UnrealizedPnl, pos.LiquidationPx, pos.MarginUsed, pos.Leverage.Value)
 		if err != nil {
 			return exchange.PositionEvent{}, hlMalformed(exchange.ProductPerp, "WatchPositions", err.Error())
 		}
@@ -919,7 +922,7 @@ func hyperliquidWaitPostResult(ctx context.Context, ch <-chan hyperliquid.PostRe
 	}
 }
 
-func hyperliquidSpotPostPlaceAck(instrument, clientOrderID, nativeClientOrderID string, orderType exchange.OrderType, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
+func hyperliquidSpotPostPlaceAck(instrument exchange.Instrument, clientOrderID, nativeClientOrderID string, orderType exchange.OrderType, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
 	var response hyperliquid.APIResponse[hyperliquidspot.PlaceOrderResponse]
 	if err := hyperliquidDecodePostAction(exchange.ProductSpot, "PlaceOrder", result, &response); err != nil {
 		return exchange.OrderAcknowledgement{}, err
@@ -940,7 +943,7 @@ func hyperliquidSpotPostPlaceAck(instrument, clientOrderID, nativeClientOrderID 
 	return ack, ack.Validate()
 }
 
-func hyperliquidPerpPostPlaceAck(instrument, clientOrderID, nativeClientOrderID string, orderType exchange.OrderType, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
+func hyperliquidPerpPostPlaceAck(instrument exchange.Instrument, clientOrderID, nativeClientOrderID string, orderType exchange.OrderType, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
 	var response hyperliquid.APIResponse[hyperliquidperp.PlaceOrderResponse]
 	if err := hyperliquidDecodePostAction(exchange.ProductPerp, "PlaceOrder", result, &response); err != nil {
 		return exchange.OrderAcknowledgement{}, err
@@ -993,7 +996,7 @@ func hyperliquidPerpSinglePlaceStatus(status string, failure string, body *hyper
 	return &body.Data.Statuses[0], nil
 }
 
-func hyperliquidPostCancelAck(product exchange.Product, instrument, orderID string, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
+func hyperliquidPostCancelAck(product exchange.Product, instrument exchange.Instrument, orderID string, result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
 	var response hyperliquid.APIResponse[struct {
 		Statuses hyperliquid.MixedArray `json:"statuses"`
 	}]
@@ -1021,7 +1024,7 @@ func hyperliquidPostCancelAck(product exchange.Product, instrument, orderID stri
 func hyperliquidRejectedAck(
 	product exchange.Product,
 	operation exchange.OrderOperation,
-	instrument string,
+	instrument exchange.Instrument,
 	orderID string,
 	clientOrderID string,
 	orderType exchange.OrderType,
@@ -1051,13 +1054,14 @@ func hyperliquidDecodePostAction(product exchange.Product, operation string, res
 	return nil
 }
 
-func hyperliquidAmbiguousAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
+func hyperliquidAmbiguousAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
 	return exchange.OrderAcknowledgement{
 		Venue:         exchange.VenueHyperliquid,
 		Product:       product,
 		Operation:     op,
 		State:         exchange.AckAmbiguous,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
+		NativeID:      instrument.Identity.NativeID,
 		OrderID:       orderID,
 		ClientOrderID: clientOrderID,
 	}

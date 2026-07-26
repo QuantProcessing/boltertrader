@@ -140,23 +140,26 @@ func (router *gateOpenAPIRouter) RoundTrip(request *http.Request) (*http.Respons
 func TestOpenAPIGateRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 	router := &gateOpenAPIRouter{}
-	settings := Settings{Endpoint: "https://openapi.invalid", WebSocketEndpoint: "wss://ws.invalid/v4/ws/spot", Environment: "testnet", HTTPClient: &http.Client{Transport: router}}
+	spotSettings := gateTestSettings(exchange.ProductSpot, router)
+	perpSettings := gateTestSettings(exchange.ProductPerp, router)
 
-	spot := NewGateSpot("key", "secret", settings)
-	assertGateSpotReadMatrix(t, ctx, spot, "BTC_USDT")
-	exerciseGateOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "BTC_USDT")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC_USDT", OrderID: "11"}); err != nil {
+	spot := NewGateSpot("key", "secret", spotSettings)
+	spotInst := gateTestInstrument(exchange.ProductSpot)
+	assertGateSpotReadMatrix(t, ctx, spot, spotInst)
+	exerciseGateOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInst)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInst, OrderID: "11"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertGateSpotLifecycleMatrix(t, ctx, spot, "BTC_USDT")
+	assertGateSpotLifecycleMatrix(t, ctx, spot, spotInst)
 
-	perp := NewGateUSDTPerp("key", "secret", settings)
-	assertGatePerpReadMatrix(t, ctx, perp, "BTC_USDT")
-	exerciseGateOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC_USDT")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC_USDT", OrderID: "21"}); err != nil {
+	perp := NewGateUSDTPerp("key", "secret", perpSettings)
+	perpInst := gateTestInstrument(exchange.ProductPerp)
+	assertGatePerpReadMatrix(t, ctx, perp, perpInst)
+	exerciseGateOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInst)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInst, OrderID: "21"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertGatePerpLifecycleMatrix(t, ctx, perp, "BTC_USDT")
+	assertGatePerpLifecycleMatrix(t, ctx, perp, perpInst)
 	if router.futuresSettleSeen != "usdt" {
 		t.Fatalf("Gate perp did not use USDT settlement route")
 	}
@@ -179,18 +182,21 @@ func TestGateSDKFundingHistoryAndSetLeverageMethods(t *testing.T) {
 func TestGateOrderHistoryUsesFinishedHistoryEndpoints(t *testing.T) {
 	ctx := context.Background()
 	router := &gateOpenAPIRouter{}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: router}}
-	spot := NewGateSpot("key", "secret", settings)
-	perp := NewGateUSDTPerp("key", "secret", settings)
+	spotSettings := gateTestSettings(exchange.ProductSpot, router)
+	perpSettings := gateTestSettings(exchange.ProductPerp, router)
+	spot := NewGateSpot("key", "secret", spotSettings)
+	perp := NewGateUSDTPerp("key", "secret", perpSettings)
 
-	spotRows, err := spot.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: "BTC_USDT", Limit: 10})
+	spotInst := gateTestInstrument(exchange.ProductSpot)
+	spotRows, err := spot.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &spotInst, Limit: 10})
 	if err != nil {
 		t.Fatalf("spot OrderHistory: %v", err)
 	}
 	if len(spotRows.Orders) != 1 || spotRows.Orders[0].OrderID != "12" || spotRows.Orders[0].ClientOrderID != "102" {
 		t.Fatalf("spot OrderHistory rows = %+v", spotRows.Orders)
 	}
-	perpRows, err := perp.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: "BTC_USDT", Limit: 10})
+	perpInst := gateTestInstrument(exchange.ProductPerp)
+	perpRows, err := perp.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &perpInst, Limit: 10})
 	if err != nil {
 		t.Fatalf("perp OrderHistory: %v", err)
 	}
@@ -212,7 +218,7 @@ func TestGateMalformedRESTRowsReturnMalformedResponse(t *testing.T) {
 	client := NewGateSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return gateOpenAPIJSONResponse(`[{"id":"1","create_time_ms":"1720000000000","currency_pair":"BTC_USDT","side":"hold","amount":"not-a-number","price":"100"}]`), nil
 	})}})
-	_, err := client.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: "BTC_USDT", Limit: 1})
+	_, err := client.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: gateTestInstrument(exchange.ProductSpot), Limit: 1})
 	assertGateErrorKind(t, err, exchange.KindMalformedResponse)
 }
 
@@ -253,16 +259,16 @@ func TestGateSpotBalancesUseUnifiedAccountWhenUnifiedModeIsEnabled(t *testing.T)
 
 func TestGateSetLeverageTransportFailureIsAmbiguous(t *testing.T) {
 	router := &gateOpenAPIRouter{failLeverage: true}
-	client := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: router}})
-	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: "BTC_USDT", Leverage: 5})
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
+	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: gateTestInstrument(exchange.ProductPerp), Leverage: 5})
 	assertGateErrorKind(t, err, exchange.KindAmbiguousOutcome)
 }
 
 func TestGatePerpPlaceOrderConvertsNeutralBaseQuantityToContractCount(t *testing.T) {
 	router := &gateOpenAPIRouter{}
-	client := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: router}})
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
 	ack, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC_USDT",
+		Instrument:    gateTestInstrument(exchange.ProductPerp),
 		ClientOrderID: "101",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -281,11 +287,60 @@ func TestGatePerpPlaceOrderConvertsNeutralBaseQuantityToContractCount(t *testing
 	}
 }
 
+func TestGatePerpPlaceOrderUsesExactCatalogMultiplierForContractCount(t *testing.T) {
+	router := &gateOpenAPIRouter{}
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
+	instrument := gateTestInstrument(exchange.ProductPerp)
+	instrument.Encoding.ContractMultiplier = exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true}
+	instrument.Rules.QuantityIncrement = decimal.RequireFromString("0.0001")
+	instrument.Rules.MinQuantity = decimal.RequireFromString("0.0001")
+	ack, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
+		Instrument:    instrument,
+		ClientOrderID: "101",
+		Side:          exchange.SideBuy,
+		Type:          exchange.OrderTypeLimit,
+		Quantity:      decimal.RequireFromString("0.0003"),
+		LimitPrice:    decimal.NewFromInt(100),
+		LimitPolicy:   exchange.LimitPolicyResting,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	if len(router.placeBodies) != 1 || gateNumberValue(router.placeBodies[0]["size"]) != "3" {
+		t.Fatalf("place bodies = %+v, want 3 Gate contracts", router.placeBodies)
+	}
+	if !ack.FilledQuantity.Equal(decimal.RequireFromString("0.0003")) {
+		t.Fatalf("ack filled quantity = %s, want neutral base quantity 0.0003", ack.FilledQuantity)
+	}
+}
+
+func TestGatePerpPlaceOrderRejectsSubContractQuantityBeforeSend(t *testing.T) {
+	router := &gateOpenAPIRouter{}
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
+	instrument := gateTestInstrument(exchange.ProductPerp)
+	instrument.Encoding.ContractMultiplier = exchange.OptionalDecimal{Value: decimal.RequireFromString("0.0001"), Valid: true}
+	instrument.Rules.QuantityIncrement = decimal.RequireFromString("0.0001")
+	instrument.Rules.MinQuantity = decimal.RequireFromString("0.0001")
+	_, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
+		Instrument:    instrument,
+		ClientOrderID: "101",
+		Side:          exchange.SideBuy,
+		Type:          exchange.OrderTypeLimit,
+		Quantity:      decimal.RequireFromString("0.00035"),
+		LimitPrice:    decimal.NewFromInt(100),
+		LimitPolicy:   exchange.LimitPolicyResting,
+	})
+	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
+	if len(router.placeBodies) != 0 {
+		t.Fatalf("sub-contract futures quantity reached transport")
+	}
+}
+
 func TestGatePerpPlaceOrderRejectsQuantityNotAlignedToContractMultiplierBeforeSend(t *testing.T) {
 	router := &gateOpenAPIRouter{}
-	client := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: router}})
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
 	_, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC_USDT",
+		Instrument:    gateTestInstrument(exchange.ProductPerp),
 		ClientOrderID: "101",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -299,11 +354,97 @@ func TestGatePerpPlaceOrderRejectsQuantityNotAlignedToContractMultiplierBeforeSe
 	}
 }
 
+func TestGateSpotMarketBuyEmptyAsksReturnsMalformedResponse(t *testing.T) {
+	client := NewGateSpot("key", "secret", gateTestSettings(exchange.ProductSpot, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v4/spot/order_book", "/spot/order_book":
+			return gateOpenAPIJSONResponse(`{"id":7,"current":1720000000000,"update":1720000000000,"bids":[["99","1"]],"asks":[]}`), nil
+		default:
+			return gateOpenAPIJSONResponse(`{"id":"11","text":"t-101","currency_pair":"BTC_USDT","type":"market","side":"buy","amount":"1","price":"0","left":"0","filled_amount":"1","status":"closed","finish_as":"filled"}`), nil
+		}
+	})))
+	_, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
+		Instrument:    gateTestInstrument(exchange.ProductSpot),
+		ClientOrderID: "101",
+		Side:          exchange.SideBuy,
+		Type:          exchange.OrderTypeMarket,
+		Quantity:      decimal.NewFromInt(1),
+	})
+	assertGateErrorKind(t, err, exchange.KindMalformedResponse)
+}
+
+func TestGateRESTPublicTradesRejectMismatchedNativeIdentity(t *testing.T) {
+	spot := NewGateSpot("key", "secret", gateTestSettings(exchange.ProductSpot, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return gateOpenAPIJSONResponse(`[{"id":"1","create_time_ms":"1720000000000","currency_pair":"ETH_USDT","side":"buy","amount":"0.1","price":"100"}]`), nil
+	})))
+	_, err := spot.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: gateTestInstrument(exchange.ProductSpot), Limit: 1})
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	perp := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return gateOpenAPIJSONResponse(`[{"id":2,"create_time":1720000000.125,"contract":"ETH_USDT","size":"1","price":"100"}]`), nil
+	})))
+	_, err = perp.PublicTrades(context.Background(), exchange.PublicTradesRequest{Instrument: gateTestInstrument(exchange.ProductPerp), Limit: 1})
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+}
+
+func TestGateFundingRateRejectsMismatchedNativeIdentity(t *testing.T) {
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return gateOpenAPIJSONResponse(`{"name":"ETH_USDT","type":"direct","order_price_round":"0.1","order_size_min":1,"quanto_multiplier":"0.001","funding_rate":"0.0001","mark_price":"100","funding_next_apply":1720003600,"status":"trading"}`), nil
+	})))
+	_, err := client.FundingRate(context.Background(), exchange.FundingRateRequest{Instrument: gateTestInstrument(exchange.ProductPerp)})
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+}
+
+func TestGateRESTUnknownNativeIdentityFailsMetadataResolution(t *testing.T) {
+	catalog := exchange.NewDefaultMemoryCatalog()
+	scope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot}
+	descriptor := exchange.SourceDescriptor{Name: "gate-spot-test", Endpoint: "https://openapi.invalid", Transport: "custom-http-client"}
+	scope.EndpointFingerprint = descriptor.Fingerprint()
+	if err := catalog.RegisterSource(scope, descriptor, exchange.StaticInstrumentLoader{Snapshot: exchange.InstrumentSnapshot{
+		SchemaVersion: 1,
+		Scope:         scope,
+		Instruments:   []exchange.Instrument{gateTestInstrument(exchange.ProductSpot)},
+	}}); err != nil {
+		t.Fatalf("RegisterSource: %v", err)
+	}
+	client := NewGateSpot("key", "secret", Settings{
+		Endpoint:    descriptor.Endpoint,
+		Environment: "testnet",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return gateOpenAPIJSONResponse(`[{"id":"91","text":"t-91","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"1","price":"99","time_in_force":"gtc","left":"1","filled_amount":"0","status":"open"}]`), nil
+		})},
+		InstrumentCatalog: catalog,
+		CatalogScope:      scope,
+		SourceDescriptor:  descriptor,
+	})
+	_, err := client.OpenOrders(context.Background(), exchange.OpenOrdersRequest{})
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+}
+
+func TestGateACKRejectsRawResponseInstrumentMismatch(t *testing.T) {
+	client := NewGateSpot("key", "secret", gateTestSettings(exchange.ProductSpot, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			return gateOpenAPIJSONResponse(`{"id":"11","text":"t-101","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"1","price":"99","left":"0","filled_amount":"1","status":"closed","finish_as":"filled"}`), nil
+		}
+		return gateOpenAPIJSONResponse(`[]`), nil
+	})))
+	_, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
+		Instrument:    gateTestInstrument(exchange.ProductSpot),
+		ClientOrderID: "101",
+		Side:          exchange.SideBuy,
+		Type:          exchange.OrderTypeLimit,
+		Quantity:      decimal.NewFromInt(1),
+		LimitPrice:    decimal.NewFromInt(99),
+		LimitPolicy:   exchange.LimitPolicyResting,
+	})
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+}
+
 func TestGateFundingHistoryRequestSemantics(t *testing.T) {
-	client := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	_, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: "BTC_USDT", Cursor: "next"})
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, &gateOpenAPIRouter{}))
+	_, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: gateTestInstrument(exchange.ProductPerp), Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
-	_, err = client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: "BTC_USDT", Start: time.Unix(20, 0), End: time.Unix(10, 0)})
+	_, err = client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Instrument: gateTestInstrument(exchange.ProductPerp), Start: time.Unix(20, 0), End: time.Unix(10, 0)})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 	_, err = client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{Limit: 1})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
@@ -311,43 +452,44 @@ func TestGateFundingHistoryRequestSemantics(t *testing.T) {
 
 func TestGateOpenOrdersRejectsUnsupportedCursor(t *testing.T) {
 	spot := NewGateSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	_, err := spot.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: "BTC_USDT", Cursor: "next"})
+	_, err := spot.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductSpot)), Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 
 	perp := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	_, err = perp.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: "BTC_USDT", Cursor: "next"})
+	_, err = perp.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductPerp)), Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 }
 
 func TestGateFillsRejectsUnsupportedCursorAndWindows(t *testing.T) {
 	spot := NewGateSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	_, err := spot.Fills(context.Background(), exchange.FillsRequest{Instrument: "BTC_USDT", Cursor: "next"})
+	_, err := spot.Fills(context.Background(), exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductSpot)), Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
-	_, err = spot.Fills(context.Background(), exchange.FillsRequest{Instrument: "BTC_USDT", Start: time.Unix(20, 0), End: time.Unix(30, 0)})
+	_, err = spot.Fills(context.Background(), exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductSpot)), Start: time.Unix(20, 0), End: time.Unix(30, 0)})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 
 	perp := NewGateUSDTPerp("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	_, err = perp.Fills(context.Background(), exchange.FillsRequest{Instrument: "BTC_USDT", Cursor: "next"})
+	_, err = perp.Fills(context.Background(), exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductPerp)), Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
-	_, err = perp.Fills(context.Background(), exchange.FillsRequest{Instrument: "BTC_USDT", Start: time.Unix(20, 0), End: time.Unix(30, 0)})
+	_, err = perp.Fills(context.Background(), exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductPerp)), Start: time.Unix(20, 0), End: time.Unix(30, 0)})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 }
 
 func TestGateFillsAppliesSupportedOrderIDFilters(t *testing.T) {
 	ctx := context.Background()
 	router := &gateOpenAPIRouter{}
-	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: router}}
+	spotSettings := gateTestSettings(exchange.ProductSpot, router)
+	perpSettings := gateTestSettings(exchange.ProductPerp, router)
 
-	spot := NewGateSpot("key", "secret", settings)
-	if _, err := spot.Fills(ctx, exchange.FillsRequest{Instrument: "BTC_USDT", OrderID: "11", Limit: 10}); err != nil {
+	spot := NewGateSpot("key", "secret", spotSettings)
+	if _, err := spot.Fills(ctx, exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductSpot)), OrderID: "11", Limit: 10}); err != nil {
 		t.Fatalf("spot Fills: %v", err)
 	}
 	if !router.saw("GET /spot/my_trades?", "order_id=11") {
 		t.Fatalf("spot fills did not pass order_id: %#v", router.seen)
 	}
 
-	perp := NewGateUSDTPerp("key", "secret", settings)
-	if _, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: "BTC_USDT", OrderID: "21", Limit: 10}); err != nil {
+	perp := NewGateUSDTPerp("key", "secret", perpSettings)
+	if _, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: gateInstrumentPtr(gateTestInstrument(exchange.ProductPerp)), OrderID: "21", Limit: 10}); err != nil {
 		t.Fatalf("perp Fills: %v", err)
 	}
 	if !router.saw("GET /futures/usdt/my_trades?", "order=21") {
@@ -359,8 +501,8 @@ func TestGateCandlesApplyIntervalAndWindowSemantics(t *testing.T) {
 	ctx := context.Background()
 	start := time.Unix(1720000000, 0)
 	end := time.Unix(1720001800, 0)
-	client := NewGateSpot("key", "secret", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: &gateOpenAPIRouter{}}})
-	page, err := client.Candles(ctx, exchange.CandlesRequest{Instrument: "BTC_USDT", Interval: "5m", Start: start, End: end, Limit: 1})
+	client := NewGateSpot("key", "secret", gateTestSettings(exchange.ProductSpot, &gateOpenAPIRouter{}))
+	page, err := client.Candles(ctx, exchange.CandlesRequest{Instrument: gateTestInstrument(exchange.ProductSpot), Interval: "5m", Start: start, End: end, Limit: 1})
 	if err != nil {
 		t.Fatalf("Candles: %v", err)
 	}
@@ -370,9 +512,9 @@ func TestGateCandlesApplyIntervalAndWindowSemantics(t *testing.T) {
 	if got, want := page.Candles[0].CloseTime, start.Add(5*time.Minute); !got.Equal(want) {
 		t.Fatalf("CloseTime = %s, want %s", got, want)
 	}
-	_, err = client.Candles(ctx, exchange.CandlesRequest{Instrument: "BTC_USDT", Interval: "5m", Cursor: "next"})
+	_, err = client.Candles(ctx, exchange.CandlesRequest{Instrument: gateTestInstrument(exchange.ProductSpot), Interval: "5m", Cursor: "next"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
-	_, err = client.Candles(ctx, exchange.CandlesRequest{Instrument: "BTC_USDT", Interval: "not-real"})
+	_, err = client.Candles(ctx, exchange.CandlesRequest{Instrument: gateTestInstrument(exchange.ProductSpot), Interval: "not-real"})
 	assertGateErrorKind(t, err, exchange.KindInvalidRequest)
 }
 
@@ -478,7 +620,7 @@ func assertGateErrorKind(t *testing.T, err error, kind exchange.ErrorKind) {
 	}
 }
 
-func exerciseGateOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exchange.Product, client any, instrument string) {
+func exerciseGateOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exchange.Product, client any, instrument exchange.Instrument) {
 	t.Helper()
 	cases := []exchange.PlaceOrderRequest{
 		{Instrument: instrument, ClientOrderID: "101", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1)},
@@ -500,7 +642,7 @@ func exerciseGateOpenAPIOrderBranches(t *testing.T, ctx context.Context, product
 	}
 }
 
-func assertGateSpotReadMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument string) {
+func assertGateSpotReadMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument exchange.Instrument) {
 	t.Helper()
 	if rows, err := client.Instruments(ctx); err != nil || len(rows) != 1 {
 		t.Fatalf("Instruments: rows=%d err=%v", len(rows), err)
@@ -516,12 +658,12 @@ func assertGateSpotReadMatrix(t *testing.T, ctx context.Context, client exchange
 	}
 }
 
-func assertGatePerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+func assertGatePerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument exchange.Instrument) {
 	t.Helper()
 	if rows, err := client.Instruments(ctx); err != nil || len(rows) != 1 {
 		t.Fatalf("Instruments: rows=%d err=%v", len(rows), err)
-	} else if !rows[0].QuantityIncrement.Equal(decimal.RequireFromString("0.001")) || !rows[0].MinQuantity.Equal(decimal.RequireFromString("0.001")) {
-		t.Fatalf("Instrument quantity semantics = increment %s min %s, want neutral base units", rows[0].QuantityIncrement, rows[0].MinQuantity)
+	} else if !rows[0].Rules.QuantityIncrement.Equal(decimal.RequireFromString("0.001")) || !rows[0].Rules.MinQuantity.Equal(decimal.RequireFromString("0.001")) {
+		t.Fatalf("Instrument quantity semantics = increment %s min %s, want neutral base units", rows[0].Rules.QuantityIncrement, rows[0].Rules.MinQuantity)
 	}
 	if row, err := client.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 5}); err != nil || len(row.Bids) != 1 {
 		t.Fatalf("OrderBook: bids=%d err=%v", len(row.Bids), err)
@@ -538,15 +680,15 @@ func assertGatePerpReadMatrix(t *testing.T, ctx context.Context, client exchange
 	}
 }
 
-func assertGateSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument string) {
+func assertGateSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument exchange.Instrument) {
 	t.Helper()
-	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OpenOrders: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OrderHistory: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
+	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
 		t.Fatalf("Fills: rows=%d err=%v", len(rows.Fills), err)
 	}
 	if rows, err := client.Balances(ctx); err != nil || len(rows) != 1 {
@@ -557,15 +699,15 @@ func assertGateSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exc
 	}
 }
 
-func assertGatePerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+func assertGatePerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument exchange.Instrument) {
 	t.Helper()
-	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OpenOrders: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OrderHistory: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
+	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
 		t.Fatalf("Fills: rows=%d err=%v", len(rows.Fills), err)
 	}
 	if rows, err := client.Balances(ctx); err != nil || len(rows) != 1 {
@@ -574,7 +716,7 @@ func assertGatePerpLifecycleMatrix(t *testing.T, ctx context.Context, client exc
 	if row, err := client.PerpAccount(ctx); err != nil || !row.MarginUsed.Valid || !row.MarginUsed.Value.Equal(decimal.NewFromInt(10)) {
 		t.Fatalf("PerpAccount: row=%+v err=%v", row, err)
 	}
-	if rows, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: instrument}); err != nil || len(rows) != 1 {
+	if rows, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument}); err != nil || len(rows) != 1 {
 		t.Fatalf("Positions: rows=%d err=%v", len(rows), err)
 	} else if !rows[0].Quantity.Equal(decimal.RequireFromString("0.001")) {
 		t.Fatalf("Positions quantity = %s, want neutral base quantity 0.001", rows[0].Quantity)

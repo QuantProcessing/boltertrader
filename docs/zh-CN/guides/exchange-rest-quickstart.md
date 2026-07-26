@@ -117,8 +117,13 @@ positive decimal `int64` string；Nado 要求 lowercase `0x` 前缀的 32-byte
 order digest。
 
 ```go
+instrument, err := client.ResolveInstrument(ctx, "ETH-USDT")
+if err != nil {
+	return err
+}
+
 market := exchange.PlaceOrderRequest{
-	Instrument:    "ETH-USDT",
+	Instrument:    instrument,
 	ClientOrderID: "101",
 	Side:          exchange.SideBuy,
 	Type:          exchange.OrderTypeMarket,
@@ -126,7 +131,7 @@ market := exchange.PlaceOrderRequest{
 }
 
 postOnlyReduce := exchange.PlaceOrderRequest{
-	Instrument:    "ETH-USDT",
+	Instrument:    instrument,
 	ClientOrderID: "102",
 	Side:          exchange.SideSell,
 	Type:          exchange.OrderTypeLimit,
@@ -189,8 +194,17 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	binanceInstrument, err := binance.ResolveInstrument(ctx, requiredEnv("BINANCE_DEMO_SPOT_SYMBOL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	lighterInstrument, err := lighter.ResolveInstrument(ctx, requiredEnv("LIGHTER_TESTNET_PERP_SYMBOL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	_, err = binance.PlaceOrder(ctx, exchange.PlaceOrderRequest{
-		Instrument:    requiredEnv("BINANCE_DEMO_SPOT_SYMBOL"),
+		Instrument:    binanceInstrument,
 		ClientOrderID: "101",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -203,7 +217,7 @@ func main() {
 	}
 
 	_, err = lighter.PlaceOrder(ctx, exchange.PlaceOrderRequest{
-		Instrument:    requiredEnv("LIGHTER_TESTNET_PERP_SYMBOL"),
+		Instrument:    lighterInstrument,
 		ClientOrderID: "102",
 		Side:          exchange.SideSell,
 		Type:          exchange.OrderTypeLimit,

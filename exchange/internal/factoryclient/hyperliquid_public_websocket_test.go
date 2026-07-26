@@ -124,20 +124,12 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	spotInstrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
 	base := hyperliquid.NewWebsocketClient(ctx).
 		WithURL("ws" + strings.TrimPrefix(server.URL, "http"))
 	base.SubscriptionAckTimeout = time.Second
 	rest := &hyperliquidSpotClient{
-		spotClient: &spotClient{meta: clientMeta{
-			venue:   exchange.VenueHyperliquid,
-			product: exchange.ProductSpot,
-		}},
-		metadata: map[string]hyperliquidMarketMeta{
-			"@1": {
-				instrument: exchange.Instrument{Symbol: "PURR-USDC", Product: exchange.ProductSpot},
-				nativeCoin: "@1",
-			},
-		},
+		spotClient: &spotClient{meta: hyperliquidStaticTestMeta(t, spotInstrument)},
 	}
 	backend := newHyperliquidSpotWSBackendWithClient(
 		rest,
@@ -153,7 +145,7 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	watchCtx, watchCancel := context.WithTimeout(context.Background(), time.Second)
 	defer watchCancel()
 	subscription, err := socket.WatchBBO(watchCtx, exchange.WatchRequest{
-		Instrument: "PURR-USDC",
+		Instrument: spotInstrument,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +155,7 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	}
 	select {
 	case event := <-subscription.Events():
-		if event.Instrument != "PURR-USDC" ||
+		if !hlSameInstrument(event.Instrument, spotInstrument) ||
 			!event.Bid.Price.Equal(decimal.RequireFromString("10.1")) ||
 			!event.Ask.Quantity.Equal(decimal.RequireFromString("3")) {
 			t.Fatalf("event = %+v", event)
@@ -174,13 +166,13 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	if err := subscription.Close(); err != nil {
 		t.Fatal(err)
 	}
-	books, err := socket.WatchOrderBook(watchCtx, exchange.WatchRequest{Instrument: "PURR-USDC"})
+	books, err := socket.WatchOrderBook(watchCtx, exchange.WatchRequest{Instrument: spotInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case event := <-books.Events():
-		if event.Instrument != "PURR-USDC" ||
+		if !hlSameInstrument(event.Instrument, spotInstrument) ||
 			!event.Bids[0].Price.Equal(decimal.RequireFromString("10.1")) ||
 			!event.Asks[0].Quantity.Equal(decimal.RequireFromString("3")) {
 			t.Fatalf("book event = %+v", event)
@@ -191,13 +183,13 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	if err := books.Close(); err != nil {
 		t.Fatal(err)
 	}
-	trades, err := socket.WatchPublicTrades(watchCtx, exchange.WatchRequest{Instrument: "PURR-USDC"})
+	trades, err := socket.WatchPublicTrades(watchCtx, exchange.WatchRequest{Instrument: spotInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case event := <-trades.Events():
-		if event.Instrument != "PURR-USDC" || event.TradeID != "77" ||
+		if !hlSameInstrument(event.Instrument, spotInstrument) || event.TradeID != "77" ||
 			event.Side != exchange.SideBuy ||
 			!event.Quantity.Equal(decimal.RequireFromString("0.5")) {
 			t.Fatalf("trade event = %+v", event)
@@ -209,7 +201,7 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 		t.Fatal(err)
 	}
 	candles, err := socket.WatchCandles(watchCtx, exchange.WatchCandlesRequest{
-		Instrument: "PURR-USDC",
+		Instrument: spotInstrument,
 		Interval:   "1m",
 	})
 	if err != nil {
@@ -217,7 +209,7 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	}
 	select {
 	case event := <-candles.Events():
-		if event.Instrument != "PURR-USDC" ||
+		if !hlSameInstrument(event.Instrument, spotInstrument) ||
 			event.Interval != "1m" ||
 			!event.Candle.Close.Equal(decimal.RequireFromString("10.2")) ||
 			!event.Candle.Volume.Equal(decimal.RequireFromString("12.5")) ||
@@ -243,20 +235,12 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 
 	perpCtx, perpCancel := context.WithCancel(context.Background())
 	t.Cleanup(perpCancel)
+	perpInstrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	perpBase := hyperliquid.NewWebsocketClient(perpCtx).
 		WithURL("ws" + strings.TrimPrefix(server.URL, "http"))
 	perpBase.SubscriptionAckTimeout = time.Second
 	perpREST := &hyperliquidPerpClient{
-		perpClient: &perpClient{meta: clientMeta{
-			venue:   exchange.VenueHyperliquid,
-			product: exchange.ProductPerp,
-		}},
-		metadata: map[string]hyperliquidMarketMeta{
-			"BTC": {
-				instrument: exchange.Instrument{Symbol: "BTC-USDC", Product: exchange.ProductPerp},
-				nativeCoin: "BTC",
-			},
-		},
+		perpClient: &perpClient{meta: hyperliquidStaticTestMeta(t, perpInstrument)},
 	}
 	perpBackend := newHyperliquidPerpWSBackendWithClient(
 		perpREST,
@@ -269,27 +253,27 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 		t.Fatalf("perp backend construction connected eagerly; connections = %d", connections.Load())
 	}
 
-	perpBook, err := perpSocket.WatchOrderBook(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	perpBook, err := perpSocket.WatchOrderBook(watchCtx, exchange.WatchRequest{Instrument: perpInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event := receiveWebSocketEvent(t, perpBook.Events()); event.Instrument != "BTC-USDC" {
+	if event := receiveWebSocketEvent(t, perpBook.Events()); !hlSameInstrument(event.Instrument, perpInstrument) {
 		t.Fatalf("perp book event = %+v", event)
 	}
 	if err := perpBook.Close(); err != nil {
 		t.Fatal(err)
 	}
-	perpBBO, err := perpSocket.WatchBBO(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	perpBBO, err := perpSocket.WatchBBO(watchCtx, exchange.WatchRequest{Instrument: perpInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event := receiveWebSocketEvent(t, perpBBO.Events()); event.Instrument != "BTC-USDC" {
+	if event := receiveWebSocketEvent(t, perpBBO.Events()); !hlSameInstrument(event.Instrument, perpInstrument) {
 		t.Fatalf("perp BBO event = %+v", event)
 	}
 	if err := perpBBO.Close(); err != nil {
 		t.Fatal(err)
 	}
-	perpTrades, err := perpSocket.WatchPublicTrades(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	perpTrades, err := perpSocket.WatchPublicTrades(watchCtx, exchange.WatchRequest{Instrument: perpInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,17 +283,17 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	if err := perpTrades.Close(); err != nil {
 		t.Fatal(err)
 	}
-	perpCandles, err := perpSocket.WatchCandles(watchCtx, exchange.WatchCandlesRequest{Instrument: "BTC-USDC", Interval: "1m"})
+	perpCandles, err := perpSocket.WatchCandles(watchCtx, exchange.WatchCandlesRequest{Instrument: perpInstrument, Interval: "1m"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if event := receiveWebSocketEvent(t, perpCandles.Events()); event.Instrument != "BTC-USDC" {
+	if event := receiveWebSocketEvent(t, perpCandles.Events()); !hlSameInstrument(event.Instrument, perpInstrument) {
 		t.Fatalf("perp candle event = %+v", event)
 	}
 	if err := perpCandles.Close(); err != nil {
 		t.Fatal(err)
 	}
-	marks, err := perpSocket.WatchMarkPrice(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	marks, err := perpSocket.WatchMarkPrice(watchCtx, exchange.WatchRequest{Instrument: perpInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +303,7 @@ func TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod(t *testing.T) {
 	if err := marks.Close(); err != nil {
 		t.Fatal(err)
 	}
-	funding, err := perpSocket.WatchFundingRate(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	funding, err := perpSocket.WatchFundingRate(watchCtx, exchange.WatchRequest{Instrument: perpInstrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,22 +393,23 @@ func TestHyperliquidWatchCandlesSeedsLatestRESTSnapshotWhenNativeStreamIsIdle(t 
 		w.Header().Set("Content-Type", "application/json")
 		switch payload["type"] {
 		case "spotMeta":
-			_, _ = w.Write([]byte(`{"tokens":[{"name":"USDC","szDecimals":8,"weiDecimals":8,"index":0,"isCanonical":true},{"name":"PURR","szDecimals":0,"weiDecimals":5,"index":1,"isCanonical":true}],"universe":[{"name":"PURR/USDC","index":0,"tokens":[1,0],"isCanonical":true}]}`))
+			_, _ = w.Write([]byte(`{"tokens":[{"name":"USDC","szDecimals":8,"weiDecimals":8,"index":0,"isCanonical":true},{"name":"PURR","szDecimals":0,"weiDecimals":5,"index":1,"isCanonical":true}],"universe":[{"name":"@1","index":1,"tokens":[1,0],"isCanonical":true}]}`))
 		case "candleSnapshot":
 			candleSnapshots.Add(1)
-			_, _ = w.Write([]byte(`[{"t":1700000000000,"T":1700000059999,"s":"PURR/USDC","i":"1m","o":"10.0","c":"10.2","h":"10.5","l":"9.9","v":"12.5","n":7}]`))
+			_, _ = w.Write([]byte(`[{"t":1700000000000,"T":1700000059999,"s":"@1","i":"1m","o":"10.0","c":"10.2","h":"10.5","l":"9.9","v":"12.5","n":7}]`))
 		default:
 			http.Error(w, "unexpected info request", http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewHyperliquidSpot(openAPITestPrivateKey, Settings{
+	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
 		Endpoint:          server.URL,
 		WebSocketEndpoint: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",
 		Environment:       "testnet",
 		HTTPClient:        server.Client(),
-	}).(*hyperliquidSpotClient)
+	}, exchange.ProductSpot)
+	client := NewHyperliquidSpot(openAPITestPrivateKey, settings).(*hyperliquidSpotClient)
 	t.Cleanup(func() {
 		if err := client.Close(); err != nil {
 			t.Errorf("Close: %v", err)
@@ -433,8 +418,12 @@ func TestHyperliquidWatchCandlesSeedsLatestRESTSnapshotWhenNativeStreamIsIdle(t 
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	instrument, err := client.ResolveInstrument(ctx, "PURR-USDC")
+	if err != nil {
+		t.Fatalf("ResolveInstrument: %v", err)
+	}
 	subscription, err := client.WebSocket().WatchCandles(ctx, exchange.WatchCandlesRequest{
-		Instrument: "PURR-USDC",
+		Instrument: instrument,
 		Interval:   "1m",
 	})
 	if err != nil {
@@ -444,7 +433,7 @@ func TestHyperliquidWatchCandlesSeedsLatestRESTSnapshotWhenNativeStreamIsIdle(t 
 
 	select {
 	case event := <-subscription.Events():
-		if event.Instrument != "PURR-USDC" ||
+		if !hlSameInstrument(event.Instrument, instrument) ||
 			event.Interval != "1m" ||
 			!event.Candle.Close.Equal(decimal.RequireFromString("10.2")) {
 			t.Fatalf("seed candle = %+v", event)
@@ -474,7 +463,7 @@ func receiveWebSocketEvent[T any](t *testing.T, events <-chan T) T {
 
 func TestHyperliquidWebSocketConvertersRejectMalformedPayloads(t *testing.T) {
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{Symbol: "BTC-USDC", Product: exchange.ProductPerp},
+		instrument: hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3),
 		nativeCoin: "BTC",
 	}
 	if _, err := hyperliquidBookEvent(meta, hyperliquid.WsL2Book{

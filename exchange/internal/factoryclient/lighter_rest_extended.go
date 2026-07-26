@@ -27,7 +27,10 @@ func (client *lighterPerpClient) PublicTrades(ctx context.Context, req exchange.
 }
 
 func (client *lighterSpotClient) OrderHistory(ctx context.Context, req exchange.OrderHistoryRequest) (exchange.OrderPage, error) {
-	meta, err := client.lighterMeta(ctx, "OrderHistory", exchange.ProductSpot, lighterSpot, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, lighterInvalid(exchange.ProductSpot, "OrderHistory", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "OrderHistory", exchange.ProductSpot, lighterSpot, *req.Instrument)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -35,7 +38,10 @@ func (client *lighterSpotClient) OrderHistory(ctx context.Context, req exchange.
 }
 
 func (client *lighterPerpClient) OrderHistory(ctx context.Context, req exchange.OrderHistoryRequest) (exchange.OrderPage, error) {
-	meta, err := client.lighterMeta(ctx, "OrderHistory", exchange.ProductPerp, lighterPerp, req.Instrument)
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, lighterInvalid(exchange.ProductPerp, "OrderHistory", "instrument is required")
+	}
+	meta, err := client.lighterMeta(ctx, "OrderHistory", exchange.ProductPerp, lighterPerp, *req.Instrument)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -56,9 +62,10 @@ func (client *lighterPerpClient) FundingRate(ctx context.Context, req exchange.F
 	}
 	rate := decimal.NewFromFloat(row.Rate)
 	return exchange.FundingRate{
-		Instrument: req.Instrument,
-		Rate:       rate,
-		ObservedAt: time.Now().UTC(),
+		NativeSymbol: meta.instrument.Identity.NativeSymbol,
+		NativeID:     meta.instrument.Identity.NativeID,
+		Rate:         rate,
+		ObservedAt:   time.Now().UTC(),
 	}, nil
 }
 
@@ -102,9 +109,10 @@ func (client *lighterPerpClient) FundingRateHistory(ctx context.Context, req exc
 			return exchange.FundingRatePage{}, lighterMalformed(exchange.ProductPerp, "FundingRateHistory", "invalid funding rate")
 		}
 		rates = append(rates, exchange.FundingRate{
-			Instrument:  req.Instrument,
-			Rate:        rate,
-			FundingTime: lighterFlexibleUnix(row.Timestamp),
+			NativeSymbol: meta.instrument.Identity.NativeSymbol,
+			NativeID:     meta.instrument.Identity.NativeID,
+			Rate:         rate,
+			FundingTime:  lighterFlexibleUnix(row.Timestamp),
 		})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: historyPage("", req.Limit, start, end)}, nil
@@ -133,7 +141,7 @@ func (client *lighterPerpClient) SetLeverage(ctx context.Context, req exchange.S
 	if row.Code != 200 {
 		return exchange.Leverage{}, lighterMalformed(exchange.ProductPerp, "SetLeverage", "response code is not 200")
 	}
-	return exchange.Leverage{Instrument: req.Instrument, Effective: req.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, Effective: req.Leverage}, nil
 }
 
 func lighterPublicTrades(ctx context.Context, sdk *lighter.Client, product exchange.Product, meta lighterMarketMeta, req exchange.PublicTradesRequest) (exchange.PublicTradePage, error) {
@@ -169,7 +177,7 @@ func lighterPublicTrades(ctx context.Context, sdk *lighter.Client, product excha
 			side = exchange.SideBuy
 		}
 		trades = append(trades, exchange.PublicTrade{
-			Instrument: req.Instrument,
+			Instrument: meta.instrument,
 			TradeID:    strconv.FormatInt(row.TradeId, 10),
 			Side:       side,
 			Price:      price,

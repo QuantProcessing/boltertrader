@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	nadosdk "github.com/QuantProcessing/boltertrader/sdk/nado"
 	"github.com/gorilla/websocket"
 	"github.com/shopspring/decimal"
 )
@@ -27,7 +29,7 @@ func TestNadoWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL}
 
 	spot := NewNadoSpot(testAsterPrivateKey, "default", settings).WebSocket()
-	exerciseNadoSpotWebSocketFixture(t, spot, fixture, "ETH-USDT0", int64(1))
+	exerciseNadoSpotWebSocketFixture(t, spot, fixture, nadoTestInstrument(exchange.ProductSpot), int64(1))
 	_ = spot.Close()
 
 	perp := NewNadoUSDT0Perp(testAsterPrivateKey, "default", settings).WebSocket()
@@ -49,6 +51,100 @@ func TestNadoClientCachesAndClosesWebSocketFacet(t *testing.T) {
 	for _, secret := range []string{testAsterPrivateKey, "ac0974", "signature=", "userinfo"} {
 		if strings.Contains(rendered, secret) {
 			t.Fatalf("Nado formatting leaked %q: %s", secret, rendered)
+		}
+	}
+}
+
+func TestNadoWSSetupUsesCallerContext(t *testing.T) {
+	settings := Settings{Environment: "testnet", Endpoint: "https://nado-fixture.invalid/v1", WebSocketEndpoint: "ws://127.0.0.1:1"}
+	base := newNadoBase(exchange.ProductSpot, testAsterPrivateKey, "default", settings)
+	backend := &nadoSpotWSBackend{base: base}
+
+	for _, test := range []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{name: "market", call: func(ctx context.Context) error {
+			_, err := backend.ensureMarket(ctx)
+			return err
+		}},
+		{name: "account", call: func(ctx context.Context) error {
+			_, err := backend.ensureAccount(ctx)
+			return err
+		}},
+		{name: "api", call: func(ctx context.Context) error {
+			_, err := backend.ensureAPI(ctx)
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := test.call(ctx); !errors.Is(err, exchange.ErrCanceled) {
+				t.Fatalf("ensure %s error = %v, want ErrCanceled", test.name, err)
+			}
+		})
+	}
+}
+
+func TestNadoWatchBalancesRefreshUsesSubscriptionContext(t *testing.T) {
+	fixture := newNadoWSFixture(t)
+	var canceledRefreshes atomic.Int32
+	refreshStarted := make(chan struct{})
+	var closeRefreshStarted sync.Once
+	router := nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if !nadoIsSubaccountInfoRequest(request) {
+			return newNadoOpenAPIRouter(t).RoundTrip(request)
+		}
+		closeRefreshStarted.Do(func() { close(refreshStarted) })
+		response := asterOpenAPIJSONResponse(`{"status":"success","data":{"subaccount":"default","exists":true,"spot_balances":[{"product_id":1,"balance":{"amount":"1000000000000000000"}}],"perp_balances":[],"healths":[]},"request_type":"subaccount_info"}`)
+		select {
+		case <-request.Context().Done():
+			canceledRefreshes.Add(1)
+			return nil, request.Context().Err()
+		case <-time.After(2 * time.Second):
+			return response, nil
+		}
+	})
+	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL, HTTPClient: &http.Client{Transport: router}}
+	base := newNadoBase(exchange.ProductSpot, testAsterPrivateKey, "default", settings)
+	account, err := nadosdk.NewWsAccountClient(context.Background(), base.sdk)
+	if err != nil {
+		t.Fatalf("NewWsAccountClient: %v", err)
+	}
+	if err := account.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	backend := &nadoSpotWSBackend{base: base, account: account}
+	ctx, cancel := context.WithCancel(context.Background())
+	var gotErr atomic.Bool
+	stop, err := backend.StartBalances(ctx, streamCallbacks[exchange.BalanceEvent]{
+		Error: func(err error) {
+			if errors.Is(err, exchange.ErrCanceled) {
+				gotErr.Store(true)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartBalances: %v", err)
+	}
+	fixture.requireFrame("authenticate", "")
+	fixture.requireFrame("subscribe", "position_change")
+	select {
+	case <-refreshStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for WatchBalances refresh request")
+	}
+	_ = stop()
+	cancel()
+
+	deadline := time.After(2 * time.Second)
+	for canceledRefreshes.Load() == 0 || !gotErr.Load() {
+		select {
+		case <-deadline:
+			t.Fatalf("canceled refreshes=%d gotErr=%v, want canceled WatchBalances refresh", canceledRefreshes.Load(), gotErr.Load())
+		default:
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -161,6 +257,9 @@ func (fixture *nadoWSFixture) writeJSONPayloadBurst(conn *websocket.Conn, stream
 	for range 5 {
 		time.Sleep(20 * time.Millisecond)
 		if err := fixture.writeJSON(conn, object); err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "close sent") {
+				return
+			}
 			fixture.frames <- nadoWSFrame{Method: "write_error", Stream: stream + ": " + err.Error()}
 			return
 		}
@@ -245,7 +344,7 @@ func (fixture *nadoWSFixture) requireFrame(method, stream string) {
 	}
 }
 
-func exerciseNadoSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, fixture *nadoWSFixture, instrument string, productID int64) {
+func exerciseNadoSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, fixture *nadoWSFixture, instrument exchange.Instrument, productID int64) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -328,10 +427,11 @@ func exerciseNadoSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, f
 
 func exerciseNadoPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, fixture *nadoWSFixture) {
 	t.Helper()
-	exerciseNadoSpotWebSocketFixture(t, ws, fixture, "ETH-PERP-USDT0", 2)
+	instrument := nadoTestInstrument(exchange.ProductPerp)
+	exerciseNadoSpotWebSocketFixture(t, ws, fixture, instrument, 2)
 
 	ctx := context.Background()
-	positions, err := ws.WatchPositions(ctx, exchange.WatchRequest{Instrument: "ETH-PERP-USDT0", Options: exchange.WatchOptions{Buffer: 8}})
+	positions, err := ws.WatchPositions(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Nado perp WatchPositions: %v", err)
 	}
@@ -340,7 +440,7 @@ func exerciseNadoPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, f
 	_ = positions.Close()
 	fixture.requireFrame("unsubscribe", "position_change:2")
 
-	funding, err := ws.WatchFundingRate(ctx, exchange.WatchRequest{Instrument: "ETH-PERP-USDT0", Options: exchange.WatchOptions{Buffer: 8}})
+	funding, err := ws.WatchFundingRate(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Nado perp WatchFundingRate: %v", err)
 	}
@@ -349,7 +449,7 @@ func exerciseNadoPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, f
 	_ = funding.Close()
 	fixture.requireFrame("unsubscribe", "funding_rate:2")
 
-	marks, err := ws.WatchMarkPrice(ctx, exchange.WatchRequest{Instrument: "ETH-PERP-USDT0", Options: exchange.WatchOptions{Buffer: 8}})
+	marks, err := ws.WatchMarkPrice(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if !errors.Is(err, exchange.ErrUnsupported) {
 		t.Fatalf("Nado perp WatchMarkPrice error = %v, want ErrUnsupported", err)
 	}

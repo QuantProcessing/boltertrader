@@ -8,6 +8,15 @@
 
 [返回项目中文 README](../../README.zh-CN.md)
 
+## 选择产品路径
+
+- [直接使用统一交易所 API](exchange/README.md)：在进程内使用规范化 client。
+- [Exchange Gateway](guides/exchange-gateway.md)：通过常驻服务集中管理 account、
+  Catalog、持久订单、reconciliation 和私有事件。
+- [Runtime node](guides/runtime-node.md)：承载单一策略的有状态执行。
+
+三者是面向不同需求的同级路径，不存在替代或弃用关系。
+
 ## 入门
 
 - [前置条件](getting-started/prerequisites.md)
@@ -18,6 +27,7 @@
 ## Exchange API
 
 - [独立统一交易所 API](exchange/README.md)
+- [Exchange Gateway](guides/exchange-gateway.md)
 
 ## 概念
 

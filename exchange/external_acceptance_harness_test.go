@@ -207,6 +207,27 @@ type externalRowCoverage struct {
 	marks   map[string]externalCoverageMark
 }
 
+type externalCoverageWaiver struct {
+	reason string
+	marks  map[string]struct{}
+}
+
+func newExternalCoverageWaiver(reason string, marks ...externalCoverageMark) externalCoverageWaiver {
+	waiver := externalCoverageWaiver{
+		reason: strings.TrimSpace(reason),
+		marks:  make(map[string]struct{}, len(marks)),
+	}
+	for _, mark := range marks {
+		waiver.marks[coverageMarkKey(mark)] = struct{}{}
+	}
+	return waiver
+}
+
+func (waiver externalCoverageWaiver) Allows(mark externalCoverageMark) bool {
+	_, ok := waiver.marks[coverageMarkKey(mark)]
+	return ok
+}
+
 func newExternalRowCoverage(t *testing.T, ledger externalAcceptanceLedger, rowCode string) *externalRowCoverage {
 	t.Helper()
 	if _, err := ledger.CompleteMarksForRow(rowCode); err != nil {
@@ -257,6 +278,43 @@ func (coverage *externalRowCoverage) Validate() error {
 	return coverage.ledger.ValidateRowMarks(coverage.rowCode, marks)
 }
 
+func (coverage *externalRowCoverage) ValidateWithWaiver(waiver externalCoverageWaiver) error {
+	if waiver.reason == "" || len(waiver.marks) == 0 {
+		return errors.New("external coverage waiver requires a reason and at least one mark")
+	}
+	expected, err := coverage.ledger.CompleteMarksForRow(coverage.rowCode)
+	if err != nil {
+		return err
+	}
+	expectedKeys := make(map[string]struct{}, len(expected))
+	for _, mark := range expected {
+		expectedKeys[coverageMarkKey(mark)] = struct{}{}
+	}
+	for key := range waiver.marks {
+		if _, ok := expectedKeys[key]; !ok {
+			return fmt.Errorf("waiver references unknown external coverage mark %s", key)
+		}
+		if _, exercised := coverage.marks[key]; exercised {
+			return fmt.Errorf("waiver references exercised external coverage mark %s", key)
+		}
+	}
+	var missing []string
+	for key := range expectedKeys {
+		if _, exercised := coverage.marks[key]; exercised {
+			continue
+		}
+		if _, waived := waiver.marks[key]; waived {
+			continue
+		}
+		missing = append(missing, key)
+	}
+	if len(missing) != 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("missing non-waived external coverage marks: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 type ownedOrderJournal struct {
 	orderIDs       map[string]struct{}
 	clientOrderIDs map[string]struct{}
@@ -293,8 +351,8 @@ func (journal *ownedOrderJournal) MarkTerminal(orderID string) {
 	delete(journal.orderIDs, orderID)
 }
 
-func (journal *ownedOrderJournal) Cleanup(ctx context.Context, client orderCleanupClient, instrument string) error {
-	page, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 100})
+func (journal *ownedOrderJournal) Cleanup(ctx context.Context, client orderCleanupClient, instrument exchange.Instrument) error {
+	page, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 100})
 	if err != nil {
 		return err
 	}
@@ -318,7 +376,7 @@ func (journal *ownedOrderJournal) Cleanup(ctx context.Context, client orderClean
 
 	var lastErr error
 	for {
-		page, err = client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 100})
+		page, err = client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 100})
 		if err == nil {
 			residualOrderID := ""
 			for _, order := range page.Orders {
@@ -482,7 +540,7 @@ func sizeAcceptanceQuoteOrder(
 	if err != nil {
 		return approxOrderSize{}, err
 	}
-	price = roundPriceToTick(price, instrument.PriceIncrement, side)
+	price = roundPriceToTick(price, instrument.Rules.PriceIncrement, side)
 	if !price.IsPositive() {
 		return approxOrderSize{}, errors.New("rounded price is not positive")
 	}
@@ -499,34 +557,34 @@ func sizeAcceptanceQuoteOrderAtPrice(
 		return approxOrderSize{}, errors.New("order price must be positive")
 	}
 	effectiveTarget := target
-	useVenueMinimum := instrument.MinNotional.Valid && instrument.MinNotional.Value.GreaterThan(target)
+	useVenueMinimum := instrument.Rules.MinNotional.Valid && instrument.Rules.MinNotional.Value.GreaterThan(target)
 	if useVenueMinimum {
 		if !maxNotional.IsPositive() {
-			return approxOrderSize{}, fmt.Errorf("approximately %s quote notional is below min notional %s", target, instrument.MinNotional.Value)
+			return approxOrderSize{}, fmt.Errorf("approximately %s quote notional is below min notional %s", target, instrument.Rules.MinNotional.Value)
 		}
-		effectiveTarget = instrument.MinNotional.Value
+		effectiveTarget = instrument.Rules.MinNotional.Value
 	}
 
-	quantity := roundDownToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+	quantity := roundDownToStep(effectiveTarget.Div(price), instrument.Rules.QuantityIncrement)
 	if useVenueMinimum {
-		quantity = roundUpToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+		quantity = roundUpToStep(effectiveTarget.Div(price), instrument.Rules.QuantityIncrement)
 	} else if maxNotional.IsPositive() && price.Mul(quantity).LessThan(target.Mul(decimal.RequireFromString("0.90"))) {
-		nextQuantity := roundUpToStep(effectiveTarget.Div(price), instrument.QuantityIncrement)
+		nextQuantity := roundUpToStep(effectiveTarget.Div(price), instrument.Rules.QuantityIncrement)
 		if price.Mul(nextQuantity).LessThanOrEqual(maxNotional) {
 			quantity = nextQuantity
 		}
 	}
-	if quantity.LessThan(instrument.MinQuantity) {
-		quantity = instrument.MinQuantity
+	if quantity.LessThan(instrument.Rules.MinQuantity) {
+		quantity = instrument.Rules.MinQuantity
 	}
-	quantity = roundDownToStep(quantity, instrument.QuantityIncrement)
+	quantity = roundDownToStep(quantity, instrument.Rules.QuantityIncrement)
 	if !quantity.IsPositive() {
 		return approxOrderSize{}, errors.New("rounded quantity is not positive")
 	}
 
 	notional := price.Mul(quantity)
-	if instrument.MinNotional.Valid && notional.LessThan(instrument.MinNotional.Value) {
-		return approxOrderSize{}, fmt.Errorf("approximately %s quote notional is below min notional %s", target, instrument.MinNotional.Value)
+	if instrument.Rules.MinNotional.Valid && notional.LessThan(instrument.Rules.MinNotional.Value) {
+		return approxOrderSize{}, fmt.Errorf("approximately %s quote notional is below min notional %s", target, instrument.Rules.MinNotional.Value)
 	}
 	if notional.LessThan(target.Mul(decimal.RequireFromString("0.90"))) {
 		return approxOrderSize{}, fmt.Errorf("rounded notional %s is too far below approximately %s", notional, target)
@@ -535,7 +593,7 @@ func sizeAcceptanceQuoteOrderAtPrice(
 		return approxOrderSize{}, fmt.Errorf("minimum tradable notional %s is too far above approximately %s", notional, target)
 	}
 	if maxNotional.IsPositive() {
-		roundingAllowance := price.Mul(instrument.QuantityIncrement)
+		roundingAllowance := price.Mul(instrument.Rules.QuantityIncrement)
 		if notional.GreaterThan(maxNotional.Add(roundingAllowance)) {
 			return approxOrderSize{}, fmt.Errorf("minimum tradable notional %s exceeds configured maximum %s", notional, maxNotional)
 		}

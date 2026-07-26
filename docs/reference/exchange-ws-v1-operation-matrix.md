@@ -170,7 +170,7 @@ environment certification. Current acceptance certification is:
 | BNP | Passed | Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row. |
 | OXS | Passed | OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
 | OXP | Passed | OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row. |
-| LIS | Waived | Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; user accepted waiver, and no synthetic liquidity/self-trade was used. |
+| LIS | Waived | Lighter Testnet Spot is structurally one-sided. The user authorized a live-write waiver: the serial target verifies REST reads, account access, the one-sided order-book stream, remaining public/private subscription activation, and invalid-request boundaries with zero live order mutations; WatchBBO, exact lookup, and write paths remain explicitly waived or fixture-only, and the gateway keeps the row not write-ready. |
 | LIP | Passed | Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row. |
 | HLS | Passed | Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row. |
 | HLP | Passed | Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row. |

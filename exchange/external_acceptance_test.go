@@ -27,6 +27,7 @@ type exchangeAcceptanceRow struct {
 	perpReference             exchangeAcceptancePerpReference
 	perpPublicWS              exchangeAcceptancePerpPublicWebSocket
 	watchMarkPriceUnsupported bool
+	oneSidedSpotWaiver        bool
 }
 
 type exchangeAcceptancePerpReference interface {
@@ -43,6 +44,11 @@ type exchangeAcceptanceREST interface {
 	exchange.MarketREST
 	exchange.OrderREST
 	Balances(context.Context) ([]exchange.Balance, error)
+}
+
+type exchangeAcceptanceCatalog interface {
+	ResolveInstrument(context.Context, string) (exchange.Instrument, error)
+	RefreshInstruments(context.Context) ([]exchange.Instrument, error)
 }
 
 type spotExposureCleanupClient interface {
@@ -228,10 +234,11 @@ func TestExchangeLighterSpotTestnetAcceptance(t *testing.T) {
 		t.Fatalf("construct Lighter Spot Testnet exchange: %v", err)
 	}
 	runExchangeSpotAcceptance(t, exchangeAcceptanceRow{
-		code:           "LIS",
-		product:        exchange.ProductSpot,
-		instrumentHint: cfg.SpotSymbol,
-		notional:       acceptanceNotional(t),
+		code:               "LIS",
+		product:            exchange.ProductSpot,
+		instrumentHint:     cfg.SpotSymbol,
+		notional:           acceptanceNotional(t),
+		oneSidedSpotWaiver: true,
 	}, client)
 }
 
@@ -621,6 +628,10 @@ func runExchangeSpotAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 	coverage := newExternalRowCoverage(t, buildExternalAcceptanceLedger(t, loadExternalAcceptanceManifest(t)), row.code)
 	journal := newOwnedOrderJournal()
 	instrument, book := exerciseCommonREST(t, ctx, row, client, coverage)
+	if row.oneSidedSpotWaiver {
+		exerciseOneSidedSpotWaiver(t, ctx, row, client, instrument, coverage)
+		return
+	}
 
 	baseline, err := client.Balances(ctx)
 	if err != nil {
@@ -638,9 +649,9 @@ func runExchangeSpotAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 	coverage.MarkOperation("rest", "SpotAccount")
 
 	socket := client.WebSocket()
-	privateWitnesses := exerciseSpotWebSocket(t, ctx, row, socket, instrument.Symbol, coverage)
-	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", coverage)
-	exerciseInvalidOrderRequests(t, ctx, row, socket, "ws", coverage)
+	privateWitnesses := exerciseSpotWebSocket(t, ctx, row, socket, instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, socket, "ws", instrument, coverage)
 	armAcceptanceWitnesses(privateWitnesses)
 	exerciseSpotOrderCases(t, ctx, row, client, socket, instrument, book, baseline, journal, coverage)
 	requireAcceptanceWitnessEvents(t, ctx, privateWitnesses)
@@ -650,6 +661,32 @@ func runExchangeSpotAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 			t.Fatalf("%s external coverage: %v", row.code, err)
 		}
 	}
+}
+
+func exerciseOneSidedSpotWaiver(
+	t *testing.T,
+	ctx context.Context,
+	row exchangeAcceptanceRow,
+	client exchange.SpotClient,
+	instrument exchange.Instrument,
+	coverage *externalRowCoverage,
+) {
+	t.Helper()
+	if _, err := client.SpotAccount(ctx); err != nil {
+		t.Fatalf("%s SpotAccount: %v", row.code, err)
+	}
+	coverage.MarkOperation("rest", "SpotAccount")
+
+	socket := client.WebSocket()
+	witnesses := exerciseSpotWebSocket(t, ctx, row, socket, instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, socket, "ws", instrument, coverage)
+	closeAcceptanceWitnessesWithoutEvents(t, witnesses)
+	closeAcceptanceSocket(t, row.code, socket, coverage)
+	if err := coverage.ValidateWithWaiver(lighterSpotOneSidedCoverageWaiver()); err != nil {
+		t.Fatalf("%s one-sided external coverage: %v", row.code, err)
+	}
+	t.Logf("%s accepted explicit Testnet one-sided waiver; no live order mutation was sent", row.code)
 }
 
 func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client exchange.PerpClient) {
@@ -662,11 +699,11 @@ func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 	journal := newOwnedOrderJournal()
 	instrument, book := exerciseCommonREST(t, ctx, row, client, coverage)
 
-	baselinePositions, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: instrument.Symbol})
+	baselinePositions, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
 	if err != nil {
 		t.Fatalf("%s baseline Positions: %v", row.code, err)
 	}
-	baselinePosition := signedAcceptancePosition(baselinePositions, instrument.Symbol)
+	baselinePosition := signedAcceptancePosition(baselinePositions, instrument)
 	defer func() {
 		if err := finalizePerpAcceptance(row, client, instrument, baselinePosition, journal); err != nil {
 			t.Errorf("%s final cleanup: %v", row.code, err)
@@ -677,7 +714,7 @@ func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 		t.Fatalf("%s PerpAccount: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "PerpAccount")
-	if _, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: instrument.Symbol}); err != nil {
+	if _, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument}); err != nil {
 		t.Fatalf("%s Positions: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "Positions")
@@ -685,27 +722,27 @@ func runExchangePerpAcceptance(t *testing.T, row exchangeAcceptanceRow, client e
 	if row.perpReference != nil {
 		reference = row.perpReference
 	}
-	if _, err := reference.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument.Symbol}); err != nil {
+	if _, err := reference.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument}); err != nil {
 		t.Fatalf("%s FundingRate: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "FundingRate")
 	if _, err := reference.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{
-		Instrument: instrument.Symbol,
+		Instrument: instrument,
 		Limit:      10,
 	}); err != nil {
 		t.Fatalf("%s FundingRateHistory: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "FundingRateHistory")
 	socket := client.WebSocket()
-	privateWitnesses := exercisePerpWebSocket(t, ctx, row, socket, instrument.Symbol, coverage)
-	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", coverage)
-	exerciseInvalidOrderRequests(t, ctx, row, socket, "ws", coverage)
+	privateWitnesses := exercisePerpWebSocket(t, ctx, row, socket, instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, client, "rest", instrument, coverage)
+	exerciseInvalidOrderRequests(t, ctx, row, socket, "ws", instrument, coverage)
 	armAcceptanceWitnesses(privateWitnesses)
 	exercisePerpOrderCases(t, ctx, row, client, socket, instrument, book, baselinePosition, journal, coverage)
 	requireAcceptanceWitnessEvents(t, ctx, privateWitnesses)
 	closeAcceptanceSocket(t, row.code, socket, coverage)
 	if _, err := client.SetLeverage(ctx, exchange.SetLeverageRequest{
-		Instrument: instrument.Symbol,
+		Instrument: instrument,
 		Leverage:   1,
 	}); err != nil {
 		t.Fatalf("%s SetLeverage: %v", row.code, err)
@@ -735,17 +772,22 @@ func exerciseCommonREST(
 	if err != nil {
 		t.Fatalf("%s select instrument: %v", row.code, err)
 	}
-	book, err := client.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument.Symbol, Limit: 20})
+	instrument, err = refreshAcceptanceInstrument(ctx, client, instrument)
+	if err != nil {
+		t.Fatalf("%s catalog convenience methods: %v", row.code, err)
+	}
+	coverage.MarkOperation("rest", "ResolveInstrument")
+	coverage.MarkOperation("rest", "RefreshInstruments")
+	book, err := client.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 20})
 	if err != nil {
 		t.Fatalf("%s OrderBook: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "OrderBook")
-	if len(book.Bids) == 0 || len(book.Asks) == 0 ||
-		!book.Bids[0].Price.IsPositive() || !book.Asks[0].Price.IsPositive() {
-		t.Fatalf("%s OrderBook has no positive top of book for %s", row.code, instrument.Symbol)
+	if err := validateAcceptanceTopOfBook(row, instrument, book); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := client.Candles(ctx, exchange.CandlesRequest{
-		Instrument: instrument.Symbol,
+		Instrument: instrument,
 		Interval:   "1m",
 		Limit:      2,
 	}); err != nil {
@@ -753,14 +795,14 @@ func exerciseCommonREST(
 	}
 	coverage.MarkOperation("rest", "Candles")
 	if _, err := client.PublicTrades(ctx, exchange.PublicTradesRequest{
-		Instrument: instrument.Symbol,
+		Instrument: instrument,
 		Limit:      10,
 	}); err != nil {
 		t.Fatalf("%s PublicTrades: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "PublicTrades")
 	open, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{
-		Instrument: instrument.Symbol,
+		Instrument: &instrument,
 		Limit:      100,
 	})
 	if err != nil {
@@ -768,17 +810,17 @@ func exerciseCommonREST(
 	}
 	coverage.MarkOperation("rest", "OpenOrders")
 	if len(open.Orders) != 0 {
-		t.Fatalf("%s requires no pre-existing open order for %s; got %d", row.code, instrument.Symbol, len(open.Orders))
+		t.Fatalf("%s requires no pre-existing open order for %s; got %d", row.code, instrument.Identity.Symbol, len(open.Orders))
 	}
 	if _, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{
-		Instrument: instrument.Symbol,
+		Instrument: &instrument,
 		Limit:      20,
 	}); err != nil {
 		t.Fatalf("%s OrderHistory: %v", row.code, err)
 	}
 	coverage.MarkOperation("rest", "OrderHistory")
 	if _, err := client.Fills(ctx, exchange.FillsRequest{
-		Instrument: instrument.Symbol,
+		Instrument: &instrument,
 		Limit:      20,
 	}); err != nil {
 		t.Fatalf("%s Fills: %v", row.code, err)
@@ -795,16 +837,100 @@ func exerciseCommonREST(
 	return instrument, book
 }
 
+func validateAcceptanceTopOfBook(
+	row exchangeAcceptanceRow,
+	instrument exchange.Instrument,
+	book exchange.OrderBook,
+) error {
+	hasBid := len(book.Bids) != 0 && book.Bids[0].Price.IsPositive()
+	hasAsk := len(book.Asks) != 0 && book.Asks[0].Price.IsPositive()
+	if hasBid && hasAsk {
+		return nil
+	}
+	if row.oneSidedSpotWaiver && row.code == "LIS" && (hasBid || hasAsk) {
+		return nil
+	}
+	return fmt.Errorf("%s OrderBook has no positive two-sided top of book for %s", row.code, instrument.Identity.Symbol)
+}
+
+func acceptanceSubscriptionSkipped(row exchangeAcceptanceRow, operation string) bool {
+	return row.oneSidedSpotWaiver && row.code == "LIS" && operation == "WatchBBO"
+}
+
+func lighterSpotOneSidedCoverageWaiver() externalCoverageWaiver {
+	const reason = "Lighter Testnet Spot is structurally one-sided; user authorized skipping live order mutations"
+	operation := func(transport, method string) externalCoverageMark {
+		return externalCoverageMark{Kind: "operation", RowCode: "LIS", Transport: transport, Method: method}
+	}
+	parameter := func(caseID string) externalCoverageMark {
+		return externalCoverageMark{Kind: "parameter_case", RowCode: "LIS", CaseID: caseID}
+	}
+	return newExternalCoverageWaiver(
+		reason,
+		operation("rest", "PlaceOrder"),
+		operation("rest", "CancelOrder"),
+		operation("rest", "LookupExactOrder"),
+		operation("websocket", "PlaceOrder"),
+		operation("websocket", "CancelOrder"),
+		operation("websocket", "WatchBBO"),
+		parameter("place_order.rest.market"),
+		parameter("place_order.rest.limit_resting"),
+		parameter("place_order.rest.limit_ioc"),
+		parameter("place_order.rest.limit_post_only"),
+		parameter("place_order.rest.client_order_id"),
+		parameter("place_order.ws.market"),
+		parameter("place_order.ws.limit_resting"),
+		parameter("place_order.ws.limit_ioc"),
+		parameter("place_order.ws.limit_post_only"),
+		parameter("place_order.ws.client_order_id"),
+		parameter("cancel_order.rest.order_id"),
+		parameter("cancel_order.ws.order_id"),
+	)
+}
+
+func refreshAcceptanceInstrument(
+	ctx context.Context,
+	client exchangeAcceptanceCatalog,
+	selected exchange.Instrument,
+) (exchange.Instrument, error) {
+	resolved, err := client.ResolveInstrument(ctx, selected.Identity.Symbol)
+	if err != nil {
+		return exchange.Instrument{}, fmt.Errorf("resolve %s: %w", selected.Identity.Symbol, err)
+	}
+	if resolved.Identity != selected.Identity {
+		return exchange.Instrument{}, fmt.Errorf(
+			"resolved identity mismatch for %s: got %+v want %+v",
+			selected.Identity.Symbol,
+			resolved.Identity,
+			selected.Identity,
+		)
+	}
+	refreshed, err := client.RefreshInstruments(ctx)
+	if err != nil {
+		return exchange.Instrument{}, fmt.Errorf("refresh instruments: %w", err)
+	}
+	for _, instrument := range refreshed {
+		if instrument.Identity == selected.Identity {
+			return instrument, nil
+		}
+	}
+	return exchange.Instrument{}, fmt.Errorf(
+		"refreshed catalog no longer contains %s (%s)",
+		selected.Identity.Symbol,
+		selected.Identity.NativeSymbol,
+	)
+}
+
 func exerciseInvalidOrderRequests(
 	t *testing.T,
 	ctx context.Context,
 	row exchangeAcceptanceRow,
 	transport exchangeAcceptanceOrderTransport,
 	transportName string,
+	instrument exchange.Instrument,
 	coverage *externalRowCoverage,
 ) {
 	t.Helper()
-	instrument := row.instrumentHint
 	invalid := []struct {
 		caseID  string
 		request exchange.PlaceOrderRequest
@@ -961,7 +1087,7 @@ func exerciseSpotWebSocket(
 	ctx context.Context,
 	row exchangeAcceptanceRow,
 	socket exchange.SpotWebSocket,
-	instrument string,
+	instrument exchange.Instrument,
 	coverage *externalRowCoverage,
 ) []*acceptanceSubscriptionWitness {
 	t.Helper()
@@ -969,15 +1095,17 @@ func exerciseSpotWebSocket(
 		t.Fatalf("%s WebSocket returned nil", row.code)
 	}
 	watch := exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 32}}
+	witnesses := make([]*acceptanceSubscriptionWitness, 0, 5)
 	requireAcceptanceSubscription(t, ctx, row.code+"/WatchOrderBook", true, func(startCtx context.Context) (exchange.Subscription[exchange.BookEvent], error) {
 		return socket.WatchOrderBook(startCtx, watch)
 	})
 	coverage.MarkOperation("websocket", "WatchOrderBook")
-	requireAcceptanceSubscription(t, ctx, row.code+"/WatchBBO", true, func(startCtx context.Context) (exchange.Subscription[exchange.BBOEvent], error) {
-		return socket.WatchBBO(startCtx, watch)
-	})
-	coverage.MarkOperation("websocket", "WatchBBO")
-	witnesses := make([]*acceptanceSubscriptionWitness, 0, 5)
+	if !acceptanceSubscriptionSkipped(row, "WatchBBO") {
+		requireAcceptanceSubscription(t, ctx, row.code+"/WatchBBO", true, func(startCtx context.Context) (exchange.Subscription[exchange.BBOEvent], error) {
+			return socket.WatchBBO(startCtx, watch)
+		})
+		coverage.MarkOperation("websocket", "WatchBBO")
+	}
 	witnesses = append(witnesses, requireActiveAcceptanceWitness(t, ctx, row.code+"/WatchPublicTrades", func(startCtx context.Context) (exchange.Subscription[exchange.PublicTradeEvent], error) {
 		return socket.WatchPublicTrades(startCtx, watch)
 	}))
@@ -1010,7 +1138,7 @@ func exercisePerpWebSocket(
 	ctx context.Context,
 	row exchangeAcceptanceRow,
 	socket exchange.PerpWebSocket,
-	instrument string,
+	instrument exchange.Instrument,
 	coverage *externalRowCoverage,
 ) []*acceptanceSubscriptionWitness {
 	t.Helper()
@@ -1129,11 +1257,11 @@ func exerciseSpotFillRoundTrip(
 	coverage *externalRowCoverage,
 ) {
 	t.Helper()
-	before := acceptanceBalanceTotal(baseline, instrument.BaseAsset)
+	before := acceptanceBalanceTotal(baseline, instrument.Identity.BaseAsset)
 	if current, err := rest.Balances(ctx); err != nil {
 		t.Fatalf("%s %s %s pre-order Balances: %v", row.code, transport.caseName, orderCase.Kind, err)
 	} else {
-		before = acceptanceBalanceTotal(current, instrument.BaseAsset)
+		before = acceptanceBalanceTotal(current, instrument.Identity.BaseAsset)
 	}
 
 	request := acceptanceFillRequest(t, row, instrument, book, exchange.SideBuy, orderCase.Kind, false)
@@ -1141,16 +1269,16 @@ func exerciseSpotFillRoundTrip(
 	ack = requireAcceptanceOrderAck(t, row.code+"/"+transport.caseName+"/"+orderCase.Kind, ack, err)
 	coverage.MarkOperation(transport.coverageName, "PlaceOrder")
 
-	acquired := waitAcceptanceBalanceIncrease(t, ctx, row.code, rest, instrument.BaseAsset, before, instrument.QuantityIncrement)
+	acquired := waitAcceptanceBalanceIncrease(t, ctx, row.code, rest, instrument.Identity.BaseAsset, before, instrument.Rules.QuantityIncrement)
 	if ack.State == exchange.AckAmbiguous || ack.State == exchange.AckRejected {
 		t.Fatalf("%s %s returned unsafe acknowledgement state %s", row.code, orderCase.Kind, ack.State)
 	}
-	sellQuantity := roundDownToStep(acquired, instrument.QuantityIncrement)
+	sellQuantity := roundDownToStep(acquired, instrument.Rules.QuantityIncrement)
 	if !sellQuantity.IsPositive() {
 		t.Fatalf("%s %s acquired quantity %s is not tradable", row.code, orderCase.Kind, acquired)
 	}
 	offset := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: nextAcceptanceClientOrderID(),
 		Side:          exchange.SideSell,
 		Type:          exchange.OrderTypeMarket,
@@ -1158,7 +1286,7 @@ func exerciseSpotFillRoundTrip(
 	}
 	offsetAck, err := placeTrackedAcceptanceOrder(ctx, transport.orderTransport, offset, journal)
 	requireAcceptanceOrderAck(t, row.code+"/"+transport.caseName+"/"+orderCase.Kind+"/offset", offsetAck, err)
-	waitAcceptanceBalanceBaseline(t, ctx, row.code, rest, instrument.BaseAsset, before, instrument.QuantityIncrement)
+	waitAcceptanceBalanceBaseline(t, ctx, row.code, rest, instrument.Identity.BaseAsset, before, instrument.Rules.QuantityIncrement)
 }
 
 func exercisePerpFillRoundTrip(
@@ -1175,8 +1303,8 @@ func exercisePerpFillRoundTrip(
 	coverage *externalRowCoverage,
 ) {
 	t.Helper()
-	tolerance := instrument.QuantityIncrement.Div(decimal.NewFromInt(2))
-	if current := currentAcceptancePosition(t, ctx, row.code, rest, instrument.Symbol); current.Sub(baseline).Abs().GreaterThan(tolerance) {
+	tolerance := instrument.Rules.QuantityIncrement.Div(decimal.NewFromInt(2))
+	if current := currentAcceptancePosition(t, ctx, row.code, rest, instrument); current.Sub(baseline).Abs().GreaterThan(tolerance) {
 		t.Fatalf("%s %s pre-order position %s differs from baseline %s", row.code, orderCase.Kind, current, baseline)
 	}
 	primarySide, offsetSide, direction := perpRoundTripDirection(baseline)
@@ -1190,10 +1318,10 @@ func exercisePerpFillRoundTrip(
 			ctx,
 			row.code,
 			rest,
-			instrument.Symbol,
+			instrument,
 			baseline,
 			direction,
-			instrument.QuantityIncrement,
+			instrument.Rules.QuantityIncrement,
 		)
 	}
 
@@ -1207,12 +1335,12 @@ func exercisePerpFillRoundTrip(
 		orderCase.Kind == "perp_reduce_only",
 	)
 	if orderCase.Kind == "perp_reduce_only" {
-		position := currentAcceptancePosition(t, ctx, row.code, rest, instrument.Symbol)
+		position := currentAcceptancePosition(t, ctx, row.code, rest, instrument)
 		request.Side = offsetSide
 		request.Type = exchange.OrderTypeMarket
 		request.LimitPrice = decimal.Zero
 		request.LimitPolicy = ""
-		request.Quantity = roundDownToStep(position.Sub(baseline).Abs(), instrument.QuantityIncrement)
+		request.Quantity = roundDownToStep(position.Sub(baseline).Abs(), instrument.Rules.QuantityIncrement)
 		request.ReduceOnly = true
 	}
 	ack, err := placeTrackedAcceptanceOrder(ctx, transport.orderTransport, request, journal)
@@ -1220,7 +1348,7 @@ func exercisePerpFillRoundTrip(
 	coverage.MarkOperation(transport.coverageName, "PlaceOrder")
 
 	if orderCase.Kind == "perp_reduce_only" {
-		waitAcceptancePositionBaseline(t, ctx, row.code, rest, instrument.Symbol, baseline, instrument.QuantityIncrement)
+		waitAcceptancePositionBaseline(t, ctx, row.code, rest, instrument, baseline, instrument.Rules.QuantityIncrement)
 		return
 	}
 
@@ -1229,17 +1357,17 @@ func exercisePerpFillRoundTrip(
 		ctx,
 		row.code,
 		rest,
-		instrument.Symbol,
+		instrument,
 		baseline,
 		direction,
-		instrument.QuantityIncrement,
+		instrument.Rules.QuantityIncrement,
 	)
-	offsetQuantity := roundDownToStep(moved.Sub(baseline).Abs(), instrument.QuantityIncrement)
+	offsetQuantity := roundDownToStep(moved.Sub(baseline).Abs(), instrument.Rules.QuantityIncrement)
 	if !offsetQuantity.IsPositive() {
 		t.Fatalf("%s %s filled position delta %s is not tradable", row.code, orderCase.Kind, moved.Sub(baseline))
 	}
 	offset := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: nextAcceptanceClientOrderID(),
 		Side:          offsetSide,
 		Type:          exchange.OrderTypeMarket,
@@ -1248,7 +1376,7 @@ func exercisePerpFillRoundTrip(
 	}
 	offsetAck, err := placeTrackedAcceptanceOrder(ctx, transport.orderTransport, offset, journal)
 	requireAcceptanceOrderAck(t, row.code+"/"+transport.caseName+"/"+orderCase.Kind+"/offset", offsetAck, err)
-	waitAcceptancePositionBaseline(t, ctx, row.code, rest, instrument.Symbol, baseline, instrument.QuantityIncrement)
+	waitAcceptancePositionBaseline(t, ctx, row.code, rest, instrument, baseline, instrument.Rules.QuantityIncrement)
 }
 
 func exerciseRestingOrderAndCancel(
@@ -1275,7 +1403,7 @@ func exerciseRestingOrderAndCancel(
 	}
 	clientOrderID := nextAcceptanceClientOrderID()
 	request := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: clientOrderID,
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -1292,18 +1420,69 @@ func exerciseRestingOrderAndCancel(
 	if orderCase.Kind == "client_order_id" && ack.ClientOrderID != clientOrderID {
 		t.Fatalf("%s %s client order id = %q, want %q", row.code, orderCase.Kind, ack.ClientOrderID, clientOrderID)
 	}
-	orderID := resolveAcceptanceOrderID(t, ctx, row.code, rest, instrument.Symbol, clientOrderID, ack.OrderID)
+	orderID := resolveAcceptanceOrderID(t, ctx, row.code, rest, instrument, clientOrderID, ack.OrderID)
 	journal.TrackOrderID(orderID)
+	if orderCase.Kind == "client_order_id" && transport.caseName == "rest" && firstPromotionExactLookupRow(row.code) {
+		lookup, ok := rest.(exchange.ExactOrderLookup)
+		if !ok {
+			t.Fatalf("%s REST client does not implement ExactOrderLookup", row.code)
+		}
+		exact := waitAcceptanceExactOrder(t, ctx, row.code, lookup, instrument, clientOrderID)
+		if exact.Order.ClientOrderID != clientOrderID || exact.Order.OrderID != orderID {
+			t.Fatalf("%s exact order identity = client:%q venue:%q, want client:%q venue:%q", row.code, exact.Order.ClientOrderID, exact.Order.OrderID, clientOrderID, orderID)
+		}
+		coverage.MarkOperation("rest", "LookupExactOrder")
+	}
 
-	cancelAck, err := transport.orderTransport.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: instrument.Symbol, OrderID: orderID})
+	cancelAck, err := transport.orderTransport.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: instrument, OrderID: orderID})
 	cancelAck = requireAcceptanceOrderAck(t, row.code+"/"+transport.caseName+"/"+orderCase.Kind+"/cancel", cancelAck, err)
 	if cancelAck.Operation != exchange.OrderOperationCancel {
 		t.Fatalf("%s cancel acknowledgement operation = %s", row.code, cancelAck.Operation)
 	}
 	coverage.MarkOperation(transport.coverageName, "CancelOrder")
 	coverage.MarkParameterCase("cancel_order." + transport.caseName + ".order_id")
-	waitAcceptanceOrderClosed(t, ctx, row.code, rest, instrument.Symbol, orderID)
+	waitAcceptanceOrderClosed(t, ctx, row.code, rest, instrument, orderID)
 	journal.MarkTerminal(orderID)
+}
+
+func firstPromotionExactLookupRow(code string) bool {
+	switch code {
+	case "BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP":
+		return true
+	default:
+		return false
+	}
+}
+
+func waitAcceptanceExactOrder(
+	t *testing.T,
+	ctx context.Context,
+	rowCode string,
+	lookup exchange.ExactOrderLookup,
+	instrument exchange.Instrument,
+	clientOrderID string,
+) exchange.ExactOrderLookupResult {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		result, err := lookup.LookupExactOrder(ctx, exchange.ExactOrderLookupRequest{
+			Instrument:    &instrument,
+			ClientOrderID: clientOrderID,
+		})
+		if err == nil && result.Status == exchange.ExactOrderFound {
+			if validateErr := result.Validate(); validateErr != nil {
+				t.Fatalf("%s exact order evidence is invalid: %v", rowCode, validateErr)
+			}
+			return result
+		}
+		if err != nil {
+			t.Fatalf("%s LookupExactOrder: %v", rowCode, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s exact order remained %s after accepted placement", rowCode, result.Status)
+		}
+		waitAcceptancePoll(t, ctx, rowCode+"/exact-order")
+	}
 }
 
 func placeTrackedAcceptanceOrder(
@@ -1335,7 +1514,7 @@ func acceptanceFillRequest(
 		t.Fatalf("%s %s size: %v", row.code, kind, err)
 	}
 	request := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: nextAcceptanceClientOrderID(),
 		Side:          side,
 		Quantity:      size.Quantity,
@@ -1388,14 +1567,52 @@ func nextAcceptanceClientOrderID() string {
 
 func acceptanceRestingBuyPrice(instrument exchange.Instrument, book exchange.OrderBook) decimal.Decimal {
 	price := book.Bids[0].Price.Mul(decimal.RequireFromString("0.98"))
-	return roundDownToStep(price, instrument.PriceIncrement)
+	return acceptanceLimitPrice(instrument, price, false)
 }
 
 func acceptanceIOCPrice(instrument exchange.Instrument, book exchange.OrderBook, side exchange.Side) decimal.Decimal {
-	if side == exchange.SideBuy {
-		return roundUpToStep(book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), instrument.PriceIncrement)
+	if instrument.Identity.Venue == exchange.VenueBybit && instrument.Identity.Product == exchange.ProductSpot {
+		if side == exchange.SideBuy {
+			return acceptanceLimitPrice(instrument, book.Asks[0].Price, true)
+		}
+		return acceptanceLimitPrice(instrument, book.Bids[0].Price, false)
 	}
-	return roundDownToStep(book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), instrument.PriceIncrement)
+	if side == exchange.SideBuy {
+		return acceptanceLimitPrice(instrument, book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), true)
+	}
+	return acceptanceLimitPrice(instrument, book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), false)
+}
+
+func acceptanceLimitPrice(instrument exchange.Instrument, desired decimal.Decimal, roundUp bool) decimal.Decimal {
+	step := instrument.Rules.PriceIncrement
+	if instrument.Identity.Venue == exchange.VenueHyperliquid {
+		significantStep := hyperliquidAcceptanceSignificantStep(desired)
+		if significantStep.GreaterThan(step) {
+			step = significantStep
+		}
+	}
+	if roundUp {
+		return roundUpToStep(desired, step)
+	}
+	return roundDownToStep(desired, step)
+}
+
+func hyperliquidAcceptanceSignificantStep(value decimal.Decimal) decimal.Decimal {
+	value = value.Abs()
+	if value.IsZero() || value.Equal(value.Truncate(0)) {
+		return decimal.Zero
+	}
+	parts := strings.SplitN(value.String(), ".", 2)
+	integerDigits := len(strings.TrimLeft(parts[0], "0"))
+	if integerDigits > 0 {
+		return decimal.New(1, int32(integerDigits-5))
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+	}
+	leadingZeros := len(fraction) - len(strings.TrimLeft(fraction, "0"))
+	return decimal.New(1, int32(-(leadingZeros + 5)))
 }
 
 func resolveAcceptanceOrderID(
@@ -1403,7 +1620,7 @@ func resolveAcceptanceOrderID(
 	ctx context.Context,
 	rowCode string,
 	rest exchange.OrderREST,
-	instrument string,
+	instrument exchange.Instrument,
 	clientOrderID string,
 	ackOrderID string,
 ) string {
@@ -1413,7 +1630,7 @@ func resolveAcceptanceOrderID(
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		page, err := rest.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 100})
+		page, err := rest.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 100})
 		if err == nil {
 			for _, order := range page.Orders {
 				if order.ClientOrderID == clientOrderID && isPortableNativeOrderID(order.OrderID) {
@@ -1433,13 +1650,13 @@ func waitAcceptanceOrderClosed(
 	ctx context.Context,
 	rowCode string,
 	rest exchange.OrderREST,
-	instrument string,
+	instrument exchange.Instrument,
 	orderID string,
 ) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		page, err := rest.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 100})
+		page, err := rest.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 100})
 		if err == nil && !orderPageContainsOrderID(page, orderID) {
 			return
 		}
@@ -1539,20 +1756,20 @@ func currentAcceptancePosition(
 	rest interface {
 		Positions(context.Context, exchange.PositionsRequest) ([]exchange.Position, error)
 	},
-	instrument string,
+	instrument exchange.Instrument,
 ) decimal.Decimal {
 	t.Helper()
-	positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: instrument})
+	positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
 	if err != nil {
 		t.Fatalf("%s Positions: %v", rowCode, err)
 	}
 	return signedAcceptancePosition(positions, instrument)
 }
 
-func signedAcceptancePosition(positions []exchange.Position, instrument string) decimal.Decimal {
+func signedAcceptancePosition(positions []exchange.Position, instrument exchange.Instrument) decimal.Decimal {
 	total := decimal.Zero
 	for _, position := range positions {
-		if normalizeAcceptanceSymbol(position.Instrument) != normalizeAcceptanceSymbol(instrument) {
+		if !acceptancePositionMatchesInstrument(position, instrument) {
 			continue
 		}
 		switch position.Side {
@@ -1565,6 +1782,16 @@ func signedAcceptancePosition(positions []exchange.Position, instrument string) 
 	return total
 }
 
+func acceptancePositionMatchesInstrument(position exchange.Position, instrument exchange.Instrument) bool {
+	if position.NativeID != "" && instrument.Identity.NativeID != "" {
+		return position.NativeID == instrument.Identity.NativeID
+	}
+	if position.NativeSymbol != "" && instrument.Identity.NativeSymbol != "" {
+		return normalizeAcceptanceSymbol(position.NativeSymbol) == normalizeAcceptanceSymbol(instrument.Identity.NativeSymbol)
+	}
+	return false
+}
+
 func waitAcceptancePositionMove(
 	t *testing.T,
 	ctx context.Context,
@@ -1572,7 +1799,7 @@ func waitAcceptancePositionMove(
 	rest interface {
 		Positions(context.Context, exchange.PositionsRequest) ([]exchange.Position, error)
 	},
-	instrument string,
+	instrument exchange.Instrument,
 	baseline decimal.Decimal,
 	direction decimal.Decimal,
 	step decimal.Decimal,
@@ -1598,7 +1825,7 @@ func waitAcceptancePositionBaseline(
 	rest interface {
 		Positions(context.Context, exchange.PositionsRequest) ([]exchange.Position, error)
 	},
-	instrument string,
+	instrument exchange.Instrument,
 	baseline decimal.Decimal,
 	step decimal.Decimal,
 ) {
@@ -1638,11 +1865,11 @@ func cleanupSpotAcceptanceExposure(
 	if err != nil {
 		return fmt.Errorf("%s cleanup Balances: %w", row.code, err)
 	}
-	delta := acceptanceBalanceTotal(balances, instrument.BaseAsset).Sub(acceptanceBalanceTotal(baseline, instrument.BaseAsset))
-	if spotBalanceWithinFeeTolerance(delta, instrument.QuantityIncrement, decimal.Zero) {
+	delta := acceptanceBalanceTotal(balances, instrument.Identity.BaseAsset).Sub(acceptanceBalanceTotal(baseline, instrument.Identity.BaseAsset))
+	if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, decimal.Zero) {
 		return nil
 	}
-	book, err := rest.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument.Symbol, Limit: 1})
+	book, err := rest.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
 	if err != nil {
 		return fmt.Errorf("%s cleanup OrderBook: %w", row.code, err)
 	}
@@ -1655,18 +1882,18 @@ func cleanupSpotAcceptanceExposure(
 	if err != nil {
 		return fmt.Errorf("%s cleanup executable price: %w", row.code, err)
 	}
-	if spotBalanceWithinFeeTolerance(delta, instrument.QuantityIncrement, price) {
+	if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, price) {
 		return nil
 	}
-	quantity := roundDownToStep(delta.Abs(), instrument.QuantityIncrement)
+	quantity := roundDownToStep(delta.Abs(), instrument.Rules.QuantityIncrement)
 	if !quantity.IsPositive() {
-		return fmt.Errorf("%s cleanup delta %s cannot be represented by quantity step %s", row.code, delta, instrument.QuantityIncrement)
+		return fmt.Errorf("%s cleanup delta %s cannot be represented by quantity step %s", row.code, delta, instrument.Rules.QuantityIncrement)
 	}
-	if instrument.MinNotional.Valid && quantity.Mul(price).LessThan(instrument.MinNotional.Value) {
+	if instrument.Rules.MinNotional.Valid && quantity.Mul(price).LessThan(instrument.Rules.MinNotional.Value) {
 		return nil
 	}
 	request := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: nextAcceptanceClientOrderID(),
 		Side:          side,
 		Type:          exchange.OrderTypeMarket,
@@ -1675,7 +1902,7 @@ func cleanupSpotAcceptanceExposure(
 	journal.TrackClientOrderID(request.ClientOrderID)
 	ack, err := rest.PlaceOrder(ctx, request)
 	if err != nil {
-		return fmt.Errorf("%s cleanup spot delta %s %s: %w", row.code, quantity, instrument.BaseAsset, err)
+		return fmt.Errorf("%s cleanup spot delta %s %s: %w", row.code, quantity, instrument.Identity.BaseAsset, err)
 	}
 	journal.TrackPlacement(ack)
 	if err := validateAcceptanceCleanupAck(ack); err != nil {
@@ -1692,18 +1919,18 @@ func cleanupPerpAcceptanceExposure(
 	baseline decimal.Decimal,
 	journal *ownedOrderJournal,
 ) error {
-	positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: instrument.Symbol})
+	positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
 	if err != nil {
 		return fmt.Errorf("%s cleanup Positions: %w", row.code, err)
 	}
-	current := signedAcceptancePosition(positions, instrument.Symbol)
+	current := signedAcceptancePosition(positions, instrument)
 	delta := current.Sub(baseline)
-	if delta.Abs().LessThanOrEqual(instrument.QuantityIncrement.Div(decimal.NewFromInt(2))) {
+	if delta.Abs().LessThanOrEqual(instrument.Rules.QuantityIncrement.Div(decimal.NewFromInt(2))) {
 		return nil
 	}
-	quantity := roundDownToStep(delta.Abs(), instrument.QuantityIncrement)
+	quantity := roundDownToStep(delta.Abs(), instrument.Rules.QuantityIncrement)
 	if !quantity.IsPositive() {
-		return fmt.Errorf("%s cleanup position delta %s cannot be represented by quantity step %s", row.code, delta, instrument.QuantityIncrement)
+		return fmt.Errorf("%s cleanup position delta %s cannot be represented by quantity step %s", row.code, delta, instrument.Rules.QuantityIncrement)
 	}
 	side := exchange.SideSell
 	if delta.IsNegative() {
@@ -1712,7 +1939,7 @@ func cleanupPerpAcceptanceExposure(
 	reduceOnly := baseline.IsZero() ||
 		current.Sign() == baseline.Sign() && current.Abs().GreaterThan(baseline.Abs())
 	request := exchange.PlaceOrderRequest{
-		Instrument:    instrument.Symbol,
+		Instrument:    instrument,
 		ClientOrderID: nextAcceptanceClientOrderID(),
 		Side:          side,
 		Type:          exchange.OrderTypeMarket,
@@ -1762,15 +1989,15 @@ func waitSpotAcceptanceBaseline(
 	for {
 		balances, err := rest.Balances(ctx)
 		if err == nil {
-			delta := acceptanceBalanceTotal(balances, instrument.BaseAsset).
-				Sub(acceptanceBalanceTotal(baseline, instrument.BaseAsset))
-			if spotBalanceWithinFeeTolerance(delta, instrument.QuantityIncrement, price) {
+			delta := acceptanceBalanceTotal(balances, instrument.Identity.BaseAsset).
+				Sub(acceptanceBalanceTotal(baseline, instrument.Identity.BaseAsset))
+			if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, price) {
 				return nil
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%s %s balance did not return to baseline: %w", rowCode, instrument.BaseAsset, ctx.Err())
+			return fmt.Errorf("%s %s balance did not return to baseline: %w", rowCode, instrument.Identity.BaseAsset, ctx.Err())
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
@@ -1785,11 +2012,11 @@ func waitPerpAcceptanceBaseline(
 	instrument exchange.Instrument,
 	baseline decimal.Decimal,
 ) error {
-	tolerance := instrument.QuantityIncrement.Div(decimal.NewFromInt(2))
+	tolerance := instrument.Rules.QuantityIncrement.Div(decimal.NewFromInt(2))
 	for {
-		positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: instrument.Symbol})
+		positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
 		if err == nil {
-			current := signedAcceptancePosition(positions, instrument.Symbol)
+			current := signedAcceptancePosition(positions, instrument)
 			if current.Sub(baseline).Abs().LessThanOrEqual(tolerance) {
 				return nil
 			}
@@ -1812,13 +2039,13 @@ func finalizeSpotAcceptance(
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var cleanupErrors []error
-	if err := journal.Cleanup(ctx, rest, instrument.Symbol); err != nil {
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("cancel exact-owned orders: %w", err))
 	}
 	if err := cleanupSpotAcceptanceExposure(ctx, row, rest, instrument, baseline, journal); err != nil {
 		cleanupErrors = append(cleanupErrors, err)
 	}
-	if err := journal.Cleanup(ctx, rest, instrument.Symbol); err != nil {
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("verify exact-owned orders: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
@@ -1834,13 +2061,13 @@ func finalizePerpAcceptance(
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	var cleanupErrors []error
-	if err := journal.Cleanup(ctx, rest, instrument.Symbol); err != nil {
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("cancel exact-owned orders: %w", err))
 	}
 	if err := cleanupPerpAcceptanceExposure(ctx, row, rest, instrument, baseline, journal); err != nil {
 		cleanupErrors = append(cleanupErrors, err)
 	}
-	if err := journal.Cleanup(ctx, rest, instrument.Symbol); err != nil {
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("verify exact-owned orders: %w", err))
 	}
 	return errors.Join(cleanupErrors...)
@@ -1932,6 +2159,21 @@ func requireAcceptanceWitnessEvents(
 		if err := witness.WaitEvent(ctx); err != nil {
 			t.Fatalf("%s did not produce a post-arm event: %v", witness.operation, err)
 		}
+		if err := witness.Close(); err != nil {
+			t.Fatalf("%s close: %v", witness.operation, err)
+		}
+		if err := witness.Close(); err != nil {
+			t.Fatalf("%s idempotent close: %v", witness.operation, err)
+		}
+	}
+}
+
+func closeAcceptanceWitnessesWithoutEvents(
+	t *testing.T,
+	witnesses []*acceptanceSubscriptionWitness,
+) {
+	t.Helper()
+	for _, witness := range witnesses {
 		if err := witness.Close(); err != nil {
 			t.Fatalf("%s close: %v", witness.operation, err)
 		}
@@ -2045,15 +2287,15 @@ func selectAcceptanceInstrument(
 ) (exchange.Instrument, error) {
 	want := normalizeAcceptanceSymbol(hint)
 	for _, instrument := range instruments {
-		if instrument.Product != product {
+		if instrument.Identity.Product != product {
 			continue
 		}
-		if normalizeAcceptanceSymbol(instrument.Symbol) == want {
+		if normalizeAcceptanceSymbol(instrument.Identity.Symbol) == want {
 			return instrument, nil
 		}
 		if product == exchange.ProductPerp &&
-			strings.EqualFold(instrument.QuoteAsset, "USDC") &&
-			normalizeAcceptanceSymbol(instrument.BaseAsset+"PERP") == want {
+			strings.EqualFold(instrument.Identity.QuoteAsset, "USDC") &&
+			normalizeAcceptanceSymbol(instrument.Identity.BaseAsset+"PERP") == want {
 			return instrument, nil
 		}
 	}

@@ -12,6 +12,10 @@
   lifecycle、normalized product 和 account dimension。
 - 按照[统一交易所 API 快速入门](../guides/exchange-rest-quickstart.md)完成 typed
   构造与安全的非生产示例。
+- 如果调用方不应在进程内管理 client、缓存、凭证和重启恢复，而应通过常驻远程
+  服务交互，请选择 [Exchange Gateway](../guides/exchange-gateway.md)。
+- 如果进程承载单一有状态策略，请选择 [runtime node](../guides/runtime-node.md)。
+  三者是同级产品路径，不是直接 API 的迭代版本。
 
 ## 精确 API 清单
 

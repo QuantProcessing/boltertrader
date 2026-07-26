@@ -47,7 +47,7 @@ func TestPublicSurfaceManifestDefinesTwentyProductRows(t *testing.T) {
 			if got.Venue != wantRow.Venue || got.Product != wantRow.Product || got.FactoryConfig != wantRow.FactoryConfig || got.AcceptanceTarget != wantRow.AcceptanceTarget {
 				t.Fatalf("row %s metadata = %#v, want venue/product/config/target %#v", code, got, wantRow)
 			}
-			assertSameStrings(t, got.RESTMethods, expectedRESTMethodsForProduct(wantRow.Product))
+			assertSameStrings(t, got.RESTMethods, expectedRESTMethodsForRow(code, wantRow.Product))
 			assertSameStrings(t, got.WebSocketMethods, expectedWebSocketMethodsForProduct(wantRow.Product))
 			if len(got.Fixtures) == 0 {
 				t.Fatalf("row %s must declare fixture coverage", code)
@@ -64,6 +64,8 @@ func TestPublicSurfaceManifestDefinesTwentyProductRows(t *testing.T) {
 func TestPublicSurfaceManifestDefinesRESTAndWebSocketMethodMatrix(t *testing.T) {
 	manifest := loadPublicSurfaceManifest(t, repositoryRoot(t))
 	assertMethodSupport(t, manifest.RESTMethods, map[string][2]bool{
+		"ResolveInstrument":  {true, true},
+		"RefreshInstruments": {true, true},
 		"Instruments":        {true, true},
 		"OrderBook":          {true, true},
 		"Candles":            {true, true},
@@ -180,10 +182,12 @@ func TestPublicSurfaceManifestDefinesAcceptanceStatus(t *testing.T) {
 		"blocked":        true,
 	}
 	requiredLISReason := []string{
-		"Lighter Testnet ETH/USDC and LIT/USDC",
-		"platform-provided one-sided books",
-		"user accepted waiver",
-		"no synthetic liquidity/self-trade was used",
+		"Lighter Testnet Spot is structurally one-sided",
+		"user authorized a live-write waiver",
+		"zero live order mutations",
+		"WatchBBO",
+		"fixture-only",
+		"not write-ready",
 	}
 
 	for code, want := range wantStatus {
@@ -211,7 +215,7 @@ func TestPublicSurfaceManifestDefinesAcceptanceStatus(t *testing.T) {
 				if row.AcceptanceTarget != "test-exchange-lighter-testnet-spot" {
 					t.Fatalf("row LIS acceptance target = %q, want test-exchange-lighter-testnet-spot", row.AcceptanceTarget)
 				}
-				assertSameStrings(t, row.RESTMethods, expectedRESTMethodsForProduct(row.Product))
+				assertSameStrings(t, row.RESTMethods, expectedRESTMethodsForRow(code, row.Product))
 				assertSameStrings(t, row.WebSocketMethods, expectedWebSocketMethodsForProduct(row.Product))
 			}
 		})
@@ -555,11 +559,21 @@ func cellsForSupport(rows map[string]exchangeProductRow, spot, perp bool) []stri
 }
 
 func expectedRESTMethodsForProduct(product string) []string {
-	methods := []string{"Balances", "CancelOrder", "Candles", "Fills", "Instruments", "OpenOrders", "OrderBook", "OrderHistory", "PlaceOrder", "PublicTrades"}
+	methods := []string{"Balances", "CancelOrder", "Candles", "Fills", "Instruments", "OpenOrders", "OrderBook", "OrderHistory", "PlaceOrder", "PublicTrades", "RefreshInstruments", "ResolveInstrument"}
 	if strings.Contains(product, "Spot") {
 		return append(methods, "SpotAccount")
 	}
 	return append(methods, "FundingRate", "FundingRateHistory", "PerpAccount", "Positions", "SetLeverage")
+}
+
+func expectedRESTMethodsForRow(code, product string) []string {
+	methods := expectedRESTMethodsForProduct(product)
+	switch code {
+	case "BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP":
+		return append(methods, "LookupExactOrder")
+	default:
+		return methods
+	}
 }
 
 func expectedWebSocketMethodsForProduct(product string) []string {

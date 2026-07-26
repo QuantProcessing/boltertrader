@@ -37,7 +37,7 @@ func TestBinancePerpRESTMarketNewAcknowledgementIsAcceptedPending(t *testing.T) 
 	})
 
 	ack, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDT",
+		Instrument:    binancePerpETHUSDTInstrument(),
 		ClientOrderID: "1001",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -80,7 +80,7 @@ func TestBinancePerpRESTRejectsAcknowledgementOrderTypeMismatch(t *testing.T) {
 	})
 
 	_, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDT",
+		Instrument:    binancePerpETHUSDTInstrument(),
 		ClientOrderID: "1002",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,

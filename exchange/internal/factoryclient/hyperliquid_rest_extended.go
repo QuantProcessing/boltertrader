@@ -86,10 +86,11 @@ func (client *hyperliquidPerpClient) FundingRate(ctx context.Context, req exchan
 		return exchange.FundingRate{}, hlMalformed(exchange.ProductPerp, "FundingRate", "invalid mark price")
 	}
 	return exchange.FundingRate{
-		Instrument: req.Instrument,
-		Rate:       rate,
-		MarkPrice:  exchange.OptionalDecimal{Value: mark, Valid: true},
-		ObservedAt: time.Now().UTC(),
+		NativeSymbol: req.Instrument.Identity.NativeSymbol,
+		NativeID:     req.Instrument.Identity.NativeID,
+		Rate:         rate,
+		MarkPrice:    exchange.OptionalDecimal{Value: mark, Valid: true},
+		ObservedAt:   time.Now().UTC(),
 	}, nil
 }
 
@@ -125,9 +126,10 @@ func (client *hyperliquidPerpClient) FundingRateHistory(ctx context.Context, req
 			return exchange.FundingRatePage{}, hlMalformed(exchange.ProductPerp, "FundingRateHistory", "invalid funding rate")
 		}
 		rates = append(rates, exchange.FundingRate{
-			Instrument:  req.Instrument,
-			Rate:        rate,
-			FundingTime: time.UnixMilli(row.Time).UTC(),
+			NativeSymbol: req.Instrument.Identity.NativeSymbol,
+			NativeID:     req.Instrument.Identity.NativeID,
+			Rate:         rate,
+			FundingTime:  time.UnixMilli(row.Time).UTC(),
 		})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: historyPage("", req.Limit, req.Start, req.End)}, nil
@@ -160,7 +162,7 @@ func (client *hyperliquidPerpClient) SetLeverage(ctx context.Context, req exchan
 	if err != nil {
 		return exchange.Leverage{}, hlLeverageMutationErr(err, tracker)
 	}
-	return exchange.Leverage{Instrument: req.Instrument, Effective: req.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: req.Instrument.Identity.NativeSymbol, NativeID: req.Instrument.Identity.NativeID, Effective: req.Leverage}, nil
 }
 
 func hlLeverageMutationErr(err error, tracker *hyperliquidRequestTracker) error {
@@ -274,7 +276,7 @@ func hlPublicTrades(ctx context.Context, sdk *hyperliquid.Client, product exchan
 			return exchange.PublicTradePage{}, hlMalformed(product, "PublicTrades", "invalid trade quantity")
 		}
 		trades = append(trades, exchange.PublicTrade{
-			Instrument: req.Instrument,
+			Instrument: meta.instrument,
 			TradeID:    strconv.FormatInt(row.TradeID, 10),
 			Side:       side,
 			Price:      price,
@@ -310,12 +312,12 @@ func hlOrderHistory(
 			continue
 		}
 		details := row.Order
-		meta, ok := metas[details.Coin]
-		if !ok || hlRejectCoin(details.Coin) {
-			continue
-		}
 		if requested != nil && details.Coin != requested.nativeCoin {
 			continue
+		}
+		meta, ok := metas[details.Coin]
+		if !ok || hlRejectCoin(details.Coin) {
+			return exchange.OrderPage{}, hlMalformed(product, "OrderHistory", "mixed or unknown product row")
 		}
 		if !req.Start.IsZero() && row.StatusTimestamp < req.Start.UnixMilli() {
 			continue
@@ -382,7 +384,8 @@ func hlHistoricalOrder(meta hyperliquidMarketMeta, row hyperliquid.HistoricalOrd
 		clientID = hlPortableClientOrderID(*details.ClientOrderID)
 	}
 	return exchange.Order{
-		Instrument:    meta.instrument.Symbol,
+		NativeSymbol:  meta.instrument.Identity.NativeSymbol,
+		NativeID:      meta.instrument.Identity.NativeID,
 		OrderID:       strconv.FormatInt(details.OrderID, 10),
 		ClientOrderID: clientID,
 		Side:          side,

@@ -1,0 +1,256 @@
+openapi: 3.1.0
+info:
+  title: Exchange Gateway API
+  version: v1
+security:
+  - bearerAuth: []
+paths:
+  /v1/health/live:
+    get: {operationId: getLiveHealth, responses: {'200': {description: live}}}
+  /v1/health/ready:
+    get: {operationId: getReadyHealth, responses: {'200': {description: ready}}}
+  /v1/accounts:
+    get:
+      operationId: listAccounts
+      parameters: [{$ref: '#/components/parameters/PaginationLimit'}]
+      responses: {'200': {description: accounts}, default: {$ref: '#/components/responses/Error'}}
+  /v1/accounts/{account_id}:
+    get:
+      operationId: getAccount
+      parameters: [{name: account_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: account}}
+  /v1/capabilities:
+    get:
+      operationId: listCapabilities
+      parameters: [{name: account_id, in: query, schema: {type: string}}]
+      responses: {'200': {description: capabilities}, default: {$ref: '#/components/responses/Error'}}
+  /v1/instruments:
+    get:
+      operationId: listInstruments
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {name: venue, in: query, schema: {type: string}}
+        - {name: product, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+      responses: {'200': {description: instruments}, default: {$ref: '#/components/responses/Error'}}
+  /v1/instruments/{instrument_id}:
+    get:
+      operationId: getInstrument
+      parameters: [{name: instrument_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: instrument}}
+  /v1/rules:
+    get:
+      operationId: listRules
+      parameters: [{name: account_id, in: query, schema: {type: string}}]
+      responses: {'200': {description: rules}, default: {$ref: '#/components/responses/Error'}}
+  /v1/risk-limits:
+    get:
+      operationId: listRiskLimits
+      parameters: [{name: account_id, in: query, schema: {type: string}}]
+      responses: {'200': {description: risk limits}, default: {$ref: '#/components/responses/Error'}}
+  /v1/orders:
+    post:
+      operationId: placeOrder
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PlaceOrderRequest'}
+      responses:
+        '202': {description: accepted, content: {application/json: {schema: {$ref: '#/components/schemas/OrderResponse'}}}}
+        '409': {description: idempotency conflict, content: {application/json: {schema: {$ref: '#/components/schemas/IdempotencyConflict'}}}}
+        default: {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listOrders
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {name: instrument_id, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses: {'200': {description: orders}, default: {$ref: '#/components/responses/Error'}}
+  /v1/orders/{gateway_order_id}:
+    get:
+      operationId: getOrder
+      parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: order}}
+    patch:
+      operationId: amendOrder
+      parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
+      responses: {'501': {description: unsupported capability}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      operationId: cancelOrder
+      parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
+      responses: {'202': {description: cancel accepted}, default: {$ref: '#/components/responses/Error'}}
+  /v1/open-orders:
+    get:
+      operationId: listOpenOrders
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {name: instrument_id, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses: {'200': {description: open orders}, default: {$ref: '#/components/responses/Error'}}
+  /v1/fills:
+    get:
+      operationId: listFills
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {name: instrument_id, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses: {'200': {description: fills}, default: {$ref: '#/components/responses/Error'}}
+  /v1/balances:
+    get:
+      operationId: listBalances
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+      responses: {'200': {description: balances}, default: {$ref: '#/components/responses/Error'}}
+  /v1/positions:
+    get:
+      operationId: listPositions
+      parameters:
+        - {name: account_id, in: query, schema: {type: string}}
+        - {name: instrument_id, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+      responses: {'200': {description: positions}, default: {$ref: '#/components/responses/Error'}}
+  /v1/funding-rates:
+    get:
+      operationId: listFundingRates
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+      responses: {'200': {description: funding rates}, default: {$ref: '#/components/responses/Error'}}
+  /v1/accounts/{account_id}/instruments/{instrument_id}/leverage:
+    put:
+      operationId: setLeverage
+      parameters:
+        - {name: account_id, in: path, required: true, schema: {type: string}}
+        - {name: instrument_id, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [leverage]
+              additionalProperties: false
+              properties:
+                leverage: {type: integer, minimum: 1}
+      responses: {'501': {description: durable leverage commands are not supported in Gateway V1}, default: {$ref: '#/components/responses/Error'}}
+  /v1/ws:
+    get:
+      operationId: streamPrivateEvents
+      parameters:
+        - {name: cursor, in: query, schema: {type: string}}
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - name: kind
+          in: query
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: {type: string, enum: [order, fill, balance, position, account_health]}
+      responses:
+        '101':
+          description: private event stream; each server message is a PrivateEvent
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    PaginationLimit:
+      name: pagination.limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 500}
+    PaginationCursor:
+      name: pagination.cursor
+      in: query
+      schema: {type: string}
+  responses:
+    Error:
+      description: stable error envelope
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorEnvelope'}
+  schemas:
+    PlaceOrderRequest:
+      type: object
+      required: [account_id, instrument_id, idempotency_key, side, type, quantity]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        idempotency_key: {type: string}
+        side: {type: string, enum: [buy, sell]}
+        type: {type: string, enum: [market, limit]}
+        quantity: {type: string}
+        limit_price: {type: string}
+        limit_policy: {type: string, enum: [resting, ioc, post_only]}
+        reduce_only: {type: boolean}
+    OrderResponse:
+      type: object
+      required: [command_id, gateway_order_id, client_order_id, state, resource_version]
+      properties:
+        command_id: {type: string}
+        gateway_order_id: {type: string}
+        client_order_id: {type: string}
+        state: {type: string}
+        resource_version: {type: integer, minimum: 0}
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlation_id, retryable]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            correlation_id: {type: string}
+            retryable: {type: boolean}
+    IdempotencyConflict:
+      type: object
+      required: [error, existing_command_id]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlation_id, retryable]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            correlation_id: {type: string}
+            retryable: {type: boolean}
+        existing_command_id: {type: string}
+    PrivateEvent:
+      type: object
+      required: [boot_id, sequence, event_id, account_id, resource_version, kind, occurred_at, payload]
+      additionalProperties: false
+      properties:
+        boot_id: {type: string}
+        sequence: {type: integer, minimum: 1}
+        event_id: {type: string}
+        account_id: {type: string}
+        resource_version: {type: integer, minimum: 0}
+        kind: {type: string, enum: [order, fill, balance, position, account_health, resync_required]}
+        occurred_at: {type: string, format: date-time}
+        payload: {type: object, additionalProperties: true}
+    ResyncRequiredEvent:
+      allOf:
+        - {$ref: '#/components/schemas/PrivateEvent'}
+        - type: object
+          properties:
+            kind: {type: string, enum: [resync_required]}
+            payload:
+              type: object
+              required: [reason, resources]
+              additionalProperties: false
+              properties:
+                reason: {type: string}
+                resources:
+                  type: array
+                  items: {type: string}

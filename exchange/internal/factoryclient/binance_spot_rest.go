@@ -24,9 +24,52 @@ func (client *binanceSpotClient) Instruments(ctx context.Context) ([]exchange.In
 	if err := binanceSpotContextErr(ctx, "Instruments"); err != nil {
 		return nil, err
 	}
+	if client.meta.catalog != nil && client.meta.catalogScope != (exchange.CatalogScope{}) {
+		snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
+		if err != nil {
+			return nil, withExchangeOperation(err, "Instruments")
+		}
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+	}
 	res, err := client.sdk.ExchangeInfo(ctx)
 	if err != nil {
 		return nil, binanceSpotNormalizeErr(err, "Instruments")
+	}
+	instruments, err := binanceSpotInstrumentsFromExchangeInfo(res)
+	if err != nil {
+		return nil, binanceSpotMalformed("Instruments", err.Error())
+	}
+	return instruments, nil
+}
+
+func (client *binanceSpotClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	if err := binanceSpotContextErr(ctx, "ResolveInstrument"); err != nil {
+		return exchange.Instrument{}, err
+	}
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return exchange.Instrument{}, binanceSpotInvalid("ResolveInstrument", "instrument catalog is not configured")
+	}
+	instrument, err := client.meta.catalog.Resolve(ctx, client.meta.catalogScope, exchange.InstrumentQuery{Symbol: symbol})
+	return instrument, withExchangeOperation(err, "ResolveInstrument")
+}
+
+func (client *binanceSpotClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	if err := binanceSpotContextErr(ctx, "RefreshInstruments"); err != nil {
+		return nil, err
+	}
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return nil, binanceSpotInvalid("RefreshInstruments", "instrument catalog is not configured")
+	}
+	snapshot, err := client.meta.catalog.Refresh(ctx, client.meta.catalogScope)
+	if err != nil {
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), withExchangeOperation(err, "RefreshInstruments")
+	}
+	return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+}
+
+func binanceSpotInstrumentsFromExchangeInfo(res *binancespot.ExchangeInfoResponse) ([]exchange.Instrument, error) {
+	if res == nil {
+		return nil, fmt.Errorf("missing exchangeInfo response")
 	}
 	seen := make(map[string]struct{}, len(res.Symbols))
 	instruments := make([]exchange.Instrument, 0, len(res.Symbols))
@@ -36,26 +79,31 @@ func (client *binanceSpotClient) Instruments(ctx context.Context) ([]exchange.In
 		}
 		normalized, err := binanceSpotNormalizeVenueSymbol(symbol.Symbol, symbol.BaseAsset, symbol.QuoteAsset)
 		if err != nil {
-			return nil, binanceSpotMalformed("Instruments", err.Error())
+			return nil, err
 		}
 		if _, exists := seen[normalized]; exists {
-			return nil, binanceSpotMalformed("Instruments", "duplicate symbol")
+			return nil, fmt.Errorf("duplicate symbol")
 		}
 		seen[normalized] = struct{}{}
 		filters, err := binanceSpotInstrumentFilters(symbol.Filters)
 		if err != nil {
-			return nil, binanceSpotMalformed("Instruments", err.Error())
+			return nil, err
 		}
-		instruments = append(instruments, exchange.Instrument{
-			Symbol:            normalized,
-			BaseAsset:         symbol.BaseAsset,
-			QuoteAsset:        symbol.QuoteAsset,
-			Product:           binanceSpotProduct,
-			PriceIncrement:    filters.priceIncrement,
-			QuantityIncrement: filters.quantityIncrement,
-			MinQuantity:       filters.minQuantity,
-			MinNotional:       filters.minNotional,
-		})
+		instruments = append(instruments, newInstrument(
+			exchange.VenueBinance,
+			binanceSpotProduct,
+			normalized,
+			symbol.BaseAsset,
+			symbol.QuoteAsset,
+			"",
+			symbol.Symbol,
+			"",
+			filters.priceIncrement,
+			filters.quantityIncrement,
+			filters.minQuantity,
+			filters.minNotional,
+			oneContract(),
+		))
 	}
 	return instruments, nil
 }
@@ -172,7 +220,7 @@ func (client *binanceSpotClient) PlaceOrder(ctx context.Context, request exchang
 		Product:       binanceSpotProduct,
 		Operation:     exchange.OrderOperationPlace,
 		State:         state,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderType:     request.Type,
 		OrderID:       strconv.FormatInt(res.OrderID, 10),
 		ClientOrderID: res.ClientOrderID,
@@ -227,7 +275,7 @@ func (client *binanceSpotClient) CancelOrder(ctx context.Context, request exchan
 		Product:       binanceSpotProduct,
 		Operation:     exchange.OrderOperationCancel,
 		State:         exchange.AckAcceptedPending,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderID:       strconv.FormatInt(res.OrderID, 10),
 		ClientOrderID: res.ClientOrderID,
 	}
@@ -241,9 +289,15 @@ func (client *binanceSpotClient) OpenOrders(ctx context.Context, request exchang
 	if err := binanceSpotContextErr(ctx, "OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	symbol, instrument, err := binanceSpotSymbols(request.Instrument, "OpenOrders")
-	if err != nil {
-		return exchange.OrderPage{}, err
+	symbol := ""
+	nativeSymbol := ""
+	if request.Instrument != nil {
+		parsedSymbol, instrument, err := binanceSpotSymbols(*request.Instrument, "OpenOrders")
+		if err != nil {
+			return exchange.OrderPage{}, err
+		}
+		symbol = parsedSymbol
+		nativeSymbol = instrument.Identity.NativeSymbol
 	}
 	if request.Cursor != "" {
 		return exchange.OrderPage{}, binanceSpotInvalid("OpenOrders", "cursor is not supported by Binance Spot open orders")
@@ -257,7 +311,7 @@ func (client *binanceSpotClient) OpenOrders(ctx context.Context, request exchang
 	}
 	orders := make([]exchange.Order, 0, len(res))
 	for _, native := range res {
-		order, err := binanceSpotOrder(native, symbol, instrument)
+		order, err := binanceSpotOrder(native, symbol, nativeSymbol)
 		if err != nil {
 			return exchange.OrderPage{}, binanceSpotMalformed("OpenOrders", err.Error())
 		}
@@ -270,7 +324,10 @@ func (client *binanceSpotClient) Fills(ctx context.Context, request exchange.Fil
 	if err := binanceSpotContextErr(ctx, "Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	symbol, instrument, err := binanceSpotSymbols(request.Instrument, "Fills")
+	if request.Instrument == nil {
+		return exchange.FillPage{}, binanceSpotInvalid("Fills", "instrument filter is required by Binance Spot trade history")
+	}
+	symbol, instrument, err := binanceSpotSymbols(*request.Instrument, "Fills")
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -296,7 +353,7 @@ func (client *binanceSpotClient) Fills(ctx context.Context, request exchange.Fil
 	}
 	fills := make([]exchange.Fill, 0, len(res))
 	for _, native := range res {
-		fill, err := binanceSpotFill(native, symbol, instrument)
+		fill, err := binanceSpotFill(native, symbol, instrument.Identity.NativeSymbol)
 		if err != nil {
 			return exchange.FillPage{}, binanceSpotMalformed("Fills", err.Error())
 		}
@@ -467,9 +524,12 @@ func binanceSpotCandle(native binancespot.KlineResponse) (exchange.Candle, error
 	}, nil
 }
 
-func binanceSpotOrder(native binancespot.OrderResponse, expectedSymbol, instrument string) (exchange.Order, error) {
-	if native.Symbol != expectedSymbol {
+func binanceSpotOrder(native binancespot.OrderResponse, expectedSymbol string, nativeSymbol string) (exchange.Order, error) {
+	if expectedSymbol != "" && native.Symbol != expectedSymbol {
 		return exchange.Order{}, fmt.Errorf("order symbol does not match requested instrument")
+	}
+	if nativeSymbol == "" {
+		nativeSymbol = native.Symbol
 	}
 	if native.OrderID <= 0 {
 		return exchange.Order{}, fmt.Errorf("order id must be positive")
@@ -506,7 +566,7 @@ func binanceSpotOrder(native binancespot.OrderResponse, expectedSymbol, instrume
 		return exchange.Order{}, fmt.Errorf("unsupported order type")
 	}
 	order := exchange.Order{
-		Instrument:    instrument,
+		NativeSymbol:  nativeSymbol,
 		OrderID:       strconv.FormatInt(native.OrderID, 10),
 		ClientOrderID: native.ClientOrderID,
 		Side:          side,
@@ -523,9 +583,12 @@ func binanceSpotOrder(native binancespot.OrderResponse, expectedSymbol, instrume
 	return order, nil
 }
 
-func binanceSpotFill(native binancespot.Trade, expectedSymbol, instrument string) (exchange.Fill, error) {
-	if native.Symbol != expectedSymbol {
+func binanceSpotFill(native binancespot.Trade, expectedSymbol string, nativeSymbol string) (exchange.Fill, error) {
+	if expectedSymbol != "" && native.Symbol != expectedSymbol {
 		return exchange.Fill{}, fmt.Errorf("fill symbol does not match requested instrument")
+	}
+	if nativeSymbol == "" {
+		nativeSymbol = native.Symbol
 	}
 	if native.ID <= 0 {
 		return exchange.Fill{}, fmt.Errorf("fill id must be positive")
@@ -557,16 +620,16 @@ func binanceSpotFill(native binancespot.Trade, expectedSymbol, instrument string
 		liquidity = exchange.LiquidityMaker
 	}
 	return exchange.Fill{
-		Instrument: instrument,
-		OrderID:    strconv.FormatInt(native.OrderID, 10),
-		FillID:     strconv.FormatInt(native.ID, 10),
-		Side:       side,
-		Price:      price,
-		Quantity:   quantity,
-		Fee:        fee,
-		FeeAsset:   native.CommissionAsset,
-		Liquidity:  liquidity,
-		Time:       time.UnixMilli(native.Time).UTC(),
+		NativeSymbol: nativeSymbol,
+		OrderID:      strconv.FormatInt(native.OrderID, 10),
+		FillID:       strconv.FormatInt(native.ID, 10),
+		Side:         side,
+		Price:        price,
+		Quantity:     quantity,
+		Fee:          fee,
+		FeeAsset:     native.CommissionAsset,
+		Liquidity:    liquidity,
+		Time:         time.UnixMilli(native.Time).UTC(),
 	}, nil
 }
 
@@ -610,16 +673,27 @@ func binanceSpotNormalizeVenueSymbol(symbol, base, quote string) (string, error)
 	return base + "-" + quote, nil
 }
 
-func binanceSpotSymbols(instrument, operation string) (venueSymbol string, canonical string, err error) {
-	parts := strings.Split(strings.TrimSpace(instrument), "-")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", binanceSpotInvalid(operation, "instrument must be a normalized spot symbol like BTC-USDT")
+func binanceSpotSymbols(instrument exchange.Instrument, operation string) (venueSymbol string, canonical exchange.Instrument, err error) {
+	if err := instrument.Validate(); err != nil {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, err.Error())
 	}
-	if parts[0] != strings.ToUpper(parts[0]) || parts[1] != strings.ToUpper(parts[1]) {
-		return "", "", binanceSpotInvalid(operation, "instrument must use canonical uppercase BASE-QUOTE form")
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueBinance || identity.Product != exchange.ProductSpot {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, "instrument must be a Binance spot instrument")
 	}
-	canonical = parts[0] + "-" + parts[1]
-	return parts[0] + parts[1], canonical, nil
+	if identity.SettleAsset != "" {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, "spot instrument must not include settlement asset")
+	}
+	if identity.Symbol != identity.BaseAsset+"-"+identity.QuoteAsset {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, "instrument symbol must be canonical BASE-QUOTE")
+	}
+	if identity.NativeSymbol != identity.BaseAsset+identity.QuoteAsset {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, "native symbol must match base and quote assets")
+	}
+	if identity.Symbol != strings.ToUpper(identity.Symbol) || identity.NativeSymbol != strings.ToUpper(identity.NativeSymbol) {
+		return "", exchange.Instrument{}, binanceSpotInvalid(operation, "instrument must use uppercase Binance symbols")
+	}
+	return identity.NativeSymbol, instrument, nil
 }
 
 func binanceSpotRequireNativeSymbol(got, want, operation string) error {
@@ -653,7 +727,7 @@ func binanceSpotAckState(status string) (exchange.OrderAckState, error) {
 	}
 }
 
-func binanceSpotCommandAck(instrument string, operation exchange.OrderOperation, operationName, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
+func binanceSpotCommandAck(instrument exchange.Instrument, operation exchange.OrderOperation, operationName, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
 	apiErr, apiOK := binanceSpotAPIError(err)
 	if binancespot.IsDefinitiveOrderRejection(err) && apiOK {
 		ack := exchange.OrderAcknowledgement{
@@ -661,7 +735,7 @@ func binanceSpotCommandAck(instrument string, operation exchange.OrderOperation,
 			Product:       binanceSpotProduct,
 			Operation:     operation,
 			State:         exchange.AckRejected,
-			Instrument:    instrument,
+			NativeSymbol:  instrument.Identity.NativeSymbol,
 			OrderID:       orderID,
 			ClientOrderID: clientOrderID,
 			VenueCode:     strconv.Itoa(apiErr.Code),
@@ -684,7 +758,7 @@ func binanceSpotCommandAck(instrument string, operation exchange.OrderOperation,
 			Product:       binanceSpotProduct,
 			Operation:     operation,
 			State:         exchange.AckAmbiguous,
-			Instrument:    instrument,
+			NativeSymbol:  instrument.Identity.NativeSymbol,
 			OrderID:       orderID,
 			ClientOrderID: clientOrderID,
 			VenueMessage:  "transport outcome unknown",

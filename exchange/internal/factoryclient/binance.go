@@ -41,8 +41,9 @@ func NewBinanceSpot(apiKey, secretKey string, settings Settings) exchange.SpotCl
 	wsCtx := context.Background()
 	commandWSAPI := binancespot.NewWsAPIClient(wsCtx).WithURL(wsProfile.WSAPIBaseURL)
 	accountWSAPI := binancespot.NewWsAPIClient(wsCtx).WithURL(wsProfile.WSAPIBaseURL)
+	meta := clientMetaFromSettings(exchange.VenueBinance, exchange.ProductSpot, settings)
 	client := &binanceSpotClient{
-		spotClient:   &spotClient{meta: clientMeta{venue: exchange.VenueBinance, product: exchange.ProductSpot}},
+		spotClient:   &spotClient{meta: meta},
 		sdk:          sdkClient,
 		commandWSAPI: commandWSAPI,
 		accountWSAPI: accountWSAPI,
@@ -91,8 +92,9 @@ func NewBinanceUSDPerp(apiKey, secretKey string, settings Settings) exchange.Per
 		wsProfile.WSMarketBaseURL = settings.WebSocketEndpoint
 		wsProfile.WSMarketFallbackBaseURL = settings.WebSocketEndpoint
 	}
+	meta := clientMetaFromSettings(exchange.VenueBinance, exchange.ProductPerp, settings)
 	client := &binancePerpClient{
-		perpClient: &perpClient{meta: clientMeta{venue: exchange.VenueBinance, product: exchange.ProductPerp}},
+		perpClient: &perpClient{meta: meta},
 		sdk:        sdkClient,
 	}
 	wsCtx := context.Background()

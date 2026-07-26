@@ -2,11 +2,10 @@
 
 > English is canonical. [简体中文](README.zh-CN.md)
 
-BolterTrader is a Go-native trading framework that keeps exchange differences in
-SDKs and adapters while giving strategies one venue-neutral runtime. The runtime
-owns stateful behavior such as orders, fills, positions, balances, portfolio,
-risk, reconciliation, and reconnect handling; it does not import exchange SDKs
-or adapters.
+BolterTrader is a Go-native trading system with three peer product paths over
+the same venue integrations: a direct normalized `exchange` API, a self-hosted
+Exchange Gateway, and a single-strategy `runtime`. Choose by deployment and
+state-ownership needs; none of these paths deprecates or wraps the others.
 
 ## Choose a starting path
 
@@ -14,24 +13,29 @@ or adapters.
 - No credentials: run the [offline runtime walkthrough](docs/getting-started/offline-runtime.md).
 - CEX non-production validation: use [Binance Spot Demo](docs/getting-started/cex-demo.md).
 - DEX non-production validation: use [Hyperliquid Perp Testnet](docs/getting-started/dex-testnet.md).
-- Building directly on venue SDKs: use the standalone
+- Embedding venue-neutral clients in a Go process: use the standalone
   [Unified exchange API](docs/exchange/README.md).
+- Centralizing accounts, Catalog, durable order identity, restart recovery, and
+  private events in a resident service: use the
+  [Exchange Gateway](docs/guides/exchange-gateway.md).
+- Hosting one stateful strategy: use the
+  [runtime node guide](docs/guides/runtime-node.md).
 - Looking for a topic or venue: open the [documentation index](docs/README.md).
 
 ## Architecture in one minute
 
-```text
-strategy
-   ↓ venue-neutral Context
-runtime
-   ↓ core contracts only
-adapter/<venue>
-   ↓ official-API translation
-sdk/<venue>
-```
+| Product path | Use it for | It owns |
+| --- | --- | --- |
+| Direct `exchange` | In-process normalized REST and WebSocket clients | Typed clients and venue normalization; the caller owns lifecycle, caching, and durability |
+| Exchange Gateway | Remote REST/private-WebSocket access through a resident service | Account clients, credentials, Catalog, durable order identity, reconciliation, and event delivery |
+| `runtime` | One strategy's stateful execution | Strategy context, cache, portfolio, risk, lifecycle, and reconciliation |
 
 The boundary is deliberate:
 
+- `exchange/` is the normalized driver and model layer used directly or by the
+  Gateway.
+- `gateway/` is a service above `exchange/`; it does not import `runtime/`,
+  adapters, strategies, or venue SDK packages.
 - `core/` defines venue-neutral decimal models, contracts, enums, and clocks.
 - `runtime/` owns portable state and may depend only on `core/`.
 - `adapter/<venue>/` absorbs venue products, identifiers, signing, response

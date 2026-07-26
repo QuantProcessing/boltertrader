@@ -14,6 +14,12 @@ product, and environment explicitly.
   dimensions.
 - Follow the [Unified exchange API quickstart](../guides/exchange-rest-quickstart.md)
   for typed construction and safe non-production examples.
+- If callers should use a resident remote service instead of owning clients,
+  caching, credentials, and restart recovery in-process, choose the
+  [Exchange Gateway](../guides/exchange-gateway.md).
+- If the process hosts one stateful strategy, choose the
+  [runtime node](../guides/runtime-node.md). These are peer product paths, not
+  successive versions of the direct API.
 
 ## Exact API inventories
 

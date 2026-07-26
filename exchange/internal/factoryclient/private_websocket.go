@@ -12,8 +12,8 @@ import (
 )
 
 type privateWSBackend interface {
-	StartOrders(context.Context, string, streamCallbacks[exchange.OrderEvent]) (func() error, error)
-	StartFills(context.Context, string, streamCallbacks[exchange.FillEvent]) (func() error, error)
+	StartOrders(context.Context, exchange.Instrument, streamCallbacks[exchange.OrderEvent]) (func() error, error)
+	StartFills(context.Context, exchange.Instrument, streamCallbacks[exchange.FillEvent]) (func() error, error)
 	StartBalances(context.Context, streamCallbacks[exchange.BalanceEvent]) (func() error, error)
 	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
 	CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error)
@@ -22,7 +22,7 @@ type privateWSBackend interface {
 
 type perpPrivateWSBackend interface {
 	privateWSBackend
-	StartPositions(context.Context, string, streamCallbacks[exchange.PositionEvent]) (func() error, error)
+	StartPositions(context.Context, exchange.Instrument, streamCallbacks[exchange.PositionEvent]) (func() error, error)
 }
 
 type spotWebSocket struct {
@@ -148,8 +148,8 @@ func (socket *privateWebSocket) WatchOrders(
 		ctx,
 		"WatchOrders",
 		"orders",
-		request.Instrument,
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
+		websocketInstrumentKey(request.Instrument),
 		request.Options.Buffer,
 		socket.orders,
 		func(startCtx context.Context, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
@@ -170,8 +170,8 @@ func (socket *privateWebSocket) WatchFills(
 		ctx,
 		"WatchFills",
 		"fills",
-		request.Instrument,
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
+		websocketInstrumentKey(request.Instrument),
 		request.Options.Buffer,
 		socket.fills,
 		func(startCtx context.Context, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
@@ -222,7 +222,7 @@ func (socket *privateWebSocket) CancelOrder(
 	if err := socket.validateCommandContext(ctx, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	if err := validatePrivateCancelOrder(request); err != nil {
+	if err := validatePrivateCancelOrder(socket.public.meta, request); err != nil {
 		return exchange.OrderAcknowledgement{}, websocketError(socket.public.meta, "CancelOrder", exchange.KindInvalidRequest, err.Error())
 	}
 	return socket.backend.CancelOrder(ctx, request)
@@ -489,10 +489,12 @@ func watchPrivateWebSocketTopic[T any](
 	return subscription, nil
 }
 
-func validatePrivateCancelOrder(request exchange.CancelOrderRequest) error {
-	if strings.TrimSpace(request.Instrument) == "" ||
-		strings.TrimSpace(request.Instrument) != request.Instrument {
-		return errors.New("instrument is required and must not have surrounding whitespace")
+func validatePrivateCancelOrder(meta clientMeta, request exchange.CancelOrderRequest) error {
+	if err := request.Instrument.Validate(); err != nil {
+		return err
+	}
+	if request.Instrument.Identity.Venue != meta.venue || request.Instrument.Identity.Product != meta.product {
+		return errors.New("instrument venue/product does not match websocket")
 	}
 	orderID, err := strconv.ParseInt(request.OrderID, 10, 64)
 	if err == nil && orderID > 0 && strconv.FormatInt(orderID, 10) == request.OrderID {
@@ -505,6 +507,19 @@ func validatePrivateCancelOrder(request exchange.CancelOrderRequest) error {
 		return nil
 	}
 	return errors.New("order id must use the canonical venue-issued format")
+}
+
+func validNadoOrderID(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
+		return false
+	}
+	for _, ch := range value[2:] {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func validUUIDOrderID(value string) bool {

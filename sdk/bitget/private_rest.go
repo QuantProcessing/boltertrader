@@ -381,6 +381,7 @@ func (c *Client) getFillsPage(ctx context.Context, req GetFillsRequest) (*FillLi
 	var out responseEnvelope[FillList]
 	err := c.getPrivate(ctx, "/api/v3/trade/fills", map[string]string{
 		"category":  req.Category,
+		"symbol":    req.Symbol,
 		"orderId":   req.OrderID,
 		"startTime": req.StartTime,
 		"endTime":   req.EndTime,

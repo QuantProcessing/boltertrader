@@ -11,8 +11,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
+	binancespot "github.com/QuantProcessing/boltertrader/sdk/binance/spot"
+	gate "github.com/QuantProcessing/boltertrader/sdk/gate"
+	"github.com/QuantProcessing/boltertrader/sdk/lighter"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -103,6 +109,424 @@ func TestTwentyKnownConfigsInferAndConstructProductClients(t *testing.T) {
 
 	if got := transport.requests.Load(); got != 0 {
 		t.Fatalf("factory construction performed %d HTTP requests", got)
+	}
+}
+
+func TestFactorySourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
+	transport := new(countingTransport)
+	catalog := exchange.NewDefaultMemoryCatalog()
+	options := []Option{
+		WithEnvironment(EnvironmentLive),
+		WithEndpoint("http://factory-source.test"),
+		WithWebSocketEndpoint("ws://factory-source.test/ws"),
+		WithHTTPClient(&http.Client{Transport: transport}),
+		WithInstrumentCatalog(catalog),
+	}
+
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, options...)); err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 3, options...)); err != nil {
+		t.Fatalf("New equivalent: %v", err)
+	}
+	if got := transport.requests.Load(); got != 0 {
+		t.Fatalf("factory source registration performed %d HTTP requests", got)
+	}
+
+	scope, descriptor, ok := catalogSourceForConfig("lighter-spot", newSettings(options))
+	if !ok {
+		t.Fatal("missing catalog source for lighter spot")
+	}
+	conflict := descriptor
+	conflict.Endpoint = "http://factory-source-conflict.test"
+	if err := catalog.RegisterSource(scope, conflict, exchange.StaticInstrumentLoader{}); !errors.Is(err, exchange.ErrInvalidConfig) {
+		t.Fatalf("conflicting source registration error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestFactorySourceRegistrationConflictPropagatesThroughNew(t *testing.T) {
+	catalog := &conflictingFactoryCatalog{}
+	first := []Option{
+		WithEnvironment(EnvironmentLive),
+		WithEndpoint("http://factory-source-a.test"),
+		WithInstrumentCatalog(catalog),
+	}
+	second := []Option{
+		WithEnvironment(EnvironmentLive),
+		WithEndpoint("http://factory-source-b.test"),
+		WithInstrumentCatalog(catalog),
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, first...)); err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, second...)); !errors.Is(err, exchange.ErrInvalidConfig) {
+		t.Fatalf("New conflicting source error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestFactoryLighterDefaultSourceUsesSDKEndpointsAndEquivalentScope(t *testing.T) {
+	catalog := exchange.NewDefaultMemoryCatalog()
+	options := []Option{
+		WithEnvironment(EnvironmentTestnet),
+		WithInstrumentCatalog(catalog),
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, options...)); err != nil {
+		t.Fatalf("New first: %v", err)
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 3, options...)); err != nil {
+		t.Fatalf("New equivalent: %v", err)
+	}
+	scope, descriptor, ok := catalogSourceForConfig("lighter-spot", newSettings(options))
+	if !ok {
+		t.Fatal("missing lighter spot catalog source")
+	}
+	if descriptor.Endpoint != lighter.TestnetAPIURL || descriptor.WebSocketEndpoint != lighter.TestnetWSURL {
+		t.Fatalf("descriptor endpoints = %+v, want SDK testnet defaults", descriptor)
+	}
+	if scope.EndpointFingerprint != descriptor.Fingerprint() {
+		t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
+	}
+}
+
+func TestFactoryLighterPerpDefaultSourceUsesUSDCSettlementAndCatalogResolution(t *testing.T) {
+	transport := new(countingTransport)
+	catalog := exchange.NewDefaultMemoryCatalog()
+	options := []Option{
+		WithEnvironment(EnvironmentTestnet),
+		WithHTTPClient(&http.Client{Transport: transport}),
+		WithInstrumentCatalog(catalog),
+	}
+	settings := newSettings(options)
+	scope, descriptor, ok := catalogSourceForConfig("lighter-perp", settings)
+	if !ok {
+		t.Fatal("missing lighter perp catalog source")
+	}
+	if scope.Settlement != "USDC" {
+		t.Fatalf("lighter perp settlement = %q, want USDC", scope.Settlement)
+	}
+	instrument := exchange.Instrument{
+		Identity: exchange.InstrumentIdentity{
+			Venue:        exchange.VenueLighter,
+			Product:      exchange.ProductPerp,
+			Symbol:       "ETH-USDC",
+			BaseAsset:    "ETH",
+			QuoteAsset:   "USDC",
+			SettleAsset:  "USDC",
+			NativeSymbol: "ETH-USDC",
+			NativeID:     "1",
+		},
+		Rules: exchange.InstrumentRules{
+			PriceIncrement:    decimal.RequireFromString("0.01"),
+			QuantityIncrement: decimal.RequireFromString("0.001"),
+			MinQuantity:       decimal.RequireFromString("0.001"),
+		},
+		Encoding: exchange.InstrumentEncoding{
+			PriceScale:    exchange.OptionalInt{Value: 2, Valid: true},
+			QuantityScale: exchange.OptionalInt{Value: 3, Valid: true},
+			QuoteScale:    exchange.OptionalInt{Value: 5, Valid: true},
+		},
+	}
+	snapshot := exchange.InstrumentSnapshot{
+		SchemaVersion: 1,
+		Scope:         scope,
+		LoadedAt:      time.Unix(1, 0).UTC(),
+		Instruments:   []exchange.Instrument{instrument},
+	}
+	if err := catalog.RegisterSource(scope, descriptor, exchange.StaticInstrumentLoader{Snapshot: snapshot}); err != nil {
+		t.Fatalf("RegisterSource fixture: %v", err)
+	}
+	client, err := New(LighterPerpConfig(testLighterPrivateKey, 1, 2, options...))
+	if err != nil {
+		t.Fatalf("New LighterPerpConfig: %v", err)
+	}
+	rows, err := client.RefreshInstruments(context.Background())
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("RefreshInstruments rows=%d err=%v", len(rows), err)
+	}
+	resolved, err := client.ResolveInstrument(context.Background(), "ETH-USDC")
+	if err != nil {
+		t.Fatalf("ResolveInstrument: %v", err)
+	}
+	if resolved.Identity.SettleAsset != "USDC" || resolved.Identity.NativeID != "1" {
+		t.Fatalf("resolved lighter perp instrument = %+v", resolved.Identity)
+	}
+	if got := transport.requests.Load(); got != 0 {
+		t.Fatalf("Lighter perp catalog resolution performed %d HTTP requests", got)
+	}
+}
+
+func TestFactoryBinanceSourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configName string
+		run        func(...Option) (any, error)
+	}{
+		{
+			name:       "spot",
+			configName: "binance-spot",
+			run: func(options ...Option) (any, error) {
+				return New(BinanceSpotConfig("key", "secret", options...))
+			},
+		},
+		{
+			name:       "usd-perp",
+			configName: "binance-usd-perp",
+			run: func(options ...Option) (any, error) {
+				return New(BinanceUSDPerpConfig("key", "secret", options...))
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := new(countingTransport)
+			catalog := exchange.NewDefaultMemoryCatalog()
+			options := []Option{
+				WithEnvironment(EnvironmentDemo),
+				WithHTTPClient(&http.Client{Transport: transport}),
+				WithInstrumentCatalog(catalog),
+			}
+			if _, err := test.run(options...); err != nil {
+				t.Fatalf("New first: %v", err)
+			}
+			if _, err := test.run(options...); err != nil {
+				t.Fatalf("New equivalent: %v", err)
+			}
+			if got := transport.requests.Load(); got != 0 {
+				t.Fatalf("factory source registration performed %d HTTP requests", got)
+			}
+			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
+			if !ok {
+				t.Fatalf("missing catalog source for %s", test.configName)
+			}
+			if scope.EndpointFingerprint != descriptor.Fingerprint() {
+				t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
+			}
+			if strings.Contains(descriptor.Fingerprint(), "key") || strings.Contains(descriptor.Fingerprint(), "secret") {
+				t.Fatalf("descriptor fingerprint leaked credential material")
+			}
+		})
+	}
+}
+
+func TestFactoryGateSourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configName string
+		run        func(...Option) (any, error)
+	}{
+		{
+			name:       "spot",
+			configName: "gate-spot",
+			run: func(options ...Option) (any, error) {
+				return New(GateSpotConfig("key", "secret", options...))
+			},
+		},
+		{
+			name:       "usdt-perp",
+			configName: "gate-usdt-perp",
+			run: func(options ...Option) (any, error) {
+				return New(GateUSDTPerpConfig("key", "secret", options...))
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := new(countingTransport)
+			catalog := exchange.NewDefaultMemoryCatalog()
+			options := []Option{
+				WithEnvironment(EnvironmentTestnet),
+				WithHTTPClient(&http.Client{Transport: transport}),
+				WithInstrumentCatalog(catalog),
+			}
+			if _, err := test.run(options...); err != nil {
+				t.Fatalf("New first: %v", err)
+			}
+			if _, err := test.run(options...); err != nil {
+				t.Fatalf("New equivalent: %v", err)
+			}
+			if got := transport.requests.Load(); got != 0 {
+				t.Fatalf("factory source registration performed %d HTTP requests", got)
+			}
+			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
+			if !ok {
+				t.Fatalf("missing catalog source for %s", test.configName)
+			}
+			if scope.EndpointFingerprint != descriptor.Fingerprint() {
+				t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
+			}
+		})
+	}
+}
+
+func TestFactoryNadoConfigsShareAndRegisterBothCatalogScopes(t *testing.T) {
+	settings := newSettings([]Option{WithEnvironment(EnvironmentTestnet)})
+	spotScope, spotDescriptor, ok := catalogSourceForConfig("nado-spot", settings)
+	if !ok {
+		t.Fatal("missing Nado Spot catalog source")
+	}
+	perpScope, perpDescriptor, ok := catalogSourceForConfig("nado-usdt0-perp", settings)
+	if !ok {
+		t.Fatal("missing Nado Perp catalog source")
+	}
+	if spotScope.EndpointFingerprint != perpScope.EndpointFingerprint ||
+		spotDescriptor.Fingerprint() != perpDescriptor.Fingerprint() {
+		t.Fatalf("Nado catalog family fingerprints differ: spot=%q perp=%q", spotScope.EndpointFingerprint, perpScope.EndpointFingerprint)
+	}
+	for _, configName := range []string{"nado-spot", "nado-usdt0-perp"} {
+		names := catalogRegistrationNames(configName)
+		if len(names) != 2 || names[0] != "nado-spot" || names[1] != "nado-usdt0-perp" {
+			t.Fatalf("%s registration names = %v", configName, names)
+		}
+	}
+}
+
+func TestFactoryBinanceDefaultSourceUsesSDKEndpoints(t *testing.T) {
+	tests := []struct {
+		name           string
+		configName     string
+		environment    Environment
+		wantEndpoint   string
+		wantWSEndpoint string
+	}{
+		{
+			name:           "spot demo",
+			configName:     "binance-spot",
+			environment:    EnvironmentDemo,
+			wantEndpoint:   binancespot.DemoBaseURL,
+			wantWSEndpoint: binancespot.DemoWSBaseURL,
+		},
+		{
+			name:           "spot live",
+			configName:     "binance-spot",
+			environment:    EnvironmentLive,
+			wantEndpoint:   binancespot.BaseURL,
+			wantWSEndpoint: binancespot.WSBaseURL,
+		},
+		{
+			name:           "usd-perp demo",
+			configName:     "binance-usd-perp",
+			environment:    EnvironmentDemo,
+			wantEndpoint:   binanceperp.DemoBaseURL,
+			wantWSEndpoint: binanceperp.DemoWSPublicBaseURL,
+		},
+		{
+			name:           "usd-perp live",
+			configName:     "binance-usd-perp",
+			environment:    EnvironmentLive,
+			wantEndpoint:   binanceperp.BaseURL,
+			wantWSEndpoint: binanceperp.WSPublicBaseURL,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := []Option{WithEnvironment(test.environment)}
+			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
+			if !ok {
+				t.Fatalf("missing catalog source for %s", test.configName)
+			}
+			if descriptor.Endpoint != test.wantEndpoint || descriptor.WebSocketEndpoint != test.wantWSEndpoint {
+				t.Fatalf("descriptor endpoints = %+v", descriptor)
+			}
+			if scope.EndpointFingerprint != descriptor.Fingerprint() {
+				t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
+			}
+		})
+	}
+}
+
+func TestFactoryGateDefaultSourceUsesSDKEndpoints(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		configName     string
+		environment    Environment
+		wantEndpoint   string
+		wantWSEndpoint string
+	}{
+		{
+			name:           "spot live",
+			configName:     "gate-spot",
+			environment:    EnvironmentLive,
+			wantEndpoint:   gate.MainnetEnvironmentProfile().RESTBaseURL,
+			wantWSEndpoint: gate.MainnetEnvironmentProfile().SpotWSURL,
+		},
+		{
+			name:           "spot testnet",
+			configName:     "gate-spot",
+			environment:    EnvironmentTestnet,
+			wantEndpoint:   gate.TestnetEnvironmentProfile().RESTBaseURL,
+			wantWSEndpoint: gate.TestnetEnvironmentProfile().SpotWSURL,
+		},
+		{
+			name:           "usdt-perp live",
+			configName:     "gate-usdt-perp",
+			environment:    EnvironmentLive,
+			wantEndpoint:   gate.MainnetEnvironmentProfile().RESTBaseURL,
+			wantWSEndpoint: gate.MainnetEnvironmentProfile().FuturesUSDTWSURL,
+		},
+		{
+			name:           "usdt-perp testnet",
+			configName:     "gate-usdt-perp",
+			environment:    EnvironmentTestnet,
+			wantEndpoint:   gate.TestnetEnvironmentProfile().RESTBaseURL,
+			wantWSEndpoint: gate.TestnetEnvironmentProfile().FuturesUSDTWSURL,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := []Option{WithEnvironment(test.environment)}
+			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
+			if !ok {
+				t.Fatalf("missing catalog source for %s", test.configName)
+			}
+			if descriptor.Endpoint != test.wantEndpoint || descriptor.WebSocketEndpoint != test.wantWSEndpoint {
+				t.Fatalf("descriptor endpoints = %+v", descriptor)
+			}
+			if scope.EndpointFingerprint != descriptor.Fingerprint() {
+				t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
+			}
+		})
+	}
+}
+
+func TestFactoryLighterEndpointSourceScopesAreIsolated(t *testing.T) {
+	catalog := exchange.NewDefaultMemoryCatalog()
+	first := []Option{
+		WithEnvironment(EnvironmentTestnet),
+		WithEndpoint("http://lighter-a.test"),
+		WithInstrumentCatalog(catalog),
+	}
+	second := []Option{
+		WithEnvironment(EnvironmentTestnet),
+		WithEndpoint("http://lighter-b.test"),
+		WithInstrumentCatalog(catalog),
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, first...)); err != nil {
+		t.Fatalf("New first endpoint: %v", err)
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, second...)); err != nil {
+		t.Fatalf("New isolated endpoint: %v", err)
+	}
+	firstScope, firstDescriptor, _ := catalogSourceForConfig("lighter-spot", newSettings(first))
+	secondScope, secondDescriptor, _ := catalogSourceForConfig("lighter-spot", newSettings(second))
+	if firstScope == secondScope || firstDescriptor.Fingerprint() == secondDescriptor.Fingerprint() {
+		t.Fatalf("endpoint scopes were not isolated: first=%+v second=%+v", firstScope, secondScope)
+	}
+}
+
+func TestFactoryCustomCatalogIsolationDoesNotTouchGlobalDefault(t *testing.T) {
+	catalog := exchange.NewDefaultMemoryCatalog()
+	options := []Option{
+		WithEnvironment(EnvironmentLive),
+		WithEndpoint("http://factory-custom-isolation.test"),
+		WithInstrumentCatalog(catalog),
+	}
+	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, options...)); err != nil {
+		t.Fatalf("New with custom catalog: %v", err)
+	}
+
+	scope, _, ok := catalogSourceForConfig("lighter-spot", newSettings(options))
+	if !ok {
+		t.Fatal("missing catalog source for lighter spot")
+	}
+	if _, err := exchange.DefaultInstrumentCatalog().Snapshot(context.Background(), scope); !errors.Is(err, exchange.ErrMetadataResolution) {
+		t.Fatalf("default catalog Snapshot error = %v, want ErrMetadataResolution for custom-only scope", err)
 	}
 }
 
@@ -727,6 +1151,45 @@ func assertInvalidConfig(t *testing.T, err error) {
 	if errors.Unwrap(err) != nil {
 		t.Fatalf("invalid config error unexpectedly unwraps: %v", errors.Unwrap(err))
 	}
+}
+
+type conflictingFactoryCatalog struct {
+	mu         sync.Mutex
+	seen       bool
+	descriptor exchange.SourceDescriptor
+}
+
+func (catalog *conflictingFactoryCatalog) RegisterSource(_ exchange.CatalogScope, descriptor exchange.SourceDescriptor, _ exchange.InstrumentLoader) error {
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	if !catalog.seen {
+		catalog.seen = true
+		catalog.descriptor = descriptor
+		return nil
+	}
+	if catalog.descriptor != descriptor {
+		return exchange.NewError(exchange.KindInvalidConfig, exchange.ErrorDetails{
+			Operation:   "factory.New",
+			SafeMessage: "instrument source registration conflicts with existing source",
+		})
+	}
+	return nil
+}
+
+func (*conflictingFactoryCatalog) Resolve(context.Context, exchange.CatalogScope, exchange.InstrumentQuery) (exchange.Instrument, error) {
+	return exchange.Instrument{}, nil
+}
+
+func (*conflictingFactoryCatalog) Snapshot(context.Context, exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
+	return exchange.InstrumentSnapshot{}, nil
+}
+
+func (*conflictingFactoryCatalog) Refresh(context.Context, exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
+	return exchange.InstrumentSnapshot{}, nil
+}
+
+func (*conflictingFactoryCatalog) Status(exchange.CatalogScope) exchange.CatalogStatus {
+	return exchange.CatalogStatus{}
 }
 
 func optionsWithEnvironment(options []Option, environment Environment) []Option {

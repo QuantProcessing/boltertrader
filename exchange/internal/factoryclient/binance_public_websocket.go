@@ -200,7 +200,7 @@ func (backend *binancePublicWSBackend) ensureConnected(ctx context.Context, oper
 
 func (backend *binancePublicWSBackend) StartOrderBook(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	venueSymbol, canonical, err := binanceSpotSymbols(instrument, "WatchOrderBook")
@@ -240,7 +240,7 @@ func (backend *binancePublicWSBackend) StartOrderBook(
 
 func (backend *binancePublicWSBackend) StartBBO(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
 	venueSymbol, canonical, err := binanceSpotSymbols(instrument, "WatchBBO")
@@ -275,7 +275,7 @@ func (backend *binancePublicWSBackend) StartBBO(
 
 func (backend *binancePublicWSBackend) StartPublicTrades(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
 	venueSymbol, canonical, err := binanceSpotSymbols(instrument, "WatchPublicTrades")
@@ -310,7 +310,7 @@ func (backend *binancePublicWSBackend) StartPublicTrades(
 
 func (backend *binancePublicWSBackend) StartCandles(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	callbacks streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
@@ -415,10 +415,10 @@ func (backend *binancePerpPublicWSBackend) ensureConnected(ctx context.Context, 
 
 func (backend *binancePerpPublicWSBackend) StartOrderBook(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
-	canonical, venueSymbol, err := binancePerpNativeSymbols(instrument)
+	canonical, venueSymbol, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchOrderBook", exchange.KindInvalidRequest, err.Error())
 	}
@@ -475,10 +475,10 @@ func (backend *binancePerpPublicWSBackend) StartOrderBook(
 
 func (backend *binancePerpPublicWSBackend) StartBBO(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
-	canonical, venueSymbol, err := binancePerpNativeSymbols(instrument)
+	canonical, venueSymbol, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchBBO", exchange.KindInvalidRequest, err.Error())
 	}
@@ -510,10 +510,10 @@ func (backend *binancePerpPublicWSBackend) StartBBO(
 
 func (backend *binancePerpPublicWSBackend) StartPublicTrades(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
-	canonical, venueSymbol, err := binancePerpNativeSymbols(instrument)
+	canonical, venueSymbol, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchPublicTrades", exchange.KindInvalidRequest, err.Error())
 	}
@@ -545,11 +545,11 @@ func (backend *binancePerpPublicWSBackend) StartPublicTrades(
 
 func (backend *binancePerpPublicWSBackend) StartCandles(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	callbacks streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
-	canonical, venueSymbol, err := binancePerpNativeSymbols(instrument)
+	canonical, venueSymbol, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchCandles", exchange.KindInvalidRequest, err.Error())
 	}
@@ -581,10 +581,10 @@ func (backend *binancePerpPublicWSBackend) StartCandles(
 
 func (backend *binancePerpPublicWSBackend) StartReference(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
-	canonical, venueSymbol, err := binancePerpNativeSymbols(instrument)
+	canonical, venueSymbol, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchPerpReference", exchange.KindInvalidRequest, err.Error())
 	}
@@ -673,7 +673,7 @@ func (backend *binancePerpPublicWSBackend) Close() error {
 }
 
 func binanceSpotWSBookEvent(
-	instrument string,
+	instrument exchange.Instrument,
 	row *binancespot.DepthEvent,
 	first *bool,
 	popResync func() bool,
@@ -681,7 +681,7 @@ func binanceSpotWSBookEvent(
 	if row == nil {
 		return exchange.BookEvent{}, binanceSpotMalformed("WatchOrderBook", "order book push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BookEvent{}, binanceSpotMalformed("WatchOrderBook", "order book instrument mismatch")
 	}
 	if row.FinalUpdateID <= 0 {
@@ -721,11 +721,11 @@ func binanceSpotWSBookEvent(
 	}, nil
 }
 
-func binanceSpotWSBBOEvent(instrument string, ticker *binancespot.BookTickerEvent) (exchange.BBOEvent, error) {
+func binanceSpotWSBBOEvent(instrument exchange.Instrument, ticker *binancespot.BookTickerEvent) (exchange.BBOEvent, error) {
 	if ticker == nil {
 		return exchange.BBOEvent{}, binanceSpotMalformed("WatchBBO", "ticker is nil")
 	}
-	if ticker.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if ticker.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BBOEvent{}, binanceSpotMalformed("WatchBBO", "ticker instrument mismatch")
 	}
 	bidPrice, err := positiveDecimal(ticker.BestBidPrice)
@@ -752,11 +752,11 @@ func binanceSpotWSBBOEvent(instrument string, ticker *binancespot.BookTickerEven
 	}, nil
 }
 
-func binanceSpotWSCandleEvent(instrument string, interval string, row *binancespot.KlineEvent) (exchange.CandleEvent, error) {
+func binanceSpotWSCandleEvent(instrument exchange.Instrument, interval string, row *binancespot.KlineEvent) (exchange.CandleEvent, error) {
 	if row == nil {
 		return exchange.CandleEvent{}, binanceSpotMalformed("WatchCandles", "candle push is nil")
 	}
-	expected := strings.ReplaceAll(instrument, "-", "")
+	expected := instrument.Identity.NativeSymbol
 	if row.Symbol != expected || row.Kline.Symbol != expected || row.Kline.Interval != interval {
 		return exchange.CandleEvent{}, binanceSpotMalformed("WatchCandles", "candle instrument mismatch")
 	}
@@ -767,11 +767,11 @@ func binanceSpotWSCandleEvent(instrument string, interval string, row *binancesp
 	return exchange.CandleEvent{Instrument: instrument, Interval: interval, Candle: candle}, nil
 }
 
-func binanceSpotWSPublicTrade(instrument string, row *binancespot.AggTradeEvent) (exchange.PublicTradeEvent, error) {
+func binanceSpotWSPublicTrade(instrument exchange.Instrument, row *binancespot.AggTradeEvent) (exchange.PublicTradeEvent, error) {
 	if row == nil {
 		return exchange.PublicTradeEvent{}, binanceSpotMalformed("WatchPublicTrades", "trade push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.PublicTradeEvent{}, binanceSpotMalformed("WatchPublicTrades", "trade instrument mismatch")
 	}
 	if row.AggTradeID <= 0 || row.TradeTime <= 0 {
@@ -822,7 +822,7 @@ func binanceSpotWSBookLevels(rows [][]string) ([]exchange.BookLevel, error) {
 }
 
 func binancePerpWSBookEvent(
-	instrument string,
+	instrument exchange.Instrument,
 	row *binanceperp.WsDepthEvent,
 	first *bool,
 	popResync func() bool,
@@ -830,7 +830,7 @@ func binancePerpWSBookEvent(
 	if row == nil {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book instrument mismatch")
 	}
 	if row.FinalUpdateID <= 0 {
@@ -851,7 +851,7 @@ func binancePerpWSBookEvent(
 	if popResync != nil {
 		resync = popResync()
 	}
-	ts := firstPositive(row.TransactionTime, row.EventTime)
+	ts := firstPositiveInt64(row.TransactionTime, row.EventTime)
 	observedAt := time.Now().UTC()
 	if ts > 0 {
 		observedAt = time.UnixMilli(ts).UTC()
@@ -868,14 +868,14 @@ func binancePerpWSBookEvent(
 }
 
 func binancePerpWSBookDeltaEvent(
-	instrument string,
+	instrument exchange.Instrument,
 	row *binanceperp.WsDepthEvent,
 	popResync func() bool,
 ) (exchange.BookEvent, error) {
 	if row == nil {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BookEvent{}, binancePerpMalformed("WatchOrderBook", "order book instrument mismatch")
 	}
 	if row.FirstUpdateID <= 0 || row.FinalUpdateID < row.FirstUpdateID || row.FinalUpdateIDLast < 0 {
@@ -896,7 +896,7 @@ func binancePerpWSBookDeltaEvent(
 	if popResync != nil {
 		resync = popResync()
 	}
-	ts := firstPositive(row.TransactionTime, row.EventTime)
+	ts := firstPositiveInt64(row.TransactionTime, row.EventTime)
 	observedAt := time.Now().UTC()
 	if ts > 0 {
 		observedAt = time.UnixMilli(ts).UTC()
@@ -917,11 +917,11 @@ func binancePerpWSBookDeltaEvent(
 	}, nil
 }
 
-func binancePerpWSBBOEvent(instrument string, ticker *binanceperp.WsBookTickerEvent) (exchange.BBOEvent, error) {
+func binancePerpWSBBOEvent(instrument exchange.Instrument, ticker *binanceperp.WsBookTickerEvent) (exchange.BBOEvent, error) {
 	if ticker == nil {
 		return exchange.BBOEvent{}, binancePerpMalformed("WatchBBO", "ticker is nil")
 	}
-	if ticker.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if ticker.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.BBOEvent{}, binancePerpMalformed("WatchBBO", "ticker instrument mismatch")
 	}
 	bidPrice, err := positiveDecimal(ticker.BestBidPrice)
@@ -952,11 +952,11 @@ func binancePerpWSBBOEvent(instrument string, ticker *binanceperp.WsBookTickerEv
 	}, nil
 }
 
-func binancePerpWSPublicTrade(instrument string, row *binanceperp.WsAggTradeEvent) (exchange.PublicTradeEvent, error) {
+func binancePerpWSPublicTrade(instrument exchange.Instrument, row *binanceperp.WsAggTradeEvent) (exchange.PublicTradeEvent, error) {
 	if row == nil {
 		return exchange.PublicTradeEvent{}, binancePerpMalformed("WatchPublicTrades", "trade push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.PublicTradeEvent{}, binancePerpMalformed("WatchPublicTrades", "trade instrument mismatch")
 	}
 	if row.AggTradeID <= 0 || row.TradeTime <= 0 {
@@ -984,11 +984,11 @@ func binancePerpWSPublicTrade(instrument string, row *binanceperp.WsAggTradeEven
 	}, nil
 }
 
-func binancePerpWSCandleEvent(instrument string, interval string, row *binanceperp.WsKlineEvent) (exchange.CandleEvent, error) {
+func binancePerpWSCandleEvent(instrument exchange.Instrument, interval string, row *binanceperp.WsKlineEvent) (exchange.CandleEvent, error) {
 	if row == nil {
 		return exchange.CandleEvent{}, binancePerpMalformed("WatchCandles", "candle push is nil")
 	}
-	expected := strings.ReplaceAll(instrument, "-", "")
+	expected := instrument.Identity.NativeSymbol
 	if row.Symbol != expected || row.Kline.Symbol != expected || row.Kline.Interval != interval {
 		return exchange.CandleEvent{}, binancePerpMalformed("WatchCandles", "candle instrument mismatch")
 	}
@@ -999,11 +999,11 @@ func binancePerpWSCandleEvent(instrument string, interval string, row *binancepe
 	return exchange.CandleEvent{Instrument: instrument, Interval: interval, Candle: candle}, nil
 }
 
-func binancePerpWSReferenceEvent(instrument string, row *binanceperp.WsMarkPriceEvent) (perpReferenceEvent, error) {
+func binancePerpWSReferenceEvent(instrument exchange.Instrument, row *binanceperp.WsMarkPriceEvent) (perpReferenceEvent, error) {
 	if row == nil {
 		return perpReferenceEvent{}, binancePerpMalformed("WatchPerpReference", "reference push is nil")
 	}
-	if row.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if row.Symbol != instrument.Identity.NativeSymbol {
 		return perpReferenceEvent{}, binancePerpMalformed("WatchPerpReference", "reference instrument mismatch")
 	}
 	mark, err := positiveDecimal(row.MarkPrice)

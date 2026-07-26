@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,7 +28,7 @@ type fakePublicWSBackend struct {
 
 func (backend *fakePublicWSBackend) StartOrderBook(
 	context.Context,
-	string,
+	exchange.Instrument,
 	streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	return func() error { return nil }, nil
@@ -35,7 +36,7 @@ func (backend *fakePublicWSBackend) StartOrderBook(
 
 func (backend *fakePublicWSBackend) StartBBO(
 	_ context.Context,
-	_ string,
+	_ exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
 	backend.mu.Lock()
@@ -52,7 +53,7 @@ func (backend *fakePublicWSBackend) StartBBO(
 
 func (backend *fakePublicWSBackend) StartPublicTrades(
 	context.Context,
-	string,
+	exchange.Instrument,
 	streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
 	return func() error { return nil }, nil
@@ -60,7 +61,7 @@ func (backend *fakePublicWSBackend) StartPublicTrades(
 
 func (backend *fakePublicWSBackend) StartCandles(
 	_ context.Context,
-	_ string,
+	_ exchange.Instrument,
 	interval string,
 	_ streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
@@ -74,6 +75,31 @@ func (backend *fakePublicWSBackend) StartCandles(
 		backend.mu.Unlock()
 		return nil
 	}, nil
+}
+
+func websocketTestInstrument(venue exchange.Venue, product exchange.Product, symbol string) exchange.Instrument {
+	return newInstrument(
+		venue,
+		product,
+		symbol,
+		"ETH",
+		"USDC",
+		"USDC",
+		symbol,
+		"",
+		decimal.RequireFromString("0.1"),
+		decimal.RequireFromString("0.001"),
+		decimal.RequireFromString("0.001"),
+		exchange.OptionalDecimal{},
+		oneContract(),
+	)
+}
+
+func invalidWebsocketTestInstrument(venue exchange.Venue, product exchange.Product, symbol string) exchange.Instrument {
+	instrument := websocketTestInstrument(venue, product, strings.TrimSpace(symbol))
+	instrument.Identity.Symbol = symbol
+	instrument.Identity.NativeSymbol = symbol
+	return instrument
 }
 
 func (backend *fakePublicWSBackend) Close() error {
@@ -106,15 +132,16 @@ func TestPublicWebSocketIsLazyAndSharesOneNativeTopic(t *testing.T) {
 	if backend.startBBOCalls != 0 {
 		t.Fatal("construction performed websocket I/O")
 	}
+	instrument := websocketTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT")
 
 	first, err := socket.WatchBBO(context.Background(), exchange.WatchRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := socket.WatchBBO(context.Background(), exchange.WatchRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +154,7 @@ func TestPublicWebSocketIsLazyAndSharesOneNativeTopic(t *testing.T) {
 	}
 
 	event := exchange.BBOEvent{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		Bid: exchange.BookLevel{
 			Price:    decimal.RequireFromString("100"),
 			Quantity: decimal.RequireFromString("2"),
@@ -164,8 +191,9 @@ func TestPublicWebSocketStatusAndBackpressureAreObservable(t *testing.T) {
 		clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot},
 		backend,
 	)
+	instrument := websocketTestInstrument(exchange.VenueOKX, exchange.ProductSpot, "BTC-USDT")
 	subscription, err := socket.WatchBBO(context.Background(), exchange.WatchRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		Options:    exchange.WatchOptions{Buffer: 1},
 	})
 	if err != nil {
@@ -174,8 +202,8 @@ func TestPublicWebSocketStatusAndBackpressureAreObservable(t *testing.T) {
 	assertStatusState(t, subscription.Status(), exchange.SubscriptionConnecting)
 	assertStatusState(t, subscription.Status(), exchange.SubscriptionActive)
 
-	first := exchange.BBOEvent{Instrument: "BTC-USDT"}
-	second := exchange.BBOEvent{Instrument: "BTC-USDT"}
+	first := exchange.BBOEvent{Instrument: instrument}
+	second := exchange.BBOEvent{Instrument: instrument}
 	backend.emitBBO(first)
 	blocked := make(chan struct{})
 	go func() {
@@ -219,7 +247,7 @@ func TestPublicWebSocketContextAndClientCloseAreIdempotent(t *testing.T) {
 		backend,
 	)
 	ctx, cancel := context.WithCancel(context.Background())
-	subscription, err := socket.WatchBBO(ctx, exchange.WatchRequest{Instrument: "BTC-USDC"})
+	subscription, err := socket.WatchBBO(ctx, exchange.WatchRequest{Instrument: websocketTestInstrument(exchange.VenueHyperliquid, exchange.ProductSpot, "BTC-USDC")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,11 +277,12 @@ func TestPublicWebSocketRejectsInvalidWatchRequestsBeforeBackend(t *testing.T) {
 		clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot},
 		backend,
 	)
+	valid := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "BTC-USDC")
 	for _, request := range []exchange.WatchRequest{
 		{},
-		{Instrument: " BTC-USDC"},
-		{Instrument: "BTC-USDC", Options: exchange.WatchOptions{Buffer: -1}},
-		{Instrument: "BTC-USDC", Options: exchange.WatchOptions{Buffer: maxWebSocketBuffer + 1}},
+		{Instrument: invalidWebsocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, " BTC-USDC")},
+		{Instrument: valid, Options: exchange.WatchOptions{Buffer: -1}},
+		{Instrument: valid, Options: exchange.WatchOptions{Buffer: maxWebSocketBuffer + 1}},
 	} {
 		_, err := socket.WatchBBO(context.Background(), request)
 		if !errors.Is(err, exchange.ErrInvalidRequest) {
@@ -271,22 +300,23 @@ func TestPublicWebSocketCandlesShareOnlyExactInstrumentIntervalTopic(t *testing.
 		clientMeta{venue: exchange.VenueLighter, product: exchange.ProductPerp},
 		backend,
 	)
+	instrument := websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "ETH")
 	first, err := socket.WatchCandles(context.Background(), exchange.WatchCandlesRequest{
-		Instrument: "ETH",
+		Instrument: instrument,
 		Interval:   "1m",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := socket.WatchCandles(context.Background(), exchange.WatchCandlesRequest{
-		Instrument: "ETH",
+		Instrument: instrument,
 		Interval:   "1m",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	third, err := socket.WatchCandles(context.Background(), exchange.WatchCandlesRequest{
-		Instrument: "ETH",
+		Instrument: instrument,
 		Interval:   "5m",
 	})
 	if err != nil {
@@ -323,7 +353,7 @@ func TestPublicWebSocketCandlesRejectIntervalsOutsideStrictIntersection(t *testi
 	)
 	for _, interval := range []string{"", "3m", "1M", " 1m"} {
 		_, err := socket.WatchCandles(context.Background(), exchange.WatchCandlesRequest{
-			Instrument: "ETH-USDC",
+			Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC"),
 			Interval:   interval,
 		})
 		if !errors.Is(err, exchange.ErrInvalidRequest) {
@@ -341,8 +371,9 @@ func TestPublicWebSocketConcurrentCloseDoesNotRaceEmit(t *testing.T) {
 		clientMeta{venue: exchange.VenueBinance, product: exchange.ProductSpot},
 		backend,
 	)
+	instrument := websocketTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT")
 	subscription, err := socket.WatchBBO(context.Background(), exchange.WatchRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		Options:    exchange.WatchOptions{Buffer: 1},
 	})
 	if err != nil {
@@ -351,7 +382,7 @@ func TestPublicWebSocketConcurrentCloseDoesNotRaceEmit(t *testing.T) {
 	var completed atomic.Int32
 	go func() {
 		for range 100 {
-			backend.emitBBO(exchange.BBOEvent{Instrument: "BTC-USDT"})
+			backend.emitBBO(exchange.BBOEvent{Instrument: instrument})
 		}
 		completed.Add(1)
 	}()
@@ -384,7 +415,7 @@ func newBlockingStartupWSBackend() *blockingStartupWSBackend {
 
 func (backend *blockingStartupWSBackend) StartOrderBook(
 	context.Context,
-	string,
+	exchange.Instrument,
 	streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	return func() error { return nil }, nil
@@ -392,7 +423,7 @@ func (backend *blockingStartupWSBackend) StartOrderBook(
 
 func (backend *blockingStartupWSBackend) StartBBO(
 	ctx context.Context,
-	_ string,
+	_ exchange.Instrument,
 	_ streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
 	close(backend.bboStarted)
@@ -402,7 +433,7 @@ func (backend *blockingStartupWSBackend) StartBBO(
 
 func (backend *blockingStartupWSBackend) StartPublicTrades(
 	context.Context,
-	string,
+	exchange.Instrument,
 	streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
 	return func() error { return nil }, nil
@@ -410,7 +441,7 @@ func (backend *blockingStartupWSBackend) StartPublicTrades(
 
 func (backend *blockingStartupWSBackend) StartCandles(
 	context.Context,
-	string,
+	exchange.Instrument,
 	string,
 	streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
@@ -419,7 +450,7 @@ func (backend *blockingStartupWSBackend) StartCandles(
 
 func (backend *blockingStartupWSBackend) StartReference(
 	ctx context.Context,
-	_ string,
+	_ exchange.Instrument,
 	_ streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
 	close(backend.referenceStarted)
@@ -441,7 +472,7 @@ func TestPublicWebSocketCloseCancelsPendingStartupWithoutDeadlock(t *testing.T) 
 	watchResult := make(chan error, 1)
 	go func() {
 		_, err := socket.WatchBBO(context.Background(), exchange.WatchRequest{
-			Instrument: "ETH-USDC",
+			Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC"),
 		})
 		watchResult <- err
 	}()

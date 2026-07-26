@@ -102,7 +102,7 @@ func (backend *lighterPrivateWSBackend) auth(operation string, refresh bool) (st
 	return token, nil
 }
 
-func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	const operation = "WatchOrders"
 	meta, err := backend.resolveMeta(ctx, operation, instrument)
 	if err != nil {
@@ -162,7 +162,7 @@ func (backend *lighterPrivateWSBackend) StartOrders(ctx context.Context, instrum
 	return stop, nil
 }
 
-func (backend *lighterPrivateWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *lighterPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	const operation = "WatchFills"
 	meta, err := backend.resolveMeta(ctx, operation, instrument)
 	if err != nil {
@@ -257,7 +257,7 @@ func (backend *lighterPrivateWSBackend) StartBalances(ctx context.Context, callb
 	return stop, nil
 }
 
-func (backend *lighterPrivateWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+func (backend *lighterPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	const operation = "WatchPositions"
 	meta, err := backend.resolveMeta(ctx, operation, instrument)
 	if err != nil {
@@ -629,7 +629,7 @@ func (backend *lighterPrivateWSBackend) PlaceOrder(ctx context.Context, req exch
 	return lighterWSCommandAck(
 		backend.product,
 		exchange.OrderOperationPlace,
-		meta.instrument.Symbol,
+		meta.instrument,
 		"",
 		req.ClientOrderID,
 		req.Type,
@@ -656,7 +656,7 @@ func (backend *lighterPrivateWSBackend) CancelOrder(ctx context.Context, req exc
 	return lighterWSCommandAck(
 		backend.product,
 		exchange.OrderOperationCancel,
-		meta.instrument.Symbol,
+		meta.instrument,
 		req.OrderID,
 		"",
 		"",
@@ -669,7 +669,7 @@ func (backend *lighterPrivateWSBackend) CancelOrder(ctx context.Context, req exc
 func lighterWSCommandAck(
 	product exchange.Product,
 	operation exchange.OrderOperation,
-	instrument string,
+	instrument exchange.Instrument,
 	orderID string,
 	clientOrderID string,
 	orderType exchange.OrderType,
@@ -720,7 +720,8 @@ func lighterWSCommandAck(
 			Product:         product,
 			Operation:       operation,
 			State:           exchange.AckAmbiguous,
-			Instrument:      instrument,
+			NativeSymbol:    instrument.Identity.NativeSymbol,
+			NativeID:        instrument.Identity.NativeID,
 			OrderID:         orderID,
 			ClientOrderID:   clientOrderID,
 			TransactionHash: outcome.TransactionHash,

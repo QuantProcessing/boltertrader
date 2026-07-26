@@ -25,7 +25,7 @@ type okxPublicWebSocketClient interface {
 	Unsubscribe(okx.WsSubscribeArgs) error
 }
 
-type okxPerpMetaLoader func(context.Context, string) (okxContractMeta, error)
+type okxPerpMetaLoader func(context.Context, exchange.Instrument) (okxContractMeta, error)
 
 type okxPublicWSBackend struct {
 	meta      clientMeta
@@ -64,15 +64,19 @@ func newOKXPerpWSBackend(ws *okx.WSClient, meta okxPerpMetaLoader) perpWSBackend
 }
 
 func newOKXSpotWSBackendWithClient(ws okxPublicWebSocketClient) publicWSBackend {
+	return newOKXSpotWSBackendWithMeta(clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot}, ws)
+}
+
+func newOKXSpotWSBackendWithMeta(meta clientMeta, ws okxPublicWebSocketClient) publicWSBackend {
 	return &okxPublicWSBackend{
-		meta:           clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot},
+		meta:           meta,
 		ws:             ws,
 		statusHandlers: make(map[*okxWSStatusRegistration]struct{}),
 	}
 }
 
-func newOKXSpotWSBackendWithClients(ws, candleWS okxPublicWebSocketClient) publicWSBackend {
-	backend := newOKXSpotWSBackendWithClient(ws).(*okxPublicWSBackend)
+func newOKXSpotWSBackendWithClients(meta clientMeta, ws, candleWS okxPublicWebSocketClient) publicWSBackend {
+	backend := newOKXSpotWSBackendWithMeta(meta, ws).(*okxPublicWSBackend)
 	backend.candleWS = candleWS
 	return backend
 }
@@ -86,28 +90,33 @@ func newOKXPerpWSBackendWithClient(ws okxPublicWebSocketClient, meta okxPerpMeta
 	}
 }
 
-func newOKXPerpWSBackendWithClients(ws, candleWS okxPublicWebSocketClient, meta okxPerpMetaLoader) perpWSBackend {
+func newOKXPerpWSBackendWithClients(clientMeta clientMeta, ws, candleWS okxPublicWebSocketClient, meta okxPerpMetaLoader) perpWSBackend {
 	backend := newOKXPerpWSBackendWithClient(ws, meta).(*okxPublicWSBackend)
+	backend.meta = clientMeta
 	backend.candleWS = candleWS
 	return backend
 }
 
 func (backend *okxPublicWSBackend) StartOrderBook(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
+	if err := backend.validateInstrument("WatchOrderBook", instrument); err != nil {
+		return nil, err
+	}
 	if err := backend.ensureConnected(ctx, "WatchOrderBook"); err != nil {
 		return nil, err
 	}
 	registration := backend.registerStatus(callbacks.Status)
+	native := instrument.Identity.NativeSymbol
 	multiplier, err := backend.quantityMultiplier(ctx, "WatchOrderBook", instrument)
 	if err != nil {
 		backend.unregisterStatus(registration)
 		return nil, err
 	}
 	if err := backend.ws.SubscribeOrderBookDepthWithError(
-		instrument,
+		native,
 		5,
 		func(book *okx.OrderBook, action string) {
 			event, err := backend.bookEvent("WatchOrderBook", instrument, book, action, multiplier)
@@ -126,21 +135,25 @@ func (backend *okxPublicWSBackend) StartOrderBook(
 	}
 	return func() error {
 		backend.unregisterStatus(registration)
-		return backend.unsubscribe("WatchOrderBook", okx.WsSubscribeArgs{Channel: "books5", InstId: instrument})
+		return backend.unsubscribe("WatchOrderBook", okx.WsSubscribeArgs{Channel: "books5", InstId: native})
 	}, nil
 }
 
 func (backend *okxPublicWSBackend) StartBBO(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
+	if err := backend.validateInstrument("WatchBBO", instrument); err != nil {
+		return nil, err
+	}
 	if err := backend.ensureConnected(ctx, "WatchBBO"); err != nil {
 		return nil, err
 	}
+	native := instrument.Identity.NativeSymbol
 	registration := backend.registerStatus(callbacks.Status)
 	if err := backend.ws.SubscribeTickerWithError(
-		instrument,
+		native,
 		func(ticker *okx.Ticker) {
 			event, err := okxBBOEvent(backend.meta.product, "WatchBBO", instrument, ticker)
 			if err != nil {
@@ -158,26 +171,30 @@ func (backend *okxPublicWSBackend) StartBBO(
 	}
 	return func() error {
 		backend.unregisterStatus(registration)
-		return backend.unsubscribe("WatchBBO", okx.WsSubscribeArgs{Channel: "tickers", InstId: instrument})
+		return backend.unsubscribe("WatchBBO", okx.WsSubscribeArgs{Channel: "tickers", InstId: native})
 	}, nil
 }
 
 func (backend *okxPublicWSBackend) StartPublicTrades(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
+	if err := backend.validateInstrument("WatchPublicTrades", instrument); err != nil {
+		return nil, err
+	}
 	if err := backend.ensureConnected(ctx, "WatchPublicTrades"); err != nil {
 		return nil, err
 	}
 	registration := backend.registerStatus(callbacks.Status)
+	native := instrument.Identity.NativeSymbol
 	multiplier, err := backend.quantityMultiplier(ctx, "WatchPublicTrades", instrument)
 	if err != nil {
 		backend.unregisterStatus(registration)
 		return nil, err
 	}
 	if err := backend.ws.SubscribeTradesWithError(
-		instrument,
+		native,
 		func(trade *okx.PublicTrade) {
 			event, err := okxPublicTradeEvent(backend.meta.product, "WatchPublicTrades", instrument, trade, multiplier)
 			if err != nil {
@@ -195,37 +212,31 @@ func (backend *okxPublicWSBackend) StartPublicTrades(
 	}
 	return func() error {
 		backend.unregisterStatus(registration)
-		return backend.unsubscribe("WatchPublicTrades", okx.WsSubscribeArgs{Channel: "trades", InstId: instrument})
+		return backend.unsubscribe("WatchPublicTrades", okx.WsSubscribeArgs{Channel: "trades", InstId: native})
 	}, nil
 }
 
 func (backend *okxPublicWSBackend) StartCandles(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	callbacks streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
 	const operation = "WatchCandles"
+	if err := backend.validateInstrument(operation, instrument); err != nil {
+		return nil, err
+	}
+	channel, duration, err := okxWSCandleChannel(interval)
+	if err != nil {
+		return nil, okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
+	}
 	if err := backend.ensureCandleConnected(ctx, operation); err != nil {
 		return nil, err
 	}
 	registration := backend.registerStatus(callbacks.Status)
-	channel, duration, err := okxWSCandleChannel(interval)
-	if err != nil {
-		backend.unregisterStatus(registration)
-		return nil, okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
-	}
-	if backend.meta.product == exchange.ProductSpot {
-		if err := okxValidateSpotInstrument(instrument); err != nil {
-			backend.unregisterStatus(registration)
-			return nil, okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
-		}
-	} else if err := okxValidateSwapInstrument(instrument); err != nil {
-		backend.unregisterStatus(registration)
-		return nil, okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
-	}
+	native := instrument.Identity.NativeSymbol
 	if err := backend.candleClient().SubscribeCandlesWithError(
-		instrument,
+		native,
 		channel,
 		func(candle okx.Candle) {
 			event, err := okxWSCandleEvent(backend.meta.product, operation, instrument, interval, duration, candle)
@@ -244,24 +255,28 @@ func (backend *okxPublicWSBackend) StartCandles(
 	}
 	return func() error {
 		backend.unregisterStatus(registration)
-		return backend.unsubscribeCandle(operation, okx.WsSubscribeArgs{Channel: channel, InstId: instrument})
+		return backend.unsubscribeCandle(operation, okx.WsSubscribeArgs{Channel: channel, InstId: native})
 	}, nil
 }
 
 func (backend *okxPublicWSBackend) StartReference(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
 	if backend.meta.product != exchange.ProductPerp {
 		return nil, okxWSError(backend.meta, "WatchReference", exchange.KindInvalidRequest, "reference streams require perp product")
 	}
+	if err := backend.validateInstrument("WatchReference", instrument); err != nil {
+		return nil, err
+	}
 	if err := backend.ensureConnected(ctx, "WatchReference"); err != nil {
 		return nil, err
 	}
+	native := instrument.Identity.NativeSymbol
 	registration := backend.registerStatus(callbacks.Status)
 	if err := backend.ws.SubscribeMarkPriceWithError(
-		instrument,
+		native,
 		func(mark *okx.MarkPrice) {
 			event, err := okxMarkPriceEvent("WatchMarkPrice", instrument, mark)
 			if err != nil {
@@ -282,7 +297,7 @@ func (backend *okxPublicWSBackend) StartReference(
 	}
 	fundingSubscribed := false
 	if err := backend.ws.SubscribeFundingRateWithError(
-		instrument,
+		native,
 		func(funding *okx.FundingRate) {
 			event, err := okxFundingRateEvent("WatchFundingRate", instrument, funding)
 			if err != nil {
@@ -298,7 +313,7 @@ func (backend *okxPublicWSBackend) StartReference(
 			emitOKXWSError(callbacks, okxWSError(backend.meta, "WatchFundingRate", exchange.KindMalformedResponse, err.Error()))
 		},
 	); err != nil {
-		_ = backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: instrument})
+		_ = backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: native})
 		backend.unregisterStatus(registration)
 		return nil, okxWSError(backend.meta, "WatchFundingRate", exchange.KindTransport, err.Error())
 	}
@@ -306,16 +321,32 @@ func (backend *okxPublicWSBackend) StartReference(
 	return func() error {
 		backend.unregisterStatus(registration)
 		var errs []error
-		if err := backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: instrument}); err != nil {
+		if err := backend.unsubscribe("WatchMarkPrice", okx.WsSubscribeArgs{Channel: "mark-price", InstId: native}); err != nil {
 			errs = append(errs, err)
 		}
 		if fundingSubscribed {
-			if err := backend.unsubscribe("WatchFundingRate", okx.WsSubscribeArgs{Channel: "funding-rate", InstId: instrument}); err != nil {
+			if err := backend.unsubscribe("WatchFundingRate", okx.WsSubscribeArgs{Channel: "funding-rate", InstId: native}); err != nil {
 				errs = append(errs, err)
 			}
 		}
 		return errorsJoin(errs)
 	}, nil
+}
+
+func (backend *okxPublicWSBackend) validateInstrument(operation string, instrument exchange.Instrument) error {
+	if backend == nil {
+		return okxWSError(socketMeta(nil), operation, exchange.KindInvalidConfig, "OKX websocket backend is not configured")
+	}
+	var err error
+	if backend.meta.product == exchange.ProductSpot {
+		err = okxValidateSpotInstrument(instrument)
+	} else {
+		err = okxValidateSwapInstrument(instrument)
+	}
+	if err != nil {
+		return okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
+	}
+	return nil
 }
 
 func okxWSCandleChannel(interval string) (string, time.Duration, error) {
@@ -561,7 +592,7 @@ func (backend *okxPublicWSBackend) emitStatus(status backendStatus) {
 
 func (backend *okxPublicWSBackend) bookEvent(
 	operation string,
-	instrument string,
+	instrument exchange.Instrument,
 	book *okx.OrderBook,
 	action string,
 	multiplier decimal.Decimal,
@@ -591,7 +622,7 @@ func (backend *okxPublicWSBackend) bookEvent(
 	}, nil
 }
 
-func (backend *okxPublicWSBackend) quantityMultiplier(ctx context.Context, operation, instrument string) (decimal.Decimal, error) {
+func (backend *okxPublicWSBackend) quantityMultiplier(ctx context.Context, operation string, instrument exchange.Instrument) (decimal.Decimal, error) {
 	if backend.meta.product == exchange.ProductSpot {
 		if err := okxValidateSpotInstrument(instrument); err != nil {
 			return decimal.Zero, okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
@@ -646,8 +677,8 @@ func (backend *okxPublicWSBackend) Close() error {
 	return nil
 }
 
-func okxBBOEvent(product exchange.Product, operation, instrument string, ticker *okx.Ticker) (exchange.BBOEvent, error) {
-	if ticker == nil || ticker.InstId != instrument {
+func okxBBOEvent(product exchange.Product, operation string, instrument exchange.Instrument, ticker *okx.Ticker) (exchange.BBOEvent, error) {
+	if ticker == nil || ticker.InstId != instrument.Identity.NativeSymbol {
 		return exchange.BBOEvent{}, okxWSError(clientMeta{venue: exchange.VenueOKX, product: product}, operation, exchange.KindMalformedResponse, "ticker instrument mismatch")
 	}
 	bidPrice, err := okxPositiveDecimal(ticker.BidPx)
@@ -678,8 +709,8 @@ func okxBBOEvent(product exchange.Product, operation, instrument string, ticker 
 	}, nil
 }
 
-func okxPublicTradeEvent(product exchange.Product, operation, instrument string, trade *okx.PublicTrade, multiplier decimal.Decimal) (exchange.PublicTradeEvent, error) {
-	if trade == nil || trade.InstId != instrument {
+func okxPublicTradeEvent(product exchange.Product, operation string, instrument exchange.Instrument, trade *okx.PublicTrade, multiplier decimal.Decimal) (exchange.PublicTradeEvent, error) {
+	if trade == nil || trade.InstId != instrument.Identity.NativeSymbol {
 		return exchange.PublicTradeEvent{}, okxWSError(clientMeta{venue: exchange.VenueOKX, product: product}, operation, exchange.KindMalformedResponse, "trade instrument mismatch")
 	}
 	price, err := okxPositiveDecimal(trade.Px)
@@ -711,7 +742,7 @@ func okxPublicTradeEvent(product exchange.Product, operation, instrument string,
 func okxWSCandleEvent(
 	product exchange.Product,
 	operation string,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	duration time.Duration,
 	row okx.Candle,
@@ -727,8 +758,8 @@ func okxWSCandleEvent(
 	}, nil
 }
 
-func okxMarkPriceEvent(operation, instrument string, mark *okx.MarkPrice) (exchange.MarkPriceEvent, error) {
-	if mark == nil || mark.InstId != instrument {
+func okxMarkPriceEvent(operation string, instrument exchange.Instrument, mark *okx.MarkPrice) (exchange.MarkPriceEvent, error) {
+	if mark == nil || mark.InstId != instrument.Identity.NativeSymbol {
 		return exchange.MarkPriceEvent{}, okxWSError(clientMeta{venue: exchange.VenueOKX, product: exchange.ProductPerp}, operation, exchange.KindMalformedResponse, "mark-price instrument mismatch")
 	}
 	price, err := okxPositiveDecimal(mark.MarkPx)
@@ -742,8 +773,8 @@ func okxMarkPriceEvent(operation, instrument string, mark *okx.MarkPrice) (excha
 	return exchange.MarkPriceEvent{Instrument: instrument, Price: price, Time: ts}, nil
 }
 
-func okxFundingRateEvent(operation, instrument string, funding *okx.FundingRate) (exchange.FundingRateEvent, error) {
-	if funding == nil || funding.InstrumentID != instrument {
+func okxFundingRateEvent(operation string, instrument exchange.Instrument, funding *okx.FundingRate) (exchange.FundingRateEvent, error) {
+	if funding == nil || funding.InstrumentID != instrument.Identity.NativeSymbol {
 		return exchange.FundingRateEvent{}, okxWSError(clientMeta{venue: exchange.VenueOKX, product: exchange.ProductPerp}, operation, exchange.KindMalformedResponse, "funding-rate instrument mismatch")
 	}
 	rate, err := okxDecimal(funding.FundingRate)

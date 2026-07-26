@@ -1,6 +1,10 @@
 package factory
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/QuantProcessing/boltertrader/exchange"
+)
 
 type settings struct {
 	endpoint          string
@@ -8,6 +12,7 @@ type settings struct {
 	httpClient        *http.Client
 	environment       Environment
 	accountAddress    string
+	catalog           exchange.InstrumentCatalog
 	err               error
 }
 

@@ -66,9 +66,10 @@ type ClientOrderInput struct {
 	IsolatedMargin float64
 	// IsolatedMarginX6 carries the exact signed-appendix value when callers
 	// already operate in venue precision. It takes precedence over IsolatedMargin.
-	IsolatedMarginX6 *big.Int
-	SpotLeverage     *bool
-	BorrowMargin     *bool
+	IsolatedMarginX6  *big.Int
+	SpotLeverage      *bool
+	BorrowMargin      *bool
+	DiscoveredProduct *DiscoveredProduct
 
 	// Trigger related
 	TriggerType  int // 0=None, 1=Price, 2=Twap, 3=TwapCustom
@@ -87,9 +88,15 @@ func (c *Client) PlaceOrder(ctx context.Context, input ClientOrderInput) (*Place
 	if _, err := c.ensureContracts(ctx); err != nil {
 		return nil, err
 	}
-	product, err := c.ResolveProduct(ctx, input.ProductId)
-	if err != nil {
-		return nil, err
+	var product DiscoveredProduct
+	if input.DiscoveredProduct != nil {
+		product = *input.DiscoveredProduct
+	} else {
+		var err error
+		product, err = c.ResolveProduct(ctx, input.ProductId)
+		if err != nil {
+			return nil, err
+		}
 	}
 	input, price, amount, err := prepareNadoOrderInput(product, input)
 	if err != nil {
@@ -391,9 +398,15 @@ func (c *Client) CancelAndPlace(ctx context.Context, cancelInput CancelOrdersInp
 	if err != nil {
 		return nil, err
 	}
-	product, err := c.ResolveProduct(ctx, placeInput.ProductId)
-	if err != nil {
-		return nil, err
+	var product DiscoveredProduct
+	if placeInput.DiscoveredProduct != nil {
+		product = *placeInput.DiscoveredProduct
+	} else {
+		var err error
+		product, err = c.ResolveProduct(ctx, placeInput.ProductId)
+		if err != nil {
+			return nil, err
+		}
 	}
 	placeInput, price, amount, err := prepareNadoOrderInput(product, placeInput)
 	if err != nil {
@@ -511,9 +524,25 @@ func validateNadoTradingStatus(status TradingStatus, input ClientOrderInput) err
 	return fmt.Errorf("%w: product_id %d status %q rejects requested order mode", ErrNadoDiscoveryInactiveProduct, input.ProductId, status)
 }
 
+func validateClientOrderDiscoveredProduct(product DiscoveredProduct, input ClientOrderInput) error {
+	if product.ProductID != input.ProductId {
+		return fmt.Errorf("%w: input product_id %d discovered product_id %d", ErrNadoDiscoveryProductMismatch, input.ProductId, product.ProductID)
+	}
+	if product.ProductType != MarketTypeSpot && product.ProductType != MarketTypePerp {
+		return fmt.Errorf("%w: product_id %d type %q", ErrNadoDiscoveryProductMismatch, input.ProductId, product.ProductType)
+	}
+	if err := validateDiscoveredProduct(product.ProductID, string(product.ProductType), product.BookInfo, product.Symbol); err != nil {
+		return err
+	}
+	return nil
+}
+
 func prepareNadoOrderInput(product DiscoveredProduct, input ClientOrderInput) (ClientOrderInput, *big.Int, *big.Int, error) {
 	if input.ProductId < 0 || input.ProductId > int64(^uint32(0)) {
 		return input, nil, nil, fmt.Errorf("nado order: product id %d is outside uint32", input.ProductId)
+	}
+	if err := validateClientOrderDiscoveredProduct(product, input); err != nil {
+		return input, nil, nil, err
 	}
 	if input.Side != OrderSideBuy && input.Side != OrderSideSell {
 		return input, nil, nil, fmt.Errorf("nado order: invalid side %q", input.Side)

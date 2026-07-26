@@ -19,11 +19,18 @@ func (client *gateSpotClient) PlaceOrder(ctx context.Context, request exchange.P
 	if err := request.Validate(exchange.ProductSpot); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	order := gateSpotPlaceOrder(request)
+	native, err := gateRequiredNativeInstrument(client.meta, "PlaceOrder", request.Instrument)
+	if err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	order := gateSpotPlaceOrder(request, native)
 	if request.Type == exchange.OrderTypeMarket && request.Side == exchange.SideBuy {
-		book, err := client.sdk.GetSpotOrderBook(ctx, request.Instrument, 20, false)
+		book, err := client.sdk.GetSpotOrderBook(ctx, native, 20, false)
 		if err != nil {
 			return exchange.OrderAcknowledgement{}, gateNormalizeErr(client.meta, "PlaceOrder", err)
+		}
+		if book == nil || len(book.Asks) == 0 || len(book.Asks[0]) < 2 {
+			return exchange.OrderAcknowledgement{}, gateMalformed(client.meta, "PlaceOrder", "gate order book best ask is missing")
 		}
 		if err := gateValidateSpotOrderBook(client.meta, "PlaceOrder", *book); err != nil {
 			return exchange.OrderAcknowledgement{}, err
@@ -37,7 +44,7 @@ func (client *gateSpotClient) PlaceOrder(ctx context.Context, request exchange.P
 	if err := gateValidateSpotOrders(client.meta, "PlaceOrder", []gate.Order{*row}); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	return gateAckValidate(gateSpotAck(client.meta, exchange.OrderOperationPlace, request.Type, *row))
+	return gateAckValidateForInstrument(client.meta, "PlaceOrder", request.Instrument, gateSpotAck(client.meta, exchange.OrderOperationPlace, request.Type, request.Instrument, *row))
 }
 
 func (client *gatePerpClient) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -47,7 +54,11 @@ func (client *gatePerpClient) PlaceOrder(ctx context.Context, request exchange.P
 	if err := request.Validate(exchange.ProductPerp); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	multiplier, err := client.gateContractMultiplier(ctx, "PlaceOrder", request.Instrument)
+	native, err := gateRequiredNativeInstrument(client.meta, "PlaceOrder", request.Instrument)
+	if err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	multiplier, err := client.gateContractMultiplier("PlaceOrder", request.Instrument)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -55,7 +66,7 @@ func (client *gatePerpClient) PlaceOrder(ctx context.Context, request exchange.P
 	if !contracts.IsPositive() || !contracts.Equal(contracts.Truncate(0)) {
 		return exchange.OrderAcknowledgement{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: "PlaceOrder", SafeMessage: "gate futures quantity must align with the contract multiplier"})
 	}
-	order := gateFuturesPlaceOrder(request, contracts.IntPart())
+	order := gateFuturesPlaceOrder(request, native, contracts.IntPart())
 	row, err := client.sdk.CreateFuturesOrder(ctx, client.settle, order)
 	if err != nil {
 		return gateCommandErr(client.meta, exchange.OrderOperationPlace, request.Instrument, "", request.ClientOrderID, err)
@@ -63,7 +74,7 @@ func (client *gatePerpClient) PlaceOrder(ctx context.Context, request exchange.P
 	if err := gateValidateFuturesOrders(client.meta, "PlaceOrder", []gate.FuturesOrder{*row}); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	return gateAckValidate(gateFuturesAck(client.meta, exchange.OrderOperationPlace, request.Type, *row, multiplier))
+	return gateAckValidateForInstrument(client.meta, "PlaceOrder", request.Instrument, gateFuturesAck(client.meta, exchange.OrderOperationPlace, request.Type, request.Instrument, *row, multiplier))
 }
 
 func (client *gateSpotClient) CancelOrder(ctx context.Context, request exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -73,14 +84,15 @@ func (client *gateSpotClient) CancelOrder(ctx context.Context, request exchange.
 	if err := validateGateCancel(client.meta, request); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	row, err := client.sdk.CancelSpotOrder(ctx, request.OrderID, request.Instrument)
+	native := request.Instrument.Identity.NativeSymbol
+	row, err := client.sdk.CancelSpotOrder(ctx, request.OrderID, native)
 	if err != nil {
 		return gateCommandErr(client.meta, exchange.OrderOperationCancel, request.Instrument, request.OrderID, "", err)
 	}
 	if err := gateValidateSpotOrders(client.meta, "CancelOrder", []gate.Order{*row}); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	return gateAckValidate(gateSpotAck(client.meta, exchange.OrderOperationCancel, gateOrderType(*row), *row))
+	return gateAckValidateForInstrument(client.meta, "CancelOrder", request.Instrument, gateSpotAck(client.meta, exchange.OrderOperationCancel, gateOrderType(*row), request.Instrument, *row))
 }
 
 func (client *gatePerpClient) CancelOrder(ctx context.Context, request exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -94,7 +106,7 @@ func (client *gatePerpClient) CancelOrder(ctx context.Context, request exchange.
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	multiplier, err := client.gateContractMultiplier(ctx, "CancelOrder", request.Instrument)
+	multiplier, err := client.gateContractMultiplier("CancelOrder", request.Instrument)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -105,7 +117,7 @@ func (client *gatePerpClient) CancelOrder(ctx context.Context, request exchange.
 	if err := gateValidateFuturesOrders(client.meta, "CancelOrder", []gate.FuturesOrder{*row}); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	return gateAckValidate(gateFuturesAck(client.meta, exchange.OrderOperationCancel, gateFuturesOrderType(*row), *row, multiplier))
+	return gateAckValidateForInstrument(client.meta, "CancelOrder", request.Instrument, gateFuturesAck(client.meta, exchange.OrderOperationCancel, gateFuturesOrderType(*row), request.Instrument, *row, multiplier))
 }
 
 func (client *gateSpotClient) OpenOrders(ctx context.Context, request exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
@@ -115,14 +127,22 @@ func (client *gateSpotClient) OpenOrders(ctx context.Context, request exchange.O
 	if err := gateRejectCursor(client.meta, "OpenOrders", request.Cursor); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	rows, err := client.sdk.ListSpotOpenOrders(ctx, request.Instrument)
+	native, _, err := gateOptionalNativeInstrument(client.meta, "OpenOrders", request.Instrument)
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
+	rows, err := client.sdk.ListSpotOpenOrders(ctx, native)
 	if err != nil {
 		return exchange.OrderPage{}, gateNormalizeErr(client.meta, "OpenOrders", err)
 	}
 	if err := gateValidateSpotOrders(client.meta, "OpenOrders", rows); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	return boundedOrderPage(gateSpotOrders(rows), request.Limit, request.Cursor), nil
+	orders, err := gateSpotOrders(ctx, client.meta, "OpenOrders", rows, request.Instrument)
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
+	return boundedOrderPage(orders, request.Limit, request.Cursor), nil
 }
 
 func (client *gatePerpClient) OpenOrders(ctx context.Context, request exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
@@ -132,7 +152,11 @@ func (client *gatePerpClient) OpenOrders(ctx context.Context, request exchange.O
 	if err := gateRejectCursor(client.meta, "OpenOrders", request.Cursor); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	rows, err := client.sdk.ListFuturesOpenOrders(ctx, client.settle, request.Instrument)
+	native, _, err := gateOptionalNativeInstrument(client.meta, "OpenOrders", request.Instrument)
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
+	rows, err := client.sdk.ListFuturesOpenOrders(ctx, client.settle, native)
 	if err != nil {
 		return exchange.OrderPage{}, gateNormalizeErr(client.meta, "OpenOrders", err)
 	}
@@ -150,27 +174,39 @@ func (client *gateSpotClient) OrderHistory(ctx context.Context, request exchange
 	if err := gateContext(ctx, client.meta, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	if err := gateValidateHistoryRequest(client.meta, "OrderHistory", request.Instrument, request.Cursor, request.Start, request.End); err != nil {
+	native, _, err := gateOptionalNativeInstrument(client.meta, "OrderHistory", request.Instrument)
+	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	rows, err := client.sdk.ListSpotOrderHistory(ctx, request.Instrument, request.Start, request.End, request.Limit)
+	if err := gateValidateHistoryRequest(client.meta, "OrderHistory", native, request.Cursor, request.Start, request.End); err != nil {
+		return exchange.OrderPage{}, err
+	}
+	rows, err := client.sdk.ListSpotOrderHistory(ctx, native, request.Start, request.End, request.Limit)
 	if err != nil {
 		return exchange.OrderPage{}, gateNormalizeErr(client.meta, "OrderHistory", err)
 	}
 	if err := gateValidateSpotOrders(client.meta, "OrderHistory", rows); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	return boundedOrderPage(gateSpotOrders(rows), request.Limit, request.Cursor), nil
+	orders, err := gateSpotOrders(ctx, client.meta, "OrderHistory", rows, request.Instrument)
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
+	return boundedOrderPage(orders, request.Limit, request.Cursor), nil
 }
 
 func (client *gatePerpClient) OrderHistory(ctx context.Context, request exchange.OrderHistoryRequest) (exchange.OrderPage, error) {
 	if err := gateContext(ctx, client.meta, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	if err := gateValidateHistoryRequest(client.meta, "OrderHistory", request.Instrument, request.Cursor, request.Start, request.End); err != nil {
+	native, _, err := gateOptionalNativeInstrument(client.meta, "OrderHistory", request.Instrument)
+	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	rows, err := client.sdk.ListFuturesOrderHistory(ctx, client.settle, request.Instrument, request.Start, request.End, request.Limit)
+	if err := gateValidateHistoryRequest(client.meta, "OrderHistory", native, request.Cursor, request.Start, request.End); err != nil {
+		return exchange.OrderPage{}, err
+	}
+	rows, err := client.sdk.ListFuturesOrderHistory(ctx, client.settle, native, request.Start, request.End, request.Limit)
 	if err != nil {
 		return exchange.OrderPage{}, gateNormalizeErr(client.meta, "OrderHistory", err)
 	}
@@ -191,14 +227,22 @@ func (client *gateSpotClient) Fills(ctx context.Context, request exchange.FillsR
 	if err := gateValidateFillsRequest(client.meta, request); err != nil {
 		return exchange.FillPage{}, err
 	}
-	rows, err := client.sdk.ListSpotMyTrades(ctx, request.Instrument, request.OrderID, request.Limit)
+	native, _, err := gateOptionalNativeInstrument(client.meta, "Fills", request.Instrument)
+	if err != nil {
+		return exchange.FillPage{}, err
+	}
+	rows, err := client.sdk.ListSpotMyTrades(ctx, native, request.OrderID, request.Limit)
 	if err != nil {
 		return exchange.FillPage{}, gateNormalizeErr(client.meta, "Fills", err)
 	}
 	if err := gateValidateSpotFills(client.meta, "Fills", rows); err != nil {
 		return exchange.FillPage{}, err
 	}
-	return exchange.FillPage{Fills: gateSpotFills(rows), Page: exchange.PageInfo{Cursor: request.Cursor, Limit: request.Limit, WindowStart: request.Start, WindowEnd: request.End}}, nil
+	fills, err := gateSpotFills(ctx, client.meta, "Fills", rows, request.Instrument)
+	if err != nil {
+		return exchange.FillPage{}, err
+	}
+	return exchange.FillPage{Fills: fills, Page: exchange.PageInfo{Cursor: request.Cursor, Limit: request.Limit, WindowStart: request.Start, WindowEnd: request.End}}, nil
 }
 
 func (client *gatePerpClient) Fills(ctx context.Context, request exchange.FillsRequest) (exchange.FillPage, error) {
@@ -208,7 +252,11 @@ func (client *gatePerpClient) Fills(ctx context.Context, request exchange.FillsR
 	if err := gateValidateFillsRequest(client.meta, request); err != nil {
 		return exchange.FillPage{}, err
 	}
-	rows, err := client.sdk.ListMyFuturesTradesFiltered(ctx, client.settle, request.Instrument, request.OrderID, request.Limit)
+	native, _, err := gateOptionalNativeInstrument(client.meta, "Fills", request.Instrument)
+	if err != nil {
+		return exchange.FillPage{}, err
+	}
+	rows, err := client.sdk.ListMyFuturesTradesFiltered(ctx, client.settle, native, request.OrderID, request.Limit)
 	if err != nil {
 		return exchange.FillPage{}, gateNormalizeErr(client.meta, "Fills", err)
 	}
@@ -305,8 +353,16 @@ func (client *gatePerpClient) Positions(ctx context.Context, request exchange.Po
 	}
 	out := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
-		if request.Instrument != "" && row.Contract != request.Instrument {
+		native, filtered, err := gateOptionalNativeInstrument(client.meta, "Positions", request.Instrument)
+		if err != nil {
+			return nil, err
+		}
+		if filtered && row.Contract != native {
 			continue
+		}
+		instrument, err := gateCatalogInstrumentByNative(ctx, client.meta, "Positions", row.Contract)
+		if err != nil {
+			return nil, err
 		}
 		side := exchange.SideBuy
 		size := row.Size
@@ -314,12 +370,13 @@ func (client *gatePerpClient) Positions(ctx context.Context, request exchange.Po
 			side = exchange.SideSell
 			size = -size
 		}
-		multiplier, err := client.gateContractMultiplier(ctx, "Positions", row.Contract)
+		multiplier, err := client.gateContractMultiplier("Positions", instrument)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, exchange.Position{
-			Instrument:       row.Contract,
+			NativeSymbol:     row.Contract,
+			NativeID:         instrument.Identity.NativeID,
 			Side:             side,
 			Quantity:         decimal.NewFromInt(size).Mul(multiplier),
 			EntryPrice:       gateDecimal(row.EntryPrice),
@@ -337,7 +394,11 @@ func (client *gatePerpClient) FundingRate(ctx context.Context, request exchange.
 	if err := gateContext(ctx, client.meta, "FundingRate"); err != nil {
 		return exchange.FundingRate{}, err
 	}
-	contract, err := client.sdk.GetFuturesContract(ctx, client.settle, request.Instrument)
+	native, err := gateRequiredNativeInstrument(client.meta, "FundingRate", request.Instrument)
+	if err != nil {
+		return exchange.FundingRate{}, err
+	}
+	contract, err := client.sdk.GetFuturesContract(ctx, client.settle, native)
 	if err != nil {
 		return exchange.FundingRate{}, gateNormalizeErr(client.meta, "FundingRate", err)
 	}
@@ -347,18 +408,25 @@ func (client *gatePerpClient) FundingRate(ctx context.Context, request exchange.
 	if err := gateValidateDecimal(client.meta, "FundingRate", "mark price", contract.MarkPrice); err != nil {
 		return exchange.FundingRate{}, err
 	}
+	if err := gateEnsureNativeInstrument(client.meta, "FundingRate", request.Instrument, contract.Name); err != nil {
+		return exchange.FundingRate{}, err
+	}
 	next := time.Unix(int64(contract.FundingNextApply), 0).UTC()
-	return exchange.FundingRate{Instrument: contract.Name, Rate: gateDecimal(contract.FundingRate), MarkPrice: gateOptionalDecimal(contract.MarkPrice), NextFundingTime: next}, nil
+	return exchange.FundingRate{NativeSymbol: contract.Name, NativeID: request.Instrument.Identity.NativeID, Rate: gateDecimal(contract.FundingRate), MarkPrice: gateOptionalDecimal(contract.MarkPrice), NextFundingTime: next}, nil
 }
 
 func (client *gatePerpClient) FundingRateHistory(ctx context.Context, request exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
 	if err := gateContext(ctx, client.meta, "FundingRateHistory"); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	if err := gateValidateHistoryRequest(client.meta, "FundingRateHistory", request.Instrument, request.Cursor, request.Start, request.End); err != nil {
+	native, err := gateRequiredNativeInstrument(client.meta, "FundingRateHistory", request.Instrument)
+	if err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	rows, err := client.sdk.ListFuturesFundingRateHistory(ctx, client.settle, request.Instrument, request.Start, request.End, request.Limit)
+	if err := gateValidateHistoryRequest(client.meta, "FundingRateHistory", native, request.Cursor, request.Start, request.End); err != nil {
+		return exchange.FundingRatePage{}, err
+	}
+	rows, err := client.sdk.ListFuturesFundingRateHistory(ctx, client.settle, native, request.Start, request.End, request.Limit)
 	if err != nil {
 		return exchange.FundingRatePage{}, gateNormalizeErr(client.meta, "FundingRateHistory", err)
 	}
@@ -367,7 +435,7 @@ func (client *gatePerpClient) FundingRateHistory(ctx context.Context, request ex
 		if err := gateValidateDecimal(client.meta, "FundingRateHistory", "funding rate", row.Rate); err != nil {
 			return exchange.FundingRatePage{}, err
 		}
-		out = append(out, exchange.FundingRate{Instrument: request.Instrument, Rate: gateDecimal(row.Rate), FundingTime: time.Unix(row.Time, 0).UTC()})
+		out = append(out, exchange.FundingRate{NativeSymbol: native, NativeID: request.Instrument.Identity.NativeID, Rate: gateDecimal(row.Rate), FundingTime: time.Unix(row.Time, 0).UTC()})
 	}
 	return exchange.FundingRatePage{Rates: out, Page: exchange.PageInfo{Cursor: request.Cursor, Limit: request.Limit, WindowStart: request.Start, WindowEnd: request.End}}, nil
 }
@@ -376,10 +444,14 @@ func (client *gatePerpClient) SetLeverage(ctx context.Context, request exchange.
 	if err := gateContext(ctx, client.meta, "SetLeverage"); err != nil {
 		return exchange.Leverage{}, err
 	}
-	if strings.TrimSpace(request.Instrument) == "" || request.Leverage <= 0 {
+	native, err := gateRequiredNativeInstrument(client.meta, "SetLeverage", request.Instrument)
+	if err != nil {
+		return exchange.Leverage{}, err
+	}
+	if request.Leverage <= 0 {
 		return exchange.Leverage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: "SetLeverage", SafeMessage: "instrument and positive leverage are required"})
 	}
-	row, err := client.sdk.SetFuturesLeverage(ctx, client.settle, request.Instrument, request.Leverage)
+	row, err := client.sdk.SetFuturesLeverage(ctx, client.settle, native, request.Leverage)
 	if err != nil {
 		return exchange.Leverage{}, gateWriteErr(client.meta, "SetLeverage", err)
 	}
@@ -390,11 +462,11 @@ func (client *gatePerpClient) SetLeverage(ctx context.Context, request exchange.
 	if effective != request.Leverage {
 		return exchange.Leverage{}, gateMalformed(client.meta, "SetLeverage", "gate leverage response did not match request")
 	}
-	return exchange.Leverage{Instrument: request.Instrument, Effective: effective}, nil
+	return exchange.Leverage{NativeSymbol: native, NativeID: request.Instrument.Identity.NativeID, Effective: effective}, nil
 }
 
-func gateSpotPlaceOrder(request exchange.PlaceOrderRequest) gate.Order {
-	order := gate.Order{CurrencyPair: request.Instrument, Text: gateClientOrderID(request.ClientOrderID), Side: string(request.Side), Amount: request.Quantity.String(), Account: "spot"}
+func gateSpotPlaceOrder(request exchange.PlaceOrderRequest, native string) gate.Order {
+	order := gate.Order{CurrencyPair: native, Text: gateClientOrderID(request.ClientOrderID), Side: string(request.Side), Amount: request.Quantity.String(), Account: "spot"}
 	if request.Type == exchange.OrderTypeMarket {
 		order.Type = "market"
 		order.TimeInForce = "ioc"
@@ -413,12 +485,12 @@ func gateSpotPlaceOrder(request exchange.PlaceOrderRequest) gate.Order {
 	return order
 }
 
-func gateFuturesPlaceOrder(request exchange.PlaceOrderRequest, contracts int64) gate.FuturesOrder {
+func gateFuturesPlaceOrder(request exchange.PlaceOrderRequest, native string, contracts int64) gate.FuturesOrder {
 	size := contracts
 	if request.Side == exchange.SideSell {
 		size = -size
 	}
-	order := gate.FuturesOrder{Contract: request.Instrument, Text: gateClientOrderID(request.ClientOrderID), Size: size, ReduceOnly: request.ReduceOnly}
+	order := gate.FuturesOrder{Contract: native, Text: gateClientOrderID(request.ClientOrderID), Size: size, ReduceOnly: request.ReduceOnly}
 	if request.Type == exchange.OrderTypeMarket {
 		order.Price = "0"
 		order.TIF = "ioc"
@@ -436,18 +508,7 @@ func gateFuturesPlaceOrder(request exchange.PlaceOrderRequest, contracts int64) 
 	return order
 }
 
-func gateSpotOrders(rows []gate.Order) []exchange.Order {
-	out := make([]exchange.Order, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, gateSpotOrder(row))
-	}
-	return out
-}
-
 func gateValidateHistoryRequest(meta clientMeta, operation, instrument, cursor string, start, end time.Time) error {
-	if strings.TrimSpace(instrument) == "" {
-		return exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "instrument is required"})
-	}
 	if strings.TrimSpace(cursor) != "" {
 		return exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "cursor is not supported"})
 	}
@@ -647,16 +708,31 @@ func gateValidateLiquidity(meta clientMeta, operation, value string) error {
 	}
 }
 
-func gateSpotOrder(row gate.Order) exchange.Order {
+func gateSpotOrders(ctx context.Context, meta clientMeta, operation string, rows []gate.Order, filter *exchange.Instrument) ([]exchange.Order, error) {
+	out := make([]exchange.Order, 0, len(rows))
+	for _, row := range rows {
+		if filter != nil && row.CurrencyPair != filter.Identity.NativeSymbol {
+			continue
+		}
+		instrument, err := gateCatalogInstrumentByNative(ctx, meta, operation, row.CurrencyPair)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, gateSpotOrder(row, instrument))
+	}
+	return out, nil
+}
+
+func gateSpotOrder(row gate.Order, instrument exchange.Instrument) exchange.Order {
 	quantity := gateDecimal(row.Amount)
 	filled := gateDecimal(row.FilledAmount)
 	if filled.IsZero() && row.Left != "" {
 		filled = quantity.Sub(gateDecimal(row.Left))
 	}
-	return exchange.Order{Instrument: row.CurrencyPair, OrderID: row.ID, ClientOrderID: gatePortableClientOrderID(row.Text), Side: gateSide(row.Side), Type: gateOrderType(row), Quantity: quantity, LimitPrice: gateDecimal(row.Price), LimitPolicy: gateLimitPolicy(row.TimeInForce), Filled: filled, AverageFillPrice: gateOptionalDecimal(row.AvgDealPrice), Status: gateOrderStatus(row.Status, row.FinishAs), CreatedAt: gateTimeMS(string(row.CreateTimeMS)), UpdatedAt: gateTimeMS(string(row.UpdateTimeMS))}
+	return exchange.Order{NativeSymbol: row.CurrencyPair, NativeID: instrument.Identity.NativeID, OrderID: row.ID, ClientOrderID: gatePortableClientOrderID(row.Text), Side: gateSide(row.Side), Type: gateOrderType(row), Quantity: quantity, LimitPrice: gateDecimal(row.Price), LimitPolicy: gateLimitPolicy(row.TimeInForce), Filled: filled, AverageFillPrice: gateOptionalDecimal(row.AvgDealPrice), Status: gateOrderStatus(row.Status, row.FinishAs), CreatedAt: gateTimeMS(string(row.CreateTimeMS)), UpdatedAt: gateTimeMS(string(row.UpdateTimeMS))}
 }
 
-func gateFuturesOrder(row gate.FuturesOrder, multiplier decimal.Decimal) exchange.Order {
+func gateFuturesOrder(row gate.FuturesOrder, instrument exchange.Instrument, multiplier decimal.Decimal) exchange.Order {
 	size := row.Size
 	side := exchange.SideBuy
 	if size < 0 {
@@ -665,16 +741,16 @@ func gateFuturesOrder(row gate.FuturesOrder, multiplier decimal.Decimal) exchang
 	}
 	quantity := decimal.NewFromInt(size).Mul(multiplier)
 	filled := quantity.Sub(decimal.NewFromInt(abs64(row.Left)).Mul(multiplier))
-	return exchange.Order{Instrument: row.Contract, OrderID: gateOrderID(row.ID), ClientOrderID: gatePortableClientOrderID(row.Text), Side: side, Type: gateFuturesOrderType(row), Quantity: quantity, LimitPrice: gateDecimal(row.Price), LimitPolicy: gateLimitPolicy(row.TIF), ReduceOnly: row.ReduceOnly || row.IsReduceOnly, Filled: filled, AverageFillPrice: gateOptionalDecimal(row.FillPrice), Status: gateOrderStatus(row.Status, row.FinishAs), CreatedAt: gateTimeMS(string(row.CreateTimeMS)), UpdatedAt: gateTimeMS(string(row.UpdateTime))}
+	return exchange.Order{NativeSymbol: row.Contract, NativeID: instrument.Identity.NativeID, OrderID: gateOrderID(row.ID), ClientOrderID: gatePortableClientOrderID(row.Text), Side: side, Type: gateFuturesOrderType(row), Quantity: quantity, LimitPrice: gateDecimal(row.Price), LimitPolicy: gateLimitPolicy(row.TIF), ReduceOnly: row.ReduceOnly || row.IsReduceOnly, Filled: filled, AverageFillPrice: gateOptionalDecimal(row.FillPrice), Status: gateOrderStatus(row.Status, row.FinishAs), CreatedAt: gateTimeMS(string(row.CreateTimeMS)), UpdatedAt: gateTimeMS(string(row.UpdateTime))}
 }
 
-func gateSpotAck(meta clientMeta, operation exchange.OrderOperation, orderType exchange.OrderType, row gate.Order) exchange.OrderAcknowledgement {
-	order := gateSpotOrder(row)
+func gateSpotAck(meta clientMeta, operation exchange.OrderOperation, orderType exchange.OrderType, instrument exchange.Instrument, row gate.Order) exchange.OrderAcknowledgement {
+	order := gateSpotOrder(row, instrument)
 	return gateAckFromOrder(meta, operation, orderType, order)
 }
 
-func gateFuturesAck(meta clientMeta, operation exchange.OrderOperation, orderType exchange.OrderType, row gate.FuturesOrder, multiplier decimal.Decimal) exchange.OrderAcknowledgement {
-	order := gateFuturesOrder(row, multiplier)
+func gateFuturesAck(meta clientMeta, operation exchange.OrderOperation, orderType exchange.OrderType, instrument exchange.Instrument, row gate.FuturesOrder, multiplier decimal.Decimal) exchange.OrderAcknowledgement {
+	order := gateFuturesOrder(row, instrument, multiplier)
 	return gateAckFromOrder(meta, operation, orderType, order)
 }
 
@@ -689,7 +765,7 @@ func gateAckFromOrder(meta clientMeta, operation exchange.OrderOperation, orderT
 	} else if orderType == exchange.OrderTypeMarket {
 		state = exchange.AckAcceptedPending
 	}
-	return exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: operation, State: state, Instrument: order.Instrument, OrderType: orderType, OrderID: order.OrderID, ClientOrderID: order.ClientOrderID, FilledQuantity: order.Filled, AverageFillPrice: order.AverageFillPrice}
+	return exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: operation, State: state, NativeSymbol: order.NativeSymbol, NativeID: order.NativeID, OrderType: orderType, OrderID: order.OrderID, ClientOrderID: order.ClientOrderID, FilledQuantity: order.Filled, AverageFillPrice: order.AverageFillPrice}
 }
 
 func gateOrderType(row gate.Order) exchange.OrderType {
@@ -724,15 +800,22 @@ func gateOrderStatus(status, finishAs string) string {
 	return status
 }
 
-func gateSpotFills(rows []gate.SpotUserTrade) []exchange.Fill {
+func gateSpotFills(ctx context.Context, meta clientMeta, operation string, rows []gate.SpotUserTrade, filter *exchange.Instrument) ([]exchange.Fill, error) {
 	out := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, exchange.Fill{Instrument: row.CurrencyPair, OrderID: row.OrderID, ClientOrderID: gatePortableClientOrderID(row.Text), FillID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Fee: gateDecimal(row.Fee), FeeAsset: row.FeeCurrency, Liquidity: gateLiquidity(row.Role), Time: gateTimeMS(row.CreateTimeMS)})
+		if filter != nil && row.CurrencyPair != filter.Identity.NativeSymbol {
+			continue
+		}
+		instrument, err := gateCatalogInstrumentByNative(ctx, meta, operation, row.CurrencyPair)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, exchange.Fill{NativeSymbol: row.CurrencyPair, NativeID: instrument.Identity.NativeID, OrderID: row.OrderID, ClientOrderID: gatePortableClientOrderID(row.Text), FillID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Fee: gateDecimal(row.Fee), FeeAsset: row.FeeCurrency, Liquidity: gateLiquidity(row.Role), Time: gateTimeMS(row.CreateTimeMS)})
 	}
-	return out
+	return out, nil
 }
 
-func gateFuturesFills(rows []gate.MyFuturesTrade, multiplier decimal.Decimal) []exchange.Fill {
+func gateFuturesFills(rows []gate.MyFuturesTrade, instrument exchange.Instrument, multiplier decimal.Decimal) []exchange.Fill {
 	out := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
 		side := exchange.SideBuy
@@ -741,7 +824,7 @@ func gateFuturesFills(rows []gate.MyFuturesTrade, multiplier decimal.Decimal) []
 			side = exchange.SideSell
 			size = -size
 		}
-		out = append(out, exchange.Fill{Instrument: row.Contract, OrderID: gateOrderID(row.OrderID), ClientOrderID: gatePortableClientOrderID(row.Text), FillID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: decimal.NewFromInt(size).Mul(multiplier), Fee: gateDecimal(row.Fee), FeeAsset: strings.ToUpper(gate.SettleUSDT), Liquidity: gateLiquidity(row.Role), Time: gateUnixSecondString(string(row.CreateTime))})
+		out = append(out, exchange.Fill{NativeSymbol: row.Contract, NativeID: instrument.Identity.NativeID, OrderID: gateOrderID(row.OrderID), ClientOrderID: gatePortableClientOrderID(row.Text), FillID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: decimal.NewFromInt(size).Mul(multiplier), Fee: gateDecimal(row.Fee), FeeAsset: strings.ToUpper(gate.SettleUSDT), Liquidity: gateLiquidity(row.Role), Time: gateUnixSecondString(string(row.CreateTime))})
 	}
 	return out
 }
@@ -749,11 +832,15 @@ func gateFuturesFills(rows []gate.MyFuturesTrade, multiplier decimal.Decimal) []
 func (client *gatePerpClient) gateFuturesOrders(ctx context.Context, operation string, rows []gate.FuturesOrder) ([]exchange.Order, error) {
 	out := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
-		multiplier, err := client.gateContractMultiplier(ctx, operation, row.Contract)
+		instrument, err := gateCatalogInstrumentByNative(ctx, client.meta, operation, row.Contract)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, gateFuturesOrder(row, multiplier))
+		multiplier, err := client.gateContractMultiplier(operation, instrument)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, gateFuturesOrder(row, instrument, multiplier))
 	}
 	return out, nil
 }
@@ -761,11 +848,15 @@ func (client *gatePerpClient) gateFuturesOrders(ctx context.Context, operation s
 func (client *gatePerpClient) gateFuturesFills(ctx context.Context, operation string, rows []gate.MyFuturesTrade) ([]exchange.Fill, error) {
 	out := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
-		multiplier, err := client.gateContractMultiplier(ctx, operation, row.Contract)
+		instrument, err := gateCatalogInstrumentByNative(ctx, client.meta, operation, row.Contract)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, gateFuturesFills([]gate.MyFuturesTrade{row}, multiplier)...)
+		multiplier, err := client.gateContractMultiplier(operation, instrument)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, gateFuturesFills([]gate.MyFuturesTrade{row}, instrument, multiplier)...)
 	}
 	return out, nil
 }

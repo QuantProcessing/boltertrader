@@ -38,6 +38,9 @@ func New[C any](cfg Config[C]) (C, error) {
 	if err := cfg.validate(cfg.options); err != nil {
 		return zero, err
 	}
+	if err := registerInstrumentSource(cfg.name, cfg.options); err != nil {
+		return zero, err
+	}
 	return cfg.build(cfg.options), nil
 }
 
@@ -134,6 +137,19 @@ func WithHTTPClient(client *http.Client) Option {
 	}}
 }
 
+// WithInstrumentCatalog injects the catalog used for this constructed client.
+// When omitted, factory.New registers public metadata sources on the process
+// default catalog. Registration is local and does not load metadata.
+func WithInstrumentCatalog(catalog exchange.InstrumentCatalog) Option {
+	return Option{apply: func(settings *settings) error {
+		if catalog == nil {
+			return invalidConfig("instrument catalog must not be nil")
+		}
+		settings.catalog = catalog
+		return nil
+	}}
+}
+
 // WithAccountAddress explicitly selects the account identity queried by
 // account-scoped venue APIs. Hyperliquid Spot and Perp use it for agent-wallet
 // owner accounts; when omitted, the signer address remains the account identity.
@@ -163,7 +179,7 @@ func BinanceSpotConfig(apiKey, secretKey string, options ...Option) Config[excha
 		}
 		return requireNonEmptyCredentials("binance spot", apiKey, secretKey)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewBinanceSpot(apiKey, secretKey, factorySettings(settings))
+		return factoryclient.NewBinanceSpot(apiKey, secretKey, factorySettingsForConfig("binance-spot", settings))
 	})
 }
 
@@ -178,7 +194,7 @@ func BinanceUSDPerpConfig(apiKey, secretKey string, options ...Option) Config[ex
 		}
 		return requireNonEmptyCredentials("binance usd perp", apiKey, secretKey)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewBinanceUSDPerp(apiKey, secretKey, factorySettings(settings))
+		return factoryclient.NewBinanceUSDPerp(apiKey, secretKey, factorySettingsForConfig("binance-usd-perp", settings))
 	})
 }
 
@@ -193,7 +209,7 @@ func OKXSpotConfig(apiKey, secretKey, passphrase string, options ...Option) Conf
 		}
 		return requireNonEmptyCredentials("okx spot", apiKey, secretKey, passphrase)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewOKXSpot(apiKey, secretKey, passphrase, factorySettings(settings))
+		return factoryclient.NewOKXSpot(apiKey, secretKey, passphrase, factorySettingsForConfig("okx-spot", settings))
 	})
 }
 
@@ -208,7 +224,7 @@ func OKXUSDTPerpConfig(apiKey, secretKey, passphrase string, options ...Option) 
 		}
 		return requireNonEmptyCredentials("okx usdt perp", apiKey, secretKey, passphrase)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewOKXUSDTPerp(apiKey, secretKey, passphrase, factorySettings(settings))
+		return factoryclient.NewOKXUSDTPerp(apiKey, secretKey, passphrase, factorySettingsForConfig("okx-usdt-perp", settings))
 	})
 }
 
@@ -229,7 +245,7 @@ func LighterSpotConfig(privateKey string, accountIndex int64, keyIndex uint8, op
 		}
 		return nil
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewLighterSpot(privateKey, accountIndex, keyIndex, factorySettings(settings))
+		return factoryclient.NewLighterSpot(privateKey, accountIndex, keyIndex, factorySettingsForConfig("lighter-spot", settings))
 	})
 }
 
@@ -250,7 +266,7 @@ func LighterPerpConfig(privateKey string, accountIndex int64, keyIndex uint8, op
 		}
 		return nil
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewLighterPerp(privateKey, accountIndex, keyIndex, factorySettings(settings))
+		return factoryclient.NewLighterPerp(privateKey, accountIndex, keyIndex, factorySettingsForConfig("lighter-perp", settings))
 	})
 }
 
@@ -262,7 +278,7 @@ func HyperliquidSpotConfig(privateKey string, options ...Option) Config[exchange
 		}
 		return requireHyperliquidPrivateKey("hyperliquid spot", privateKey)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewHyperliquidSpot(privateKey, factorySettings(settings))
+		return factoryclient.NewHyperliquidSpot(privateKey, factorySettingsForConfig("hyperliquid-spot", settings))
 	})
 }
 
@@ -274,7 +290,7 @@ func HyperliquidPerpConfig(privateKey string, options ...Option) Config[exchange
 		}
 		return requireHyperliquidPrivateKey("hyperliquid perp", privateKey)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewHyperliquidPerp(privateKey, factorySettings(settings))
+		return factoryclient.NewHyperliquidPerp(privateKey, factorySettingsForConfig("hyperliquid-perp", settings))
 	})
 }
 
@@ -289,7 +305,7 @@ func BybitSpotConfig(apiKey, secretKey string, options ...Option) Config[exchang
 		}
 		return requireNonEmptyCredentials("bybit spot", apiKey, secretKey)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewBybitSpot(apiKey, secretKey, factorySettings(settings))
+		return factoryclient.NewBybitSpot(apiKey, secretKey, factorySettingsForConfig("bybit-spot", settings))
 	})
 }
 
@@ -313,7 +329,7 @@ func bybitPerpConfig(name, settleCoin, apiKey, secretKey string, options []Optio
 		}
 		return requireNonEmptyCredentials(name, apiKey, secretKey)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewBybitLinearPerp(apiKey, secretKey, settleCoin, factorySettings(settings))
+		return factoryclient.NewBybitLinearPerp(apiKey, secretKey, settleCoin, factorySettingsForConfig(name, settings))
 	})
 }
 
@@ -328,7 +344,7 @@ func BitgetSpotConfig(apiKey, secretKey, passphrase string, options ...Option) C
 		}
 		return requireNonEmptyCredentials("bitget spot", apiKey, secretKey, passphrase)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewBitgetSpot(apiKey, secretKey, passphrase, factorySettings(settings))
+		return factoryclient.NewBitgetSpot(apiKey, secretKey, passphrase, factorySettingsForConfig("bitget-spot", settings))
 	})
 }
 
@@ -352,7 +368,7 @@ func bitgetPerpConfig(name, productType, apiKey, secretKey, passphrase string, o
 		}
 		return requireNonEmptyCredentials(name, apiKey, secretKey, passphrase)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewBitgetPerp(apiKey, secretKey, passphrase, productType, factorySettings(settings))
+		return factoryclient.NewBitgetPerp(apiKey, secretKey, passphrase, productType, factorySettingsForConfig(name, settings))
 	})
 }
 
@@ -367,7 +383,7 @@ func GateSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange
 		}
 		return requireNonEmptyCredentials("gate spot", apiKey, secretKey)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewGateSpot(apiKey, secretKey, factorySettings(settings))
+		return factoryclient.NewGateSpot(apiKey, secretKey, factorySettingsForConfig("gate-spot", settings))
 	})
 }
 
@@ -382,7 +398,7 @@ func GateUSDTPerpConfig(apiKey, secretKey string, options ...Option) Config[exch
 		}
 		return requireNonEmptyCredentials("gate usdt perp", apiKey, secretKey)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewGateUSDTPerp(apiKey, secretKey, factorySettings(settings))
+		return factoryclient.NewGateUSDTPerp(apiKey, secretKey, factorySettingsForConfig("gate-usdt-perp", settings))
 	})
 }
 
@@ -397,7 +413,7 @@ func AsterSpotConfig(userAddress, apiWalletPrivateKey, expectedSigner string, op
 		}
 		return requireAsterCredentials("aster spot", userAddress, apiWalletPrivateKey, expectedSigner)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewAsterSpot(userAddress, apiWalletPrivateKey, expectedSigner, factorySettings(settings))
+		return factoryclient.NewAsterSpot(userAddress, apiWalletPrivateKey, expectedSigner, factorySettingsForConfig("aster-spot", settings))
 	})
 }
 
@@ -412,7 +428,7 @@ func AsterUSDTPerpConfig(userAddress, apiWalletPrivateKey, expectedSigner string
 		}
 		return requireAsterCredentials("aster usdt perp", userAddress, apiWalletPrivateKey, expectedSigner)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner, factorySettings(settings))
+		return factoryclient.NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner, factorySettingsForConfig("aster-usdt-perp", settings))
 	})
 }
 
@@ -428,7 +444,7 @@ func NadoSpotConfig(privateKey, subaccount string, options ...Option) Config[exc
 		}
 		return requireNadoCredentials("nado spot", privateKey, subaccount)
 	}, func(settings settings) exchange.SpotClient {
-		return factoryclient.NewNadoSpot(privateKey, subaccount, factorySettings(settings))
+		return factoryclient.NewNadoSpot(privateKey, subaccount, factorySettingsForConfig("nado-spot", settings))
 	})
 }
 
@@ -444,7 +460,7 @@ func NadoUSDT0PerpConfig(privateKey, subaccount string, options ...Option) Confi
 		}
 		return requireNadoCredentials("nado usdt0 perp", privateKey, subaccount)
 	}, func(settings settings) exchange.PerpClient {
-		return factoryclient.NewNadoUSDT0Perp(privateKey, subaccount, factorySettings(settings))
+		return factoryclient.NewNadoUSDT0Perp(privateKey, subaccount, factorySettingsForConfig("nado-usdt0-perp", settings))
 	})
 }
 
@@ -585,12 +601,177 @@ func invalidConfig(message string) error {
 	})
 }
 
+func registerInstrumentSource(configName string, settings settings) error {
+	catalog := settings.catalog
+	if catalog == nil {
+		catalog = exchange.DefaultInstrumentCatalog()
+	}
+	for _, sourceName := range catalogRegistrationNames(configName) {
+		scope, descriptor, ok := catalogSourceForConfig(sourceName, settings)
+		if !ok {
+			continue
+		}
+		loader := instrumentLoaderForConfig(sourceName, settings)
+		if loader == nil {
+			continue
+		}
+		if err := catalog.RegisterSource(scope, descriptor, loader); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func catalogRegistrationNames(configName string) []string {
+	switch configName {
+	case "nado-spot", "nado-usdt0-perp":
+		return []string{"nado-spot", "nado-usdt0-perp"}
+	default:
+		return []string{configName}
+	}
+}
+
+func catalogSourceForConfig(configName string, settings settings) (exchange.CatalogScope, exchange.SourceDescriptor, bool) {
+	venue, product, settlement, ok := catalogIdentityForConfig(configName)
+	if !ok {
+		return exchange.CatalogScope{}, exchange.SourceDescriptor{}, false
+	}
+	sourceName := configName
+	if configName == "nado-spot" || configName == "nado-usdt0-perp" {
+		sourceName = "nado"
+	}
+	descriptor := exchange.SourceDescriptor{
+		Name:              sourceName,
+		Endpoint:          settings.endpoint,
+		WebSocketEndpoint: settings.webSocketEndpoint,
+		Transport:         "default",
+	}
+	factoryclient.ApplyDefaultCatalogEndpoints(configName, string(settings.environment), &descriptor)
+	if settings.httpClient != nil {
+		descriptor.Transport = "custom-http-client"
+	}
+	scope := exchange.CatalogScope{
+		Venue:               venue,
+		Environment:         exchange.Environment(settings.environment),
+		Product:             product,
+		Settlement:          settlement,
+		EndpointFingerprint: descriptor.Fingerprint(),
+	}
+	return scope, descriptor, true
+}
+
+func catalogIdentityForConfig(configName string) (exchange.Venue, exchange.Product, string, bool) {
+	switch configName {
+	case "binance-spot":
+		return exchange.VenueBinance, exchange.ProductSpot, "", true
+	case "binance-usd-perp":
+		return exchange.VenueBinance, exchange.ProductPerp, "USDT", true
+	case "okx-spot":
+		return exchange.VenueOKX, exchange.ProductSpot, "", true
+	case "okx-usdt-perp":
+		return exchange.VenueOKX, exchange.ProductPerp, "USDT", true
+	case "lighter-spot":
+		return exchange.VenueLighter, exchange.ProductSpot, "", true
+	case "lighter-perp":
+		return exchange.VenueLighter, exchange.ProductPerp, "USDC", true
+	case "hyperliquid-spot":
+		return exchange.VenueHyperliquid, exchange.ProductSpot, "", true
+	case "hyperliquid-perp":
+		return exchange.VenueHyperliquid, exchange.ProductPerp, "USDC", true
+	case "bybit-spot":
+		return exchange.VenueBybit, exchange.ProductSpot, "", true
+	case "bybit-usdt-perp":
+		return exchange.VenueBybit, exchange.ProductPerp, "USDT", true
+	case "bybit-usdc-perp":
+		return exchange.VenueBybit, exchange.ProductPerp, "USDC", true
+	case "bitget-spot":
+		return exchange.VenueBitget, exchange.ProductSpot, "", true
+	case "bitget-usdt-perp":
+		return exchange.VenueBitget, exchange.ProductPerp, "USDT", true
+	case "bitget-usdc-perp":
+		return exchange.VenueBitget, exchange.ProductPerp, "USDC", true
+	case "gate-spot":
+		return exchange.VenueGate, exchange.ProductSpot, "", true
+	case "gate-usdt-perp":
+		return exchange.VenueGate, exchange.ProductPerp, "USDT", true
+	case "aster-spot":
+		return exchange.VenueAster, exchange.ProductSpot, "", true
+	case "aster-usdt-perp":
+		return exchange.VenueAster, exchange.ProductPerp, "USDT", true
+	case "nado-spot":
+		return exchange.VenueNado, exchange.ProductSpot, "USDT0", true
+	case "nado-usdt0-perp":
+		return exchange.VenueNado, exchange.ProductPerp, "USDT0", true
+	default:
+		return "", "", "", false
+	}
+}
+
+func instrumentLoaderForConfig(configName string, settings settings) exchange.InstrumentLoader {
+	switch configName {
+	case "binance-spot":
+		return factoryclient.NewBinanceInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "binance-usd-perp":
+		return factoryclient.NewBinanceInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "lighter-spot":
+		return factoryclient.NewLighterInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "lighter-perp":
+		return factoryclient.NewLighterInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "okx-spot":
+		return factoryclient.NewOKXInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "okx-usdt-perp":
+		return factoryclient.NewOKXInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "hyperliquid-spot":
+		return factoryclient.NewHyperliquidInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "hyperliquid-perp":
+		return factoryclient.NewHyperliquidInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "aster-spot":
+		return factoryclient.NewAsterInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "aster-usdt-perp":
+		return factoryclient.NewAsterInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "bybit-spot":
+		return factoryclient.NewBybitInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "bybit-usdt-perp", "bybit-usdc-perp":
+		return factoryclient.NewBybitInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "bitget-spot":
+		return factoryclient.NewBitgetInstrumentLoader(exchange.ProductSpot, "", factorySettingsForConfig(configName, settings))
+	case "bitget-usdt-perp":
+		return factoryclient.NewBitgetInstrumentLoader(exchange.ProductPerp, "USDT-FUTURES", factorySettingsForConfig(configName, settings))
+	case "bitget-usdc-perp":
+		return factoryclient.NewBitgetInstrumentLoader(exchange.ProductPerp, "USDC-FUTURES", factorySettingsForConfig(configName, settings))
+	case "gate-spot":
+		return factoryclient.NewGateInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "gate-usdt-perp":
+		return factoryclient.NewGateInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	case "nado-spot":
+		return factoryclient.NewNadoInstrumentLoader(exchange.ProductSpot, factorySettingsForConfig(configName, settings))
+	case "nado-usdt0-perp":
+		return factoryclient.NewNadoInstrumentLoader(exchange.ProductPerp, factorySettingsForConfig(configName, settings))
+	default:
+		return nil
+	}
+}
+
 func factorySettings(settings settings) factoryclient.Settings {
+	catalog := settings.catalog
+	if catalog == nil {
+		catalog = exchange.DefaultInstrumentCatalog()
+	}
 	return factoryclient.Settings{
 		Endpoint:          settings.endpoint,
 		WebSocketEndpoint: settings.webSocketEndpoint,
 		HTTPClient:        settings.httpClient,
 		Environment:       string(settings.environment),
 		AccountAddress:    settings.accountAddress,
+		InstrumentCatalog: catalog,
 	}
+}
+
+func factorySettingsForConfig(configName string, settings settings) factoryclient.Settings {
+	out := factorySettings(settings)
+	if scope, descriptor, ok := catalogSourceForConfig(configName, settings); ok {
+		out.CatalogScope = scope
+		out.SourceDescriptor = descriptor
+	}
+	return out
 }

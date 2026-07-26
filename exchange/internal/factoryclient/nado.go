@@ -46,6 +46,7 @@ type nadoProduct struct {
 	canonical  string
 	productID  int64
 	marketType nadosdk.MarketType
+	instrument exchange.Instrument
 	symbol     nadosdk.Symbol
 	book       nadosdk.ProductBookInfo
 	base       string
@@ -95,7 +96,7 @@ func newNadoBase(product exchange.Product, privateKey, subaccount string, settin
 		_, _ = client.WithCredentials(privateKey, subaccount)
 	}
 	return &nadoBase{
-		meta: clientMeta{venue: exchange.VenueNado, product: product},
+		meta: clientMetaFromSettings(exchange.VenueNado, product, settings),
 		sdk:  client,
 	}
 }
@@ -115,6 +116,13 @@ func (base *nadoBase) normalize(operation string, err error) error {
 		return base.err(operation, exchange.KindDeadlineExceeded, "request deadline exceeded")
 	}
 	return base.err(operation, exchange.KindTransport, "Nado request failed")
+}
+
+func (base *nadoBase) contextError(ctx context.Context, operation string) error {
+	if ctx == nil {
+		return base.err(operation, exchange.KindInvalidRequest, "context is required")
+	}
+	return base.normalize(operation, ctx.Err())
 }
 
 func (base *nadoBase) mutationError(operation string, err error, ack *exchange.OrderAcknowledgement) error {
@@ -193,27 +201,186 @@ func (base *nadoBase) discover(ctx context.Context, operation string) ([]nadoPro
 			symbol:     symbol,
 			book:       nadoBookInfo(*products, int64(symbol.ProductID), marketType),
 		}
+		instrument, err := nadoInstrumentFromDiscovery(base.meta.product, symbol, ticker)
+		if err != nil {
+			return nil, err
+		}
+		product.instrument = instrument
 		product.base, product.quote = nadoAssets(product.canonical, marketType)
+		if marketType == nadosdk.MarketTypePerp && strings.HasSuffix(product.base, "-PERP") {
+			product.base = strings.TrimSuffix(product.base, "-PERP")
+		}
 		out = append(out, product)
 	}
 	return out, nil
 }
 
-func (base *nadoBase) product(ctx context.Context, instrument, operation string) (nadoProduct, error) {
-	canonical := strings.TrimSpace(instrument)
-	if canonical == "" || canonical != instrument {
-		return nadoProduct{}, base.err(operation, exchange.KindInvalidRequest, "instrument is required and must not have surrounding whitespace")
-	}
-	products, err := base.discover(ctx, operation)
-	if err != nil {
+func (base *nadoBase) product(ctx context.Context, instrument exchange.Instrument, operation string) (nadoProduct, error) {
+	if err := base.contextError(ctx, operation); err != nil {
 		return nadoProduct{}, err
 	}
-	for _, product := range products {
-		if product.canonical == canonical || product.native == instrument {
-			return product, nil
+	if err := instrument.Validate(); err != nil {
+		return nadoProduct{}, withExchangeOperation(err, operation)
+	}
+	if instrument.Identity.Venue != exchange.VenueNado || instrument.Identity.Product != base.meta.product {
+		return nadoProduct{}, base.err(operation, exchange.KindInvalidRequest, "instrument venue/product does not match Nado client")
+	}
+	if base.meta.catalog == nil || base.meta.catalogScope == (exchange.CatalogScope{}) {
+		return nadoProductFromInstrument(base.meta, operation, instrument)
+	}
+	query := exchange.InstrumentQuery{NativeSymbol: instrument.Identity.NativeSymbol}
+	if instrument.Identity.NativeID != "" {
+		query = exchange.InstrumentQuery{NativeID: instrument.Identity.NativeID}
+	}
+	resolved, err := base.meta.catalog.Resolve(ctx, base.meta.catalogScope, query)
+	if err != nil {
+		return nadoProduct{}, withExchangeOperation(err, operation)
+	}
+	if resolved.Identity.Symbol != instrument.Identity.Symbol ||
+		resolved.Identity.NativeSymbol != instrument.Identity.NativeSymbol ||
+		resolved.Identity.NativeID != instrument.Identity.NativeID {
+		return nadoProduct{}, base.err(operation, exchange.KindMetadataResolution, "Nado instrument identity does not match catalog")
+	}
+	return nadoProductFromInstrument(base.meta, operation, resolved)
+}
+
+func (base *nadoBase) products(ctx context.Context, operation string) ([]nadoProduct, error) {
+	if err := base.contextError(ctx, operation); err != nil {
+		return nil, err
+	}
+	if base.meta.catalog == nil || base.meta.catalogScope == (exchange.CatalogScope{}) {
+		return base.discover(ctx, operation)
+	}
+	snapshot, err := base.meta.catalog.Snapshot(ctx, base.meta.catalogScope)
+	if err != nil {
+		return nil, withExchangeOperation(err, operation)
+	}
+	out := make([]nadoProduct, 0, len(snapshot.Instruments))
+	for _, instrument := range snapshot.Instruments {
+		product, err := nadoProductFromInstrument(base.meta, operation, instrument)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, product)
+	}
+	return out, nil
+}
+
+func (base *nadoBase) allKnownProducts(ctx context.Context, operation string) ([]nadoProduct, error) {
+	seen := make(map[int64]bool)
+	var out []nadoProduct
+	add := func(products []nadoProduct) {
+		for _, product := range products {
+			if seen[product.productID] {
+				continue
+			}
+			seen[product.productID] = true
+			out = append(out, product)
 		}
 	}
-	return nadoProduct{}, base.err(operation, exchange.KindInvalidRequest, "unknown Nado instrument")
+	products, err := base.products(ctx, operation)
+	if err != nil {
+		return nil, err
+	}
+	add(products)
+	for _, productType := range []exchange.Product{exchange.ProductSpot, exchange.ProductPerp} {
+		if productType == base.meta.product {
+			continue
+		}
+		peer := *base
+		peer.meta.product = productType
+		if base.meta.catalog != nil && base.meta.catalogScope != (exchange.CatalogScope{}) {
+			peer.meta.catalogScope.Product = productType
+		}
+		products, err := peer.products(ctx, operation)
+		if err != nil {
+			if base.meta.catalog != nil && base.meta.catalogScope != (exchange.CatalogScope{}) && errors.Is(err, exchange.ErrMetadataResolution) {
+				continue
+			}
+			return nil, err
+		}
+		add(products)
+	}
+	return out, nil
+}
+
+func (base *nadoBase) productsForOptionalInstrument(ctx context.Context, instrument *exchange.Instrument, operation string) ([]nadoProduct, error) {
+	if instrument != nil {
+		product, err := base.product(ctx, *instrument, operation)
+		if err != nil {
+			return nil, err
+		}
+		return []nadoProduct{product}, nil
+	}
+	return base.products(ctx, operation)
+}
+
+func nadoProductFromInstrument(meta clientMeta, operation string, instrument exchange.Instrument) (nadoProduct, error) {
+	identity := instrument.Identity
+	id, err := strconv.ParseInt(identity.NativeID, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != identity.NativeID {
+		return nadoProduct{}, exchange.NewError(exchange.KindMetadataResolution, exchange.ErrorDetails{
+			Venue:       exchange.VenueNado,
+			Product:     meta.product,
+			Operation:   operation,
+			SafeMessage: "Nado instrument native id is invalid",
+		})
+	}
+	marketType := nadosdk.MarketTypeSpot
+	if identity.Product == exchange.ProductPerp {
+		marketType = nadosdk.MarketTypePerp
+	}
+	return nadoProduct{
+		native:     identity.NativeSymbol,
+		canonical:  identity.Symbol,
+		productID:  id,
+		marketType: marketType,
+		instrument: instrument,
+		base:       identity.BaseAsset,
+		quote:      identity.QuoteAsset,
+	}, nil
+}
+
+func nadoProductIDs(products []nadoProduct) []int64 {
+	ids := make([]int64, 0, len(products))
+	for _, product := range products {
+		ids = append(ids, product.productID)
+	}
+	return ids
+}
+
+func nadoProductsByID(products []nadoProduct) map[int64]nadoProduct {
+	byID := make(map[int64]nadoProduct, len(products))
+	for _, product := range products {
+		byID[product.productID] = product
+	}
+	return byID
+}
+
+func nadoProductIDSet(ids []int64) map[int64]bool {
+	set := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set
+}
+
+func nadoAck(meta clientMeta, operation exchange.OrderOperation, product nadoProduct, orderType exchange.OrderType, clientOrderID, orderID string) exchange.OrderAcknowledgement {
+	state := exchange.AckAcceptedPending
+	if operation == exchange.OrderOperationCancel {
+		state = exchange.AckCanceled
+	}
+	return exchange.OrderAcknowledgement{
+		Venue:         exchange.VenueNado,
+		Product:       meta.product,
+		Operation:     operation,
+		State:         state,
+		NativeSymbol:  product.native,
+		NativeID:      product.instrument.Identity.NativeID,
+		OrderType:     orderType,
+		OrderID:       orderID,
+		ClientOrderID: clientOrderID,
+	}
 }
 
 func nadoBookInfo(products nadosdk.AllProductsResponse, productID int64, marketType nadosdk.MarketType) nadosdk.ProductBookInfo {
@@ -256,38 +423,13 @@ func (client *nadoPerpClient) Instruments(ctx context.Context) ([]exchange.Instr
 }
 
 func (base *nadoBase) instruments(ctx context.Context, operation string) ([]exchange.Instrument, error) {
-	products, err := base.discover(ctx, operation)
+	products, err := base.products(ctx, operation)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]exchange.Instrument, 0, len(products))
 	for _, product := range products {
-		priceIncrement, err := nadoX18(product.symbol.PriceIncrementX18)
-		if err != nil {
-			return nil, nadoMalformed(base.meta.product, operation, "invalid price increment")
-		}
-		quantityIncrement, err := nadoX18(product.symbol.SizeIncrement)
-		if err != nil {
-			return nil, nadoMalformed(base.meta.product, operation, "invalid quantity increment")
-		}
-		minSize, err := nadoX18(product.symbol.MinSize)
-		if err != nil {
-			return nil, nadoMalformed(base.meta.product, operation, "invalid min size")
-		}
-		out = append(out, exchange.Instrument{
-			Symbol:            product.canonical,
-			BaseAsset:         product.base,
-			QuoteAsset:        product.quote,
-			SettleAsset:       nadoSettle(product),
-			Product:           base.meta.product,
-			PriceIncrement:    priceIncrement,
-			QuantityIncrement: quantityIncrement,
-			MinQuantity:       quantityIncrement,
-			MinNotional: exchange.OptionalDecimal{
-				Value: minSize,
-				Valid: minSize.IsPositive(),
-			},
-		})
+		out = append(out, product.instrument)
 	}
 	return out, nil
 }
@@ -318,7 +460,7 @@ func (base *nadoBase) orderBook(ctx context.Context, req exchange.OrderBookReque
 	}
 	bids := nadoFloatLevels(resp.Bids)
 	asks := nadoFloatLevels(resp.Asks)
-	return exchange.OrderBook{Instrument: product.canonical, Bids: bids, Asks: asks, Time: time.UnixMilli(resp.Timestamp).UTC(), Page: exchange.PageInfo{Limit: req.Limit}}, nil
+	return exchange.OrderBook{Instrument: product.instrument, Bids: bids, Asks: asks, Time: time.UnixMilli(resp.Timestamp).UTC(), Page: exchange.PageInfo{Limit: req.Limit}}, nil
 }
 
 func (client *nadoSpotClient) Candles(ctx context.Context, req exchange.CandlesRequest) (exchange.CandlePage, error) {
@@ -413,7 +555,7 @@ func (base *nadoBase) publicTrades(ctx context.Context, req exchange.PublicTrade
 		if row.TradeType == "sell" {
 			side = exchange.SideSell
 		}
-		trades = append(trades, exchange.PublicTrade{Instrument: product.canonical, TradeID: strconv.FormatInt(row.TradeID, 10), Side: side, Price: decimal.NewFromFloat(row.Price), Quantity: decimal.NewFromFloat(row.BaseFilled), Time: time.UnixMilli(row.Timestamp).UTC()})
+		trades = append(trades, exchange.PublicTrade{Instrument: product.instrument, TradeID: strconv.FormatInt(row.TradeID, 10), Side: side, Price: decimal.NewFromFloat(row.Price), Quantity: decimal.NewFromFloat(row.BaseFilled), Time: time.UnixMilli(row.Timestamp).UTC()})
 	}
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: req.Limit}}, nil
 }
@@ -439,7 +581,7 @@ func (base *nadoBase) placeOrder(ctx context.Context, req exchange.PlaceOrderReq
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := base.sdk.PlaceOrder(ctx, input)
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueNado, Product: base.meta.product, Operation: exchange.OrderOperationPlace, State: exchange.AckAcceptedPending, Instrument: product.canonical, OrderType: req.Type, ClientOrderID: req.ClientOrderID}
+	ack := nadoAck(base.meta, exchange.OrderOperationPlace, product, req.Type, req.ClientOrderID, "")
 	if resp != nil {
 		if !validNadoOrderID(resp.Digest) {
 			return exchange.OrderAcknowledgement{}, nadoMalformed(base.meta.product, "PlaceOrder", "invalid response order digest")
@@ -468,8 +610,36 @@ func (base *nadoBase) orderInput(ctx context.Context, product nadoProduct, req e
 		}
 		effectivePrice = price
 	}
+	if _, err := nadosdk.ParseX18(effectivePrice.String()); err != nil {
+		return nadosdk.ClientOrderInput{}, base.err("PlaceOrder", exchange.KindInvalidRequest, "price is not representable as Nado x18")
+	}
+	if _, err := nadosdk.ParseX18(req.Quantity.String()); err != nil {
+		return nadosdk.ClientOrderInput{}, base.err("PlaceOrder", exchange.KindInvalidRequest, "quantity is not representable as Nado x18")
+	}
 	input := nadosdk.ClientOrderInput{ProductId: product.productID, Price: effectivePrice.String(), Amount: req.Quantity.String(), Side: nadoSide(req.Side), OrderType: orderType, ReduceOnly: req.ReduceOnly, PostOnly: req.LimitPolicy == exchange.LimitPolicyPostOnly}
+	input.DiscoveredProduct = nadoDiscoveredProduct(product)
 	return input, nil
+}
+
+func nadoDiscoveredProduct(product nadoProduct) *nadosdk.DiscoveredProduct {
+	return &nadosdk.DiscoveredProduct{
+		ProductID:   product.productID,
+		ProductType: product.marketType,
+		Symbol: nadosdk.Symbol{
+			Type:              string(product.marketType),
+			ProductID:         int(product.productID),
+			Symbol:            product.native,
+			PriceIncrementX18: nadoX18String(product.instrument.Rules.PriceIncrement),
+			SizeIncrement:     nadoX18String(product.instrument.Rules.QuantityIncrement),
+			MinSize:           nadoX18String(product.instrument.Rules.MinQuantity),
+			TradingStatus:     nadosdk.TradingStatusLive,
+		},
+		BookInfo: nadosdk.ProductBookInfo{
+			PriceIncrementX18: nadoX18String(product.instrument.Rules.PriceIncrement),
+			SizeIncrement:     nadoX18String(product.instrument.Rules.QuantityIncrement),
+			MinSize:           nadoX18String(product.instrument.Rules.MinQuantity),
+		},
+	}
 }
 
 func (base *nadoBase) marketOrderLimitPrice(ctx context.Context, product nadoProduct, side exchange.Side) (decimal.Decimal, error) {
@@ -477,10 +647,7 @@ func (base *nadoBase) marketOrderLimitPrice(ctx context.Context, product nadoPro
 	if err != nil {
 		return decimal.Zero, base.normalize("PlaceOrder", err)
 	}
-	tick, err := nadoX18(product.symbol.PriceIncrementX18)
-	if err != nil || !tick.IsPositive() {
-		return decimal.Zero, base.err("PlaceOrder", exchange.KindMalformedResponse, "Nado product has an invalid price increment")
-	}
+	tick := product.instrument.Rules.PriceIncrement
 	switch side {
 	case exchange.SideBuy:
 		if len(book.Asks) == 0 {
@@ -537,7 +704,7 @@ func (base *nadoBase) cancelOrder(ctx context.Context, req exchange.CancelOrderR
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := base.sdk.CancelOrders(ctx, nadosdk.CancelOrdersInput{ProductIds: []int64{product.productID}, Digests: []string{req.OrderID}})
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueNado, Product: base.meta.product, Operation: exchange.OrderOperationCancel, State: exchange.AckCanceled, Instrument: product.canonical, OrderID: req.OrderID}
+	ack := nadoAck(base.meta, exchange.OrderOperationCancel, product, "", "", req.OrderID)
 	if err != nil {
 		return ack, base.mutationError("CancelOrder", err, &ack)
 	}
@@ -559,28 +726,48 @@ func (client *nadoPerpClient) OpenOrders(ctx context.Context, req exchange.OpenO
 }
 
 func (base *nadoBase) openOrders(ctx context.Context, req exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
-	product, err := base.product(ctx, req.Instrument, "OpenOrders")
+	products, err := base.productsForOptionalInstrument(ctx, req.Instrument, "OpenOrders")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
+	ids := nadoProductIDs(products)
+	requestedIDs := nadoProductIDSet(ids)
 	sender, err := base.sdk.Sender()
 	if err != nil {
 		return exchange.OrderPage{}, base.normalize("OpenOrders", err)
 	}
-	resp, err := base.sdk.GetAccountMultiProductsOrders(ctx, []int64{product.productID}, sender)
+	resp, err := base.sdk.GetAccountMultiProductsOrders(ctx, ids, sender)
 	if err != nil {
 		return exchange.OrderPage{}, base.normalize("OpenOrders", err)
 	}
+	byID := nadoProductsByID(products)
+	knownByID, err := base.allKnownProductByID(ctx, "OpenOrders")
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
 	var orders []exchange.Order
 	for _, group := range resp.ProductOrders {
-		if group.ProductID != product.productID {
+		if _, ok := knownByID[group.ProductID]; !ok {
+			return exchange.OrderPage{}, base.err("OpenOrders", exchange.KindMetadataResolution, "Nado order product metadata was not found")
+		}
+		if !requestedIDs[group.ProductID] {
 			continue
 		}
+		if _, ok := byID[group.ProductID]; !ok {
+			return exchange.OrderPage{}, base.err("OpenOrders", exchange.KindMetadataResolution, "Nado order product metadata was not found")
+		}
 		for _, row := range group.Orders {
-			if row.ProductID != product.productID {
+			if _, ok := knownByID[row.ProductID]; !ok {
+				return exchange.OrderPage{}, base.err("OpenOrders", exchange.KindMetadataResolution, "Nado order product metadata was not found")
+			}
+			if !requestedIDs[row.ProductID] {
 				continue
 			}
-			order, err := nadoOrder(row, product)
+			rowProduct, ok := byID[row.ProductID]
+			if !ok {
+				return exchange.OrderPage{}, base.err("OpenOrders", exchange.KindMetadataResolution, "Nado order product metadata was not found")
+			}
+			order, err := nadoOrder(row, rowProduct)
 			if err != nil {
 				return exchange.OrderPage{}, err
 			}
@@ -599,10 +786,12 @@ func (client *nadoPerpClient) OrderHistory(ctx context.Context, req exchange.Ord
 }
 
 func (base *nadoBase) orderHistory(ctx context.Context, req exchange.OrderHistoryRequest) (exchange.OrderPage, error) {
-	product, err := base.product(ctx, req.Instrument, "OrderHistory")
+	products, err := base.productsForOptionalInstrument(ctx, req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
+	ids := nadoProductIDs(products)
+	requestedIDs := nadoProductIDSet(ids)
 	sender, err := base.sdk.Sender()
 	if err != nil {
 		return exchange.OrderPage{}, base.normalize("OrderHistory", err)
@@ -611,14 +800,26 @@ func (base *nadoBase) orderHistory(ctx context.Context, req exchange.OrderHistor
 	if !req.End.IsZero() {
 		maxTime = req.End.Unix()
 	}
-	archive, err := base.sdk.GetArchiveOrders(ctx, sender, []int64{product.productID}, maxTime, req.Cursor, req.Limit)
+	archive, err := base.sdk.GetArchiveOrders(ctx, sender, ids, maxTime, req.Cursor, req.Limit)
 	if err != nil {
 		return exchange.OrderPage{}, base.normalize("OrderHistory", err)
 	}
+	byID := nadoProductsByID(products)
+	knownByID, err := base.allKnownProductByID(ctx, "OrderHistory")
+	if err != nil {
+		return exchange.OrderPage{}, err
+	}
 	orders := make([]exchange.Order, 0, len(archive.Orders))
 	for _, row := range archive.Orders {
-		if row.ProductID != product.productID {
+		if _, ok := knownByID[row.ProductID]; !ok {
+			return exchange.OrderPage{}, base.err("OrderHistory", exchange.KindMetadataResolution, "Nado order product metadata was not found")
+		}
+		if !requestedIDs[row.ProductID] {
 			continue
+		}
+		product, ok := byID[row.ProductID]
+		if !ok {
+			return exchange.OrderPage{}, base.err("OrderHistory", exchange.KindMetadataResolution, "Nado order product metadata was not found")
 		}
 		order, err := nadoArchiveOrder(row, product)
 		if err != nil {
@@ -648,22 +849,37 @@ func (base *nadoBase) fills(ctx context.Context, req exchange.FillsRequest) (exc
 	if req.Cursor != "" || req.OrderID != "" {
 		return exchange.FillPage{}, base.err("Fills", exchange.KindInvalidRequest, "cursor and order id filters are not supported")
 	}
-	product, err := base.product(ctx, req.Instrument, "Fills")
+	products, err := base.productsForOptionalInstrument(ctx, req.Instrument, "Fills")
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
+	ids := nadoProductIDs(products)
+	requestedIDs := nadoProductIDSet(ids)
 	sender, err := base.sdk.Sender()
 	if err != nil {
 		return exchange.FillPage{}, base.normalize("Fills", err)
 	}
-	resp, err := base.sdk.GetMatches(ctx, sender, []int64{product.productID}, req.Limit)
+	resp, err := base.sdk.GetMatches(ctx, sender, ids, req.Limit)
 	if err != nil {
 		return exchange.FillPage{}, base.normalize("Fills", err)
 	}
+	byID := nadoProductsByID(products)
+	knownByID, err := base.allKnownProductByID(ctx, "Fills")
+	if err != nil {
+		return exchange.FillPage{}, err
+	}
 	fills := make([]exchange.Fill, 0, len(resp.Matches))
 	for _, row := range resp.Matches {
-		if nadoMatchProductID(row) != product.productID {
+		productID := nadoMatchProductID(row)
+		if _, ok := knownByID[productID]; !ok {
+			return exchange.FillPage{}, base.err("Fills", exchange.KindMetadataResolution, "Nado fill product metadata was not found")
+		}
+		if !requestedIDs[productID] {
 			continue
+		}
+		product, ok := byID[productID]
+		if !ok {
+			return exchange.FillPage{}, base.err("Fills", exchange.KindMetadataResolution, "Nado fill product metadata was not found")
 		}
 		fill, err := nadoMatchFill(row, product)
 		if err != nil {
@@ -731,7 +947,7 @@ func (base *nadoBase) balanceSnapshot(ctx context.Context, operation string) ([]
 	if err != nil {
 		return nil, base.normalize(operation, err)
 	}
-	products, err := base.discover(ctx, operation)
+	products, err := base.allKnownProducts(ctx, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -750,10 +966,22 @@ func (base *nadoBase) balanceSnapshot(ctx context.Context, operation string) ([]
 			asset = "USDT0"
 		} else if product, ok := byID[row.ProductID]; ok {
 			asset = product.base
+		} else if amount.IsZero() {
+			continue
+		} else {
+			return nil, base.err(operation, exchange.KindMetadataResolution, "Nado balance product metadata was not found")
 		}
 		balances = append(balances, exchange.Balance{Asset: asset, Available: amount, Total: amount})
 	}
 	return balances, nil
+}
+
+func (base *nadoBase) allKnownProductByID(ctx context.Context, operation string) (map[int64]nadoProduct, error) {
+	products, err := base.allKnownProducts(ctx, operation)
+	if err != nil {
+		return nil, err
+	}
+	return nadoProductsByID(products), nil
 }
 
 func (client *nadoPerpClient) Positions(ctx context.Context, req exchange.PositionsRequest) ([]exchange.Position, error) {
@@ -761,7 +989,7 @@ func (client *nadoPerpClient) Positions(ctx context.Context, req exchange.Positi
 	if err != nil {
 		return nil, client.normalize("Positions", err)
 	}
-	products, err := client.discover(ctx, "Positions")
+	products, err := client.productsForOptionalInstrument(ctx, req.Instrument, "Positions")
 	if err != nil {
 		return nil, err
 	}
@@ -769,15 +997,29 @@ func (client *nadoPerpClient) Positions(ctx context.Context, req exchange.Positi
 	for _, product := range products {
 		byID[product.productID] = product
 	}
+	requestedIDs := nadoProductIDSet(nadoProductIDs(products))
+	knownByID, err := client.allKnownProductByID(ctx, "Positions")
+	if err != nil {
+		return nil, err
+	}
 	var positions []exchange.Position
 	for _, row := range account.PerpBalances {
-		product, ok := byID[row.ProductID]
-		if !ok || (req.Instrument != "" && product.canonical != req.Instrument) {
-			continue
-		}
 		qty, err := nadoX18(row.Balance.Amount)
 		if err != nil {
 			return nil, nadoMalformed(exchange.ProductPerp, "Positions", "invalid position quantity")
+		}
+		if _, ok := knownByID[row.ProductID]; !ok {
+			if qty.IsZero() {
+				continue
+			}
+			return nil, client.err("Positions", exchange.KindMetadataResolution, "Nado position product metadata was not found")
+		}
+		if !requestedIDs[row.ProductID] {
+			continue
+		}
+		product, ok := byID[row.ProductID]
+		if !ok {
+			return nil, client.err("Positions", exchange.KindMetadataResolution, "Nado position product metadata was not found")
 		}
 		if qty.IsZero() {
 			continue
@@ -805,7 +1047,7 @@ func (client *nadoPerpClient) Positions(ctx context.Context, req exchange.Positi
 		if qty.IsNegative() {
 			side = exchange.SideSell
 		}
-		positions = append(positions, exchange.Position{Instrument: product.canonical, Side: side, Quantity: qty.Abs(), EntryPrice: entry, MarkPrice: mark})
+		positions = append(positions, exchange.Position{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, Side: side, Quantity: qty.Abs(), EntryPrice: entry, MarkPrice: mark})
 	}
 	return positions, nil
 }
@@ -851,7 +1093,7 @@ func (client *nadoPerpClient) SetLeverage(ctx context.Context, req exchange.SetL
 	if req.Leverage <= 0 {
 		return exchange.Leverage{}, client.err("SetLeverage", exchange.KindInvalidRequest, "leverage must be positive")
 	}
-	return exchange.Leverage{Instrument: product.canonical, Effective: 0}, nil
+	return exchange.Leverage{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, Effective: 0}, nil
 }
 
 func (client *nadoSpotClient) WebSocket() exchange.SpotWebSocket {
@@ -935,7 +1177,7 @@ func nadoOrder(row nadosdk.Order, product nadoProduct) (exchange.Order, error) {
 	if err != nil {
 		return exchange.Order{}, nadoMalformed(productType(product), "OpenOrders", err.Error())
 	}
-	return exchange.Order{Instrument: product.canonical, OrderID: row.Digest, Type: exchange.OrderTypeLimit, Side: side, Quantity: qty.Abs(), LimitPrice: price, Filled: qty.Abs().Sub(unfilled.Abs()), Status: "open"}, nil
+	return exchange.Order{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, OrderID: row.Digest, Type: exchange.OrderTypeLimit, Side: side, Quantity: qty.Abs(), LimitPrice: price, Filled: qty.Abs().Sub(unfilled.Abs()), Status: "open"}, nil
 }
 
 func nadoMatchFill(row nadosdk.Match, product nadoProduct) (exchange.Fill, error) {
@@ -967,7 +1209,7 @@ func nadoMatchFill(row nadosdk.Match, product nadoProduct) (exchange.Fill, error
 	if err != nil {
 		return exchange.Fill{}, nadoMalformed(productType(product), "Fills", err.Error())
 	}
-	return exchange.Fill{Instrument: product.canonical, OrderID: row.Digest, FillID: row.SubmissionIdx, Side: side, Price: price, Quantity: qty.Abs(), Fee: fee, FeeAsset: product.quote, Time: fillTime}, nil
+	return exchange.Fill{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, OrderID: row.Digest, FillID: row.SubmissionIdx, Side: side, Price: price, Quantity: qty.Abs(), Fee: fee, FeeAsset: product.quote, Time: fillTime}, nil
 }
 
 func nadoMatchProductID(row nadosdk.Match) int64 {
@@ -1014,7 +1256,7 @@ func nadoArchiveOrder(row nadosdk.ArchiveOrder, product nadoProduct) (exchange.O
 	if filled.Abs().Equal(qty.Abs()) {
 		status = "filled"
 	}
-	return exchange.Order{Instrument: product.canonical, OrderID: row.Digest, Type: exchange.OrderTypeLimit, Side: side, Quantity: qty.Abs(), LimitPrice: price, Filled: filled.Abs(), Status: status, UpdatedAt: time.Unix(ts, 0).UTC()}, nil
+	return exchange.Order{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, OrderID: row.Digest, Type: exchange.OrderTypeLimit, Side: side, Quantity: qty.Abs(), LimitPrice: price, Filled: filled.Abs(), Status: status, UpdatedAt: time.Unix(ts, 0).UTC()}, nil
 }
 
 func withinUnixWindow(at, start, end time.Time) bool {
@@ -1036,7 +1278,7 @@ func nadoFundingRate(resp nadosdk.FundingRateResponse, product nadoProduct) (exc
 	if err != nil {
 		return exchange.FundingRate{}, nadoMalformed(productType(product), "FundingRate", "invalid funding timestamp")
 	}
-	return exchange.FundingRate{Instrument: product.canonical, Rate: rate, ObservedAt: time.Unix(at, 0).UTC(), FundingTime: time.Unix(at, 0).UTC()}, nil
+	return exchange.FundingRate{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, Rate: rate, ObservedAt: time.Unix(at, 0).UTC(), FundingTime: time.Unix(at, 0).UTC()}, nil
 }
 
 func productType(product nadoProduct) exchange.Product {
@@ -1079,17 +1321,8 @@ func nadoDecimalScale(value decimal.Decimal, places int32) *big.Int {
 	return result
 }
 
-func validNadoOrderID(value string) bool {
-	value = strings.TrimSpace(value)
-	if len(value) != 66 || !strings.HasPrefix(value, "0x") {
-		return false
-	}
-	for _, ch := range value[2:] {
-		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
-			return false
-		}
-	}
-	return true
+func nadoX18String(value decimal.Decimal) string {
+	return nadoDecimalScale(value, 18).String()
 }
 
 func nadoMalformed(product exchange.Product, operation, message string) error {
@@ -1156,7 +1389,7 @@ func nadoBookEvent(book *nadosdk.OrderBook, product nadoProduct, exchangeProduct
 	if err != nil {
 		return exchange.BookEvent{}, err
 	}
-	return exchange.BookEvent{Kind: exchange.EventSnapshot, Instrument: product.canonical, Sequence: book.MaxTimestamp, Previous: book.LastMaxTimestamp, Bids: bids, Asks: asks, Time: at}, nil
+	return exchange.BookEvent{Kind: exchange.EventSnapshot, Instrument: product.instrument, Sequence: book.MaxTimestamp, Previous: book.LastMaxTimestamp, Bids: bids, Asks: asks, Time: at}, nil
 }
 
 func nadoBBOEvent(ticker *nadosdk.Ticker, product nadoProduct, exchangeProduct exchange.Product, operation string) (exchange.BBOEvent, error) {
@@ -1183,7 +1416,7 @@ func nadoBBOEvent(ticker *nadosdk.Ticker, product nadoProduct, exchangeProduct e
 	if err != nil {
 		return exchange.BBOEvent{}, err
 	}
-	return exchange.BBOEvent{Instrument: product.canonical, Bid: exchange.BookLevel{Price: bidPrice, Quantity: bidQty}, Ask: exchange.BookLevel{Price: askPrice, Quantity: askQty}, Time: at}, nil
+	return exchange.BBOEvent{Instrument: product.instrument, Bid: exchange.BookLevel{Price: bidPrice, Quantity: bidQty}, Ask: exchange.BookLevel{Price: askPrice, Quantity: askQty}, Time: at}, nil
 }
 
 func nadoPublicTradeEvent(trade *nadosdk.Trade, product nadoProduct, exchangeProduct exchange.Product, operation string) (exchange.PublicTradeEvent, error) {
@@ -1206,7 +1439,7 @@ func nadoPublicTradeEvent(trade *nadosdk.Trade, product nadoProduct, exchangePro
 	if err != nil {
 		return exchange.PublicTradeEvent{}, err
 	}
-	return exchange.PublicTradeEvent{Instrument: product.canonical, Side: side, Price: price, Quantity: qty.Abs(), Time: at}, nil
+	return exchange.PublicTradeEvent{Instrument: product.instrument, Side: side, Price: price, Quantity: qty.Abs(), Time: at}, nil
 }
 
 func nadoCandleEvent(candle *nadosdk.Candlestick, product nadoProduct, interval string, exchangeProduct exchange.Product, operation string) (exchange.CandleEvent, error) {
@@ -1237,7 +1470,7 @@ func nadoCandleEvent(candle *nadosdk.Candlestick, product nadoProduct, interval 
 	if err != nil {
 		return exchange.CandleEvent{}, err
 	}
-	return exchange.CandleEvent{Instrument: product.canonical, Interval: interval, Candle: exchange.Candle{OpenTime: at, Open: open, High: high, Low: low, Close: closeValue, Volume: volume, Complete: true}}, nil
+	return exchange.CandleEvent{Instrument: product.instrument, Interval: interval, Candle: exchange.Candle{OpenTime: at, Open: open, High: high, Low: low, Close: closeValue, Volume: volume, Complete: true}}, nil
 }
 
 func nadoOrderUpdateEvent(update *nadosdk.OrderUpdate, product nadoProduct, exchangeProduct exchange.Product, operation string) (exchange.OrderEvent, error) {
@@ -1263,7 +1496,7 @@ func nadoOrderUpdateEvent(update *nadosdk.OrderUpdate, product nadoProduct, exch
 	if err != nil {
 		return exchange.OrderEvent{}, nadoMalformed(exchangeProduct, operation, err.Error())
 	}
-	return exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{Instrument: product.canonical, OrderID: update.Digest, Side: side, Quantity: qty.Abs(), Type: exchange.OrderTypeLimit, Status: status, UpdatedAt: at}}, nil
+	return exchange.OrderEvent{Kind: exchange.EventDelta, Order: exchange.Order{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, OrderID: update.Digest, Side: side, Quantity: qty.Abs(), Type: exchange.OrderTypeLimit, Status: status, UpdatedAt: at}}, nil
 }
 
 func nadoOrderReasonStatus(reason nadosdk.OrderUpdateReason) (string, error) {
@@ -1303,7 +1536,7 @@ func nadoFillEvent(fill *nadosdk.Fill, product nadoProduct, exchangeProduct exch
 	if err != nil {
 		return exchange.FillEvent{}, err
 	}
-	return exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{Instrument: product.canonical, OrderID: fill.OrderDigest, FillID: fill.SubmissionIdx, Side: side, Price: price, Quantity: qty.Abs(), Fee: fee, FeeAsset: product.quote, Time: at}}, nil
+	return exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, OrderID: fill.OrderDigest, FillID: fill.SubmissionIdx, Side: side, Price: price, Quantity: qty.Abs(), Fee: fee, FeeAsset: product.quote, Time: at}}, nil
 }
 
 func nadoBalanceEvent(change *nadosdk.PositionChange, exchangeProduct exchange.Product, operation string) (exchange.BalanceEvent, error) {
@@ -1348,7 +1581,7 @@ func nadoPositionEvent(change *nadosdk.PositionChange, product nadoProduct, oper
 	if err != nil {
 		return exchange.PositionEvent{}, err
 	}
-	return exchange.PositionEvent{Kind: exchange.EventDelta, Positions: []exchange.Position{{Instrument: product.canonical, Side: side, Quantity: qty.Abs(), EntryPrice: entry}}, Time: at}, nil
+	return exchange.PositionEvent{Kind: exchange.EventDelta, Positions: []exchange.Position{{NativeSymbol: product.native, NativeID: product.instrument.Identity.NativeID, Side: side, Quantity: qty.Abs(), EntryPrice: entry}}, Time: at}, nil
 }
 
 func nadoFundingRateEvent(rate *nadosdk.FundingRate, product nadoProduct, operation string) (exchange.FundingRateEvent, error) {
@@ -1363,23 +1596,29 @@ func nadoFundingRateEvent(rate *nadosdk.FundingRate, product nadoProduct, operat
 	if err != nil {
 		return exchange.FundingRateEvent{}, err
 	}
-	return exchange.FundingRateEvent{Instrument: product.canonical, Rate: value, EffectiveAt: at}, nil
+	return exchange.FundingRateEvent{Instrument: product.instrument, Rate: value, EffectiveAt: at}, nil
 }
 
 type nadoSpotWSBackend struct {
-	base    *nadoBase
-	mu      sync.Mutex
-	market  *nadosdk.WsMarketClient
-	account *nadosdk.WsAccountClient
-	api     *nadosdk.WsApiClient
+	base          *nadoBase
+	mu            sync.Mutex
+	market        *nadosdk.WsMarketClient
+	marketCancel  context.CancelFunc
+	account       *nadosdk.WsAccountClient
+	accountCancel context.CancelFunc
+	api           *nadosdk.WsApiClient
+	apiCancel     context.CancelFunc
 }
 
 type nadoPerpWSBackend struct {
-	base    *nadoBase
-	mu      sync.Mutex
-	market  *nadosdk.WsMarketClient
-	account *nadosdk.WsAccountClient
-	api     *nadosdk.WsApiClient
+	base          *nadoBase
+	mu            sync.Mutex
+	market        *nadosdk.WsMarketClient
+	marketCancel  context.CancelFunc
+	account       *nadosdk.WsAccountClient
+	accountCancel context.CancelFunc
+	api           *nadosdk.WsApiClient
+	apiCancel     context.CancelFunc
 }
 
 func (backend *nadoSpotWSBackend) ensureMarket(ctx context.Context) (*nadosdk.WsMarketClient, error) {
@@ -1391,14 +1630,21 @@ func (backend *nadoSpotWSBackend) ensureMarket(ctx context.Context) (*nadosdk.Ws
 	if err := backend.base.ready("WebSocket"); err != nil {
 		return nil, err
 	}
-	client, err := nadosdk.NewWsMarketClient(context.Background(), backend.base.sdk.Profile())
+	lifecycleCtx, lifecycleCancel, setupDone := nadoWSLifecycleContext(ctx)
+	client, err := nadosdk.NewWsMarketClient(lifecycleCtx, backend.base.sdk.Profile())
 	if err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
 	if err := client.Connect(); err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
+	setupDone()
 	backend.market = client
+	backend.marketCancel = lifecycleCancel
 	return client, nil
 }
 
@@ -1411,14 +1657,21 @@ func (backend *nadoSpotWSBackend) ensureAccount(ctx context.Context) (*nadosdk.W
 	if err := backend.base.ready("WebSocket"); err != nil {
 		return nil, err
 	}
-	client, err := nadosdk.NewWsAccountClient(context.Background(), backend.base.sdk)
+	lifecycleCtx, lifecycleCancel, setupDone := nadoWSLifecycleContext(ctx)
+	client, err := nadosdk.NewWsAccountClient(lifecycleCtx, backend.base.sdk)
 	if err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
 	if err := client.Connect(); err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
+	setupDone()
 	backend.account = client
+	backend.accountCancel = lifecycleCancel
 	return client, nil
 }
 
@@ -1431,18 +1684,49 @@ func (backend *nadoSpotWSBackend) ensureAPI(ctx context.Context) (*nadosdk.WsApi
 	if err := backend.base.ready("WebSocket"); err != nil {
 		return nil, err
 	}
-	client, err := nadosdk.NewWsApiClient(context.Background(), backend.base.sdk)
+	lifecycleCtx, lifecycleCancel, setupDone := nadoWSLifecycleContext(ctx)
+	client, err := nadosdk.NewWsApiClient(lifecycleCtx, backend.base.sdk)
 	if err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
 	if err := client.Connect(); err != nil {
+		setupDone()
+		lifecycleCancel()
 		return nil, backend.base.normalize("WebSocket", err)
 	}
+	setupDone()
 	backend.api = client
+	backend.apiCancel = lifecycleCancel
 	return client, nil
 }
 
-func (backend *nadoSpotWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+func nadoWSLifecycleContext(ctx context.Context) (context.Context, context.CancelFunc, func()) {
+	lifecycleCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			close(done)
+		})
+	}
+	if err := ctx.Err(); err != nil {
+		cancel()
+		stop()
+		return lifecycleCtx, cancel, stop
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel()
+		case <-done:
+		}
+	}()
+	return lifecycleCtx, cancel, stop
+}
+
+func (backend *nadoSpotWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchOrderBook")
 	if err != nil {
 		return nil, err
@@ -1464,7 +1748,7 @@ func (backend *nadoSpotWSBackend) StartOrderBook(ctx context.Context, instrument
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeOrderBook(product.productID) }), nil
 }
-func (backend *nadoSpotWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (backend *nadoSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchBBO")
 	if err != nil {
 		return nil, err
@@ -1486,7 +1770,7 @@ func (backend *nadoSpotWSBackend) StartBBO(ctx context.Context, instrument strin
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeTicker(product.productID) }), nil
 }
-func (backend *nadoSpotWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+func (backend *nadoSpotWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchPublicTrades")
 	if err != nil {
 		return nil, err
@@ -1508,7 +1792,7 @@ func (backend *nadoSpotWSBackend) StartPublicTrades(ctx context.Context, instrum
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeTrades(product.productID) }), nil
 }
-func (backend *nadoSpotWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+func (backend *nadoSpotWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchCandles")
 	if err != nil {
 		return nil, err
@@ -1533,7 +1817,7 @@ func (backend *nadoSpotWSBackend) StartCandles(ctx context.Context, instrument, 
 		return ws.UnsubscribeLatestCandlestick(product.productID, granularity)
 	}), nil
 }
-func (backend *nadoSpotWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *nadoSpotWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchOrders")
 	if err != nil {
 		return nil, err
@@ -1555,7 +1839,7 @@ func (backend *nadoSpotWSBackend) StartOrders(ctx context.Context, instrument st
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribeOrders(&product.productID) }), nil
 }
-func (backend *nadoSpotWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *nadoSpotWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchFills")
 	if err != nil {
 		return nil, err
@@ -1582,11 +1866,12 @@ func (backend *nadoSpotWSBackend) StartBalances(ctx context.Context, callbacks s
 	if err != nil {
 		return nil, err
 	}
+	refreshCtx, refreshCancel, refreshSetupDone := nadoWSLifecycleContext(ctx)
 	err = ws.SubscribePositions(nil, func(change *nadosdk.PositionChange) {
 		if change == nil {
 			return
 		}
-		balances, err := backend.base.balanceSnapshot(context.Background(), "WatchBalances")
+		balances, err := backend.base.balanceSnapshot(refreshCtx, "WatchBalances")
 		if err != nil {
 			emitNadoWSError(callbacks, err)
 			return
@@ -1600,9 +1885,15 @@ func (backend *nadoSpotWSBackend) StartBalances(ctx context.Context, callbacks s
 		callbacks.Event(event)
 	})
 	if err != nil {
+		refreshSetupDone()
+		refreshCancel()
 		return nil, backend.base.normalize("WatchBalances", err)
 	}
-	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribePositions(nil) }), nil
+	refreshSetupDone()
+	return nadoIdempotentUnsubscribe(func() error {
+		refreshCancel()
+		return ws.UnsubscribePositions(nil)
+	}), nil
 }
 func (backend *nadoSpotWSBackend) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
 	if err := req.Validate(backend.base.meta.product); err != nil {
@@ -1621,7 +1912,7 @@ func (backend *nadoSpotWSBackend) PlaceOrder(ctx context.Context, req exchange.P
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := ws.PlaceOrder(ctx, input)
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueNado, Product: backend.base.meta.product, Operation: exchange.OrderOperationPlace, State: exchange.AckAcceptedPending, Instrument: product.canonical, OrderType: req.Type, ClientOrderID: req.ClientOrderID}
+	ack := nadoAck(backend.base.meta, exchange.OrderOperationPlace, product, req.Type, req.ClientOrderID, "")
 	if resp != nil {
 		if !validNadoOrderID(resp.Digest) {
 			return exchange.OrderAcknowledgement{}, nadoMalformed(backend.base.meta.product, "PlaceOrder", "invalid response order digest")
@@ -1647,7 +1938,7 @@ func (backend *nadoSpotWSBackend) CancelOrder(ctx context.Context, req exchange.
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := ws.CancelOrders(ctx, nadosdk.CancelOrdersInput{ProductIds: []int64{product.productID}, Digests: []string{req.OrderID}})
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueNado, Product: backend.base.meta.product, Operation: exchange.OrderOperationCancel, State: exchange.AckCanceled, Instrument: product.canonical, OrderID: req.OrderID}
+	ack := nadoAck(backend.base.meta, exchange.OrderOperationCancel, product, "", "", req.OrderID)
 	if err != nil {
 		return ack, backend.base.mutationError("CancelOrder", err, &ack)
 	}
@@ -1666,13 +1957,25 @@ func (backend *nadoSpotWSBackend) Close() error {
 		backend.market.Close()
 		backend.market = nil
 	}
+	if backend.marketCancel != nil {
+		backend.marketCancel()
+		backend.marketCancel = nil
+	}
 	if backend.account != nil {
 		backend.account.Close()
 		backend.account = nil
 	}
+	if backend.accountCancel != nil {
+		backend.accountCancel()
+		backend.accountCancel = nil
+	}
 	if backend.api != nil {
 		backend.api.Close()
 		backend.api = nil
+	}
+	if backend.apiCancel != nil {
+		backend.apiCancel()
+		backend.apiCancel = nil
 	}
 	return nil
 }
@@ -1690,28 +1993,28 @@ func nadoIdempotentUnsubscribe(unsubscribe func() error) func() error {
 	}
 }
 
-func (backend *nadoPerpWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartOrderBook(ctx, instrument, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartBBO(ctx, instrument, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartPublicTrades(ctx, instrument, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartCandles(ctx, instrument, interval, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartOrders(ctx, instrument, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartFills(ctx, instrument, callbacks)
 }
 func (backend *nadoPerpWSBackend) StartBalances(ctx context.Context, callbacks streamCallbacks[exchange.BalanceEvent]) (func() error, error) {
 	return (*nadoSpotWSBackend)(backend).StartBalances(ctx, callbacks)
 }
-func (backend *nadoPerpWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchPositions")
 	if err != nil {
 		return nil, err
@@ -1733,7 +2036,7 @@ func (backend *nadoPerpWSBackend) StartPositions(ctx context.Context, instrument
 	}
 	return nadoIdempotentUnsubscribe(func() error { return ws.UnsubscribePositions(&product.productID) }), nil
 }
-func (backend *nadoPerpWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
+func (backend *nadoPerpWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
 	product, err := backend.base.product(ctx, instrument, "WatchReference")
 	if err != nil {
 		return nil, err

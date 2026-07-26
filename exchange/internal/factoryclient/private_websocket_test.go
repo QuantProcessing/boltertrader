@@ -51,16 +51,17 @@ func newFakePrivateWSBackend() *fakePrivateWSBackend {
 
 func (backend *fakePrivateWSBackend) StartOrders(
 	_ context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.OrderEvent],
 ) (func() error, error) {
+	key := instrument.Identity.NativeSymbol
 	backend.mu.Lock()
-	backend.startOrdersCalls[instrument]++
-	backend.orderCallbacks[instrument] = callbacks
+	backend.startOrdersCalls[key]++
+	backend.orderCallbacks[key] = callbacks
 	backend.mu.Unlock()
 	return func() error {
 		backend.mu.Lock()
-		backend.stopOrdersCalls[instrument]++
+		backend.stopOrdersCalls[key]++
 		backend.mu.Unlock()
 		return nil
 	}, nil
@@ -68,16 +69,17 @@ func (backend *fakePrivateWSBackend) StartOrders(
 
 func (backend *fakePrivateWSBackend) StartFills(
 	_ context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.FillEvent],
 ) (func() error, error) {
+	key := instrument.Identity.NativeSymbol
 	backend.mu.Lock()
-	backend.startFillsCalls[instrument]++
-	backend.fillCallbacks[instrument] = callbacks
+	backend.startFillsCalls[key]++
+	backend.fillCallbacks[key] = callbacks
 	backend.mu.Unlock()
 	return func() error {
 		backend.mu.Lock()
-		backend.stopFillsCalls[instrument]++
+		backend.stopFillsCalls[key]++
 		backend.mu.Unlock()
 		return nil
 	}, nil
@@ -101,16 +103,17 @@ func (backend *fakePrivateWSBackend) StartBalances(
 
 func (backend *fakePrivateWSBackend) StartPositions(
 	_ context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PositionEvent],
 ) (func() error, error) {
+	key := instrument.Identity.NativeSymbol
 	backend.mu.Lock()
-	backend.startPositionsCalls[instrument]++
-	backend.positionCallbacks[instrument] = callbacks
+	backend.startPositionsCalls[key]++
+	backend.positionCallbacks[key] = callbacks
 	backend.mu.Unlock()
 	return func() error {
 		backend.mu.Lock()
-		backend.stopPositionsCalls[instrument]++
+		backend.stopPositionsCalls[key]++
 		backend.mu.Unlock()
 		return nil
 	}, nil
@@ -129,7 +132,8 @@ func (backend *fakePrivateWSBackend) PlaceOrder(
 		Product:       exchange.ProductSpot,
 		Operation:     exchange.OrderOperationPlace,
 		State:         exchange.AckAcceptedPending,
-		Instrument:    request.Instrument,
+		NativeSymbol:  request.Instrument.Identity.NativeSymbol,
+		NativeID:      request.Instrument.Identity.NativeID,
 		ClientOrderID: request.ClientOrderID,
 	}, nil
 }
@@ -143,12 +147,13 @@ func (backend *fakePrivateWSBackend) CancelOrder(
 	backend.lastCancel = request
 	backend.mu.Unlock()
 	return exchange.OrderAcknowledgement{
-		Venue:      exchange.VenueLighter,
-		Product:    exchange.ProductSpot,
-		Operation:  exchange.OrderOperationCancel,
-		State:      exchange.AckCanceled,
-		Instrument: request.Instrument,
-		OrderID:    request.OrderID,
+		Venue:        exchange.VenueLighter,
+		Product:      exchange.ProductSpot,
+		Operation:    exchange.OrderOperationCancel,
+		State:        exchange.AckCanceled,
+		NativeSymbol: request.Instrument.Identity.NativeSymbol,
+		NativeID:     request.Instrument.Identity.NativeID,
+		OrderID:      request.OrderID,
 	}, nil
 }
 
@@ -165,11 +170,12 @@ func TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated(t *testing.T) {
 		newPublicWebSocket(clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot}, &fakePublicWSBackend{}),
 		privateBackend,
 	)
-	orders, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "ETH-USDC"})
+	eth := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC")
+	orders, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: eth})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fills, err := socket.WatchFills(context.Background(), exchange.WatchRequest{Instrument: "ETH-USDC"})
+	fills, err := socket.WatchFills(context.Background(), exchange.WatchRequest{Instrument: eth})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,8 +186,8 @@ func TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated(t *testing.T) {
 	privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{
 		Kind: exchange.EventDelta,
 		Order: exchange.Order{
-			Instrument: "ETH-USDC",
-			OrderID:    "11",
+			NativeSymbol: "ETH-USDC",
+			OrderID:      "11",
 		},
 	})
 	if got := <-orders.Events(); got.Order.OrderID != "11" {
@@ -196,8 +202,8 @@ func TestSpotWebSocketPrivateStreamsAreSemanticallyIsolated(t *testing.T) {
 	privateBackend.fillCallbacks["ETH-USDC"].Event(exchange.FillEvent{
 		Kind: exchange.EventDelta,
 		Fill: exchange.Fill{
-			Instrument: "ETH-USDC",
-			FillID:     "fill-1",
+			NativeSymbol: "ETH-USDC",
+			FillID:       "fill-1",
 		},
 	})
 	if got := <-fills.Events(); got.Fill.FillID != "fill-1" {
@@ -216,15 +222,17 @@ func TestSpotWebSocketPrivateStreamsShareExactSemanticTopic(t *testing.T) {
 		newPublicWebSocket(clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot}, &fakePublicWSBackend{}),
 		privateBackend,
 	)
-	first, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "ETH-USDC"})
+	eth := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC")
+	btc := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "BTC-USDC")
+	first, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: eth})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "ETH-USDC"})
+	second, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: eth})
 	if err != nil {
 		t.Fatal(err)
 	}
-	third, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDC"})
+	third, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: btc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +240,7 @@ func TestSpotWebSocketPrivateStreamsShareExactSemanticTopic(t *testing.T) {
 		t.Fatalf("starts = %+v, want one per instrument", privateBackend.startOrdersCalls)
 	}
 
-	privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{Instrument: "ETH-USDC", OrderID: "eth"}})
+	privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{NativeSymbol: "ETH-USDC", OrderID: "eth"}})
 	if got := <-first.Events(); got.Order.OrderID != "eth" {
 		t.Fatalf("first order = %+v", got)
 	}
@@ -268,8 +276,9 @@ func TestPrivateWebSocketStatusAndBackpressureAreObservable(t *testing.T) {
 		newPublicWebSocket(clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot}, &fakePublicWSBackend{}),
 		privateBackend,
 	)
+	eth := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC")
 	subscription, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{
-		Instrument: "ETH-USDC",
+		Instrument: eth,
 		Options:    exchange.WatchOptions{Buffer: 1},
 	})
 	if err != nil {
@@ -278,10 +287,10 @@ func TestPrivateWebSocketStatusAndBackpressureAreObservable(t *testing.T) {
 	assertStatusState(t, subscription.Status(), exchange.SubscriptionConnecting)
 	assertStatusState(t, subscription.Status(), exchange.SubscriptionActive)
 
-	privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{Instrument: "ETH-USDC", OrderID: "1"}})
+	privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{NativeSymbol: "ETH-USDC", OrderID: "1"}})
 	blocked := make(chan struct{})
 	go func() {
-		privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{Instrument: "ETH-USDC", OrderID: "2"}})
+		privateBackend.orderCallbacks["ETH-USDC"].Event(exchange.OrderEvent{Order: exchange.Order{NativeSymbol: "ETH-USDC", OrderID: "2"}})
 		close(blocked)
 	}()
 	select {
@@ -357,11 +366,13 @@ func TestPerpWebSocketPositionsArePerpOnlyAndInstrumentKeyed(t *testing.T) {
 		&fakePerpWSBackend{},
 		privateBackend,
 	)
-	first, err := socket.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: "ETH"})
+	eth := websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "ETH")
+	btc := websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "BTC")
+	first, err := socket.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: eth})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := socket.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: "BTC"})
+	second, err := socket.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: btc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,11 +383,11 @@ func TestPerpWebSocketPositionsArePerpOnlyAndInstrumentKeyed(t *testing.T) {
 	privateBackend.positionCallbacks["ETH"].Event(exchange.PositionEvent{
 		Kind: exchange.EventSnapshot,
 		Positions: []exchange.Position{{
-			Instrument: "ETH",
-			Quantity:   decimal.RequireFromString("2"),
+			NativeSymbol: "ETH",
+			Quantity:     decimal.RequireFromString("2"),
 		}},
 	})
-	if got := <-first.Events(); got.Positions[0].Instrument != "ETH" {
+	if got := <-first.Events(); got.Positions[0].NativeSymbol != "ETH" {
 		t.Fatalf("ETH position = %+v", got)
 	}
 	select {
@@ -402,8 +413,9 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 		newPublicWebSocket(clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot}, &fakePublicWSBackend{}),
 		privateBackend,
 	)
+	eth := websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC")
 	place := exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDC",
+		Instrument:    eth,
 		ClientOrderID: "123",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -416,7 +428,7 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	if ack.Operation != exchange.OrderOperationPlace || ack.ClientOrderID != "123" {
 		t.Fatalf("place ack = %+v", ack)
 	}
-	if privateBackend.placeCalls != 1 || privateBackend.lastPlace.Instrument != "ETH-USDC" {
+	if privateBackend.placeCalls != 1 || privateBackend.lastPlace.Instrument.Identity.NativeSymbol != "ETH-USDC" {
 		t.Fatalf("place pass-through calls=%d request=%+v", privateBackend.placeCalls, privateBackend.lastPlace)
 	}
 	if _, err := socket.PlaceOrder(nil, place); !errors.Is(err, exchange.ErrInvalidRequest) {
@@ -440,7 +452,7 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	}
 
 	cancelAck, err := socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "ETH-USDC",
+		Instrument: eth,
 		OrderID:    "99",
 	})
 	if err != nil {
@@ -451,7 +463,7 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	}
 	nadoDigest := "0x1111111111111111111111111111111111111111111111111111111111111111"
 	cancelAck, err = socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "ETH-USDT0",
+		Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDT0"),
 		OrderID:    nadoDigest,
 	})
 	if err != nil {
@@ -462,7 +474,7 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	}
 	bybitUUID := "cf55eb56-0853-4d3f-945e-17ddd6059a89"
 	cancelAck, err = socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "BTC-USDT"),
 		OrderID:    bybitUUID,
 	})
 	if err != nil {
@@ -471,18 +483,18 @@ func TestPrivateWebSocketCommandsValidateAndPassThroughAcknowledgements(t *testi
 	if cancelAck.Operation != exchange.OrderOperationCancel || cancelAck.OrderID != bybitUUID {
 		t.Fatalf("UUID cancel ack = %+v", cancelAck)
 	}
-	if _, err := socket.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: "ETH-USDC", OrderID: "99"}); !errors.Is(err, exchange.ErrInvalidRequest) {
+	if _, err := socket.CancelOrder(nil, exchange.CancelOrderRequest{Instrument: eth, OrderID: "99"}); !errors.Is(err, exchange.ErrInvalidRequest) {
 		t.Fatalf("nil CancelOrder context error = %v, want invalid request", err)
 	}
-	if _, err := socket.CancelOrder(canceled, exchange.CancelOrderRequest{Instrument: "ETH-USDC", OrderID: "99"}); !errors.Is(err, exchange.ErrCanceled) {
+	if _, err := socket.CancelOrder(canceled, exchange.CancelOrderRequest{Instrument: eth, OrderID: "99"}); !errors.Is(err, exchange.ErrCanceled) {
 		t.Fatalf("canceled CancelOrder context error = %v, want canceled", err)
 	}
-	if _, err := socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: "ETH-USDC"}); !errors.Is(err, exchange.ErrInvalidRequest) {
+	if _, err := socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: eth}); !errors.Is(err, exchange.ErrInvalidRequest) {
 		t.Fatalf("invalid CancelOrder request error = %v, want invalid request", err)
 	}
 	for _, orderID := range []string{"0", "01", "not-an-order-id", "9223372036854775808"} {
 		if _, err := socket.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-			Instrument: "ETH-USDC",
+			Instrument: eth,
 			OrderID:    orderID,
 		}); !errors.Is(err, exchange.ErrInvalidRequest) {
 			t.Errorf("CancelOrder order id %q error = %v, want invalid request", orderID, err)
@@ -504,7 +516,7 @@ func newBlockingPrivateWSBackend() *blockingPrivateWSBackend {
 
 func (backend *blockingPrivateWSBackend) StartOrders(
 	ctx context.Context,
-	_ string,
+	_ exchange.Instrument,
 	_ streamCallbacks[exchange.OrderEvent],
 ) (func() error, error) {
 	close(backend.started)
@@ -514,7 +526,7 @@ func (backend *blockingPrivateWSBackend) StartOrders(
 
 func (backend *blockingPrivateWSBackend) StartFills(
 	context.Context,
-	string,
+	exchange.Instrument,
 	streamCallbacks[exchange.FillEvent],
 ) (func() error, error) {
 	return func() error { return nil }, nil
@@ -554,7 +566,7 @@ func TestPrivateWebSocketCloseCancelsPendingStartupWithoutDeadlockAndIsIdempoten
 	)
 	watchResult := make(chan error, 1)
 	go func() {
-		_, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "ETH-USDC"})
+		_, err := socket.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductSpot, "ETH-USDC")})
 		watchResult <- err
 	}()
 	<-privateBackend.started

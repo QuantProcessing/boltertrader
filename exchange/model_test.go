@@ -41,7 +41,7 @@ func TestPlaceOrderRequestFreezesCommonMarketAndLimitFields(t *testing.T) {
 	}
 
 	request := PlaceOrderRequest{
-		Instrument:  "BTC-USDT",
+		Instrument:  testInstrument(ProductSpot),
 		Side:        SideBuy,
 		Type:        OrderTypeLimit,
 		Quantity:    decimal.RequireFromString("0.00000001"),
@@ -78,7 +78,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 			name:    "spot market",
 			product: ProductSpot,
 			request: PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    testInstrument(ProductSpot),
 				ClientOrderID: "123",
 				Side:          SideBuy,
 				Type:          OrderTypeMarket,
@@ -89,7 +89,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 			name:    "perp reduce-only market",
 			product: ProductPerp,
 			request: PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    testInstrument(ProductPerp),
 				ClientOrderID: "281474976710655",
 				Side:          SideSell,
 				Type:          OrderTypeMarket,
@@ -101,7 +101,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 			name:    "spot resting limit",
 			product: ProductSpot,
 			request: PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    testInstrument(ProductSpot),
 				ClientOrderID: "124",
 				Side:          SideBuy,
 				Type:          OrderTypeLimit,
@@ -114,7 +114,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 			name:    "spot ioc limit",
 			product: ProductSpot,
 			request: PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    testInstrument(ProductSpot),
 				ClientOrderID: "125",
 				Side:          SideBuy,
 				Type:          OrderTypeLimit,
@@ -127,7 +127,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 			name:    "perp post-only limit",
 			product: ProductPerp,
 			request: PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    testInstrument(ProductPerp),
 				ClientOrderID: "126",
 				Side:          SideSell,
 				Type:          OrderTypeLimit,
@@ -147,14 +147,14 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 	}
 
 	baseMarket := PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    testInstrument(ProductSpot),
 		ClientOrderID: "123",
 		Side:          SideBuy,
 		Type:          OrderTypeMarket,
 		Quantity:      decimal.RequireFromString("0.001"),
 	}
 	baseLimit := PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    testInstrument(ProductSpot),
 		ClientOrderID: "123",
 		Side:          SideBuy,
 		Type:          OrderTypeLimit,
@@ -168,7 +168,7 @@ func TestPlaceOrderRequestValidation(t *testing.T) {
 		request PlaceOrderRequest
 	}{
 		{name: "unknown product", product: Product("option"), request: baseMarket},
-		{name: "missing instrument", product: ProductSpot, request: withPlaceOrder(baseMarket, func(request *PlaceOrderRequest) { request.Instrument = "" })},
+		{name: "missing instrument", product: ProductSpot, request: withPlaceOrder(baseMarket, func(request *PlaceOrderRequest) { request.Instrument = Instrument{} })},
 		{name: "unknown side", product: ProductSpot, request: withPlaceOrder(baseMarket, func(request *PlaceOrderRequest) { request.Side = Side("hold") })},
 		{name: "unknown type", product: ProductSpot, request: withPlaceOrder(baseMarket, func(request *PlaceOrderRequest) { request.Type = OrderType("stop") })},
 		{name: "zero quantity", product: ProductSpot, request: withPlaceOrder(baseMarket, func(request *PlaceOrderRequest) { request.Quantity = decimal.Zero })},
@@ -211,14 +211,14 @@ func TestNormalizedModelsDoNotExposeNativeRepresentations(t *testing.T) {
 		Perp       PerpAccount
 		Positions  []Position
 	}{
-		Instrument: Instrument{Symbol: "BTC-USDT"},
-		Book:       OrderBook{Instrument: "BTC-USDT"},
+		Instrument: testInstrument(ProductSpot),
+		Book:       OrderBook{Instrument: testInstrument(ProductSpot)},
 		Candles:    CandlePage{Page: PageInfo{Limit: 100}},
-		Order:      Order{Instrument: "BTC-USDT"},
+		Order:      Order{NativeSymbol: "BTCUSDT"},
 		Fills:      FillPage{Page: PageInfo{Limit: 100}},
 		Spot:       SpotAccount{},
 		Perp:       PerpAccount{},
-		Positions:  []Position{{Instrument: "BTC-USDT"}},
+		Positions:  []Position{{NativeSymbol: "BTCUSDT"}},
 	}
 
 	data, err := json.Marshal(value)
@@ -228,7 +228,7 @@ func TestNormalizedModelsDoNotExposeNativeRepresentations(t *testing.T) {
 	lower := strings.ToLower(string(data))
 	for _, forbidden := range []string{
 		"market_id", "marketid", "contract_count", "contractcount",
-		"sdk", "native", "raw_response", "rawresponse",
+		"sdk", "raw_response", "rawresponse",
 	} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("normalized JSON leaks %q: %s", forbidden, data)
@@ -238,16 +238,19 @@ func TestNormalizedModelsDoNotExposeNativeRepresentations(t *testing.T) {
 
 func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 	instrument := Instrument{
-		Symbol:            "BTC-USDT",
-		PriceIncrement:    decimal.RequireFromString("0.10"),
-		QuantityIncrement: decimal.RequireFromString("0.0001"),
-		MinQuantity:       decimal.RequireFromString("0.001"),
-		MinNotional: OptionalDecimal{
-			Value: decimal.RequireFromString("5"),
-			Valid: true,
+		Identity: testInstrument(ProductSpot).Identity,
+		Rules: InstrumentRules{
+			PriceIncrement:    decimal.RequireFromString("0.10"),
+			QuantityIncrement: decimal.RequireFromString("0.0001"),
+			MinQuantity:       decimal.RequireFromString("0.001"),
+			MinNotional: OptionalDecimal{
+				Value: decimal.RequireFromString("5"),
+				Valid: true,
+			},
 		},
+		Encoding: testInstrument(ProductSpot).Encoding,
 	}
-	if !instrument.MinNotional.Valid {
+	if !instrument.Rules.MinNotional.Valid {
 		t.Fatal("instrument must preserve optional min-notional truth")
 	}
 
@@ -277,7 +280,7 @@ func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 	}
 
 	position := Position{
-		Instrument:       "BTC-USDT",
+		NativeSymbol:     "BTCUSDT",
 		Quantity:         decimal.RequireFromString("-0.5"),
 		EntryPrice:       decimal.RequireFromString("100"),
 		MarkPrice:        decimal.RequireFromString("90"),
@@ -314,7 +317,7 @@ func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 	}
 
 	publicTrade := PublicTrade{
-		Instrument: "BTC-USDT",
+		Instrument: testInstrument(ProductSpot),
 		TradeID:    "77",
 		Side:       SideBuy,
 		Price:      decimal.RequireFromString("65000"),
@@ -326,18 +329,41 @@ func TestModelsCarryMatrixRequiredNormalizedFields(t *testing.T) {
 	}
 
 	funding := FundingRate{
-		Instrument: "BTC-USDT",
-		Rate:       decimal.RequireFromString("0.0001"),
-		MarkPrice:  OptionalDecimal{Value: decimal.RequireFromString("65000"), Valid: true},
-		ObservedAt: time.UnixMilli(1700000000000).UTC(),
+		NativeSymbol: "BTCUSDT",
+		Rate:         decimal.RequireFromString("0.0001"),
+		MarkPrice:    OptionalDecimal{Value: decimal.RequireFromString("65000"), Valid: true},
+		ObservedAt:   time.UnixMilli(1700000000000).UTC(),
 	}
-	if funding.Instrument == "" || !funding.MarkPrice.Valid || funding.ObservedAt.IsZero() {
+	if funding.NativeSymbol == "" || !funding.MarkPrice.Valid || funding.ObservedAt.IsZero() {
 		t.Fatal("funding rate must preserve instrument, applicable time, and optional mark")
 	}
 
-	leverage := Leverage{Instrument: "BTC-USDT", Effective: 5}
+	leverage := Leverage{NativeSymbol: "BTCUSDT", Effective: 5}
 	if leverage.Effective != 5 {
 		t.Fatal("leverage must report the effective value")
+	}
+}
+
+func testInstrument(product Product) Instrument {
+	return Instrument{
+		Identity: InstrumentIdentity{
+			Venue:        VenueBinance,
+			Product:      product,
+			Symbol:       "BTC-USDT",
+			BaseAsset:    "BTC",
+			QuoteAsset:   "USDT",
+			SettleAsset:  "USDT",
+			NativeSymbol: "BTCUSDT",
+		},
+		Rules: InstrumentRules{
+			PriceIncrement:    decimal.RequireFromString("0.10"),
+			QuantityIncrement: decimal.RequireFromString("0.0001"),
+			MinQuantity:       decimal.RequireFromString("0.001"),
+			MinNotional:       OptionalDecimal{Value: decimal.RequireFromString("5"), Valid: true},
+		},
+		Encoding: InstrumentEncoding{
+			ContractMultiplier: OptionalDecimal{Value: decimal.NewFromInt(1), Valid: true},
+		},
 	}
 }
 

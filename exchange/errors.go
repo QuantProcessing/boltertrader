@@ -21,6 +21,7 @@ const (
 	KindTransport          ErrorKind = "transport"
 	KindAmbiguousOutcome   ErrorKind = "ambiguous_outcome"
 	KindMalformedResponse  ErrorKind = "malformed_response"
+	KindMetadataResolution ErrorKind = "metadata_resolution"
 	KindCanceled           ErrorKind = "canceled"
 	KindDeadlineExceeded   ErrorKind = "deadline_exceeded"
 	KindSubscriptionGap    ErrorKind = "subscription_gap"
@@ -39,6 +40,7 @@ var (
 	ErrTransport          = errorSentinel{kind: KindTransport}
 	ErrAmbiguousOutcome   = errorSentinel{kind: KindAmbiguousOutcome}
 	ErrMalformedResponse  = errorSentinel{kind: KindMalformedResponse}
+	ErrMetadataResolution = errorSentinel{kind: KindMetadataResolution}
 	ErrCanceled           = errorSentinel{kind: KindCanceled}
 	ErrDeadlineExceeded   = errorSentinel{kind: KindDeadlineExceeded}
 	ErrSubscriptionGap    = errorSentinel{kind: KindSubscriptionGap}

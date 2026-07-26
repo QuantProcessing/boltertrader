@@ -2,6 +2,7 @@ package factoryclient
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,7 +23,7 @@ type okxPrivateWebSocketClient interface {
 	Unsubscribe(okx.WsSubscribeArgs) error
 }
 
-type okxInstrumentCodeLoader func(context.Context, string, string) (int64, error)
+type okxInstrumentCodeLoader func(context.Context, string, exchange.Instrument) (int64, error)
 type okxSpotTradeModeLoader func(context.Context, string) (string, error)
 
 type okxPrivateWSBackend struct {
@@ -86,28 +87,31 @@ type okxPrivatePositionRegistration struct {
 }
 
 func newOKXSpotPrivateWSBackend(
+	meta clientMeta,
 	ws *okx.WSClient,
 	instrumentCode okxInstrumentCodeLoader,
 	tradeMode okxSpotTradeModeLoader,
 ) privateWSBackend {
-	return newOKXSpotPrivateWSBackendWithClient(ws, instrumentCode, tradeMode)
+	return newOKXSpotPrivateWSBackendWithClient(meta, ws, instrumentCode, tradeMode)
 }
 
 func newOKXPerpPrivateWSBackend(
+	clientMeta clientMeta,
 	ws *okx.WSClient,
 	instrumentCode okxInstrumentCodeLoader,
-	meta okxPerpMetaLoader,
+	perpMeta okxPerpMetaLoader,
 ) perpPrivateWSBackend {
-	return newOKXPerpPrivateWSBackendWithClient(ws, instrumentCode, meta)
+	return newOKXPerpPrivateWSBackendWithClient(clientMeta, ws, instrumentCode, perpMeta)
 }
 
 func newOKXSpotPrivateWSBackendWithClient(
+	meta clientMeta,
 	ws okxPrivateWebSocketClient,
 	instrumentCode okxInstrumentCodeLoader,
 	tradeMode okxSpotTradeModeLoader,
 ) privateWSBackend {
 	return &okxPrivateWSBackend{
-		meta:           clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot},
+		meta:           meta,
 		ws:             ws,
 		instrumentCode: instrumentCode,
 		spotTradeMode:  tradeMode,
@@ -117,15 +121,16 @@ func newOKXSpotPrivateWSBackendWithClient(
 }
 
 func newOKXPerpPrivateWSBackendWithClient(
+	meta clientMeta,
 	ws okxPrivateWebSocketClient,
 	instrumentCode okxInstrumentCodeLoader,
-	meta okxPerpMetaLoader,
+	perpMeta okxPerpMetaLoader,
 ) perpPrivateWSBackend {
 	return &okxPrivateWSBackend{
-		meta:           clientMeta{venue: exchange.VenueOKX, product: exchange.ProductPerp},
+		meta:           meta,
 		ws:             ws,
 		instrumentCode: instrumentCode,
-		perpMeta:       meta,
+		perpMeta:       perpMeta,
 		statusHandlers: make(map[*okxWSStatusRegistration]struct{}),
 		orderStreams:   make(map[string]*okxPrivateOrderStream),
 	}
@@ -133,7 +138,7 @@ func newOKXPerpPrivateWSBackendWithClient(
 
 func (backend *okxPrivateWSBackend) StartOrders(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.OrderEvent],
 ) (func() error, error) {
 	if err := backend.validateInstrument("WatchOrders", instrument); err != nil {
@@ -146,21 +151,22 @@ func (backend *okxPrivateWSBackend) StartOrders(
 		callbacks: callbacks,
 		status:    backend.registerStatus(callbacks.Status),
 	}
-	stream, first := backend.addOrderRegistration(instrument, registration, nil)
+	native := instrument.Identity.NativeSymbol
+	stream, first := backend.addOrderRegistration(native, registration, nil)
 	if first {
-		if err := backend.subscribeOrders(instrument, stream.instType); err != nil {
-			backend.removeOrderRegistration(instrument, registration, nil)
+		if err := backend.subscribeOrders(native, stream.instType); err != nil {
+			backend.removeOrderRegistration(native, registration, nil)
 			return nil, err
 		}
 	}
 	return func() error {
-		return backend.removeOrderRegistration(instrument, registration, nil)
+		return backend.removeOrderRegistration(native, registration, nil)
 	}, nil
 }
 
 func (backend *okxPrivateWSBackend) StartFills(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.FillEvent],
 ) (func() error, error) {
 	if err := backend.validateInstrument("WatchFills", instrument); err != nil {
@@ -173,15 +179,16 @@ func (backend *okxPrivateWSBackend) StartFills(
 		callbacks: callbacks,
 		status:    backend.registerStatus(callbacks.Status),
 	}
-	stream, first := backend.addOrderRegistration(instrument, nil, registration)
+	native := instrument.Identity.NativeSymbol
+	stream, first := backend.addOrderRegistration(native, nil, registration)
 	if first {
-		if err := backend.subscribeOrders(instrument, stream.instType); err != nil {
-			backend.removeOrderRegistration(instrument, nil, registration)
+		if err := backend.subscribeOrders(native, stream.instType); err != nil {
+			backend.removeOrderRegistration(native, nil, registration)
 			return nil, err
 		}
 	}
 	return func() error {
-		return backend.removeOrderRegistration(instrument, nil, registration)
+		return backend.removeOrderRegistration(native, nil, registration)
 	}, nil
 }
 
@@ -217,7 +224,7 @@ func (backend *okxPrivateWSBackend) StartBalances(
 
 func (backend *okxPrivateWSBackend) StartPositions(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PositionEvent],
 ) (func() error, error) {
 	if backend.meta.product != exchange.ProductPerp {
@@ -229,8 +236,9 @@ func (backend *okxPrivateWSBackend) StartPositions(
 	if err := backend.ensureConnected(ctx, "WatchPositions"); err != nil {
 		return nil, err
 	}
+	native := instrument.Identity.NativeSymbol
 	registration := &okxPrivatePositionRegistration{
-		instrument: instrument,
+		instrument: native,
 		callbacks:  callbacks,
 		status:     backend.registerStatus(callbacks.Status),
 	}
@@ -671,14 +679,14 @@ func (backend *okxPrivateWSBackend) emitPositionError(err error) {
 	}
 }
 
-func (backend *okxPrivateWSBackend) validateCommand(ctx context.Context, operation, instrument string) error {
+func (backend *okxPrivateWSBackend) validateCommand(ctx context.Context, operation string, instrument exchange.Instrument) error {
 	if err := backend.validateInstrument(operation, instrument); err != nil {
 		return err
 	}
 	return backend.ensureConnected(ctx, operation)
 }
 
-func (backend *okxPrivateWSBackend) validateInstrument(operation, instrument string) error {
+func (backend *okxPrivateWSBackend) validateInstrument(operation string, instrument exchange.Instrument) error {
 	if backend.meta.product == exchange.ProductSpot {
 		if err := okxValidateSpotInstrument(instrument); err != nil {
 			return okxWSError(backend.meta, operation, exchange.KindInvalidRequest, err.Error())
@@ -705,7 +713,7 @@ func (backend *okxPrivateWSBackend) placeRequest(
 	}
 	ordType, px := okxOrderRequestShape(req)
 	native := &okx.OrderRequest{
-		InstId:     req.Instrument,
+		InstId:     req.Instrument.Identity.NativeSymbol,
 		InstIdCode: &instIDCode,
 		ClOrdId:    okxStringPtr(req.ClientOrderID),
 		Side:       string(req.Side),
@@ -757,11 +765,38 @@ func (backend *okxPrivateWSBackend) orderMultiplier(
 	if backend.perpMeta == nil {
 		return decimal.Zero, okxWSError(backend.meta, operation, exchange.KindInvalidConfig, "OKX perp metadata loader is not configured")
 	}
-	meta, err := backend.perpMeta(ctx, instrument)
+	meta, err := backend.perpMetaByNative(ctx, operation, instrument)
 	if err != nil {
 		return decimal.Zero, err
 	}
 	return meta.contractValue, nil
+}
+
+func (backend *okxPrivateWSBackend) perpMetaByNative(ctx context.Context, operation, nativeSymbol string) (okxContractMeta, error) {
+	if backend.meta.catalog == nil || backend.meta.catalogScope == (exchange.CatalogScope{}) {
+		return okxContractMeta{}, okxWSError(backend.meta, operation, exchange.KindMetadataResolution, "instrument catalog is not configured")
+	}
+	snapshot, err := backend.meta.catalog.Snapshot(ctx, backend.meta.catalogScope)
+	if err != nil {
+		return okxContractMeta{}, withExchangeOperation(err, operation)
+	}
+	var instrument exchange.Instrument
+	found := false
+	for _, candidate := range snapshot.Instruments {
+		if candidate.Identity.NativeSymbol == nativeSymbol {
+			instrument = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return okxContractMeta{}, okxWSError(backend.meta, operation, exchange.KindMetadataResolution, "instrument metadata not found")
+	}
+	meta, err := okxContractMetaFromInstrument(instrument)
+	if err != nil {
+		return okxContractMeta{}, okxWSError(backend.meta, operation, exchange.KindMalformedResponse, err.Error())
+	}
+	return meta, nil
 }
 
 func (backend *okxPrivateWSBackend) ensureConnected(ctx context.Context, operation string) error {
@@ -907,33 +942,31 @@ func (backend *okxPrivateWSBackend) instType() string {
 	return okxSpotType
 }
 
-func okxSpotInstrumentCodeLoader(sdk *okx.Client) okxInstrumentCodeLoader {
-	return okxSDKInstrumentCodeLoader(sdk, exchange.ProductSpot, okxSpotType)
+func okxSpotInstrumentCodeLoader(meta clientMeta) okxInstrumentCodeLoader {
+	return okxCatalogInstrumentCodeLoader(meta, exchange.ProductSpot)
 }
 
-func okxPerpInstrumentCodeLoader(sdk *okx.Client) okxInstrumentCodeLoader {
-	return okxSDKInstrumentCodeLoader(sdk, exchange.ProductPerp, okxSwapType)
+func okxPerpInstrumentCodeLoader(meta clientMeta) okxInstrumentCodeLoader {
+	return okxCatalogInstrumentCodeLoader(meta, exchange.ProductPerp)
 }
 
-func okxSDKInstrumentCodeLoader(sdk *okx.Client, product exchange.Product, instType string) okxInstrumentCodeLoader {
-	return func(ctx context.Context, operation, instrument string) (int64, error) {
-		if err := okxReady(ctx, product, operation, sdk); err != nil {
-			return 0, err
-		}
-		rows, err := sdk.GetInstruments(ctx, instType)
-		if err != nil {
-			return 0, okxNormalizeErr(product, operation, err)
-		}
-		for _, row := range rows {
-			if row.InstId != instrument {
-				continue
+func okxCatalogInstrumentCodeLoader(meta clientMeta, product exchange.Product) okxInstrumentCodeLoader {
+	return func(_ context.Context, operation string, instrument exchange.Instrument) (int64, error) {
+		if product == exchange.ProductSpot {
+			if err := okxValidateSpotInstrument(instrument); err != nil {
+				return 0, okxInvalid(product, operation, err.Error())
 			}
-			if row.InstIdCode == nil || *row.InstIdCode <= 0 {
-				return 0, okxMalformed(product, operation, "OKX instrument id code is missing")
-			}
-			return *row.InstIdCode, nil
+		} else if err := okxValidateSwapInstrument(instrument); err != nil {
+			return 0, okxInvalid(product, operation, err.Error())
 		}
-		return 0, okxInvalid(product, operation, "instrument is not present in OKX metadata")
+		if strings.TrimSpace(instrument.Identity.NativeID) == "" {
+			return 0, okxMalformed(product, operation, "OKX instrument id code is missing")
+		}
+		code, err := strconv.ParseInt(instrument.Identity.NativeID, 10, 64)
+		if err != nil || code <= 0 || strconv.FormatInt(code, 10) != instrument.Identity.NativeID {
+			return 0, okxMalformed(product, operation, "OKX instrument id code is invalid")
+		}
+		return code, nil
 	}
 }
 

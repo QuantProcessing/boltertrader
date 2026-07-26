@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -23,17 +22,15 @@ type gateSpotClient struct {
 
 type gatePerpClient struct {
 	*perpClient
-	sdk          *gate.Client
-	ws           exchange.PerpWebSocket
-	settle       string
-	multiplierMu sync.RWMutex
-	multipliers  map[string]decimal.Decimal
+	sdk    *gate.Client
+	ws     exchange.PerpWebSocket
+	settle string
 }
 
 func NewGateSpot(apiKey, secretKey string, settings Settings) exchange.SpotClient {
 	sdkClient, profile := newGateSDK(apiKey, secretKey, settings)
 	client := &gateSpotClient{
-		spotClient: &spotClient{meta: clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}},
+		spotClient: &spotClient{meta: clientMetaFromSettings(exchange.VenueGate, exchange.ProductSpot, settings)},
 		sdk:        sdkClient,
 	}
 	wsClient, _ := gate.NewWSClientWithProfile(profile, gate.ProductSpot)
@@ -52,10 +49,9 @@ func NewGateSpot(apiKey, secretKey string, settings Settings) exchange.SpotClien
 func NewGateUSDTPerp(apiKey, secretKey string, settings Settings) exchange.PerpClient {
 	sdkClient, profile := newGateSDK(apiKey, secretKey, settings)
 	client := &gatePerpClient{
-		perpClient:  &perpClient{meta: clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}},
-		sdk:         sdkClient,
-		settle:      gate.SettleUSDT,
-		multipliers: make(map[string]decimal.Decimal),
+		perpClient: &perpClient{meta: clientMetaFromSettings(exchange.VenueGate, exchange.ProductPerp, settings)},
+		sdk:        sdkClient,
+		settle:     gate.SettleUSDT,
 	}
 	wsClient, _ := gate.NewWSClientWithProfile(profile, gate.ProductFuturesUSDT)
 	if wsClient == nil {
@@ -102,25 +98,14 @@ func (client *gatePerpClient) gateFuturesUserID(ctx context.Context) (string, er
 	return strconv.FormatInt(account.User, 10), nil
 }
 
-func (client *gatePerpClient) gateContractMultiplier(ctx context.Context, operation, instrument string) (decimal.Decimal, error) {
-	client.multiplierMu.RLock()
-	multiplier, ok := client.multipliers[instrument]
-	client.multiplierMu.RUnlock()
-	if ok {
-		return multiplier, nil
+func (client *gatePerpClient) gateContractMultiplier(operation string, instrument exchange.Instrument) (decimal.Decimal, error) {
+	if instrument.Identity.Venue != exchange.VenueGate || instrument.Identity.Product != exchange.ProductPerp {
+		return decimal.Zero, client.meta.catalogInvalidRequest(operation, "instrument venue/product does not match Gate perp")
 	}
-	contract, err := client.sdk.GetFuturesContract(ctx, client.settle, instrument)
-	if err != nil {
-		return decimal.Zero, gateNormalizeErr(client.meta, operation, err)
+	if !instrument.Encoding.ContractMultiplier.Valid || !instrument.Encoding.ContractMultiplier.Value.IsPositive() {
+		return decimal.Zero, client.meta.catalogMetadataResolution(operation, "gate futures contract multiplier is missing from catalog instrument")
 	}
-	multiplier, err = gateFuturesMultiplier(client.meta, operation, contract.QuantoMultiplier)
-	if err != nil {
-		return decimal.Zero, err
-	}
-	client.multiplierMu.Lock()
-	client.multipliers[instrument] = multiplier
-	client.multiplierMu.Unlock()
-	return multiplier, nil
+	return instrument.Encoding.ContractMultiplier.Value, nil
 }
 func (client *gateSpotClient) String() string {
 	if client == nil || client.spotClient == nil {
@@ -153,75 +138,87 @@ func (client *gateSpotClient) Instruments(ctx context.Context) ([]exchange.Instr
 	if err := gateContext(ctx, client.meta, "Instruments"); err != nil {
 		return nil, err
 	}
-	rows, err := client.sdk.ListCurrencyPairs(ctx)
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return nil, client.meta.catalogMetadataResolution("Instruments", "instrument catalog is not configured")
+	}
+	snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
 	if err != nil {
-		return nil, gateNormalizeErr(client.meta, "Instruments", err)
+		return nil, withExchangeOperation(err, "Instruments")
 	}
-	if err := gateValidateSpotInstruments(client.meta, "Instruments", rows); err != nil {
-		return nil, err
-	}
-	out := make([]exchange.Instrument, 0, len(rows))
-	for _, row := range rows {
-		if row.TradeStatus != "" && row.TradeStatus != "tradable" {
-			continue
-		}
-		out = append(out, exchange.Instrument{
-			Symbol:            row.ID,
-			BaseAsset:         row.Base,
-			QuoteAsset:        row.Quote,
-			Product:           exchange.ProductSpot,
-			PriceIncrement:    decimal.New(1, -int32(row.Precision)),
-			QuantityIncrement: decimal.New(1, -int32(row.AmountPrecision)),
-			MinQuantity:       gateDecimal(row.MinBaseAmount),
-			MinNotional:       gateOptionalDecimal(row.MinQuoteAmount),
-		})
-	}
-	return out, nil
+	return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
 }
 
 func (client *gatePerpClient) Instruments(ctx context.Context) ([]exchange.Instrument, error) {
 	if err := gateContext(ctx, client.meta, "Instruments"); err != nil {
 		return nil, err
 	}
-	rows, err := client.sdk.ListFuturesContracts(ctx, client.settle)
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return nil, client.meta.catalogMetadataResolution("Instruments", "instrument catalog is not configured")
+	}
+	snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
 	if err != nil {
-		return nil, gateNormalizeErr(client.meta, "Instruments", err)
+		return nil, withExchangeOperation(err, "Instruments")
 	}
-	if err := gateValidateFuturesInstruments(client.meta, "Instruments", rows); err != nil {
-		return nil, err
+	return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+}
+
+func gateRequiredNativeInstrument(meta clientMeta, operation string, instrument exchange.Instrument) (string, error) {
+	if err := instrument.Validate(); err != nil {
+		return "", exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: err.Error()})
 	}
-	out := make([]exchange.Instrument, 0, len(rows))
-	for _, row := range rows {
-		if row.Status != "" && row.Status != "trading" {
-			continue
-		}
-		multiplier, err := gateFuturesMultiplier(client.meta, "Instruments", row.QuantoMultiplier)
-		if err != nil {
-			return nil, err
-		}
-		client.multiplierMu.Lock()
-		client.multipliers[row.Name] = multiplier
-		client.multiplierMu.Unlock()
-		base, quote := gateSplitSymbol(row.Name)
-		out = append(out, exchange.Instrument{
-			Symbol:            row.Name,
-			BaseAsset:         base,
-			QuoteAsset:        quote,
-			SettleAsset:       strings.ToUpper(client.settle),
-			Product:           exchange.ProductPerp,
-			PriceIncrement:    gateDecimal(row.OrderPriceRound),
-			QuantityIncrement: multiplier,
-			MinQuantity:       decimal.NewFromInt(row.OrderSizeMin).Mul(multiplier),
-		})
+	if instrument.Identity.Venue != meta.venue || instrument.Identity.Product != meta.product {
+		return "", exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "instrument venue/product does not match client"})
 	}
-	return out, nil
+	return instrument.Identity.NativeSymbol, nil
+}
+
+func gateOptionalNativeInstrument(meta clientMeta, operation string, instrument *exchange.Instrument) (string, bool, error) {
+	if instrument == nil {
+		return "", false, nil
+	}
+	native, err := gateRequiredNativeInstrument(meta, operation, *instrument)
+	return native, true, err
+}
+
+func gateCatalogInstrumentByNative(ctx context.Context, meta clientMeta, operation, native string) (exchange.Instrument, error) {
+	if strings.TrimSpace(native) == "" {
+		return exchange.Instrument{}, meta.catalogMetadataResolution(operation, "native instrument symbol is missing")
+	}
+	if meta.catalog == nil || meta.catalogScope == (exchange.CatalogScope{}) {
+		return exchange.Instrument{}, meta.catalogMetadataResolution(operation, "instrument catalog is not configured")
+	}
+	inst, err := meta.catalog.Resolve(ctx, meta.catalogScope, exchange.InstrumentQuery{NativeSymbol: native})
+	if err != nil {
+		return exchange.Instrument{}, withExchangeOperation(err, operation)
+	}
+	return inst, nil
+}
+
+func gateValidateSpotInstruments(meta clientMeta, operation string, rows []gate.CurrencyPair) error {
+	_, err := gateSpotCatalogInstruments(rows)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func gateValidateFuturesInstruments(meta clientMeta, operation string, rows []gate.Contract) error {
+	_, err := gatePerpCatalogInstruments(rows, gate.SettleUSDT)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (client *gateSpotClient) OrderBook(ctx context.Context, request exchange.OrderBookRequest) (exchange.OrderBook, error) {
 	if err := gateContext(ctx, client.meta, "OrderBook"); err != nil {
 		return exchange.OrderBook{}, err
 	}
-	book, err := client.sdk.GetSpotOrderBook(ctx, request.Instrument, request.Limit, true)
+	native, err := gateRequiredNativeInstrument(client.meta, "OrderBook", request.Instrument)
+	if err != nil {
+		return exchange.OrderBook{}, err
+	}
+	book, err := client.sdk.GetSpotOrderBook(ctx, native, request.Limit, true)
 	if err != nil {
 		return exchange.OrderBook{}, gateNormalizeErr(client.meta, "OrderBook", err)
 	}
@@ -235,14 +232,18 @@ func (client *gatePerpClient) OrderBook(ctx context.Context, request exchange.Or
 	if err := gateContext(ctx, client.meta, "OrderBook"); err != nil {
 		return exchange.OrderBook{}, err
 	}
-	book, err := client.sdk.GetFuturesOrderBook(ctx, client.settle, request.Instrument, request.Limit, true)
+	native, err := gateRequiredNativeInstrument(client.meta, "OrderBook", request.Instrument)
+	if err != nil {
+		return exchange.OrderBook{}, err
+	}
+	book, err := client.sdk.GetFuturesOrderBook(ctx, client.settle, native, request.Limit, true)
 	if err != nil {
 		return exchange.OrderBook{}, gateNormalizeErr(client.meta, "OrderBook", err)
 	}
 	if err := gateValidateFuturesOrderBook(client.meta, "OrderBook", *book); err != nil {
 		return exchange.OrderBook{}, err
 	}
-	multiplier, err := client.gateContractMultiplier(ctx, "OrderBook", request.Instrument)
+	multiplier, err := client.gateContractMultiplier("OrderBook", request.Instrument)
 	if err != nil {
 		return exchange.OrderBook{}, err
 	}
@@ -257,7 +258,11 @@ func (client *gateSpotClient) Candles(ctx context.Context, request exchange.Cand
 	if err != nil {
 		return exchange.CandlePage{}, err
 	}
-	rows, err := client.sdk.ListSpotCandlesticksWindow(ctx, request.Instrument, request.Interval, request.Start, request.End, request.Limit)
+	native, err := gateRequiredNativeInstrument(client.meta, "Candles", request.Instrument)
+	if err != nil {
+		return exchange.CandlePage{}, err
+	}
+	rows, err := client.sdk.ListSpotCandlesticksWindow(ctx, native, request.Interval, request.Start, request.End, request.Limit)
 	if err != nil {
 		return exchange.CandlePage{}, gateNormalizeErr(client.meta, "Candles", err)
 	}
@@ -275,7 +280,11 @@ func (client *gatePerpClient) Candles(ctx context.Context, request exchange.Cand
 	if err != nil {
 		return exchange.CandlePage{}, err
 	}
-	rows, err := client.sdk.ListFuturesCandlesticksWindow(ctx, client.settle, request.Instrument, request.Interval, request.Start, request.End, request.Limit)
+	native, err := gateRequiredNativeInstrument(client.meta, "Candles", request.Instrument)
+	if err != nil {
+		return exchange.CandlePage{}, err
+	}
+	rows, err := client.sdk.ListFuturesCandlesticksWindow(ctx, client.settle, native, request.Interval, request.Start, request.End, request.Limit)
 	if err != nil {
 		return exchange.CandlePage{}, gateNormalizeErr(client.meta, "Candles", err)
 	}
@@ -290,7 +299,11 @@ func (client *gateSpotClient) PublicTrades(ctx context.Context, request exchange
 	if err := gateContext(ctx, client.meta, "PublicTrades"); err != nil {
 		return exchange.PublicTradePage{}, err
 	}
-	rows, err := client.sdk.ListSpotTrades(ctx, request.Instrument, request.Limit)
+	native, err := gateRequiredNativeInstrument(client.meta, "PublicTrades", request.Instrument)
+	if err != nil {
+		return exchange.PublicTradePage{}, err
+	}
+	rows, err := client.sdk.ListSpotTrades(ctx, native, request.Limit)
 	if err != nil {
 		return exchange.PublicTradePage{}, gateNormalizeErr(client.meta, "PublicTrades", err)
 	}
@@ -299,7 +312,10 @@ func (client *gateSpotClient) PublicTrades(ctx context.Context, request exchange
 	}
 	trades := make([]exchange.PublicTrade, 0, len(rows))
 	for _, row := range rows {
-		trades = append(trades, exchange.PublicTrade{Instrument: row.CurrencyPair, TradeID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Time: gateTimeMS(row.CreateTimeMS)})
+		if err := gateEnsureNativeInstrument(client.meta, "PublicTrades", request.Instrument, row.CurrencyPair); err != nil {
+			return exchange.PublicTradePage{}, err
+		}
+		trades = append(trades, exchange.PublicTrade{Instrument: request.Instrument, TradeID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Time: gateTimeMS(row.CreateTimeMS)})
 	}
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: request.Limit}}, nil
 }
@@ -308,25 +324,32 @@ func (client *gatePerpClient) PublicTrades(ctx context.Context, request exchange
 	if err := gateContext(ctx, client.meta, "PublicTrades"); err != nil {
 		return exchange.PublicTradePage{}, err
 	}
-	rows, err := client.sdk.ListFuturesTrades(ctx, client.settle, request.Instrument, request.Limit)
+	native, err := gateRequiredNativeInstrument(client.meta, "PublicTrades", request.Instrument)
+	if err != nil {
+		return exchange.PublicTradePage{}, err
+	}
+	rows, err := client.sdk.ListFuturesTrades(ctx, client.settle, native, request.Limit)
 	if err != nil {
 		return exchange.PublicTradePage{}, gateNormalizeErr(client.meta, "PublicTrades", err)
 	}
 	if err := gateValidateFuturesPublicTrades(client.meta, "PublicTrades", rows); err != nil {
 		return exchange.PublicTradePage{}, err
 	}
-	multiplier, err := client.gateContractMultiplier(ctx, "PublicTrades", request.Instrument)
+	multiplier, err := client.gateContractMultiplier("PublicTrades", request.Instrument)
 	if err != nil {
 		return exchange.PublicTradePage{}, err
 	}
 	trades := make([]exchange.PublicTrade, 0, len(rows))
 	for _, row := range rows {
+		if err := gateEnsureNativeInstrument(client.meta, "PublicTrades", request.Instrument, row.Contract); err != nil {
+			return exchange.PublicTradePage{}, err
+		}
 		side := exchange.SideBuy
 		size := gateDecimal(string(row.Size))
 		if size.IsNegative() {
 			side = exchange.SideSell
 		}
-		trades = append(trades, exchange.PublicTrade{Instrument: row.Contract, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: gateDecimal(row.Price), Quantity: size.Abs().Mul(multiplier), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
+		trades = append(trades, exchange.PublicTrade{Instrument: request.Instrument, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: gateDecimal(row.Price), Quantity: size.Abs().Mul(multiplier), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
 	}
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: request.Limit}}, nil
 }
@@ -340,6 +363,10 @@ func gateNormalizeErr(meta clientMeta, operation string, err error) error {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return exchange.NewError(exchange.KindDeadlineExceeded, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "operation deadline exceeded"})
+	}
+	var exchangeErr *exchange.Error
+	if errors.As(err, &exchangeErr) {
+		return withExchangeOperation(err, operation)
 	}
 	var apiErr *gate.APIError
 	if errors.As(err, &apiErr) {
@@ -359,14 +386,26 @@ func gateNormalizeErr(meta clientMeta, operation string, err error) error {
 	return exchange.NewError(exchange.KindTransport, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: operation, SafeMessage: "gate transport failed"})
 }
 
-func gateCommandErr(meta clientMeta, operation exchange.OrderOperation, instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
-	ack := exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: operation, State: exchange.AckAmbiguous, Instrument: instrument, OrderID: orderID, ClientOrderID: clientID}
+func gateCommandErr(meta clientMeta, operation exchange.OrderOperation, instrument exchange.Instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
+	ack := exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: operation, State: exchange.AckAmbiguous, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientID}
+	if gateCommandMetadataMismatch(err) {
+		return ack, meta.catalogMetadataResolution(string(operation), "gate command response identity does not match requested instrument")
+	}
 	if gate.IsDefinitiveCommandRejection(err) {
 		ack.State = exchange.AckRejected
 		ack.VenueMessage = "gate rejected command"
 		return ack, gateNormalizeErr(meta, string(operation), err)
 	}
 	return ack, exchange.NewError(exchange.KindAmbiguousOutcome, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: string(operation), SafeMessage: "gate command outcome is ambiguous"})
+}
+
+func gateCommandMetadataMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "returned mismatched currency pair") ||
+		strings.Contains(message, "returned mismatched contract")
 }
 
 func gateWriteErr(meta clientMeta, operation string, err error) error {
@@ -497,6 +536,14 @@ func gateValidateDecimal(meta clientMeta, operation, field, value string) error 
 	return nil
 }
 
+func gateValidatePositiveDecimal(meta clientMeta, operation, field, value string) error {
+	parsed, err := gateParseDecimal(value)
+	if err != nil || !parsed.IsPositive() {
+		return gateMalformed(meta, operation, "invalid gate "+field)
+	}
+	return nil
+}
+
 func gateValidateSide(meta clientMeta, operation, value string) error {
 	if _, err := gateParseSide(value); err != nil {
 		return gateMalformed(meta, operation, "invalid gate side")
@@ -526,7 +573,7 @@ func gateValidateStatus(meta clientMeta, operation, status, finishAs string) err
 }
 
 func gateValidateCandleRequest(meta clientMeta, request exchange.CandlesRequest) (time.Duration, error) {
-	if strings.TrimSpace(request.Instrument) == "" {
+	if strings.TrimSpace(request.Instrument.Identity.NativeSymbol) == "" {
 		return 0, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: "Candles", SafeMessage: "instrument is required"})
 	}
 	if strings.TrimSpace(request.Cursor) != "" {
@@ -625,42 +672,6 @@ func gateValidateFuturesPublicTrades(meta clientMeta, operation string, rows []g
 		}
 		if err := gateValidateDecimal(meta, operation, "trade create time", string(row.CreateTime)); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func gateValidateSpotInstruments(meta clientMeta, operation string, rows []gate.CurrencyPair) error {
-	for _, row := range rows {
-		for _, field := range []struct {
-			name  string
-			value string
-		}{
-			{"min base amount", row.MinBaseAmount},
-			{"min quote amount", row.MinQuoteAmount},
-		} {
-			if err := gateValidateDecimal(meta, operation, field.name, field.value); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func gateValidateFuturesInstruments(meta clientMeta, operation string, rows []gate.Contract) error {
-	for _, row := range rows {
-		for _, field := range []struct {
-			name  string
-			value string
-		}{
-			{"order price round", row.OrderPriceRound},
-			{"quanto multiplier", row.QuantoMultiplier},
-			{"funding rate", row.FundingRate},
-			{"mark price", row.MarkPrice},
-		} {
-			if err := gateValidateDecimal(meta, operation, field.name, field.value); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -768,8 +779,8 @@ func parseGateOrderID(meta clientMeta, operation, value string) (int64, error) {
 }
 
 func validateGateCancel(meta clientMeta, request exchange.CancelOrderRequest) error {
-	if strings.TrimSpace(request.Instrument) == "" {
-		return exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: "CancelOrder", SafeMessage: "instrument is required"})
+	if _, err := gateRequiredNativeInstrument(meta, "CancelOrder", request.Instrument); err != nil {
+		return err
 	}
 	_, err := parseGateOrderID(meta, "CancelOrder", request.OrderID)
 	return err
@@ -780,6 +791,14 @@ func gateAckValidate(ack exchange.OrderAcknowledgement) (exchange.OrderAcknowled
 		return ack, err
 	}
 	return ack, nil
+}
+
+func gateAckValidateForInstrument(meta clientMeta, operation string, instrument exchange.Instrument, ack exchange.OrderAcknowledgement) (exchange.OrderAcknowledgement, error) {
+	if ack.NativeSymbol != instrument.Identity.NativeSymbol {
+		return ack, meta.catalogMetadataResolution(operation, "gate acknowledgement native instrument does not match requested instrument")
+	}
+	ack.NativeID = instrument.Identity.NativeID
+	return gateAckValidate(ack)
 }
 
 func gateBadResponse(meta clientMeta, operation string, err error) error {

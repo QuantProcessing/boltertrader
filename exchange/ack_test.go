@@ -35,34 +35,34 @@ func TestOrderAcknowledgementValidation(t *testing.T) {
 	valid := []OrderAcknowledgement{
 		{
 			Venue: VenueLighter, Product: ProductSpot, Operation: OrderOperationPlace,
-			State: AckAcceptedPending, Instrument: "BTC-USDC",
+			State: AckAcceptedPending, NativeSymbol: "BTC-USDC",
 			ClientOrderID: "client-1", TransactionHash: "tx-1",
 		},
 		{
 			Venue: VenueHyperliquid, Product: ProductPerp, Operation: OrderOperationPlace,
-			State: AckResting, Instrument: "BTC", OrderID: "42",
+			State: AckResting, NativeSymbol: "BTC", OrderID: "42",
 		},
 		{
 			Venue: VenueHyperliquid, Product: ProductPerp, Operation: OrderOperationPlace,
-			State: AckImmediatelyFilled, Instrument: "BTC", OrderID: "43",
+			State: AckImmediatelyFilled, NativeSymbol: "BTC", OrderID: "43",
 		},
 		{
 			Venue: VenueBinance, Product: ProductSpot, Operation: OrderOperationPlace,
-			State: AckPartiallyFilled, Instrument: "BTC-USDT", OrderID: "44",
+			State: AckPartiallyFilled, NativeSymbol: "BTC-USDT", OrderID: "44",
 			FilledQuantity: decimal.RequireFromString("0.001"),
 		},
 		{
 			Venue: VenueBinance, Product: ProductSpot, Operation: OrderOperationCancel,
-			State: AckCanceled, Instrument: "BTC-USDT", OrderID: "45",
+			State: AckCanceled, NativeSymbol: "BTC-USDT", OrderID: "45",
 		},
 		{
 			Venue: VenueOKX, Product: ProductSpot, Operation: OrderOperationPlace,
-			State: AckRejected, Instrument: "BTC-USDT", VenueCode: "51008",
+			State: AckRejected, NativeSymbol: "BTC-USDT", VenueCode: "51008",
 			VenueMessage: "insufficient balance",
 		},
 		{
 			Venue: VenueBinance, Product: ProductSpot, Operation: OrderOperationCancel,
-			State: AckAmbiguous, Instrument: "BTCUSDT", ClientOrderID: "client-2",
+			State: AckAmbiguous, NativeSymbol: "BTCUSDT", ClientOrderID: "client-2",
 		},
 	}
 	for _, acknowledgement := range valid {
@@ -73,7 +73,7 @@ func TestOrderAcknowledgementValidation(t *testing.T) {
 
 	invalid := OrderAcknowledgement{
 		Venue: VenueHyperliquid, Product: ProductPerp, Operation: OrderOperationPlace,
-		State: AckResting, Instrument: "BTC",
+		State: AckResting, NativeSymbol: "BTC",
 	}
 	err := invalid.Validate()
 	if !errors.Is(err, ErrMalformedResponse) {
@@ -82,7 +82,7 @@ func TestOrderAcknowledgementValidation(t *testing.T) {
 
 	marketResting := OrderAcknowledgement{
 		Venue: VenueHyperliquid, Product: ProductPerp, Operation: OrderOperationPlace,
-		State: AckResting, Instrument: "BTC", OrderID: "46", OrderType: OrderTypeMarket,
+		State: AckResting, NativeSymbol: "BTC", OrderID: "46", OrderType: OrderTypeMarket,
 	}
 	err = marketResting.Validate()
 	if !errors.Is(err, ErrMalformedResponse) {
@@ -91,7 +91,7 @@ func TestOrderAcknowledgementValidation(t *testing.T) {
 
 	partialWithoutFill := OrderAcknowledgement{
 		Venue: VenueBinance, Product: ProductSpot, Operation: OrderOperationPlace,
-		State: AckPartiallyFilled, Instrument: "BTC-USDT", OrderID: "47",
+		State: AckPartiallyFilled, NativeSymbol: "BTC-USDT", OrderID: "47",
 	}
 	err = partialWithoutFill.Validate()
 	if !errors.Is(err, ErrMalformedResponse) {
@@ -99,10 +99,10 @@ func TestOrderAcknowledgementValidation(t *testing.T) {
 	}
 }
 
-func TestOrderAcknowledgementHasNoNativePayload(t *testing.T) {
+func TestOrderAcknowledgementUsesRawNativeIdentityWithoutPrivatePayload(t *testing.T) {
 	acknowledgement := OrderAcknowledgement{
 		Venue: VenueOKX, Product: ProductSpot, Operation: OrderOperationPlace,
-		State: AckRejected, Instrument: "BTC-USDT", VenueCode: "51008",
+		State: AckRejected, NativeSymbol: "BTC-USDT", VenueCode: "51008",
 		VenueMessage: "insufficient balance",
 	}
 	data, err := json.Marshal(acknowledgement)
@@ -110,9 +110,12 @@ func TestOrderAcknowledgementHasNoNativePayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"sdk", "native", "raw", "signature", "secret", "token"} {
+	for _, forbidden := range []string{"sdk", "raw_response", "signature", "secret", "token"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("acknowledgement leaks %q: %s", forbidden, data)
 		}
+	}
+	if !strings.Contains(lower, "native_symbol") {
+		t.Fatalf("acknowledgement does not expose raw native symbol: %s", data)
 	}
 }

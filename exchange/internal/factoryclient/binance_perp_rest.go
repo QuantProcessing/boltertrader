@@ -27,9 +27,52 @@ func (client *binancePerpClient) Instruments(ctx context.Context) ([]exchange.In
 	if err := client.binancePerpReady(ctx, "Instruments"); err != nil {
 		return nil, err
 	}
+	if client.meta.catalog != nil && client.meta.catalogScope != (exchange.CatalogScope{}) {
+		snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
+		if err != nil {
+			return nil, withExchangeOperation(err, "Instruments")
+		}
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+	}
 	info, err := client.sdk.ExchangeInfo(ctx)
 	if err != nil {
 		return nil, binancePerpNormalizeError("Instruments", err)
+	}
+	instruments, err := binancePerpInstrumentsFromExchangeInfo(info)
+	if err != nil {
+		return nil, binancePerpMalformed("Instruments", err.Error())
+	}
+	return instruments, nil
+}
+
+func (client *binancePerpClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	if err := client.binancePerpReady(ctx, "ResolveInstrument"); err != nil {
+		return exchange.Instrument{}, err
+	}
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return exchange.Instrument{}, binancePerpInvalidRequest("ResolveInstrument", "instrument catalog is not configured")
+	}
+	instrument, err := client.meta.catalog.Resolve(ctx, client.meta.catalogScope, exchange.InstrumentQuery{Symbol: symbol})
+	return instrument, withExchangeOperation(err, "ResolveInstrument")
+}
+
+func (client *binancePerpClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	if err := client.binancePerpReady(ctx, "RefreshInstruments"); err != nil {
+		return nil, err
+	}
+	if client.meta.catalog == nil || client.meta.catalogScope == (exchange.CatalogScope{}) {
+		return nil, binancePerpInvalidRequest("RefreshInstruments", "instrument catalog is not configured")
+	}
+	snapshot, err := client.meta.catalog.Refresh(ctx, client.meta.catalogScope)
+	if err != nil {
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), withExchangeOperation(err, "RefreshInstruments")
+	}
+	return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+}
+
+func binancePerpInstrumentsFromExchangeInfo(info *binanceperp.ExchangeInfoResponse) ([]exchange.Instrument, error) {
+	if info == nil {
+		return nil, fmt.Errorf("missing exchangeInfo response")
 	}
 	instruments := make([]exchange.Instrument, 0, len(info.Symbols))
 	seen := make(map[string]struct{}, len(info.Symbols))
@@ -40,39 +83,43 @@ func (client *binancePerpClient) Instruments(ctx context.Context) ([]exchange.In
 		if symbol.ContractType != "PERPETUAL" {
 			continue
 		}
-		if symbol.MarginAsset == "" || symbol.BaseAsset == "" || symbol.QuoteAsset == "" {
-			return nil, binancePerpMalformed("Instruments", "missing contract asset metadata")
-		}
 		canonical, supported, err := binancePerpPublicInstrumentSymbols(
 			symbol.Symbol,
 			symbol.BaseAsset,
 			symbol.QuoteAsset,
 		)
 		if err != nil {
-			return nil, binancePerpMalformed("Instruments", err.Error())
+			return nil, err
 		}
 		if !supported {
 			continue
 		}
+		if symbol.MarginAsset == "" || symbol.MarginAsset != symbol.QuoteAsset {
+			return nil, fmt.Errorf("USD-M settlement asset does not match quote metadata")
+		}
 		if _, ok := seen[symbol.Symbol]; ok {
-			return nil, binancePerpMalformed("Instruments", "duplicate symbol")
+			return nil, fmt.Errorf("duplicate symbol")
 		}
 		seen[symbol.Symbol] = struct{}{}
 		priceIncrement, quantityIncrement, minQuantity, minNotional, err := binancePerpInstrumentFilters(symbol.Filters)
 		if err != nil {
-			return nil, binancePerpMalformed("Instruments", err.Error())
+			return nil, err
 		}
-		instruments = append(instruments, exchange.Instrument{
-			Symbol:            canonical,
-			BaseAsset:         symbol.BaseAsset,
-			QuoteAsset:        symbol.QuoteAsset,
-			SettleAsset:       symbol.MarginAsset,
-			Product:           exchange.ProductPerp,
-			PriceIncrement:    priceIncrement,
-			QuantityIncrement: quantityIncrement,
-			MinQuantity:       minQuantity,
-			MinNotional:       minNotional,
-		})
+		instruments = append(instruments, newInstrument(
+			exchange.VenueBinance,
+			exchange.ProductPerp,
+			canonical,
+			symbol.BaseAsset,
+			symbol.QuoteAsset,
+			symbol.MarginAsset,
+			symbol.Symbol,
+			"",
+			priceIncrement,
+			quantityIncrement,
+			minQuantity,
+			minNotional,
+			oneContract(),
+		))
 	}
 	return instruments, nil
 }
@@ -207,9 +254,15 @@ func (client *binancePerpClient) OpenOrders(ctx context.Context, req exchange.Op
 	if err := client.binancePerpReady(ctx, "OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	canonical, native, err := binancePerpRequestSymbols(req.Instrument)
-	if err != nil {
-		return exchange.OrderPage{}, binancePerpInvalidRequest("OpenOrders", err.Error())
+	native := ""
+	nativeSymbol := ""
+	if req.Instrument != nil {
+		canonical, parsedNative, err := binancePerpRequestSymbols(*req.Instrument)
+		if err != nil {
+			return exchange.OrderPage{}, binancePerpInvalidRequest("OpenOrders", err.Error())
+		}
+		native = parsedNative
+		nativeSymbol = canonical.Identity.NativeSymbol
 	}
 	if req.Cursor != "" {
 		return exchange.OrderPage{}, binancePerpInvalidRequest("OpenOrders", "cursor is not supported by Binance open orders")
@@ -227,7 +280,7 @@ func (client *binancePerpClient) OpenOrders(ctx context.Context, req exchange.Op
 		if err != nil {
 			return exchange.OrderPage{}, binancePerpMalformed("OpenOrders", err.Error())
 		}
-		if normalized.Instrument != canonical {
+		if nativeSymbol != "" && normalized.NativeSymbol != nativeSymbol {
 			return exchange.OrderPage{}, binancePerpMalformed("OpenOrders", "response instrument mismatch")
 		}
 		orders = append(orders, normalized)
@@ -239,9 +292,15 @@ func (client *binancePerpClient) Fills(ctx context.Context, req exchange.FillsRe
 	if err := client.binancePerpReady(ctx, "Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	canonical, native, err := binancePerpRequestSymbols(req.Instrument)
-	if err != nil {
-		return exchange.FillPage{}, binancePerpInvalidRequest("Fills", err.Error())
+	native := ""
+	nativeSymbol := ""
+	if req.Instrument != nil {
+		canonical, parsedNative, err := binancePerpRequestSymbols(*req.Instrument)
+		if err != nil {
+			return exchange.FillPage{}, binancePerpInvalidRequest("Fills", err.Error())
+		}
+		native = parsedNative
+		nativeSymbol = canonical.Identity.NativeSymbol
 	}
 	if req.Limit < 0 {
 		return exchange.FillPage{}, binancePerpInvalidRequest("Fills", "limit must be non-negative")
@@ -267,7 +326,7 @@ func (client *binancePerpClient) Fills(ctx context.Context, req exchange.FillsRe
 		if err != nil {
 			return exchange.FillPage{}, binancePerpMalformed("Fills", err.Error())
 		}
-		if fill.Instrument != canonical {
+		if nativeSymbol != "" && fill.NativeSymbol != nativeSymbol {
 			return exchange.FillPage{}, binancePerpMalformed("Fills", "response instrument mismatch")
 		}
 		cursor = fill.FillID
@@ -308,13 +367,15 @@ func (client *binancePerpClient) Positions(ctx context.Context, req exchange.Pos
 		return nil, err
 	}
 	native := ""
-	canonical := ""
-	if req.Instrument != "" {
+	nativeSymbol := ""
+	if req.Instrument != nil {
 		var err error
-		canonical, native, err = binancePerpRequestSymbols(req.Instrument)
+		canonical, parsedNative, err := binancePerpRequestSymbols(*req.Instrument)
 		if err != nil {
 			return nil, binancePerpInvalidRequest("Positions", err.Error())
 		}
+		native = parsedNative
+		nativeSymbol = canonical.Identity.NativeSymbol
 	}
 	resp, err := client.sdk.GetPositionRisk(ctx, native)
 	if err != nil {
@@ -326,7 +387,7 @@ func (client *binancePerpClient) Positions(ctx context.Context, req exchange.Pos
 		if err != nil {
 			return nil, binancePerpMalformed("Positions", err.Error())
 		}
-		if req.Instrument != "" && position.Instrument != canonical {
+		if nativeSymbol != "" && position.NativeSymbol != nativeSymbol {
 			return nil, binancePerpMalformed("Positions", "response instrument mismatch")
 		}
 		if position.Quantity.IsZero() {
@@ -484,7 +545,7 @@ func binancePerpCandle(row binanceperp.KlineResponse) (exchange.Candle, error) {
 	}, nil
 }
 
-func binancePerpOrderAck(operation exchange.OrderOperation, expectedInstrument, expectedOrderID, expectedClientOrderID string, resp *binanceperp.OrderResponse) (exchange.OrderAcknowledgement, error) {
+func binancePerpOrderAck(operation exchange.OrderOperation, expectedInstrument exchange.Instrument, expectedOrderID, expectedClientOrderID string, resp *binanceperp.OrderResponse) (exchange.OrderAcknowledgement, error) {
 	if resp == nil {
 		return exchange.OrderAcknowledgement{}, binancePerpMalformed(string(operation), "missing order response")
 	}
@@ -495,7 +556,7 @@ func binancePerpOrderAck(operation exchange.OrderOperation, expectedInstrument, 
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, binancePerpMalformed(string(operation), err.Error())
 	}
-	if canonical != expectedInstrument {
+	if canonical.Identity.NativeSymbol != expectedInstrument.Identity.NativeSymbol {
 		return exchange.OrderAcknowledgement{}, binancePerpMalformed(string(operation), "response instrument mismatch")
 	}
 	nativeOrderID := strconv.FormatInt(resp.OrderID, 10)
@@ -652,7 +713,7 @@ func binancePerpOrder(resp binanceperp.OrderResponse) (exchange.Order, error) {
 		return exchange.Order{}, errors.New("unsupported order type")
 	}
 	return exchange.Order{
-		Instrument:       canonical,
+		NativeSymbol:     canonical.Identity.NativeSymbol,
 		OrderID:          strconv.FormatInt(resp.OrderID, 10),
 		ClientOrderID:    resp.ClientOrderID,
 		Side:             side,
@@ -703,16 +764,16 @@ func binancePerpFill(trade binanceperp.Trade) (exchange.Fill, error) {
 		side = exchange.SideBuy
 	}
 	return exchange.Fill{
-		Instrument: canonical,
-		OrderID:    strconv.FormatInt(trade.OrderID, 10),
-		FillID:     strconv.FormatInt(trade.ID, 10),
-		Side:       side,
-		Price:      price,
-		Quantity:   quantity,
-		Fee:        fee,
-		FeeAsset:   trade.CommissionAsset,
-		Liquidity:  liquidity,
-		Time:       time.UnixMilli(trade.Time).UTC(),
+		NativeSymbol: canonical.Identity.NativeSymbol,
+		OrderID:      strconv.FormatInt(trade.OrderID, 10),
+		FillID:       strconv.FormatInt(trade.ID, 10),
+		Side:         side,
+		Price:        price,
+		Quantity:     quantity,
+		Fee:          fee,
+		FeeAsset:     trade.CommissionAsset,
+		Liquidity:    liquidity,
+		Time:         time.UnixMilli(trade.Time).UTC(),
 	}, nil
 }
 
@@ -817,7 +878,7 @@ func binancePerpPosition(resp binanceperp.PositionRiskResponse) (exchange.Positi
 		side = exchange.SideSell
 	}
 	return exchange.Position{
-		Instrument:       canonical,
+		NativeSymbol:     canonical.Identity.NativeSymbol,
 		Side:             side,
 		Quantity:         quantity,
 		EntryPrice:       entry,
@@ -829,12 +890,12 @@ func binancePerpPosition(resp binanceperp.PositionRiskResponse) (exchange.Positi
 	}, nil
 }
 
-func binancePerpAck(operation exchange.OrderOperation, instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
+func binancePerpAck(operation exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
 	return exchange.OrderAcknowledgement{
 		Venue:         binancePerpVenue,
 		Product:       binancePerpProduct,
 		Operation:     operation,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderID:       orderID,
 		ClientOrderID: clientOrderID,
 	}
@@ -873,66 +934,118 @@ func binancePerpValidateCancel(req exchange.CancelOrderRequest) error {
 	return nil
 }
 
-func binancePerpRequestSymbols(instrument string) (canonical string, native string, err error) {
-	if instrument == "" {
-		return "", "", errors.New("instrument is required")
+func binancePerpRequestSymbols(instrument exchange.Instrument) (canonical exchange.Instrument, native string, err error) {
+	if err := instrument.Validate(); err != nil {
+		return exchange.Instrument{}, "", err
 	}
-	if strings.TrimSpace(instrument) != instrument || strings.Contains(instrument, "/") || strings.ToUpper(instrument) != instrument {
-		return "", "", errors.New("instrument must be an uppercase BASE-QUOTE Binance USD-M symbol")
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueBinance || identity.Product != exchange.ProductPerp {
+		return exchange.Instrument{}, "", errors.New("instrument must be a Binance USD-M perp instrument")
 	}
-	parts := strings.Split(instrument, "-")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", errors.New("instrument must be an uppercase BASE-QUOTE Binance USD-M symbol")
+	if identity.SettleAsset == "" || identity.SettleAsset != identity.QuoteAsset {
+		return exchange.Instrument{}, "", errors.New("instrument settlement must match USD-M quote asset")
 	}
-	joined := parts[0] + parts[1]
-	for _, r := range joined {
+	if identity.Symbol != identity.BaseAsset+"-"+identity.QuoteAsset {
+		return exchange.Instrument{}, "", errors.New("instrument symbol must be canonical BASE-QUOTE")
+	}
+	if identity.NativeSymbol != identity.BaseAsset+identity.QuoteAsset {
+		return exchange.Instrument{}, "", errors.New("native symbol must match base and quote assets")
+	}
+	if identity.Symbol != strings.ToUpper(identity.Symbol) || identity.NativeSymbol != strings.ToUpper(identity.NativeSymbol) {
+		return exchange.Instrument{}, "", errors.New("instrument must use uppercase Binance USD-M symbols")
+	}
+	for _, r := range identity.NativeSymbol {
 		if r < 'A' || r > 'Z' {
 			if r < '0' || r > '9' {
-				return "", "", errors.New("instrument must be alphanumeric")
+				return exchange.Instrument{}, "", errors.New("instrument must be alphanumeric")
 			}
 		}
 	}
 	for _, quote := range []string{"USDT", "USDC"} {
-		if parts[1] == quote {
-			return instrument, joined, nil
+		if identity.QuoteAsset == quote {
+			return instrument, identity.NativeSymbol, nil
 		}
 	}
-	return "", "", errors.New("instrument must be a USD-M quote symbol")
+	return exchange.Instrument{}, "", errors.New("instrument must be a USD-M quote symbol")
 }
 
 func binancePerpPublicInstrumentSymbols(symbol, baseAsset, quoteAsset string) (canonical string, supported bool, err error) {
-	canonical, native, err := binancePerpRequestSymbols(baseAsset + "-" + quoteAsset)
-	if err != nil {
+	if quoteAsset != "USDT" && quoteAsset != "USDC" {
 		return "", false, nil
+	}
+	if !binancePerpASCII(symbol) || !binancePerpASCII(baseAsset) {
+		return "", false, nil
+	}
+	candidate := newInstrument(
+		exchange.VenueBinance,
+		exchange.ProductPerp,
+		baseAsset+"-"+quoteAsset,
+		baseAsset,
+		quoteAsset,
+		quoteAsset,
+		baseAsset+quoteAsset,
+		"",
+		decimal.NewFromInt(1),
+		decimal.NewFromInt(1),
+		decimal.Zero,
+		exchange.OptionalDecimal{},
+		oneContract(),
+	)
+	instrument, native, err := binancePerpRequestSymbols(candidate)
+	if err != nil {
+		return "", true, err
 	}
 	if symbol != native {
 		return "", true, errors.New("USD-M symbol does not match asset metadata")
 	}
-	return canonical, true, nil
+	return instrument.Identity.Symbol, true, nil
 }
 
-func binancePerpNativeSymbols(symbol string) (canonical string, native string, err error) {
+func binancePerpASCII(value string) bool {
+	for _, r := range value {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func binancePerpNativeSymbols(symbol string) (canonical exchange.Instrument, native string, err error) {
 	if symbol == "" {
-		return "", "", errors.New("instrument is required")
+		return exchange.Instrument{}, "", errors.New("instrument is required")
 	}
 	if strings.TrimSpace(symbol) != symbol || strings.Contains(symbol, "/") {
-		return "", "", errors.New("instrument must be a Binance USD-M symbol")
+		return exchange.Instrument{}, "", errors.New("instrument must be a Binance USD-M symbol")
 	}
 	upper := strings.ToUpper(strings.ReplaceAll(symbol, "-", ""))
 	for _, r := range upper {
 		if r < 'A' || r > 'Z' {
 			if r < '0' || r > '9' {
-				return "", "", errors.New("instrument must be alphanumeric")
+				return exchange.Instrument{}, "", errors.New("instrument must be alphanumeric")
 			}
 		}
 	}
 	for _, quote := range []string{"USDT", "USDC"} {
 		if strings.HasSuffix(upper, quote) && len(upper) > len(quote) {
 			base := strings.TrimSuffix(upper, quote)
-			return base + "-" + quote, upper, nil
+			return newInstrument(
+				exchange.VenueBinance,
+				exchange.ProductPerp,
+				base+"-"+quote,
+				base,
+				quote,
+				quote,
+				upper,
+				"",
+				decimal.NewFromInt(1),
+				decimal.NewFromInt(1),
+				decimal.Zero,
+				exchange.OptionalDecimal{},
+				oneContract(),
+			), upper, nil
 		}
 	}
-	return "", "", errors.New("instrument must be a USD-M quote symbol")
+	return exchange.Instrument{}, "", errors.New("instrument must be a USD-M quote symbol")
 }
 
 func binancePerpSide(side exchange.Side) string {

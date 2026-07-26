@@ -16,21 +16,23 @@ func TestOpenAPIBitgetRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: &http.Client{Transport: bitgetOpenAPIRouter{}}}
 
-	spot := NewBitgetSpot("key", "secret", "passphrase", settings)
-	assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "BTC-USDT")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "11"}); err != nil {
+	spotSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBitget, exchange.ProductSpot, "BTC-USDT")
+	spot := NewBitgetSpot("key", "secret", "passphrase", spotSettings)
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "11"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, "BTC-USDT")
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
-	perp := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
-	assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC-USDT")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "21"}); err != nil {
+	perpSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	perp := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", perpSettings)
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "21"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrixWithFundingRequest(t, ctx, perp, "BTC-USDT", exchange.FundingRateHistoryRequest{Instrument: "BTC-USDT", Limit: 10})
+	assertPerpLifecycleMatrixWithFundingRequest(t, ctx, perp, perpInstrument, exchange.FundingRateHistoryRequest{Instrument: perpInstrument, Limit: 10})
 }
 
 func TestBitgetBuildersSatisfyExchangeContracts(t *testing.T) {
@@ -79,7 +81,7 @@ func TestBitgetUSDCPerpUsesUSDCFuturesProductTypeAndMarginCoin(t *testing.T) {
 		t.Fatalf("instrument category = %q, want USDC-FUTURES", instrumentsCategory)
 	}
 	_, err := client.PlaceOrder(ctx, exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDC",
+		Instrument:    bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDC"),
 		ClientOrderID: "401",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -120,7 +122,7 @@ func TestBitgetSpotMarketBuyConvertsBaseQuantityToQuoteQuantity(t *testing.T) {
 		})},
 	})
 	_, err := client.PlaceOrder(t.Context(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductSpot, "BTC-USDT"),
 		ClientOrderID: "401",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -145,7 +147,7 @@ func TestBitgetCancelAcceptsVenueSizedOrderID(t *testing.T) {
 			return bitgetData(`{"orderId":"` + orderID + `"}`), nil
 		})},
 	})
-	if _, err := client.CancelOrder(t.Context(), exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: orderID}); err != nil {
+	if _, err := client.CancelOrder(t.Context(), exchange.CancelOrderRequest{Instrument: bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductSpot, "BTC-USDT"), OrderID: orderID}); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	if !strings.Contains(cancelBody, `"orderId":"`+orderID+`"`) {

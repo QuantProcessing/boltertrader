@@ -30,6 +30,35 @@ func openAPIJSONResponse(body string) *http.Response {
 	}
 }
 
+func hyperliquidOpenAPICatalogSettings(t *testing.T, settings Settings, product exchange.Product) Settings {
+	t.Helper()
+	settlement := ""
+	if product == exchange.ProductPerp {
+		settlement = "USDC"
+	}
+	descriptor := exchange.SourceDescriptor{
+		Name:              "hyperliquid-" + string(product) + "-openapi-test",
+		Endpoint:          settings.Endpoint,
+		WebSocketEndpoint: "wss://openapi.invalid/ws",
+		Transport:         "test-http-client",
+	}
+	scope := exchange.CatalogScope{
+		Venue:               exchange.VenueHyperliquid,
+		Environment:         exchange.Environment(settings.Environment),
+		Product:             product,
+		Settlement:          settlement,
+		EndpointFingerprint: descriptor.Fingerprint(),
+	}
+	catalog := exchange.NewDefaultMemoryCatalog()
+	if err := catalog.RegisterSource(scope, descriptor, NewHyperliquidInstrumentLoader(product, settings)); err != nil {
+		t.Fatalf("RegisterSource: %v", err)
+	}
+	settings.InstrumentCatalog = catalog
+	settings.CatalogScope = scope
+	settings.SourceDescriptor = descriptor
+	return settings
+}
+
 type binanceOpenAPIRouter struct {
 	mu          sync.Mutex
 	seen        map[string]int
@@ -122,25 +151,25 @@ func TestOpenAPIBinanceRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	spot := NewBinanceSpot("key", "secret", settings)
-	assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "BTC-USDT")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "11"}); err != nil {
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "11"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, "BTC-USDT")
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
 	perp := NewBinanceUSDPerp("key", "secret", settings)
-	assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC-USDT")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "21"}); err != nil {
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "21"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrix(t, ctx, perp, "BTC-USDT")
+	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 
 	assertBinanceOpenAPIPlaceShapes(t, router.placeShapes)
 }
 
-func exerciseOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exchange.Product, client any, instrument string) {
+func exerciseOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exchange.Product, client any, instrument exchange.Instrument) {
 	t.Helper()
 	cases := []exchange.PlaceOrderRequest{
 		{Instrument: instrument, ClientOrderID: "101", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1)},
@@ -170,12 +199,17 @@ func exerciseOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exc
 	}
 }
 
-func assertSpotReadMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument string) {
+func assertSpotReadMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, expectedSymbol string) exchange.Instrument {
 	t.Helper()
 	start := time.UnixMilli(1720000000000)
 	end := start.Add(time.Minute)
-	if rows, err := client.Instruments(ctx); err != nil || len(rows) != 1 {
+	rows, err := client.Instruments(ctx)
+	if err != nil || len(rows) != 1 {
 		t.Fatalf("Instruments: rows=%d err=%v", len(rows), err)
+	}
+	instrument := rows[0]
+	if instrument.Identity.Symbol != expectedSymbol {
+		t.Fatalf("Instrument symbol = %q, want %q", instrument.Identity.Symbol, expectedSymbol)
 	}
 	if row, err := client.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 5}); err != nil || len(row.Bids) != 1 {
 		t.Fatalf("OrderBook: bids=%d err=%v", len(row.Bids), err)
@@ -186,17 +220,18 @@ func assertSpotReadMatrix(t *testing.T, ctx context.Context, client exchange.Spo
 	if rows, err := client.PublicTrades(ctx, exchange.PublicTradesRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Trades) != 1 {
 		t.Fatalf("PublicTrades: rows=%d err=%v", len(rows.Trades), err)
 	}
+	return instrument
 }
 
-func assertSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument string) {
+func assertSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.SpotClient, instrument exchange.Instrument) {
 	t.Helper()
-	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 || rows.Page.Limit != 1 {
+	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 || rows.Page.Limit != 1 {
 		t.Fatalf("OpenOrders: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OrderHistory: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
+	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
 		t.Fatalf("Fills: rows=%d err=%v", len(rows.Fills), err)
 	}
 	if rows, err := client.Balances(ctx); err != nil || len(rows) != 1 {
@@ -207,17 +242,22 @@ func assertSpotLifecycleMatrix(t *testing.T, ctx context.Context, client exchang
 	}
 }
 
-func assertPerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+func assertPerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, expectedSymbol string) exchange.Instrument {
 	t.Helper()
-	assertSpotLikePerpReadMatrix(t, ctx, client, instrument)
+	return assertSpotLikePerpReadMatrix(t, ctx, client, expectedSymbol)
 }
 
-func assertSpotLikePerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+func assertSpotLikePerpReadMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, expectedSymbol string) exchange.Instrument {
 	t.Helper()
 	start := time.UnixMilli(1720000000000)
 	end := start.Add(time.Minute)
-	if rows, err := client.Instruments(ctx); err != nil || len(rows) != 1 {
+	rows, err := client.Instruments(ctx)
+	if err != nil || len(rows) != 1 {
 		t.Fatalf("Instruments: rows=%d err=%v", len(rows), err)
+	}
+	instrument := rows[0]
+	if instrument.Identity.Symbol != expectedSymbol {
+		t.Fatalf("Instrument symbol = %q, want %q", instrument.Identity.Symbol, expectedSymbol)
 	}
 	if row, err := client.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 5}); err != nil || len(row.Bids) != 1 {
 		t.Fatalf("OrderBook: bids=%d err=%v", len(row.Bids), err)
@@ -228,9 +268,10 @@ func assertSpotLikePerpReadMatrix(t *testing.T, ctx context.Context, client exch
 	if rows, err := client.PublicTrades(ctx, exchange.PublicTradesRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Trades) != 1 {
 		t.Fatalf("PublicTrades: rows=%d err=%v", len(rows.Trades), err)
 	}
+	return instrument
 }
 
-func assertPerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string) {
+func assertPerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument exchange.Instrument) {
 	start := time.UnixMilli(1719990000000)
 	assertPerpLifecycleMatrixWithFundingRequest(t, ctx, client, instrument, exchange.FundingRateHistoryRequest{
 		Instrument: instrument,
@@ -240,15 +281,15 @@ func assertPerpLifecycleMatrix(t *testing.T, ctx context.Context, client exchang
 	})
 }
 
-func assertPerpLifecycleMatrixWithFundingRequest(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument string, fundingRequest exchange.FundingRateHistoryRequest) {
+func assertPerpLifecycleMatrixWithFundingRequest(t *testing.T, ctx context.Context, client exchange.PerpClient, instrument exchange.Instrument, fundingRequest exchange.FundingRateHistoryRequest) {
 	t.Helper()
-	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 || rows.Page.Limit != 1 {
+	if rows, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 1}); err != nil || len(rows.Orders) != 1 || rows.Page.Limit != 1 {
 		t.Fatalf("OpenOrders: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
+	if rows, err := client.OrderHistory(ctx, exchange.OrderHistoryRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Orders) != 1 {
 		t.Fatalf("OrderHistory: rows=%d err=%v", len(rows.Orders), err)
 	}
-	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
+	if rows, err := client.Fills(ctx, exchange.FillsRequest{Instrument: &instrument, Limit: 10}); err != nil || len(rows.Fills) != 1 {
 		t.Fatalf("Fills: rows=%d err=%v", len(rows.Fills), err)
 	}
 	if rows, err := client.Balances(ctx); err != nil || len(rows) != 1 {
@@ -259,7 +300,7 @@ func assertPerpLifecycleMatrixWithFundingRequest(t *testing.T, ctx context.Conte
 	} else if !row.MarginUsed.Valid || !row.MarginUsed.Value.Equal(decimal.NewFromInt(10)) {
 		t.Fatalf("PerpAccount MarginUsed = %#v, want 10", row.MarginUsed)
 	}
-	if rows, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: instrument}); err != nil || len(rows) != 1 {
+	if rows, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument}); err != nil || len(rows) != 1 {
 		t.Fatalf("Positions: rows=%d err=%v", len(rows), err)
 	}
 	if row, err := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument}); err != nil || !row.Rate.Equal(decimal.RequireFromString("0.0001")) {
@@ -312,8 +353,9 @@ func TestOpenAPIBinancePerpOrderHistoryRejectsMismatchedInstrument(t *testing.T)
 		Environment: "demo",
 		HTTPClient:  &http.Client{Transport: transport},
 	})
+	instrument := assertPerpReadMatrix(t, context.Background(), client, "BTC-USDT")
 
-	_, err := client.OrderHistory(context.Background(), exchange.OrderHistoryRequest{Instrument: "BTC-USDT", Limit: 10})
+	_, err := client.OrderHistory(context.Background(), exchange.OrderHistoryRequest{Instrument: &instrument, Limit: 10})
 	if !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("OrderHistory error = %v, want ErrMalformedResponse", err)
 	}
@@ -397,21 +439,21 @@ func TestOpenAPIOKXRESTExecutionMatrix(t *testing.T) {
 	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: &http.Client{Transport: router}}
 	ctx := context.Background()
 
-	spot := NewOKXSpot("key", "secret", "passphrase", settings)
-	assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "BTC-USDT")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "31"}); err != nil {
+	spot := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, settings))
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "31"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, "BTC-USDT")
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
-	perp := NewOKXUSDTPerp("key", "secret", "passphrase", settings)
-	assertPerpReadMatrix(t, ctx, perp, "BTC-USDT-SWAP")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC-USDT-SWAP")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT-SWAP", OrderID: "31"}); err != nil {
+	perp := NewOKXUSDTPerp("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductPerp, settings))
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT-SWAP")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "31"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrix(t, ctx, perp, "BTC-USDT-SWAP")
+	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 
 	assertOKXOpenAPIPlaceShapes(t, router.placeBodies)
 	if len(router.leverageBodies) != 1 {
@@ -462,7 +504,8 @@ func TestOpenAPIOKXSetLeverageRejectsMarginScopeMismatch(t *testing.T) {
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
-	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: "BTC-USDT-SWAP", Leverage: 5})
+	instrument := okxOpenAPIFixtureInstrument(exchange.ProductPerp)
+	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: instrument, Leverage: 5})
 	if !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("SetLeverage error = %v, want ErrMalformedResponse", err)
 	}
@@ -482,16 +525,44 @@ func TestOpenAPIOKXSetLeverageAcceptsBlankResponsePositionSideForNetScope(t *tes
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
+	instrument := okxOpenAPIFixtureInstrument(exchange.ProductPerp)
 	got, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{
-		Instrument: "BTC-USDT-SWAP",
+		Instrument: instrument,
 		Leverage:   5,
 	})
 	if err != nil {
 		t.Fatalf("SetLeverage net-scope response: %v", err)
 	}
-	if got.Instrument != "BTC-USDT-SWAP" || got.Effective != 5 {
+	if got.NativeSymbol != "BTC-USDT-SWAP" || got.Effective != 5 {
 		t.Fatalf("SetLeverage result = %+v", got)
 	}
+}
+
+func okxOpenAPICatalogSettings(product exchange.Product, settings Settings) Settings {
+	scope := exchange.CatalogScope{
+		Venue:       exchange.VenueOKX,
+		Environment: exchange.EnvironmentDemo,
+		Product:     product,
+	}
+	if product == exchange.ProductPerp {
+		scope.Settlement = "USDT"
+	}
+	settings.InstrumentCatalog = exchange.NewMemoryCatalog(exchange.StaticInstrumentLoader{
+		Snapshot: exchange.InstrumentSnapshot{
+			SchemaVersion: 1,
+			Scope:         scope,
+			Instruments:   []exchange.Instrument{okxOpenAPIFixtureInstrument(product)},
+		},
+	}, nil)
+	settings.CatalogScope = scope
+	return settings
+}
+
+func okxOpenAPIFixtureInstrument(product exchange.Product) exchange.Instrument {
+	if product == exchange.ProductPerp {
+		return okxCatalogTestInstrument(exchange.ProductPerp, "BTC", "USDT", "2001", decimal.RequireFromString("0.01"))
+	}
+	return okxCatalogTestInstrument(exchange.ProductSpot, "BTC", "USDT", "1001", decimal.RequireFromString("0.001"))
 }
 
 type lighterOpenAPIRouter struct {
@@ -591,22 +662,22 @@ func TestOpenAPILighterRESTExecutionMatrix(t *testing.T) {
 	spotRouter := &lighterOpenAPIRouter{product: exchange.ProductSpot, marketID: 1, instrument: "BTC-USDC"}
 	spotSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: spotRouter}}
 	spot := NewLighterSpot(openAPILighterPrivateKey, 7, 2, spotSettings)
-	assertSpotReadMatrix(t, ctx, spot, spotRouter.instrument)
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotRouter.instrument)
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotRouter.instrument, OrderID: "30"}); err != nil {
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, spotRouter.instrument)
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "30"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, spotRouter.instrument)
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
 	perpRouter := &lighterOpenAPIRouter{product: exchange.ProductPerp, marketID: 2, instrument: "BTC"}
 	perpSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}
 	perp := NewLighterPerp(openAPILighterPrivateKey, 7, 2, perpSettings)
-	assertPerpReadMatrix(t, ctx, perp, perpRouter.instrument)
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpRouter.instrument)
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpRouter.instrument, OrderID: "30"}); err != nil {
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, perpRouter.instrument)
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "30"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrix(t, ctx, perp, perpRouter.instrument)
+	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 
 	assertLighterOpenAPIPlaceShapes(t, spotRouter.placeBodies, false)
 	assertLighterOpenAPIPlaceShapes(t, perpRouter.placeBodies, true)
@@ -732,24 +803,24 @@ func TestOpenAPIHyperliquidRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	spotRouter := &hyperliquidOpenAPIRouter{product: exchange.ProductSpot, coin: "@1"}
-	spotSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: spotRouter}}
+	spotSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: spotRouter}}, exchange.ProductSpot)
 	spot := NewHyperliquidSpot(openAPITestPrivateKey, spotSettings)
-	assertSpotReadMatrix(t, ctx, spot, "PURR-USDC")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "PURR-USDC")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "PURR-USDC", OrderID: "41"}); err != nil {
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "PURR-USDC")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "41"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, "PURR-USDC")
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
 	perpRouter := &hyperliquidOpenAPIRouter{product: exchange.ProductPerp, coin: "BTC"}
-	perpSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}
+	perpSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}, exchange.ProductPerp)
 	perp := NewHyperliquidPerp(openAPITestPrivateKey, perpSettings)
-	assertPerpReadMatrix(t, ctx, perp, "BTC-USDC")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC-USDC")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDC", OrderID: "41"}); err != nil {
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDC")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "41"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrix(t, ctx, perp, "BTC-USDC")
+	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 
 	assertHyperliquidOpenAPIPlaceShapes(t, spotRouter.placeActions, false, 10001)
 	assertHyperliquidOpenAPIPlaceShapes(t, perpRouter.placeActions, true, 0)
@@ -764,39 +835,40 @@ func TestOpenAPIHyperliquidRESTExecutionMatrix(t *testing.T) {
 	}
 }
 
-func TestOpenAPIHyperliquidRESTNormalizesEveryLimitPolicyConservatively(t *testing.T) {
+func TestOpenAPIHyperliquidRESTRejectsInexactPricesForEveryLimitPolicy(t *testing.T) {
 	ctx := context.Background()
 	tests := []struct {
-		name       string
-		product    exchange.Product
-		coin       string
-		instrument string
-		newClient  func(*hyperliquidOpenAPIRouter) any
+		name      string
+		product   exchange.Product
+		coin      string
+		newClient func(*testing.T, *hyperliquidOpenAPIRouter) (any, exchange.Instrument)
 	}{
 		{
-			name:       "spot",
-			product:    exchange.ProductSpot,
-			coin:       "@1",
-			instrument: "PURR-USDC",
-			newClient: func(router *hyperliquidOpenAPIRouter) any {
-				return NewHyperliquidSpot(openAPITestPrivateKey, Settings{
+			name:    "spot",
+			product: exchange.ProductSpot,
+			coin:    "@1",
+			newClient: func(t *testing.T, router *hyperliquidOpenAPIRouter) (any, exchange.Instrument) {
+				settings := hyperliquidOpenAPICatalogSettings(t, Settings{
 					Endpoint:    "https://openapi.invalid",
 					Environment: "testnet",
 					HTTPClient:  &http.Client{Transport: router},
-				})
+				}, exchange.ProductSpot)
+				client := NewHyperliquidSpot(openAPITestPrivateKey, settings)
+				return client, assertSpotReadMatrix(t, ctx, client, "PURR-USDC")
 			},
 		},
 		{
-			name:       "perp",
-			product:    exchange.ProductPerp,
-			coin:       "BTC",
-			instrument: "BTC-USDC",
-			newClient: func(router *hyperliquidOpenAPIRouter) any {
-				return NewHyperliquidPerp(openAPITestPrivateKey, Settings{
+			name:    "perp",
+			product: exchange.ProductPerp,
+			coin:    "BTC",
+			newClient: func(t *testing.T, router *hyperliquidOpenAPIRouter) (any, exchange.Instrument) {
+				settings := hyperliquidOpenAPICatalogSettings(t, Settings{
 					Endpoint:    "https://openapi.invalid",
 					Environment: "testnet",
 					HTTPClient:  &http.Client{Transport: router},
-				})
+				}, exchange.ProductPerp)
+				client := NewHyperliquidPerp(openAPITestPrivateKey, settings)
+				return client, assertPerpReadMatrix(t, ctx, client, "BTC-USDC")
 			},
 		},
 	}
@@ -808,7 +880,7 @@ func TestOpenAPIHyperliquidRESTNormalizesEveryLimitPolicyConservatively(t *testi
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			router := &hyperliquidOpenAPIRouter{product: test.product, coin: test.coin}
-			client := test.newClient(router)
+			client, instrument := test.newClient(t, router)
 			for index, policy := range policies {
 				for _, side := range []exchange.Side{exchange.SideBuy, exchange.SideSell} {
 					sideIndex := 0
@@ -816,7 +888,7 @@ func TestOpenAPIHyperliquidRESTNormalizesEveryLimitPolicyConservatively(t *testi
 						sideIndex = 1
 					}
 					request := exchange.PlaceOrderRequest{
-						Instrument:    test.instrument,
+						Instrument:    instrument,
 						ClientOrderID: intString(200 + index*2 + sideIndex),
 						Side:          side,
 						Type:          exchange.OrderTypeLimit,
@@ -831,24 +903,13 @@ func TestOpenAPIHyperliquidRESTNormalizesEveryLimitPolicyConservatively(t *testi
 					} else {
 						_, err = client.(exchange.PerpClient).PlaceOrder(ctx, request)
 					}
-					if err != nil {
-						t.Fatalf("%s %s PlaceOrder: %v", policy, side, err)
+					if !errors.Is(err, exchange.ErrInvalidRequest) {
+						t.Fatalf("%s %s PlaceOrder error = %v, want ErrInvalidRequest", policy, side, err)
 					}
 				}
 			}
-			if len(router.placeActions) != len(policies)*2 {
-				t.Fatalf("captured place actions = %d, want %d", len(router.placeActions), len(policies)*2)
-			}
-			for index, action := range router.placeActions {
-				orders, _ := action["orders"].([]any)
-				order, _ := orders[0].(map[string]any)
-				want := "101.23"
-				if index%2 == 1 {
-					want = "101.24"
-				}
-				if got := stringValue(order["p"]); got != want {
-					t.Errorf("place[%d] price = %q, want %q", index, got, want)
-				}
+			if len(router.placeActions) != 0 {
+				t.Fatalf("inexact requests reached exchange: captured %d place actions", len(router.placeActions))
 			}
 		})
 	}
@@ -901,13 +962,15 @@ func TestOpenAPIHyperliquidSetLeveragePostSendFailureUsesSetLeverageBoundary(t *
 		}
 		return router.RoundTrip(request)
 	})
-	client := NewHyperliquidPerp(openAPITestPrivateKey, Settings{
+	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
 		Endpoint:    "https://openapi.invalid",
 		Environment: "testnet",
 		HTTPClient:  &http.Client{Transport: transport},
-	})
+	}, exchange.ProductPerp)
+	client := NewHyperliquidPerp(openAPITestPrivateKey, settings)
+	instrument := assertPerpReadMatrix(t, context.Background(), client, "BTC-USDC")
 
-	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: "BTC-USDC", Leverage: 5})
+	_, err := client.SetLeverage(context.Background(), exchange.SetLeverageRequest{Instrument: instrument, Leverage: 5})
 	if !errors.Is(err, exchange.ErrAmbiguousOutcome) {
 		t.Fatalf("SetLeverage error = %v, want ErrAmbiguousOutcome", err)
 	}

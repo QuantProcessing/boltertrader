@@ -21,7 +21,7 @@ type gateSpotREST interface {
 type gatePerpREST interface {
 	gateSpotREST
 	gateFuturesUserID(context.Context) (string, error)
-	gateContractMultiplier(context.Context, string, string) (decimal.Decimal, error)
+	gateContractMultiplier(string, exchange.Instrument) (decimal.Decimal, error)
 }
 
 type gateSpotWSBackend struct {
@@ -60,7 +60,7 @@ func gatePerpPrivateAccountPayload(userID string) []string {
 	return []string{userID}
 }
 
-func gateSpotOrderBookEvent(raw json.RawMessage, instrument string) (exchange.BookEvent, error) {
+func gateSpotOrderBookEvent(raw json.RawMessage, instrument exchange.Instrument) (exchange.BookEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}
 	var message struct {
 		Result struct {
@@ -78,9 +78,12 @@ func gateSpotOrderBookEvent(raw json.RawMessage, instrument string) (exchange.Bo
 	if err := gateValidateSpotOrderBook(meta, "WatchOrderBook", book); err != nil {
 		return exchange.BookEvent{}, err
 	}
+	if err := gateEnsureNativeInstrument(meta, "WatchOrderBook", instrument, message.Result.S); err != nil {
+		return exchange.BookEvent{}, err
+	}
 	return exchange.BookEvent{
 		Kind:       exchange.EventSnapshot,
-		Instrument: coalesce(message.Result.S, instrument),
+		Instrument: instrument,
 		Sequence:   strconv.FormatInt(message.Result.LastUpdateID, 10),
 		Bids:       gateBookLevels(message.Result.Bids),
 		Asks:       gateBookLevels(message.Result.Asks),
@@ -88,7 +91,7 @@ func gateSpotOrderBookEvent(raw json.RawMessage, instrument string) (exchange.Bo
 	}, nil
 }
 
-func gatePerpOrderBookEvent(raw json.RawMessage, instrument string, multiplier decimal.Decimal) (exchange.BookEvent, error) {
+func gatePerpOrderBookEvent(raw json.RawMessage, instrument exchange.Instrument, multiplier decimal.Decimal) (exchange.BookEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	var message struct {
 		Result struct {
@@ -106,9 +109,12 @@ func gatePerpOrderBookEvent(raw json.RawMessage, instrument string, multiplier d
 	if err := gateValidateFuturesOrderBook(meta, "WatchOrderBook", book); err != nil {
 		return exchange.BookEvent{}, err
 	}
+	if err := gateEnsureNativeInstrument(meta, "WatchOrderBook", instrument, message.Result.Contract); err != nil {
+		return exchange.BookEvent{}, err
+	}
 	return exchange.BookEvent{
 		Kind:       exchange.EventSnapshot,
-		Instrument: coalesce(message.Result.Contract, instrument),
+		Instrument: instrument,
 		Sequence:   strconv.FormatInt(message.Result.ID, 10),
 		Bids:       gateFuturesBookLevels(message.Result.Bids, multiplier),
 		Asks:       gateFuturesBookLevels(message.Result.Asks, multiplier),
@@ -127,7 +133,7 @@ type gateWSCandlestick struct {
 	W bool              `json:"w"`
 }
 
-func gateSpotCandleEvent(raw json.RawMessage, instrument, interval string) (exchange.CandleEvent, error) {
+func gateSpotCandleEvent(raw json.RawMessage, instrument exchange.Instrument, interval string) (exchange.CandleEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}
 	var message struct {
 		Result gateWSCandlestick `json:"result"`
@@ -138,7 +144,7 @@ func gateSpotCandleEvent(raw json.RawMessage, instrument, interval string) (exch
 	return gateWSCandleEvent(meta, message.Result, instrument, interval)
 }
 
-func gatePerpCandleEvents(raw json.RawMessage, instrument, interval string) ([]exchange.CandleEvent, error) {
+func gatePerpCandleEvents(raw json.RawMessage, instrument exchange.Instrument, interval string) ([]exchange.CandleEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	var message struct {
 		Result []gateWSCandlestick `json:"result"`
@@ -160,7 +166,10 @@ func gatePerpCandleEvents(raw json.RawMessage, instrument, interval string) ([]e
 	return events, nil
 }
 
-func gateWSCandleEvent(meta clientMeta, row gateWSCandlestick, instrument, interval string) (exchange.CandleEvent, error) {
+func gateWSCandleEvent(meta clientMeta, row gateWSCandlestick, instrument exchange.Instrument, interval string) (exchange.CandleEvent, error) {
+	if err := gateEnsureNativeInstrument(meta, "WatchCandles", instrument, gateWSCandleInstrument(row.N, interval)); err != nil {
+		return exchange.CandleEvent{}, err
+	}
 	candlestick := gate.Candlestick{row.T, row.V, row.C, row.H, row.L, row.O}
 	if err := gateValidateCandles(meta, "WatchCandles", []gate.Candlestick{candlestick}); err != nil {
 		return exchange.CandleEvent{}, err
@@ -180,22 +189,23 @@ func gateWSCandleEvent(meta clientMeta, row gateWSCandlestick, instrument, inter
 	candle := page.Candles[0]
 	candle.Complete = row.W
 	return exchange.CandleEvent{
-		Instrument: gateWSCandleInstrument(row.N, interval, instrument),
+		Instrument: instrument,
 		Interval:   interval,
 		Candle:     candle,
 	}, nil
 }
 
-func gateWSCandleInstrument(name, interval, fallback string) string {
+func gateWSCandleInstrument(name, interval string) string {
 	prefix := interval + "_"
 	if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
 		return name[len(prefix):]
 	}
-	return fallback
+	return ""
 }
 
-func (backend *gateSpotWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
-	return backend.subscribe(ctx, gate.ChannelSpotOrderBook, gateSpotOrderBookSubscription(instrument), func(raw json.RawMessage) {
+func (backend *gateSpotWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, gate.ChannelSpotOrderBook, gateSpotOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gateSpotOrderBookEvent(raw, instrument)
 		if err != nil {
 			callbacks.Error(err)
@@ -205,7 +215,7 @@ func (backend *gateSpotWSBackend) StartOrderBook(ctx context.Context, instrument
 	})
 }
 
-func (backend *gateSpotWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (backend *gateSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	return backend.StartOrderBook(ctx, instrument, streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) {
 			var bbo exchange.BBOEvent
@@ -224,7 +234,7 @@ func (backend *gateSpotWSBackend) StartBBO(ctx context.Context, instrument strin
 	})
 }
 
-func (backend *gatePerpWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (backend *gatePerpWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	return backend.StartOrderBook(ctx, instrument, streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) {
 			var bbo exchange.BBOEvent
@@ -243,25 +253,21 @@ func (backend *gatePerpWSBackend) StartBBO(ctx context.Context, instrument strin
 	})
 }
 
-func (backend *gateSpotWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
-	return backend.subscribe(ctx, gate.ChannelSpotTrade, []string{instrument}, func(raw json.RawMessage) {
-		var message struct {
-			Result gate.Trade `json:"result"`
-		}
-		if err := json.Unmarshal(raw, &message); err != nil {
+func (backend *gateSpotWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, gate.ChannelSpotTrade, []string{native}, func(raw json.RawMessage) {
+		event, err := gateSpotPublicTradeEvent(raw, instrument)
+		if err != nil {
 			callbacks.Error(err)
 			return
 		}
-		if err := gateValidateSpotPublicTrades(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "WatchPublicTrades", []gate.Trade{message.Result}); err != nil {
-			callbacks.Error(err)
-			return
-		}
-		callbacks.Event(exchange.PublicTradeEvent{Instrument: coalesce(message.Result.CurrencyPair, instrument), TradeID: message.Result.ID, Side: gateSide(message.Result.Side), Price: gateDecimal(message.Result.Price), Quantity: gateDecimal(message.Result.Amount), Time: gateTimeMS(message.Result.CreateTimeMS)})
+		callbacks.Event(event)
 	})
 }
 
-func (backend *gateSpotWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
-	return backend.subscribe(ctx, "spot.candlesticks", []string{interval, instrument}, func(raw json.RawMessage) {
+func (backend *gateSpotWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, "spot.candlesticks", []string{interval, native}, func(raw json.RawMessage) {
 		event, err := gateSpotCandleEvent(raw, instrument, interval)
 		if err != nil {
 			callbacks.Error(err)
@@ -271,9 +277,10 @@ func (backend *gateSpotWSBackend) StartCandles(ctx context.Context, instrument, 
 	})
 }
 
-func (backend *gateSpotWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	return backend.subscribe(ctx, gate.ChannelSpotOrder, []string{instrument}, func(raw json.RawMessage) {
-		events, err := gateSpotOrderEvents(raw)
+func (backend *gateSpotWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, gate.ChannelSpotOrder, []string{native}, func(raw json.RawMessage) {
+		events, err := gateSpotOrderEvents(raw, instrument)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -284,9 +291,10 @@ func (backend *gateSpotWSBackend) StartOrders(ctx context.Context, instrument st
 	})
 }
 
-func (backend *gateSpotWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	return backend.subscribe(ctx, gate.ChannelSpotUserTrade, []string{instrument}, func(raw json.RawMessage) {
-		events, err := gateSpotFillEvents(raw)
+func (backend *gateSpotWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, gate.ChannelSpotUserTrade, []string{native}, func(raw json.RawMessage) {
+		events, err := gateSpotFillEvents(raw, instrument)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -325,12 +333,13 @@ func (backend *gateSpotWSBackend) Close() error {
 	return backend.ws.Close()
 }
 
-func (backend *gatePerpWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
-	multiplier, err := backend.rest.gateContractMultiplier(ctx, "WatchOrderBook", instrument)
+func (backend *gatePerpWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	multiplier, err := backend.rest.gateContractMultiplier("WatchOrderBook", instrument)
 	if err != nil {
 		return nil, err
 	}
-	return backend.subscribe(ctx, gate.ChannelFuturesOrderBook, gatePerpOrderBookSubscription(instrument), func(raw json.RawMessage) {
+	return backend.subscribe(ctx, gate.ChannelFuturesOrderBook, gatePerpOrderBookSubscription(native), func(raw json.RawMessage) {
 		event, err := gatePerpOrderBookEvent(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
@@ -340,12 +349,13 @@ func (backend *gatePerpWSBackend) StartOrderBook(ctx context.Context, instrument
 	})
 }
 
-func (backend *gatePerpWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
-	multiplier, err := backend.rest.gateContractMultiplier(ctx, "WatchPublicTrades", instrument)
+func (backend *gatePerpWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	multiplier, err := backend.rest.gateContractMultiplier("WatchPublicTrades", instrument)
 	if err != nil {
 		return nil, err
 	}
-	return backend.subscribe(ctx, gate.ChannelFuturesTrade, []string{instrument}, func(raw json.RawMessage) {
+	return backend.subscribe(ctx, gate.ChannelFuturesTrade, []string{native}, func(raw json.RawMessage) {
 		events, err := gatePerpPublicTradeEvents(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
@@ -357,7 +367,7 @@ func (backend *gatePerpWSBackend) StartPublicTrades(ctx context.Context, instrum
 	})
 }
 
-func gatePerpPublicTradeEvents(raw json.RawMessage, instrument string, multiplier decimal.Decimal) ([]exchange.PublicTradeEvent, error) {
+func gatePerpPublicTradeEvents(raw json.RawMessage, instrument exchange.Instrument, multiplier decimal.Decimal) ([]exchange.PublicTradeEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
@@ -382,12 +392,15 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument string, multiplie
 	}
 	events := make([]exchange.PublicTradeEvent, 0, len(rows))
 	for _, row := range rows {
+		if err := gateEnsureNativeInstrument(meta, "WatchPublicTrades", instrument, row.Contract); err != nil {
+			return nil, err
+		}
 		side := exchange.SideBuy
 		size := gateDecimal(string(row.Size))
 		if size.IsNegative() {
 			side = exchange.SideSell
 		}
-		events = append(events, exchange.PublicTradeEvent{Instrument: coalesce(row.Contract, instrument), TradeID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: size.Abs().Mul(multiplier), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
+		events = append(events, exchange.PublicTradeEvent{Instrument: instrument, TradeID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: size.Abs().Mul(multiplier), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
 	}
 	if len(events) == 0 {
 		return nil, gateMalformed(meta, "WatchPublicTrades", "gate futures trade update is empty")
@@ -395,8 +408,9 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument string, multiplie
 	return events, nil
 }
 
-func (backend *gatePerpWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
-	return backend.subscribe(ctx, "futures.candlesticks", []string{interval, instrument}, func(raw json.RawMessage) {
+func (backend *gatePerpWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+	native := instrument.Identity.NativeSymbol
+	return backend.subscribe(ctx, "futures.candlesticks", []string{interval, native}, func(raw json.RawMessage) {
 		events, err := gatePerpCandleEvents(raw, instrument, interval)
 		if err != nil {
 			callbacks.Error(err)
@@ -408,17 +422,17 @@ func (backend *gatePerpWSBackend) StartCandles(ctx context.Context, instrument, 
 	})
 }
 
-func (backend *gatePerpWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *gatePerpWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	multiplier, err := backend.rest.gateContractMultiplier("WatchOrders", instrument)
+	if err != nil {
+		return nil, err
+	}
 	userID, err := backend.privateUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	multiplier, err := backend.rest.gateContractMultiplier(ctx, "WatchOrders", instrument)
-	if err != nil {
-		return nil, err
-	}
-	return backend.subscribe(ctx, gate.ChannelFuturesOrder, gatePerpPrivateInstrumentPayload(userID, instrument), func(raw json.RawMessage) {
-		events, err := gateFuturesOrderEvents(raw, multiplier)
+	return backend.subscribe(ctx, gate.ChannelFuturesOrder, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
+		events, err := gateFuturesOrderEvents(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -429,17 +443,17 @@ func (backend *gatePerpWSBackend) StartOrders(ctx context.Context, instrument st
 	})
 }
 
-func (backend *gatePerpWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *gatePerpWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	multiplier, err := backend.rest.gateContractMultiplier("WatchFills", instrument)
+	if err != nil {
+		return nil, err
+	}
 	userID, err := backend.privateUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	multiplier, err := backend.rest.gateContractMultiplier(ctx, "WatchFills", instrument)
-	if err != nil {
-		return nil, err
-	}
-	return backend.subscribe(ctx, gate.ChannelFuturesUserTrade, gatePerpPrivateInstrumentPayload(userID, instrument), func(raw json.RawMessage) {
-		events, err := gateFuturesFillEvents(raw, multiplier)
+	return backend.subscribe(ctx, gate.ChannelFuturesUserTrade, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
+		events, err := gateFuturesFillEvents(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -467,16 +481,16 @@ func (backend *gatePerpWSBackend) StartBalances(ctx context.Context, callbacks s
 	})
 }
 
-func (backend *gatePerpWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+func (backend *gatePerpWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+	multiplier, err := backend.rest.gateContractMultiplier("WatchPositions", instrument)
+	if err != nil {
+		return nil, err
+	}
 	userID, err := backend.privateUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	multiplier, err := backend.rest.gateContractMultiplier(ctx, "WatchPositions", instrument)
-	if err != nil {
-		return nil, err
-	}
-	return backend.subscribe(ctx, gate.ChannelFuturesPosition, gatePerpPrivateInstrumentPayload(userID, instrument), func(raw json.RawMessage) {
+	return backend.subscribe(ctx, gate.ChannelFuturesPosition, gatePerpPrivateInstrumentPayload(userID, instrument.Identity.NativeSymbol), func(raw json.RawMessage) {
 		events, err := gateFuturesPositionEvents(raw, instrument, multiplier)
 		if err != nil {
 			callbacks.Error(err)
@@ -505,7 +519,7 @@ func (backend *gatePerpWSBackend) privateUserID(ctx context.Context) (string, er
 	return userID, nil
 }
 
-func gatePerpReferenceEvents(raw json.RawMessage, instrument string) ([]perpReferenceEvent, error) {
+func gatePerpReferenceEvents(raw json.RawMessage, instrument exchange.Instrument) ([]perpReferenceEvent, error) {
 	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	var message struct {
 		Result []gate.FuturesTicker `json:"result"`
@@ -515,6 +529,9 @@ func gatePerpReferenceEvents(raw json.RawMessage, instrument string) ([]perpRefe
 	}
 	events := make([]perpReferenceEvent, 0, len(message.Result))
 	for _, row := range message.Result {
+		if err := gateEnsureNativeInstrument(meta, "WatchMarkPrice", instrument, row.Contract); err != nil {
+			return nil, err
+		}
 		if row.MarkPrice != "" {
 			if err := gateValidateDecimal(meta, "WatchMarkPrice", "mark price", row.MarkPrice); err != nil {
 				return nil, err
@@ -528,9 +545,9 @@ func gatePerpReferenceEvents(raw json.RawMessage, instrument string) ([]perpRefe
 		at := time.Now().UTC()
 		events = append(events, perpReferenceEvent{
 			MarkValid:    row.MarkPrice != "",
-			MarkPrice:    exchange.MarkPriceEvent{Instrument: coalesce(row.Contract, instrument), Price: gateDecimal(row.MarkPrice), Time: at},
+			MarkPrice:    exchange.MarkPriceEvent{Instrument: instrument, Price: gateDecimal(row.MarkPrice), Time: at},
 			FundingValid: row.FundingRate != "",
-			FundingRate:  exchange.FundingRateEvent{Instrument: coalesce(row.Contract, instrument), Rate: gateDecimal(row.FundingRate), EffectiveAt: at},
+			FundingRate:  exchange.FundingRateEvent{Instrument: instrument, Rate: gateDecimal(row.FundingRate), EffectiveAt: at},
 		})
 	}
 	if len(events) == 0 {
@@ -539,8 +556,8 @@ func gatePerpReferenceEvents(raw json.RawMessage, instrument string) ([]perpRefe
 	return events, nil
 }
 
-func (backend *gatePerpWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
-	return backend.subscribe(ctx, "futures.tickers", []string{instrument}, func(raw json.RawMessage) {
+func (backend *gatePerpWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
+	return backend.subscribe(ctx, "futures.tickers", []string{instrument.Identity.NativeSymbol}, func(raw json.RawMessage) {
 		events, err := gatePerpReferenceEvents(raw, instrument)
 		if err != nil {
 			callbacks.Error(err)
@@ -562,52 +579,77 @@ func (backend *gateSpotWSBackend) subscribe(ctx context.Context, channel string,
 	return func() error { return backend.ws.Unsubscribe(context.Background(), channel, payload) }, nil
 }
 
-func coalesce(value, fallback string) string {
-	if strings.TrimSpace(value) != "" {
-		return value
+func gateSpotPublicTradeEvent(raw json.RawMessage, instrument exchange.Instrument) (exchange.PublicTradeEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}
+	var message struct {
+		Result gate.Trade `json:"result"`
 	}
-	return fallback
+	if err := json.Unmarshal(raw, &message); err != nil {
+		return exchange.PublicTradeEvent{}, gateNormalizeErr(meta, "WatchPublicTrades", err)
+	}
+	if err := gateValidateSpotPublicTrades(meta, "WatchPublicTrades", []gate.Trade{message.Result}); err != nil {
+		return exchange.PublicTradeEvent{}, err
+	}
+	if err := gateEnsureNativeInstrument(meta, "WatchPublicTrades", instrument, message.Result.CurrencyPair); err != nil {
+		return exchange.PublicTradeEvent{}, err
+	}
+	return exchange.PublicTradeEvent{Instrument: instrument, TradeID: message.Result.ID, Side: gateSide(message.Result.Side), Price: gateDecimal(message.Result.Price), Quantity: gateDecimal(message.Result.Amount), Time: gateTimeMS(message.Result.CreateTimeMS)}, nil
 }
 
-func gateSpotOrderEvents(raw []byte) ([]exchange.OrderEvent, error) {
+func gateSpotOrderEvents(raw []byte, instrument exchange.Instrument) ([]exchange.OrderEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}
 	message, err := gate.DecodeSpotOrderMessage(raw)
 	if err != nil {
-		return nil, gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "WatchOrders", err.Error())
+		return nil, gateMalformed(meta, "WatchOrders", err.Error())
 	}
-	if err := gateValidateSpotOrders(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "WatchOrders", message.Orders); err != nil {
+	if err := gateValidateSpotOrders(meta, "WatchOrders", message.Orders); err != nil {
 		return nil, err
 	}
 	events := make([]exchange.OrderEvent, 0, len(message.Orders))
 	for _, row := range message.Orders {
-		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateSpotOrder(row)})
+		if err := gateEnsureNativeInstrument(meta, "WatchOrders", instrument, row.CurrencyPair); err != nil {
+			return nil, err
+		}
+		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateSpotOrder(row, instrument)})
 	}
 	return events, nil
 }
 
-func gateFuturesOrderEvents(raw []byte, multiplier decimal.Decimal) ([]exchange.OrderEvent, error) {
+func gateFuturesOrderEvents(raw []byte, instrument exchange.Instrument, multiplier decimal.Decimal) ([]exchange.OrderEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	message, err := gate.DecodeFuturesOrderMessage(raw)
 	if err != nil {
-		return nil, gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchOrders", err.Error())
+		return nil, gateMalformed(meta, "WatchOrders", err.Error())
 	}
-	if err := gateValidateFuturesOrders(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchOrders", message.Orders); err != nil {
+	if err := gateValidateFuturesOrders(meta, "WatchOrders", message.Orders); err != nil {
 		return nil, err
 	}
 	events := make([]exchange.OrderEvent, 0, len(message.Orders))
 	for _, row := range message.Orders {
-		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateFuturesOrder(row, multiplier)})
+		if err := gateEnsureNativeInstrument(meta, "WatchOrders", instrument, row.Contract); err != nil {
+			return nil, err
+		}
+		events = append(events, exchange.OrderEvent{Kind: exchange.EventDelta, Order: gateFuturesOrder(row, instrument, multiplier)})
 	}
 	return events, nil
 }
 
-func gateSpotFillEvents(raw []byte) ([]exchange.FillEvent, error) {
+func gateSpotFillEvents(raw []byte, instrument exchange.Instrument) ([]exchange.FillEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}
 	message, err := gate.DecodeSpotUserTradeMessage(raw)
 	if err != nil {
-		return nil, gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "WatchFills", err.Error())
+		return nil, gateMalformed(meta, "WatchFills", err.Error())
 	}
-	if err := gateValidateSpotFills(clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot}, "WatchFills", message.Trades); err != nil {
+	if err := gateValidateSpotFills(meta, "WatchFills", message.Trades); err != nil {
 		return nil, err
 	}
-	fills := gateSpotFills(message.Trades)
+	fills := make([]exchange.Fill, 0, len(message.Trades))
+	for _, row := range message.Trades {
+		if err := gateEnsureNativeInstrument(meta, "WatchFills", instrument, row.CurrencyPair); err != nil {
+			return nil, err
+		}
+		fills = append(fills, exchange.Fill{NativeSymbol: row.CurrencyPair, NativeID: instrument.Identity.NativeID, OrderID: row.OrderID, ClientOrderID: gatePortableClientOrderID(row.Text), FillID: row.ID, Side: gateSide(row.Side), Price: gateDecimal(row.Price), Quantity: gateDecimal(row.Amount), Fee: gateDecimal(row.Fee), FeeAsset: row.FeeCurrency, Liquidity: gateLiquidity(row.Role), Time: gateTimeMS(row.CreateTimeMS)})
+	}
 	events := make([]exchange.FillEvent, 0, len(fills))
 	for _, fill := range fills {
 		events = append(events, exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
@@ -615,15 +657,21 @@ func gateSpotFillEvents(raw []byte) ([]exchange.FillEvent, error) {
 	return events, nil
 }
 
-func gateFuturesFillEvents(raw []byte, multiplier decimal.Decimal) ([]exchange.FillEvent, error) {
+func gateFuturesFillEvents(raw []byte, instrument exchange.Instrument, multiplier decimal.Decimal) ([]exchange.FillEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	message, err := gate.DecodeFuturesUserTradeMessage(raw)
 	if err != nil {
-		return nil, gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchFills", err.Error())
+		return nil, gateMalformed(meta, "WatchFills", err.Error())
 	}
-	if err := gateValidateFuturesFills(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchFills", message.Trades); err != nil {
+	if err := gateValidateFuturesFills(meta, "WatchFills", message.Trades); err != nil {
 		return nil, err
 	}
-	fills := gateFuturesFills(message.Trades, multiplier)
+	for _, row := range message.Trades {
+		if err := gateEnsureNativeInstrument(meta, "WatchFills", instrument, row.Contract); err != nil {
+			return nil, err
+		}
+	}
+	fills := gateFuturesFills(message.Trades, instrument, multiplier)
 	events := make([]exchange.FillEvent, 0, len(fills))
 	for _, fill := range fills {
 		events = append(events, exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
@@ -667,18 +715,19 @@ func gateFuturesBalanceEvents(raw []byte) ([]exchange.BalanceEvent, error) {
 	return []exchange.BalanceEvent{{Kind: exchange.EventDelta, Balances: balances, Time: time.Now().UTC()}}, nil
 }
 
-func gateFuturesPositionEvents(raw []byte, instrument string, multiplier decimal.Decimal) ([]exchange.PositionEvent, error) {
+func gateFuturesPositionEvents(raw []byte, instrument exchange.Instrument, multiplier decimal.Decimal) ([]exchange.PositionEvent, error) {
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
 	message, err := gate.DecodeFuturesPositionMessage(raw)
 	if err != nil {
-		return nil, gateMalformed(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchPositions", err.Error())
+		return nil, gateMalformed(meta, "WatchPositions", err.Error())
 	}
-	if err := gateValidatePositions(clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}, "WatchPositions", message.Positions); err != nil {
+	if err := gateValidatePositions(meta, "WatchPositions", message.Positions); err != nil {
 		return nil, err
 	}
 	positions := make([]exchange.Position, 0, len(message.Positions))
 	for _, row := range message.Positions {
-		if instrument != "" && row.Contract != instrument {
-			continue
+		if err := gateEnsureNativeInstrument(meta, "WatchPositions", instrument, row.Contract); err != nil {
+			return nil, err
 		}
 		side := exchange.SideBuy
 		size := row.Size
@@ -686,7 +735,14 @@ func gateFuturesPositionEvents(raw []byte, instrument string, multiplier decimal
 			side = exchange.SideSell
 			size = -size
 		}
-		positions = append(positions, exchange.Position{Instrument: row.Contract, Side: side, Quantity: decimal.NewFromInt(size).Mul(multiplier), EntryPrice: gateDecimal(row.EntryPrice), MarkPrice: gateDecimal(row.MarkPrice), UnrealizedPnL: gateDecimal(row.UnrealisedPNL), LiquidationPrice: gateOptionalDecimal(row.LiqPrice), Leverage: gateOptionalDecimal(row.Leverage), MarginUsed: gateOptionalDecimal(row.Margin)})
+		positions = append(positions, exchange.Position{NativeSymbol: row.Contract, NativeID: instrument.Identity.NativeID, Side: side, Quantity: decimal.NewFromInt(size).Mul(multiplier), EntryPrice: gateDecimal(row.EntryPrice), MarkPrice: gateDecimal(row.MarkPrice), UnrealizedPnL: gateDecimal(row.UnrealisedPNL), LiquidationPrice: gateOptionalDecimal(row.LiqPrice), Leverage: gateOptionalDecimal(row.Leverage), MarginUsed: gateOptionalDecimal(row.Margin)})
 	}
 	return []exchange.PositionEvent{{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()}}, nil
+}
+
+func gateEnsureNativeInstrument(meta clientMeta, operation string, instrument exchange.Instrument, native string) error {
+	if strings.TrimSpace(native) == "" || native != instrument.Identity.NativeSymbol {
+		return meta.catalogMetadataResolution(operation, "gate native instrument does not match requested instrument")
+	}
+	return nil
 }

@@ -2,10 +2,10 @@
 
 > 英文为规范版本。[English](README.md)
 
-BolterTrader 是一个 Go 原生交易框架：它将交易所差异收敛在 SDK 和
-adapter 中，同时为策略提供统一的、与 venue 无关的 runtime。runtime 负责订单、
-成交、持仓、余额、portfolio、risk、reconciliation 和重连处理等有状态行为；
-它不导入交易所 SDK 或 adapter。
+BolterTrader 是一个 Go 原生交易系统，在同一套 venue 集成之上提供三种同级
+产品路径：直接使用规范化 `exchange` API、自托管 Exchange Gateway，以及面向
+单一策略的 `runtime`。请按部署方式和状态归属选择；三者互不弃用，也不是彼此的
+包装层。
 
 ## 选择起步路径
 
@@ -13,24 +13,26 @@ adapter 中，同时为策略提供统一的、与 venue 无关的 runtime。run
 - 没有凭证：运行[离线 runtime 演练](docs/zh-CN/getting-started/offline-runtime.md)。
 - CEX 非生产验证：使用 [Binance Spot Demo](docs/zh-CN/getting-started/cex-demo.md)。
 - DEX 非生产验证：使用 [Hyperliquid Perp Testnet](docs/zh-CN/getting-started/dex-testnet.md)。
-- 直接基于 venue SDK 构建：使用独立的
+- 在 Go 进程内嵌入 venue-neutral client：使用独立的
   [统一交易所 API](docs/zh-CN/exchange/README.md)。
+- 通过常驻服务集中管理 account、Catalog、持久订单身份、重启恢复和私有事件：
+  使用 [Exchange Gateway](docs/zh-CN/guides/exchange-gateway.md)。
+- 承载单一有状态策略：使用 [runtime node 指南](docs/zh-CN/guides/runtime-node.md)。
 - 查找某个主题或 venue：打开[文档索引](docs/zh-CN/README.md)。
 
 ## 一分钟了解架构
 
-```text
-strategy
-   ↓ venue-neutral Context
-runtime
-   ↓ core contracts only
-adapter/<venue>
-   ↓ official-API translation
-sdk/<venue>
-```
+| 产品路径 | 适用场景 | 负责内容 |
+| --- | --- | --- |
+| 直接 `exchange` | 进程内使用规范化 REST 和 WebSocket client | typed client 与 venue 归一化；生命周期、缓存和持久化由调用方负责 |
+| Exchange Gateway | 通过常驻服务提供远程 REST/私有 WebSocket | account client、凭证、Catalog、持久订单身份、reconciliation 与事件投递 |
+| `runtime` | 单一策略的有状态执行 | strategy context、cache、portfolio、risk、lifecycle 与 reconciliation |
 
 这些边界是有意设计的：
 
+- `exchange/` 是规范化的驱动与模型层，可被调用方直接使用，也可由 Gateway 使用。
+- `gateway/` 是构建在 `exchange/` 之上的服务；它不导入 `runtime/`、adapter、
+  strategy 或 venue SDK package。
 - `core/` 定义与 venue 无关的 decimal model、contract、enum 和 clock。
 - `runtime/` 负责可移植状态，并且只能依赖 `core/`。
 - `adapter/<venue>/` 吸收 venue product、identifier、签名、响应语义、

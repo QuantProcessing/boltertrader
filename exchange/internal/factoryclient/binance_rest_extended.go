@@ -42,7 +42,10 @@ func (client *binanceSpotClient) OrderHistory(ctx context.Context, req exchange.
 	if err := binanceSpotContextErr(ctx, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	symbol, instrument, err := binanceSpotSymbols(req.Instrument, "OrderHistory")
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, binanceSpotInvalid("OrderHistory", "instrument filter is required by Binance Spot order history")
+	}
+	symbol, instrument, err := binanceSpotSymbols(*req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -62,7 +65,7 @@ func (client *binanceSpotClient) OrderHistory(ctx context.Context, req exchange.
 		if binanceOrderActive(row.Status) {
 			continue
 		}
-		order, err := binanceSpotOrder(row, symbol, instrument)
+		order, err := binanceSpotOrder(row, symbol, instrument.Identity.NativeSymbol)
 		if err != nil {
 			return exchange.OrderPage{}, binanceSpotMalformed("OrderHistory", err.Error())
 		}
@@ -101,7 +104,10 @@ func (client *binancePerpClient) OrderHistory(ctx context.Context, req exchange.
 	if err := client.binancePerpReady(ctx, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	instrument, symbol, err := binancePerpRequestSymbols(req.Instrument)
+	if req.Instrument == nil {
+		return exchange.OrderPage{}, binancePerpInvalidRequest("OrderHistory", "instrument filter is required by Binance USD-M order history")
+	}
+	instrument, symbol, err := binancePerpRequestSymbols(*req.Instrument)
 	if err != nil {
 		return exchange.OrderPage{}, binancePerpInvalidRequest("OrderHistory", err.Error())
 	}
@@ -125,7 +131,7 @@ func (client *binancePerpClient) OrderHistory(ctx context.Context, req exchange.
 		if err != nil {
 			return exchange.OrderPage{}, binancePerpMalformed("OrderHistory", err.Error())
 		}
-		if order.Instrument != instrument {
+		if order.NativeSymbol != instrument.Identity.NativeSymbol {
 			return exchange.OrderPage{}, binancePerpMalformed("OrderHistory", "response instrument does not match request")
 		}
 		orders = append(orders, order)
@@ -154,7 +160,7 @@ func (client *binancePerpClient) FundingRate(ctx context.Context, req exchange.F
 		return exchange.FundingRate{}, binancePerpMalformed("FundingRate", "invalid mark price")
 	}
 	return exchange.FundingRate{
-		Instrument:      instrument,
+		NativeSymbol:    instrument.Identity.NativeSymbol,
 		Rate:            rate,
 		MarkPrice:       exchange.OptionalDecimal{Value: mark, Valid: true},
 		ObservedAt:      time.UnixMilli(row.Time).UTC(),
@@ -209,10 +215,10 @@ func (client *binancePerpClient) SetLeverage(ctx context.Context, req exchange.S
 	if !strings.EqualFold(row.Symbol, symbol) || row.Leverage <= 0 {
 		return exchange.Leverage{}, binancePerpMalformed("SetLeverage", "response does not match request")
 	}
-	return exchange.Leverage{Instrument: instrument, Effective: row.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: instrument.Identity.NativeSymbol, Effective: row.Leverage}, nil
 }
 
-func binanceSpotPublicTrade(instrument string, row binancespot.PublicTrade) (exchange.PublicTrade, error) {
+func binanceSpotPublicTrade(instrument exchange.Instrument, row binancespot.PublicTrade) (exchange.PublicTrade, error) {
 	price, err := positiveDecimal(row.Price)
 	if err != nil {
 		return exchange.PublicTrade{}, err
@@ -235,7 +241,7 @@ func binanceSpotPublicTrade(instrument string, row binancespot.PublicTrade) (exc
 	}, nil
 }
 
-func binancePerpPublicTrade(instrument string, row binanceperp.AggTrade) (exchange.PublicTrade, error) {
+func binancePerpPublicTrade(instrument exchange.Instrument, row binanceperp.AggTrade) (exchange.PublicTrade, error) {
 	price, err := positiveDecimal(row.Price)
 	if err != nil {
 		return exchange.PublicTrade{}, err
@@ -258,15 +264,15 @@ func binancePerpPublicTrade(instrument string, row binanceperp.AggTrade) (exchan
 	}, nil
 }
 
-func binanceFundingHistory(instrument string, row binanceperp.FundingRateHistoryEntry) (exchange.FundingRate, error) {
+func binanceFundingHistory(instrument exchange.Instrument, row binanceperp.FundingRateHistoryEntry) (exchange.FundingRate, error) {
 	rate, err := positiveOrNegativeDecimal(row.FundingRate)
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
 	out := exchange.FundingRate{
-		Instrument:  instrument,
-		Rate:        rate,
-		FundingTime: time.UnixMilli(row.FundingTime).UTC(),
+		NativeSymbol: instrument.Identity.NativeSymbol,
+		Rate:         rate,
+		FundingTime:  time.UnixMilli(row.FundingTime).UTC(),
 	}
 	if row.MarkPrice != "" {
 		mark, err := positiveDecimal(row.MarkPrice)
@@ -294,16 +300,6 @@ func positiveOrNegativeDecimal(value string) (decimal.Decimal, error) {
 	return parsed, nil
 }
 
-func validateBoundedHistory(cursor string, limit int, start, end time.Time) error {
-	if limit < 0 {
-		return strconv.ErrRange
-	}
-	if !start.IsZero() && !end.IsZero() && !start.Before(end) {
-		return strconv.ErrRange
-	}
-	return nil
-}
-
 func positiveInt64Cursor(cursor string) (int64, error) {
 	if cursor == "" {
 		return 0, nil
@@ -313,17 +309,6 @@ func positiveInt64Cursor(cursor string) (int64, error) {
 		return 0, strconv.ErrSyntax
 	}
 	return value, nil
-}
-
-func optionalMillis(value time.Time) int64 {
-	if value.IsZero() {
-		return 0
-	}
-	return value.UnixMilli()
-}
-
-func historyPage(cursor string, limit int, start, end time.Time) exchange.PageInfo {
-	return exchange.PageInfo{Cursor: cursor, Limit: limit, WindowStart: start, WindowEnd: end}
 }
 
 func binanceOrderActive(status string) bool {

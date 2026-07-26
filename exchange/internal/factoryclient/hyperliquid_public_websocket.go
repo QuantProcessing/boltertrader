@@ -20,8 +20,8 @@ import (
 type hyperliquidPublicWSBackend struct {
 	meta           clientMeta
 	base           *hyperliquid.WebsocketClient
-	resolve        func(context.Context, string, string) (hyperliquidMarketMeta, error)
-	candleSnapshot func(context.Context, string, string) (exchange.CandleEvent, bool, error)
+	resolve        func(context.Context, string, exchange.Instrument) (hyperliquidMarketMeta, error)
+	candleSnapshot func(context.Context, exchange.Instrument, string) (exchange.CandleEvent, bool, error)
 	lifecycle      *backendLifecycle
 	cancel         context.CancelFunc
 
@@ -76,7 +76,7 @@ func newHyperliquidSpotWSBackendWithClient(
 		cancel:    cancel,
 	}
 	if rest.sdk != nil {
-		backend.candleSnapshot = func(ctx context.Context, instrument, interval string) (exchange.CandleEvent, bool, error) {
+		backend.candleSnapshot = func(ctx context.Context, instrument exchange.Instrument, interval string) (exchange.CandleEvent, bool, error) {
 			return hyperliquidLatestCandleSnapshot(ctx, instrument, interval, rest.Candles)
 		}
 	}
@@ -121,7 +121,7 @@ func newHyperliquidPerpWSBackendWithClient(
 		cancel:    cancel,
 	}
 	if rest.sdk != nil {
-		backend.candleSnapshot = func(ctx context.Context, instrument, interval string) (exchange.CandleEvent, bool, error) {
+		backend.candleSnapshot = func(ctx context.Context, instrument exchange.Instrument, interval string) (exchange.CandleEvent, bool, error) {
 			return hyperliquidLatestCandleSnapshot(ctx, instrument, interval, rest.Candles)
 		}
 	}
@@ -156,7 +156,7 @@ func (backend *hyperliquidPublicWSBackend) ensureConnected(operation string) err
 
 func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	const operation = "WatchOrderBook"
@@ -167,10 +167,11 @@ func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
+	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{"type": "l2Book", "coin": meta.nativeCoin}
 	var resyncNext atomic.Bool
 	removeLifecycle := backend.lifecycle.Register(
-		"book:"+instrument,
+		"book:"+key,
 		callbacks.Status,
 		func() { resyncNext.Store(true) },
 	)
@@ -197,7 +198,7 @@ func (backend *hyperliquidPublicWSBackend) StartOrderBook(
 
 func (backend *hyperliquidPublicWSBackend) StartBBO(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
 	const operation = "WatchBBO"
@@ -208,8 +209,9 @@ func (backend *hyperliquidPublicWSBackend) StartBBO(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
+	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{"type": "l2Book", "coin": meta.nativeCoin}
-	removeLifecycle := backend.lifecycle.Register("bbo:"+instrument, callbacks.Status, nil)
+	removeLifecycle := backend.lifecycle.Register("bbo:"+key, callbacks.Status, nil)
 	err = backend.base.SubscribeConfirmed("l2Book", subscription, func(message hyperliquid.WsMessage) {
 		var raw hyperliquid.WsL2Book
 		if err := json.Unmarshal(message.Data, &raw); err != nil {
@@ -232,7 +234,7 @@ func (backend *hyperliquidPublicWSBackend) StartBBO(
 
 func (backend *hyperliquidPublicWSBackend) StartPublicTrades(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
 	const operation = "WatchPublicTrades"
@@ -243,8 +245,9 @@ func (backend *hyperliquidPublicWSBackend) StartPublicTrades(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
+	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{"type": "trades", "coin": meta.nativeCoin}
-	removeLifecycle := backend.lifecycle.Register("trades:"+instrument, callbacks.Status, nil)
+	removeLifecycle := backend.lifecycle.Register("trades:"+key, callbacks.Status, nil)
 	err = backend.base.SubscribeConfirmed("trades", subscription, func(message hyperliquid.WsMessage) {
 		var rows []hyperliquid.WsTrade
 		if err := json.Unmarshal(message.Data, &rows); err != nil {
@@ -269,7 +272,7 @@ func (backend *hyperliquidPublicWSBackend) StartPublicTrades(
 
 func (backend *hyperliquidPublicWSBackend) StartCandles(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	callbacks streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
@@ -286,13 +289,14 @@ func (backend *hyperliquidPublicWSBackend) StartCandles(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
+	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{
 		"type":     "candle",
 		"coin":     meta.nativeCoin,
 		"interval": interval,
 	}
 	removeLifecycle := backend.lifecycle.Register(
-		"candles:"+instrument+":"+interval,
+		"candles:"+key+":"+interval,
 		callbacks.Status,
 		nil,
 	)
@@ -338,7 +342,7 @@ func (backend *hyperliquidPublicWSBackend) StartCandles(
 
 func hyperliquidLatestCandleSnapshot(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	load func(context.Context, exchange.CandlesRequest) (exchange.CandlePage, error),
 ) (exchange.CandleEvent, bool, error) {
@@ -403,7 +407,7 @@ func hyperliquidCandleDuration(interval string) (time.Duration, error) {
 
 func (backend *hyperliquidPerpWSBackend) StartReference(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
 	const operation = "WatchPerpReference"
@@ -414,8 +418,9 @@ func (backend *hyperliquidPerpWSBackend) StartReference(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
+	key := websocketInstrumentKey(instrument)
 	subscription := map[string]string{"type": "activeAssetCtx", "coin": meta.nativeCoin}
-	removeLifecycle := backend.lifecycle.Register("reference:"+instrument, callbacks.Status, nil)
+	removeLifecycle := backend.lifecycle.Register("reference:"+key, callbacks.Status, nil)
 	err = backend.base.SubscribeConfirmed("activeAssetCtx", subscription, func(message hyperliquid.WsMessage) {
 		var raw hyperliquid.WsActiveAssetCtx
 		if err := json.Unmarshal(message.Data, &raw); err != nil {
@@ -491,7 +496,7 @@ func hyperliquidBookEvent(
 	}
 	return exchange.BookEvent{
 		Kind:       exchange.EventSnapshot,
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		Bids:       bids,
 		Asks:       asks,
 		Time:       time.UnixMilli(raw.Time).UTC(),
@@ -529,7 +534,7 @@ func hyperliquidBBOEvent(
 		return exchange.BBOEvent{}, err
 	}
 	return exchange.BBOEvent{
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		Bid:        levels[0],
 		Ask:        levels[1],
 		Time:       time.UnixMilli(raw.Time).UTC(),
@@ -583,7 +588,7 @@ func hyperliquidTradeEvent(
 		return exchange.PublicTradeEvent{}, errors.New("invalid public trade side")
 	}
 	return exchange.PublicTradeEvent{
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		TradeID:    strconv.FormatInt(raw.Tid, 10),
 		Side:       side,
 		Price:      price,
@@ -611,13 +616,13 @@ func hyperliquidReferenceEvent(
 	receivedAt = receivedAt.UTC()
 	return perpReferenceEvent{
 		MarkPrice: exchange.MarkPriceEvent{
-			Instrument: meta.instrument.Symbol,
+			Instrument: meta.instrument,
 			Price:      mark,
 			Time:       receivedAt,
 		},
 		MarkValid: true,
 		FundingRate: exchange.FundingRateEvent{
-			Instrument:  meta.instrument.Symbol,
+			Instrument:  meta.instrument,
 			Rate:        funding,
 			EffectiveAt: receivedAt,
 		},
@@ -665,7 +670,7 @@ func hyperliquidCandleEvent(
 	openTime := time.UnixMilli(raw.T).UTC()
 	closeTime := time.UnixMilli(raw.TClose).UTC()
 	return exchange.CandleEvent{
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		Interval:   interval,
 		Candle: exchange.Candle{
 			OpenTime:  openTime,

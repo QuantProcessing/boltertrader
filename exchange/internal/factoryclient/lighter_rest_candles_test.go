@@ -15,13 +15,13 @@ import (
 
 func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testing.T) {
 	var candleQuery url.Values
-	transport := openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	transport := lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/api/v1/orderBookDetails":
-			return openAPIJSONResponse(`{"code":200,"message":"","spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
 		case "/api/v1/candles":
 			candleQuery = request.URL.Query()
-			return openAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","r":"1m","c":[{"t":1720000000,"o":100,"h":101,"l":99,"c":100.5,"v":3}]}`), nil
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -30,14 +30,14 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 			}, nil
 		}
 	})
-	client := NewLighterSpot(openAPILighterPrivateKey, 7, 2, Settings{
+	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:    "https://openapi.invalid",
 		Environment: "testnet",
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
 	page, err := client.Candles(context.Background(), exchange.CandlesRequest{
-		Instrument: "ETH/USDC",
+		Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH/USDC", "ETH/USDC", "2048"),
 		Interval:   "1m",
 		Limit:      2,
 	})
@@ -67,12 +67,12 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 }
 
 func TestLighterOrderHistoryFiltersTriggerOrdersOutsideExchangeSubset(t *testing.T) {
-	transport := openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	transport := lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/api/v1/orderBookDetails":
-			return openAPIJSONResponse(`{"code":200,"message":"","spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","spot_order_book_details":[{"symbol":"ETH/USDC","market_id":2048,"market_type":"spot","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
 		case "/api/v1/accountInactiveOrders":
-			return openAPIJSONResponse(`{"code":200,"message":"","next_cursor":"","orders":[
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","next_cursor":"","orders":[
 				{"order_index":11,"client_order_index":101,"market_index":2048,"initial_base_amount":"0.01","filled_base_amount":"0","price":"100","type":"limit","time_in_force":"good-till-time","trigger_price":"95","status":"canceled","created_at":1720000000000,"updated_at":1720000001000},
 				{"order_index":12,"client_order_index":102,"market_index":2048,"initial_base_amount":"0.02","filled_base_amount":"0.02","price":"101","type":"limit","time_in_force":"good-till-time","trigger_price":"0.00","status":"filled","created_at":1720000002000,"updated_at":1720000003000}
 			]}`), nil
@@ -84,14 +84,15 @@ func TestLighterOrderHistoryFiltersTriggerOrdersOutsideExchangeSubset(t *testing
 			}, nil
 		}
 	})
-	client := NewLighterSpot(openAPILighterPrivateKey, 7, 2, Settings{
+	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:    "https://openapi.invalid",
 		Environment: "testnet",
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
+	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH/USDC", "ETH/USDC", "2048")
 	page, err := client.OrderHistory(context.Background(), exchange.OrderHistoryRequest{
-		Instrument: "ETH/USDC",
+		Instrument: &instrument,
 		Limit:      20,
 	})
 	if err != nil {
@@ -104,13 +105,13 @@ func TestLighterOrderHistoryFiltersTriggerOrdersOutsideExchangeSubset(t *testing
 
 func TestLighterFundingRateHistoryDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testing.T) {
 	var fundingQuery url.Values
-	transport := openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	transport := lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
 		case "/api/v1/orderBookDetails":
-			return openAPIJSONResponse(`{"code":200,"message":"","order_book_details":[{"symbol":"ETH","market_id":0,"market_type":"perp","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","order_book_details":[{"symbol":"ETH","market_id":0,"market_type":"perp","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
 		case "/api/v1/fundings":
 			fundingQuery = request.URL.Query()
-			return openAPIJSONResponse(`{"code":200,"message":"","resolution":"1h","fundings":[{"timestamp":1720000000,"rate":"0.0001","value":"0","direction":"long"}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","resolution":"1h","fundings":[{"timestamp":1720000000,"rate":"0.0001","value":"0","direction":"long"}]}`), nil
 		default:
 			return &http.Response{
 				StatusCode: http.StatusNotFound,
@@ -119,14 +120,14 @@ func TestLighterFundingRateHistoryDerivesNativeWindowWhenPortableBoundsAreOmitte
 			}, nil
 		}
 	})
-	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{
+	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:    "https://openapi.invalid",
 		Environment: "testnet",
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
 	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
-		Instrument: "ETH",
+		Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH", "ETH", "0"),
 		Limit:      10,
 	})
 	if err != nil {

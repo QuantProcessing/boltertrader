@@ -47,12 +47,12 @@ type WatchOptions struct {
 }
 
 type WatchRequest struct {
-	Instrument string       `json:"instrument,omitempty"`
+	Instrument Instrument   `json:"instrument"`
 	Options    WatchOptions `json:"options,omitempty"`
 }
 
 type WatchCandlesRequest struct {
-	Instrument string       `json:"instrument,omitempty"`
+	Instrument Instrument   `json:"instrument"`
 	Interval   string       `json:"interval,omitempty"`
 	Options    WatchOptions `json:"options,omitempty"`
 }
@@ -71,7 +71,7 @@ type Subscription[T any] interface {
 
 type BookEvent struct {
 	Kind       EventKind   `json:"kind,omitempty"`
-	Instrument string      `json:"instrument,omitempty"`
+	Instrument Instrument  `json:"instrument"`
 	Sequence   string      `json:"sequence,omitempty"`
 	Previous   string      `json:"previous,omitempty"`
 	Resync     bool        `json:"resync,omitempty"`
@@ -81,14 +81,14 @@ type BookEvent struct {
 }
 
 type BBOEvent struct {
-	Instrument string    `json:"instrument,omitempty"`
-	Bid        BookLevel `json:"bid"`
-	Ask        BookLevel `json:"ask"`
-	Time       time.Time `json:"time,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	Bid        BookLevel  `json:"bid"`
+	Ask        BookLevel  `json:"ask"`
+	Time       time.Time  `json:"time,omitempty"`
 }
 
 type PublicTradeEvent struct {
-	Instrument string          `json:"instrument,omitempty"`
+	Instrument Instrument      `json:"instrument"`
 	TradeID    string          `json:"trade_id,omitempty"`
 	Side       Side            `json:"side,omitempty"`
 	Price      decimal.Decimal `json:"price"`
@@ -97,9 +97,9 @@ type PublicTradeEvent struct {
 }
 
 type CandleEvent struct {
-	Instrument string `json:"instrument,omitempty"`
-	Interval   string `json:"interval,omitempty"`
-	Candle     Candle `json:"candle"`
+	Instrument Instrument `json:"instrument"`
+	Interval   string     `json:"interval,omitempty"`
+	Candle     Candle     `json:"candle"`
 }
 
 type OrderEvent struct {
@@ -125,13 +125,13 @@ type PositionEvent struct {
 }
 
 type MarkPriceEvent struct {
-	Instrument string          `json:"instrument,omitempty"`
+	Instrument Instrument      `json:"instrument"`
 	Price      decimal.Decimal `json:"price"`
 	Time       time.Time       `json:"time,omitempty"`
 }
 
 type FundingRateEvent struct {
-	Instrument  string          `json:"instrument,omitempty"`
+	Instrument  Instrument      `json:"instrument"`
 	Rate        decimal.Decimal `json:"rate"`
 	EffectiveAt time.Time       `json:"effective_at,omitempty"`
 	NextAt      time.Time       `json:"next_at,omitempty"`

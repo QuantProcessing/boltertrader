@@ -21,8 +21,9 @@ import (
 )
 
 func TestHyperliquidPrivateOrderEventNormalizesLifecycleAndMarketShape(t *testing.T) {
+	instrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{Symbol: "BTC-USDT"},
+		instrument: instrument,
 		nativeCoin: "BTC",
 	}
 	update := hyperliquid.WsOrderUpdate{
@@ -46,7 +47,8 @@ func TestHyperliquidPrivateOrderEventNormalizesLifecycleAndMarketShape(t *testin
 		t.Fatalf("hyperliquidPrivateOrderEvent: %v", err)
 	}
 	if event.Kind != exchange.EventDelta ||
-		event.Order.Instrument != "BTC-USDT" ||
+		event.Order.NativeSymbol != instrument.Identity.NativeSymbol ||
+		event.Order.NativeID != instrument.Identity.NativeID ||
 		event.Order.Type != exchange.OrderTypeMarket ||
 		event.Order.Status != string(hyperliquid.StatusFilled) ||
 		!event.Order.Filled.Equal(decimal.NewFromInt(2)) {
@@ -56,7 +58,7 @@ func TestHyperliquidPrivateOrderEventNormalizesLifecycleAndMarketShape(t *testin
 
 func TestHyperliquidPrivateOrderEventKeepsExplicitIOCLimitType(t *testing.T) {
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{Symbol: "BTC-USDT"},
+		instrument: hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3),
 		nativeCoin: "BTC",
 	}
 	update := hyperliquid.WsOrderUpdate{
@@ -87,7 +89,7 @@ func TestHyperliquidPrivateOrderEventKeepsExplicitIOCLimitType(t *testing.T) {
 
 func TestHyperliquidPrivateOrderEventRejectsUnknownNativeOrderType(t *testing.T) {
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{Symbol: "BTC-USDT", Product: exchange.ProductPerp},
+		instrument: hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3),
 		nativeCoin: "BTC",
 	}
 	update := hyperliquid.WsOrderUpdate{
@@ -150,13 +152,15 @@ func TestHyperliquidPrivateHubSharesOneNativeSubscriptionAndStopsLastOwner(t *te
 }
 
 func TestHyperliquidPrivatePostResponsesPreserveRestAckSemantics(t *testing.T) {
+	spotInstrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
+	perpInstrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	spotPlace := hyperliquid.PostResult{Response: hyperliquid.WsPostResponsePayload{
 		Type: "action",
 		Payload: json.RawMessage(
 			`{"status":"ok","response":{"type":"order","data":{"statuses":[{"resting":{"oid":7,"cloid":"0x00000000000000000000000000000001"}}]}}}`,
 		),
 	}}
-	spotAck, err := hyperliquidSpotPostPlaceAck("BTC-USDT", "1", "0x00000000000000000000000000000001", exchange.OrderTypeLimit, spotPlace)
+	spotAck, err := hyperliquidSpotPostPlaceAck(spotInstrument, "1", "0x00000000000000000000000000000001", exchange.OrderTypeLimit, spotPlace)
 	if err != nil {
 		t.Fatalf("spot place ack: %v", err)
 	}
@@ -170,7 +174,7 @@ func TestHyperliquidPrivatePostResponsesPreserveRestAckSemantics(t *testing.T) {
 			`{"status":"ok","response":{"type":"order","data":{"statuses":[{"filled":{"oid":8,"totalSz":"0.5","avgPx":"100"}}]}}}`,
 		),
 	}}
-	perpAck, err := hyperliquidPerpPostPlaceAck("BTC-USDT", "", "", exchange.OrderTypeMarket, perpPlace)
+	perpAck, err := hyperliquidPerpPostPlaceAck(perpInstrument, "", "", exchange.OrderTypeMarket, perpPlace)
 	if err != nil {
 		t.Fatalf("perp place ack: %v", err)
 	}
@@ -184,7 +188,7 @@ func TestHyperliquidPrivatePostResponsesPreserveRestAckSemantics(t *testing.T) {
 		Type:    "action",
 		Payload: json.RawMessage(`{"status":"ok","response":{"type":"cancel","data":{"statuses":["success"]}}}`),
 	}}
-	cancelAck, err := hyperliquidPostCancelAck(exchange.ProductPerp, "BTC-USDT", "8", cancel)
+	cancelAck, err := hyperliquidPostCancelAck(exchange.ProductPerp, perpInstrument, "8", cancel)
 	if err != nil {
 		t.Fatalf("cancel ack: %v", err)
 	}
@@ -194,13 +198,15 @@ func TestHyperliquidPrivatePostResponsesPreserveRestAckSemantics(t *testing.T) {
 }
 
 func TestHyperliquidPrivatePostResponsesRejectMalformedAndVenueErrors(t *testing.T) {
+	spotInstrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
+	perpInstrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	rejection := hyperliquid.PostResult{Response: hyperliquid.WsPostResponsePayload{
 		Type: "action",
 		Payload: json.RawMessage(
 			`{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"insufficient balance"}]}}}`,
 		),
 	}}
-	ack, err := hyperliquidSpotPostPlaceAck("BTC-USDT", "17", "", exchange.OrderTypeLimit, rejection)
+	ack, err := hyperliquidSpotPostPlaceAck(spotInstrument, "17", "", exchange.OrderTypeLimit, rejection)
 	if err == nil {
 		t.Fatal("venue rejection was accepted")
 	}
@@ -214,7 +220,7 @@ func TestHyperliquidPrivatePostResponsesRejectMalformedAndVenueErrors(t *testing
 		Type:    "action",
 		Payload: json.RawMessage(`{"status":"ok","response":{"type":"order","data":{"statuses":[]}}}`),
 	}}
-	if _, err := hyperliquidPerpPostPlaceAck("BTC-USDT", "", "", exchange.OrderTypeLimit, malformed); err == nil {
+	if _, err := hyperliquidPerpPostPlaceAck(perpInstrument, "", "", exchange.OrderTypeLimit, malformed); err == nil {
 		t.Fatal("empty place status was accepted")
 	}
 
@@ -222,7 +228,7 @@ func TestHyperliquidPrivatePostResponsesRejectMalformedAndVenueErrors(t *testing
 		Type:    "action",
 		Payload: json.RawMessage(`{"status":"ok","response":{"type":"cancel","data":{"statuses":[{"error":"order not found"}]}}}`),
 	}}
-	cancelAck, err := hyperliquidPostCancelAck(exchange.ProductPerp, "BTC-USDT", "41", cancelRejection)
+	cancelAck, err := hyperliquidPostCancelAck(exchange.ProductPerp, perpInstrument, "41", cancelRejection)
 	if err == nil {
 		t.Fatal("cancel venue rejection was accepted")
 	}
@@ -235,6 +241,8 @@ func TestHyperliquidPrivatePostResponsesRejectMalformedAndVenueErrors(t *testing
 }
 
 func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t *testing.T) {
+	spotInstrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
+	perpInstrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	const secret = "private-key-should-not-leak"
 	rejectedPlacePayload := json.RawMessage(`{"status":"ok","response":{"type":"order","data":{"statuses":[{"error":"` + secret + `"}]}}}`)
 	malformedPlacePayload := json.RawMessage(`{"status":"ok","response":{"type":"order","data":{"statuses":[]}}}`)
@@ -256,7 +264,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationPlace,
 			result:    hyperliquidPostAction(rejectedPlacePayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidSpotPostPlaceAck("BTC-USDT", "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
+				return hyperliquidSpotPostPlaceAck(spotInstrument, "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
 			},
 			wantErr:   exchange.ErrVenueRejected,
 			wantState: exchange.AckRejected,
@@ -267,7 +275,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationPlace,
 			result:    hyperliquidPostAction(rejectedPlacePayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPerpPostPlaceAck("BTC-USDT", "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
+				return hyperliquidPerpPostPlaceAck(perpInstrument, "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
 			},
 			wantErr:   exchange.ErrVenueRejected,
 			wantState: exchange.AckRejected,
@@ -278,7 +286,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationCancel,
 			result:    hyperliquidPostAction(rejectedCancelPayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPostCancelAck(exchange.ProductSpot, "BTC-USDT", "41", result)
+				return hyperliquidPostCancelAck(exchange.ProductSpot, spotInstrument, "41", result)
 			},
 			wantErr:   exchange.ErrVenueRejected,
 			wantState: exchange.AckRejected,
@@ -289,7 +297,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationCancel,
 			result:    hyperliquidPostAction(rejectedCancelPayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPostCancelAck(exchange.ProductPerp, "BTC-USDT", "41", result)
+				return hyperliquidPostCancelAck(exchange.ProductPerp, perpInstrument, "41", result)
 			},
 			wantErr:   exchange.ErrVenueRejected,
 			wantState: exchange.AckRejected,
@@ -300,7 +308,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationPlace,
 			result:    hyperliquidPostAction(malformedPlacePayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidSpotPostPlaceAck("BTC-USDT", "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
+				return hyperliquidSpotPostPlaceAck(spotInstrument, "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
 			},
 			wantErr: exchange.ErrMalformedResponse,
 		},
@@ -310,7 +318,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationPlace,
 			result:    hyperliquidPostAction(malformedPlacePayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPerpPostPlaceAck("BTC-USDT", "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
+				return hyperliquidPerpPostPlaceAck(perpInstrument, "17", hlNativeClientOrderID("17"), exchange.OrderTypeLimit, result)
 			},
 			wantErr: exchange.ErrMalformedResponse,
 		},
@@ -320,7 +328,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationCancel,
 			result:    hyperliquidPostAction(malformedCancelPayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPostCancelAck(exchange.ProductSpot, "BTC-USDT", "41", result)
+				return hyperliquidPostCancelAck(exchange.ProductSpot, spotInstrument, "41", result)
 			},
 			wantErr: exchange.ErrMalformedResponse,
 		},
@@ -330,7 +338,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 			operation: exchange.OrderOperationCancel,
 			result:    hyperliquidPostAction(malformedCancelPayload),
 			decode: func(result hyperliquid.PostResult) (exchange.OrderAcknowledgement, error) {
-				return hyperliquidPostCancelAck(exchange.ProductPerp, "BTC-USDT", "41", result)
+				return hyperliquidPostCancelAck(exchange.ProductPerp, perpInstrument, "41", result)
 			},
 			wantErr: exchange.ErrMalformedResponse,
 		},
@@ -348,7 +356,7 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 				t.Fatalf("ack state=%s, want %s", ack.State, tt.wantState)
 			}
 			if tt.wantState != "" &&
-				(ack.Product != tt.product || ack.Operation != tt.operation || ack.Instrument != "BTC-USDT") {
+				(ack.Product != tt.product || ack.Operation != tt.operation || ack.NativeSymbol == "") {
 				t.Fatalf("ack metadata=%+v", ack)
 			}
 		})
@@ -356,6 +364,8 @@ func TestHyperliquidPrivatePostResponseBoundariesCoverEveryProductAndOperation(t
 }
 
 func TestHyperliquidPrivatePostSendAmbiguityMatrixPreservesLocatorsAndRedactsError(t *testing.T) {
+	spotInstrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
+	perpInstrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
 	const secret = "post-error-secret"
 	tests := []struct {
 		name          string
@@ -381,7 +391,11 @@ func TestHyperliquidPrivatePostSendAmbiguityMatrixPreservesLocatorsAndRedactsErr
 			if strings.Contains(err.Error(), secret) {
 				t.Fatalf("ambiguous error leaked unsafe cause: %v", err)
 			}
-			ack := hyperliquidAmbiguousAck(tt.product, tt.operation, "BTC-USDT", tt.orderID, tt.clientOrderID)
+			instrument := spotInstrument
+			if tt.product == exchange.ProductPerp {
+				instrument = perpInstrument
+			}
+			ack := hyperliquidAmbiguousAck(tt.product, tt.operation, instrument, tt.orderID, tt.clientOrderID)
 			if ack.State != exchange.AckAmbiguous ||
 				ack.Product != tt.product ||
 				ack.Operation != tt.operation ||
@@ -506,19 +520,20 @@ func TestHyperliquidPrivateWebSocketConnectErrorPreservesCauseWithoutCredentials
 func TestHyperliquidPrivateCommandsRejectMissingOrderIDBeforeMutationForEveryProduct(t *testing.T) {
 	for _, product := range []exchange.Product{exchange.ProductSpot, exchange.ProductPerp} {
 		t.Run(string(product), func(t *testing.T) {
+			instrument := hyperliquidPrivateLoopInstrument(product)
 			var resolves atomic.Int32
 			backend := &hyperliquidPrivateWSBackend{
 				meta: clientMeta{venue: exchange.VenueHyperliquid, product: product},
-				resolve: func(_ context.Context, operation string, instrument string) (hyperliquidMarketMeta, error) {
+				resolve: func(_ context.Context, operation string, got exchange.Instrument) (hyperliquidMarketMeta, error) {
 					resolves.Add(1)
-					if operation != "CancelOrder" || instrument != "BTC-USDT" {
-						t.Fatalf("resolve operation=%s instrument=%s", operation, instrument)
+					if operation != "CancelOrder" || !hlSameInstrument(instrument, got) {
+						t.Fatalf("resolve operation=%s instrument=%+v", operation, got)
 					}
 					return hyperliquidMarketMeta{assetID: 1}, nil
 				},
 			}
 			ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-				Instrument: "BTC-USDT",
+				Instrument: instrument,
 			})
 			if !errors.Is(err, exchange.ErrInvalidRequest) {
 				t.Fatalf("err=%v, want ErrInvalidRequest", err)
@@ -540,21 +555,18 @@ func hyperliquidPostAction(payload json.RawMessage) hyperliquid.PostResult {
 func TestHyperliquidPrivateCommandsRejectInvalidRequestsBeforeSendForEveryProduct(t *testing.T) {
 	for _, product := range []exchange.Product{exchange.ProductSpot, exchange.ProductPerp} {
 		t.Run(string(product), func(t *testing.T) {
+			instrument := hyperliquidPrivateLoopInstrument(product)
 			meta := hyperliquidMarketMeta{
-				instrument: exchange.Instrument{
-					Symbol:            "BTC-USDT",
-					Product:           product,
-					QuantityIncrement: decimal.RequireFromString("0.001"),
-				},
-				nativeCoin:    "BTC",
-				assetID:       1,
+				instrument:    instrument,
+				nativeCoin:    instrument.Identity.NativeSymbol,
+				assetID:       hyperliquidPrivateLoopAssetID(product),
 				sizeDecimals:  3,
 				priceDecimals: 2,
 			}
 			backend := &hyperliquidPrivateWSBackend{
 				meta: clientMeta{venue: exchange.VenueHyperliquid, product: product},
-				resolve: func(_ context.Context, _ string, instrument string) (hyperliquidMarketMeta, error) {
-					if instrument != meta.instrument.Symbol {
+				resolve: func(_ context.Context, _ string, got exchange.Instrument) (hyperliquidMarketMeta, error) {
+					if !hlSameInstrument(meta.instrument, got) {
 						return hyperliquidMarketMeta{}, errors.New("unexpected instrument")
 					}
 					return meta, nil
@@ -562,7 +574,7 @@ func TestHyperliquidPrivateCommandsRejectInvalidRequestsBeforeSendForEveryProduc
 			}
 
 			placeAck, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-				Instrument:    "BTC-USDT",
+				Instrument:    instrument,
 				ClientOrderID: "17",
 				Side:          exchange.SideBuy,
 				Type:          exchange.OrderTypeLimit,
@@ -577,7 +589,7 @@ func TestHyperliquidPrivateCommandsRejectInvalidRequestsBeforeSendForEveryProduc
 			}
 
 			cancelAck, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-				Instrument: "BTC-USDT",
+				Instrument: instrument,
 				OrderID:    "not-a-native-order-id",
 			})
 			if !errors.Is(err, exchange.ErrInvalidRequest) {
@@ -591,18 +603,20 @@ func TestHyperliquidPrivateCommandsRejectInvalidRequestsBeforeSendForEveryProduc
 }
 
 func TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches(t *testing.T) {
+	instrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
 	meta := hyperliquidMarketMeta{
+		instrument:    instrument,
 		assetID:       3,
 		sizeDecimals:  3,
 		priceDecimals: 5,
 	}
 	base := exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    instrument,
 		ClientOrderID: "17",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
 		Quantity:      decimal.RequireFromString("0.5"),
-		LimitPrice:    decimal.RequireFromString("101.23456"),
+		LimitPrice:    decimal.RequireFromString("101.23"),
 		LimitPolicy:   exchange.LimitPolicyResting,
 	}
 	nativeClientID := hlNativeClientOrderID(base.ClientOrderID)
@@ -663,7 +677,7 @@ func TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches(t *testin
 			}
 			if perp.IsBuy ||
 				!perp.ReduceOnly ||
-				perp.Price != 101.24 ||
+				perp.Price != 101.23 ||
 				perp.OrderType.Limit == nil ||
 				perp.OrderType.Limit.Tif != tt.want {
 				t.Fatalf("perp=%+v", perp)
@@ -686,10 +700,11 @@ func TestHyperliquidPrivatePlaceRequestsCoverPortableParameterBranches(t *testin
 }
 
 func TestHyperliquidMutationErrAllowsWebSocketWithoutHTTPTracker(t *testing.T) {
+	instrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
 	ack, err := hlMutationErr(
 		exchange.ProductSpot,
 		exchange.OrderOperationPlace,
-		"BTC-USDT",
+		instrument,
 		"",
 		"17",
 		errors.New("transport failed"),
@@ -742,7 +757,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 						"channel": "orderUpdates",
 						"data": []map[string]any{{
 							"order": map[string]any{
-								"coin": "BTC", "side": "B", "limitPx": "100", "sz": "1",
+								"coin": "@1", "side": "B", "limitPx": "100", "sz": "1",
 								"origSz": "1", "oid": int64(7), "timestamp": int64(1_700_000_000_000),
 								"orderType": "Limit", "tif": "Gtc",
 							},
@@ -756,7 +771,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 							"user":       subscription["user"],
 							"isSnapshot": true,
 							"fills": []map[string]any{{
-								"coin": "BTC", "px": "100", "sz": "0.5", "side": "B",
+								"coin": "@1", "px": "100", "sz": "0.5", "side": "B",
 								"time": int64(1_700_000_000_002), "hash": "0xfill",
 								"oid": int64(7), "tid": int64(9), "fee": "0.01",
 								"feeToken": "USDT", "crossed": true,
@@ -826,14 +841,11 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		WithURL("ws"+strings.TrimPrefix(server.URL, "http")).
 		WithCredentials(privateKey, nil)
 	base.SubscriptionAckTimeout = time.Second
+	instrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:            "BTC-USDT",
-			Product:           exchange.ProductSpot,
-			QuantityIncrement: decimal.RequireFromString("0.001"),
-		},
-		nativeCoin:    "BTC",
-		assetID:       1,
+		instrument:    instrument,
+		nativeCoin:    "@1",
+		assetID:       10001,
 		sizeDecimals:  3,
 		priceDecimals: 2,
 	}
@@ -842,8 +854,8 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		meta: clientMeta,
 		base: base,
 		user: base.AccountAddr,
-		resolve: func(_ context.Context, _ string, instrument string) (hyperliquidMarketMeta, error) {
-			if instrument != meta.instrument.Symbol {
+		resolve: func(_ context.Context, _ string, got exchange.Instrument) (hyperliquidMarketMeta, error) {
+			if !hlSameInstrument(meta.instrument, got) {
 				return hyperliquidMarketMeta{}, errors.New("unknown instrument")
 			}
 			return meta, nil
@@ -858,18 +870,18 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	}
 	backend.installReconnectHooks()
 	socket := newSpotWebSocket(
-		newPublicWebSocket(clientMeta, &fakePublicWSBackend{}),
+		newPublicWebSocket(clientMeta, &hyperliquidNoopPublicWSBackend{}),
 		backend,
 	)
 	t.Cleanup(func() { _ = socket.Close() })
 
 	watchCtx, watchCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer watchCancel()
-	orders, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	orders, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fills, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	fills, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -880,7 +892,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 
 	select {
 	case event := <-orders.Events():
-		if event.Order.OrderID != "7" || event.Order.Instrument != "BTC-USDT" {
+		if event.Order.OrderID != "7" || event.Order.NativeSymbol != instrument.Identity.NativeSymbol {
 			t.Fatalf("order event=%+v", event)
 		}
 	case err := <-serverErrors:
@@ -892,7 +904,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	case event := <-fills.Events():
 		if event.Kind != exchange.EventSnapshot ||
 			event.Fill.FillID != "9" ||
-			event.Fill.Instrument != "BTC-USDT" {
+			event.Fill.NativeSymbol != instrument.Identity.NativeSymbol {
 			t.Fatalf("fill event=%+v", event)
 		}
 	case err := <-serverErrors:
@@ -913,7 +925,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	}
 
 	placeAck, err := socket.PlaceOrder(watchCtx, exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    instrument,
 		ClientOrderID: "17",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -930,7 +942,7 @@ func TestHyperliquidSpotPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		t.Fatalf("place ack=%+v", placeAck)
 	}
 	cancelAck, err := socket.CancelOrder(watchCtx, exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		OrderID:    "41",
 	})
 	if err != nil {
@@ -1033,7 +1045,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 								"assetPositions": []map[string]any{{
 									"position": map[string]any{
 										"coin": "BTC", "entryPx": "100", "leverage": map[string]any{"value": 5},
-										"liquidationPx": "50", "marginUsed": "20", "szi": "-2", "unrealizedPnl": "3",
+										"liquidationPx": "50", "marginUsed": "20", "positionValue": "210", "szi": "-2", "unrealizedPnl": "3",
 									},
 								}},
 								"marginSummary": map[string]any{"accountValue": "120", "totalMarginUsed": "20"},
@@ -1093,12 +1105,9 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		WithURL("ws"+strings.TrimPrefix(server.URL, "http")).
 		WithCredentials(privateKey, nil)
 	base.SubscriptionAckTimeout = time.Second
+	instrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "1", "USDC", 3)
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:            "BTC-USDT",
-			Product:           exchange.ProductPerp,
-			QuantityIncrement: decimal.RequireFromString("0.001"),
-		},
+		instrument:    instrument,
 		nativeCoin:    "BTC",
 		assetID:       1,
 		sizeDecimals:  3,
@@ -1110,8 +1119,8 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		meta: clientMeta,
 		base: base,
 		user: base.AccountAddr,
-		resolve: func(_ context.Context, _ string, instrument string) (hyperliquidMarketMeta, error) {
-			if instrument != meta.instrument.Symbol {
+		resolve: func(_ context.Context, _ string, got exchange.Instrument) (hyperliquidMarketMeta, error) {
+			if !hlSameInstrument(meta.instrument, got) {
 				return hyperliquidMarketMeta{}, errors.New("unknown instrument")
 			}
 			return meta, nil
@@ -1125,16 +1134,16 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		state:     newHyperliquidPrivateHub[hyperliquidPrivateState](),
 	}
 	backend.installReconnectHooks()
-	socket := newPerpWebSocket(clientMeta, &fakePerpWSBackend{}, backend)
+	socket := newPerpWebSocket(clientMeta, &hyperliquidNoopPerpWSBackend{}, backend)
 	t.Cleanup(func() { _ = socket.Close() })
 
 	watchCtx, watchCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer watchCancel()
-	orders, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	orders, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fills, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	fills, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1152,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		err error
 	}, 1)
 	go func() {
-		sub, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+		sub, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: instrument})
 		positionsResult <- struct {
 			sub exchange.Subscription[exchange.PositionEvent]
 			err error
@@ -1183,7 +1192,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	case event := <-fills.Events():
 		if event.Kind != exchange.EventDelta ||
 			event.Fill.FillID != "9" ||
-			event.Fill.Instrument != "BTC-USDT" {
+			event.Fill.NativeSymbol != instrument.Identity.NativeSymbol {
 			t.Fatalf("fill event=%+v", event)
 		}
 	case err := <-serverErrors:
@@ -1205,7 +1214,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	select {
 	case event := <-positions.Events():
 		if len(event.Positions) != 1 ||
-			event.Positions[0].Instrument != "BTC-USDT" ||
+			event.Positions[0].NativeSymbol != instrument.Identity.NativeSymbol ||
 			event.Positions[0].Side != exchange.SideSell {
 			t.Fatalf("position event=%+v", event)
 		}
@@ -1216,7 +1225,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 	}
 
 	placeAck, err := socket.PlaceOrder(watchCtx, exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    instrument,
 		ClientOrderID: "17",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -1232,7 +1241,7 @@ func TestHyperliquidPerpPrivateWebSocketExercisesEveryExposedMethod(t *testing.T
 		t.Fatalf("place ack=%+v", placeAck)
 	}
 	cancelAck, err := socket.CancelOrder(watchCtx, exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: instrument,
 		OrderID:    "41",
 	})
 	if err != nil {
@@ -1344,7 +1353,7 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 									"assetPositions": []map[string]any{{
 										"position": map[string]any{
 											"coin": "BTC", "entryPx": "100", "leverage": map[string]any{"value": 5},
-											"liquidationPx": "50", "marginUsed": "20", "szi": "2", "unrealizedPnl": "3",
+											"liquidationPx": "50", "marginUsed": "20", "positionValue": "210", "szi": "2", "unrealizedPnl": "3",
 										},
 									}},
 									"marginSummary": map[string]any{"accountValue": "120", "totalMarginUsed": "20"},
@@ -1370,12 +1379,9 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 		WithURL("ws"+strings.TrimPrefix(server.URL, "http")).
 		WithCredentials(privateKey, nil)
 	base.SubscriptionAckTimeout = time.Second
+	instrument := hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "1", "USDC", 3)
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:            "BTC-USDT",
-			Product:           exchange.ProductPerp,
-			QuantityIncrement: decimal.RequireFromString("0.001"),
-		},
+		instrument:    instrument,
 		nativeCoin:    "BTC",
 		assetID:       1,
 		sizeDecimals:  3,
@@ -1387,8 +1393,8 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 		meta: clientMeta,
 		base: base,
 		user: base.AccountAddr,
-		resolve: func(_ context.Context, _ string, instrument string) (hyperliquidMarketMeta, error) {
-			if instrument != meta.instrument.Symbol {
+		resolve: func(_ context.Context, _ string, got exchange.Instrument) (hyperliquidMarketMeta, error) {
+			if !hlSameInstrument(meta.instrument, got) {
 				return hyperliquidMarketMeta{}, errors.New("unknown instrument")
 			}
 			return meta, nil
@@ -1402,24 +1408,24 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 		state:     newHyperliquidPrivateHub[hyperliquidPrivateState](),
 	}
 	backend.installReconnectHooks()
-	socket := newPerpWebSocket(clientMeta, &fakePerpWSBackend{}, backend)
+	socket := newPerpWebSocket(clientMeta, &hyperliquidNoopPerpWSBackend{}, backend)
 	t.Cleanup(func() { _ = socket.Close() })
 
 	watchCtx, watchCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer watchCancel()
-	ordersA, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	ordersA, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ordersB, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	ordersB, err := socket.WatchOrders(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fillsA, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	fillsA, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fillsB, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	fillsB, err := socket.WatchFills(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1431,11 +1437,11 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionsA, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	positionsA, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionsB, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: "BTC-USDT"})
+	positionsB, err := socket.WatchPositions(watchCtx, exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1447,7 +1453,7 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 	for _, sub := range []exchange.Subscription[exchange.OrderEvent]{ordersA, ordersB} {
 		select {
 		case event := <-sub.Events():
-			if event.Order.OrderID != "7" || event.Order.Instrument != "BTC-USDT" {
+			if event.Order.OrderID != "7" || event.Order.NativeSymbol != instrument.Identity.NativeSymbol {
 				t.Fatalf("order event=%+v", event)
 			}
 		case err := <-serverErrors:
@@ -1459,7 +1465,7 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 	for _, sub := range []exchange.Subscription[exchange.FillEvent]{fillsA, fillsB} {
 		select {
 		case event := <-sub.Events():
-			if event.Fill.FillID != "9" || event.Fill.Instrument != "BTC-USDT" {
+			if event.Fill.FillID != "9" || event.Fill.NativeSymbol != instrument.Identity.NativeSymbol {
 				t.Fatalf("fill event=%+v", event)
 			}
 		case err := <-serverErrors:
@@ -1483,7 +1489,7 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 	for _, sub := range []exchange.Subscription[exchange.PositionEvent]{positionsA, positionsB} {
 		select {
 		case event := <-sub.Events():
-			if len(event.Positions) != 1 || event.Positions[0].Instrument != "BTC-USDT" {
+			if len(event.Positions) != 1 || event.Positions[0].NativeSymbol != instrument.Identity.NativeSymbol {
 				t.Fatalf("position event=%+v", event)
 			}
 		case err := <-serverErrors:
@@ -1522,7 +1528,7 @@ func TestHyperliquidPerpPrivateWebSocketSharesSameSemanticSubscribers(t *testing
 func TestHyperliquidPrivateStateNormalizers(t *testing.T) {
 	var state hyperliquidperp.PerpPosition
 	if err := json.Unmarshal([]byte(`{
-		"assetPositions":[{"position":{"coin":"BTC","entryPx":"100","leverage":{"value":5},"liquidationPx":"50","marginUsed":"20","szi":"2","unrealizedPnl":"3"}}],
+		"assetPositions":[{"position":{"coin":"BTC","entryPx":"100","leverage":{"value":5},"liquidationPx":"50","marginUsed":"20","positionValue":"210","szi":"2","unrealizedPnl":"3"}}],
 		"marginSummary":{"accountValue":"120","totalMarginUsed":"20"},
 		"withdrawable":"100",
 		"time":1700000000000
@@ -1539,7 +1545,7 @@ func TestHyperliquidPrivateStateNormalizers(t *testing.T) {
 		t.Fatalf("balance event=%+v", balanceEvent)
 	}
 	meta := hyperliquidMarketMeta{
-		instrument: exchange.Instrument{Symbol: "BTC-USDT"},
+		instrument: hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3),
 		nativeCoin: "BTC",
 		markPrice:  decimal.NewFromInt(105),
 	}
@@ -1549,7 +1555,7 @@ func TestHyperliquidPrivateStateNormalizers(t *testing.T) {
 	}
 	if positionEvent.Kind != exchange.EventSnapshot ||
 		len(positionEvent.Positions) != 1 ||
-		positionEvent.Positions[0].Instrument != "BTC-USDT" {
+		positionEvent.Positions[0].NativeSymbol != meta.instrument.Identity.NativeSymbol {
 		t.Fatalf("position event=%+v", positionEvent)
 	}
 }
@@ -1578,3 +1584,47 @@ var (
 	_ = hyperliquidspot.PlaceOrderResponse{}
 	_ = hyperliquidperp.PlaceOrderResponse{}
 )
+
+type hyperliquidNoopPublicWSBackend struct{}
+
+func hyperliquidPrivateLoopInstrument(product exchange.Product) exchange.Instrument {
+	if product == exchange.ProductSpot {
+		return hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
+	}
+	return hyperliquidCatalogInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "0", "USDC", 3)
+}
+
+func hyperliquidPrivateLoopAssetID(product exchange.Product) int {
+	if product == exchange.ProductSpot {
+		return 10001
+	}
+	return 0
+}
+
+func (backend *hyperliquidNoopPublicWSBackend) StartOrderBook(context.Context, exchange.Instrument, streamCallbacks[exchange.BookEvent]) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
+func (backend *hyperliquidNoopPublicWSBackend) StartBBO(context.Context, exchange.Instrument, streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
+func (backend *hyperliquidNoopPublicWSBackend) StartPublicTrades(context.Context, exchange.Instrument, streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
+func (backend *hyperliquidNoopPublicWSBackend) StartCandles(context.Context, exchange.Instrument, string, streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+	return func() error { return nil }, nil
+}
+
+func (backend *hyperliquidNoopPublicWSBackend) Close() error {
+	return nil
+}
+
+type hyperliquidNoopPerpWSBackend struct {
+	hyperliquidNoopPublicWSBackend
+}
+
+func (backend *hyperliquidNoopPerpWSBackend) StartReference(context.Context, exchange.Instrument, streamCallbacks[perpReferenceEvent]) (func() error, error) {
+	return func() error { return nil }, nil
+}
