@@ -29,6 +29,7 @@
 ## 指南
 
 - [统一交易所 API 快速入门](guides/exchange-rest-quickstart.md)
+- [交易所网关](guides/exchange-gateway.md)
 - [编写策略](guides/strategies.md)
 - [构建 runtime node](guides/runtime-node.md)
 - [市场与 reference data](guides/market-reference-data.md)

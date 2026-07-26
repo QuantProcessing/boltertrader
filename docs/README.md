@@ -30,6 +30,7 @@ configuration, and test semantics.
 ## Guides
 
 - [Unified exchange API quickstart](guides/exchange-rest-quickstart.md)
+- [Exchange Gateway](guides/exchange-gateway.md)
 - [Writing strategies](guides/strategies.md)
 - [Building a runtime node](guides/runtime-node.md)
 - [Market and reference data](guides/market-reference-data.md)
