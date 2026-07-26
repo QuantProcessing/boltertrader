@@ -23,14 +23,14 @@ func TestBinancePrivateWSSpotStreamsNormalizeAndFilter(t *testing.T) {
 	var gotBalance exchange.BalanceEvent
 	var gotErr error
 
-	stopOrders, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{
+	stopOrders, err := backend.StartOrders(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{
 		Event: func(event exchange.OrderEvent) { gotOrder = event },
 		Error: func(err error) { gotErr = err },
 	})
 	if err != nil {
 		t.Fatalf("StartOrders: %v", err)
 	}
-	stopFills, err := backend.StartFills(context.Background(), "ETH-USDT", streamCallbacks[exchange.FillEvent]{
+	stopFills, err := backend.StartFills(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.FillEvent]{
 		Event: func(event exchange.FillEvent) { gotFill = event },
 		Error: func(err error) { gotErr = err },
 	})
@@ -87,14 +87,14 @@ func TestBinancePrivateWSSpotStreamsNormalizeAndFilter(t *testing.T) {
 		CreationTime:                           1700000000000,
 		TransactionTime:                        1700000000002,
 	})
-	if gotOrder.Kind != exchange.EventDelta || gotOrder.Order.Instrument != "ETH-USDT" ||
+	if gotOrder.Kind != exchange.EventDelta || gotOrder.Order.NativeSymbol != "ETHUSDT" ||
 		gotOrder.Order.OrderID != "77" || gotOrder.Order.Side != exchange.SideSell ||
 		gotOrder.Order.Type != exchange.OrderTypeLimit || gotOrder.Order.LimitPolicy != exchange.LimitPolicyPostOnly ||
 		!gotOrder.Order.Filled.Equal(decimal.RequireFromString("0.5")) ||
 		!gotOrder.Order.AverageFillPrice.Valid {
 		t.Fatalf("order event = %+v", gotOrder)
 	}
-	if gotFill.Kind != exchange.EventDelta || gotFill.Fill.Instrument != "ETH-USDT" ||
+	if gotFill.Kind != exchange.EventDelta || gotFill.Fill.NativeSymbol != "ETHUSDT" ||
 		gotFill.Fill.OrderID != "77" || gotFill.Fill.FillID != "555" ||
 		gotFill.Fill.Liquidity != exchange.LiquidityMaker ||
 		!gotFill.Fill.Quantity.Equal(decimal.RequireFromString("0.5")) ||
@@ -145,7 +145,7 @@ func TestBinancePrivateWSSpotStreamsNormalizeAndFilter(t *testing.T) {
 }
 
 func TestBinanceSpotWSFillEventSkipsNonTradeExecutionReports(t *testing.T) {
-	fill, ok, err := binanceSpotWSFillEvent("SOL-USDT", "SOLUSDT", &binancespot.ExecutionReportEvent{
+	fill, ok, err := binanceSpotWSFillEvent(binanceCatalogTestInstrument(exchange.ProductSpot, "SOL", "USDT", "", decimal.RequireFromString("0.001")), "SOLUSDT", &binancespot.ExecutionReportEvent{
 		Symbol:               "SOLUSDT",
 		ExecutionType:        "NEW",
 		LastExecutedQuantity: "0.00000000",
@@ -170,25 +170,25 @@ func TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches(t *testing.T) {
 	}{
 		{
 			name: "market",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "1001", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("0.5")},
+			req:  exchange.PlaceOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1001", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("0.5")},
 			want: binancespot.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "MARKET", Quantity: "0.5", NewClientOrderID: "1001", NewOrderRespType: "RESULT"},
 			resp: binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 800, ClientOrderID: "1001", Status: "FILLED", ExecutedQty: "0.5", CummulativeQuoteQty: "50"},
 		},
 		{
 			name: "limit-resting",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "1002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.6"), LimitPrice: decimal.RequireFromString("101.5"), LimitPolicy: exchange.LimitPolicyResting},
+			req:  exchange.PlaceOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.6"), LimitPrice: decimal.RequireFromString("101.5"), LimitPolicy: exchange.LimitPolicyResting},
 			want: binancespot.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "0.6", Price: "101.5", NewClientOrderID: "1002", NewOrderRespType: "RESULT"},
 			resp: binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 800, ClientOrderID: "1002", Status: "NEW", ExecutedQty: "0", CummulativeQuoteQty: "0"},
 		},
 		{
 			name: "limit-ioc",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "1003", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.6"), LimitPrice: decimal.RequireFromString("101.5"), LimitPolicy: exchange.LimitPolicyIOC},
+			req:  exchange.PlaceOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1003", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.6"), LimitPrice: decimal.RequireFromString("101.5"), LimitPolicy: exchange.LimitPolicyIOC},
 			want: binancespot.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "IOC", Quantity: "0.6", Price: "101.5", NewClientOrderID: "1003", NewOrderRespType: "RESULT"},
 			resp: binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 800, ClientOrderID: "1003", Status: "NEW", ExecutedQty: "0", CummulativeQuoteQty: "0"},
 		},
 		{
 			name: "post-only",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "1004", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.7"), LimitPrice: decimal.RequireFromString("99.5"), LimitPolicy: exchange.LimitPolicyPostOnly},
+			req:  exchange.PlaceOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1004", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("0.7"), LimitPrice: decimal.RequireFromString("99.5"), LimitPolicy: exchange.LimitPolicyPostOnly},
 			want: binancespot.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "LIMIT_MAKER", Quantity: "0.7", Price: "99.5", NewClientOrderID: "1004", NewOrderRespType: "RESULT"},
 			resp: binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 800, ClientOrderID: "1004", Status: "NEW", ExecutedQty: "0", CummulativeQuoteQty: "0"},
 		},
@@ -208,7 +208,7 @@ func TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches(t *testing.T) {
 				t.Fatalf("place params = %+v, want %+v", wsapi.lastSpotPlace, tc.want)
 			}
 			if ack.Venue != exchange.VenueBinance || ack.Product != exchange.ProductSpot || ack.Operation != exchange.OrderOperationPlace ||
-				ack.Instrument != "ETH-USDT" || ack.OrderID != "800" || ack.ClientOrderID != tc.req.ClientOrderID {
+				ack.NativeSymbol != "ETHUSDT" || ack.OrderID != "800" || ack.ClientOrderID != tc.req.ClientOrderID {
 				t.Fatalf("ack = %+v", ack)
 			}
 			wsapi.placeCalls = 0
@@ -216,7 +216,7 @@ func TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches(t *testing.T) {
 	}
 
 	wsapi.cancelResponse = &binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 800, ClientOrderID: "1003", Status: "CANCELED"}
-	ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "800"})
+	ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), OrderID: "800"})
 	if err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestBinancePrivateWSSpotCommandsUseWSAPIAndMapBranches(t *testing.T) {
 
 	wsapi.cancelCalls = 0
 	wsapi.cancelResponse = &binancespot.OrderResponse{Symbol: "ETHUSDT", OrderID: 801, ClientOrderID: "1004", Status: "CANCELED"}
-	ack, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "801"})
+	ack, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), OrderID: "801"})
 	if err != nil {
 		t.Fatalf("CancelOrder by order id: %v", err)
 	}
@@ -251,16 +251,16 @@ func TestBinancePrivateWSPerpStreamsCommandsAndPositions(t *testing.T) {
 	var gotBalance exchange.BalanceEvent
 	var gotPosition exchange.PositionEvent
 	var gotErr error
-	if _, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{Event: func(event exchange.OrderEvent) { gotOrder = event }, Error: func(err error) { gotErr = err }}); err != nil {
+	if _, err := backend.StartOrders(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{Event: func(event exchange.OrderEvent) { gotOrder = event }, Error: func(err error) { gotErr = err }}); err != nil {
 		t.Fatalf("StartOrders: %v", err)
 	}
-	if _, err := backend.StartFills(context.Background(), "ETH-USDT", streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) { gotFill = event }, Error: func(err error) { gotErr = err }}); err != nil {
+	if _, err := backend.StartFills(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) { gotFill = event }, Error: func(err error) { gotErr = err }}); err != nil {
 		t.Fatalf("StartFills: %v", err)
 	}
 	if _, err := backend.StartBalances(context.Background(), streamCallbacks[exchange.BalanceEvent]{Event: func(event exchange.BalanceEvent) { gotBalance = event }, Error: func(err error) { gotErr = err }}); err != nil {
 		t.Fatalf("StartBalances: %v", err)
 	}
-	if _, err := backend.StartPositions(context.Background(), "ETH-USDT", streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) { gotPosition = event }, Error: func(err error) { gotErr = err }}); err != nil {
+	if _, err := backend.StartPositions(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) { gotPosition = event }, Error: func(err error) { gotErr = err }}); err != nil {
 		t.Fatalf("StartPositions: %v", err)
 	}
 
@@ -285,11 +285,11 @@ func TestBinancePrivateWSPerpStreamsCommandsAndPositions(t *testing.T) {
 	order.Order.PositionSide = "BOTH"
 	order.Order.IsReduceOnly = true
 	account.emitOrder(order)
-	if gotOrder.Order.Instrument != "ETH-USDT" || gotOrder.Order.OrderID != "88" ||
+	if gotOrder.Order.NativeSymbol != "ETHUSDT" || gotOrder.Order.OrderID != "88" ||
 		gotOrder.Order.LimitPolicy != exchange.LimitPolicyPostOnly || !gotOrder.Order.ReduceOnly {
 		t.Fatalf("perp order = %+v", gotOrder)
 	}
-	if gotFill.Fill.Instrument != "ETH-USDT" || gotFill.Fill.FillID != "901" ||
+	if gotFill.Fill.NativeSymbol != "ETHUSDT" || gotFill.Fill.FillID != "901" ||
 		!gotFill.Fill.Price.Equal(decimal.RequireFromString("101")) || !gotFill.Fill.Fee.Equal(decimal.RequireFromString("0.02")) {
 		t.Fatalf("perp fill = %+v", gotFill)
 	}
@@ -315,7 +315,7 @@ func TestBinancePrivateWSPerpStreamsCommandsAndPositions(t *testing.T) {
 	if len(gotBalance.Balances) != 1 || !gotBalance.Balances[0].Total.Equal(decimal.RequireFromString("15")) {
 		t.Fatalf("perp balances = %+v", gotBalance)
 	}
-	if len(gotPosition.Positions) != 1 || gotPosition.Positions[0].Instrument != "ETH-USDT" ||
+	if len(gotPosition.Positions) != 1 || gotPosition.Positions[0].NativeSymbol != "ETHUSDT" ||
 		gotPosition.Positions[0].Side != exchange.SideSell ||
 		!gotPosition.Positions[0].Quantity.Equal(decimal.RequireFromString("2")) ||
 		!gotPosition.Positions[0].UnrealizedPnL.Equal(decimal.RequireFromString("1.5")) {
@@ -328,7 +328,7 @@ func TestBinancePrivateWSPerpStreamsCommandsAndPositions(t *testing.T) {
 	}
 
 	wsapi.placeResponse = &binanceperp.OrderResponse{Symbol: "ETHUSDT", OrderID: 801, ClientOrderID: "2002", Status: "NEW", Type: "LIMIT", Side: "SELL", OrigQty: "4", Price: "99", ExecutedQty: "0", AvgPrice: "0", PositionSide: "BOTH", UpdateTime: 1700000000005, ReduceOnly: true}
-	ack, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("4"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyIOC, ReduceOnly: true})
+	ack, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("4"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyIOC, ReduceOnly: true})
 	if err != nil {
 		t.Fatalf("perp PlaceOrder: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestBinancePrivateWSPerpStreamsCommandsAndPositions(t *testing.T) {
 	}
 
 	wsapi.cancelResponse = &binanceperp.OrderResponse{Symbol: "ETHUSDT", OrderID: 801, ClientOrderID: "2002", Status: "CANCELED", Type: "LIMIT", Side: "SELL", OrigQty: "4", Price: "99", ExecutedQty: "0", AvgPrice: "0", PositionSide: "BOTH", UpdateTime: 1700000000006}
-	ack, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "801"})
+	ack, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: binancePerpETHUSDTInstrument(), OrderID: "801"})
 	if err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
@@ -363,27 +363,27 @@ func TestBinancePrivateWSPerpCommandsNormalizeEveryPortableOrderBranch(t *testin
 	}{
 		{
 			name: "market",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2001", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("1.5")},
+			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2001", Side: exchange.SideBuy, Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("1.5")},
 			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "MARKET", Quantity: "1.5", NewClientOrderID: "2001"},
 		},
 		{
 			name: "limit-resting",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2"), LimitPrice: decimal.RequireFromString("100.5"), LimitPolicy: exchange.LimitPolicyResting},
+			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2002", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2"), LimitPrice: decimal.RequireFromString("100.5"), LimitPolicy: exchange.LimitPolicyResting},
 			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "2", Price: "100.5", NewClientOrderID: "2002"},
 		},
 		{
 			name: "limit-ioc",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2003", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2.5"), LimitPrice: decimal.RequireFromString("100.75"), LimitPolicy: exchange.LimitPolicyIOC},
+			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2003", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("2.5"), LimitPrice: decimal.RequireFromString("100.75"), LimitPolicy: exchange.LimitPolicyIOC},
 			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "IOC", Quantity: "2.5", Price: "100.75", NewClientOrderID: "2003"},
 		},
 		{
 			name: "post-only",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2004", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("3"), LimitPrice: decimal.RequireFromString("99.5"), LimitPolicy: exchange.LimitPolicyPostOnly},
+			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2004", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("3"), LimitPrice: decimal.RequireFromString("99.5"), LimitPolicy: exchange.LimitPolicyPostOnly},
 			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "BUY", Type: "LIMIT", TimeInForce: "GTX", Quantity: "3", Price: "99.5", NewClientOrderID: "2004"},
 		},
 		{
 			name: "reduce-only",
-			req:  exchange.PlaceOrderRequest{Instrument: "ETH-USDT", ClientOrderID: "2005", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("4"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyResting, ReduceOnly: true},
+			req:  exchange.PlaceOrderRequest{Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "2005", Side: exchange.SideSell, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("4"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyResting, ReduceOnly: true},
 			want: binanceperp.PlaceOrderParams{Symbol: "ETHUSDT", Side: "SELL", Type: "LIMIT", TimeInForce: "GTC", Quantity: "4", Price: "99", NewClientOrderID: "2005", ReduceOnly: true},
 		},
 	}
@@ -422,7 +422,7 @@ func TestBinancePrivateWSPerpCancelUsesPortableOrderID(t *testing.T) {
 	}{
 		{
 			name: "order-id",
-			req:  exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "801"},
+			req:  exchange.CancelOrderRequest{Instrument: binancePerpETHUSDTInstrument(), OrderID: "801"},
 			want: binanceperp.CancelOrderParams{Symbol: "ETHUSDT", OrderID: "801"},
 			resp: binanceperp.OrderResponse{Symbol: "ETHUSDT", OrderID: 801, ClientOrderID: "2001", Status: "CANCELED", Type: "LIMIT", Side: "SELL", OrigQty: "4", Price: "99", ExecutedQty: "0", AvgPrice: "0", PositionSide: "BOTH", UpdateTime: 1700000000006},
 		},
@@ -445,11 +445,14 @@ func TestBinancePrivateWSPerpCancelUsesPortableOrderID(t *testing.T) {
 }
 
 func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
-	place := exchange.PlaceOrderRequest{
-		Instrument: "ETH-USDT", ClientOrderID: "1001", Side: exchange.SideBuy,
+	spotPlace := exchange.PlaceOrderRequest{
+		Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1001", Side: exchange.SideBuy,
 		Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1),
 	}
-	cancel := exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "801"}
+	spotCancel := exchange.CancelOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), OrderID: "801"}
+	perpPlace := spotPlace
+	perpPlace.Instrument = binancePerpETHUSDTInstrument()
+	perpCancel := exchange.CancelOrderRequest{Instrument: binancePerpETHUSDTInstrument(), OrderID: "801"}
 
 	t.Run("spot rejection and ambiguity", func(t *testing.T) {
 		for _, tc := range []struct {
@@ -495,10 +498,10 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 				var err error
 				if tc.command == "place" {
 					api.placeErr = tc.commandErr
-					ack, err = backend.PlaceOrder(context.Background(), place)
+					ack, err = backend.PlaceOrder(context.Background(), spotPlace)
 				} else {
 					api.cancelErr = tc.commandErr
-					ack, err = backend.CancelOrder(context.Background(), cancel)
+					ack, err = backend.CancelOrder(context.Background(), spotCancel)
 				}
 				if !errors.Is(err, tc.wantErr) || ack.State != tc.wantState {
 					t.Fatalf("ack=%+v err=%v, want state=%s error=%v", ack, err, tc.wantState, tc.wantErr)
@@ -554,10 +557,10 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 				var err error
 				if tc.command == "place" {
 					api.placeErr = tc.commandErr
-					ack, err = backend.PlaceOrder(context.Background(), place)
+					ack, err = backend.PlaceOrder(context.Background(), perpPlace)
 				} else {
 					api.cancelErr = tc.commandErr
-					ack, err = backend.CancelOrder(context.Background(), cancel)
+					ack, err = backend.CancelOrder(context.Background(), perpCancel)
 				}
 				if !errors.Is(err, tc.wantErr) || ack.State != tc.wantState {
 					t.Fatalf("ack=%+v err=%v, want state=%s error=%v", ack, err, tc.wantState, tc.wantErr)
@@ -577,14 +580,14 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 				if product == exchange.ProductSpot {
 					api := &fakeBinanceSpotPrivateAPI{connectErr: errors.New("secret dial detail")}
 					backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-					ack, err = backend.PlaceOrder(context.Background(), place)
+					ack, err = backend.PlaceOrder(context.Background(), spotPlace)
 					if api.placeCalls != 0 {
 						t.Fatalf("place command sent after connect failure")
 					}
 				} else {
 					api := &fakeBinancePerpPrivateAPI{connectErr: errors.New("secret dial detail")}
 					backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-					ack, err = backend.PlaceOrder(context.Background(), place)
+					ack, err = backend.PlaceOrder(context.Background(), perpPlace)
 					if api.placeCalls != 0 {
 						t.Fatalf("place command sent after connect failure")
 					}
@@ -601,11 +604,14 @@ func TestBinancePrivateWSCommandErrorsPreserveOutcomeBoundaries(t *testing.T) {
 }
 
 func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T) {
-	place := exchange.PlaceOrderRequest{
-		Instrument: "ETH-USDT", ClientOrderID: "1001", Side: exchange.SideBuy,
+	spotPlace := exchange.PlaceOrderRequest{
+		Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1001", Side: exchange.SideBuy,
 		Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1),
 	}
-	cancel := exchange.CancelOrderRequest{Instrument: "ETH-USDT", OrderID: "801"}
+	spotCancel := exchange.CancelOrderRequest{Instrument: binanceSpotETHUSDTInstrument(), OrderID: "801"}
+	perpPlace := spotPlace
+	perpPlace.Instrument = binancePerpETHUSDTInstrument()
+	perpCancel := exchange.CancelOrderRequest{Instrument: binancePerpETHUSDTInstrument(), OrderID: "801"}
 
 	spotGoodPlace := func() *binancespot.OrderResponse {
 		return &binancespot.OrderResponse{
@@ -650,7 +656,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 			run: func() (exchange.OrderAcknowledgement, error) {
 				api := &fakeBinanceSpotPrivateAPI{}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), spotPlace)
 			},
 		},
 		{
@@ -660,7 +666,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.Symbol = "BTCUSDT"
 				api := &fakeBinanceSpotPrivateAPI{placeResponse: resp}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), spotPlace)
 			},
 		},
 		{
@@ -670,7 +676,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.OrderID = 0
 				api := &fakeBinanceSpotPrivateAPI{placeResponse: resp}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), spotPlace)
 			},
 		},
 		{
@@ -678,7 +684,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 			run: func() (exchange.OrderAcknowledgement, error) {
 				api := &fakeBinanceSpotPrivateAPI{}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), spotCancel)
 			},
 		},
 		{
@@ -688,7 +694,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.OrderID = 802
 				api := &fakeBinanceSpotPrivateAPI{cancelResponse: resp}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), spotCancel)
 			},
 		},
 		{
@@ -698,7 +704,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.OrderID = 0
 				api := &fakeBinanceSpotPrivateAPI{cancelResponse: resp}
 				backend := newBinanceSpotPrivateWSBackendForTest(api, &fakeBinanceSpotAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), spotCancel)
 			},
 		},
 		{
@@ -706,7 +712,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 			run: func() (exchange.OrderAcknowledgement, error) {
 				api := &fakeBinancePerpPrivateAPI{}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), perpPlace)
 			},
 		},
 		{
@@ -716,7 +722,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.Symbol = "BTCUSDT"
 				api := &fakeBinancePerpPrivateAPI{placeResponse: resp}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), perpPlace)
 			},
 		},
 		{
@@ -726,7 +732,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.Status = "UNKNOWN"
 				api := &fakeBinancePerpPrivateAPI{placeResponse: resp}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.PlaceOrder(context.Background(), place)
+				return backend.PlaceOrder(context.Background(), perpPlace)
 			},
 		},
 		{
@@ -734,7 +740,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 			run: func() (exchange.OrderAcknowledgement, error) {
 				api := &fakeBinancePerpPrivateAPI{}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), perpCancel)
 			},
 		},
 		{
@@ -744,7 +750,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.OrderID = 802
 				api := &fakeBinancePerpPrivateAPI{cancelResponse: resp}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), perpCancel)
 			},
 		},
 		{
@@ -754,7 +760,7 @@ func TestBinancePrivateWSCommandMalformedNativeResponsesReturnNoAck(t *testing.T
 				resp.PositionSide = "LONG"
 				api := &fakeBinancePerpPrivateAPI{cancelResponse: resp}
 				backend := newBinancePerpPrivateWSBackendForTest(api, &fakeBinancePerpAccountWS{}, "key", "secret")
-				return backend.CancelOrder(context.Background(), cancel)
+				return backend.CancelOrder(context.Background(), perpCancel)
 			},
 		},
 	} {

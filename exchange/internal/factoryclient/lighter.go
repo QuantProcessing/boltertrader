@@ -31,16 +31,26 @@ func NewLighterSpot(privateKey string, accountIndex int64, keyIndex uint8, setti
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
 	sdkClient.HTTPClient = lighterTrackedHTTPClient(settings.HTTPClient)
+	meta := clientMetaFromSettings(exchange.VenueLighter, exchange.ProductSpot, settings)
 	client := &lighterSpotClient{
-		spotClient: &spotClient{meta: clientMeta{venue: exchange.VenueLighter, product: exchange.ProductSpot}},
+		spotClient: &spotClient{meta: meta},
 		sdk:        sdkClient,
-		state:      newLighterRESTState(),
+		state:      newLighterRESTState(meta),
 	}
 	client.ws = newSpotWebSocket(
 		newPublicWebSocket(client.meta, newLighterSpotWSBackend(client.sdk, client.state, settings)),
 		newLighterSpotPrivateWSBackend(client.sdk, client.state, settings),
 	)
 	return client
+}
+
+func (client *lighterSpotClient) WebSocket() exchange.SpotWebSocket { return client.ws }
+
+func (client *lighterSpotClient) Close() error {
+	if client.ws == nil {
+		return nil
+	}
+	return client.ws.Close()
 }
 
 type lighterPerpClient struct {
@@ -61,10 +71,11 @@ func NewLighterPerp(privateKey string, accountIndex int64, keyIndex uint8, setti
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
 	sdkClient.HTTPClient = lighterTrackedHTTPClient(settings.HTTPClient)
+	meta := clientMetaFromSettings(exchange.VenueLighter, exchange.ProductPerp, settings)
 	client := &lighterPerpClient{
-		perpClient: &perpClient{meta: clientMeta{venue: exchange.VenueLighter, product: exchange.ProductPerp}},
+		perpClient: &perpClient{meta: meta},
 		sdk:        sdkClient,
-		state:      newLighterRESTState(),
+		state:      newLighterRESTState(meta),
 	}
 	client.ws = newPerpWebSocket(
 		client.meta,
@@ -74,16 +85,30 @@ func NewLighterPerp(privateKey string, accountIndex int64, keyIndex uint8, setti
 	return client
 }
 
+func (client *lighterPerpClient) WebSocket() exchange.PerpWebSocket { return client.ws }
+
+func (client *lighterPerpClient) Close() error {
+	if client.ws == nil {
+		return nil
+	}
+	return client.ws.Close()
+}
+
 type lighterRESTState struct {
 	cacheMu sync.Mutex
 	metas   map[string]lighterMarketMeta
 	byID    map[int]lighterMarketMeta
 	loading chan struct{}
 	cmdGate chan struct{}
+	meta    clientMeta
 }
 
-func newLighterRESTState() *lighterRESTState {
-	return &lighterRESTState{cmdGate: make(chan struct{}, 1)}
+func newLighterRESTState(meta ...clientMeta) *lighterRESTState {
+	state := &lighterRESTState{cmdGate: make(chan struct{}, 1)}
+	if len(meta) > 0 {
+		state.meta = meta[0]
+	}
+	return state
 }
 
 type lighterSendTracker struct {

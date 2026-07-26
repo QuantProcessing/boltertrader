@@ -58,7 +58,7 @@ func (client *okxPerpClient) OrderHistory(ctx context.Context, req exchange.Orde
 		return exchange.OrderPage{}, okxInvalid(exchange.ProductPerp, "OrderHistory", err.Error())
 	}
 	return okxOrderHistory(ctx, client.sdk, exchange.ProductPerp, req, inst, func(instrument string) (decimal.Decimal, error) {
-		meta, err := client.okxPerpMeta(ctx, "OrderHistory", instrument)
+		meta, err := client.okxPerpMetaByNative(ctx, "OrderHistory", instrument)
 		return meta.contractValue, err
 	})
 }
@@ -70,11 +70,11 @@ func (client *okxPerpClient) FundingRate(ctx context.Context, req exchange.Fundi
 	if err := okxValidateSwapInstrument(req.Instrument); err != nil {
 		return exchange.FundingRate{}, okxInvalid(exchange.ProductPerp, "FundingRate", err.Error())
 	}
-	row, err := client.sdk.GetFundingRate(ctx, req.Instrument)
+	row, err := client.sdk.GetFundingRate(ctx, req.Instrument.Identity.NativeSymbol)
 	if err != nil {
 		return exchange.FundingRate{}, okxNormalizeErr(exchange.ProductPerp, "FundingRate", err)
 	}
-	if row.InstrumentID != req.Instrument {
+	if row.InstrumentID != req.Instrument.Identity.NativeSymbol {
 		return exchange.FundingRate{}, okxMalformed(exchange.ProductPerp, "FundingRate", "response instrument does not match request")
 	}
 	rate, err := okxDecimal(row.FundingRate)
@@ -94,7 +94,7 @@ func (client *okxPerpClient) FundingRate(ctx context.Context, req exchange.Fundi
 		return exchange.FundingRate{}, okxMalformed(exchange.ProductPerp, "FundingRate", "invalid next funding timestamp")
 	}
 	return exchange.FundingRate{
-		Instrument:      req.Instrument,
+		NativeSymbol:    req.Instrument.Identity.NativeSymbol,
 		Rate:            rate,
 		ObservedAt:      observed,
 		FundingTime:     fundingTime,
@@ -115,13 +115,13 @@ func (client *okxPerpClient) FundingRateHistory(ctx context.Context, req exchang
 	if req.Cursor != "" {
 		return exchange.FundingRatePage{}, okxInvalid(exchange.ProductPerp, "FundingRateHistory", "cursor is not supported")
 	}
-	rows, err := client.sdk.GetFundingRateHistory(ctx, req.Instrument, optionalMillis(req.Start), optionalMillis(req.End), req.Limit)
+	rows, err := client.sdk.GetFundingRateHistory(ctx, req.Instrument.Identity.NativeSymbol, optionalMillis(req.Start), optionalMillis(req.End), req.Limit)
 	if err != nil {
 		return exchange.FundingRatePage{}, okxNormalizeErr(exchange.ProductPerp, "FundingRateHistory", err)
 	}
 	rates := make([]exchange.FundingRate, 0, len(rows))
 	for _, row := range rows {
-		if row.InstId != req.Instrument {
+		if row.InstId != req.Instrument.Identity.NativeSymbol {
 			return exchange.FundingRatePage{}, okxMalformed(exchange.ProductPerp, "FundingRateHistory", "response instrument does not match request")
 		}
 		rate, err := okxDecimal(row.FundingRate)
@@ -132,7 +132,7 @@ func (client *okxPerpClient) FundingRateHistory(ctx context.Context, req exchang
 		if err != nil {
 			return exchange.FundingRatePage{}, okxMalformed(exchange.ProductPerp, "FundingRateHistory", "invalid funding timestamp")
 		}
-		rates = append(rates, exchange.FundingRate{Instrument: req.Instrument, Rate: rate, FundingTime: at})
+		rates = append(rates, exchange.FundingRate{NativeSymbol: req.Instrument.Identity.NativeSymbol, Rate: rate, FundingTime: at})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: historyPage("", req.Limit, req.Start, req.End)}, nil
 }
@@ -152,7 +152,7 @@ func (client *okxPerpClient) SetLeverage(ctx context.Context, req exchange.SetLe
 		return exchange.Leverage{}, err
 	}
 	rows, err := client.sdk.SetLeverage(ctx, okx.SetLeverage{
-		InstId:  req.Instrument,
+		InstId:  req.Instrument.Identity.NativeSymbol,
 		Lever:   req.Leverage,
 		MgnMode: marginMode,
 		PosSide: positionSide,
@@ -160,7 +160,7 @@ func (client *okxPerpClient) SetLeverage(ctx context.Context, req exchange.SetLe
 	if err != nil {
 		return exchange.Leverage{}, okxNormalizeErr(exchange.ProductPerp, "SetLeverage", err)
 	}
-	if len(rows) != 1 || rows[0].InstId != req.Instrument || rows[0].Lever <= 0 {
+	if len(rows) != 1 || rows[0].InstId != req.Instrument.Identity.NativeSymbol || rows[0].Lever <= 0 {
 		return exchange.Leverage{}, okxMalformed(exchange.ProductPerp, "SetLeverage", "response does not match request")
 	}
 	if rows[0].MgnMode != marginMode || !okxPositionSidesEquivalent(positionSide, rows[0].PosSide) {
@@ -176,7 +176,7 @@ func (client *okxPerpClient) SetLeverage(ctx context.Context, req exchange.SetLe
 			),
 		)
 	}
-	return exchange.Leverage{Instrument: req.Instrument, Effective: rows[0].Lever}, nil
+	return exchange.Leverage{NativeSymbol: req.Instrument.Identity.NativeSymbol, Effective: rows[0].Lever}, nil
 }
 
 func okxPositionSidesEquivalent(left, right string) bool {
@@ -188,9 +188,10 @@ func okxPositionSidesEquivalent(left, right string) bool {
 	return leftIsNet && rightIsNet
 }
 
-func (client *okxPerpClient) okxCurrentLeverageScope(ctx context.Context, instrument string) (string, string, error) {
+func (client *okxPerpClient) okxCurrentLeverageScope(ctx context.Context, instrument exchange.Instrument) (string, string, error) {
 	instType := okxSwapType
-	rows, err := client.sdk.GetPositions(ctx, &instType, &instrument)
+	native := instrument.Identity.NativeSymbol
+	rows, err := client.sdk.GetPositions(ctx, &instType, &native)
 	if err != nil {
 		return "", "", okxNormalizeErr(exchange.ProductPerp, "SetLeverage", err)
 	}
@@ -201,7 +202,7 @@ func (client *okxPerpClient) okxCurrentLeverageScope(ctx context.Context, instru
 		return "", "", okxInvalid(exchange.ProductPerp, "SetLeverage", "multiple position scopes are not portable")
 	}
 	row := rows[0]
-	if row.InstType != okxSwapType || row.InstId != instrument {
+	if row.InstType != okxSwapType || row.InstId != native {
 		return "", "", okxMalformed(exchange.ProductPerp, "SetLeverage", "position response does not match request")
 	}
 	switch row.MgnMode {
@@ -221,13 +222,13 @@ func okxPublicTrades(ctx context.Context, sdk *okx.Client, product exchange.Prod
 	if req.Limit < 0 {
 		return exchange.PublicTradePage{}, okxInvalid(product, "PublicTrades", "limit must be non-negative")
 	}
-	rows, err := sdk.GetTrades(ctx, req.Instrument, okxLimitPtr(req.Limit))
+	rows, err := sdk.GetTrades(ctx, req.Instrument.Identity.NativeSymbol, okxLimitPtr(req.Limit))
 	if err != nil {
 		return exchange.PublicTradePage{}, okxNormalizeErr(product, "PublicTrades", err)
 	}
 	trades := make([]exchange.PublicTrade, 0, len(rows))
 	for _, row := range rows {
-		if row.InstId != req.Instrument {
+		if row.InstId != req.Instrument.Identity.NativeSymbol {
 			return exchange.PublicTradePage{}, okxMalformed(product, "PublicTrades", "response instrument does not match request")
 		}
 		price, err := okxPositiveDecimal(row.Px)
@@ -247,7 +248,7 @@ func okxPublicTrades(ctx context.Context, sdk *okx.Client, product exchange.Prod
 			return exchange.PublicTradePage{}, okxMalformed(product, "PublicTrades", "invalid trade timestamp")
 		}
 		trades = append(trades, exchange.PublicTrade{
-			Instrument: row.InstId,
+			Instrument: req.Instrument,
 			TradeID:    row.TradeId,
 			Side:       side,
 			Price:      price,

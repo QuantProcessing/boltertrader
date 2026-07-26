@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,10 +35,10 @@ type streamCallbacks[T any] struct {
 }
 
 type publicWSBackend interface {
-	StartOrderBook(context.Context, string, streamCallbacks[exchange.BookEvent]) (func() error, error)
-	StartBBO(context.Context, string, streamCallbacks[exchange.BBOEvent]) (func() error, error)
-	StartPublicTrades(context.Context, string, streamCallbacks[exchange.PublicTradeEvent]) (func() error, error)
-	StartCandles(context.Context, string, string, streamCallbacks[exchange.CandleEvent]) (func() error, error)
+	StartOrderBook(context.Context, exchange.Instrument, streamCallbacks[exchange.BookEvent]) (func() error, error)
+	StartBBO(context.Context, exchange.Instrument, streamCallbacks[exchange.BBOEvent]) (func() error, error)
+	StartPublicTrades(context.Context, exchange.Instrument, streamCallbacks[exchange.PublicTradeEvent]) (func() error, error)
+	StartCandles(context.Context, exchange.Instrument, string, streamCallbacks[exchange.CandleEvent]) (func() error, error)
 	Close() error
 }
 
@@ -272,7 +271,7 @@ func (socket *publicWebSocket) WatchOrderBook(
 		ctx,
 		"WatchOrderBook",
 		"order-book",
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
 		request,
 		socket.books,
 		socket.backend.StartOrderBook,
@@ -291,7 +290,7 @@ func (socket *publicWebSocket) WatchBBO(
 		ctx,
 		"WatchBBO",
 		"bbo",
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
 		request,
 		socket.bbos,
 		socket.backend.StartBBO,
@@ -310,7 +309,7 @@ func (socket *publicWebSocket) WatchPublicTrades(
 		ctx,
 		"WatchPublicTrades",
 		"public-trades",
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
 		request,
 		socket.trades,
 		socket.backend.StartPublicTrades,
@@ -336,7 +335,7 @@ func (socket *publicWebSocket) WatchCandles(
 			"interval must be one of 1m, 5m, 15m, 30m, 1h, 4h, 12h, or 1d",
 		)
 	}
-	topicKey := request.Instrument + "\x00" + request.Interval
+	topicKey := websocketInstrumentKey(request.Instrument) + "\x00" + request.Interval
 	return watchWebSocketTopic(
 		socket,
 		ctx,
@@ -347,7 +346,7 @@ func (socket *publicWebSocket) WatchCandles(
 		socket.candles,
 		func(
 			startCtx context.Context,
-			instrument string,
+			instrument exchange.Instrument,
 			callbacks streamCallbacks[exchange.CandleEvent],
 		) (func() error, error) {
 			return socket.backend.StartCandles(startCtx, instrument, request.Interval, callbacks)
@@ -378,9 +377,11 @@ func (socket *publicWebSocket) validateWatch(
 	if err := ctx.Err(); err != nil {
 		return websocketContextError(socket.meta, operation, err)
 	}
-	if strings.TrimSpace(request.Instrument) == "" ||
-		strings.TrimSpace(request.Instrument) != request.Instrument {
-		return websocketError(socket.meta, operation, exchange.KindInvalidRequest, "instrument is required and must not have surrounding whitespace")
+	if err := request.Instrument.Validate(); err != nil {
+		return websocketError(socket.meta, operation, exchange.KindInvalidRequest, err.Error())
+	}
+	if request.Instrument.Identity.Venue != socket.meta.venue || request.Instrument.Identity.Product != socket.meta.product {
+		return websocketError(socket.meta, operation, exchange.KindInvalidRequest, "instrument venue/product does not match websocket")
 	}
 	if request.Options.Buffer < 0 || request.Options.Buffer > maxWebSocketBuffer {
 		return websocketError(socket.meta, operation, exchange.KindInvalidRequest, "buffer must be between 0 and 65536")
@@ -403,7 +404,7 @@ func watchWebSocketTopic[T any](
 	topicKey string,
 	request exchange.WatchRequest,
 	topics map[string]*websocketTopic[T],
-	start func(context.Context, string, streamCallbacks[T]) (func() error, error),
+	start func(context.Context, exchange.Instrument, streamCallbacks[T]) (func() error, error),
 ) (exchange.Subscription[T], error) {
 	buffer := request.Options.Buffer
 	if buffer == 0 {
@@ -414,7 +415,7 @@ func watchWebSocketTopic[T any](
 		socket.meta.venue,
 		socket.meta.product,
 		kind,
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
 		websocketSubscriptionSequence.Add(1),
 	)
 
@@ -513,6 +514,14 @@ func watchWebSocketTopic[T any](
 		}
 	}()
 	return subscription, nil
+}
+
+func websocketInstrumentKey(instrument exchange.Instrument) string {
+	identity := instrument.Identity
+	if identity.NativeID != "" {
+		return string(identity.Venue) + ":" + string(identity.Product) + ":id:" + identity.NativeID
+	}
+	return string(identity.Venue) + ":" + string(identity.Product) + ":symbol:" + identity.NativeSymbol
 }
 
 func removeWebSocketTopicSubscription[T any](

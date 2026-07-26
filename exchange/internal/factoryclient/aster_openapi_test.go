@@ -22,7 +22,7 @@ func TestAsterOrderBookNormalizesVenueDepthLimitAndTruncatesResult(t *testing.T)
 		t.Fatalf("venue depth limit = %d, want 5", venueLimit)
 	}
 	book, err := asterOrderBook(
-		"BTC-USDT",
+		asterTestInstrument(exchange.ProductSpot, "BTC-USDT"),
 		1,
 		[][]string{{"99", "1"}, {"98", "2"}},
 		[][]string{{"101", "1"}, {"102", "2"}},
@@ -40,12 +40,13 @@ func TestAsterOrderBookNormalizesVenueDepthLimitAndTruncatesResult(t *testing.T)
 
 func TestAsterInvalidEndpointReturnsInvalidConfigInsteadOfPanic(t *testing.T) {
 	spot := NewAsterSpot(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, Settings{Endpoint: "://bad"})
-	_, err := spot.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: "BTC-USDT"})
+	spotInstrument := asterTestInstrument(exchange.ProductSpot, "BTC-USDT")
+	_, err := spot.OpenOrders(context.Background(), exchange.OpenOrdersRequest{Instrument: &spotInstrument})
 	if !errors.Is(err, exchange.ErrInvalidConfig) {
 		t.Fatalf("Aster spot nil sdk error = %v, want ErrInvalidConfig", err)
 	}
 	perp := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, Settings{Endpoint: "://bad"})
-	_, err = perp.FundingRate(context.Background(), exchange.FundingRateRequest{Instrument: "BTC-USDT"})
+	_, err = perp.FundingRate(context.Background(), exchange.FundingRateRequest{Instrument: asterTestInstrument(exchange.ProductPerp, "BTC-USDT")})
 	if !errors.Is(err, exchange.ErrInvalidConfig) {
 		t.Fatalf("Aster perp nil sdk error = %v, want ErrInvalidConfig", err)
 	}

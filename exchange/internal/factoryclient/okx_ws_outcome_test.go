@@ -10,7 +10,8 @@ import (
 )
 
 func TestOKXCommandTransportAckDistinguishesWSOutcomeBoundaries(t *testing.T) {
-	ack, err := okxCommandTransportAck(exchange.ProductSpot, exchange.OrderOperationPlace, "BTC-USDT", "", "cid", okx.ErrWSPreSend)
+	instrument := okxPrivateTestInstrument(exchange.ProductSpot)
+	ack, err := okxCommandTransportAck(exchange.ProductSpot, exchange.OrderOperationPlace, instrument, "", "cid", okx.ErrWSPreSend)
 	if !errors.Is(err, exchange.ErrTransport) || ack.State != "" {
 		t.Fatalf("pre-send ack=%+v err=%v, want transport without ack", ack, err)
 	}
@@ -18,13 +19,13 @@ func TestOKXCommandTransportAckDistinguishesWSOutcomeBoundaries(t *testing.T) {
 		t.Fatalf("pre-send error leaked unsafe detail: %v", err)
 	}
 
-	ack, err = okxCommandTransportAck(exchange.ProductSpot, exchange.OrderOperationCancel, "BTC-USDT", "1", "", okx.ErrWSOutcomeUnknown)
+	ack, err = okxCommandTransportAck(exchange.ProductSpot, exchange.OrderOperationCancel, instrument, "1", "", okx.ErrWSOutcomeUnknown)
 	if !errors.Is(err, exchange.ErrAmbiguousOutcome) || ack.State != exchange.AckAmbiguous || ack.OrderID != "1" {
 		t.Fatalf("post-send ack=%+v err=%v, want ambiguous ack", ack, err)
 	}
 
 	for _, op := range []exchange.OrderOperation{exchange.OrderOperationPlace, exchange.OrderOperationCancel} {
-		ack, err = okxCommandTransportAck(exchange.ProductSpot, op, "BTC-USDT", "1", "cid", okx.ErrWSMalformedResponse)
+		ack, err = okxCommandTransportAck(exchange.ProductSpot, op, instrument, "1", "cid", okx.ErrWSMalformedResponse)
 		if !errors.Is(err, exchange.ErrMalformedResponse) || ack.State != "" {
 			t.Fatalf("malformed %s ack=%+v err=%v, want malformed without ack", op, ack, err)
 		}
@@ -32,7 +33,8 @@ func TestOKXCommandTransportAckDistinguishesWSOutcomeBoundaries(t *testing.T) {
 }
 
 func TestOKXCommandTransportAckMapsWSAPIErrorSafely(t *testing.T) {
-	ack, err := okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationPlace, "BTC-USDT-SWAP", "", "cid", &okx.APIError{
+	instrument := okxPrivateTestInstrument(exchange.ProductPerp)
+	ack, err := okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationPlace, instrument, "", "cid", &okx.APIError{
 		Code:    "51000",
 		Message: "secret venue rejection detail",
 	})
@@ -43,7 +45,7 @@ func TestOKXCommandTransportAckMapsWSAPIErrorSafely(t *testing.T) {
 		t.Fatalf("unsafe venue detail leaked: ack=%+v err=%v", ack, err)
 	}
 
-	ack, err = okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationCancel, "BTC-USDT-SWAP", "1", "", &okx.APIError{
+	ack, err = okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationCancel, instrument, "1", "", &okx.APIError{
 		Code:    "50113",
 		Message: "secret auth detail",
 	})

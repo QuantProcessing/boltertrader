@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,18 +30,24 @@ func TestBybitWebSocketExercisesEveryExposedMethod(t *testing.T) {
 		HTTPClient:        &http.Client{Transport: transport},
 	}
 
-	spot := NewBybitSpot("key", "secret", settings)
-	exerciseSpotWebSocketEveryMethod(t, spot.WebSocket(), "BTC-USDT", "11")
-	exerciseBybitSpotStreams(t, spot.WebSocket())
+	spotSettings := settings
+	spotSettings.InstrumentCatalog, spotSettings.CatalogScope = bybitBitgetIdentityCatalog(t, exchange.VenueBybit, exchange.ProductSpot)
+	spot := NewBybitSpot("key", "secret", spotSettings)
+	spotInstrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT")
+	exerciseSpotWebSocketEveryMethod(t, spot.WebSocket(), spotInstrument, "11")
+	exerciseBybitSpotStreams(t, spot.WebSocket(), spotInstrument)
 	assertFactoryStringRedacts(t, spot, `exchange/factory.Client{venue:"bybit", product:"spot", credentials:redacted}`, "key", "secret")
 
-	usdtPerp := NewBybitLinearPerp("key", "secret", "USDT", settings)
-	exercisePerpWebSocketEveryMethod(t, usdtPerp.WebSocket(), "BTC-USDT", "21")
-	exerciseBybitPerpStreams(t, usdtPerp.WebSocket())
+	usdtSettings := settings
+	usdtSettings.InstrumentCatalog, usdtSettings.CatalogScope = bybitBitgetIdentityCatalog(t, exchange.VenueBybit, exchange.ProductPerp)
+	usdtPerp := NewBybitLinearPerp("key", "secret", "USDT", usdtSettings)
+	usdtInstrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
+	exercisePerpWebSocketEveryMethod(t, usdtPerp.WebSocket(), usdtInstrument, "21")
+	exerciseBybitPerpStreams(t, usdtPerp.WebSocket(), usdtInstrument)
 	assertFactoryStringRedacts(t, usdtPerp, `exchange/factory.Client{venue:"bybit", product:"perp", credentials:redacted}`, "key", "secret")
 
 	usdcPerp := NewBybitLinearPerp("key", "secret", "USDC", settings)
-	exercisePerpWebSocketEveryMethod(t, usdcPerp.WebSocket(), "BTC-USDC", "31")
+	exercisePerpWebSocketEveryMethod(t, usdcPerp.WebSocket(), bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDC"), "31")
 	assertFactoryStringRedacts(t, usdcPerp, `exchange/factory.Client{venue:"bybit", product:"perp", credentials:redacted}`, "key", "secret")
 
 	if got := transport.calls.Load(); got != 0 {
@@ -56,7 +63,7 @@ func TestBybitDemoWebSocketOrderCommandsUseRESTBridge(t *testing.T) {
 	})
 
 	placed, err := client.WebSocket().PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC-USDT",
+		Instrument:    bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT"),
 		ClientOrderID: "401",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -72,7 +79,7 @@ func TestBybitDemoWebSocketOrderCommandsUseRESTBridge(t *testing.T) {
 	}
 
 	canceled, err := client.WebSocket().CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT"),
 		OrderID:    placed.OrderID,
 	})
 	if err != nil {
@@ -83,7 +90,33 @@ func TestBybitDemoWebSocketOrderCommandsUseRESTBridge(t *testing.T) {
 	}
 }
 
-func exerciseSpotWebSocketEveryMethod(t *testing.T, ws exchange.SpotWebSocket, instrument, orderID string) {
+func TestBybitPublicWebSocketSubscriptionCloseClosesDedicatedSDKClient(t *testing.T) {
+	wsURL, waitClosed, closeServer := newBybitLifecycleWSServer(t)
+	defer closeServer()
+	settings := Settings{
+		Endpoint:          "https://openapi.invalid",
+		WebSocketEndpoint: wsURL,
+		Environment:       "demo",
+		HTTPClient:        &http.Client{Transport: bybitOpenAPIRouter{}},
+	}
+	client := NewBybitSpot("key", "secret", settings)
+	instrument := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT")
+
+	subscription, err := client.WebSocket().WatchOrderBook(context.Background(), exchange.WatchRequest{Instrument: instrument})
+	if err != nil {
+		t.Fatalf("WatchOrderBook: %v", err)
+	}
+	assertReceive(t, subscription.Events(), "book")
+	if err := subscription.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	if err := subscription.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	waitClosed("Bybit public socket")
+}
+
+func exerciseSpotWebSocketEveryMethod(t *testing.T, ws exchange.SpotWebSocket, instrument exchange.Instrument, orderID string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := ws.PlaceOrder(ctx, exchange.PlaceOrderRequest{
@@ -131,7 +164,7 @@ func exerciseSpotWebSocketEveryMethod(t *testing.T, ws exchange.SpotWebSocket, i
 	})
 }
 
-func exercisePerpWebSocketEveryMethod(t *testing.T, ws exchange.PerpWebSocket, instrument, orderID string) {
+func exercisePerpWebSocketEveryMethod(t *testing.T, ws exchange.PerpWebSocket, instrument exchange.Instrument, orderID string) {
 	t.Helper()
 	exerciseSpotWebSocketEveryMethod(t, ws, instrument, orderID)
 	canceled, cancel := context.WithCancel(context.Background())
@@ -158,10 +191,10 @@ func assertCanceledWS(t *testing.T, operation string, run func() error) {
 	}
 }
 
-func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
+func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket, instrument exchange.Instrument) {
 	t.Helper()
 	publicCloses := bybitScriptedWSClosedConnections(t)
-	book, err := ws.WatchOrderBook(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	book, err := ws.WatchOrderBook(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchOrderBook: %v", err)
 	}
@@ -171,7 +204,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	publicCloses.expectNext("book")
 
-	bbo, err := ws.WatchBBO(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	bbo, err := ws.WatchBBO(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchBBO: %v", err)
 	}
@@ -179,7 +212,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	_ = bbo.Close()
 	publicCloses.expectNext("bbo")
 
-	trades, err := ws.WatchPublicTrades(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	trades, err := ws.WatchPublicTrades(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchPublicTrades: %v", err)
 	}
@@ -187,7 +220,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	_ = trades.Close()
 	publicCloses.expectNext("public trades")
 
-	candles, err := ws.WatchCandles(context.Background(), exchange.WatchCandlesRequest{Instrument: "BTC-USDT", Interval: "1m"})
+	candles, err := ws.WatchCandles(context.Background(), exchange.WatchCandlesRequest{Instrument: instrument, Interval: "1m"})
 	if err != nil {
 		t.Fatalf("WatchCandles: %v", err)
 	}
@@ -195,14 +228,14 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	_ = candles.Close()
 	publicCloses.expectNext("candles")
 
-	orders, err := ws.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	orders, err := ws.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchOrders: %v", err)
 	}
 	assertReceive(t, orders.Events(), "orders")
 	_ = orders.Close()
 
-	fills, err := ws.WatchFills(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	fills, err := ws.WatchFills(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchFills: %v", err)
 	}
@@ -217,17 +250,17 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	_ = balances.Close()
 }
 
-func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket) {
+func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket, instrument exchange.Instrument) {
 	t.Helper()
 	publicCloses := bybitScriptedWSClosedConnections(t)
-	positions, err := ws.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	positions, err := ws.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchPositions: %v", err)
 	}
 	assertReceive(t, positions.Events(), "positions")
 	_ = positions.Close()
 
-	mark, err := ws.WatchMarkPrice(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	mark, err := ws.WatchMarkPrice(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchMarkPrice: %v", err)
 	}
@@ -235,7 +268,7 @@ func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket) {
 	_ = mark.Close()
 	publicCloses.expectNext("mark")
 
-	funding, err := ws.WatchFundingRate(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
+	funding, err := ws.WatchFundingRate(context.Background(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchFundingRate: %v", err)
 	}
@@ -273,17 +306,11 @@ func bybitScriptedWSClosedConnections(t *testing.T) *scriptedWSConnectionTracker
 }
 
 func (tracker *scriptedWSConnectionTracker) expectNext(label string) {
-	deadline := time.After(3 * time.Second)
-	want := tracker.count.Load() + 1
-	for {
-		select {
-		case <-tracker.closed:
-			if tracker.count.Load() == want {
-				return
-			}
-		case <-deadline:
-			panic(fmt.Sprintf("timeout waiting for %s websocket close; closed=%d want=%d", label, tracker.count.Load(), want))
-		}
+	select {
+	case <-tracker.closed:
+		return
+	case <-time.After(3 * time.Second):
+		panic(fmt.Sprintf("timeout waiting for %s websocket close; closed=%d", label, tracker.count.Load()))
 	}
 }
 
@@ -298,10 +325,13 @@ func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
+		publicConnection := false
 		defer func() {
 			_ = conn.Close()
-			tracker.count.Add(1)
-			tracker.closed <- struct{}{}
+			if publicConnection {
+				tracker.count.Add(1)
+				tracker.closed <- struct{}{}
+			}
 		}()
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
@@ -312,7 +342,8 @@ func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 			t.Errorf("decode first request: %v", err)
 			return
 		}
-		if req.Op == "auth" {
+		authenticated := req.Op == "auth"
+		if authenticated {
 			_ = conn.WriteJSON(map[string]any{"op": "auth", "success": true, "retCode": 0})
 			_, payload, err = conn.ReadMessage()
 			if err != nil {
@@ -349,6 +380,7 @@ func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 			return
 		}
 		if req.Op == "subscribe" {
+			publicConnection = !authenticated
 			_ = conn.WriteJSON(map[string]any{"op": "subscribe", "req_id": req.ReqID, "success": true})
 		}
 		if len(req.Args) == 0 {
@@ -369,6 +401,67 @@ func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 		server.Close()
 		bybitScriptedWSConnections.Store(nil)
 	}
+}
+
+func newBybitLifecycleWSServer(t *testing.T) (string, func(string), func()) {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	closed := make(chan struct{})
+	var closeOnce sync.Once
+	var mu sync.Mutex
+	var conns []*websocket.Conn
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		mu.Lock()
+		conns = append(conns, conn)
+		mu.Unlock()
+		defer conn.Close()
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) || strings.Contains(err.Error(), "close") {
+					closeOnce.Do(func() { close(closed) })
+				}
+				return
+			}
+			var req bybitScriptedWSRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			if req.Op != "subscribe" || len(req.Args) == 0 {
+				continue
+			}
+			var topic string
+			if err := json.Unmarshal(req.Args[0], &topic); err != nil {
+				t.Errorf("decode topic: %v", err)
+				return
+			}
+			_ = conn.WriteJSON(map[string]any{"op": "subscribe", "req_id": req.ReqID, "success": true})
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(bybitWSEvent(topic)))
+		}
+	}))
+	waitClosed := func(label string) {
+		t.Helper()
+		select {
+		case <-closed:
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("%s did not close after subscription stop", label)
+		}
+	}
+	closeServer := func() {
+		mu.Lock()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+		server.Close()
+	}
+	return "ws" + strings.TrimPrefix(server.URL, "http"), waitClosed, closeServer
 }
 
 type bybitScriptedWSRequest struct {

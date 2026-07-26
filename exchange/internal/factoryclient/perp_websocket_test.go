@@ -20,7 +20,7 @@ type fakePerpWSBackend struct {
 
 func (backend *fakePerpWSBackend) StartReference(
 	_ context.Context,
-	_ string,
+	_ exchange.Instrument,
 	callbacks streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
 	backend.referenceMu.Lock()
@@ -41,14 +41,15 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 		clientMeta{venue: exchange.VenueLighter, product: exchange.ProductPerp},
 		backend,
 	)
+	instrument := websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "ETH")
 	mark, err := socket.WatchMarkPrice(context.Background(), exchange.WatchRequest{
-		Instrument: "ETH",
+		Instrument: instrument,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	funding, err := socket.WatchFundingRate(context.Background(), exchange.WatchRequest{
-		Instrument: "ETH",
+		Instrument: instrument,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +61,7 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	backend.referenceCallbacks.Event(perpReferenceEvent{
 		MarkPrice: exchange.MarkPriceEvent{
-			Instrument: "ETH",
+			Instrument: instrument,
 			Price:      decimal.RequireFromString("3000.25"),
 			Time:       at,
 		},
@@ -77,7 +78,7 @@ func TestPerpWebSocketSharesOneNativeReferenceStream(t *testing.T) {
 
 	backend.referenceCallbacks.Event(perpReferenceEvent{
 		FundingRate: exchange.FundingRateEvent{
-			Instrument:  "ETH",
+			Instrument:  instrument,
 			Rate:        decimal.RequireFromString("0.0001"),
 			EffectiveAt: at,
 		},
@@ -115,7 +116,7 @@ func TestPerpWebSocketCloseCancelsPendingReferenceStartupWithoutDeadlock(t *test
 	watchResult := make(chan error, 1)
 	go func() {
 		_, err := socket.WatchMarkPrice(context.Background(), exchange.WatchRequest{
-			Instrument: "ETH",
+			Instrument: websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "ETH"),
 		})
 		watchResult <- err
 	}()

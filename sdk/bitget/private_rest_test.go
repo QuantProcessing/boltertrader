@@ -566,6 +566,27 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 	}
 }
 
+func TestClient_GetFillsOmitsEmptySymbolQuery(t *testing.T) {
+	var seenQuery string
+	client := NewClient().
+		WithCredentials("key", "secret", "passphrase").
+		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			seenQuery = req.URL.RawQuery
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{"list":[],"cursor":""}}`)),
+				Header:     make(http.Header),
+			}, nil
+		})})
+
+	if _, err := client.GetFills(context.Background(), GetFillsRequest{Category: bitgetPerpCategory}); err != nil {
+		t.Fatalf("GetFills: %v", err)
+	}
+	if strings.Contains(seenQuery, "symbol=") {
+		t.Fatalf("empty symbol should be omitted from query, got %s", seenQuery)
+	}
+}
+
 func TestClient_GetFillsBoundedConsumesCursorWithinOverallLimit(t *testing.T) {
 	calls := 0
 	client := NewClient().

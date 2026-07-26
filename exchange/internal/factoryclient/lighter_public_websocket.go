@@ -119,7 +119,7 @@ func newLighterWSBackend(
 
 func (backend *lighterWSBackend) StartOrderBook(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BookEvent],
 ) (func() error, error) {
 	const operation = "WatchOrderBook"
@@ -260,7 +260,7 @@ func (backend *lighterWSBackend) StartOrderBook(
 
 func (backend *lighterWSBackend) StartBBO(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.BBOEvent],
 ) (func() error, error) {
 	const operation = "WatchBBO"
@@ -311,7 +311,7 @@ func (backend *lighterWSBackend) StartBBO(
 
 func (backend *lighterWSBackend) StartPublicTrades(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[exchange.PublicTradeEvent],
 ) (func() error, error) {
 	const operation = "WatchPublicTrades"
@@ -364,7 +364,7 @@ func (backend *lighterWSBackend) StartPublicTrades(
 
 func (backend *lighterWSBackend) StartCandles(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	interval string,
 	callbacks streamCallbacks[exchange.CandleEvent],
 ) (func() error, error) {
@@ -385,8 +385,6 @@ func (backend *lighterWSBackend) StartCandles(
 	if err := backend.ensureConnected(operation); err != nil {
 		return nil, err
 	}
-	ready := make(chan struct{})
-	var readyOnce sync.Once
 	var stopped atomic.Bool
 	lifecycle, recoveredOnValid := lighterSimpleLifecycle(callbacks)
 	handler := func(payload []byte) {
@@ -402,7 +400,6 @@ func (backend *lighterWSBackend) StartCandles(
 			emitLighterEvent(callbacks.Event, event)
 		}
 		recoveredOnValid()
-		readyOnce.Do(func() { close(ready) })
 	}
 	key := lighterWSKey("candle/"+interval, meta.marketID)
 	backend.addLifecycle(key, lifecycle)
@@ -419,15 +416,12 @@ func (backend *lighterWSBackend) StartCandles(
 		}
 		return nil
 	})
-	if err := backend.waitFirst(ctx, operation, ready, stop); err != nil {
-		return nil, err
-	}
 	return stop, nil
 }
 
 func (backend *lighterWSBackend) StartReference(
 	ctx context.Context,
-	instrument string,
+	instrument exchange.Instrument,
 	callbacks streamCallbacks[perpReferenceEvent],
 ) (func() error, error) {
 	const operation = "WatchPerpReference"
@@ -479,7 +473,7 @@ func (backend *lighterWSBackend) StartReference(
 func (backend *lighterWSBackend) resolveMeta(
 	ctx context.Context,
 	operation string,
-	instrument string,
+	instrument exchange.Instrument,
 ) (lighterMarketMeta, error) {
 	return lighterMeta(ctx, backend.rest, backend.state, operation, backend.product, backend.marketType, instrument)
 }
@@ -637,7 +631,7 @@ func lighterBookEvent(payload []byte, meta lighterMarketMeta) (exchange.BookEven
 		return exchange.BookEvent{}, errors.New("invalid order-book timestamp")
 	}
 	return exchange.BookEvent{
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		Sequence:   strconv.FormatInt(row.OrderBook.Nonce, 10),
 		Previous:   strconv.FormatInt(row.OrderBook.BeginNonce, 10),
 		Bids:       bids,
@@ -667,7 +661,7 @@ func lighterBBOEvent(payload []byte, meta lighterMarketMeta) (exchange.BBOEvent,
 		return exchange.BBOEvent{}, errors.New("invalid ticker timestamp")
 	}
 	return exchange.BBOEvent{
-		Instrument: meta.instrument.Symbol,
+		Instrument: meta.instrument,
 		Bid:        bid,
 		Ask:        ask,
 		Time:       lighterFlexibleUnix(timestamp),
@@ -714,7 +708,7 @@ func lighterPublicTradeEvents(payload []byte, meta lighterMarketMeta) ([]exchang
 			side = exchange.SideBuy
 		}
 		events = append(events, exchange.PublicTradeEvent{
-			Instrument: meta.instrument.Symbol,
+			Instrument: meta.instrument,
 			TradeID:    tradeID,
 			Side:       side,
 			Price:      price,
@@ -753,13 +747,13 @@ func lighterReferenceEvent(payload []byte, meta lighterMarketMeta) (perpReferenc
 	observedAt := lighterFlexibleUnix(row.Timestamp)
 	return perpReferenceEvent{
 		MarkPrice: exchange.MarkPriceEvent{
-			Instrument: meta.instrument.Symbol,
+			Instrument: meta.instrument,
 			Price:      mark,
 			Time:       observedAt,
 		},
 		MarkValid: true,
 		FundingRate: exchange.FundingRateEvent{
-			Instrument:  meta.instrument.Symbol,
+			Instrument:  meta.instrument,
 			Rate:        funding,
 			EffectiveAt: observedAt,
 		},
@@ -824,7 +818,7 @@ func lighterCandleEvents(
 		openTime := time.UnixMilli(candle.OpenTime).UTC()
 		closeTime := openTime.Add(duration)
 		events = append(events, exchange.CandleEvent{
-			Instrument: meta.instrument.Symbol,
+			Instrument: meta.instrument,
 			Interval:   interval,
 			Candle: exchange.Candle{
 				OpenTime:  openTime,

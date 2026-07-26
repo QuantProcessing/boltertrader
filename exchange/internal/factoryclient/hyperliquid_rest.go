@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -50,7 +49,7 @@ func (client *hyperliquidSpotClient) Instruments(ctx context.Context) ([]exchang
 	for _, meta := range metas {
 		out = append(out, meta.instrument)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity.Symbol < out[j].Identity.Symbol })
 	return out, nil
 }
 
@@ -134,7 +133,7 @@ func (client *hyperliquidSpotClient) PlaceOrder(ctx context.Context, req exchang
 	if err != nil {
 		return hlMutationErr(exchange.ProductSpot, exchange.OrderOperationPlace, req.Instrument, "", req.ClientOrderID, err, tracker)
 	}
-	ack, err := hlSpotPlaceAck(meta.instrument.Symbol, nativeClientID, status)
+	ack, err := hlSpotPlaceAck(meta.instrument, nativeClientID, status)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -180,12 +179,12 @@ func (client *hyperliquidSpotClient) OpenOrders(ctx context.Context, req exchang
 	}
 	orders := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
+		if requested != nil && row.Coin != requested.nativeCoin {
+			continue
+		}
 		meta, ok := metas[row.Coin]
 		if !ok || hlRejectCoin(row.Coin) {
 			return exchange.OrderPage{}, hlMalformed(exchange.ProductSpot, "OpenOrders", "mixed or unknown product row")
-		}
-		if requested != nil && row.Coin != requested.nativeCoin {
-			continue
 		}
 		order, err := hlOrder(meta, row.Coin, row.Side, row.LimitPx, row.Sz, row.OrigSz, row.Oid, row.Cliod, row.Timestamp, row.Timestamp, row.OrderType, row.Tif, row.ReduceOnly, row.IsTrigger)
 		if err != nil {
@@ -277,7 +276,7 @@ func (client *hyperliquidPerpClient) Instruments(ctx context.Context) ([]exchang
 	for _, meta := range metas {
 		out = append(out, meta.instrument)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity.Symbol < out[j].Identity.Symbol })
 	return out, nil
 }
 
@@ -363,7 +362,7 @@ func (client *hyperliquidPerpClient) PlaceOrder(ctx context.Context, req exchang
 	if err != nil {
 		return hlMutationErr(exchange.ProductPerp, exchange.OrderOperationPlace, req.Instrument, "", req.ClientOrderID, err, tracker)
 	}
-	ack, err := hlPerpPlaceAck(meta.instrument.Symbol, nativeClientID, status)
+	ack, err := hlPerpPlaceAck(meta.instrument, nativeClientID, status)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -409,12 +408,12 @@ func (client *hyperliquidPerpClient) OpenOrders(ctx context.Context, req exchang
 	}
 	orders := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
+		if requested != nil && row.Coin != requested.nativeCoin {
+			continue
+		}
 		meta, ok := metas[row.Coin]
 		if !ok || hlRejectCoin(row.Coin) {
 			return exchange.OrderPage{}, hlMalformed(exchange.ProductPerp, "OpenOrders", "mixed or unknown product row")
-		}
-		if requested != nil && row.Coin != requested.nativeCoin {
-			continue
 		}
 		order, err := hlOrder(meta, row.Coin, row.Side, row.LimitPx, row.Sz, row.OrigSz, row.Oid, row.Cliod, row.Timestamp, row.Timestamp, row.OrderType, row.Tif, row.ReduceOnly, row.IsTrigger)
 		if err != nil {
@@ -541,14 +540,14 @@ func (client *hyperliquidPerpClient) Positions(ctx context.Context, req exchange
 	positions := make([]exchange.Position, 0, len(state.AssetPositions))
 	for _, row := range state.AssetPositions {
 		coin := row.Position.Coin
+		if requested != nil && coin != requested.nativeCoin {
+			continue
+		}
 		meta, ok := metas[coin]
 		if !ok || hlRejectCoin(coin) {
 			return nil, hlMalformed(exchange.ProductPerp, "Positions", "mixed or unknown product row")
 		}
-		if requested != nil && coin != requested.nativeCoin {
-			continue
-		}
-		pos, err := hlPosition(meta, row.Position.Szi, row.Position.EntryPx, row.Position.UnrealizedPnl, row.Position.LiquidationPx, row.Position.MarginUsed, row.Position.Leverage.Value)
+		pos, err := hlPosition(meta, row.Position.Szi, row.Position.PositionValue, row.Position.EntryPx, row.Position.UnrealizedPnl, row.Position.LiquidationPx, row.Position.MarginUsed, row.Position.Leverage.Value)
 		if err != nil {
 			return nil, hlMalformed(exchange.ProductPerp, "Positions", err.Error())
 		}
@@ -560,96 +559,62 @@ func (client *hyperliquidPerpClient) Positions(ctx context.Context, req exchange
 }
 
 func (client *hyperliquidSpotClient) spotMetas(ctx context.Context, operation string) (map[string]hyperliquidMarketMeta, error) {
-	return hlCachedMetas(ctx, operation, exchange.ProductSpot, &client.cacheMu, &client.loading, &client.metadata, func(loadCtx context.Context) (map[string]hyperliquidMarketMeta, error) {
-		requestCtx, tracker := hyperliquidWithRequestTracker(loadCtx)
-		meta, err := client.sdk.GetSpotMeta(requestCtx)
-		if err != nil {
-			return nil, hlNormalizeQueryErr(exchange.ProductSpot, operation, err, tracker)
-		}
-		return hlSpotMetas(operation, meta)
-	})
+	return hlCatalogMetas(ctx, client.meta, operation, exchange.ProductSpot)
 }
 
 func (client *hyperliquidPerpClient) perpMetas(ctx context.Context, operation string) (map[string]hyperliquidMarketMeta, error) {
-	return hlCachedMetas(ctx, operation, exchange.ProductPerp, &client.cacheMu, &client.loading, &client.metadata, func(loadCtx context.Context) (map[string]hyperliquidMarketMeta, error) {
-		fullCtx, fullTracker := hyperliquidWithRequestTracker(loadCtx)
-		full, err := client.sdk.GetMetaAndAssetCtxs(fullCtx)
-		if err != nil {
-			return nil, hlNormalizeQueryErr(exchange.ProductPerp, operation, err, fullTracker)
-		}
-		prepCtx, prepTracker := hyperliquidWithRequestTracker(loadCtx)
-		prep, err := client.sdk.GetPrepMeta(prepCtx)
-		if err != nil {
-			return nil, hlNormalizeQueryErr(exchange.ProductPerp, operation, err, prepTracker)
-		}
-		return hlPerpMetas(operation, full, prep)
-	})
+	return hlCatalogMetas(ctx, client.meta, operation, exchange.ProductPerp)
 }
 
-func hlCachedMetas(ctx context.Context, operation string, product exchange.Product, mu *sync.Mutex, loading *chan struct{}, cache *map[string]hyperliquidMarketMeta, load func(context.Context) (map[string]hyperliquidMarketMeta, error)) (map[string]hyperliquidMarketMeta, error) {
-	for {
-		mu.Lock()
-		if *cache != nil {
-			out := *cache
-			mu.Unlock()
-			return out, nil
-		}
-		if *loading == nil {
-			ch := make(chan struct{})
-			*loading = ch
-			mu.Unlock()
-			metas, err := load(ctx)
-			mu.Lock()
-			if err == nil {
-				*cache = metas
-			}
-			if *loading == ch {
-				*loading = nil
-				close(ch)
-			}
-			mu.Unlock()
-			if err != nil {
-				return nil, err
-			}
-			return metas, nil
-		}
-		ch := *loading
-		mu.Unlock()
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return nil, hlContextErr(product, operation, ctx.Err())
-		}
+func hlCatalogMetas(ctx context.Context, meta clientMeta, operation string, product exchange.Product) (map[string]hyperliquidMarketMeta, error) {
+	if meta.catalog == nil || meta.catalogScope == (exchange.CatalogScope{}) {
+		return nil, meta.catalogMetadataResolution(operation, "instrument catalog is not configured")
 	}
+	snapshot, err := meta.catalog.Snapshot(ctx, meta.catalogScope)
+	if err != nil {
+		return nil, withExchangeOperation(err, operation)
+	}
+	out := make(map[string]hyperliquidMarketMeta, len(snapshot.Instruments))
+	for _, instrument := range snapshot.Instruments {
+		market, err := hlMetaFromInstrument(product, operation, instrument)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := out[market.nativeCoin]; exists {
+			return nil, hlMalformed(product, operation, "duplicate Hyperliquid native coin in catalog")
+		}
+		out[market.nativeCoin] = market
+	}
+	return out, nil
 }
 
-func (client *hyperliquidSpotClient) spotMeta(ctx context.Context, operation, instrument string) (hyperliquidMarketMeta, error) {
-	metas, _, err := client.spotMetasForOptional(ctx, operation, instrument)
+func (client *hyperliquidSpotClient) spotMeta(ctx context.Context, operation string, instrument exchange.Instrument) (hyperliquidMarketMeta, error) {
+	metas, _, err := client.spotMetasForOptional(ctx, operation, &instrument)
 	if err != nil {
 		return hyperliquidMarketMeta{}, err
 	}
 	for _, meta := range metas {
-		if meta.instrument.Symbol == instrument {
+		if hlSameInstrument(meta.instrument, instrument) {
 			return meta, nil
 		}
 	}
 	return hyperliquidMarketMeta{}, hlInvalid(exchange.ProductSpot, operation, "instrument is not present in Hyperliquid spot metadata")
 }
 
-func (client *hyperliquidPerpClient) perpMeta(ctx context.Context, operation, instrument string) (hyperliquidMarketMeta, error) {
-	metas, _, err := client.perpMetasForOptional(ctx, operation, instrument)
+func (client *hyperliquidPerpClient) perpMeta(ctx context.Context, operation string, instrument exchange.Instrument) (hyperliquidMarketMeta, error) {
+	metas, _, err := client.perpMetasForOptional(ctx, operation, &instrument)
 	if err != nil {
 		return hyperliquidMarketMeta{}, err
 	}
 	for _, meta := range metas {
-		if meta.instrument.Symbol == instrument {
+		if hlSameInstrument(meta.instrument, instrument) {
 			return meta, nil
 		}
 	}
 	return hyperliquidMarketMeta{}, hlInvalid(exchange.ProductPerp, operation, "instrument is not present in Hyperliquid perp metadata")
 }
 
-func (client *hyperliquidSpotClient) spotMetasForOptional(ctx context.Context, operation, instrument string) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
+func (client *hyperliquidSpotClient) spotMetasForOptional(ctx context.Context, operation string, instrument *exchange.Instrument) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
 	metas, err := client.spotMetas(ctx, operation)
 	if err != nil {
 		return nil, nil, err
@@ -657,7 +622,7 @@ func (client *hyperliquidSpotClient) spotMetasForOptional(ctx context.Context, o
 	return hlOptionalMeta(exchange.ProductSpot, operation, metas, instrument)
 }
 
-func (client *hyperliquidPerpClient) perpMetasForOptional(ctx context.Context, operation, instrument string) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
+func (client *hyperliquidPerpClient) perpMetasForOptional(ctx context.Context, operation string, instrument *exchange.Instrument) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
 	metas, err := client.perpMetas(ctx, operation)
 	if err != nil {
 		return nil, nil, err
@@ -665,17 +630,26 @@ func (client *hyperliquidPerpClient) perpMetasForOptional(ctx context.Context, o
 	return hlOptionalMeta(exchange.ProductPerp, operation, metas, instrument)
 }
 
-func hlOptionalMeta(product exchange.Product, operation string, metas map[string]hyperliquidMarketMeta, instrument string) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
-	if strings.TrimSpace(instrument) == "" {
+func hlOptionalMeta(product exchange.Product, operation string, metas map[string]hyperliquidMarketMeta, instrument *exchange.Instrument) (map[string]hyperliquidMarketMeta, *hyperliquidMarketMeta, error) {
+	if instrument == nil {
 		return metas, nil, nil
 	}
 	for _, meta := range metas {
-		if meta.instrument.Symbol == instrument {
+		if hlSameInstrument(meta.instrument, *instrument) {
 			copyMeta := meta
 			return metas, &copyMeta, nil
 		}
 	}
 	return nil, nil, hlInvalid(product, operation, "instrument is not present in Hyperliquid metadata")
+}
+
+func hlSameInstrument(expected, got exchange.Instrument) bool {
+	return expected.Identity.Venue == got.Identity.Venue &&
+		expected.Identity.Product == got.Identity.Product &&
+		expected.Identity.Symbol == got.Identity.Symbol &&
+		expected.Identity.NativeSymbol == got.Identity.NativeSymbol &&
+		expected.Identity.NativeID == got.Identity.NativeID &&
+		expected.Identity.SettleAsset == got.Identity.SettleAsset
 }
 
 func (client *hyperliquidSpotClient) spotCancelMeta(ctx context.Context, req exchange.CancelOrderRequest) (hyperliquidMarketMeta, int64, error) {
@@ -710,10 +684,15 @@ func hlSpotMetas(operation string, meta *hyperliquidspot.SpotMeta) (map[string]h
 		name      string
 		decimals  int
 		canonical bool
+		portable  bool
 	}{}
 	for _, token := range meta.Tokens {
 		if hlRejectCoin(token.Name) || token.Index < 0 || int64(token.Index) >= hyperliquidOutcomeAssetBase || token.SzDecimals < 0 || token.SzDecimals > 8 {
 			return nil, hlMalformed(exchange.ProductSpot, operation, "malformed token metadata")
+		}
+		portable := strings.TrimSpace(token.Name) == token.Name
+		if !portable && token.IsCanonical {
+			return nil, hlMalformed(exchange.ProductSpot, operation, "canonical token name is not portable")
 		}
 		if _, exists := tokens[token.Index]; exists {
 			return nil, hlMalformed(exchange.ProductSpot, operation, "duplicate token index")
@@ -722,7 +701,8 @@ func hlSpotMetas(operation string, meta *hyperliquidspot.SpotMeta) (map[string]h
 			name      string
 			decimals  int
 			canonical bool
-		}{token.Name, token.SzDecimals, token.IsCanonical}
+			portable  bool
+		}{token.Name, token.SzDecimals, token.IsCanonical, portable}
 	}
 	out := map[string]hyperliquidMarketMeta{}
 	seenSymbols := map[string]struct{}{}
@@ -740,6 +720,12 @@ func hlSpotMetas(operation string, meta *hyperliquidspot.SpotMeta) (map[string]h
 		if !ok {
 			return nil, hlMalformed(exchange.ProductSpot, operation, "unknown quote token")
 		}
+		if !base.portable || !quote.portable {
+			if uni.IsCanonical {
+				return nil, hlMalformed(exchange.ProductSpot, operation, "canonical spot universe uses nonportable token metadata")
+			}
+			continue
+		}
 		symbol := base.name + "-" + quote.name
 		if _, exists := seenSymbols[symbol]; exists {
 			return nil, hlMalformed(exchange.ProductSpot, operation, "duplicate spot symbol")
@@ -751,17 +737,24 @@ func hlSpotMetas(operation string, meta *hyperliquidspot.SpotMeta) (map[string]h
 		qtyInc := decimal.New(1, int32(-base.decimals))
 		priceDecimals := max(0, 8-base.decimals)
 		priceInc := decimal.New(1, int32(-priceDecimals))
+		instrument := newInstrument(
+			exchange.VenueHyperliquid,
+			exchange.ProductSpot,
+			symbol,
+			base.name,
+			quote.name,
+			"",
+			uni.Name,
+			strconv.Itoa(int(assetID)),
+			priceInc,
+			qtyInc,
+			qtyInc,
+			exchange.OptionalDecimal{Value: hyperliquidMinNotional, Valid: true},
+			oneContract(),
+		)
+		hlApplyScaleMetadata(&instrument, priceDecimals, base.decimals, 8)
 		out[uni.Name] = hyperliquidMarketMeta{
-			instrument: exchange.Instrument{
-				Symbol:            symbol,
-				BaseAsset:         base.name,
-				QuoteAsset:        quote.name,
-				Product:           exchange.ProductSpot,
-				PriceIncrement:    priceInc,
-				QuantityIncrement: qtyInc,
-				MinQuantity:       qtyInc,
-				MinNotional:       exchange.OptionalDecimal{Value: hyperliquidMinNotional, Valid: true},
-			},
+			instrument:    instrument,
 			nativeCoin:    uni.Name,
 			assetID:       int(assetID),
 			sizeDecimals:  base.decimals,
@@ -803,18 +796,24 @@ func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, p
 		if _, exists := out[uni.Name]; exists {
 			return nil, hlMalformed(exchange.ProductPerp, operation, "duplicate perp coin")
 		}
+		instrument := newInstrument(
+			exchange.VenueHyperliquid,
+			exchange.ProductPerp,
+			symbol,
+			uni.Name,
+			"USDC",
+			"USDC",
+			uni.Name,
+			strconv.Itoa(i),
+			priceInc,
+			qtyInc,
+			qtyInc,
+			exchange.OptionalDecimal{Value: hyperliquidMinNotional, Valid: true},
+			oneContract(),
+		)
+		hlApplyScaleMetadata(&instrument, priceDecimals, sz, 6)
 		out[uni.Name] = hyperliquidMarketMeta{
-			instrument: exchange.Instrument{
-				Symbol:            symbol,
-				BaseAsset:         uni.Name,
-				QuoteAsset:        "USDC",
-				SettleAsset:       "USDC",
-				Product:           exchange.ProductPerp,
-				PriceIncrement:    priceInc,
-				QuantityIncrement: qtyInc,
-				MinQuantity:       qtyInc,
-				MinNotional:       exchange.OptionalDecimal{Value: hyperliquidMinNotional, Valid: true},
-			},
+			instrument:    instrument,
 			nativeCoin:    uni.Name,
 			assetID:       i,
 			sizeDecimals:  sz,
@@ -823,6 +822,79 @@ func hlPerpMetas(operation string, full *hyperliquidperp.MetaAndAssetCtxsFull, p
 		}
 	}
 	return out, nil
+}
+
+func hlApplyScaleMetadata(instrument *exchange.Instrument, priceDecimals, quantityDecimals, quoteDecimals int) {
+	if instrument == nil {
+		return
+	}
+	if priceDecimals > 0 {
+		instrument.Encoding.PriceScale = exchange.OptionalInt{Value: int64(priceDecimals), Valid: true}
+	}
+	if quantityDecimals > 0 {
+		instrument.Encoding.QuantityScale = exchange.OptionalInt{Value: int64(quantityDecimals), Valid: true}
+	}
+	if quoteDecimals > 0 {
+		instrument.Encoding.QuoteScale = exchange.OptionalInt{Value: int64(quoteDecimals), Valid: true}
+	}
+}
+
+func hlMetaFromInstrument(product exchange.Product, operation string, instrument exchange.Instrument) (hyperliquidMarketMeta, error) {
+	if err := instrument.Validate(); err != nil {
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "invalid catalog instrument")
+	}
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueHyperliquid || identity.Product != product {
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "instrument venue/product mismatch")
+	}
+	if product == exchange.ProductSpot && identity.SettleAsset != "" {
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "spot settlement must be empty")
+	}
+	if product == exchange.ProductPerp && identity.SettleAsset != "USDC" {
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "perp settlement must be USDC")
+	}
+	assetID64, err := strconv.ParseInt(identity.NativeID, 10, 32)
+	if err != nil || strconv.FormatInt(assetID64, 10) != identity.NativeID || assetID64 < 0 {
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "native_id must be a non-negative decimal asset id")
+	}
+	assetID := int(assetID64)
+	sizeDecimals := decimalPlaces(instrument.Rules.QuantityIncrement)
+	if instrument.Encoding.QuantityScale.Valid {
+		sizeDecimals = int(instrument.Encoding.QuantityScale.Value)
+	}
+	priceDecimals := decimalPlaces(instrument.Rules.PriceIncrement)
+	if instrument.Encoding.PriceScale.Valid {
+		priceDecimals = int(instrument.Encoding.PriceScale.Value)
+	}
+	switch product {
+	case exchange.ProductSpot:
+		if strings.HasPrefix(identity.NativeSymbol, "@") {
+			rawIndex, err := strconv.ParseInt(strings.TrimPrefix(identity.NativeSymbol, "@"), 10, 32)
+			if err != nil || rawIndex < 0 || assetID64 != rawIndex+hyperliquidSpotAssetOffset {
+				return hyperliquidMarketMeta{}, hlInvalid(product, operation, "spot native id must equal 10000 + universe index")
+			}
+		} else {
+			wantNative := identity.BaseAsset + "/" + identity.QuoteAsset
+			if identity.NativeSymbol != wantNative ||
+				assetID64 < hyperliquidSpotAssetOffset ||
+				assetID64 >= hyperliquidOutcomeAssetBase {
+				return hyperliquidMarketMeta{}, hlInvalid(product, operation, "canonical spot native symbol or asset id is invalid")
+			}
+		}
+	case exchange.ProductPerp:
+		if strings.TrimSpace(identity.NativeSymbol) == "" || strings.HasPrefix(identity.NativeSymbol, "@") {
+			return hyperliquidMarketMeta{}, hlInvalid(product, operation, "perp native symbol must be the coin name")
+		}
+	default:
+		return hyperliquidMarketMeta{}, hlInvalid(product, operation, "unsupported Hyperliquid product")
+	}
+	return hyperliquidMarketMeta{
+		instrument:    instrument,
+		nativeCoin:    identity.NativeSymbol,
+		assetID:       assetID,
+		sizeDecimals:  sizeDecimals,
+		priceDecimals: priceDecimals,
+	}, nil
 }
 
 func hlBook(product exchange.Product, operation string, meta hyperliquidMarketMeta, limit int, coin string, rawLevels any, ms int64) (exchange.OrderBook, error) {
@@ -869,7 +941,7 @@ func hlBook(product exchange.Product, operation string, meta hyperliquidMarketMe
 	if ms <= 0 {
 		return exchange.OrderBook{}, hlMalformed(product, operation, "invalid book timestamp")
 	}
-	return exchange.OrderBook{Instrument: meta.instrument.Symbol, Bids: bids, Asks: asks, Time: time.UnixMilli(ms), Page: exchange.PageInfo{Limit: limit}}, nil
+	return exchange.OrderBook{Instrument: meta.instrument, Bids: bids, Asks: asks, Time: time.UnixMilli(ms), Page: exchange.PageInfo{Limit: limit}}, nil
 }
 
 type hlL2Level struct {
@@ -965,19 +1037,19 @@ func hlCandlePage(candles []exchange.Candle, req exchange.CandlesRequest) exchan
 }
 
 func hlNormalizePlace(product exchange.Product, req exchange.PlaceOrderRequest, meta hyperliquidMarketMeta) (exchange.PlaceOrderRequest, error) {
-	if req.Instrument != meta.instrument.Symbol {
+	if !hlSameInstrument(meta.instrument, req.Instrument) {
 		return exchange.PlaceOrderRequest{}, hlInvalid(product, "PlaceOrder", "instrument identity mismatch")
 	}
 	if err := req.Validate(product); err != nil {
 		return exchange.PlaceOrderRequest{}, hlInvalid(product, "PlaceOrder", "invalid normalized order request")
 	}
-	if !req.Quantity.Mod(meta.instrument.QuantityIncrement).IsZero() {
+	if !req.Quantity.Mod(meta.instrument.Rules.QuantityIncrement).IsZero() {
 		return exchange.PlaceOrderRequest{}, hlInvalid(product, "PlaceOrder", "quantity must align to Hyperliquid size increment")
 	}
 	if req.Type == exchange.OrderTypeMarket {
 		return req, nil
 	}
-	normalized, err := hlNormalizeLimitPrice(req.Side, req.LimitPrice, meta.priceDecimals)
+	normalized, err := hlValidateLimitPrice(req.Side, req.LimitPrice, meta.priceDecimals)
 	if err != nil {
 		return exchange.PlaceOrderRequest{}, hlInvalid(product, "PlaceOrder", "limit_price cannot be represented within Hyperliquid price precision")
 	}
@@ -985,12 +1057,11 @@ func hlNormalizePlace(product exchange.Product, req exchange.PlaceOrderRequest, 
 	return req, nil
 }
 
-// hlNormalizeLimitPrice applies Hyperliquid's venue-specific price rule:
-// non-integer prices have at most five significant figures and at most the
-// metadata-derived number of decimal places. To preserve the caller's maximum
-// acceptable buy price and minimum acceptable sell price, buys round down and
-// sells round up.
-func hlNormalizeLimitPrice(side exchange.Side, requested decimal.Decimal, priceDecimals int) (decimal.Decimal, error) {
+// hlValidateLimitPrice applies Hyperliquid's venue-specific price rule without
+// rewriting user intent: non-integer prices must already have at most five
+// significant figures and at most the metadata-derived number of decimal places.
+// Integer prices are allowed by Hyperliquid's integer exception.
+func hlValidateLimitPrice(side exchange.Side, requested decimal.Decimal, priceDecimals int) (decimal.Decimal, error) {
 	if !requested.IsPositive() {
 		return decimal.Zero, fmt.Errorf("price must be positive")
 	}
@@ -1000,25 +1071,17 @@ func hlNormalizeLimitPrice(side exchange.Side, requested decimal.Decimal, priceD
 	if side != exchange.SideBuy && side != exchange.SideSell {
 		return decimal.Zero, fmt.Errorf("side must be buy or sell")
 	}
-
-	quantum := decimal.New(1, int32(-priceDecimals))
-	for remainingDecimals := priceDecimals; remainingDecimals >= 0; remainingDecimals-- {
-		units := requested.Div(quantum)
-		if side == exchange.SideBuy {
-			units = units.Floor()
-		} else {
-			units = units.Ceil()
-		}
-		normalized := units.Mul(quantum)
-		if normalized.IsPositive() {
-			isInteger := normalized.Equal(normalized.Truncate(0))
-			if isInteger || hlSignificantDigits(normalized) <= 5 {
-				return normalized, nil
-			}
-		}
-		quantum = quantum.Mul(decimal.NewFromInt(10))
+	if decimalPlaces(requested) > priceDecimals {
+		return decimal.Zero, fmt.Errorf("price has too many decimal places")
 	}
-	return decimal.Zero, fmt.Errorf("price cannot be represented")
+	if requested.Equal(requested.Truncate(0)) || hlSignificantDigits(requested) <= 5 {
+		return requested, nil
+	}
+	return decimal.Zero, fmt.Errorf("price has too many significant figures")
+}
+
+func hlNormalizeLimitPrice(side exchange.Side, requested decimal.Decimal, priceDecimals int) (decimal.Decimal, error) {
+	return hlValidateLimitPrice(side, requested, priceDecimals)
 }
 
 func hlValidateCancel(product exchange.Product, req exchange.CancelOrderRequest) (int64, error) {
@@ -1050,7 +1113,7 @@ func hlValidateOptionalOrderID(product exchange.Product, operation, orderID stri
 	return nil
 }
 
-func hlSpotPlaceAck(instrument, cloid string, status *hyperliquidspot.OrderStatus) (exchange.OrderAcknowledgement, error) {
+func hlSpotPlaceAck(instrument exchange.Instrument, cloid string, status *hyperliquidspot.OrderStatus) (exchange.OrderAcknowledgement, error) {
 	if status == nil {
 		return exchange.OrderAcknowledgement{}, hlMalformed(exchange.ProductSpot, "PlaceOrder", "missing order status")
 	}
@@ -1077,7 +1140,7 @@ func hlSpotPlaceAck(instrument, cloid string, status *hyperliquidspot.OrderStatu
 	return exchange.OrderAcknowledgement{}, hlMalformed(exchange.ProductSpot, "PlaceOrder", "unexpected order status")
 }
 
-func hlPerpPlaceAck(instrument, cloid string, status *hyperliquidperp.OrderStatus) (exchange.OrderAcknowledgement, error) {
+func hlPerpPlaceAck(instrument exchange.Instrument, cloid string, status *hyperliquidperp.OrderStatus) (exchange.OrderAcknowledgement, error) {
 	if status == nil {
 		return exchange.OrderAcknowledgement{}, hlMalformed(exchange.ProductPerp, "PlaceOrder", "missing order status")
 	}
@@ -1104,14 +1167,14 @@ func hlPerpPlaceAck(instrument, cloid string, status *hyperliquidperp.OrderStatu
 	return exchange.OrderAcknowledgement{}, hlMalformed(exchange.ProductPerp, "PlaceOrder", "unexpected order status")
 }
 
-func hlCancelAck(product exchange.Product, instrument, orderID string, status *string) (exchange.OrderAcknowledgement, error) {
+func hlCancelAck(product exchange.Product, instrument exchange.Instrument, orderID string, status *string) (exchange.OrderAcknowledgement, error) {
 	if status == nil || *status != "success" {
 		return exchange.OrderAcknowledgement{}, hlMalformed(product, "CancelOrder", "cancel response must be exactly success")
 	}
 	return hlBaseAck(product, exchange.OrderOperationCancel, instrument, orderID, "", exchange.AckAcceptedPending), nil
 }
 
-func hlMutationErr(product exchange.Product, op exchange.OrderOperation, instrument, orderID, cloid string, err error, tracker *hyperliquidRequestTracker) (exchange.OrderAcknowledgement, error) {
+func hlMutationErr(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, cloid string, err error, tracker *hyperliquidRequestTracker) (exchange.OrderAcknowledgement, error) {
 	operation := "PlaceOrder"
 	if op == exchange.OrderOperationCancel {
 		operation = "CancelOrder"
@@ -1171,8 +1234,8 @@ func hlMutationErr(product exchange.Product, op exchange.OrderOperation, instrum
 	return ack, exchange.NewError(exchange.KindAmbiguousOutcome, exchange.ErrorDetails{Venue: hyperliquidVenue, Product: product, Operation: operation, SafeMessage: "order command outcome is unknown after possible send"})
 }
 
-func hlBaseAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, cloid string, state exchange.OrderAckState) exchange.OrderAcknowledgement {
-	return exchange.OrderAcknowledgement{Venue: hyperliquidVenue, Product: product, Operation: op, State: state, Instrument: instrument, OrderID: orderID, ClientOrderID: cloid}
+func hlBaseAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, cloid string, state exchange.OrderAckState) exchange.OrderAcknowledgement {
+	return exchange.OrderAcknowledgement{Venue: hyperliquidVenue, Product: product, Operation: op, State: state, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: cloid}
 }
 
 func hlOrder(meta hyperliquidMarketMeta, coin, sideS, pxS, szS, origSzS string, oid int64, cloid string, createdMs, updatedMs int64, orderType, tif string, reduceOnly, isTrigger bool) (exchange.Order, error) {
@@ -1212,7 +1275,7 @@ func hlOrder(meta hyperliquidMarketMeta, coin, sideS, pxS, szS, origSzS string, 
 	if err != nil {
 		return exchange.Order{}, fmt.Errorf("invalid order price")
 	}
-	return exchange.Order{Instrument: meta.instrument.Symbol, OrderID: strconv.FormatInt(oid, 10), ClientOrderID: hlPortableClientOrderID(cloid), Side: side, Type: exchange.OrderTypeLimit, Quantity: original, LimitPrice: price, LimitPolicy: policy, ReduceOnly: reduceOnly, Filled: filled, Status: "open", CreatedAt: time.UnixMilli(createdMs), UpdatedAt: time.UnixMilli(updatedMs)}, nil
+	return exchange.Order{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, OrderID: strconv.FormatInt(oid, 10), ClientOrderID: hlPortableClientOrderID(cloid), Side: side, Type: exchange.OrderTypeLimit, Quantity: original, LimitPrice: price, LimitPolicy: policy, ReduceOnly: reduceOnly, Filled: filled, Status: "open", CreatedAt: time.UnixMilli(createdMs), UpdatedAt: time.UnixMilli(updatedMs)}, nil
 }
 
 func hlFill(meta hyperliquidMarketMeta, coin, sideS, pxS, szS, feeS, feeToken string, oid, tid int64, hash string, crossed bool, ms int64) (exchange.Fill, error) {
@@ -1239,7 +1302,7 @@ func hlFill(meta hyperliquidMarketMeta, coin, sideS, pxS, szS, feeS, feeToken st
 	if crossed {
 		liq = exchange.LiquidityTaker
 	}
-	return exchange.Fill{Instrument: meta.instrument.Symbol, OrderID: strconv.FormatInt(oid, 10), FillID: strconv.FormatInt(tid, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: feeToken, Liquidity: liq, Time: time.UnixMilli(ms)}, nil
+	return exchange.Fill{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, OrderID: strconv.FormatInt(oid, 10), FillID: strconv.FormatInt(tid, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: feeToken, Liquidity: liq, Time: time.UnixMilli(ms)}, nil
 }
 
 func hlSpotBalances(operation string, state *hyperliquid.SpotClearinghouseState) ([]exchange.Balance, error) {
@@ -1268,14 +1331,25 @@ func hlSpotBalances(operation string, state *hyperliquid.SpotClearinghouseState)
 	return out, nil
 }
 
-func hlPosition(meta hyperliquidMarketMeta, sziS, entryS, pnlS, liqS, marginS string, leverage int) (exchange.Position, error) {
+func hlPosition(meta hyperliquidMarketMeta, sziS, positionValueS, entryS, pnlS, liqS, marginS string, leverage int) (exchange.Position, error) {
 	szi, err := hlDecimal(sziS)
 	if err != nil {
 		return exchange.Position{}, fmt.Errorf("invalid position size")
 	}
+	if szi.IsZero() {
+		return exchange.Position{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID}, nil
+	}
 	side := exchange.SideBuy
 	if szi.IsNegative() {
 		side = exchange.SideSell
+	}
+	positionValue, err := hlPositiveDecimal(positionValueS)
+	if err != nil {
+		return exchange.Position{}, fmt.Errorf("invalid position value")
+	}
+	mark := positionValue.Div(szi.Abs())
+	if !mark.IsPositive() {
+		return exchange.Position{}, fmt.Errorf("invalid mark price")
 	}
 	entry, err := hlNonNegativeDecimal(entryS)
 	if err != nil {
@@ -1297,7 +1371,7 @@ func hlPosition(meta hyperliquidMarketMeta, sziS, entryS, pnlS, liqS, marginS st
 	if leverage > 0 {
 		lev = exchange.OptionalDecimal{Value: decimal.NewFromInt(int64(leverage)), Valid: true}
 	}
-	return exchange.Position{Instrument: meta.instrument.Symbol, Side: side, Quantity: szi, EntryPrice: entry, MarkPrice: meta.markPrice, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
+	return exchange.Position{NativeSymbol: meta.instrument.Identity.NativeSymbol, NativeID: meta.instrument.Identity.NativeID, Side: side, Quantity: szi, EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
 }
 
 func hlCandleWindow(req exchange.CandlesRequest) (int64, int64, error) {

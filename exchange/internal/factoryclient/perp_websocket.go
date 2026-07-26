@@ -18,7 +18,7 @@ type perpReferenceEvent struct {
 
 type perpWSBackend interface {
 	publicWSBackend
-	StartReference(context.Context, string, streamCallbacks[perpReferenceEvent]) (func() error, error)
+	StartReference(context.Context, exchange.Instrument, streamCallbacks[perpReferenceEvent]) (func() error, error)
 }
 
 type referenceTopic struct {
@@ -159,8 +159,8 @@ func (socket *perpWebSocket) WatchPositions(
 		ctx,
 		"WatchPositions",
 		"positions",
-		request.Instrument,
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
+		websocketInstrumentKey(request.Instrument),
 		request.Options.Buffer,
 		socket.positions,
 		func(startCtx context.Context, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
@@ -231,7 +231,7 @@ func watchReference[T any](
 		socket.meta.venue,
 		socket.meta.product,
 		kind,
-		request.Instrument,
+		websocketInstrumentKey(request.Instrument),
 		websocketSubscriptionSequence.Add(1),
 	)
 
@@ -240,15 +240,16 @@ func watchReference[T any](
 		socket.mu.Unlock()
 		return nil, websocketError(socket.meta, "Watch"+kind, exchange.KindSubscriptionClosed, "websocket client is closed")
 	}
-	topic := socket.references[request.Instrument]
+	topicKey := websocketInstrumentKey(request.Instrument)
+	topic := socket.references[topicKey]
 	first := topic == nil
 	if first {
 		topic = newReferenceTopic()
-		socket.references[request.Instrument] = topic
+		socket.references[topicKey] = topic
 	}
 	var subscription *typedSubscription[T]
 	subscription = newTypedSubscription[T](id, socket.meta, buffer, func() error {
-		return removeReferenceSubscription[T](socket, request.Instrument, id, remove)
+		return removeReferenceSubscription[T](socket, topicKey, id, remove)
 	})
 	topic.mu.Lock()
 	add(topic, subscription)
@@ -278,12 +279,12 @@ func watchReference[T any](
 		topic.starting = false
 		topic.startErr = startErr
 		topic.stop = stop
-		if startErr != nil && socket.references[request.Instrument] == topic {
-			delete(socket.references, request.Instrument)
+		if startErr != nil && socket.references[topicKey] == topic {
+			delete(socket.references, topicKey)
 		}
 		if topic.count() == 0 {
-			if socket.references[request.Instrument] == topic {
-				delete(socket.references, request.Instrument)
+			if socket.references[topicKey] == topic {
+				delete(socket.references, topicKey)
 			}
 			stopAfterStart = topic.stop
 			topic.stop = nil
@@ -340,12 +341,12 @@ func watchReference[T any](
 
 func removeReferenceSubscription[T any](
 	socket *perpWebSocket,
-	instrument string,
+	topicKey string,
 	id string,
 	remove func(*referenceTopic, string),
 ) error {
 	socket.mu.Lock()
-	topic := socket.references[instrument]
+	topic := socket.references[topicKey]
 	if topic == nil {
 		socket.mu.Unlock()
 		return nil
@@ -362,7 +363,7 @@ func removeReferenceSubscription[T any](
 		socket.mu.Unlock()
 		return nil
 	}
-	delete(socket.references, instrument)
+	delete(socket.references, topicKey)
 	stop := topic.stop
 	socket.mu.Unlock()
 	if stop != nil {

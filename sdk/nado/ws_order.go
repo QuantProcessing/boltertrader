@@ -291,9 +291,15 @@ func (c *WsApiClient) prepareOrderWrite(ctx context.Context, input ClientOrderIn
 	if _, err := c.restClient.ensureContracts(ctx); err != nil {
 		return input, nil, nil, fmt.Errorf("nado ws api contracts discovery: %w", err)
 	}
-	product, err := c.restClient.ResolveProduct(ctx, input.ProductId)
-	if err != nil {
-		return input, nil, nil, err
+	var product DiscoveredProduct
+	if input.DiscoveredProduct != nil {
+		product = *input.DiscoveredProduct
+	} else {
+		var err error
+		product, err = c.restClient.ResolveProduct(ctx, input.ProductId)
+		if err != nil {
+			return input, nil, nil, err
+		}
 	}
 	return prepareNadoOrderInput(product, input)
 }

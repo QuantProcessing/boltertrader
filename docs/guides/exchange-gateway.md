@@ -11,6 +11,19 @@ custody, smart order routing, fund transfer, deposit, or withdrawal surface.
 There is no Redis dependency and no gRPC listener. PostgreSQL is the only
 required durable service.
 
+## Choosing this product
+
+BolterTrader exposes three peer paths:
+
+- use direct `exchange` clients for a convenient normalized API inside a Go
+  process when the caller owns lifecycle, caching, and durability;
+- use Exchange Gateway when a resident process must centralize accounts,
+  credentials, Catalog, order state, reconciliation, and private events;
+- use `runtime` for one strategy's stateful execution framework.
+
+Gateway is built above `exchange`; it does not use `runtime` or replace either
+peer product.
+
 ## Service shape
 
 ```text
@@ -39,8 +52,10 @@ must not appear in the YAML file.
 ## Configuration
 
 Run one statically configured account entry per venue/product account. The
-service supports the twenty V1 rows across Binance, OKX, Lighter,
-Hyperliquid, Bybit, Bitget, Gate, Aster, and Nado.
+service models twenty V1 rows across Binance, OKX, Lighter, Hyperliquid, Bybit,
+Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
+Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
+exact lookup in its external environment.
 
 ```yaml
 server:

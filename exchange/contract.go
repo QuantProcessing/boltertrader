@@ -5,6 +5,8 @@ import "context"
 // MarketREST is the REST-only public market-data surface shared by spot and
 // perpetual products.
 type MarketREST interface {
+	ResolveInstrument(context.Context, string) (Instrument, error)
+	RefreshInstruments(context.Context) ([]Instrument, error)
 	Instruments(context.Context) ([]Instrument, error)
 	OrderBook(context.Context, OrderBookRequest) (OrderBook, error)
 	Candles(context.Context, CandlesRequest) (CandlePage, error)

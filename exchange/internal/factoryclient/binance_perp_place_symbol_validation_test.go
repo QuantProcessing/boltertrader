@@ -49,7 +49,11 @@ func TestBinancePerpWSPlaceOrderRejectsMalformedInstrumentBeforeSend(t *testing.
 
 func binancePerpMalformedSymbolPlaceRequest() exchange.PlaceOrderRequest {
 	return exchange.PlaceOrderRequest{
-		Instrument:    "eth-USDT",
+		Instrument: func() exchange.Instrument {
+			i := binanceSpotETHUSDTInstrument()
+			i.Identity.Symbol = "eth-USDT"
+			return i
+		}(),
 		ClientOrderID: "1001",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,

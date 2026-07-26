@@ -29,6 +29,7 @@ type InstrumentsResult struct {
 
 type Instrument struct {
 	Symbol        string        `json:"symbol"`
+	ContractType  string        `json:"contractType"`
 	BaseCoin      string        `json:"baseCoin"`
 	QuoteCoin     string        `json:"quoteCoin"`
 	SettleCoin    string        `json:"settleCoin"`

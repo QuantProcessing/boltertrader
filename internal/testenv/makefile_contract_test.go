@@ -148,6 +148,79 @@ func TestExchangeAcceptanceRecipesUseExactProductRowSelectors(t *testing.T) {
 	}
 }
 
+func TestGatewayFirstPromotionRecipesUseSerialNoSkipProductRows(t *testing.T) {
+	makefile := readRepoMakefile(t)
+	type contract struct {
+		env      string
+		selector string
+		timeout  string
+	}
+	rows := []struct {
+		target   string
+		contract contract
+	}{
+		{"test-gateway-binance-spot-demo", contract{"BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", "^TestExchangeBinanceSpotDemoAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-binance-usd-perp-demo", contract{"BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", "^TestExchangeBinancePerpDemoAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-okx-spot-demo", contract{"BOLTER_ENABLE_OKX_DEMO_WRITES=1", "^TestExchangeOKXSpotDemoAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-okx-usdt-perp-demo", contract{"BOLTER_ENABLE_OKX_DEMO_WRITES=1", "^TestExchangeOKXPerpDemoAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-lighter-spot-testnet", contract{"BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", "^TestExchangeLighterSpotTestnetAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-lighter-perp-testnet", contract{"BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", "^TestExchangeLighterPerpTestnetAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-hyperliquid-spot-testnet", contract{"BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", "^TestExchangeHyperliquidSpotTestnetAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-hyperliquid-perp-testnet", contract{"BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", "^TestExchangeHyperliquidPerpTestnetAcceptance$$", "-timeout=6m"}},
+		{"test-gateway-bybit-spot-demo", contract{"BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", "^TestExchangeBybitSpotDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-bybit-usdt-perp-demo", contract{"BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", "^TestExchangeBybitUSDTPerpDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-bybit-usdc-perp-demo", contract{"BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", "^TestExchangeBybitUSDCPerpDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-bitget-spot-demo", contract{"BOLTER_ENABLE_BITGET_DEMO_WRITES=1", "^TestExchangeBitgetSpotDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-bitget-usdt-perp-demo", contract{"BOLTER_ENABLE_BITGET_DEMO_WRITES=1", "^TestExchangeBitgetUSDTPerpDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-bitget-usdc-perp-demo", contract{"BOLTER_ENABLE_BITGET_DEMO_WRITES=1", "^TestExchangeBitgetUSDCPerpDemoAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-gate-spot-testnet", contract{"BOLTER_ENABLE_GATE_TESTNET_WRITES=1", "^TestExchangeGateSpotTestnetAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-gate-usdt-perp-testnet", contract{"BOLTER_ENABLE_GATE_TESTNET_WRITES=1", "^TestExchangeGateUSDTPerpTestnetAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-aster-spot-testnet", contract{"BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", "^TestExchangeAsterSpotTestnetAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-aster-usdt-perp-testnet", contract{"BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", "^TestExchangeAsterUSDTPerpTestnetAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-nado-spot-testnet", contract{"BOLTER_ENABLE_NADO_TESTNET_WRITES=1", "^TestExchangeNadoSpotTestnetAcceptance$$", "-timeout=15m"}},
+		{"test-gateway-nado-usdt0-perp-testnet", contract{"BOLTER_ENABLE_NADO_TESTNET_WRITES=1", "^TestExchangeNadoUSDT0PerpTestnetAcceptance$$", "-timeout=15m"}},
+	}
+
+	phony := make(map[string]bool)
+	for _, line := range strings.Split(makefile, "\n") {
+		if strings.HasPrefix(line, ".PHONY:") {
+			for _, target := range strings.Fields(strings.TrimPrefix(line, ".PHONY:")) {
+				phony[target] = true
+			}
+		}
+	}
+	for _, row := range rows {
+		t.Run(row.target, func(t *testing.T) {
+			if !phony[row.target] {
+				t.Fatalf("%s is not phony", row.target)
+			}
+			block := makeTargetBlock(t, makefile, row.target)
+			for _, want := range []string{
+				row.contract.env,
+				"go run ./internal/testenv/cmd/noskipgotest -- -v",
+				"-run '" + row.contract.selector + "'",
+				"./exchange/...",
+				"-count=1",
+				row.contract.timeout,
+			} {
+				if !strings.Contains(block, want) {
+					t.Fatalf("%s recipe missing %q\nblock:\n%s", row.target, want, block)
+				}
+			}
+		})
+	}
+	if !phony["test-gateway-demo-testnet"] {
+		t.Fatal("test-gateway-demo-testnet is not phony")
+	}
+	wantAggregate := "test-gateway-demo-testnet:"
+	for _, row := range rows {
+		wantAggregate += " " + row.target
+	}
+	if got := makeTargetBlock(t, makefile, "test-gateway-demo-testnet"); got != wantAggregate {
+		t.Fatalf("gateway promotion aggregate mismatch\ngot:\n%s\nwant:\n%s", got, wantAggregate)
+	}
+}
+
 func TestExchangeAcceptanceAggregateRunsAllProductRowsSerially(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	block := makeTargetBlock(t, makefile, "test-exchange-acceptance")
@@ -323,6 +396,26 @@ func TestCredentialedWriteRecipesReserveCleanupTimeout(t *testing.T) {
 		"test-exchange-lighter-testnet-perp":     6 * time.Minute,
 		"test-exchange-hyperliquid-testnet-spot": 6 * time.Minute,
 		"test-exchange-hyperliquid-testnet-perp": 6 * time.Minute,
+		"test-gateway-binance-spot-demo":         6 * time.Minute,
+		"test-gateway-binance-usd-perp-demo":     6 * time.Minute,
+		"test-gateway-okx-spot-demo":             6 * time.Minute,
+		"test-gateway-okx-usdt-perp-demo":        6 * time.Minute,
+		"test-gateway-lighter-spot-testnet":      6 * time.Minute,
+		"test-gateway-lighter-perp-testnet":      6 * time.Minute,
+		"test-gateway-hyperliquid-spot-testnet":  6 * time.Minute,
+		"test-gateway-hyperliquid-perp-testnet":  6 * time.Minute,
+		"test-gateway-bybit-spot-demo":           15 * time.Minute,
+		"test-gateway-bybit-usdt-perp-demo":      15 * time.Minute,
+		"test-gateway-bybit-usdc-perp-demo":      15 * time.Minute,
+		"test-gateway-bitget-spot-demo":          15 * time.Minute,
+		"test-gateway-bitget-usdt-perp-demo":     15 * time.Minute,
+		"test-gateway-bitget-usdc-perp-demo":     15 * time.Minute,
+		"test-gateway-gate-spot-testnet":         15 * time.Minute,
+		"test-gateway-gate-usdt-perp-testnet":    15 * time.Minute,
+		"test-gateway-aster-spot-testnet":        15 * time.Minute,
+		"test-gateway-aster-usdt-perp-testnet":   15 * time.Minute,
+		"test-gateway-nado-spot-testnet":         15 * time.Minute,
+		"test-gateway-nado-usdt0-perp-testnet":   15 * time.Minute,
 		"test-exchange-bybit-demo-spot":          15 * time.Minute,
 		"test-exchange-bybit-demo-usdt-perp":     15 * time.Minute,
 		"test-exchange-bybit-demo-usdc-perp":     15 * time.Minute,

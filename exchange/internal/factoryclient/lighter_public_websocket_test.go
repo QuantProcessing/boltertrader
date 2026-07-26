@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -213,15 +214,12 @@ func newTestLighterWSBackendForMarket(
 	ws *fakeLighterPublicWS,
 ) *lighterWSBackend {
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:  "ETH-USDC",
-			Product: product,
-		},
+		instrument: lighterTestInstrument(product, "ETH-USDC", "ETH-USDC", strconv.Itoa(marketID)),
 		marketID:   marketID,
 		marketType: marketType,
 	}
 	state := newLighterRESTState()
-	state.metas = map[string]lighterMarketMeta{meta.instrument.Symbol: meta}
+	state.metas = map[string]lighterMarketMeta{meta.instrument.Identity.Symbol: meta}
 	state.byID = map[int]lighterMarketMeta{meta.marketID: meta}
 	return newLighterWSBackend(product, marketType, lighter.NewClient(), state, ws)
 }
@@ -285,7 +283,7 @@ func TestLighterPerpWebSocketAcceptsMarketIDZero(t *testing.T) {
 	eventCh := make(chan exchange.BBOEvent, 1)
 
 	go func() {
-		_, err := backend.StartBBO(context.Background(), "ETH-USDC", streamCallbacks[exchange.BBOEvent]{
+		_, err := backend.StartBBO(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "0"), streamCallbacks[exchange.BBOEvent]{
 			Event: func(event exchange.BBOEvent) { eventCh <- event },
 		})
 		resultCh <- err
@@ -296,7 +294,7 @@ func TestLighterPerpWebSocketAcceptsMarketIDZero(t *testing.T) {
 		return ws.tickerHandlers[0] != nil
 	})
 	ws.emitTicker(0, `{"channel":"ticker:0","type":"update/ticker","timestamp":1700000000000,"ticker":{"b":{"price":"2000","size":"1"},"a":{"price":"2001","size":"1"}}}`)
-	if got := <-eventCh; got.Instrument != "ETH-USDC" {
+	if got := <-eventCh; got.Instrument.Identity.Symbol != "ETH-USDC" {
 		t.Fatalf("market zero BBO = %+v", got)
 	}
 	if err := <-resultCh; err != nil {
@@ -316,7 +314,7 @@ func TestLighterStartBBOWaitsForFirstValidEventAndMapsTicker(t *testing.T) {
 	errorCh := make(chan error, 1)
 
 	go func() {
-		stop, err := backend.StartBBO(context.Background(), "ETH-USDC", streamCallbacks[exchange.BBOEvent]{
+		stop, err := backend.StartBBO(context.Background(), lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.BBOEvent]{
 			Event: func(event exchange.BBOEvent) { eventCh <- event },
 			Error: func(err error) { errorCh <- err },
 		})
@@ -336,7 +334,7 @@ func TestLighterStartBBOWaitsForFirstValidEventAndMapsTicker(t *testing.T) {
 
 	ws.emitTicker(7, `{"channel":"ticker:7","type":"subscribed/ticker","timestamp":1700000000000,"ticker":{"b":{"price":"2000.5","size":"1.25"},"a":{"price":"2001","size":"0.75"}}}`)
 	got := <-eventCh
-	if got.Instrument != "ETH-USDC" ||
+	if got.Instrument.Identity.Symbol != "ETH-USDC" ||
 		!got.Bid.Price.Equal(decimal.RequireFromString("2000.5")) ||
 		!got.Bid.Quantity.Equal(decimal.RequireFromString("1.25")) ||
 		!got.Ask.Price.Equal(decimal.RequireFromString("2001")) ||
@@ -363,12 +361,12 @@ func TestLighterStartBBOWaitsForFirstValidEventAndMapsTicker(t *testing.T) {
 	}
 }
 
-func TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent(t *testing.T) {
+func TestLighterStartCandlesValidatesResolutionAndActivatesAfterSubscriptionAck(t *testing.T) {
 	ws := newFakeLighterPublicWS()
 	backend := newTestLighterWSBackend(exchange.ProductSpot, lighterSpot, ws)
 	if _, err := backend.StartCandles(
 		context.Background(),
-		"ETH-USDC",
+		lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"),
 		"2m",
 		streamCallbacks[exchange.CandleEvent]{},
 	); !errors.Is(err, exchange.ErrInvalidRequest) {
@@ -391,7 +389,7 @@ func TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent(t *tes
 	go func() {
 		stop, err := backend.StartCandles(
 			context.Background(),
-			"ETH-USDC",
+			lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"),
 			"1m",
 			streamCallbacks[exchange.CandleEvent]{
 				Event:  func(event exchange.CandleEvent) { eventCh <- event },
@@ -406,6 +404,15 @@ func TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent(t *tes
 		defer ws.mu.Unlock()
 		return ws.candleHandlers["7/1m"] != nil
 	})
+	var started result
+	select {
+	case started = <-resultCh:
+		if started.err != nil || started.stop == nil {
+			t.Fatalf("StartCandles result = %+v", started)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StartCandles did not activate after subscription acknowledgement")
+	}
 
 	ws.emitCandle(7, "1m", `{"channel":"candle:7:1m","type":"update/candle","timestamp":1699999981000,"candles":[{"t":1699999980000,"o":100,"h":99,"l":98,"c":99,"v":2,"V":198,"i":10}]}`)
 	select {
@@ -416,16 +423,11 @@ func TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent(t *tes
 	case <-time.After(time.Second):
 		t.Fatal("malformed candle was silently dropped")
 	}
-	select {
-	case got := <-resultCh:
-		t.Fatalf("StartCandles returned before a valid event: %+v", got)
-	default:
-	}
 
 	ws.emitCandle(7, "1m", `{"channel":"candle:7:1m","type":"update/candle","timestamp":1700000041000,"candles":[{"t":1699999980000,"o":100,"h":102,"l":99,"c":101,"v":2,"V":202,"i":10},{"t":1700000040000,"o":101,"h":103,"l":100,"c":102,"v":3,"V":306,"i":11}]}`)
 	first := <-eventCh
 	second := <-eventCh
-	if first.Instrument != "ETH-USDC" || first.Interval != "1m" ||
+	if first.Instrument.Identity.Symbol != "ETH-USDC" || first.Interval != "1m" ||
 		!first.Candle.Open.Equal(decimal.NewFromInt(100)) ||
 		!first.Candle.Close.Equal(decimal.NewFromInt(101)) ||
 		!first.Candle.Volume.Equal(decimal.NewFromInt(2)) ||
@@ -436,10 +438,6 @@ func TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent(t *tes
 		!second.Candle.Close.Equal(decimal.NewFromInt(102)) ||
 		second.Candle.Complete {
 		t.Fatalf("live candle = %+v", second)
-	}
-	started := <-resultCh
-	if started.err != nil || started.stop == nil {
-		t.Fatalf("StartCandles result = %+v", started)
 	}
 
 	ws.mu.Lock()
@@ -506,7 +504,7 @@ func TestLighterStartBBOReportsMalformedPayloadAndRemainsConnecting(t *testing.T
 	errorCh := make(chan error, 1)
 
 	go func() {
-		_, err := backend.StartBBO(ctx, "ETH-USDC", streamCallbacks[exchange.BBOEvent]{
+		_, err := backend.StartBBO(ctx, lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.BBOEvent]{
 			Error: func(err error) { errorCh <- err },
 		})
 		resultCh <- err
@@ -559,7 +557,7 @@ func TestLighterOrderBookDetectsNonceGapAndResynchronizes(t *testing.T) {
 	var stop func() error
 	go func() {
 		var err error
-		stop, err = backend.StartOrderBook(context.Background(), "ETH-USDC", streamCallbacks[exchange.BookEvent]{
+		stop, err = backend.StartOrderBook(context.Background(), lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.BookEvent]{
 			Event:  func(event exchange.BookEvent) { eventCh <- event },
 			Status: func(status backendStatus) { statusCh <- status },
 			Error:  func(err error) { errorCh <- err },
@@ -623,7 +621,7 @@ func TestLighterOrderBookDetectsNonceGapAndResynchronizes(t *testing.T) {
 
 func TestLighterBookEventAcceptsInitialSnapshotBeginNonceZero(t *testing.T) {
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{Symbol: "ETH/USDC", Product: exchange.ProductSpot},
+		instrument: lighterTestInstrument(exchange.ProductSpot, "ETH/USDC", "ETH/USDC", "2048"),
 		marketID:   2048,
 		marketType: lighterSpot,
 	}
@@ -649,13 +647,13 @@ func TestLighterPublicTradesAndPerpReferenceMapping(t *testing.T) {
 	referenceStart := make(chan error, 1)
 
 	go func() {
-		_, err := backend.StartPublicTrades(context.Background(), "ETH-USDC", streamCallbacks[exchange.PublicTradeEvent]{
+		_, err := backend.StartPublicTrades(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.PublicTradeEvent]{
 			Event: func(event exchange.PublicTradeEvent) { tradeCh <- event },
 		})
 		tradeStart <- err
 	}()
 	go func() {
-		_, err := backend.StartReference(context.Background(), "ETH-USDC", streamCallbacks[perpReferenceEvent]{
+		_, err := backend.StartReference(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[perpReferenceEvent]{
 			Event: func(event perpReferenceEvent) { referenceCh <- event },
 		})
 		referenceStart <- err
@@ -679,7 +677,7 @@ func TestLighterPublicTradesAndPerpReferenceMapping(t *testing.T) {
 
 	ws.emitStats(7, `{"channel":"market_stats:7","type":"subscribed/market_stats","timestamp":1700000000200,"market_stats":{"market_id":7,"mark_price":"2000.75","index_price":"2000.5","current_funding_rate":"-0.00012","funding_rate":"-0.0001","funding_timestamp":1700003600000}}`)
 	reference := <-referenceCh
-	if reference.MarkPrice.Instrument != "ETH-USDC" ||
+	if reference.MarkPrice.Instrument.Identity.Symbol != "ETH-USDC" ||
 		!reference.MarkPrice.Price.Equal(decimal.RequireFromString("2000.75")) ||
 		!reference.FundingRate.Rate.Equal(decimal.RequireFromString("-0.00012")) ||
 		!reference.FundingRate.EffectiveAt.Equal(time.UnixMilli(1_700_000_000_200).UTC()) ||
@@ -705,7 +703,7 @@ func TestLighterPublicTradesSignalsReadyBeforeDeliveringInitialBatch(t *testing.
 	var callbackOnce sync.Once
 
 	go func() {
-		_, err := backend.StartPublicTrades(context.Background(), "ETH-USDC", streamCallbacks[exchange.PublicTradeEvent]{
+		_, err := backend.StartPublicTrades(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.PublicTradeEvent]{
 			Event: func(exchange.PublicTradeEvent) {
 				callbackOnce.Do(func() { close(callbackEntered) })
 				<-releaseCallback
@@ -747,7 +745,7 @@ func TestLighterPublicTradesSignalsReadyBeforeDeliveringInitialBatch(t *testing.
 
 func TestLighterPublicTradesRejectMixedMarketZeroForNonzeroInstrument(t *testing.T) {
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{Symbol: "ETH-USDC", Product: exchange.ProductSpot},
+		instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"),
 		marketID:   7,
 		marketType: lighterSpot,
 	}

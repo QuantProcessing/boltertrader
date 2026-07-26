@@ -17,6 +17,10 @@ type okxSpotClient struct {
 	loading   chan struct{}
 }
 
+func (client *okxSpotClient) WebSocket() exchange.SpotWebSocket { return client.ws }
+
+func (client *okxSpotClient) Close() error { return closeSpotWebSocket(client.ws) }
+
 func NewOKXSpot(apiKey, secretKey, passphrase string, settings Settings) exchange.SpotClient {
 	sdkClient := okx.NewClient().WithCredentials(apiKey, secretKey, passphrase)
 	if settings.Environment == "demo" {
@@ -31,7 +35,7 @@ func NewOKXSpot(apiKey, secretKey, passphrase string, settings Settings) exchang
 		sdkClient.WithHTTPClient(settings.HTTPClient)
 	}
 	client := &okxSpotClient{
-		spotClient: &spotClient{meta: clientMeta{venue: exchange.VenueOKX, product: exchange.ProductSpot}},
+		spotClient: &spotClient{meta: clientMetaFromSettings(exchange.VenueOKX, exchange.ProductSpot, settings)},
 		sdk:        sdkClient,
 	}
 	wsClient := okx.NewWSClient(context.Background())
@@ -62,8 +66,8 @@ func NewOKXSpot(apiKey, secretKey, passphrase string, settings Settings) exchang
 		privateWSClient.WithURL(settings.WebSocketEndpoint)
 	}
 	client.ws = newSpotWebSocket(
-		newPublicWebSocket(client.meta, newOKXSpotWSBackendWithClients(wsClient, businessWSClient)),
-		newOKXSpotPrivateWSBackend(privateWSClient, okxSpotInstrumentCodeLoader(sdkClient), client.okxSpotTradeMode),
+		newPublicWebSocket(client.meta, newOKXSpotWSBackendWithClients(client.meta, wsClient, businessWSClient)),
+		newOKXSpotPrivateWSBackend(client.meta, privateWSClient, okxSpotInstrumentCodeLoader(client.meta), client.okxSpotTradeMode),
 	)
 	return client
 }
@@ -76,6 +80,10 @@ type okxPerpClient struct {
 	contracts map[string]okxContractMeta
 	loading   chan struct{}
 }
+
+func (client *okxPerpClient) WebSocket() exchange.PerpWebSocket { return client.ws }
+
+func (client *okxPerpClient) Close() error { return closePerpWebSocket(client.ws) }
 
 func NewOKXUSDTPerp(apiKey, secretKey, passphrase string, settings Settings) exchange.PerpClient {
 	sdkClient := okx.NewClient().WithCredentials(apiKey, secretKey, passphrase)
@@ -91,7 +99,7 @@ func NewOKXUSDTPerp(apiKey, secretKey, passphrase string, settings Settings) exc
 		sdkClient.WithHTTPClient(settings.HTTPClient)
 	}
 	client := &okxPerpClient{
-		perpClient: &perpClient{meta: clientMeta{venue: exchange.VenueOKX, product: exchange.ProductPerp}},
+		perpClient: &perpClient{meta: clientMetaFromSettings(exchange.VenueOKX, exchange.ProductPerp, settings)},
 		sdk:        sdkClient,
 	}
 	wsClient := okx.NewWSClient(context.Background())
@@ -121,13 +129,14 @@ func NewOKXUSDTPerp(apiKey, secretKey, passphrase string, settings Settings) exc
 	if settings.WebSocketEndpoint != "" {
 		privateWSClient.WithURL(settings.WebSocketEndpoint)
 	}
-	perpMeta := func(ctx context.Context, instrument string) (okxContractMeta, error) {
+	perpMeta := func(ctx context.Context, instrument exchange.Instrument) (okxContractMeta, error) {
 		return client.okxPerpMeta(ctx, "WatchPerpReference", instrument)
 	}
 	client.ws = newPerpWebSocket(client.meta, newOKXPerpWSBackendWithClients(
+		client.meta,
 		wsClient,
 		businessWSClient,
 		perpMeta,
-	), newOKXPerpPrivateWSBackend(privateWSClient, okxPerpInstrumentCodeLoader(sdkClient), perpMeta))
+	), newOKXPerpPrivateWSBackend(client.meta, privateWSClient, okxPerpInstrumentCodeLoader(client.meta), perpMeta))
 	return client
 }

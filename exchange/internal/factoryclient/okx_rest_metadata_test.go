@@ -7,28 +7,32 @@ import (
 )
 
 func TestOKXPerpMetasFilterNonUSDTLinearSwapRows(t *testing.T) {
+	btcUSDCode := int64(1000)
+	btcUSDTCode := int64(1001)
 	rows := []okx.Instrument{
 		{
-			InstId:    "BTC-USD-SWAP",
-			InstType:  okxSwapType,
-			State:     "live",
-			SettleCcy: "BTC",
-			CtValCcy:  "USD",
-			CtVal:     "100",
-			LotSz:     "1",
-			MinSz:     "1",
-			TickSz:    "0.1",
+			InstId:     "BTC-USD-SWAP",
+			InstType:   okxSwapType,
+			State:      "live",
+			SettleCcy:  "BTC",
+			CtValCcy:   "USD",
+			CtVal:      "100",
+			LotSz:      "1",
+			MinSz:      "1",
+			TickSz:     "0.1",
+			InstIdCode: &btcUSDCode,
 		},
 		{
-			InstId:    "BTC-USDT-SWAP",
-			InstType:  okxSwapType,
-			State:     "live",
-			SettleCcy: "USDT",
-			CtValCcy:  "BTC",
-			CtVal:     "0.01",
-			LotSz:     "1",
-			MinSz:     "1",
-			TickSz:    "0.1",
+			InstId:     "BTC-USDT-SWAP",
+			InstType:   okxSwapType,
+			State:      "live",
+			SettleCcy:  "USDT",
+			CtValCcy:   "BTC",
+			CtVal:      "0.01",
+			LotSz:      "1",
+			MinSz:      "1",
+			TickSz:     "0.1",
+			InstIdCode: &btcUSDTCode,
 		},
 	}
 
@@ -45,16 +49,18 @@ func TestOKXPerpMetasFilterNonUSDTLinearSwapRows(t *testing.T) {
 }
 
 func TestOKXPerpMetasRejectMalformedUSDTSettledSwapRow(t *testing.T) {
+	code := int64(1001)
 	_, err := okxPerpMetasFromRows([]okx.Instrument{{
-		InstId:    "malformed",
-		InstType:  okxSwapType,
-		State:     "live",
-		SettleCcy: "USDT",
-		CtValCcy:  "BTC",
-		CtVal:     "0.01",
-		LotSz:     "1",
-		MinSz:     "1",
-		TickSz:    "0.1",
+		InstId:     "malformed",
+		InstType:   okxSwapType,
+		State:      "live",
+		SettleCcy:  "USDT",
+		CtValCcy:   "BTC",
+		CtVal:      "0.01",
+		LotSz:      "1",
+		MinSz:      "1",
+		TickSz:     "0.1",
+		InstIdCode: &code,
 	}})
 	if err == nil {
 		t.Fatal("malformed USDT-settled SWAP row succeeded")

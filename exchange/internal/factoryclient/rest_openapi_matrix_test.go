@@ -33,6 +33,7 @@ func (transport *noSendTransport) RoundTrip(*http.Request) (*http.Response, erro
 
 type openAPIRow struct {
 	name    string
+	venue   exchange.Venue
 	product exchange.Product
 	client  any
 }
@@ -46,27 +47,52 @@ func openAPIRows(transport http.RoundTripper) []openAPIRow {
 	testnet := settings
 	testnet.Environment = "testnet"
 	return []openAPIRow{
-		{name: "binance/spot", product: exchange.ProductSpot, client: NewBinanceSpot("", "", settings)},
-		{name: "binance/perp", product: exchange.ProductPerp, client: NewBinanceUSDPerp("", "", settings)},
-		{name: "okx/spot", product: exchange.ProductSpot, client: NewOKXSpot("", "", "", settings)},
-		{name: "okx/perp", product: exchange.ProductPerp, client: NewOKXUSDTPerp("", "", "", settings)},
-		{name: "lighter/spot", product: exchange.ProductSpot, client: NewLighterSpot(openAPILighterPrivateKey, 7, 2, testnet)},
-		{name: "lighter/perp", product: exchange.ProductPerp, client: NewLighterPerp(openAPILighterPrivateKey, 7, 2, testnet)},
-		{name: "hyperliquid/spot", product: exchange.ProductSpot, client: NewHyperliquidSpot(openAPITestPrivateKey, testnet)},
-		{name: "hyperliquid/perp", product: exchange.ProductPerp, client: NewHyperliquidPerp(openAPITestPrivateKey, testnet)},
-		{name: "bybit/spot", product: exchange.ProductSpot, client: NewBybitSpot("", "", settings)},
-		{name: "bybit/usdt-perp", product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDT", settings)},
-		{name: "bybit/usdc-perp", product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDC", settings)},
-		{name: "bitget/spot", product: exchange.ProductSpot, client: NewBitgetSpot("", "", "", settings)},
-		{name: "bitget/usdt-perp", product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDT-FUTURES", settings)},
-		{name: "bitget/usdc-perp", product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDC-FUTURES", settings)},
-		{name: "gate/spot", product: exchange.ProductSpot, client: NewGateSpot("", "", testnet)},
-		{name: "gate/usdt-perp", product: exchange.ProductPerp, client: NewGateUSDTPerp("", "", testnet)},
-		{name: "aster/spot", product: exchange.ProductSpot, client: NewAsterSpot("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
-		{name: "aster/usdt-perp", product: exchange.ProductPerp, client: NewAsterUSDTPerp("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
-		{name: "nado/spot", product: exchange.ProductSpot, client: NewNadoSpot(openAPITestPrivateKey, "default", testnet)},
-		{name: "nado/usdt0-perp", product: exchange.ProductPerp, client: NewNadoUSDT0Perp(openAPITestPrivateKey, "default", testnet)},
+		{name: "binance/spot", venue: exchange.VenueBinance, product: exchange.ProductSpot, client: NewBinanceSpot("", "", settings)},
+		{name: "binance/perp", venue: exchange.VenueBinance, product: exchange.ProductPerp, client: NewBinanceUSDPerp("", "", settings)},
+		{name: "okx/spot", venue: exchange.VenueOKX, product: exchange.ProductSpot, client: NewOKXSpot("", "", "", settings)},
+		{name: "okx/perp", venue: exchange.VenueOKX, product: exchange.ProductPerp, client: NewOKXUSDTPerp("", "", "", settings)},
+		{name: "lighter/spot", venue: exchange.VenueLighter, product: exchange.ProductSpot, client: NewLighterSpot(openAPILighterPrivateKey, 7, 2, testnet)},
+		{name: "lighter/perp", venue: exchange.VenueLighter, product: exchange.ProductPerp, client: NewLighterPerp(openAPILighterPrivateKey, 7, 2, testnet)},
+		{name: "hyperliquid/spot", venue: exchange.VenueHyperliquid, product: exchange.ProductSpot, client: NewHyperliquidSpot(openAPITestPrivateKey, testnet)},
+		{name: "hyperliquid/perp", venue: exchange.VenueHyperliquid, product: exchange.ProductPerp, client: NewHyperliquidPerp(openAPITestPrivateKey, testnet)},
+		{name: "bybit/spot", venue: exchange.VenueBybit, product: exchange.ProductSpot, client: NewBybitSpot("", "", settings)},
+		{name: "bybit/usdt-perp", venue: exchange.VenueBybit, product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDT", settings)},
+		{name: "bybit/usdc-perp", venue: exchange.VenueBybit, product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDC", settings)},
+		{name: "bitget/spot", venue: exchange.VenueBitget, product: exchange.ProductSpot, client: NewBitgetSpot("", "", "", settings)},
+		{name: "bitget/usdt-perp", venue: exchange.VenueBitget, product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDT-FUTURES", settings)},
+		{name: "bitget/usdc-perp", venue: exchange.VenueBitget, product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDC-FUTURES", settings)},
+		{name: "gate/spot", venue: exchange.VenueGate, product: exchange.ProductSpot, client: NewGateSpot("", "", testnet)},
+		{name: "gate/usdt-perp", venue: exchange.VenueGate, product: exchange.ProductPerp, client: NewGateUSDTPerp("", "", testnet)},
+		{name: "aster/spot", venue: exchange.VenueAster, product: exchange.ProductSpot, client: NewAsterSpot("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
+		{name: "aster/usdt-perp", venue: exchange.VenueAster, product: exchange.ProductPerp, client: NewAsterUSDTPerp("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
+		{name: "nado/spot", venue: exchange.VenueNado, product: exchange.ProductSpot, client: NewNadoSpot(openAPITestPrivateKey, "default", testnet)},
+		{name: "nado/usdt0-perp", venue: exchange.VenueNado, product: exchange.ProductPerp, client: NewNadoUSDT0Perp(openAPITestPrivateKey, "default", testnet)},
 	}
+}
+
+func openAPITestInstrument(venue exchange.Venue, product exchange.Product) exchange.Instrument {
+	settlement := ""
+	if product == exchange.ProductPerp {
+		settlement = "USDT"
+	}
+	if venue == exchange.VenueNado {
+		settlement = "USDT0"
+	}
+	return newInstrument(
+		venue,
+		product,
+		"BTC-USDT",
+		"BTC",
+		"USDT",
+		settlement,
+		"BTC-USDT",
+		"1",
+		decimal.RequireFromString("0.1"),
+		decimal.RequireFromString("0.001"),
+		decimal.RequireFromString("0.001"),
+		exchange.OptionalDecimal{},
+		oneContract(),
+	)
 }
 
 func TestOpenAPIRestSurfaceMatrix(t *testing.T) {
@@ -102,6 +128,20 @@ func TestOpenAPIRestSurfaceMatrix(t *testing.T) {
 	}
 }
 
+func TestFirstPromotionSliceImplementsExactOrderLookup(t *testing.T) {
+	transport := new(noSendTransport)
+	for _, row := range openAPIRows(transport)[:8] {
+		t.Run(row.name, func(t *testing.T) {
+			if _, ok := row.client.(exchange.ExactOrderLookup); !ok {
+				t.Fatalf("%s does not implement exchange.ExactOrderLookup", row.name)
+			}
+		})
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("constructing exact lookup clients performed %d network calls", got)
+	}
+}
+
 func TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork(t *testing.T) {
 	transport := &noSendTransport{}
 	for _, row := range openAPIRows(transport) {
@@ -112,7 +152,7 @@ func TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork(t *testin
 			{
 				name: "limit policy on market order",
 				request: exchange.PlaceOrderRequest{
-					Instrument:    "BTC-USDT",
+					Instrument:    openAPITestInstrument(row.venue, row.product),
 					ClientOrderID: "101",
 					Side:          exchange.SideBuy,
 					Type:          exchange.OrderTypeMarket,
@@ -123,7 +163,7 @@ func TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork(t *testin
 			{
 				name: "missing client order id",
 				request: exchange.PlaceOrderRequest{
-					Instrument: "BTC-USDT",
+					Instrument: openAPITestInstrument(row.venue, row.product),
 					Side:       exchange.SideBuy,
 					Type:       exchange.OrderTypeMarket,
 					Quantity:   decimal.NewFromInt(1),
@@ -154,7 +194,7 @@ func TestOpenAPICancelOrderRejectsNonPortableOrderIDBeforeNetwork(t *testing.T) 
 		for _, orderID := range []string{"", "0", "01", "not-an-order-id", "9223372036854775808"} {
 			t.Run(row.name+"/"+orderID, func(t *testing.T) {
 				request := exchange.CancelOrderRequest{
-					Instrument: "BTC-USDT",
+					Instrument: openAPITestInstrument(row.venue, row.product),
 					OrderID:    orderID,
 				}
 				var err error
@@ -258,59 +298,60 @@ func TestOpenAPIOrderParameterMatrix(t *testing.T) {
 	}
 	rows := []struct {
 		name      string
+		venue     exchange.Venue
 		product   exchange.Product
 		translate func(exchange.PlaceOrderRequest) nativeOrderShape
 	}{
 		{
-			name: "binance/spot", product: exchange.ProductSpot,
+			name: "binance/spot", venue: exchange.VenueBinance, product: exchange.ProductSpot,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				row := binanceSpotPlaceParams("BTCUSDT", "BUY", req)
 				return nativeOrderShape{orderType: row.Type, tif: row.TimeInForce, hasPrice: row.Price != "", clientID: row.NewClientOrderID}
 			},
 		},
 		{
-			name: "binance/perp", product: exchange.ProductPerp,
+			name: "binance/perp", venue: exchange.VenueBinance, product: exchange.ProductPerp,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				row := binancePerpPlaceParams("BTCUSDT", req)
 				return nativeOrderShape{orderType: row.Type, tif: row.TimeInForce, hasPrice: row.Price != "", reduce: row.ReduceOnly, clientID: row.NewClientOrderID}
 			},
 		},
 		{
-			name: "okx/spot", product: exchange.ProductSpot,
+			name: "okx/spot", venue: exchange.VenueOKX, product: exchange.ProductSpot,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				orderType, price := okxOrderRequestShape(req)
 				return nativeOrderShape{orderType: orderType, hasPrice: price != nil, clientID: req.ClientOrderID}
 			},
 		},
 		{
-			name: "okx/perp", product: exchange.ProductPerp,
+			name: "okx/perp", venue: exchange.VenueOKX, product: exchange.ProductPerp,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				orderType, price := okxOrderRequestShape(req)
 				return nativeOrderShape{orderType: orderType, hasPrice: price != nil, reduce: req.ReduceOnly, clientID: req.ClientOrderID}
 			},
 		},
 		{
-			name: "lighter/spot", product: exchange.ProductSpot,
+			name: "lighter/spot", venue: exchange.VenueLighter, product: exchange.ProductSpot,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				row := lighterPlaceRequest(lighterMarketMeta{marketID: 1}, req, 100, 200, 101, 0)
 				return lighterNativeOrderShape(row)
 			},
 		},
 		{
-			name: "lighter/perp", product: exchange.ProductPerp,
+			name: "lighter/perp", venue: exchange.VenueLighter, product: exchange.ProductPerp,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				row := lighterPlaceRequest(lighterMarketMeta{marketID: 1}, req, 100, 200, 101, 0)
 				return lighterNativeOrderShape(row)
 			},
 		},
 		{
-			name: "hyperliquid/spot", product: exchange.ProductSpot,
+			name: "hyperliquid/spot", venue: exchange.VenueHyperliquid, product: exchange.ProductSpot,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				return hyperliquidNativeOrderShape(req)
 			},
 		},
 		{
-			name: "hyperliquid/perp", product: exchange.ProductPerp,
+			name: "hyperliquid/perp", venue: exchange.VenueHyperliquid, product: exchange.ProductPerp,
 			translate: func(req exchange.PlaceOrderRequest) nativeOrderShape {
 				shape := hyperliquidNativeOrderShape(req)
 				shape.reduce = req.ReduceOnly
@@ -323,7 +364,7 @@ func TestOpenAPIOrderParameterMatrix(t *testing.T) {
 		for _, request := range requests {
 			t.Run(row.name+"/"+request.name, func(t *testing.T) {
 				req := exchange.PlaceOrderRequest{
-					Instrument:    "BTC-USDT",
+					Instrument:    openAPITestInstrument(row.venue, row.product),
 					ClientOrderID: "101",
 					Side:          exchange.SideBuy,
 					Type:          request.kind,

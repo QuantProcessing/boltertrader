@@ -13,8 +13,8 @@ import (
 
 func TestLighterMarketProtectionPriceUsesFarSideAndConservativeTickRounding(t *testing.T) {
 	sdk := lighter.NewClient().WithBaseURL("https://openapi.invalid")
-	sdk.HTTPClient = &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		return openAPIJSONResponse(`{"code":200,"message":"","bids":[{"remaining_base_amount":"1","price":"99"}],"asks":[{"remaining_base_amount":"1","price":"101"}]}`), nil
+	sdk.HTTPClient = &http.Client{Transport: lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return lighterOpenAPIJSONResponse(`{"code":200,"message":"","bids":[{"remaining_base_amount":"1","price":"99"}],"asks":[{"remaining_base_amount":"1","price":"101"}]}`), nil
 	})}
 	meta := lighterMarketMeta{
 		marketID:   7,
@@ -39,12 +39,13 @@ func TestLighterMarketProtectionPriceUsesFarSideAndConservativeTickRounding(t *t
 }
 
 func TestLighterValidatePlaceEnforcesVenueUint48ClientOrderIndex(t *testing.T) {
+	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "2048")
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{MinQuantity: decimal.NewFromInt(1)},
+		instrument: instrument,
 		sizeScale:  decimal.NewFromInt(1),
 	}
 	request := exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDC",
+		Instrument:    instrument,
 		ClientOrderID: "281474976710655",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeMarket,
@@ -61,9 +62,10 @@ func TestLighterValidatePlaceEnforcesVenueUint48ClientOrderIndex(t *testing.T) {
 }
 
 func TestLighterPlaceRequestUsesBoundedAbsoluteExpiryForRestingOrders(t *testing.T) {
+	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "2048")
 	meta := lighterMarketMeta{marketID: 7}
 	base := exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDC",
+		Instrument:    instrument,
 		ClientOrderID: "101",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,

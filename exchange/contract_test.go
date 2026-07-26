@@ -8,6 +8,8 @@ import (
 )
 
 type expectedSpotContract interface {
+	ResolveInstrument(context.Context, string) (Instrument, error)
+	RefreshInstruments(context.Context) ([]Instrument, error)
 	Instruments(context.Context) ([]Instrument, error)
 	OrderBook(context.Context, OrderBookRequest) (OrderBook, error)
 	Candles(context.Context, CandlesRequest) (CandlePage, error)
@@ -24,6 +26,8 @@ type expectedSpotContract interface {
 }
 
 type expectedPerpContract interface {
+	ResolveInstrument(context.Context, string) (Instrument, error)
+	RefreshInstruments(context.Context) ([]Instrument, error)
 	Instruments(context.Context) ([]Instrument, error)
 	OrderBook(context.Context, OrderBookRequest) (OrderBook, error)
 	Candles(context.Context, CandlesRequest) (CandlePage, error)
@@ -106,14 +110,14 @@ func TestProductClientMethodSets(t *testing.T) {
 
 	assertMethodNames(t, spot, []string{
 		"Balances", "CancelOrder", "Candles", "Close", "Fills", "Instruments", "OpenOrders",
-		"OrderBook", "OrderHistory", "PlaceOrder", "PublicTrades", "SpotAccount",
-		"WebSocket",
+		"OrderBook", "OrderHistory", "PlaceOrder", "PublicTrades", "RefreshInstruments",
+		"ResolveInstrument", "SpotAccount", "WebSocket",
 	})
 	assertMethodNames(t, perp, []string{
 		"Balances", "CancelOrder", "Candles", "Close", "Fills", "FundingRate",
 		"FundingRateHistory", "Instruments", "OpenOrders", "OrderBook",
 		"OrderHistory", "PerpAccount", "PlaceOrder", "Positions", "PublicTrades",
-		"SetLeverage", "WebSocket",
+		"RefreshInstruments", "ResolveInstrument", "SetLeverage", "WebSocket",
 	})
 
 	for _, forbidden := range []string{

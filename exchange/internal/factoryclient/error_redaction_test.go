@@ -67,7 +67,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 			name: "binance spot",
 			run: func() outcome {
 				ack, err := binanceSpotCommandAck(
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT"),
 					exchange.OrderOperationPlace,
 					"PlaceOrder",
 					"",
@@ -82,7 +82,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 			run: func() outcome {
 				ack, err := binancePerpCommandErrorAck(
 					"PlaceOrder",
-					binancePerpAck(exchange.OrderOperationPlace, "BTC-USDT", "", "client-1"),
+					binancePerpAck(exchange.OrderOperationPlace, websocketTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT"), "", "client-1"),
 					&binanceperp.APIError{Code: -1013, Message: canary, HTTPStatus: http.StatusBadRequest},
 				)
 				return outcome{ack: ack, err: err}
@@ -94,7 +94,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 				ack, err := okxCommandTransportAck(
 					exchange.ProductPerp,
 					exchange.OrderOperationPlace,
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueOKX, exchange.ProductPerp, "BTC-USDT"),
 					"",
 					"client-1",
 					&okx.APIError{Code: "51000", Message: canary, Details: canary},
@@ -108,7 +108,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 				ack, err := lighterCommandErr(
 					exchange.ProductPerp,
 					exchange.OrderOperationPlace,
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueLighter, exchange.ProductPerp, "BTC-USDT"),
 					"",
 					"client-1",
 					&lighter.APIError{Code: http.StatusBadRequest, Message: canary},
@@ -124,7 +124,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 				ack, err := hlMutationErr(
 					exchange.ProductPerp,
 					exchange.OrderOperationPlace,
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueHyperliquid, exchange.ProductPerp, "BTC-USDT"),
 					"",
 					"client-1",
 					&hyperliquid.OrderRejectedError{Reason: canary},
@@ -199,7 +199,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 				ack, err := gateCommandErr(
 					clientMeta{venue: exchange.VenueGate, product: exchange.ProductSpot},
 					exchange.OrderOperationPlace,
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueGate, exchange.ProductSpot, "BTC-USDT"),
 					"",
 					"1",
 					&gate.APIError{StatusCode: http.StatusBadRequest, Label: "INVALID_ARGUMENT", Message: canary, Body: canary},
@@ -213,7 +213,7 @@ func TestAllVenueMutationNormalizersRedactVenueMessages(t *testing.T) {
 				ack, err := gateCommandErr(
 					clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp},
 					exchange.OrderOperationPlace,
-					"BTC-USDT",
+					websocketTestInstrument(exchange.VenueGate, exchange.ProductPerp, "BTC-USDT"),
 					"",
 					"1",
 					&gate.APIError{StatusCode: http.StatusBadRequest, Label: "INVALID_ARGUMENT", Message: canary, Body: canary},

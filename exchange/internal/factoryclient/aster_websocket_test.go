@@ -19,18 +19,39 @@ import (
 )
 
 func TestAsterWebSocketFixtureFileCoversOrderBridge(t *testing.T) {
-	TestAsterWebSocketOrderCommandsUseRESTBridge(t)
+	router := newAsterCatalogRouter()
+	settings := Settings{Environment: "testnet", Endpoint: "https://aster-fixture.invalid", HTTPClient: &http.Client{Transport: router}}
+	socket := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings).WebSocket()
+
+	ack, err := socket.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
+		Instrument:    asterTestInstrument(exchange.ProductPerp, "BTC-USDT"),
+		ClientOrderID: "101",
+		Side:          exchange.SideBuy,
+		Type:          exchange.OrderTypeLimit,
+		Quantity:      decimal.NewFromInt(1),
+		LimitPrice:    decimal.NewFromInt(99),
+		LimitPolicy:   exchange.LimitPolicyResting,
+		ReduceOnly:    true,
+	})
+	if err != nil {
+		t.Fatalf("ws PlaceOrder REST bridge: %v", err)
+	}
+	if ack.Venue != exchange.VenueAster || ack.Product != exchange.ProductPerp || ack.OrderID == "" {
+		t.Fatalf("unexpected ack: %+v", ack)
+	}
 }
 
 func TestAsterWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	fixture := newAsterWSFixture(t)
 	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL, WebSocketEndpoint: fixture.wsURL}
 
-	spot := NewAsterSpot(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings).WebSocket()
-	exerciseAsterSpotWebSocketFixture(t, spot, fixture)
+	spot := NewAsterSpot(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
+	spotInstrument := asterTestInstrument(exchange.ProductSpot, "ASTER-USDT")
+	exerciseAsterSpotWebSocketFixture(t, spot.WebSocket(), fixture, spotInstrument)
 
-	perp := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings).WebSocket()
-	exerciseAsterPerpWebSocketFixture(t, perp, fixture)
+	perp := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
+	perpInstrument := asterTestInstrument(exchange.ProductPerp, "ASTER-USDT")
+	exerciseAsterPerpWebSocketFixture(t, perp.WebSocket(), fixture, perpInstrument)
 }
 
 func TestAsterClientCachesAndClosesWebSocketFacet(t *testing.T) {
@@ -70,7 +91,7 @@ type asterWSFrame struct {
 func newAsterWSFixture(t *testing.T) *asterWSFixture {
 	t.Helper()
 	fixture := &asterWSFixture{t: t, frames: make(chan asterWSFrame, 128)}
-	rest := newAsterOpenAPIRouter()
+	rest := newAsterCatalogRouter()
 	fixture.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
 			fixture.serveWS(w, r)
@@ -254,12 +275,12 @@ func (fixture *asterWSFixture) requireFrame(method, stream string) {
 	}
 }
 
-func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, fixture *asterWSFixture) {
+func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, fixture *asterWSFixture, instrument exchange.Instrument) {
 	t.Helper()
 	defer ws.Close()
 	ctx := context.Background()
 
-	book, err := ws.WatchOrderBook(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	book, err := ws.WatchOrderBook(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchOrderBook: %v", err)
 	}
@@ -268,7 +289,7 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	requireSubscriptionEvent(t, book.Events(), "Aster spot book")
 	_ = book.Close()
 
-	bbo, err := ws.WatchBBO(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	bbo, err := ws.WatchBBO(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchBBO: %v", err)
 	}
@@ -276,7 +297,7 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	requireSubscriptionEvent(t, bbo.Events(), "Aster spot bbo")
 	_ = bbo.Close()
 
-	trades, err := ws.WatchPublicTrades(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	trades, err := ws.WatchPublicTrades(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchPublicTrades: %v", err)
 	}
@@ -284,7 +305,7 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	requireSubscriptionEvent(t, trades.Events(), "Aster spot trade")
 	_ = trades.Close()
 
-	candles, err := ws.WatchCandles(ctx, exchange.WatchCandlesRequest{Instrument: "ASTER-USDT", Interval: "1m", Options: exchange.WatchOptions{Buffer: 8}})
+	candles, err := ws.WatchCandles(ctx, exchange.WatchCandlesRequest{Instrument: instrument, Interval: "1m", Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchCandles: %v", err)
 	}
@@ -292,16 +313,16 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	requireSubscriptionEvent(t, candles.Events(), "Aster spot candle")
 	_ = candles.Close()
 
-	orders, err := ws.WatchOrders(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	orders, err := ws.WatchOrders(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchOrders: %v", err)
 	}
 	fixture.requireFrame("ACCOUNT", "spot-listen-key")
 	fixture.requireFrame("ACCOUNT_WRITE_ATTEMPT", "spot-listen-key")
 	fixture.requireFrame("ACCOUNT_WRITE", "spot-listen-key")
-	requireSubscriptionEventOrError(t, orders, "Aster spot order")
+	requireAsterSubscriptionEventOrError(t, orders, "Aster spot order")
 	_ = orders.Close()
-	fills, err := ws.WatchFills(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	fills, err := ws.WatchFills(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster spot WatchFills: %v", err)
 	}
@@ -314,18 +335,19 @@ func exerciseAsterSpotWebSocketFixture(t *testing.T, ws exchange.SpotWebSocket, 
 	requireSubscriptionEvent(t, balances.Events(), "Aster spot balance")
 	_ = balances.Close()
 
-	ack, err := ws.PlaceOrder(ctx, exchange.PlaceOrderRequest{Instrument: "BTC-USDT", ClientOrderID: "101", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.NewFromInt(1), LimitPrice: decimal.NewFromInt(99), LimitPolicy: exchange.LimitPolicyResting})
+	orderInstrument := asterTestInstrument(exchange.ProductSpot, "BTC-USDT")
+	ack, err := ws.PlaceOrder(ctx, exchange.PlaceOrderRequest{Instrument: orderInstrument, ClientOrderID: "101", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.NewFromInt(1), LimitPrice: decimal.NewFromInt(99), LimitPolicy: exchange.LimitPolicyResting})
 	if err != nil || ack.OrderID == "" {
 		t.Fatalf("Aster spot ws PlaceOrder REST bridge: ack=%+v err=%v", ack, err)
 	}
 }
 
-func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, fixture *asterWSFixture) {
+func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, fixture *asterWSFixture, instrument exchange.Instrument) {
 	t.Helper()
 	defer ws.Close()
 	ctx := context.Background()
 
-	book, err := ws.WatchOrderBook(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	book, err := ws.WatchOrderBook(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchOrderBook: %v", err)
 	}
@@ -333,7 +355,7 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	requireSubscriptionEvent(t, book.Events(), "Aster perp book")
 	_ = book.Close()
 
-	bbo, err := ws.WatchBBO(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	bbo, err := ws.WatchBBO(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchBBO: %v", err)
 	}
@@ -341,7 +363,7 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	requireSubscriptionEvent(t, bbo.Events(), "Aster perp bbo")
 	_ = bbo.Close()
 
-	trades, err := ws.WatchPublicTrades(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	trades, err := ws.WatchPublicTrades(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchPublicTrades: %v", err)
 	}
@@ -349,7 +371,7 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	requireSubscriptionEvent(t, trades.Events(), "Aster perp trade")
 	_ = trades.Close()
 
-	candles, err := ws.WatchCandles(ctx, exchange.WatchCandlesRequest{Instrument: "ASTER-USDT", Interval: "1m", Options: exchange.WatchOptions{Buffer: 8}})
+	candles, err := ws.WatchCandles(ctx, exchange.WatchCandlesRequest{Instrument: instrument, Interval: "1m", Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchCandles: %v", err)
 	}
@@ -357,13 +379,13 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	requireSubscriptionEvent(t, candles.Events(), "Aster perp candle")
 	_ = candles.Close()
 
-	orders, err := ws.WatchOrders(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	orders, err := ws.WatchOrders(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchOrders: %v", err)
 	}
 	requireSubscriptionEvent(t, orders.Events(), "Aster perp order")
 	_ = orders.Close()
-	fills, err := ws.WatchFills(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	fills, err := ws.WatchFills(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchFills: %v", err)
 	}
@@ -375,21 +397,21 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	}
 	requireSubscriptionEvent(t, balances.Events(), "Aster perp balance")
 	_ = balances.Close()
-	positions, err := ws.WatchPositions(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	positions, err := ws.WatchPositions(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchPositions: %v", err)
 	}
 	requireSubscriptionEvent(t, positions.Events(), "Aster perp position")
 	_ = positions.Close()
 
-	marks, err := ws.WatchMarkPrice(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	marks, err := ws.WatchMarkPrice(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchMarkPrice: %v", err)
 	}
 	fixture.requireFrame("SUBSCRIBE", "asterusdt@markPrice@1s")
 	requireSubscriptionEvent(t, marks.Events(), "Aster perp mark")
 	_ = marks.Close()
-	funding, err := ws.WatchFundingRate(ctx, exchange.WatchRequest{Instrument: "ASTER-USDT", Options: exchange.WatchOptions{Buffer: 8}})
+	funding, err := ws.WatchFundingRate(ctx, exchange.WatchRequest{Instrument: instrument, Options: exchange.WatchOptions{Buffer: 8}})
 	if err != nil {
 		t.Fatalf("Aster perp WatchFundingRate: %v", err)
 	}
@@ -397,7 +419,8 @@ func exerciseAsterPerpWebSocketFixture(t *testing.T, ws exchange.PerpWebSocket, 
 	requireSubscriptionEvent(t, funding.Events(), "Aster perp funding")
 	_ = funding.Close()
 
-	ack, err := ws.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "21"})
+	orderInstrument := asterTestInstrument(exchange.ProductPerp, "BTC-USDT")
+	ack, err := ws.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: orderInstrument, OrderID: "21"})
 	if err != nil || ack.OrderID == "" {
 		t.Fatalf("Aster perp ws CancelOrder REST bridge: ack=%+v err=%v", ack, err)
 	}
@@ -408,6 +431,20 @@ func requireSubscriptionEvent[T any](t *testing.T, ch <-chan T, label string) T 
 	select {
 	case event := <-ch:
 		return event
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+	var zero T
+	return zero
+}
+
+func requireAsterSubscriptionEventOrError[T any](t *testing.T, sub exchange.Subscription[T], label string) T {
+	t.Helper()
+	select {
+	case event := <-sub.Events():
+		return event
+	case err := <-sub.Errors():
+		t.Fatalf("%s error: %v", label, err)
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for %s", label)
 	}

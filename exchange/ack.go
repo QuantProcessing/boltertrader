@@ -26,7 +26,8 @@ type OrderAcknowledgement struct {
 	Product          Product         `json:"product,omitempty"`
 	Operation        OrderOperation  `json:"operation,omitempty"`
 	State            OrderAckState   `json:"state,omitempty"`
-	Instrument       string          `json:"instrument,omitempty"`
+	NativeSymbol     string          `json:"native_symbol,omitempty"`
+	NativeID         string          `json:"native_id,omitempty"`
 	OrderType        OrderType       `json:"order_type,omitempty"`
 	OrderID          string          `json:"order_id,omitempty"`
 	ClientOrderID    string          `json:"client_order_id,omitempty"`
@@ -39,7 +40,7 @@ type OrderAcknowledgement struct {
 
 func (ack OrderAcknowledgement) Validate() error {
 	if ack.Venue == "" || ack.Product == "" || ack.Operation == "" ||
-		ack.State == "" || ack.Instrument == "" {
+		ack.State == "" || ack.NativeSymbol == "" {
 		return ackMalformed("missing acknowledgement metadata")
 	}
 

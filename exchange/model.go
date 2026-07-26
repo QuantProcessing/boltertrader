@@ -63,25 +63,128 @@ type OptionalDecimal struct {
 	Valid bool            `json:"valid"`
 }
 
+type OptionalInt struct {
+	Value int64 `json:"value"`
+	Valid bool  `json:"valid"`
+}
+
+type Environment string
+
+const (
+	EnvironmentLive    Environment = "live"
+	EnvironmentDemo    Environment = "demo"
+	EnvironmentTestnet Environment = "testnet"
+)
+
 type Instrument struct {
-	Symbol            string          `json:"symbol,omitempty"`
-	BaseAsset         string          `json:"base_asset,omitempty"`
-	QuoteAsset        string          `json:"quote_asset,omitempty"`
-	SettleAsset       string          `json:"settle_asset,omitempty"`
-	Product           Product         `json:"product,omitempty"`
+	Identity InstrumentIdentity `json:"identity"`
+	Rules    InstrumentRules    `json:"rules"`
+	Encoding InstrumentEncoding `json:"encoding"`
+	Revision string             `json:"revision,omitempty"`
+}
+
+type InstrumentIdentity struct {
+	Venue        Venue   `json:"venue"`
+	Product      Product `json:"product"`
+	Symbol       string  `json:"symbol"`
+	BaseAsset    string  `json:"base_asset"`
+	QuoteAsset   string  `json:"quote_asset"`
+	SettleAsset  string  `json:"settle_asset,omitempty"`
+	NativeSymbol string  `json:"native_symbol"`
+	NativeID     string  `json:"native_id,omitempty"`
+}
+
+type InstrumentRules struct {
 	PriceIncrement    decimal.Decimal `json:"price_increment"`
 	QuantityIncrement decimal.Decimal `json:"quantity_increment"`
 	MinQuantity       decimal.Decimal `json:"min_quantity"`
 	MinNotional       OptionalDecimal `json:"min_notional"`
 }
 
+type InstrumentEncoding struct {
+	ContractMultiplier OptionalDecimal `json:"contract_multiplier"`
+	PriceScale         OptionalInt     `json:"price_scale"`
+	QuantityScale      OptionalInt     `json:"quantity_scale"`
+	QuoteScale         OptionalInt     `json:"quote_scale"`
+}
+
+func (instrument Instrument) Validate() error {
+	identity := instrument.Identity
+	if identity.Venue == "" || identity.Product == "" || strings.TrimSpace(identity.Symbol) == "" ||
+		strings.TrimSpace(identity.NativeSymbol) == "" || strings.TrimSpace(identity.BaseAsset) == "" ||
+		strings.TrimSpace(identity.QuoteAsset) == "" {
+		return invalidRequest("instrument identity is incomplete")
+	}
+	if !knownVenue(identity.Venue) {
+		return invalidRequest("instrument venue is unknown")
+	}
+	if strings.TrimSpace(identity.Symbol) != identity.Symbol ||
+		strings.TrimSpace(identity.NativeSymbol) != identity.NativeSymbol ||
+		strings.TrimSpace(identity.NativeID) != identity.NativeID ||
+		strings.TrimSpace(identity.BaseAsset) != identity.BaseAsset ||
+		strings.TrimSpace(identity.QuoteAsset) != identity.QuoteAsset ||
+		strings.TrimSpace(identity.SettleAsset) != identity.SettleAsset {
+		return invalidRequest("instrument identity must be trimmed")
+	}
+	if identity.Product != ProductSpot && identity.Product != ProductPerp {
+		return invalidRequest("instrument product is unknown")
+	}
+	rules := instrument.Rules
+	if !rules.PriceIncrement.IsPositive() {
+		return invalidRequest("instrument price increment must be positive")
+	}
+	if !rules.QuantityIncrement.IsPositive() {
+		return invalidRequest("instrument quantity increment must be positive")
+	}
+	if rules.MinQuantity.IsNegative() {
+		return invalidRequest("instrument min quantity must not be negative")
+	}
+	if rules.MinNotional.Valid && rules.MinNotional.Value.IsNegative() {
+		return invalidRequest("instrument min notional must not be negative")
+	}
+	if instrument.Encoding.ContractMultiplier.Valid && !instrument.Encoding.ContractMultiplier.Value.IsPositive() {
+		return invalidRequest("instrument contract multiplier must be positive")
+	}
+	if instrument.Encoding.PriceScale.Valid && instrument.Encoding.PriceScale.Value <= 0 {
+		return invalidRequest("instrument price scale must be positive")
+	}
+	if instrument.Encoding.QuantityScale.Valid && instrument.Encoding.QuantityScale.Value <= 0 {
+		return invalidRequest("instrument quantity scale must be positive")
+	}
+	if instrument.Encoding.QuoteScale.Valid && instrument.Encoding.QuoteScale.Value <= 0 {
+		return invalidRequest("instrument quote scale must be positive")
+	}
+	return nil
+}
+
+func knownVenue(venue Venue) bool {
+	switch venue {
+	case VenueBinance, VenueOKX, VenueLighter, VenueHyperliquid, VenueBybit, VenueBitget, VenueGate, VenueAster, VenueNado:
+		return true
+	default:
+		return false
+	}
+}
+
+func (instrument Instrument) NativeSymbol() string {
+	return instrument.Identity.NativeSymbol
+}
+
+func (instrument Instrument) Symbol() string {
+	return instrument.Identity.Symbol
+}
+
+func (instrument Instrument) Product() Product {
+	return instrument.Identity.Product
+}
+
 type OrderBookRequest struct {
-	Instrument string `json:"instrument,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	Limit      int        `json:"limit,omitempty"`
 }
 
 type OrderBook struct {
-	Instrument string      `json:"instrument,omitempty"`
+	Instrument Instrument  `json:"instrument"`
 	Bids       []BookLevel `json:"bids,omitempty"`
 	Asks       []BookLevel `json:"asks,omitempty"`
 	Time       time.Time   `json:"time,omitempty"`
@@ -95,12 +198,12 @@ type BookLevel struct {
 }
 
 type CandlesRequest struct {
-	Instrument string    `json:"instrument,omitempty"`
-	Interval   string    `json:"interval,omitempty"`
-	Start      time.Time `json:"start,omitempty"`
-	End        time.Time `json:"end,omitempty"`
-	Limit      int       `json:"limit,omitempty"`
-	Cursor     string    `json:"cursor,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	Interval   string     `json:"interval,omitempty"`
+	Start      time.Time  `json:"start,omitempty"`
+	End        time.Time  `json:"end,omitempty"`
+	Limit      int        `json:"limit,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
 }
 
 type CandlePage struct {
@@ -120,8 +223,8 @@ type Candle struct {
 }
 
 type PublicTradesRequest struct {
-	Instrument string `json:"instrument,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	Limit      int        `json:"limit,omitempty"`
 }
 
 type PublicTradePage struct {
@@ -130,7 +233,7 @@ type PublicTradePage struct {
 }
 
 type PublicTrade struct {
-	Instrument string          `json:"instrument,omitempty"`
+	Instrument Instrument      `json:"instrument"`
 	TradeID    string          `json:"trade_id,omitempty"`
 	Side       Side            `json:"side,omitempty"`
 	Price      decimal.Decimal `json:"price"`
@@ -148,7 +251,7 @@ type PageInfo struct {
 }
 
 type PlaceOrderRequest struct {
-	Instrument    string          `json:"instrument,omitempty"`
+	Instrument    Instrument      `json:"instrument"`
 	ClientOrderID string          `json:"client_order_id,omitempty"`
 	Side          Side            `json:"side,omitempty"`
 	Type          OrderType       `json:"type,omitempty"`
@@ -162,14 +265,29 @@ func (request PlaceOrderRequest) Validate(product Product) error {
 	if product != ProductSpot && product != ProductPerp {
 		return invalidRequest("unknown product")
 	}
-	if strings.TrimSpace(request.Instrument) == "" {
-		return invalidRequest("instrument is required")
+	if err := request.Instrument.Validate(); err != nil {
+		return err
+	}
+	if request.Instrument.Identity.Product != product {
+		return invalidRequest("instrument product does not match request product")
 	}
 	if request.Side != SideBuy && request.Side != SideSell {
 		return invalidRequest("side must be buy or sell")
 	}
 	if !request.Quantity.IsPositive() {
 		return invalidRequest("quantity must be positive")
+	}
+	if !decimalAligned(request.Quantity, request.Instrument.Rules.QuantityIncrement) {
+		return invalidRequest("quantity is not aligned to instrument quantity increment")
+	}
+	if request.Quantity.LessThan(request.Instrument.Rules.MinQuantity) {
+		return invalidRequest("quantity is below instrument minimum quantity")
+	}
+	if request.Instrument.Rules.MinNotional.Valid && request.LimitPrice.IsPositive() {
+		notional := request.Quantity.Mul(request.LimitPrice)
+		if notional.LessThan(request.Instrument.Rules.MinNotional.Value) {
+			return invalidRequest("order notional is below instrument minimum notional")
+		}
 	}
 	if !isPortableClientOrderID(request.ClientOrderID) {
 		return invalidRequest("client order id must be a positive decimal uint48")
@@ -190,6 +308,9 @@ func (request PlaceOrderRequest) Validate(product Product) error {
 		if !request.LimitPrice.IsPositive() {
 			return invalidRequest("limit order price must be positive")
 		}
+		if !decimalAligned(request.LimitPrice, request.Instrument.Rules.PriceIncrement) {
+			return invalidRequest("limit order price is not aligned to instrument price increment")
+		}
 		switch request.LimitPolicy {
 		case LimitPolicyResting, LimitPolicyIOC, LimitPolicyPostOnly:
 		default:
@@ -202,35 +323,35 @@ func (request PlaceOrderRequest) Validate(product Product) error {
 }
 
 type CancelOrderRequest struct {
-	Instrument string `json:"instrument,omitempty"`
-	OrderID    string `json:"order_id,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	OrderID    string     `json:"order_id,omitempty"`
 }
 
 type OpenOrdersRequest struct {
-	Instrument string `json:"instrument,omitempty"`
-	Cursor     string `json:"cursor,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	Instrument *Instrument `json:"instrument,omitempty"`
+	Cursor     string      `json:"cursor,omitempty"`
+	Limit      int         `json:"limit,omitempty"`
 }
 
 type OrderHistoryRequest struct {
-	Instrument string    `json:"instrument,omitempty"`
-	Start      time.Time `json:"start,omitempty"`
-	End        time.Time `json:"end,omitempty"`
-	Cursor     string    `json:"cursor,omitempty"`
-	Limit      int       `json:"limit,omitempty"`
+	Instrument *Instrument `json:"instrument,omitempty"`
+	Start      time.Time   `json:"start,omitempty"`
+	End        time.Time   `json:"end,omitempty"`
+	Cursor     string      `json:"cursor,omitempty"`
+	Limit      int         `json:"limit,omitempty"`
 }
 
 type FillsRequest struct {
-	Instrument string    `json:"instrument,omitempty"`
-	OrderID    string    `json:"order_id,omitempty"`
-	Start      time.Time `json:"start,omitempty"`
-	End        time.Time `json:"end,omitempty"`
-	Cursor     string    `json:"cursor,omitempty"`
-	Limit      int       `json:"limit,omitempty"`
+	Instrument *Instrument `json:"instrument,omitempty"`
+	OrderID    string      `json:"order_id,omitempty"`
+	Start      time.Time   `json:"start,omitempty"`
+	End        time.Time   `json:"end,omitempty"`
+	Cursor     string      `json:"cursor,omitempty"`
+	Limit      int         `json:"limit,omitempty"`
 }
 
 type PositionsRequest struct {
-	Instrument string `json:"instrument,omitempty"`
+	Instrument *Instrument `json:"instrument,omitempty"`
 }
 
 type OrderPage struct {
@@ -239,7 +360,8 @@ type OrderPage struct {
 }
 
 type Order struct {
-	Instrument       string          `json:"instrument,omitempty"`
+	NativeSymbol     string          `json:"native_symbol,omitempty"`
+	NativeID         string          `json:"native_id,omitempty"`
 	OrderID          string          `json:"order_id,omitempty"`
 	ClientOrderID    string          `json:"client_order_id,omitempty"`
 	Side             Side            `json:"side,omitempty"`
@@ -261,7 +383,8 @@ type FillPage struct {
 }
 
 type Fill struct {
-	Instrument    string          `json:"instrument,omitempty"`
+	NativeSymbol  string          `json:"native_symbol,omitempty"`
+	NativeID      string          `json:"native_id,omitempty"`
 	OrderID       string          `json:"order_id,omitempty"`
 	ClientOrderID string          `json:"client_order_id,omitempty"`
 	FillID        string          `json:"fill_id,omitempty"`
@@ -294,7 +417,8 @@ type Balance struct {
 }
 
 type Position struct {
-	Instrument       string          `json:"instrument,omitempty"`
+	NativeSymbol     string          `json:"native_symbol,omitempty"`
+	NativeID         string          `json:"native_id,omitempty"`
 	Side             Side            `json:"side,omitempty"`
 	Quantity         decimal.Decimal `json:"quantity"`
 	EntryPrice       decimal.Decimal `json:"entry_price"`
@@ -306,15 +430,15 @@ type Position struct {
 }
 
 type FundingRateRequest struct {
-	Instrument string `json:"instrument,omitempty"`
+	Instrument Instrument `json:"instrument"`
 }
 
 type FundingRateHistoryRequest struct {
-	Instrument string    `json:"instrument,omitempty"`
-	Start      time.Time `json:"start,omitempty"`
-	End        time.Time `json:"end,omitempty"`
-	Cursor     string    `json:"cursor,omitempty"`
-	Limit      int       `json:"limit,omitempty"`
+	Instrument Instrument `json:"instrument"`
+	Start      time.Time  `json:"start,omitempty"`
+	End        time.Time  `json:"end,omitempty"`
+	Cursor     string     `json:"cursor,omitempty"`
+	Limit      int        `json:"limit,omitempty"`
 }
 
 type FundingRatePage struct {
@@ -323,7 +447,8 @@ type FundingRatePage struct {
 }
 
 type FundingRate struct {
-	Instrument      string          `json:"instrument,omitempty"`
+	NativeSymbol    string          `json:"native_symbol,omitempty"`
+	NativeID        string          `json:"native_id,omitempty"`
 	Rate            decimal.Decimal `json:"rate"`
 	MarkPrice       OptionalDecimal `json:"mark_price"`
 	ObservedAt      time.Time       `json:"observed_at,omitempty"`
@@ -332,15 +457,23 @@ type FundingRate struct {
 }
 
 type SetLeverageRequest struct {
-	Instrument string `json:"instrument,omitempty"`
-	Leverage   int    `json:"leverage"`
+	Instrument Instrument `json:"instrument"`
+	Leverage   int        `json:"leverage"`
 }
 
 type Leverage struct {
-	Instrument string `json:"instrument,omitempty"`
+	NativeSymbol string `json:"native_symbol,omitempty"`
+	NativeID     string `json:"native_id,omitempty"`
 	// Effective is the leverage confirmed by the venue. Zero means the venue
 	// accepted the call but does not expose an instrument leverage setting.
 	Effective int `json:"effective"`
+}
+
+func decimalAligned(value, increment decimal.Decimal) bool {
+	if !increment.IsPositive() {
+		return false
+	}
+	return value.Mod(increment).IsZero()
 }
 
 func isPortableClientOrderID(value string) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -155,7 +156,8 @@ func (ws *fakeLighterPrivateWS) CancelOrderOutcome(_ context.Context, _ *lighter
 func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 	backend, fake := newTestLighterPrivateBackend(exchange.ProductPerp)
 	ctx := context.Background()
-	orders, err := backend.StartOrders(ctx, "ETH-USDC", streamCallbacks[exchange.OrderEvent]{Event: func(event exchange.OrderEvent) {
+	instrument := lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7")
+	orders, err := backend.StartOrders(ctx, instrument, streamCallbacks[exchange.OrderEvent]{Event: func(event exchange.OrderEvent) {
 		if event.Order.OrderID != "11" || event.Order.LimitPolicy != exchange.LimitPolicyPostOnly {
 			t.Fatalf("order event=%+v", event)
 		}
@@ -164,7 +166,7 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer orders()
-	fills, err := backend.StartFills(ctx, "ETH-USDC", streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
+	fills, err := backend.StartFills(ctx, instrument, streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
 		if event.Fill.FillID != "21" || event.Fill.Side != exchange.SideSell {
 			t.Fatalf("fill event=%+v", event)
 		}
@@ -185,8 +187,8 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer balances()
-	positions, err := backend.StartPositions(ctx, "ETH-USDC", streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
-		if len(event.Positions) != 1 || event.Positions[0].Instrument != "ETH-USDC" {
+	positions, err := backend.StartPositions(ctx, instrument, streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
+		if len(event.Positions) != 1 || event.Positions[0].NativeSymbol != "ETH-USDC" {
 			t.Fatalf("position event=%+v", event)
 		}
 	}})
@@ -195,7 +197,7 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 	}
 	defer positions()
 	ack, err := backend.PlaceOrder(ctx, exchange.PlaceOrderRequest{
-		Instrument:    "ETH-USDC",
+		Instrument:    instrument,
 		ClientOrderID: "123",
 		Side:          exchange.SideSell,
 		Type:          exchange.OrderTypeLimit,
@@ -210,7 +212,7 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 	if ack.TransactionHash != "0xplace" || fake.place.TimeInForce != lighter.OrderTimeInForcePostOnly || fake.place.ReduceOnly != 1 {
 		t.Fatalf("ack=%+v native=%+v", ack, fake.place)
 	}
-	cancel, err := backend.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "ETH-USDC", OrderID: "11"})
+	cancel, err := backend.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: instrument, OrderID: "11"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +224,10 @@ func TestLighterPrivateWSBackendStreamsAndCommands(t *testing.T) {
 func TestLighterPrivateWSBackendSpotStreamsAndCancel(t *testing.T) {
 	backend, fake := newTestLighterPrivateBackend(exchange.ProductSpot)
 	ctx := context.Background()
-	orderStop, err := backend.StartOrders(ctx, "ETH-USDC", streamCallbacks[exchange.OrderEvent]{
+	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7")
+	orderStop, err := backend.StartOrders(ctx, instrument, streamCallbacks[exchange.OrderEvent]{
 		Event: func(event exchange.OrderEvent) {
-			if event.Order.Instrument != "ETH-USDC" || event.Order.ReduceOnly {
+			if event.Order.NativeSymbol != "ETH-USDC" || event.Order.ReduceOnly {
 				t.Fatalf("spot order event=%+v", event)
 			}
 		},
@@ -232,9 +235,9 @@ func TestLighterPrivateWSBackendSpotStreamsAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fillStop, err := backend.StartFills(ctx, "ETH-USDC", streamCallbacks[exchange.FillEvent]{
+	fillStop, err := backend.StartFills(ctx, instrument, streamCallbacks[exchange.FillEvent]{
 		Event: func(event exchange.FillEvent) {
-			if event.Fill.Instrument != "ETH-USDC" {
+			if event.Fill.NativeSymbol != "ETH-USDC" {
 				t.Fatalf("spot fill event=%+v", event)
 			}
 		},
@@ -253,7 +256,7 @@ func TestLighterPrivateWSBackendSpotStreamsAndCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	cancel, err := backend.CancelOrder(ctx, exchange.CancelOrderRequest{
-		Instrument: "ETH-USDC",
+		Instrument: instrument,
 		OrderID:    "11",
 	})
 	if err != nil {
@@ -285,7 +288,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "spot market",
 			product: exchange.ProductSpot,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "101", Side: exchange.SideBuy,
+				Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "101", Side: exchange.SideBuy,
 				Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("1.2"),
 			},
 			wantType:  lighter.OrderTypeMarket,
@@ -296,7 +299,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "spot limit resting",
 			product: exchange.ProductSpot,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "102", Side: exchange.SideSell,
+				Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "102", Side: exchange.SideSell,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("100"), LimitPolicy: exchange.LimitPolicyResting,
 			},
@@ -308,7 +311,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "spot limit IOC",
 			product: exchange.ProductSpot,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "106", Side: exchange.SideBuy,
+				Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "106", Side: exchange.SideBuy,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("100"), LimitPolicy: exchange.LimitPolicyIOC,
 			},
@@ -320,7 +323,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "spot limit post-only",
 			product: exchange.ProductSpot,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "107", Side: exchange.SideSell,
+				Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "107", Side: exchange.SideSell,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("100"), LimitPolicy: exchange.LimitPolicyPostOnly,
 			},
@@ -332,7 +335,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "perp limit resting",
 			product: exchange.ProductPerp,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "108", Side: exchange.SideSell,
+				Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "108", Side: exchange.SideSell,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("100"), LimitPolicy: exchange.LimitPolicyResting,
 			},
@@ -344,7 +347,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "perp limit IOC",
 			product: exchange.ProductPerp,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "103", Side: exchange.SideBuy,
+				Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "103", Side: exchange.SideBuy,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("101"), LimitPolicy: exchange.LimitPolicyIOC,
 			},
@@ -356,7 +359,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "perp limit post-only reduce-only",
 			product: exchange.ProductPerp,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "104", Side: exchange.SideSell,
+				Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "104", Side: exchange.SideSell,
 				Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1.2"),
 				LimitPrice: decimal.RequireFromString("102"), LimitPolicy: exchange.LimitPolicyPostOnly,
 				ReduceOnly: true,
@@ -370,7 +373,7 @@ func TestLighterPrivateWSBackendPlaceOrderRequestMapping(t *testing.T) {
 			name:    "perp market",
 			product: exchange.ProductPerp,
 			req: exchange.PlaceOrderRequest{
-				Instrument: "ETH-USDC", ClientOrderID: "105", Side: exchange.SideBuy,
+				Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), ClientOrderID: "105", Side: exchange.SideBuy,
 				Type: exchange.OrderTypeMarket, Quantity: decimal.RequireFromString("1.2"),
 			},
 			wantType:  lighter.OrderTypeMarket,
@@ -544,7 +547,7 @@ func TestLighterPrivateWSBackendCommandOutcomeSemantics(t *testing.T) {
 				fake.placeOutcome = tt.outcome
 				fake.placeErr = tt.commandErr
 				ack, err = backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-					Instrument:    "ETH-USDC",
+					Instrument:    lighterTestInstrument(tt.product, "ETH-USDC", "ETH-USDC", "7"),
 					ClientOrderID: "101",
 					Side:          exchange.SideBuy,
 					Type:          exchange.OrderTypeMarket,
@@ -554,7 +557,7 @@ func TestLighterPrivateWSBackendCommandOutcomeSemantics(t *testing.T) {
 				fake.cancelOutcome = tt.outcome
 				fake.cancelErr = tt.commandErr
 				ack, err = backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-					Instrument: "ETH-USDC",
+					Instrument: lighterTestInstrument(tt.product, "ETH-USDC", "ETH-USDC", "7"),
 					OrderID:    "11",
 				})
 			}
@@ -585,7 +588,7 @@ func TestLighterPrivateWSBackendCancelRejectsMissingOrderIDWithoutNativeCall(t *
 		t.Run(string(product), func(t *testing.T) {
 			backend, fake := newTestLighterPrivateBackend(product)
 			ack, err := backend.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-				Instrument: "ETH-USDC",
+				Instrument: lighterTestInstrument(product, "ETH-USDC", "ETH-USDC", "7"),
 			})
 			if !errors.Is(err, exchange.ErrInvalidRequest) {
 				t.Fatalf("err=%v, want %v", err, exchange.ErrInvalidRequest)
@@ -618,7 +621,7 @@ func TestLighterPrivateWSBackendRefreshesAuthForSubscriptionReplay(t *testing.T)
 func TestLighterPrivateWSBackendRecoversOnlyAfterFirstValidPrivateEvent(t *testing.T) {
 	backend, fake := newTestLighterPrivateBackend(exchange.ProductPerp)
 	var statuses []backendStatus
-	stop, err := backend.StartFills(context.Background(), "ETH-USDC", streamCallbacks[exchange.FillEvent]{
+	stop, err := backend.StartFills(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.FillEvent]{
 		Status: func(status backendStatus) {
 			statuses = append(statuses, status)
 		},
@@ -652,19 +655,19 @@ func TestLighterPrivateWSBackendSharesAccountWideFills(t *testing.T) {
 		"8":[{"trade_id":81,"market_id":8,"size":"0.4","price":"201","ask_id":21,"bid_id":22,"ask_client_id":223,"bid_client_id":224,"ask_account_id":99,"bid_account_id":42,"is_maker_ask":false,"timestamp":1700000000300,"maker_fee":2,"taker_fee":3}]
 	}}`)
 	var ethFills, btcFills []string
-	ethStop, err := backend.StartFills(context.Background(), "ETH-USDC", streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
+	ethStop, err := backend.StartFills(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
 		ethFills = append(ethFills, event.Fill.FillID)
-		if event.Fill.Instrument != "ETH-USDC" {
-			t.Fatalf("ETH watcher received fill for %s", event.Fill.Instrument)
+		if event.Fill.NativeSymbol != "ETH-USDC" {
+			t.Fatalf("ETH watcher received fill for %s", event.Fill.NativeSymbol)
 		}
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	btcStop, err := backend.StartFills(context.Background(), "BTC-USDC", streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
+	btcStop, err := backend.StartFills(context.Background(), lighterTestInstrument(exchange.ProductPerp, "BTC-USDC", "BTC-USDC", "8"), streamCallbacks[exchange.FillEvent]{Event: func(event exchange.FillEvent) {
 		btcFills = append(btcFills, event.Fill.FillID)
-		if event.Fill.Instrument != "BTC-USDC" {
-			t.Fatalf("BTC watcher received fill for %s", event.Fill.Instrument)
+		if event.Fill.NativeSymbol != "BTC-USDC" {
+			t.Fatalf("BTC watcher received fill for %s", event.Fill.NativeSymbol)
 		}
 	}})
 	if err != nil {
@@ -706,7 +709,10 @@ func TestLighterPrivateWSBackendConcurrentStartSharesAuthAndHubs(t *testing.T) {
 	errs := make(chan error, 2)
 	stops := make(chan func() error, 2)
 	var wg sync.WaitGroup
-	for _, instrument := range []string{"ETH-USDC", "BTC-USDC"} {
+	for _, instrument := range []exchange.Instrument{
+		lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"),
+		lighterTestInstrument(exchange.ProductPerp, "BTC-USDC", "BTC-USDC", "8"),
+	} {
 		instrument := instrument
 		wg.Add(1)
 		go func() {
@@ -751,12 +757,12 @@ func TestLighterPrivateWSBackendConcurrentStartPropagatesNativeSubscribeFailure(
 	defer cancel()
 	results := make(chan error, 2)
 	go func() {
-		_, err := backend.StartFills(ctx, "ETH-USDC", streamCallbacks[exchange.FillEvent]{})
+		_, err := backend.StartFills(ctx, lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.FillEvent]{})
 		results <- err
 	}()
 	<-started
 	go func() {
-		_, err := backend.StartFills(ctx, "BTC-USDC", streamCallbacks[exchange.FillEvent]{})
+		_, err := backend.StartFills(ctx, lighterTestInstrument(exchange.ProductPerp, "BTC-USDC", "BTC-USDC", "8"), streamCallbacks[exchange.FillEvent]{})
 		results <- err
 	}()
 
@@ -804,18 +810,18 @@ func TestLighterPrivateWSBackendSharesAccountWidePositions(t *testing.T) {
 		"8":{"market_id":8,"symbol":"BTC","sign":1,"position":"2","avg_entry_price":"200","position_value":"210","unrealized_pnl":"10","liquidation_price":"100","allocated_margin":"40"}
 	}}`)
 	var ethSnapshots, btcSnapshots [][]exchange.Position
-	ethStop, err := backend.StartPositions(context.Background(), "ETH-USDC", streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
+	ethStop, err := backend.StartPositions(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH-USDC", "7"), streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
 		ethSnapshots = append(ethSnapshots, event.Positions)
-		if len(event.Positions) != 1 || event.Positions[0].Instrument != "ETH-USDC" {
+		if len(event.Positions) != 1 || event.Positions[0].NativeSymbol != "ETH-USDC" {
 			t.Fatalf("ETH watcher received positions=%+v", event.Positions)
 		}
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	btcStop, err := backend.StartPositions(context.Background(), "BTC-USDC", streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
+	btcStop, err := backend.StartPositions(context.Background(), lighterTestInstrument(exchange.ProductPerp, "BTC-USDC", "BTC-USDC", "8"), streamCallbacks[exchange.PositionEvent]{Event: func(event exchange.PositionEvent) {
 		btcSnapshots = append(btcSnapshots, event.Positions)
-		if len(event.Positions) != 1 || event.Positions[0].Instrument != "BTC-USDC" {
+		if len(event.Positions) != 1 || event.Positions[0].NativeSymbol != "BTC-USDC" {
 			t.Fatalf("BTC watcher received positions=%+v", event.Positions)
 		}
 	}})
@@ -853,13 +859,7 @@ func newTestLighterPrivateBackend(product exchange.Product) (*lighterPrivateWSBa
 		marketType = lighterSpot
 	}
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:            "ETH-USDC",
-			Product:           product,
-			PriceIncrement:    decimal.RequireFromString("0.01"),
-			QuantityIncrement: decimal.RequireFromString("0.1"),
-			MinQuantity:       decimal.RequireFromString("0.1"),
-		},
+		instrument: lighterTestInstrument(product, "ETH-USDC", "ETH-USDC", "7"),
 		marketID:   7,
 		marketType: marketType,
 		priceScale: decimal.NewFromInt(100),
@@ -870,9 +870,9 @@ func newTestLighterPrivateBackend(product exchange.Product) (*lighterPrivateWSBa
 	state.byID = map[int]lighterMarketMeta{7: meta}
 	rest := lighter.NewClient().WithCredentials(strings.Repeat("01", 40), 42, 7)
 	rest.WithBaseURL("https://openapi.invalid")
-	rest.HTTPClient = &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	rest.HTTPClient = &http.Client{Transport: lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path == "/api/v1/orderBookOrders" {
-			return openAPIJSONResponse(`{"code":200,"message":"","bids":[{"remaining_base_amount":"1","price":"99"}],"asks":[{"remaining_base_amount":"1","price":"101"}]}`), nil
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","bids":[{"remaining_base_amount":"1","price":"99"}],"asks":[{"remaining_base_amount":"1","price":"101"}]}`), nil
 		}
 		return &http.Response{
 			StatusCode: http.StatusNotFound,
@@ -889,13 +889,7 @@ func newTestLighterPrivateBackend(product exchange.Product) (*lighterPrivateWSBa
 
 func addTestLighterMarket(backend *lighterPrivateWSBackend, instrument string, marketID int) {
 	meta := lighterMarketMeta{
-		instrument: exchange.Instrument{
-			Symbol:            instrument,
-			Product:           backend.product,
-			PriceIncrement:    decimal.RequireFromString("0.01"),
-			QuantityIncrement: decimal.RequireFromString("0.1"),
-			MinQuantity:       decimal.RequireFromString("0.1"),
-		},
+		instrument: lighterTestInstrument(backend.product, instrument, instrument, strconv.Itoa(marketID)),
 		marketID:   marketID,
 		marketType: backend.marketType,
 		priceScale: decimal.NewFromInt(100),

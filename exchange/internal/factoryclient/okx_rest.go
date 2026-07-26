@@ -32,11 +32,11 @@ func (client *okxSpotClient) Instruments(ctx context.Context) ([]exchange.Instru
 	if err := okxReady(ctx, exchange.ProductSpot, "Instruments", client.sdk); err != nil {
 		return nil, err
 	}
-	rows, err := client.sdk.GetInstruments(ctx, okxSpotType)
+	snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
 	if err != nil {
-		return nil, okxNormalizeErr(exchange.ProductSpot, "Instruments", err)
+		return nil, withExchangeOperation(err, "Instruments")
 	}
-	return okxSpotInstruments(rows)
+	return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
 }
 
 func (client *okxSpotClient) OrderBook(ctx context.Context, req exchange.OrderBookRequest) (exchange.OrderBook, error) {
@@ -49,7 +49,11 @@ func (client *okxSpotClient) OrderBook(ctx context.Context, req exchange.OrderBo
 	if req.Limit < 0 {
 		return exchange.OrderBook{}, okxInvalid(exchange.ProductSpot, "OrderBook", "limit must be non-negative")
 	}
-	rows, err := client.sdk.GetOrderBook(ctx, req.Instrument, okxLimitPtr(req.Limit))
+	native, err := okxSpotNativeInstrument("OrderBook", req.Instrument)
+	if err != nil {
+		return exchange.OrderBook{}, err
+	}
+	rows, err := client.sdk.GetOrderBook(ctx, native, okxLimitPtr(req.Limit))
 	if err != nil {
 		return exchange.OrderBook{}, okxNormalizeErr(exchange.ProductSpot, "OrderBook", err)
 	}
@@ -84,7 +88,7 @@ func (client *okxSpotClient) PlaceOrder(ctx context.Context, req exchange.PlaceO
 		targetCurrency = &value
 	}
 	oid, err := client.sdk.PlaceOrder(ctx, &okx.OrderRequest{
-		InstId:  req.Instrument,
+		InstId:  req.Instrument.Identity.NativeSymbol,
 		TdMode:  tradeMode,
 		ClOrdId: okxStringPtr(req.ClientOrderID),
 		Side:    string(req.Side),
@@ -111,7 +115,11 @@ func (client *okxSpotClient) CancelOrder(ctx context.Context, req exchange.Cance
 	if err := okxValidateCancel(exchange.ProductSpot, req); err != nil {
 		return exchange.OrderAcknowledgement{}, okxInvalid(exchange.ProductSpot, "CancelOrder", err.Error())
 	}
-	oid, err := client.sdk.CancelOrder(ctx, req.Instrument, req.OrderID, "")
+	native, err := okxSpotNativeInstrument("CancelOrder", req.Instrument)
+	if err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	oid, err := client.sdk.CancelOrder(ctx, native, req.OrderID, "")
 	if err != nil {
 		return okxCommandTransportAck(exchange.ProductSpot, exchange.OrderOperationCancel, req.Instrument, req.OrderID, "", err)
 	}
@@ -136,7 +144,7 @@ func (client *okxSpotClient) OpenOrders(ctx context.Context, req exchange.OpenOr
 	}
 	orders := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
-		if row.InstType != okxSpotType || (req.Instrument != "" && row.InstId != req.Instrument) {
+		if row.InstType != okxSpotType || !okxOptionalInstrumentMatches(req.Instrument, row.InstId) {
 			return exchange.OrderPage{}, okxMalformed(exchange.ProductSpot, "OpenOrders", "mixed product or instrument row")
 		}
 		order, err := okxOrder(row, decimal.NewFromInt(1))
@@ -167,7 +175,7 @@ func (client *okxSpotClient) Fills(ctx context.Context, req exchange.FillsReques
 	}
 	fills := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
-		if row.InstType != okxSpotType || (req.Instrument != "" && row.InstId != req.Instrument) {
+		if row.InstType != okxSpotType || !okxOptionalInstrumentMatches(req.Instrument, row.InstId) {
 			return exchange.FillPage{}, okxMalformed(exchange.ProductSpot, "Fills", "mixed product or instrument row")
 		}
 		fill, err := okxFill(row, decimal.NewFromInt(1))
@@ -275,15 +283,12 @@ func (client *okxPerpClient) Instruments(ctx context.Context) ([]exchange.Instru
 	if err := okxReady(ctx, exchange.ProductPerp, "Instruments", client.sdk); err != nil {
 		return nil, err
 	}
-	metas, err := client.okxPerpMetas(ctx, "Instruments")
+	snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
 	if err != nil {
-		return nil, err
+		return nil, withExchangeOperation(err, "Instruments")
 	}
-	out := make([]exchange.Instrument, 0, len(metas))
-	for _, meta := range metas {
-		out = append(out, meta.instrument)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Symbol < out[j].Symbol })
+	out := append([]exchange.Instrument(nil), snapshot.Instruments...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity.Symbol < out[j].Identity.Symbol })
 	return out, nil
 }
 
@@ -301,7 +306,7 @@ func (client *okxPerpClient) OrderBook(ctx context.Context, req exchange.OrderBo
 	if err != nil {
 		return exchange.OrderBook{}, err
 	}
-	rows, err := client.sdk.GetOrderBook(ctx, req.Instrument, okxLimitPtr(req.Limit))
+	rows, err := client.sdk.GetOrderBook(ctx, req.Instrument.Identity.NativeSymbol, okxLimitPtr(req.Limit))
 	if err != nil {
 		return exchange.OrderBook{}, okxNormalizeErr(exchange.ProductPerp, "OrderBook", err)
 	}
@@ -335,7 +340,7 @@ func (client *okxPerpClient) PlaceOrder(ctx context.Context, req exchange.PlaceO
 	}
 	ordType, px := okxOrderRequestShape(req)
 	oid, err := client.sdk.PlaceOrder(ctx, &okx.OrderRequest{
-		InstId:     req.Instrument,
+		InstId:     req.Instrument.Identity.NativeSymbol,
 		TdMode:     okxCrossMode,
 		ClOrdId:    okxStringPtr(req.ClientOrderID),
 		Side:       string(req.Side),
@@ -362,7 +367,11 @@ func (client *okxPerpClient) CancelOrder(ctx context.Context, req exchange.Cance
 	if err := okxValidateCancel(exchange.ProductPerp, req); err != nil {
 		return exchange.OrderAcknowledgement{}, okxInvalid(exchange.ProductPerp, "CancelOrder", err.Error())
 	}
-	oid, err := client.sdk.CancelOrder(ctx, req.Instrument, req.OrderID, "")
+	native, err := okxSwapNativeInstrument("CancelOrder", req.Instrument)
+	if err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	oid, err := client.sdk.CancelOrder(ctx, native, req.OrderID, "")
 	if err != nil {
 		return okxCommandTransportAck(exchange.ProductPerp, exchange.OrderOperationCancel, req.Instrument, req.OrderID, "", err)
 	}
@@ -381,8 +390,8 @@ func (client *okxPerpClient) OpenOrders(ctx context.Context, req exchange.OpenOr
 		return exchange.OrderPage{}, okxInvalid(exchange.ProductPerp, "OpenOrders", err.Error())
 	}
 	var requestedMeta okxContractMeta
-	if req.Instrument != "" {
-		requestedMeta, err = client.okxPerpMeta(ctx, "OpenOrders", req.Instrument)
+	if req.Instrument != nil {
+		requestedMeta, err = client.okxPerpMeta(ctx, "OpenOrders", *req.Instrument)
 		if err != nil {
 			return exchange.OrderPage{}, err
 		}
@@ -394,12 +403,12 @@ func (client *okxPerpClient) OpenOrders(ctx context.Context, req exchange.OpenOr
 	}
 	orders := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
-		if row.InstType != okxSwapType || (req.Instrument != "" && row.InstId != req.Instrument) {
+		if row.InstType != okxSwapType || !okxOptionalInstrumentMatches(req.Instrument, row.InstId) {
 			return exchange.OrderPage{}, okxMalformed(exchange.ProductPerp, "OpenOrders", "mixed product or instrument row")
 		}
 		meta := requestedMeta
-		if req.Instrument == "" {
-			meta, err = client.okxPerpMeta(ctx, "OpenOrders", row.InstId)
+		if req.Instrument == nil {
+			meta, err = client.okxPerpMetaByNative(ctx, "OpenOrders", row.InstId)
 			if err != nil {
 				return exchange.OrderPage{}, err
 			}
@@ -425,8 +434,8 @@ func (client *okxPerpClient) Fills(ctx context.Context, req exchange.FillsReques
 		return exchange.FillPage{}, okxInvalid(exchange.ProductPerp, "Fills", err.Error())
 	}
 	var requestedMeta okxContractMeta
-	if req.Instrument != "" {
-		requestedMeta, err = client.okxPerpMeta(ctx, "Fills", req.Instrument)
+	if req.Instrument != nil {
+		requestedMeta, err = client.okxPerpMeta(ctx, "Fills", *req.Instrument)
 		if err != nil {
 			return exchange.FillPage{}, err
 		}
@@ -438,12 +447,12 @@ func (client *okxPerpClient) Fills(ctx context.Context, req exchange.FillsReques
 	}
 	fills := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
-		if row.InstType != okxSwapType || (req.Instrument != "" && row.InstId != req.Instrument) {
+		if row.InstType != okxSwapType || !okxOptionalInstrumentMatches(req.Instrument, row.InstId) {
 			return exchange.FillPage{}, okxMalformed(exchange.ProductPerp, "Fills", "mixed product or instrument row")
 		}
 		meta := requestedMeta
-		if req.Instrument == "" {
-			meta, err = client.okxPerpMeta(ctx, "Fills", row.InstId)
+		if req.Instrument == nil {
+			meta, err = client.okxPerpMetaByNative(ctx, "Fills", row.InstId)
 			if err != nil {
 				return exchange.FillPage{}, err
 			}
@@ -508,8 +517,8 @@ func (client *okxPerpClient) Positions(ctx context.Context, req exchange.Positio
 		return nil, okxInvalid(exchange.ProductPerp, "Positions", err.Error())
 	}
 	var requestedMeta okxContractMeta
-	if req.Instrument != "" {
-		requestedMeta, err = client.okxPerpMeta(ctx, "Positions", req.Instrument)
+	if req.Instrument != nil {
+		requestedMeta, err = client.okxPerpMeta(ctx, "Positions", *req.Instrument)
 		if err != nil {
 			return nil, err
 		}
@@ -521,12 +530,12 @@ func (client *okxPerpClient) Positions(ctx context.Context, req exchange.Positio
 	}
 	positions := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
-		if row.InstType != okxSwapType || (req.Instrument != "" && row.InstId != req.Instrument) {
+		if row.InstType != okxSwapType || !okxOptionalInstrumentMatches(req.Instrument, row.InstId) {
 			return nil, okxMalformed(exchange.ProductPerp, "Positions", "mixed product or instrument row")
 		}
 		meta := requestedMeta
-		if req.Instrument == "" {
-			meta, err = client.okxPerpMeta(ctx, "Positions", row.InstId)
+		if req.Instrument == nil {
+			meta, err = client.okxPerpMetaByNative(ctx, "Positions", row.InstId)
 			if err != nil {
 				return nil, err
 			}
@@ -547,71 +556,34 @@ func (client *okxPerpClient) okxPerpMetas(ctx context.Context, operation string)
 	if err := okxReady(ctx, exchange.ProductPerp, operation, client.sdk); err != nil {
 		return nil, err
 	}
-	for {
-		client.cacheMu.Lock()
-		if client.contracts != nil {
-			cached := client.contracts
-			client.cacheMu.Unlock()
-			return cached, nil
-		}
-		if client.loading == nil {
-			client.loading = make(chan struct{})
-			loading := client.loading
-			client.cacheMu.Unlock()
-			return client.okxLoadPerpMetas(ctx, operation, loading)
-		}
-		loading := client.loading
-		client.cacheMu.Unlock()
-
-		select {
-		case <-loading:
-		case <-ctx.Done():
-			return nil, okxContextErr(exchange.ProductPerp, operation, ctx.Err())
-		}
+	snapshot, err := client.meta.catalog.Snapshot(ctx, client.meta.catalogScope)
+	if err != nil {
+		return nil, withExchangeOperation(err, operation)
 	}
+	metas := make(map[string]okxContractMeta, len(snapshot.Instruments))
+	for _, instrument := range snapshot.Instruments {
+		meta, err := okxContractMetaFromInstrument(instrument)
+		if err != nil {
+			return nil, okxMalformed(exchange.ProductPerp, operation, err.Error())
+		}
+		metas[instrument.Identity.NativeSymbol] = meta
+	}
+	return metas, nil
 }
 
-func (client *okxPerpClient) okxLoadPerpMetas(ctx context.Context, operation string, loading chan struct{}) (map[string]okxContractMeta, error) {
-	rows, err := client.sdk.GetInstruments(ctx, okxSwapType)
-	if err != nil {
-		client.cacheMu.Lock()
-		if client.loading == loading {
-			client.loading = nil
-			close(loading)
-		}
-		client.cacheMu.Unlock()
-		return nil, okxNormalizeErr(exchange.ProductPerp, operation, err)
-	}
-	metas, err := okxPerpMetasFromRows(rows)
-	if err != nil {
-		client.cacheMu.Lock()
-		if client.loading == loading {
-			client.loading = nil
-			close(loading)
-		}
-		client.cacheMu.Unlock()
-		return nil, okxMalformed(exchange.ProductPerp, operation, err.Error())
-	}
-	client.cacheMu.Lock()
-	client.contracts = metas
-	cached := client.contracts
-	if client.loading == loading {
-		client.loading = nil
-		close(loading)
-	}
-	client.cacheMu.Unlock()
-	return cached, nil
-}
-
-func (client *okxPerpClient) okxPerpMeta(ctx context.Context, operation, instrument string) (okxContractMeta, error) {
+func (client *okxPerpClient) okxPerpMeta(ctx context.Context, operation string, instrument exchange.Instrument) (okxContractMeta, error) {
 	if err := okxValidateSwapInstrument(instrument); err != nil {
 		return okxContractMeta{}, okxInvalid(exchange.ProductPerp, operation, err.Error())
 	}
+	return client.okxPerpMetaByNative(ctx, operation, instrument.Identity.NativeSymbol)
+}
+
+func (client *okxPerpClient) okxPerpMetaByNative(ctx context.Context, operation, nativeSymbol string) (okxContractMeta, error) {
 	metas, err := client.okxPerpMetas(ctx, operation)
 	if err != nil {
 		return okxContractMeta{}, err
 	}
-	meta, ok := metas[instrument]
+	meta, ok := metas[nativeSymbol]
 	if !ok {
 		return okxContractMeta{}, okxInvalid(exchange.ProductPerp, operation, "instrument is not present in OKX SWAP metadata")
 	}
@@ -628,7 +600,15 @@ func okxSpotInstruments(rows []okx.Instrument) ([]exchange.Instrument, error) {
 		if row.State != "live" {
 			continue
 		}
-		if err := okxValidateSpotInstrument(row.InstId); err != nil {
+		if err := okxValidateRawSpotNativeSymbol(row.InstId); err != nil {
+			return nil, okxMalformed(exchange.ProductSpot, "Instruments", err.Error())
+		}
+		parts := strings.Split(row.InstId, "-")
+		if row.BaseCcy != parts[0] || row.QuoteCcy != parts[1] {
+			return nil, okxMalformed(exchange.ProductSpot, "Instruments", "instrument metadata does not match native symbol")
+		}
+		nativeID, err := okxInstrumentNativeID(row)
+		if err != nil {
 			return nil, okxMalformed(exchange.ProductSpot, "Instruments", err.Error())
 		}
 		if _, exists := seen[row.InstId]; exists {
@@ -647,15 +627,21 @@ func okxSpotInstruments(rows []okx.Instrument) ([]exchange.Instrument, error) {
 		if err != nil {
 			return nil, okxMalformed(exchange.ProductSpot, "Instruments", "invalid min size")
 		}
-		out = append(out, exchange.Instrument{
-			Symbol:            row.InstId,
-			BaseAsset:         row.BaseCcy,
-			QuoteAsset:        row.QuoteCcy,
-			Product:           exchange.ProductSpot,
-			PriceIncrement:    price,
-			QuantityIncrement: qty,
-			MinQuantity:       min,
-		})
+		out = append(out, newInstrument(
+			exchange.VenueOKX,
+			exchange.ProductSpot,
+			row.InstId,
+			parts[0],
+			parts[1],
+			"",
+			row.InstId,
+			nativeID,
+			price,
+			qty,
+			min,
+			exchange.OptionalDecimal{},
+			oneContract(),
+		))
 	}
 	return out, nil
 }
@@ -672,7 +658,11 @@ func okxPerpMetasFromRows(rows []okx.Instrument) (map[string]okxContractMeta, er
 		if row.SettleCcy != "USDT" {
 			continue
 		}
-		if err := okxValidateSwapInstrument(row.InstId); err != nil {
+		if err := okxValidateRawSwapNativeSymbol(row.InstId); err != nil {
+			return nil, err
+		}
+		nativeID, err := okxInstrumentNativeID(row)
+		if err != nil {
 			return nil, err
 		}
 		if row.CtValCcy != okxSwapBase(row.InstId) {
@@ -698,16 +688,21 @@ func okxPerpMetasFromRows(rows []okx.Instrument) (map[string]okxContractMeta, er
 			return nil, errors.New("duplicate instrument")
 		}
 		metas[row.InstId] = okxContractMeta{
-			instrument: exchange.Instrument{
-				Symbol:            row.InstId,
-				BaseAsset:         okxSwapBase(row.InstId),
-				QuoteAsset:        "USDT",
-				SettleAsset:       "USDT",
-				Product:           exchange.ProductPerp,
-				PriceIncrement:    price,
-				QuantityIncrement: lot.Mul(ctVal),
-				MinQuantity:       min.Mul(ctVal),
-			},
+			instrument: newInstrument(
+				exchange.VenueOKX,
+				exchange.ProductPerp,
+				row.InstId,
+				okxSwapBase(row.InstId),
+				"USDT",
+				"USDT",
+				row.InstId,
+				nativeID,
+				price,
+				lot.Mul(ctVal),
+				min.Mul(ctVal),
+				exchange.OptionalDecimal{},
+				exchange.OptionalDecimal{Value: ctVal, Valid: true},
+			),
 			contractValue:     ctVal,
 			contractIncrement: lot,
 		}
@@ -715,7 +710,7 @@ func okxPerpMetasFromRows(rows []okx.Instrument) (map[string]okxContractMeta, er
 	return metas, nil
 }
 
-func okxOrderBook(product exchange.Product, operation, instrument string, limit int, rows []okx.OrderBook, multiplier decimal.Decimal) (exchange.OrderBook, error) {
+func okxOrderBook(product exchange.Product, operation string, instrument exchange.Instrument, limit int, rows []okx.OrderBook, multiplier decimal.Decimal) (exchange.OrderBook, error) {
 	if len(rows) != 1 {
 		return exchange.OrderBook{}, okxMalformed(product, operation, "order book response must contain exactly one row")
 	}
@@ -761,7 +756,7 @@ func okxCandles(ctx context.Context, sdk *okx.Client, product exchange.Product, 
 		value := strconv.FormatInt(req.Start.UnixMilli(), 10)
 		before = &value
 	}
-	rows, err := sdk.GetCandles(ctx, req.Instrument, &req.Interval, after, before, okxLimitPtr(req.Limit))
+	rows, err := sdk.GetCandles(ctx, req.Instrument.Identity.NativeSymbol, &req.Interval, after, before, okxLimitPtr(req.Limit))
 	if err != nil {
 		return exchange.CandlePage{}, okxNormalizeErr(product, "Candles", err)
 	}
@@ -787,7 +782,7 @@ func okxCandles(ctx context.Context, sdk *okx.Client, product exchange.Product, 
 	return exchange.CandlePage{Candles: candles, Page: page}, nil
 }
 
-func okxCommandAck(product exchange.Product, operation string, op exchange.OrderOperation, instrument, requestOrderID, requestClientOrderID string, rows []okx.OrderId) (exchange.OrderAcknowledgement, error) {
+func okxCommandAck(product exchange.Product, operation string, op exchange.OrderOperation, instrument exchange.Instrument, requestOrderID, requestClientOrderID string, rows []okx.OrderId) (exchange.OrderAcknowledgement, error) {
 	if len(rows) != 1 {
 		return exchange.OrderAcknowledgement{}, okxMalformed(product, operation, "order command response must contain exactly one item")
 	}
@@ -818,7 +813,7 @@ func okxCommandAck(product exchange.Product, operation string, op exchange.Order
 	return ack, nil
 }
 
-func okxCommandTransportAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
+func okxCommandTransportAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string, err error) (exchange.OrderAcknowledgement, error) {
 	ack := okxBaseAck(product, op, instrument, orderID, clientOrderID)
 	ack.State = exchange.AckAmbiguous
 	operation := okxCommandOperation(op)
@@ -865,8 +860,8 @@ func okxCommandOperation(operation exchange.OrderOperation) string {
 	}
 }
 
-func okxBaseAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
-	return exchange.OrderAcknowledgement{Venue: okxVenue, Product: product, Operation: op, Instrument: instrument, OrderID: orderID, ClientOrderID: clientOrderID}
+func okxBaseAck(product exchange.Product, op exchange.OrderOperation, instrument exchange.Instrument, orderID, clientOrderID string) exchange.OrderAcknowledgement {
+	return exchange.OrderAcknowledgement{Venue: okxVenue, Product: product, Operation: op, NativeSymbol: instrument.Identity.NativeSymbol, NativeID: instrument.Identity.NativeID, OrderID: orderID, ClientOrderID: clientOrderID}
 }
 
 func okxOrder(row okx.Order, multiplier decimal.Decimal) (exchange.Order, error) {
@@ -907,7 +902,7 @@ func okxOrder(row okx.Order, multiplier decimal.Decimal) (exchange.Order, error)
 	orderType, limitPolicy := okxNormalizedOrderPolicy(row.OrdType)
 	reduceOnly := strings.EqualFold(row.ReduceOnly, "true")
 	return exchange.Order{
-		Instrument:       row.InstId,
+		NativeSymbol:     row.InstId,
 		OrderID:          row.OrdId,
 		ClientOrderID:    row.ClOrdId,
 		Side:             side,
@@ -950,7 +945,7 @@ func okxFill(row okx.Fill, multiplier decimal.Decimal) (exchange.Fill, error) {
 		return exchange.Fill{}, err
 	}
 	return exchange.Fill{
-		Instrument:    row.InstId,
+		NativeSymbol:  row.InstId,
 		OrderID:       row.OrdId,
 		ClientOrderID: row.ClOrdId,
 		FillID:        row.TradeId,
@@ -1019,7 +1014,7 @@ func okxPosition(row okx.Position, multiplier decimal.Decimal) (exchange.Positio
 	if err != nil {
 		return exchange.Position{}, err
 	}
-	return exchange.Position{Instrument: row.InstId, Side: side, Quantity: signedQty.Mul(multiplier), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
+	return exchange.Position{NativeSymbol: row.InstId, Side: side, Quantity: signedQty.Mul(multiplier), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: liq, Leverage: lev, MarginUsed: margin}, nil
 }
 
 func okxCandle(row okx.Candle, product exchange.Product, interval time.Duration) (exchange.Candle, error) {
@@ -1131,27 +1126,108 @@ func okxValidateCancel(product exchange.Product, req exchange.CancelOrderRequest
 	return nil
 }
 
-func okxOptionalSpotInstrument(instrument string) (*string, error) {
-	if instrument == "" {
+func okxOptionalSpotInstrument(instrument *exchange.Instrument) (*string, error) {
+	if instrument == nil {
 		return nil, nil
 	}
+	native, err := okxSpotNativeInstrument("OpenOrders", *instrument)
+	if err != nil {
+		return nil, err
+	}
+	return &native, nil
+}
+
+func okxOptionalSwapInstrument(instrument *exchange.Instrument) (*string, error) {
+	if instrument == nil {
+		return nil, nil
+	}
+	native, err := okxSwapNativeInstrument("OpenOrders", *instrument)
+	if err != nil {
+		return nil, err
+	}
+	return &native, nil
+}
+
+func okxValidateSpotInstrument(instrument exchange.Instrument) error {
+	if err := instrument.Validate(); err != nil {
+		return err
+	}
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueOKX || identity.Product != exchange.ProductSpot || identity.SettleAsset != "" {
+		return errors.New("instrument must be OKX SPOT")
+	}
+	parts := strings.Split(identity.NativeSymbol, "-")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ToUpper(identity.NativeSymbol) != identity.NativeSymbol {
+		return errors.New("instrument must be exact OKX SPOT BASE-QUOTE")
+	}
+	if identity.Symbol != identity.NativeSymbol || identity.BaseAsset != parts[0] || identity.QuoteAsset != parts[1] {
+		return errors.New("instrument identity does not match OKX SPOT native symbol")
+	}
+	return nil
+}
+
+func okxValidateSwapInstrument(instrument exchange.Instrument) error {
+	if err := instrument.Validate(); err != nil {
+		return err
+	}
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueOKX || identity.Product != exchange.ProductPerp || identity.SettleAsset != "USDT" {
+		return errors.New("instrument must be OKX USDT-linear SWAP")
+	}
+	parts := strings.Split(identity.NativeSymbol, "-")
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "USDT" || parts[2] != "SWAP" || strings.ToUpper(identity.NativeSymbol) != identity.NativeSymbol {
+		return errors.New("instrument must be exact OKX USDT-linear BASE-USDT-SWAP")
+	}
+	if identity.Symbol != identity.NativeSymbol || identity.BaseAsset != parts[0] || identity.QuoteAsset != "USDT" {
+		return errors.New("instrument identity does not match OKX SWAP native symbol")
+	}
+	return nil
+}
+
+func okxSpotNativeInstrument(operation string, instrument exchange.Instrument) (string, error) {
 	if err := okxValidateSpotInstrument(instrument); err != nil {
-		return nil, err
+		return "", okxInvalid(exchange.ProductSpot, operation, err.Error())
 	}
-	return &instrument, nil
+	return instrument.Identity.NativeSymbol, nil
 }
 
-func okxOptionalSwapInstrument(instrument string) (*string, error) {
-	if instrument == "" {
-		return nil, nil
-	}
+func okxSwapNativeInstrument(operation string, instrument exchange.Instrument) (string, error) {
 	if err := okxValidateSwapInstrument(instrument); err != nil {
-		return nil, err
+		return "", okxInvalid(exchange.ProductPerp, operation, err.Error())
 	}
-	return &instrument, nil
+	return instrument.Identity.NativeSymbol, nil
 }
 
-func okxValidateSpotInstrument(instrument string) error {
+func okxOptionalInstrumentMatches(instrument *exchange.Instrument, nativeSymbol string) bool {
+	return instrument == nil || instrument.Identity.NativeSymbol == nativeSymbol
+}
+
+func okxContractMetaFromInstrument(instrument exchange.Instrument) (okxContractMeta, error) {
+	if err := okxValidateSwapInstrument(instrument); err != nil {
+		return okxContractMeta{}, err
+	}
+	if !instrument.Encoding.ContractMultiplier.Valid || !instrument.Encoding.ContractMultiplier.Value.IsPositive() {
+		return okxContractMeta{}, errors.New("OKX contract multiplier is missing")
+	}
+	if !instrument.Rules.QuantityIncrement.IsPositive() {
+		return okxContractMeta{}, errors.New("OKX contract quantity increment is invalid")
+	}
+	contractValue := instrument.Encoding.ContractMultiplier.Value
+	return okxContractMeta{
+		instrument:        instrument,
+		contractValue:     contractValue,
+		contractIncrement: instrument.Rules.QuantityIncrement.Div(contractValue),
+	}, nil
+}
+
+func okxInstrumentNativeID(row okx.Instrument) (string, error) {
+	if row.InstIdCode == nil || *row.InstIdCode <= 0 {
+		return "", errors.New("instrument code is missing")
+	}
+	return strconv.FormatInt(*row.InstIdCode, 10), nil
+}
+
+func okxValidateRawSpotNativeSymbol(instrument string) error {
 	parts := strings.Split(instrument, "-")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ToUpper(instrument) != instrument {
 		return errors.New("instrument must be exact OKX SPOT BASE-QUOTE")
@@ -1159,7 +1235,7 @@ func okxValidateSpotInstrument(instrument string) error {
 	return nil
 }
 
-func okxValidateSwapInstrument(instrument string) error {
+func okxValidateRawSwapNativeSymbol(instrument string) error {
 	parts := strings.Split(instrument, "-")
 	if len(parts) != 3 || parts[0] == "" || parts[1] != "USDT" || parts[2] != "SWAP" || strings.ToUpper(instrument) != instrument {
 		return errors.New("instrument must be exact OKX USDT-linear BASE-USDT-SWAP")

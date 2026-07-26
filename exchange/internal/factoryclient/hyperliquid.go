@@ -13,11 +13,8 @@ import (
 
 type hyperliquidSpotClient struct {
 	*spotClient
-	sdk      *hyperliquidspot.Client
-	ws       exchange.SpotWebSocket
-	cacheMu  sync.Mutex
-	loading  chan struct{}
-	metadata map[string]hyperliquidMarketMeta
+	sdk *hyperliquidspot.Client
+	ws  exchange.SpotWebSocket
 }
 
 func NewHyperliquidSpot(privateKey string, settings Settings) exchange.SpotClient {
@@ -35,7 +32,7 @@ func NewHyperliquidSpot(privateKey string, settings Settings) exchange.SpotClien
 	}
 	base.Http = hyperliquidTrackedHTTPClient(settings.HTTPClient)
 	client := &hyperliquidSpotClient{
-		spotClient: &spotClient{meta: clientMeta{venue: exchange.VenueHyperliquid, product: exchange.ProductSpot}},
+		spotClient: &spotClient{meta: clientMetaFromSettings(exchange.VenueHyperliquid, exchange.ProductSpot, settings)},
 		sdk:        hyperliquidspot.NewClient(base),
 	}
 	client.ws = newSpotWebSocket(
@@ -47,11 +44,8 @@ func NewHyperliquidSpot(privateKey string, settings Settings) exchange.SpotClien
 
 type hyperliquidPerpClient struct {
 	*perpClient
-	sdk      *hyperliquidperp.Client
-	ws       exchange.PerpWebSocket
-	cacheMu  sync.Mutex
-	loading  chan struct{}
-	metadata map[string]hyperliquidMarketMeta
+	sdk *hyperliquidperp.Client
+	ws  exchange.PerpWebSocket
 }
 
 func NewHyperliquidPerp(privateKey string, settings Settings) exchange.PerpClient {
@@ -69,7 +63,7 @@ func NewHyperliquidPerp(privateKey string, settings Settings) exchange.PerpClien
 	}
 	base.Http = hyperliquidTrackedHTTPClient(settings.HTTPClient)
 	client := &hyperliquidPerpClient{
-		perpClient: &perpClient{meta: clientMeta{venue: exchange.VenueHyperliquid, product: exchange.ProductPerp}},
+		perpClient: &perpClient{meta: clientMetaFromSettings(exchange.VenueHyperliquid, exchange.ProductPerp, settings)},
 		sdk:        hyperliquidperp.NewClient(base),
 	}
 	client.ws = newPerpWebSocket(

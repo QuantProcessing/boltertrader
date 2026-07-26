@@ -12,11 +12,14 @@
         "Candles",
         "Fills",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -33,6 +36,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_binance_test.go",
         "exchange/internal/factoryclient/binance_public_websocket_test.go",
         "exchange/internal/factoryclient/binance_private_websocket_test.go"
       ],
@@ -55,6 +59,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -62,6 +67,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -81,6 +88,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_binance_test.go",
         "exchange/internal/factoryclient/binance_public_websocket_test.go",
         "exchange/internal/factoryclient/binance_private_websocket_test.go"
       ],
@@ -101,11 +109,14 @@
         "Candles",
         "Fills",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -122,6 +133,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_okx_test.go",
         "exchange/internal/factoryclient/okx_public_websocket_test.go",
         "exchange/internal/factoryclient/okx_private_websocket_test.go"
       ],
@@ -144,6 +156,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -151,6 +164,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -170,6 +185,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_okx_test.go",
         "exchange/internal/factoryclient/okx_public_websocket_test.go",
         "exchange/internal/factoryclient/okx_private_websocket_test.go"
       ],
@@ -190,11 +206,14 @@
         "Candles",
         "Fills",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -211,13 +230,14 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_lighter_test.go",
         "exchange/internal/factoryclient/lighter_public_websocket_test.go",
         "exchange/internal/factoryclient/lighter_private_websocket_test.go"
       ],
       "acceptance_target": "test-exchange-lighter-testnet-spot",
       "acceptance": {
         "status": "waived",
-        "reason": "Lighter Testnet ETH/USDC and LIT/USDC had platform-provided one-sided books; user accepted waiver, and no synthetic liquidity/self-trade was used."
+        "reason": "Lighter Testnet Spot is structurally one-sided. The user authorized a live-write waiver: the serial target verifies REST reads, account access, the one-sided order-book stream, remaining public/private subscription activation, and invalid-request boundaries with zero live order mutations; WatchBBO, exact lookup, and write paths remain explicitly waived or fixture-only, and the gateway keeps the row not write-ready."
       }
     },
     {
@@ -233,6 +253,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -240,6 +261,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -259,6 +282,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_lighter_test.go",
         "exchange/internal/factoryclient/lighter_public_websocket_test.go",
         "exchange/internal/factoryclient/lighter_private_websocket_test.go"
       ],
@@ -279,11 +303,14 @@
         "Candles",
         "Fills",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -300,6 +327,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_hyperliquid_test.go",
         "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
         "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
       ],
@@ -322,6 +350,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -329,6 +358,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -348,6 +379,7 @@
       ],
       "fixtures": [
         "exchange/internal/factoryclient/rest_openapi_execution_test.go",
+        "exchange/internal/factoryclient/exact_lookup_hyperliquid_test.go",
         "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
         "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
       ],
@@ -373,6 +405,8 @@
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -417,6 +451,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -464,6 +500,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -507,6 +545,8 @@
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -551,6 +591,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -598,6 +640,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -641,6 +685,8 @@
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -685,6 +731,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -728,6 +776,8 @@
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -772,6 +822,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -815,6 +867,8 @@
         "OrderHistory",
         "PlaceOrder",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SpotAccount"
       ],
       "websocket_methods": [
@@ -859,6 +913,8 @@
         "PlaceOrder",
         "Positions",
         "PublicTrades",
+        "RefreshInstruments",
+        "ResolveInstrument",
         "SetLeverage"
       ],
       "websocket_methods": [
@@ -888,6 +944,16 @@
     }
   ],
   "rest_methods": [
+    {
+      "method": "ResolveInstrument",
+      "spot": true,
+      "perp": true
+    },
+    {
+      "method": "RefreshInstruments",
+      "spot": true,
+      "perp": true
+    },
     {
       "method": "Instruments",
       "spot": true,
@@ -1037,6 +1103,102 @@
     }
   ],
   "operations": [
+    {
+      "id": "rest.ResolveInstrument",
+      "method": "ResolveInstrument",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "none after catalog is configured",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "Instrument",
+      "cleanup": "none",
+      "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
+        "BNP",
+        "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "NDP",
+        "NDS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
+      ]
+    },
+    {
+      "id": "rest.RefreshInstruments",
+      "method": "RefreshInstruments",
+      "transport": "rest",
+      "spot": true,
+      "perp": true,
+      "effect": "read",
+      "credentials": "valid constructor credentials; endpoint request is public",
+      "funding_requirement": "none",
+      "expected_ack": "",
+      "expected_event": "[]Instrument",
+      "cleanup": "none",
+      "external_cells": [
+        "ATP",
+        "ATS",
+        "BGC",
+        "BGS",
+        "BGU",
+        "BNP",
+        "BNS",
+        "BYC",
+        "BYS",
+        "BYU",
+        "GTS",
+        "GTU",
+        "HLP",
+        "HLS",
+        "LIP",
+        "LIS",
+        "NDP",
+        "NDS",
+        "OXP",
+        "OXS"
+      ],
+      "tests": [
+        "TestProductClientMethodSets",
+        "TestModelsCarryMatrixRequiredNormalizedFields",
+        "TestOpenAPIBinanceRESTExecutionMatrix",
+        "TestOpenAPIOKXRESTExecutionMatrix",
+        "TestOpenAPILighterRESTExecutionMatrix",
+        "TestOpenAPIHyperliquidRESTExecutionMatrix",
+        "TestOpenAPIBybitRESTExecutionMatrix",
+        "TestOpenAPIBitgetRESTExecutionMatrix",
+        "TestOpenAPIGateRESTExecutionMatrix",
+        "TestOpenAPIAsterRESTExecutionMatrix",
+        "TestOpenAPINadoRESTExecutionMatrix"
+      ]
+    },
     {
       "id": "rest.Instruments",
       "method": "Instruments",
@@ -1938,7 +2100,7 @@
         "TestBinancePerpPublicWSBackendNormalizesStreamsAndReference",
         "TestOKXPublicWSBackendStartCandlesMapsStrictIntervalsAndNormalizes",
         "TestOKXPerpWSBackendStartCandlesUsesBaseVolumeAndReconnectLifecycle",
-        "TestLighterStartCandlesValidatesResolutionAndWaitsForFirstValidEvent",
+        "TestLighterStartCandlesValidatesResolutionAndActivatesAfterSubscriptionAck",
         "TestHyperliquidPublicWebSocketsExerciseEveryExposedMethod",
         "TestBybitWebSocketExercisesEveryExposedMethod",
         "TestBitgetWebSocketExercisesEveryExposedMethod",
@@ -4251,14 +4413,6 @@
       ]
     },
     {
-      "id": "exchange.BBOEvent",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
       "id": "exchange.Balance",
       "kind": "type",
       "coverage": "contract",
@@ -4268,6 +4422,14 @@
     },
     {
       "id": "exchange.BalanceEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.BBOEvent",
       "kind": "type",
       "coverage": "contract",
       "tests": [
@@ -4331,6 +4493,73 @@
       ]
     },
     {
+      "id": "exchange.CatalogIndexes",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.CatalogScope",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.CatalogStatus",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.DefaultInstrumentCatalog",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
+      ]
+    },
+    {
+      "id": "exchange.Environment",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestVenueEnvironmentValidation"
+      ]
+    },
+    {
+      "id": "exchange.EnvironmentDemo",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestVenueEnvironmentValidation"
+      ]
+    },
+    {
+      "id": "exchange.EnvironmentLive",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestVenueEnvironmentValidation"
+      ]
+    },
+    {
+      "id": "exchange.EnvironmentTestnet",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestVenueEnvironmentValidation"
+      ]
+    },
+    {
       "id": "exchange.ErrAmbiguousOutcome",
       "kind": "var",
       "coverage": "contract",
@@ -4387,63 +4616,15 @@
       ]
     },
     {
+      "id": "exchange.ErrMetadataResolution",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
       "id": "exchange.ErrNotFound",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
-      ]
-    },
-    {
-      "id": "exchange.ErrPermission",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
-      ]
-    },
-    {
-      "id": "exchange.ErrRateLimit",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
-      ]
-    },
-    {
-      "id": "exchange.ErrSubscriptionClosed",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.ErrSubscriptionGap",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.ErrTransport",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
-      ]
-    },
-    {
-      "id": "exchange.ErrUnsupported",
-      "kind": "var",
-      "coverage": "contract",
-      "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
-      ]
-    },
-    {
-      "id": "exchange.ErrVenueRejected",
       "kind": "var",
       "coverage": "contract",
       "tests": [
@@ -4507,6 +4688,70 @@
       ]
     },
     {
+      "id": "exchange.errorSentinel.Error",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrPermission",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrRateLimit",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrSubscriptionClosed",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.ErrSubscriptionGap",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.ErrTransport",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrUnsupported",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.ErrVenueRejected",
+      "kind": "var",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
       "id": "exchange.EventDelta",
       "kind": "const",
       "coverage": "contract",
@@ -4563,19 +4808,19 @@
       ]
     },
     {
-      "id": "exchange.FundingRateEvent",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
       "id": "exchange.FundingRate",
       "kind": "type",
       "coverage": "contract",
       "tests": [
         "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.FundingRateEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
       ]
     },
     {
@@ -4635,6 +4880,193 @@
       ]
     },
     {
+      "id": "exchange.Instrument.NativeSymbol",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.Instrument.Product",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.Instrument.Symbol",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.Instrument.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentCatalog",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentCatalog.Refresh",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentCatalog.Resolve",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentCatalog.Snapshot",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentCatalog.Status",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentEncoding",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentIdentity",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentLoader",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentLoader.LoadInstruments",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentQuery",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentRules",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentSnapshot",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentSourceRegistrar",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentSourceRegistrar.RegisterSource",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentStore",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentStore.Load",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.InstrumentStore.Save",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
       "id": "exchange.KindAmbiguousOutcome",
       "kind": "const",
       "coverage": "contract",
@@ -4684,6 +5116,14 @@
     },
     {
       "id": "exchange.KindMalformedResponse",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.KindMetadataResolution",
       "kind": "const",
       "coverage": "contract",
       "tests": [
@@ -4755,6 +5195,14 @@
       ]
     },
     {
+      "id": "exchange.Leverage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
       "id": "exchange.LimitPolicy",
       "kind": "type",
       "coverage": "contract",
@@ -4811,14 +5259,6 @@
       ]
     },
     {
-      "id": "exchange.MarkPriceEvent",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
       "id": "exchange.MarketREST",
       "kind": "interface",
       "coverage": "contract",
@@ -4859,11 +5299,257 @@
       ]
     },
     {
+      "id": "exchange.MarketREST.RefreshInstruments",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarketREST.ResolveInstrument",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestProductClientMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MarkPriceEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog.Refresh",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog.RegisterSource",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog.Resolve",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog.Snapshot",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.MemoryCatalog.Status",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.NewDefaultMemoryCatalog",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
+      ]
+    },
+    {
       "id": "exchange.NewError",
       "kind": "func",
       "coverage": "contract",
       "tests": [
         "TestNormalizedErrorKindsAndMetadata"
+      ]
+    },
+    {
+      "id": "exchange.NewMemoryCatalog",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderFound",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultStatusesAreFrozen"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidence",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidence.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidenceByClientOrderID",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidenceByHistoryPage",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidenceByOpenOrders",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidenceByVenueOrderID",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderEvidenceMethod",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookup",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupInterfaceShape"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookup.LookupExactOrder",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupInterfaceShape"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookupRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupRequestRequiresExactlyOneIdentity"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookupRequest.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupRequestRequiresExactlyOneIdentity"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookupResult",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultStatusesAreFrozen"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookupResult.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderLookupStatus",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultStatusesAreFrozen"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderNotFound",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultStatusesAreFrozen"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderUnconfirmed",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultStatusesAreFrozen"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderScope",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
+      ]
+    },
+    {
+      "id": "exchange.ExactOrderScope.Validate",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestExactOrderLookupResultRequiresScopedAuthoritativeEvidence"
       ]
     },
     {
@@ -4883,19 +5569,20 @@
       ]
     },
     {
+      "id": "exchange.OptionalInt",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestInstrumentContractIsCompleteExecutionDescriptor",
+        "TestInstrumentValidationRequiresPositiveEncodingScales"
+      ]
+    },
+    {
       "id": "exchange.Order",
       "kind": "type",
       "coverage": "contract",
       "tests": [
         "TestModelsCarryMatrixRequiredNormalizedFields"
-      ]
-    },
-    {
-      "id": "exchange.OrderAckState",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestOrderAcknowledgementStates"
       ]
     },
     {
@@ -4909,6 +5596,14 @@
     {
       "id": "exchange.OrderAcknowledgement.Validate",
       "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestOrderAcknowledgementStates"
+      ]
+    },
+    {
+      "id": "exchange.OrderAckState",
+      "kind": "type",
       "coverage": "contract",
       "tests": [
         "TestOrderAcknowledgementStates"
@@ -4939,6 +5634,14 @@
       ]
     },
     {
+      "id": "exchange.OrderHistoryRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
       "id": "exchange.OrderOperation",
       "kind": "type",
       "coverage": "contract",
@@ -4960,14 +5663,6 @@
       "coverage": "contract",
       "tests": [
         "TestModelsCarryMatrixRequiredNormalizedFields"
-      ]
-    },
-    {
-      "id": "exchange.OrderHistoryRequest",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestRESTPageRequestShapesRemainBoundedAndTyped"
       ]
     },
     {
@@ -5251,19 +5946,19 @@
       ]
     },
     {
-      "id": "exchange.PublicTradeEvent",
-      "kind": "type",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
       "id": "exchange.PublicTrade",
       "kind": "type",
       "coverage": "contract",
       "tests": [
         "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.PublicTradeEvent",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
       ]
     },
     {
@@ -5280,6 +5975,14 @@
       "coverage": "contract",
       "tests": [
         "TestRESTPageRequestShapesRemainBoundedAndTyped"
+      ]
+    },
+    {
+      "id": "exchange.SetLeverageRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
       ]
     },
     {
@@ -5307,19 +6010,19 @@
       ]
     },
     {
-      "id": "exchange.SetLeverageRequest",
+      "id": "exchange.SourceDescriptor",
       "kind": "type",
       "coverage": "contract",
       "tests": [
-        "TestModelsCarryMatrixRequiredNormalizedFields"
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
       ]
     },
     {
-      "id": "exchange.Leverage",
-      "kind": "type",
+      "id": "exchange.SourceDescriptor.Fingerprint",
+      "kind": "method",
       "coverage": "contract",
       "tests": [
-        "TestModelsCarryMatrixRequiredNormalizedFields"
+        "TestDefaultCatalogSourceRegistrationSharesSameScopeAndConflictsDeterministically"
       ]
     },
     {
@@ -5411,20 +6114,20 @@
       ]
     },
     {
-      "id": "exchange.SpotWebSocket.WatchBBO",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
       "id": "exchange.SpotWebSocket.WatchBalances",
       "kind": "interface_method",
       "coverage": "contract",
       "tests": [
         "TestWebSocketFacetMethodSets",
         "TestSpotWebSocketBalancesAreAccountWide"
+      ]
+    },
+    {
+      "id": "exchange.SpotWebSocket.WatchBBO",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
       ]
     },
     {
@@ -5470,8 +6173,74 @@
       ]
     },
     {
+      "id": "exchange.StaticInstrumentLoader",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
+      "id": "exchange.StaticInstrumentLoader.LoadInstruments",
+      "kind": "method",
+      "coverage": "contract",
+      "tests": [
+        "TestMemoryCatalogPublishesImmutableIndexedSnapshots",
+        "TestInstrumentCatalogPublicContractIncludesSourceRegistration"
+      ]
+    },
+    {
       "id": "exchange.StreamStatusEvent",
       "kind": "type",
+      "coverage": "contract",
+      "tests": [
+        "TestSubscriptionExposesTypedLifecycleStatus"
+      ]
+    },
+    {
+      "id": "exchange.Subscription",
+      "kind": "interface",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Close",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Errors",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Events",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.ID",
+      "kind": "interface_method",
+      "coverage": "contract",
+      "tests": [
+        "TestWebSocketFacetMethodSets"
+      ]
+    },
+    {
+      "id": "exchange.Subscription.Status",
+      "kind": "interface_method",
       "coverage": "contract",
       "tests": [
         "TestSubscriptionExposesTypedLifecycleStatus"
@@ -5526,54 +6295,6 @@
       ]
     },
     {
-      "id": "exchange.Subscription",
-      "kind": "interface",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.Subscription.Close",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.Subscription.Errors",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.Subscription.Events",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.Subscription.ID",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestWebSocketFacetMethodSets"
-      ]
-    },
-    {
-      "id": "exchange.Subscription.Status",
-      "kind": "interface_method",
-      "coverage": "contract",
-      "tests": [
-        "TestSubscriptionExposesTypedLifecycleStatus"
-      ]
-    },
-    {
       "id": "exchange.Venue",
       "kind": "type",
       "coverage": "contract",
@@ -5582,11 +6303,43 @@
       ]
     },
     {
+      "id": "exchange.VenueAster",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
       "id": "exchange.VenueBinance",
       "kind": "const",
       "coverage": "contract",
       "tests": [
         "TestModelsCarryMatrixRequiredNormalizedFields"
+      ]
+    },
+    {
+      "id": "exchange.VenueBitget",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueBybit",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueGate",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestExpandedVenueConstantsAreStable"
       ]
     },
     {
@@ -5606,51 +6359,19 @@
       ]
     },
     {
-      "id": "exchange.VenueOKX",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestModelsCarryMatrixRequiredNormalizedFields"
-      ]
-    },
-    {
-      "id": "exchange.VenueBybit",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestExpandedVenueConstantsAreStable"
-      ]
-    },
-    {
-      "id": "exchange.VenueBitget",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestExpandedVenueConstantsAreStable"
-      ]
-    },
-    {
-      "id": "exchange.VenueGate",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestExpandedVenueConstantsAreStable"
-      ]
-    },
-    {
-      "id": "exchange.VenueAster",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestExpandedVenueConstantsAreStable"
-      ]
-    },
-    {
       "id": "exchange.VenueNado",
       "kind": "const",
       "coverage": "contract",
       "tests": [
         "TestExpandedVenueConstantsAreStable"
+      ]
+    },
+    {
+      "id": "exchange.VenueOKX",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": [
+        "TestModelsCarryMatrixRequiredNormalizedFields"
       ]
     },
     {
@@ -5687,11 +6408,19 @@
       ]
     },
     {
-      "id": "exchange.errorSentinel.Error",
-      "kind": "method",
+      "id": "exchange/factory.AsterSpotConfig",
+      "kind": "func",
       "coverage": "contract",
       "tests": [
-        "TestNormalizedErrorKindsAndMetadata"
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.AsterUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
     },
     {
@@ -5711,39 +6440,7 @@
       ]
     },
     {
-      "id": "exchange/factory.BybitSpotConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.BybitUSDTPerpConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.BybitUSDCPerpConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
       "id": "exchange/factory.BitgetSpotConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.BitgetUSDTPerpConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5759,7 +6456,7 @@
       ]
     },
     {
-      "id": "exchange/factory.GateSpotConfig",
+      "id": "exchange/factory.BitgetUSDTPerpConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5767,7 +6464,7 @@
       ]
     },
     {
-      "id": "exchange/factory.GateUSDTPerpConfig",
+      "id": "exchange/factory.BybitSpotConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5775,7 +6472,7 @@
       ]
     },
     {
-      "id": "exchange/factory.AsterSpotConfig",
+      "id": "exchange/factory.BybitUSDCPerpConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5783,23 +6480,7 @@
       ]
     },
     {
-      "id": "exchange/factory.AsterUSDTPerpConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.NadoSpotConfig",
-      "kind": "func",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.NadoUSDT0PerpConfig",
+      "id": "exchange/factory.BybitUSDTPerpConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5863,6 +6544,22 @@
       ]
     },
     {
+      "id": "exchange/factory.GateSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.GateUSDTPerpConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
       "id": "exchange/factory.HyperliquidPerpConfig",
       "kind": "func",
       "coverage": "contract",
@@ -5888,6 +6585,22 @@
     },
     {
       "id": "exchange/factory.LighterSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.NadoSpotConfig",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.NadoUSDT0PerpConfig",
       "kind": "func",
       "coverage": "contract",
       "tests": [
@@ -5957,6 +6670,14 @@
       "coverage": "contract",
       "tests": [
         "TestTwentyKnownConfigsInferAndConstructProductClients"
+      ]
+    },
+    {
+      "id": "exchange/factory.WithInstrumentCatalog",
+      "kind": "func",
+      "coverage": "contract",
+      "tests": [
+        "TestFactoryCustomCatalogIsolationDoesNotTouchGlobalDefault"
       ]
     },
     {

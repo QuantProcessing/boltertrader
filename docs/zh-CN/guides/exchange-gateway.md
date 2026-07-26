@@ -9,6 +9,19 @@ V1 是交易网关，不是统一清算系统。它不提供跨所 shared margin
 smart order routing、资金划转、充值或 withdrawal endpoint。服务 **no Redis**，
 也 **no gRPC**；PostgreSQL 是唯一必需的持久化依赖。
 
+## 选择这个产品
+
+BolterTrader 提供三种同级路径：
+
+- 调用方在 Go 进程内自行负责 lifecycle、缓存与持久化时，直接使用规范化
+  `exchange` client；
+- 需要常驻进程集中管理 account、凭证、Catalog、订单状态、reconciliation
+  和私有事件时，使用 Exchange Gateway；
+- 需要单一策略的有状态执行框架时，使用 `runtime`。
+
+Gateway 构建在 `exchange` 之上；它不使用 `runtime`，也不替代另外两种同级
+产品。
+
 ## 服务形态
 
 ```text
@@ -35,8 +48,10 @@ secret reference 解析，YAML 不得包含 secret 明文。
 
 ## 配置
 
-每个交易所产品账户配置一个 account。V1 覆盖 Binance、OKX、Lighter、
-Hyperliquid、Bybit、Bitget、Gate、Aster、Nado 共二十个产品行。
+每个交易所产品账户配置一个 account。V1 为 Binance、OKX、Lighter、
+Hyperliquid、Bybit、Bitget、Gate、Aster、Nado 建模共二十个产品行，其中
+十九行默认 write-ready；Lighter Testnet Spot 在外部环境证明双边流动性和
+exact lookup 之前保持 read-only。
 
 ```yaml
 server:

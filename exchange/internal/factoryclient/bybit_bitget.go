@@ -99,7 +99,7 @@ func newBybitBase(apiKey, secretKey string, settings Settings, product exchange.
 	if settings.HTTPClient != nil {
 		sdk.WithHTTPClient(settings.HTTPClient)
 	}
-	return &bybitBase{meta: clientMeta{venue: exchange.VenueBybit, product: product}, sdk: sdk, profile: profile, apiKey: apiKey, secretKey: secretKey, category: category, settleCoin: settleCoin}
+	return &bybitBase{meta: clientMetaFromSettings(exchange.VenueBybit, product, settings), sdk: sdk, profile: profile, apiKey: apiKey, secretKey: secretKey, category: category, settleCoin: settleCoin}
 }
 
 func NewBitgetSpot(apiKey, secretKey, passphrase string, settings Settings) exchange.SpotClient {
@@ -137,7 +137,7 @@ func newBitgetBase(apiKey, secretKey, passphrase string, settings Settings, prod
 	if settings.HTTPClient != nil {
 		sdk.WithHTTPClient(settings.HTTPClient)
 	}
-	return &bitgetBase{meta: clientMeta{venue: exchange.VenueBitget, product: product}, sdk: sdk, profile: profile, apiKey: apiKey, secretKey: secretKey, passphrase: passphrase, category: category, productType: productType, marginCoin: marginCoin}
+	return &bitgetBase{meta: clientMetaFromSettings(exchange.VenueBitget, product, settings), sdk: sdk, profile: profile, apiKey: apiKey, secretKey: secretKey, passphrase: passphrase, category: category, productType: productType, marginCoin: marginCoin}
 }
 
 func (c *bybitSpotClient) WebSocket() exchange.SpotWebSocket {
@@ -151,6 +151,14 @@ func (c *bybitSpotClient) Close() error {
 	return c.ws.Close()
 }
 
+func (c *bybitSpotClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	return c.bybitBase.meta.ResolveInstrument(ctx, symbol)
+}
+
+func (c *bybitSpotClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	return c.bybitBase.meta.RefreshInstruments(ctx)
+}
+
 func (c *bybitPerpClient) WebSocket() exchange.PerpWebSocket {
 	return c.ws
 }
@@ -160,6 +168,14 @@ func (c *bybitPerpClient) Close() error {
 		return nil
 	}
 	return c.ws.Close()
+}
+
+func (c *bybitPerpClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	return c.bybitBase.meta.ResolveInstrument(ctx, symbol)
+}
+
+func (c *bybitPerpClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	return c.bybitBase.meta.RefreshInstruments(ctx)
 }
 
 func (c *bitgetSpotClient) WebSocket() exchange.SpotWebSocket {
@@ -173,6 +189,14 @@ func (c *bitgetSpotClient) Close() error {
 	return c.ws.Close()
 }
 
+func (c *bitgetSpotClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	return c.bitgetBase.meta.ResolveInstrument(ctx, symbol)
+}
+
+func (c *bitgetSpotClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	return c.bitgetBase.meta.RefreshInstruments(ctx)
+}
+
 func (c *bitgetPerpClient) WebSocket() exchange.PerpWebSocket {
 	return c.ws
 }
@@ -182,6 +206,14 @@ func (c *bitgetPerpClient) Close() error {
 		return nil
 	}
 	return c.ws.Close()
+}
+
+func (c *bitgetPerpClient) ResolveInstrument(ctx context.Context, symbol string) (exchange.Instrument, error) {
+	return c.bitgetBase.meta.ResolveInstrument(ctx, symbol)
+}
+
+func (c *bitgetPerpClient) RefreshInstruments(ctx context.Context) ([]exchange.Instrument, error) {
+	return c.bitgetBase.meta.RefreshInstruments(ctx)
 }
 
 func (c *bybitSpotClient) String() string {
@@ -224,6 +256,13 @@ func (c *bybitBase) Instruments(ctx context.Context) ([]exchange.Instrument, err
 	if err := ctxErr(ctx, c.meta, "Instruments"); err != nil {
 		return nil, err
 	}
+	if c.meta.catalog != nil && c.meta.catalogScope != (exchange.CatalogScope{}) {
+		snapshot, err := c.meta.catalog.Snapshot(ctx, c.meta.catalogScope)
+		if err != nil {
+			return nil, withExchangeOperation(err, "Instruments")
+		}
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+	}
 	rows, err := c.sdk.GetInstruments(ctx, c.category)
 	if err != nil {
 		return nil, normErr(c.meta, "Instruments", err)
@@ -252,17 +291,21 @@ func (c *bybitBase) Instruments(ctx context.Context) ([]exchange.Instrument, err
 		if err != nil {
 			return nil, err
 		}
-		instrument := exchange.Instrument{
-			Symbol:            canonicalSymbol(row.Symbol, row.BaseCoin, row.QuoteCoin),
-			BaseAsset:         row.BaseCoin,
-			QuoteAsset:        row.QuoteCoin,
-			SettleAsset:       row.SettleCoin,
-			Product:           c.meta.product,
-			PriceIncrement:    priceIncrement,
-			QuantityIncrement: quantityIncrement,
-			MinQuantity:       minQuantity,
-			MinNotional:       minNotional,
-		}
+		instrument := newInstrument(
+			c.meta.venue,
+			c.meta.product,
+			canonicalSymbol(row.Symbol, row.BaseCoin, row.QuoteCoin),
+			row.BaseCoin,
+			row.QuoteCoin,
+			row.SettleCoin,
+			row.Symbol,
+			"",
+			priceIncrement,
+			quantityIncrement,
+			minQuantity,
+			minNotional,
+			oneContract(),
+		)
 		out = append(out, instrument)
 	}
 	return out, nil
@@ -272,6 +315,13 @@ func (c *bitgetBase) Instruments(ctx context.Context) ([]exchange.Instrument, er
 	if err := ctxErr(ctx, c.meta, "Instruments"); err != nil {
 		return nil, err
 	}
+	if c.meta.catalog != nil && c.meta.catalogScope != (exchange.CatalogScope{}) {
+		snapshot, err := c.meta.catalog.Snapshot(ctx, c.meta.catalogScope)
+		if err != nil {
+			return nil, withExchangeOperation(err, "Instruments")
+		}
+		return append([]exchange.Instrument(nil), snapshot.Instruments...), nil
+	}
 	category, symbol := c.bitgetCategoryAndSymbol("")
 	rows, err := c.sdk.GetInstruments(ctx, category, symbol)
 	if err != nil {
@@ -280,6 +330,11 @@ func (c *bitgetBase) Instruments(ctx context.Context) ([]exchange.Instrument, er
 	out := make([]exchange.Instrument, 0, len(rows))
 	for _, row := range rows {
 		if row.Status != "" && !strings.EqualFold(row.Status, "online") && !strings.EqualFold(row.Status, "normal") {
+			continue
+		}
+		if c.meta.product == exchange.ProductSpot &&
+			row.SymbolType != "" &&
+			!strings.EqualFold(row.SymbolType, "crypto") {
 			continue
 		}
 		if c.meta.product == exchange.ProductPerp {
@@ -295,9 +350,15 @@ func (c *bitgetBase) Instruments(ctx context.Context) ([]exchange.Instrument, er
 		if err != nil {
 			return nil, err
 		}
+		if !priceIncrement.IsPositive() {
+			return nil, malformed(c.meta, "Instruments", "price increment is required")
+		}
 		quantityIncrement, err := firstPositiveDecimalStrict(c.meta, "Instruments", row.QuantityMultiplier, precisionIncrement(row.QuantityPrecision))
 		if err != nil {
 			return nil, err
+		}
+		if !quantityIncrement.IsPositive() {
+			return nil, malformed(c.meta, "Instruments", "quantity increment is required")
 		}
 		minQuantity, err := parseOptionalDecimal(c.meta, "Instruments", row.MinOrderQty)
 		if err != nil {
@@ -307,17 +368,21 @@ func (c *bitgetBase) Instruments(ctx context.Context) ([]exchange.Instrument, er
 		if err != nil {
 			return nil, err
 		}
-		inst := exchange.Instrument{
-			Symbol:            canonicalSymbol(row.Symbol, row.BaseCoin, row.QuoteCoin),
-			BaseAsset:         row.BaseCoin,
-			QuoteAsset:        row.QuoteCoin,
-			SettleAsset:       c.marginCoin,
-			Product:           c.meta.product,
-			PriceIncrement:    priceIncrement,
-			QuantityIncrement: quantityIncrement,
-			MinQuantity:       minQuantity,
-			MinNotional:       minNotional,
-		}
+		inst := newInstrument(
+			c.meta.venue,
+			c.meta.product,
+			canonicalSymbol(row.Symbol, row.BaseCoin, row.QuoteCoin),
+			row.BaseCoin,
+			row.QuoteCoin,
+			c.marginCoin,
+			row.Symbol,
+			"",
+			priceIncrement,
+			quantityIncrement,
+			minQuantity,
+			minNotional,
+			oneContract(),
+		)
 		out = append(out, inst)
 	}
 	return out, nil
@@ -529,7 +594,7 @@ func (c *bybitBase) bybitPlace(ctx context.Context, req exchange.PlaceOrderReque
 	if err := req.Validate(c.meta.product); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := c.symbols(req.Instrument, "PlaceOrder")
+	native, _, err := c.symbols(req.Instrument, "PlaceOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -539,9 +604,15 @@ func (c *bybitBase) bybitPlace(ctx context.Context, req exchange.PlaceOrderReque
 	}
 	resp, err := c.sdk.PlaceOrder(ctx, bybit.PlaceOrderRequest{Category: c.category, Symbol: native, Side: bybitSide(req.Side), OrderType: bybitOrderType(req.Type), Qty: quantity, Price: priceString(req), TimeInForce: tif(req.LimitPolicy), ReduceOnly: req.ReduceOnly, OrderLinkID: req.ClientOrderID, MarketUnit: marketUnit})
 	if err != nil {
-		return commandAck(c.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(c.meta, "PlaceOrder", err.Error())
+		}
+		return commandAck(c.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
-	ack := baseAck(c.meta, exchange.OrderOperationPlace, canonical, resp.OrderID, resp.OrderLinkID)
+	if err := validateSuccessfulOrderAction(c.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, resp.OrderID, resp.OrderLinkID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(c.meta, exchange.OrderOperationPlace, native, resp.OrderID, resp.OrderLinkID)
 	ack.OrderType = req.Type
 	return ack, ack.Validate()
 }
@@ -571,7 +642,7 @@ func (c *bitgetBase) bitgetPlace(ctx context.Context, req exchange.PlaceOrderReq
 	if err := req.Validate(c.meta.product); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := c.symbols(req.Instrument, "PlaceOrder")
+	native, _, err := c.symbols(req.Instrument, "PlaceOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -585,9 +656,15 @@ func (c *bitgetBase) bitgetPlace(ctx context.Context, req exchange.PlaceOrderReq
 	}
 	resp, err := c.sdk.PlaceOrder(ctx, &bitget.PlaceOrderRequest{Category: c.bitgetPrivateCategory(), Symbol: native, Side: strings.ToLower(string(req.Side)), OrderType: strings.ToLower(string(req.Type)), Qty: quantity, Price: priceString(req), TimeInForce: bitgetTIF(req.LimitPolicy), MarginCoin: c.marginCoin, MarginMode: "crossed", ClientOID: req.ClientOrderID, ReduceOnly: bitgetReduceOnly(req, positionSide), PosSide: positionSide})
 	if err != nil {
-		return commandAck(c.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(c.meta, "PlaceOrder", err.Error())
+		}
+		return commandAck(c.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
-	ack := baseAck(c.meta, exchange.OrderOperationPlace, canonical, resp.OrderID, resp.ClientOID)
+	if err := validateSuccessfulOrderAction(c.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, resp.OrderID, resp.ClientOID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(c.meta, exchange.OrderOperationPlace, native, resp.OrderID, resp.ClientOID)
 	ack.OrderType = req.Type
 	return ack, ack.Validate()
 }
@@ -649,7 +726,7 @@ func (c *bybitBase) CancelOrder(ctx context.Context, req exchange.CancelOrderReq
 	if err := ctxErr(ctx, c.meta, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "CancelOrder")
+	native, _, err := c.symbols(req.Instrument, "CancelOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -661,9 +738,15 @@ func (c *bybitBase) CancelOrder(ctx context.Context, req exchange.CancelOrderReq
 	}
 	resp, err := c.sdk.CancelOrder(ctx, bybit.CancelOrderRequest{Category: c.category, Symbol: native, OrderID: req.OrderID})
 	if err != nil {
-		return commandAck(c.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(c.meta, "CancelOrder", err.Error())
+		}
+		return commandAck(c.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
-	ack := baseAck(c.meta, exchange.OrderOperationCancel, canonical, resp.OrderID, resp.OrderLinkID)
+	if err := validateSuccessfulOrderAction(c.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", resp.OrderID, resp.OrderLinkID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(c.meta, exchange.OrderOperationCancel, native, resp.OrderID, resp.OrderLinkID)
 	ack.State = exchange.AckCanceled
 	return ack, ack.Validate()
 }
@@ -672,7 +755,7 @@ func (c *bitgetBase) CancelOrder(ctx context.Context, req exchange.CancelOrderRe
 	if err := ctxErr(ctx, c.meta, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "CancelOrder")
+	native, _, err := c.symbols(req.Instrument, "CancelOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -684,9 +767,15 @@ func (c *bitgetBase) CancelOrder(ctx context.Context, req exchange.CancelOrderRe
 	}
 	resp, err := c.sdk.CancelOrder(ctx, &bitget.CancelOrderRequest{Category: c.bitgetPrivateCategory(), Symbol: native, OrderID: req.OrderID})
 	if err != nil {
-		return commandAck(c.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(c.meta, "CancelOrder", err.Error())
+		}
+		return commandAck(c.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
-	ack := baseAck(c.meta, exchange.OrderOperationCancel, canonical, resp.OrderID, resp.ClientOID)
+	if err := validateSuccessfulOrderAction(c.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", resp.OrderID, resp.ClientOID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(c.meta, exchange.OrderOperationCancel, native, resp.OrderID, resp.ClientOID)
 	ack.State = exchange.AckCanceled
 	return ack, ack.Validate()
 }
@@ -695,7 +784,7 @@ func (c *bybitBase) OpenOrders(ctx context.Context, req exchange.OpenOrdersReque
 	if err := ctxErr(ctx, c.meta, "OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "OpenOrders")
+	native, err := c.optionalNativeSymbol(req.Instrument, "OpenOrders")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -703,7 +792,7 @@ func (c *bybitBase) OpenOrders(ctx context.Context, req exchange.OpenOrdersReque
 	if err != nil {
 		return exchange.OrderPage{}, normErr(c.meta, "OpenOrders", err)
 	}
-	orders, err := convertBybitOrders(c.meta, "OpenOrders", rows, canonical)
+	orders, err := convertBybitOrders(ctx, c.meta, "OpenOrders", rows, native)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -714,7 +803,7 @@ func (c *bitgetBase) OpenOrders(ctx context.Context, req exchange.OpenOrdersRequ
 	if err := ctxErr(ctx, c.meta, "OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "OpenOrders")
+	native, err := c.optionalNativeSymbol(req.Instrument, "OpenOrders")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -722,7 +811,7 @@ func (c *bitgetBase) OpenOrders(ctx context.Context, req exchange.OpenOrdersRequ
 	if err != nil {
 		return exchange.OrderPage{}, normErr(c.meta, "OpenOrders", err)
 	}
-	orders, err := convertBitgetOrders(c.meta, "OpenOrders", rows, canonical)
+	orders, err := convertBitgetOrders(ctx, c.meta, "OpenOrders", rows, native)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -733,7 +822,7 @@ func (c *bybitBase) OrderHistory(ctx context.Context, req exchange.OrderHistoryR
 	if err := ctxErr(ctx, c.meta, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "OrderHistory")
+	native, err := c.optionalNativeSymbol(req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -741,7 +830,7 @@ func (c *bybitBase) OrderHistory(ctx context.Context, req exchange.OrderHistoryR
 	if err != nil {
 		return exchange.OrderPage{}, normErr(c.meta, "OrderHistory", err)
 	}
-	orders, err := convertBybitOrders(c.meta, "OrderHistory", rows, canonical)
+	orders, err := convertBybitOrders(ctx, c.meta, "OrderHistory", rows, native)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -752,7 +841,7 @@ func (c *bitgetBase) OrderHistory(ctx context.Context, req exchange.OrderHistory
 	if err := ctxErr(ctx, c.meta, "OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "OrderHistory")
+	native, err := c.optionalNativeSymbol(req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -760,7 +849,7 @@ func (c *bitgetBase) OrderHistory(ctx context.Context, req exchange.OrderHistory
 	if err != nil {
 		return exchange.OrderPage{}, normErr(c.meta, "OrderHistory", err)
 	}
-	orders, err := convertBitgetOrders(c.meta, "OrderHistory", rows, canonical)
+	orders, err := convertBitgetOrders(ctx, c.meta, "OrderHistory", rows, native)
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
@@ -774,7 +863,7 @@ func (c *bybitBase) Fills(ctx context.Context, req exchange.FillsRequest) (excha
 	if err := ctxErr(ctx, c.meta, "Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "Fills")
+	native, err := c.optionalNativeSymbol(req.Instrument, "Fills")
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -785,7 +874,7 @@ func (c *bybitBase) Fills(ctx context.Context, req exchange.FillsRequest) (excha
 	if err != nil {
 		return exchange.FillPage{}, normErr(c.meta, "Fills", err)
 	}
-	fills, err := convertBybitFills(c.meta, "Fills", rows, canonical)
+	fills, err := convertBybitFills(ctx, c.meta, "Fills", rows, native)
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -796,20 +885,15 @@ func (c *bitgetBase) Fills(ctx context.Context, req exchange.FillsRequest) (exch
 	if err := ctxErr(ctx, c.meta, "Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	native := ""
-	canonical := ""
-	if req.Instrument != "" {
-		var err error
-		native, canonical, err = c.symbols(req.Instrument, "Fills")
-		if err != nil {
-			return exchange.FillPage{}, err
-		}
+	native, err := c.optionalNativeSymbol(req.Instrument, "Fills")
+	if err != nil {
+		return exchange.FillPage{}, err
 	}
 	rows, hasMore, err := c.sdk.GetFillsBounded(ctx, bitget.GetFillsRequest{Category: c.bitgetPrivateCategory(), Symbol: native, OrderID: req.OrderID, StartTime: milliString(req.Start), EndTime: milliString(req.End), Limit: limitString(req.Limit), Cursor: req.Cursor})
 	if err != nil {
 		return exchange.FillPage{}, normErr(c.meta, "Fills", err)
 	}
-	fills, err := convertBitgetFills(c.meta, "Fills", rows, canonical)
+	fills, err := convertBitgetFills(ctx, c.meta, "Fills", rows, native)
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
@@ -942,47 +1026,37 @@ func (c *bybitBase) Positions(ctx context.Context, req exchange.PositionsRequest
 	if err := ctxErr(ctx, c.meta, "Positions"); err != nil {
 		return nil, err
 	}
-	native := ""
-	canonical := ""
-	if req.Instrument != "" {
-		var err error
-		native, canonical, err = c.symbols(req.Instrument, "Positions")
-		if err != nil {
-			return nil, err
-		}
+	native, err := c.optionalNativeSymbol(req.Instrument, "Positions")
+	if err != nil {
+		return nil, err
 	}
 	rows, err := c.sdk.GetPositions(ctx, c.category, native, c.settleCoin)
 	if err != nil {
 		return nil, normErr(c.meta, "Positions", err)
 	}
-	return convertBybitPositions(c.meta, "Positions", rows, canonical)
+	return convertBybitPositions(ctx, c.meta, "Positions", rows, native)
 }
 
 func (c *bitgetBase) Positions(ctx context.Context, req exchange.PositionsRequest) ([]exchange.Position, error) {
 	if err := ctxErr(ctx, c.meta, "Positions"); err != nil {
 		return nil, err
 	}
-	native := ""
-	canonical := ""
-	if req.Instrument != "" {
-		var err error
-		native, canonical, err = c.symbols(req.Instrument, "Positions")
-		if err != nil {
-			return nil, err
-		}
+	native, err := c.optionalNativeSymbol(req.Instrument, "Positions")
+	if err != nil {
+		return nil, err
 	}
 	rows, err := c.sdk.GetCurrentPositions(ctx, c.bitgetPrivateCategory(), native)
 	if err != nil {
 		return nil, normErr(c.meta, "Positions", err)
 	}
-	return convertBitgetPositions(c.meta, "Positions", rows, canonical)
+	return convertBitgetPositions(ctx, c.meta, "Positions", rows, native)
 }
 
 func (c *bybitBase) FundingRate(ctx context.Context, req exchange.FundingRateRequest) (exchange.FundingRate, error) {
 	if err := ctxErr(ctx, c.meta, "FundingRate"); err != nil {
 		return exchange.FundingRate{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "FundingRate")
+	native, _, err := c.symbols(req.Instrument, "FundingRate")
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
@@ -1006,14 +1080,14 @@ func (c *bybitBase) FundingRate(ctx context.Context, req exchange.FundingRateReq
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
-	return exchange.FundingRate{Instrument: canonical, Rate: rate, MarkPrice: markPrice, ObservedAt: observedAt, NextFundingTime: nextFundingTime}, nil
+	return exchange.FundingRate{NativeSymbol: native, Rate: rate, MarkPrice: markPrice, ObservedAt: observedAt, NextFundingTime: nextFundingTime}, nil
 }
 
 func (c *bitgetBase) FundingRate(ctx context.Context, req exchange.FundingRateRequest) (exchange.FundingRate, error) {
 	if err := ctxErr(ctx, c.meta, "FundingRate"); err != nil {
 		return exchange.FundingRate{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "FundingRate")
+	native, _, err := c.symbols(req.Instrument, "FundingRate")
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
@@ -1037,7 +1111,7 @@ func (c *bitgetBase) FundingRate(ctx context.Context, req exchange.FundingRateRe
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
-	return exchange.FundingRate{Instrument: canonical, Rate: rate, ObservedAt: observedAt, NextFundingTime: nextFundingTime}, nil
+	return exchange.FundingRate{NativeSymbol: native, Rate: rate, ObservedAt: observedAt, NextFundingTime: nextFundingTime}, nil
 }
 
 func (c *bybitBase) FundingRateHistory(ctx context.Context, req exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
@@ -1047,7 +1121,7 @@ func (c *bybitBase) FundingRateHistory(ctx context.Context, req exchange.Funding
 	if err := validateFundingHistoryRequest(c.meta, "FundingRateHistory", req, true); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "FundingRateHistory")
+	native, _, err := c.symbols(req.Instrument, "FundingRateHistory")
 	if err != nil {
 		return exchange.FundingRatePage{}, err
 	}
@@ -1065,7 +1139,7 @@ func (c *bybitBase) FundingRateHistory(ctx context.Context, req exchange.Funding
 		if err != nil {
 			return exchange.FundingRatePage{}, err
 		}
-		rates = append(rates, exchange.FundingRate{Instrument: canonical, Rate: rate, FundingTime: fundingTime})
+		rates = append(rates, exchange.FundingRate{NativeSymbol: native, Rate: rate, FundingTime: fundingTime})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -1077,7 +1151,7 @@ func (c *bitgetBase) FundingRateHistory(ctx context.Context, req exchange.Fundin
 	if err := validateFundingHistoryRequest(c.meta, "FundingRateHistory", req, false); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "FundingRateHistory")
+	native, _, err := c.symbols(req.Instrument, "FundingRateHistory")
 	if err != nil {
 		return exchange.FundingRatePage{}, err
 	}
@@ -1095,7 +1169,7 @@ func (c *bitgetBase) FundingRateHistory(ctx context.Context, req exchange.Fundin
 		if err != nil {
 			return exchange.FundingRatePage{}, err
 		}
-		rates = append(rates, exchange.FundingRate{Instrument: canonical, Rate: rate, FundingTime: fundingTime})
+		rates = append(rates, exchange.FundingRate{NativeSymbol: native, Rate: rate, FundingTime: fundingTime})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{Limit: req.Limit}}, nil
 }
@@ -1104,7 +1178,7 @@ func (c *bybitBase) SetLeverage(ctx context.Context, req exchange.SetLeverageReq
 	if err := ctxErr(ctx, c.meta, "SetLeverage"); err != nil {
 		return exchange.Leverage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "SetLeverage")
+	native, _, err := c.symbols(req.Instrument, "SetLeverage")
 	if err != nil {
 		return exchange.Leverage{}, err
 	}
@@ -1116,14 +1190,14 @@ func (c *bybitBase) SetLeverage(ctx context.Context, req exchange.SetLeverageReq
 	if err != nil {
 		return exchange.Leverage{}, normErr(c.meta, "SetLeverage", err)
 	}
-	return exchange.Leverage{Instrument: canonical, Effective: req.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: native, Effective: req.Leverage}, nil
 }
 
 func (c *bitgetBase) SetLeverage(ctx context.Context, req exchange.SetLeverageRequest) (exchange.Leverage, error) {
 	if err := ctxErr(ctx, c.meta, "SetLeverage"); err != nil {
 		return exchange.Leverage{}, err
 	}
-	native, canonical, err := c.symbols(req.Instrument, "SetLeverage")
+	native, _, err := c.symbols(req.Instrument, "SetLeverage")
 	if err != nil {
 		return exchange.Leverage{}, err
 	}
@@ -1134,52 +1208,68 @@ func (c *bitgetBase) SetLeverage(ctx context.Context, req exchange.SetLeverageRe
 	if err != nil {
 		return exchange.Leverage{}, normErr(c.meta, "SetLeverage", err)
 	}
-	return exchange.Leverage{Instrument: canonical, Effective: req.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: native, Effective: req.Leverage}, nil
 }
 
-func (c *bybitBase) symbols(instrument, operation string) (string, string, error) {
-	canonical := strings.ToUpper(strings.TrimSpace(instrument))
-	if canonical == "" {
-		return "", "", invalid(c.meta, operation, "instrument is required")
+func (c *bybitBase) symbols(instrument exchange.Instrument, operation string) (string, exchange.Instrument, error) {
+	if err := validateBybitBitgetInstrument(c.meta, operation, instrument); err != nil {
+		return "", exchange.Instrument{}, err
 	}
-	native := strings.NewReplacer("-", "", "_", "").Replace(canonical)
+	native := instrument.Identity.NativeSymbol
 	if c.meta.product == exchange.ProductPerp {
-		if c.settleCoin == "USDC" && strings.HasSuffix(native, "PERP") {
-			return native, canonical, nil
-		}
-		if quoteAsset(canonical) != c.settleCoin {
-			return "", "", invalid(c.meta, operation, "instrument quote must match "+c.settleCoin+" settlement")
-		}
-		if c.settleCoin == "USDC" {
-			base := strings.TrimSuffix(native, c.settleCoin)
-			if base == "" {
-				return "", "", invalid(c.meta, operation, "instrument base asset is required")
-			}
-			native = base + "PERP"
+		if instrument.Identity.SettleAsset != c.settleCoin {
+			return "", exchange.Instrument{}, invalid(c.meta, operation, "instrument quote must match "+c.settleCoin+" settlement")
 		}
 	}
-	return native, canonical, nil
+	return native, instrument, nil
 }
 
-func (c *bitgetBase) symbols(instrument, operation string) (string, string, error) {
-	canonical := strings.ToUpper(strings.TrimSpace(instrument))
-	if canonical == "" {
-		return "", "", invalid(c.meta, operation, "instrument is required")
+func (c *bitgetBase) symbols(instrument exchange.Instrument, operation string) (string, exchange.Instrument, error) {
+	if err := validateBybitBitgetInstrument(c.meta, operation, instrument); err != nil {
+		return "", exchange.Instrument{}, err
 	}
-	native := strings.NewReplacer("-", "", "_", "").Replace(canonical)
+	native := instrument.Identity.NativeSymbol
 	if c.meta.product == exchange.ProductPerp {
-		if quoteAsset(canonical) != c.marginCoin {
-			return "", "", invalid(c.meta, operation, "instrument quote must match "+c.marginCoin+" settlement")
-		}
-		if c.marginCoin == "USDC" {
-			base := strings.TrimSuffix(native, c.marginCoin)
-			if base == "" {
-				return "", "", invalid(c.meta, operation, "instrument base asset is required")
-			}
-			native = base + "PERP"
+		if instrument.Identity.SettleAsset != c.marginCoin {
+			return "", exchange.Instrument{}, invalid(c.meta, operation, "instrument quote must match "+c.marginCoin+" settlement")
 		}
 	}
-	return native, canonical, nil
+	return native, instrument, nil
+}
+
+func (c *bybitBase) optionalNativeSymbol(instrument *exchange.Instrument, operation string) (string, error) {
+	if instrument == nil {
+		return "", nil
+	}
+	native, _, err := c.symbols(*instrument, operation)
+	return native, err
+}
+
+func (c *bitgetBase) optionalNativeSymbol(instrument *exchange.Instrument, operation string) (string, error) {
+	if instrument == nil {
+		return "", nil
+	}
+	native, _, err := c.symbols(*instrument, operation)
+	return native, err
+}
+
+func validateBybitBitgetInstrument(meta clientMeta, operation string, instrument exchange.Instrument) error {
+	if err := instrument.Validate(); err != nil {
+		return withExchangeOperation(err, operation)
+	}
+	if instrument.Identity.Venue != meta.venue {
+		return invalid(meta, operation, "instrument venue does not match client venue")
+	}
+	if instrument.Identity.Product != meta.product {
+		return invalid(meta, operation, "instrument product does not match client product")
+	}
+	if instrument.Identity.NativeSymbol == "" {
+		return invalid(meta, operation, "instrument native symbol is required")
+	}
+	if instrument.Identity.NativeSymbol != strings.TrimSpace(instrument.Identity.NativeSymbol) {
+		return invalid(meta, operation, "instrument native symbol must be trimmed")
+	}
+	return nil
 }
 
 func quoteAsset(instrument string) string {
@@ -1234,9 +1324,16 @@ func (c *bitgetBase) bitgetCategory() string {
 	return c.productType
 }
 
-func convertBybitOrders(meta clientMeta, op string, rows []bybit.OrderRecord, canonical string) ([]exchange.Order, error) {
+func convertBybitOrders(ctx context.Context, meta clientMeta, op string, rows []bybit.OrderRecord, nativeFilter string) ([]exchange.Order, error) {
 	out := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
+		}
 		side, err := parseSide(meta, op, row.Side)
 		if err != nil {
 			return nil, err
@@ -1273,14 +1370,21 @@ func convertBybitOrders(meta clientMeta, op string, rows []bybit.OrderRecord, ca
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Order{Instrument: fallbackCanonical(canonical, row.Symbol), OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, Side: side, Type: orderType, Quantity: quantity, LimitPrice: limitPrice, LimitPolicy: limitPolicy(row.TimeInForce), ReduceOnly: row.ReduceOnly, Filled: filled, AverageFillPrice: averageFillPrice, Status: status, CreatedAt: createdAt, UpdatedAt: updatedAt})
+		out = append(out, exchange.Order{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, Side: side, Type: orderType, Quantity: quantity, LimitPrice: limitPrice, LimitPolicy: limitPolicy(row.TimeInForce), ReduceOnly: row.ReduceOnly, Filled: filled, AverageFillPrice: averageFillPrice, Status: status, CreatedAt: createdAt, UpdatedAt: updatedAt})
 	}
 	return out, nil
 }
 
-func convertBitgetOrders(meta clientMeta, op string, rows []bitget.OrderRecord, canonical string) ([]exchange.Order, error) {
+func convertBitgetOrders(ctx context.Context, meta clientMeta, op string, rows []bitget.OrderRecord, nativeFilter string) ([]exchange.Order, error) {
 	out := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
+		}
 		side, err := parseSide(meta, op, row.Side)
 		if err != nil {
 			return nil, err
@@ -1317,14 +1421,21 @@ func convertBitgetOrders(meta clientMeta, op string, rows []bitget.OrderRecord, 
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Order{Instrument: fallbackCanonical(canonical, row.Symbol), OrderID: row.OrderID, ClientOrderID: row.ClientOID, Side: side, Type: orderType, Quantity: quantity, LimitPrice: limitPrice, LimitPolicy: limitPolicy(row.TimeInForce), ReduceOnly: strings.EqualFold(row.ReduceOnly, "yes") || strings.EqualFold(row.ReduceOnly, "true"), Filled: filled, AverageFillPrice: averageFillPrice, Status: status, CreatedAt: createdAt, UpdatedAt: updatedAt})
+		out = append(out, exchange.Order{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.ClientOID, Side: side, Type: orderType, Quantity: quantity, LimitPrice: limitPrice, LimitPolicy: limitPolicy(row.TimeInForce), ReduceOnly: strings.EqualFold(row.ReduceOnly, "yes") || strings.EqualFold(row.ReduceOnly, "true"), Filled: filled, AverageFillPrice: averageFillPrice, Status: status, CreatedAt: createdAt, UpdatedAt: updatedAt})
 	}
 	return out, nil
 }
 
-func convertBybitFills(meta clientMeta, op string, rows []bybit.ExecutionRecord, canonical string) ([]exchange.Fill, error) {
+func convertBybitFills(ctx context.Context, meta clientMeta, op string, rows []bybit.ExecutionRecord, nativeFilter string) ([]exchange.Fill, error) {
 	out := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
+		}
 		liq := exchange.LiquidityTaker
 		if row.IsMaker {
 			liq = exchange.LiquidityMaker
@@ -1349,14 +1460,21 @@ func convertBybitFills(meta clientMeta, op string, rows []bybit.ExecutionRecord,
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Fill{Instrument: fallbackCanonical(canonical, row.Symbol), OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, FillID: row.ExecID, Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: row.FeeCurrency, Liquidity: liq, Time: executedAt})
+		out = append(out, exchange.Fill{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.OrderLinkID, FillID: row.ExecID, Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: row.FeeCurrency, Liquidity: liq, Time: executedAt})
 	}
 	return out, nil
 }
 
-func convertBitgetFills(meta clientMeta, op string, rows []bitget.FillRecord, canonical string) ([]exchange.Fill, error) {
+func convertBitgetFills(ctx context.Context, meta clientMeta, op string, rows []bitget.FillRecord, nativeFilter string) ([]exchange.Fill, error) {
 	out := make([]exchange.Fill, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
+		}
 		feeAsset, fee := "", decimal.Zero
 		if len(row.FeeDetail) > 0 {
 			feeAsset = row.FeeDetail[0].FeeCoin
@@ -1382,7 +1500,7 @@ func convertBitgetFills(meta clientMeta, op string, rows []bitget.FillRecord, ca
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Fill{Instrument: fallbackCanonical(canonical, row.Symbol), OrderID: row.OrderID, ClientOrderID: row.ClientOID, FillID: firstNonEmpty(row.ExecID, row.ExecLinkID), Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: feeAsset, Time: executedAt})
+		out = append(out, exchange.Fill{NativeSymbol: row.Symbol, NativeID: nativeID, OrderID: row.OrderID, ClientOrderID: row.ClientOID, FillID: firstNonEmpty(row.ExecID, row.ExecLinkID), Side: side, Price: price, Quantity: quantity, Fee: fee, FeeAsset: feeAsset, Time: executedAt})
 	}
 	return out, nil
 }
@@ -1428,15 +1546,22 @@ func bitgetBalances(meta clientMeta, op string, rows []bitget.AccountAsset) ([]e
 	return out, nil
 }
 
-func convertBybitPositions(meta clientMeta, op string, rows []bybit.PositionRecord, canonical string) ([]exchange.Position, error) {
+func convertBybitPositions(ctx context.Context, meta clientMeta, op string, rows []bybit.PositionRecord, nativeFilter string) ([]exchange.Position, error) {
 	out := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
 		quantity, err := parseOptionalDecimal(meta, op, row.Size)
 		if err != nil {
 			return nil, err
 		}
 		if !quantity.IsPositive() {
 			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
 		}
 		side, err := parseSide(meta, op, row.Side)
 		if err != nil {
@@ -1458,20 +1583,27 @@ func convertBybitPositions(meta clientMeta, op string, rows []bybit.PositionReco
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Position{Instrument: fallbackCanonical(canonical, row.Symbol), Side: side, Quantity: quantity, EntryPrice: entryPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
+		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, Side: side, Quantity: quantity, EntryPrice: entryPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
 	}
 	return out, nil
 }
 
-func convertBitgetPositions(meta clientMeta, op string, rows []bitget.PositionRecord, canonical string) ([]exchange.Position, error) {
+func convertBitgetPositions(ctx context.Context, meta clientMeta, op string, rows []bitget.PositionRecord, nativeFilter string) ([]exchange.Position, error) {
 	out := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
+		if nativeFilter != "" && row.Symbol != nativeFilter {
+			continue
+		}
 		quantity, err := firstPositiveDecimalStrict(meta, op, row.Qty, row.Total, row.Size)
 		if err != nil {
 			return nil, err
 		}
 		if !quantity.IsPositive() {
 			continue
+		}
+		nativeID, err := resolveEmittedNativeID(ctx, meta, op, row.Symbol)
+		if err != nil {
+			return nil, err
 		}
 		side, err := parseSide(meta, op, firstNonEmpty(row.PosSide, row.HoldSide))
 		if err != nil {
@@ -1497,7 +1629,7 @@ func convertBitgetPositions(meta clientMeta, op string, rows []bitget.PositionRe
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, exchange.Position{Instrument: fallbackCanonical(canonical, row.Symbol), Side: side, Quantity: quantity, EntryPrice: entryPrice, MarkPrice: markPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
+		out = append(out, exchange.Position{NativeSymbol: row.Symbol, NativeID: nativeID, Side: side, Quantity: quantity, EntryPrice: entryPrice, MarkPrice: markPrice, UnrealizedPnL: unrealizedPnL, LiquidationPrice: liquidationPrice, Leverage: leverage})
 	}
 	return out, nil
 }
@@ -1513,13 +1645,6 @@ func canonicalSymbol(native, base, quote string) string {
 		}
 	}
 	return native
-}
-
-func fallbackCanonical(canonical, native string) string {
-	if canonical != "" {
-		return canonical
-	}
-	return canonicalSymbol(native, "", "")
 }
 
 func ctxErr(ctx context.Context, meta clientMeta, op string) error {
@@ -1581,6 +1706,44 @@ func malformed(meta clientMeta, op, msg string) error {
 	return exchange.NewError(exchange.KindMalformedResponse, exchange.ErrorDetails{Venue: meta.venue, Product: meta.product, Operation: op, SafeMessage: msg})
 }
 
+func resolveEmittedNativeID(ctx context.Context, meta clientMeta, op, nativeSymbol string) (string, error) {
+	if meta.catalog == nil || meta.catalogScope == (exchange.CatalogScope{}) {
+		return "", meta.catalogMetadataResolution(op, "instrument catalog is not configured")
+	}
+	instrument, err := meta.catalog.Resolve(ctx, meta.catalogScope, exchange.InstrumentQuery{NativeSymbol: nativeSymbol})
+	if err != nil {
+		return "", withExchangeOperation(err, op)
+	}
+	return instrument.Identity.NativeID, nil
+}
+
+func isOrderActionMalformed(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "returned a partial response") ||
+		strings.Contains(message, "returned mismatched order id") ||
+		strings.Contains(message, "returned mismatched order link id") ||
+		strings.Contains(message, "returned mismatched client order id")
+}
+
+func validateSuccessfulOrderAction(meta clientMeta, operation string, kind exchange.OrderOperation, nativeSymbol, expectedOrderID, expectedClientID, orderID, clientID string) error {
+	if strings.TrimSpace(orderID) == "" {
+		return malformed(meta, operation, "successful order acknowledgement is missing order id")
+	}
+	if kind == exchange.OrderOperationCancel && expectedOrderID != "" && orderID != expectedOrderID {
+		return malformed(meta, operation, "successful cancel acknowledgement order id mismatch")
+	}
+	if kind == exchange.OrderOperationPlace && expectedClientID != "" && clientID != expectedClientID {
+		return malformed(meta, operation, "successful place acknowledgement client order id mismatch")
+	}
+	if strings.TrimSpace(nativeSymbol) == "" {
+		return malformed(meta, operation, "successful order acknowledgement is missing native symbol")
+	}
+	return nil
+}
+
 func commandAck(meta clientMeta, operation string, kind exchange.OrderOperation, instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
 	ack := baseAck(meta, kind, instrument, orderID, clientID)
 	ack.State = exchange.AckAmbiguous
@@ -1600,8 +1763,8 @@ func commandAck(meta clientMeta, operation string, kind exchange.OrderOperation,
 	return ack, normErr(meta, operation, err)
 }
 
-func baseAck(meta clientMeta, op exchange.OrderOperation, instrument, orderID, clientID string) exchange.OrderAcknowledgement {
-	return exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: op, State: exchange.AckAcceptedPending, Instrument: instrument, OrderID: orderID, ClientOrderID: clientID}
+func baseAck(meta clientMeta, op exchange.OrderOperation, nativeSymbol, orderID, clientID string) exchange.OrderAcknowledgement {
+	return exchange.OrderAcknowledgement{Venue: meta.venue, Product: meta.product, Operation: op, State: exchange.AckAcceptedPending, NativeSymbol: nativeSymbol, OrderID: orderID, ClientOrderID: clientID}
 }
 
 func priceString(req exchange.PlaceOrderRequest) string {
@@ -1838,6 +2001,10 @@ func firstNonEmpty(values ...string) string {
 }
 
 func precisionIncrement(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
 	places, err := strconv.Atoi(value)
 	if err != nil || places < 0 {
 		return ""
@@ -1912,7 +2079,7 @@ func strictCandle(meta clientMeta, op, openTime, open, high, low, closeValue, vo
 	return exchange.Candle{OpenTime: parsedOpenTime, Open: parsedOpen, High: parsedHigh, Low: parsedLow, Close: parsedClose, Volume: parsedVolume, Complete: true}, nil
 }
 
-func strictReference(meta clientMeta, op, canonical, markPrice, fundingRate, effectiveAt, nextAt string, observedAt time.Time) (perpReferenceEvent, error) {
+func strictReference(meta clientMeta, op string, instrument exchange.Instrument, markPrice, fundingRate, effectiveAt, nextAt string, observedAt time.Time) (perpReferenceEvent, error) {
 	event := perpReferenceEvent{}
 	if (markPrice != "" || fundingRate != "") && observedAt.IsZero() {
 		return perpReferenceEvent{}, malformed(meta, op, "observed timestamp is required")
@@ -1923,7 +2090,7 @@ func strictReference(meta clientMeta, op, canonical, markPrice, fundingRate, eff
 			return perpReferenceEvent{}, err
 		}
 		event.MarkValid = true
-		event.MarkPrice = exchange.MarkPriceEvent{Instrument: canonical, Price: price, Time: observedAt}
+		event.MarkPrice = exchange.MarkPriceEvent{Instrument: instrument, Price: price, Time: observedAt}
 	}
 	if fundingRate != "" {
 		rate, err := parseRequiredDecimal(meta, op, "funding rate", fundingRate)
@@ -1945,7 +2112,7 @@ func strictReference(meta clientMeta, op, canonical, markPrice, fundingRate, eff
 			}
 		}
 		event.FundingValid = true
-		event.FundingRate = exchange.FundingRateEvent{Instrument: canonical, Rate: rate, EffectiveAt: effectiveTime, NextAt: nextTime}
+		event.FundingRate = exchange.FundingRateEvent{Instrument: instrument, Rate: rate, EffectiveAt: effectiveTime, NextAt: nextTime}
 	}
 	return event, nil
 }
@@ -2049,21 +2216,27 @@ func (b *bybitPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.Pla
 	if err := req.Validate(b.client.meta.product); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := b.client.symbols(req.Instrument, "PlaceOrder")
+	native, _, err := b.client.symbols(req.Instrument, "PlaceOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
 	ws, err := bybit.NewTradeWSClientWithProfile(b.client.profile)
 	if err != nil {
-		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
 	ws.WithCredentials(b.client.apiKey, b.client.secretKey)
 	defer ws.Close()
 	resp, err := ws.PlaceOrderWithResponse(ctx, bybit.PlaceOrderRequest{Category: b.client.category, Symbol: native, Side: bybitSide(req.Side), OrderType: bybitOrderType(req.Type), Qty: req.Quantity.String(), Price: priceString(req), TimeInForce: tif(req.LimitPolicy), ReduceOnly: req.ReduceOnly, OrderLinkID: req.ClientOrderID})
 	if err != nil {
-		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(b.client.meta, "PlaceOrder", err.Error())
+		}
+		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
-	ack := baseAck(b.client.meta, exchange.OrderOperationPlace, canonical, resp.OrderID, resp.OrderLinkID)
+	if err := validateSuccessfulOrderAction(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, resp.OrderID, resp.OrderLinkID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(b.client.meta, exchange.OrderOperationPlace, native, resp.OrderID, resp.OrderLinkID)
 	ack.OrderType = req.Type
 	return ack, ack.Validate()
 }
@@ -2074,7 +2247,7 @@ func (b *bybitPrivateWSBackend) CancelOrder(ctx context.Context, req exchange.Ca
 	if err := ctxErr(ctx, b.client.meta, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	native, canonical, err := b.client.symbols(req.Instrument, "CancelOrder")
+	native, _, err := b.client.symbols(req.Instrument, "CancelOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -2086,15 +2259,21 @@ func (b *bybitPrivateWSBackend) CancelOrder(ctx context.Context, req exchange.Ca
 	}
 	ws, err := bybit.NewTradeWSClientWithProfile(b.client.profile)
 	if err != nil {
-		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
 	ws.WithCredentials(b.client.apiKey, b.client.secretKey)
 	defer ws.Close()
 	resp, err := ws.CancelOrderWithResponse(ctx, bybit.CancelOrderRequest{Category: b.client.category, Symbol: native, OrderID: req.OrderID})
 	if err != nil {
-		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(b.client.meta, "CancelOrder", err.Error())
+		}
+		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
-	ack := baseAck(b.client.meta, exchange.OrderOperationCancel, canonical, resp.OrderID, resp.OrderLinkID)
+	if err := validateSuccessfulOrderAction(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", resp.OrderID, resp.OrderLinkID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(b.client.meta, exchange.OrderOperationCancel, native, resp.OrderID, resp.OrderLinkID)
 	ack.State = exchange.AckCanceled
 	return ack, ack.Validate()
 }
@@ -2105,7 +2284,7 @@ func (b *bitgetPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.Pl
 	if err := req.Validate(b.client.meta.product); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := b.client.symbols(req.Instrument, "PlaceOrder")
+	native, _, err := b.client.symbols(req.Instrument, "PlaceOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -2119,13 +2298,19 @@ func (b *bitgetPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.Pl
 	}
 	ws := b.ws
 	if err := ws.Connect(ctx); err != nil {
-		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
 	resp, err := ws.PlaceUTAOrderWSContext(ctx, &bitget.PlaceOrderRequest{Category: b.client.bitgetPrivateCategory(), Symbol: native, Side: strings.ToLower(string(req.Side)), OrderType: strings.ToLower(string(req.Type)), Qty: quantity, Price: priceString(req), TimeInForce: bitgetTIF(req.LimitPolicy), MarginCoin: b.client.marginCoin, MarginMode: "crossed", ClientOID: req.ClientOrderID, ReduceOnly: bitgetReduceOnly(req, positionSide), PosSide: positionSide})
 	if err != nil {
-		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(b.client.meta, "PlaceOrder", err.Error())
+		}
+		return commandAck(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, err)
 	}
-	ack := baseAck(b.client.meta, exchange.OrderOperationPlace, canonical, resp.OrderID, resp.ClientOID)
+	if err := validateSuccessfulOrderAction(b.client.meta, "PlaceOrder", exchange.OrderOperationPlace, native, "", req.ClientOrderID, resp.OrderID, resp.ClientOID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(b.client.meta, exchange.OrderOperationPlace, native, resp.OrderID, resp.ClientOID)
 	ack.OrderType = req.Type
 	return ack, ack.Validate()
 }
@@ -2133,7 +2318,7 @@ func (b *bitgetPrivateWSBackend) CancelOrder(ctx context.Context, req exchange.C
 	if err := ctxErr(ctx, b.client.meta, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
-	native, canonical, err := b.client.symbols(req.Instrument, "CancelOrder")
+	native, _, err := b.client.symbols(req.Instrument, "CancelOrder")
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -2145,19 +2330,25 @@ func (b *bitgetPrivateWSBackend) CancelOrder(ctx context.Context, req exchange.C
 	}
 	ws := b.ws
 	if err := ws.Connect(ctx); err != nil {
-		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
 	resp, err := ws.CancelUTAOrderWSContext(ctx, &bitget.CancelOrderRequest{Category: b.client.bitgetPrivateCategory(), Symbol: native, OrderID: req.OrderID})
 	if err != nil {
-		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		if isOrderActionMalformed(err) {
+			return exchange.OrderAcknowledgement{}, malformed(b.client.meta, "CancelOrder", err.Error())
+		}
+		return commandAck(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", err)
 	}
-	ack := baseAck(b.client.meta, exchange.OrderOperationCancel, canonical, resp.OrderID, resp.ClientOID)
+	if err := validateSuccessfulOrderAction(b.client.meta, "CancelOrder", exchange.OrderOperationCancel, native, req.OrderID, "", resp.OrderID, resp.ClientOID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	ack := baseAck(b.client.meta, exchange.OrderOperationCancel, native, resp.OrderID, resp.ClientOID)
 	ack.State = exchange.AckCanceled
 	return ack, ack.Validate()
 }
 
-func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	native, canonical, err := b.client.symbols(instrument, "WatchOrders")
+func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchOrders")
 	if err != nil {
 		return nil, err
 	}
@@ -2170,7 +2361,7 @@ func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument stri
 		}
 		for _, row := range msg.Data {
 			if row.Symbol == native || native == "" {
-				orders, err := convertBybitOrders(b.client.meta, "WatchOrders", []bybit.OrderRecord{row}, canonical)
+				orders, err := convertBybitOrders(ctx, b.client.meta, "WatchOrders", []bybit.OrderRecord{row}, native)
 				if err != nil {
 					callbacks.Error(err)
 					continue
@@ -2185,8 +2376,8 @@ func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument stri
 	}
 	return ws.Close, nil
 }
-func (b *bybitPrivateWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	native, canonical, err := b.client.symbols(instrument, "WatchFills")
+func (b *bybitPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchFills")
 	if err != nil {
 		return nil, err
 	}
@@ -2199,7 +2390,7 @@ func (b *bybitPrivateWSBackend) StartFills(ctx context.Context, instrument strin
 		}
 		for _, row := range msg.Data {
 			if row.Symbol == native || native == "" {
-				fills, err := convertBybitFills(b.client.meta, "WatchFills", []bybit.ExecutionRecord{row}, canonical)
+				fills, err := convertBybitFills(ctx, b.client.meta, "WatchFills", []bybit.ExecutionRecord{row}, native)
 				if err != nil {
 					callbacks.Error(err)
 					continue
@@ -2237,8 +2428,8 @@ func (b *bybitPrivateWSBackend) StartBalances(ctx context.Context, callbacks str
 	}
 	return ws.Close, nil
 }
-func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
-	native, canonical, err := b.client.symbols(instrument, "WatchPositions")
+func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchPositions")
 	if err != nil {
 		return nil, err
 	}
@@ -2255,7 +2446,7 @@ func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument s
 				rows = append(rows, row)
 			}
 		}
-		positions, err := convertBybitPositions(b.client.meta, "WatchPositions", rows, canonical)
+		positions, err := convertBybitPositions(ctx, b.client.meta, "WatchPositions", rows, native)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -2268,8 +2459,8 @@ func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument s
 }
 func (b *bybitPrivateWSBackend) Close() error { return nil }
 
-func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	_, canonical, err := b.client.symbols(instrument, "WatchOrders")
+func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchOrders")
 	if err != nil {
 		return nil, err
 	}
@@ -2282,7 +2473,7 @@ func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument str
 			return
 		}
 		for _, row := range msg.Data {
-			orders, err := convertBitgetOrders(b.client.meta, "WatchOrders", []bitget.OrderRecord{row}, canonical)
+			orders, err := convertBitgetOrders(ctx, b.client.meta, "WatchOrders", []bitget.OrderRecord{row}, native)
 			if err != nil {
 				callbacks.Error(err)
 				continue
@@ -2296,8 +2487,8 @@ func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument str
 	}
 	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
 }
-func (b *bitgetPrivateWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	_, canonical, err := b.client.symbols(instrument, "WatchFills")
+func (b *bitgetPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchFills")
 	if err != nil {
 		return nil, err
 	}
@@ -2310,7 +2501,7 @@ func (b *bitgetPrivateWSBackend) StartFills(ctx context.Context, instrument stri
 			return
 		}
 		for _, row := range msg.Data {
-			fills, err := convertBitgetFills(b.client.meta, "WatchFills", []bitget.FillRecord{row}, canonical)
+			fills, err := convertBitgetFills(ctx, b.client.meta, "WatchFills", []bitget.FillRecord{row}, native)
 			if err != nil {
 				callbacks.Error(err)
 				continue
@@ -2344,8 +2535,8 @@ func (b *bitgetPrivateWSBackend) StartBalances(ctx context.Context, callbacks st
 	}
 	return func() error { return ws.Unsubscribe(context.Background(), arg) }, nil
 }
-func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
-	_, canonical, err := b.client.symbols(instrument, "WatchPositions")
+func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+	native, _, err := b.client.symbols(instrument, "WatchPositions")
 	if err != nil {
 		return nil, err
 	}
@@ -2357,7 +2548,7 @@ func (b *bitgetPrivateWSBackend) StartPositions(ctx context.Context, instrument 
 			callbacks.Error(malformed(b.client.meta, "WatchPositions", err.Error()))
 			return
 		}
-		positions, err := convertBitgetPositions(b.client.meta, "WatchPositions", msg.Data, canonical)
+		positions, err := convertBitgetPositions(ctx, b.client.meta, "WatchPositions", msg.Data, native)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -2375,7 +2566,7 @@ func (b *bitgetPrivateWSBackend) Close() error {
 	return b.ws.Close()
 }
 
-func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchOrderBook")
 	if err != nil {
 		return nil, err
@@ -2409,11 +2600,12 @@ func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument string, 
 		}
 		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: strconv.FormatInt(msg.Data.UpdateID, 10), Bids: bids, Asks: asks, Time: observedAt})
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchOrderBook", err)
 	}
-	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
+	return bybitPublicStop(ctx, ws, topic), nil
 }
-func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchBBO")
 	if err != nil {
 		return nil, err
@@ -2450,11 +2642,12 @@ func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument string, callba
 		}
 		callbacks.Event(exchange.BBOEvent{Instrument: canonical, Bid: bid, Ask: ask, Time: observedAt})
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchBBO", err)
 	}
-	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
+	return bybitPublicStop(ctx, ws, topic), nil
 }
-func (b *bybitWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+func (b *bybitWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchPublicTrades")
 	if err != nil {
 		return nil, err
@@ -2493,11 +2686,12 @@ func (b *bybitWSBackend) StartPublicTrades(ctx context.Context, instrument strin
 			callbacks.Event(exchange.PublicTradeEvent{Instrument: canonical, TradeID: row.ExecID, Side: side, Price: price, Quantity: quantity, Time: executedAt})
 		}
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchPublicTrades", err)
 	}
-	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
+	return bybitPublicStop(ctx, ws, topic), nil
 }
-func (b *bybitWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+func (b *bybitWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchCandles")
 	if err != nil {
 		return nil, err
@@ -2532,11 +2726,12 @@ func (b *bybitWSBackend) StartCandles(ctx context.Context, instrument, interval 
 			callbacks.Event(exchange.CandleEvent{Instrument: canonical, Interval: interval, Candle: candle})
 		}
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchCandles", err)
 	}
-	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
+	return bybitPublicStop(ctx, ws, topic), nil
 }
-func (b *bybitWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
+func (b *bybitWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchReference")
 	if err != nil {
 		return nil, err
@@ -2564,19 +2759,14 @@ func (b *bybitWSBackend) StartReference(ctx context.Context, instrument string, 
 		}
 		callbacks.Event(ref)
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchReference", err)
 	}
-	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
+	return bybitPublicStop(ctx, ws, topic), nil
 }
 func (b *bybitWSBackend) Close() error { return nil }
 
-func closeBybitPublicSubscription(ws *bybit.PublicWSClient, topic string) error {
-	unsubscribeErr := ws.Unsubscribe(context.Background(), topic)
-	closeErr := ws.Close()
-	return errors.Join(unsubscribeErr, closeErr)
-}
-
-func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchOrderBook")
 	if err != nil {
 		return nil, err
@@ -2611,11 +2801,12 @@ func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument string,
 		}
 		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: strconv.FormatInt(row.Seq, 10), Previous: strconv.FormatInt(row.PSeq, 10), Bids: bids, Asks: asks, Time: observedAt})
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchOrderBook", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, arg) }, nil
+	return bitgetPublicStop(ctx, ws, arg), nil
 }
-func (b *bitgetWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+func (b *bitgetWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchBBO")
 	if err != nil {
 		return nil, err
@@ -2645,11 +2836,12 @@ func (b *bitgetWSBackend) StartBBO(ctx context.Context, instrument string, callb
 		}
 		callbacks.Event(exchange.BBOEvent{Instrument: canonical, Bid: bid, Ask: ask, Time: observedAt})
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchBBO", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, arg) }, nil
+	return bitgetPublicStop(ctx, ws, arg), nil
 }
-func (b *bitgetWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+func (b *bitgetWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchPublicTrades")
 	if err != nil {
 		return nil, err
@@ -2688,11 +2880,12 @@ func (b *bitgetWSBackend) StartPublicTrades(ctx context.Context, instrument stri
 			callbacks.Event(exchange.PublicTradeEvent{Instrument: canonical, TradeID: firstNonEmpty(row.ExecID, row.ExecLinkID), Side: side, Price: price, Quantity: quantity, Time: executedAt})
 		}
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchPublicTrades", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, arg) }, nil
+	return bitgetPublicStop(ctx, ws, arg), nil
 }
-func (b *bitgetWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+func (b *bitgetWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchCandles")
 	if err != nil {
 		return nil, err
@@ -2716,11 +2909,12 @@ func (b *bitgetWSBackend) StartCandles(ctx context.Context, instrument, interval
 			callbacks.Event(exchange.CandleEvent{Instrument: canonical, Interval: interval, Candle: row})
 		}
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchCandles", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, arg) }, nil
+	return bitgetPublicStop(ctx, ws, arg), nil
 }
-func (b *bitgetWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
+func (b *bitgetWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchReference")
 	if err != nil {
 		return nil, err
@@ -2750,11 +2944,40 @@ func (b *bitgetWSBackend) StartReference(ctx context.Context, instrument string,
 		}
 		callbacks.Event(ref)
 	}); err != nil {
+		_ = ws.Close()
 		return nil, normErr(b.client.meta, "WatchReference", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, arg) }, nil
+	return bitgetPublicStop(ctx, ws, arg), nil
 }
 func (b *bitgetWSBackend) Close() error { return nil }
+
+func bybitPublicStop(ctx context.Context, ws *bybit.PublicWSClient, topic string) func() error {
+	var once sync.Once
+	var stopErr error
+	cleanupCtx := context.WithoutCancel(ctx)
+	return func() error {
+		once.Do(func() {
+			unsubscribeErr := ws.Unsubscribe(cleanupCtx, topic)
+			closeErr := ws.Close()
+			stopErr = errors.Join(unsubscribeErr, closeErr)
+		})
+		return stopErr
+	}
+}
+
+func bitgetPublicStop(ctx context.Context, ws *bitget.PublicWSClient, arg bitget.WSArg) func() error {
+	var once sync.Once
+	var stopErr error
+	cleanupCtx := context.WithoutCancel(ctx)
+	return func() error {
+		once.Do(func() {
+			unsubscribeErr := ws.Unsubscribe(cleanupCtx, arg)
+			closeErr := ws.Close()
+			stopErr = errors.Join(unsubscribeErr, closeErr)
+		})
+		return stopErr
+	}
+}
 
 func noopStop() error { return nil }
 

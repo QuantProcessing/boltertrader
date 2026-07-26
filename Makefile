@@ -6,6 +6,8 @@
 .PHONY: test-aster-testnet test-aster-testnet-read test-aster-testnet-spot-read test-aster-testnet-perp-read test-aster-testnet-spot test-aster-testnet-runtime-spot test-aster-testnet-perp test-aster-testnet-runtime-perp test-aster-testnet-acceptance
 .PHONY: test-nado-testnet test-nado-testnet-read test-nado-testnet-spot-read test-nado-testnet-perp-read test-nado-testnet-spot test-nado-testnet-runtime-spot test-nado-testnet-perp test-nado-testnet-runtime-perp test-nado-testnet-acceptance test-aster-nado-testnet-acceptance
 .PHONY: test-exchange-offline test-exchange-race test-exchange-redaction test-exchange-quality test-exchange-acceptance test-exchange-external-acceptance test-exchange-binance-demo-acceptance test-exchange-binance-demo-spot test-exchange-binance-demo-perp test-exchange-okx-demo-acceptance test-exchange-okx-demo-spot test-exchange-okx-demo-perp test-exchange-lighter-testnet-acceptance test-exchange-lighter-testnet-spot test-exchange-lighter-testnet-perp test-exchange-hyperliquid-testnet-acceptance test-exchange-hyperliquid-testnet-spot test-exchange-hyperliquid-testnet-perp test-exchange-bybit-demo-acceptance test-exchange-bybit-demo-spot test-exchange-bybit-demo-usdt-perp test-exchange-bybit-demo-usdc-perp test-exchange-bitget-demo-acceptance test-exchange-bitget-demo-spot test-exchange-bitget-demo-usdt-perp test-exchange-bitget-demo-usdc-perp test-exchange-gate-testnet-acceptance test-exchange-gate-testnet-spot test-exchange-gate-testnet-usdt-perp test-exchange-aster-testnet-acceptance test-exchange-aster-testnet-spot test-exchange-aster-testnet-usdt-perp test-exchange-nado-testnet-acceptance test-exchange-nado-testnet-spot test-exchange-nado-testnet-usdt0-perp
+.PHONY: test-gateway-contract test-gateway-offline test-gateway-race test-gateway-postgres test-gateway-restart test-gateway-security test-gateway
+.PHONY: test-gateway-demo-testnet test-gateway-binance-spot-demo test-gateway-binance-usd-perp-demo test-gateway-okx-spot-demo test-gateway-okx-usdt-perp-demo test-gateway-lighter-spot-testnet test-gateway-lighter-perp-testnet test-gateway-hyperliquid-spot-testnet test-gateway-hyperliquid-perp-testnet test-gateway-bybit-spot-demo test-gateway-bybit-usdt-perp-demo test-gateway-bybit-usdc-perp-demo test-gateway-bitget-spot-demo test-gateway-bitget-usdt-perp-demo test-gateway-bitget-usdc-perp-demo test-gateway-gate-spot-testnet test-gateway-gate-usdt-perp-testnet test-gateway-aster-spot-testnet test-gateway-aster-usdt-perp-testnet test-gateway-nado-spot-testnet test-gateway-nado-usdt0-perp-testnet
 
 .NOTPARALLEL:
 
@@ -40,6 +42,28 @@ test-exchange-redaction:
 	go test -short ./exchange/... -run 'Test(ConfigFormattingRedactsCredentials|ConstructedClientFormattingRedactsCredentials|ExpandedConstructedClientFormattingRedactsCredentials|AllVenueQueryNormalizersRedactUnderlyingErrors|AllVenueMutationNormalizersRedactVenueMessages|NormalizedErrorKindsAndMetadata)$$' -count=1
 
 test-exchange-quality: test-exchange-offline test-exchange-redaction test-exchange-race
+
+test-gateway-contract:
+	go test -short ./gateway/contracts ./gateway/domain ./gateway/capability ./gateway/store -count=1
+
+test-gateway-offline:
+	go test -short ./gateway/... ./cmd/exchange-gateway -count=1
+
+test-gateway-race:
+	go test -race -short ./gateway/... ./cmd/exchange-gateway -count=1
+
+test-gateway-postgres:
+	@test -n "$$GATEWAY_TEST_POSTGRES_DSN" || (echo "GATEWAY_TEST_POSTGRES_DSN is required" >&2; exit 1)
+	go test ./gateway/store/postgres/... -run 'Test(Migrate|CommandStore|AuditStore|AccountOwnership|RegisterAccount).*RealPostgres' -count=1
+
+test-gateway-restart:
+	@test -n "$$GATEWAY_TEST_POSTGRES_DSN" || (echo "GATEWAY_TEST_POSTGRES_DSN is required" >&2; exit 1)
+	go test ./gateway/order/... -run '^TestCoordinatorRealPostgresProcessCrashWindows$$' -count=1
+
+test-gateway-security:
+	go test -short ./gateway/contracts ./gateway/config ./gateway/secret ./gateway/store/postgres -run 'Test(GatewayProductionImportBoundary|OpenAPI|ConfigFormatting|RefRejects|EnvProvider|RedactErr|AcceptanceCrosswalk|GatewayOperations)' -count=1
+
+test-gateway: test-gateway-offline test-gateway-race test-gateway-security
 
 test-exchange-acceptance: test-exchange-binance-demo-acceptance test-exchange-okx-demo-acceptance test-exchange-lighter-testnet-acceptance test-exchange-hyperliquid-testnet-acceptance test-exchange-bybit-demo-acceptance test-exchange-bitget-demo-acceptance test-exchange-gate-testnet-acceptance test-exchange-aster-testnet-acceptance test-exchange-nado-testnet-acceptance
 
@@ -76,6 +100,68 @@ test-exchange-hyperliquid-testnet-spot:
 
 test-exchange-hyperliquid-testnet-perp:
 	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeHyperliquidPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-demo-testnet: test-gateway-binance-spot-demo test-gateway-binance-usd-perp-demo test-gateway-okx-spot-demo test-gateway-okx-usdt-perp-demo test-gateway-lighter-spot-testnet test-gateway-lighter-perp-testnet test-gateway-hyperliquid-spot-testnet test-gateway-hyperliquid-perp-testnet test-gateway-bybit-spot-demo test-gateway-bybit-usdt-perp-demo test-gateway-bybit-usdc-perp-demo test-gateway-bitget-spot-demo test-gateway-bitget-usdt-perp-demo test-gateway-bitget-usdc-perp-demo test-gateway-gate-spot-testnet test-gateway-gate-usdt-perp-testnet test-gateway-aster-spot-testnet test-gateway-aster-usdt-perp-testnet test-gateway-nado-spot-testnet test-gateway-nado-usdt0-perp-testnet
+
+test-gateway-binance-spot-demo:
+	BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBinanceSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-binance-usd-perp-demo:
+	BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBinancePerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-okx-spot-demo:
+	BOLTER_ENABLE_OKX_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeOKXSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-okx-usdt-perp-demo:
+	BOLTER_ENABLE_OKX_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeOKXPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-lighter-spot-testnet:
+	BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeLighterSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-lighter-perp-testnet:
+	BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeLighterPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-hyperliquid-spot-testnet:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeHyperliquidSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-hyperliquid-perp-testnet:
+	BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeHyperliquidPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=6m
+
+test-gateway-bybit-spot-demo:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-bybit-usdt-perp-demo:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitUSDTPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-bybit-usdc-perp-demo:
+	BOLTER_ENABLE_BYBIT_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBybitUSDCPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-bitget-spot-demo:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetSpotDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-bitget-usdt-perp-demo:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetUSDTPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-bitget-usdc-perp-demo:
+	BOLTER_ENABLE_BITGET_DEMO_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeBitgetUSDCPerpDemoAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-gate-spot-testnet:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeGateSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-gate-usdt-perp-testnet:
+	BOLTER_ENABLE_GATE_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeGateUSDTPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-aster-spot-testnet:
+	BOLTER_ENABLE_ASTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeAsterSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-aster-usdt-perp-testnet:
+	BOLTER_ENABLE_ASTER_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeAsterUSDTPerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-nado-spot-testnet:
+	BOLTER_ENABLE_NADO_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeNadoSpotTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
+
+test-gateway-nado-usdt0-perp-testnet:
+	BOLTER_ENABLE_NADO_TESTNET_WRITES=1 go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestExchangeNadoUSDT0PerpTestnetAcceptance$$' ./exchange/... -count=1 -timeout=15m
 
 test-exchange-bybit-demo-acceptance: test-exchange-bybit-demo-spot test-exchange-bybit-demo-usdt-perp test-exchange-bybit-demo-usdc-perp
 

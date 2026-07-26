@@ -12,21 +12,23 @@ func TestOpenAPIBybitRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: bybitOpenAPIRouter{}}}
 
-	spot := NewBybitSpot("key", "secret", settings)
-	assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, "BTC-USDT")
-	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "11"}); err != nil {
+	spotSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT")
+	spot := NewBybitSpot("key", "secret", spotSettings)
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
+	if _, err := spot.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: spotInstrument, OrderID: "11"}); err != nil {
 		t.Fatalf("spot CancelOrder: %v", err)
 	}
-	assertSpotLifecycleMatrix(t, ctx, spot, "BTC-USDT")
+	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
-	perp := NewBybitLinearPerp("key", "secret", "USDT", settings)
-	assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
-	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, "BTC-USDT")
-	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: "BTC-USDT", OrderID: "21"}); err != nil {
+	perpSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
+	perp := NewBybitLinearPerp("key", "secret", "USDT", perpSettings)
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
+	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
+	if _, err := perp.CancelOrder(ctx, exchange.CancelOrderRequest{Instrument: perpInstrument, OrderID: "21"}); err != nil {
 		t.Fatalf("perp CancelOrder: %v", err)
 	}
-	assertPerpLifecycleMatrix(t, ctx, perp, "BTC-USDT")
+	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 }
 
 func TestBybitBuildersSatisfyExchangeContracts(t *testing.T) {
@@ -66,7 +68,7 @@ func TestBybitCancelAcceptsOfficialUUIDOrderID(t *testing.T) {
 	})
 
 	ack, err := client.CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: "BTC-USDT",
+		Instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT"),
 		OrderID:    orderID,
 	})
 	if err != nil {

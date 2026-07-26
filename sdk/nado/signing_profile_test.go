@@ -275,6 +275,123 @@ func TestRESTWriteRejectsInactiveProductBeforeSigningOrExecute(t *testing.T) {
 	}
 }
 
+func TestRESTWriteRejectsMismatchedDiscoveredProductBeforeExecute(t *testing.T) {
+	discovered := nadoTestDiscoveredProduct(1, MarketTypeSpot)
+	tests := []struct {
+		name   string
+		mutate func(*DiscoveredProduct)
+		run    func(*Client, ClientOrderInput) error
+	}{
+		{
+			name:   "place product id mismatch",
+			mutate: func(product *DiscoveredProduct) { product.ProductID = 2 },
+			run: func(client *Client, input ClientOrderInput) error {
+				_, err := client.PlaceOrder(context.Background(), input)
+				return err
+			},
+		},
+		{
+			name:   "cancel and place symbol product id mismatch",
+			mutate: func(product *DiscoveredProduct) { product.Symbol.ProductID = 2 },
+			run: func(client *Client, input ClientOrderInput) error {
+				_, err := client.CancelAndPlace(context.Background(), CancelOrdersInput{
+					ProductIds: []int64{1},
+					Digests:    []string{"0x1111111111111111111111111111111111111111111111111111111111111111"},
+				}, input)
+				return err
+			},
+		},
+		{
+			name:   "place product type mismatch",
+			mutate: func(product *DiscoveredProduct) { product.ProductType = MarketTypePerp },
+			run: func(client *Client, input ClientOrderInput) error {
+				_, err := client.PlaceOrder(context.Background(), input)
+				return err
+			},
+		},
+		{
+			name:   "cancel and place precision mismatch",
+			mutate: func(product *DiscoveredProduct) { product.Symbol.PriceIncrementX18 = "1" },
+			run: func(client *Client, input ClientOrderInput) error {
+				_, err := client.CancelAndPlace(context.Background(), CancelOrdersInput{
+					ProductIds: []int64{1},
+					Digests:    []string{"0x1111111111111111111111111111111111111111111111111111111111111111"},
+				}, input)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var requests []string
+			client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests = append(requests, request.Method+" "+request.URL.String())
+				if strings.HasSuffix(request.URL.Path, "/execute") {
+					t.Fatalf("mismatched discovered product reached execute: %v", requests)
+				}
+				payload := `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
+			})})
+			product := discovered
+			test.mutate(&product)
+			input := ClientOrderInput{
+				ProductId:         1,
+				Price:             "2500",
+				Amount:            "0.1",
+				Side:              OrderSideBuy,
+				OrderType:         OrderTypeLimit,
+				DiscoveredProduct: &product,
+			}
+			if err := test.run(client, input); !errors.Is(err, ErrNadoDiscoveryProductMismatch) {
+				t.Fatalf("error = %v, want ErrNadoDiscoveryProductMismatch", err)
+			}
+			if len(requests) != 1 || !strings.Contains(requests[0], "/query?type=contracts") {
+				t.Fatalf("requests = %v, want only contracts preflight", requests)
+			}
+		})
+	}
+}
+
+func TestWSPrepareOrderRejectsMismatchedDiscoveredProduct(t *testing.T) {
+	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests []string
+	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.Method+" "+request.URL.String())
+		if strings.HasSuffix(request.URL.Path, "/execute") {
+			t.Fatalf("mismatched WS prepared product reached execute: %v", requests)
+		}
+		payload := `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
+	})})
+	ws, err := NewWsApiClient(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product := nadoTestDiscoveredProduct(1, MarketTypeSpot)
+	product.Symbol.Type = string(MarketTypePerp)
+	_, err = ws.PrepareOrder(context.Background(), ClientOrderInput{
+		ProductId:         1,
+		Price:             "2500",
+		Amount:            "0.1",
+		Side:              OrderSideBuy,
+		OrderType:         OrderTypeLimit,
+		DiscoveredProduct: &product,
+	})
+	if !errors.Is(err, ErrNadoDiscoveryProductMismatch) {
+		t.Fatalf("error = %v, want ErrNadoDiscoveryProductMismatch", err)
+	}
+	if len(requests) != 1 || !strings.Contains(requests[0], "/query?type=contracts") {
+		t.Fatalf("requests = %v, want only contracts preflight", requests)
+	}
+}
+
 func TestResolveProductRejectsFailedSequencerBeforeMetadata(t *testing.T) {
 	client := newNadoTestnetClient(t)
 	var requests []string
@@ -402,6 +519,28 @@ func TestPrepareNadoOrderInputSafetyEnvelope(t *testing.T) {
 	reduceOnly.ReduceOnly = true
 	if _, _, _, err := prepareNadoOrderInput(perp, reduceOnly); err != nil {
 		t.Fatalf("valid reduce-only order rejected: %v", err)
+	}
+}
+
+func nadoTestDiscoveredProduct(productID int64, productType MarketType) DiscoveredProduct {
+	book := ProductBookInfo{
+		PriceIncrementX18: "10",
+		SizeIncrement:     "20",
+		MinSize:           "30",
+	}
+	return DiscoveredProduct{
+		ProductID:   productID,
+		ProductType: productType,
+		BookInfo:    book,
+		Symbol: Symbol{
+			ProductID:         int(productID),
+			Type:              string(productType),
+			Symbol:            "ETH_USDT0",
+			PriceIncrementX18: book.PriceIncrementX18,
+			SizeIncrement:     book.SizeIncrement,
+			MinSize:           book.MinSize,
+			TradingStatus:     TradingStatusLive,
+		},
 	}
 }
 

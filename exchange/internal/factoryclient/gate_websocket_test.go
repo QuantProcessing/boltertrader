@@ -32,7 +32,10 @@ func TestGateOrderBookSubscriptionsAndPayloadsMatchOfficialFullSnapshotChannels(
 			"asks": [["19080.24", "0.1638"]]
 		}
 	}`)
-	spotEvent, err := gateSpotOrderBookEvent(spotRaw, "BTC_USDT")
+	spotInstrument := gateTestInstrument(exchange.ProductSpot)
+	perpInstrument := gateTestInstrument(exchange.ProductPerp)
+
+	spotEvent, err := gateSpotOrderBookEvent(spotRaw, spotInstrument)
 	if err != nil {
 		t.Fatalf("spot order book event: %v", err)
 	}
@@ -57,11 +60,11 @@ func TestGateOrderBookSubscriptionsAndPayloadsMatchOfficialFullSnapshotChannels(
 			"l": "20"
 		}
 	}`)
-	perpEvent, err := gatePerpOrderBookEvent(perpRaw, "BTC_USDT", decimal.RequireFromString("0.001"))
+	perpEvent, err := gatePerpOrderBookEvent(perpRaw, perpInstrument, decimal.RequireFromString("0.001"))
 	if err != nil {
 		t.Fatalf("perp order book event: %v", err)
 	}
-	if perpEvent.Kind != exchange.EventSnapshot || perpEvent.Instrument != "BTC_USDT" || perpEvent.Sequence != "93973511" || len(perpEvent.Bids) != 1 || len(perpEvent.Asks) != 1 {
+	if perpEvent.Kind != exchange.EventSnapshot || perpEvent.Instrument.Identity.NativeSymbol != "BTC_USDT" || perpEvent.Sequence != "93973511" || len(perpEvent.Bids) != 1 || len(perpEvent.Asks) != 1 {
 		t.Fatalf("perp order book event = %+v", perpEvent)
 	}
 	if !perpEvent.Bids[0].Quantity.Equal(decimal.RequireFromString("3.1")) || !perpEvent.Asks[0].Price.Equal(decimal.RequireFromString("97.1")) {
@@ -85,11 +88,14 @@ func TestGateCandlestickPayloadsMatchOfficialSpotObjectAndFuturesArrayShapes(t *
 			"w": true
 		}
 	}`)
-	spotEvent, err := gateSpotCandleEvent(spotRaw, "BTC_USDT", "1m")
+	spotInstrument := gateTestInstrument(exchange.ProductSpot)
+	perpInstrument := gateTestInstrument(exchange.ProductPerp)
+
+	spotEvent, err := gateSpotCandleEvent(spotRaw, spotInstrument, "1m")
 	if err != nil {
 		t.Fatalf("spot candle event: %v", err)
 	}
-	if spotEvent.Instrument != "BTC_USDT" || spotEvent.Interval != "1m" || !spotEvent.Candle.Complete {
+	if spotEvent.Instrument.Identity.NativeSymbol != "BTC_USDT" || spotEvent.Interval != "1m" || !spotEvent.Candle.Complete {
 		t.Fatalf("spot candle event = %+v", spotEvent)
 	}
 	if !spotEvent.Candle.Open.Equal(decimal.RequireFromString("19121.4")) || !spotEvent.Candle.Volume.Equal(decimal.RequireFromString("2362.32035")) {
@@ -111,7 +117,7 @@ func TestGateCandlestickPayloadsMatchOfficialSpotObjectAndFuturesArrayShapes(t *
 			"w": false
 		}]
 	}`)
-	perpEvents, err := gatePerpCandleEvents(perpRaw, "BTC_USDT", "1m")
+	perpEvents, err := gatePerpCandleEvents(perpRaw, perpInstrument, "1m")
 	if err != nil {
 		t.Fatalf("perp candle events: %v", err)
 	}
@@ -131,7 +137,7 @@ func TestGatePerpReferencePayloadMatchesOfficialTickerArrayShape(t *testing.T) {
 			"t": 1541659086123
 		}]
 	}`)
-	events, err := gatePerpReferenceEvents(raw, "BTC_USDT")
+	events, err := gatePerpReferenceEvents(raw, gateTestInstrument(exchange.ProductPerp))
 	if err != nil {
 		t.Fatalf("perp reference events: %v", err)
 	}
@@ -156,7 +162,7 @@ func TestGatePerpPublicTradePayloadMatchesTestnetArrayShape(t *testing.T) {
 			"price": "100"
 		}]
 	}`)
-	events, err := gatePerpPublicTradeEvents(raw, "BTC_USDT", decimal.RequireFromString("0.001"))
+	events, err := gatePerpPublicTradeEvents(raw, gateTestInstrument(exchange.ProductPerp), decimal.RequireFromString("0.001"))
 	if err != nil {
 		t.Fatalf("perp public trade events: %v", err)
 	}
@@ -166,6 +172,32 @@ func TestGatePerpPublicTradePayloadMatchesTestnetArrayShape(t *testing.T) {
 	if !events[0].Quantity.Equal(decimal.RequireFromString("0.001")) {
 		t.Fatalf("perp public trade quantity = %s, want neutral base quantity 0.001", events[0].Quantity)
 	}
+}
+
+func TestGatePublicWebSocketRejectsMismatchedNativeIdentity(t *testing.T) {
+	spotInstrument := gateTestInstrument(exchange.ProductSpot)
+	perpInstrument := gateTestInstrument(exchange.ProductPerp)
+
+	_, err := gateSpotOrderBookEvent(json.RawMessage(`{"result":{"t":1606295412123,"lastUpdateId":48791820,"s":"ETH_USDT","bids":[["19079.55","0.0195"]],"asks":[["19080.24","0.1638"]]}}`), spotInstrument)
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gatePerpOrderBookEvent(json.RawMessage(`{"result":{"t":1541500161123,"contract":"ETH_USDT","id":93973511,"asks":[{"p":"97.1","s":2245}],"bids":[{"p":"96.9","s":3100}]}}`), perpInstrument, decimal.RequireFromString("0.001"))
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gateSpotPublicTradeEvent(json.RawMessage(`{"result":{"id":"1","currency_pair":"ETH_USDT","side":"buy","amount":"0.1","price":"100","create_time_ms":"1720000000000"}}`), spotInstrument)
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gateSpotCandleEvent(json.RawMessage(`{"result":{"t":"1606292580","v":"1","c":"100","h":"101","l":"99","o":"100","n":"1m_ETH_USDT","w":true}}`), spotInstrument, "1m")
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gatePerpCandleEvents(json.RawMessage(`{"result":[{"t":1545129300,"v":1,"c":"95.4","h":"96.9","l":"89.5","o":"94.3","n":"1m_ETH_USDT","w":false}]}`), perpInstrument, "1m")
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gatePerpPublicTradeEvents(json.RawMessage(`{"result":[{"id":2,"create_time":1720000000.125,"contract":"ETH_USDT","size":"1","price":"100"}]}`), perpInstrument, decimal.RequireFromString("0.001"))
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+
+	_, err = gatePerpReferenceEvents(json.RawMessage(`{"result":[{"contract":"ETH_USDT","funding_rate":"0.0001","mark_price":"100"}]}`), perpInstrument)
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
 }
 
 func TestGatePerpOrderPayloadAcceptsDocumentedLifecycleMarkers(t *testing.T) {
@@ -183,7 +215,7 @@ func TestGatePerpOrderPayloadAcceptsDocumentedLifecycleMarkers(t *testing.T) {
 			"finish_as": "_new"
 		}]
 	}`)
-	events, err := gateFuturesOrderEvents(raw, decimal.RequireFromString("0.001"))
+	events, err := gateFuturesOrderEvents(raw, gateTestInstrument(exchange.ProductPerp), decimal.RequireFromString("0.001"))
 	if err != nil {
 		t.Fatalf("perp order events: %v", err)
 	}
@@ -203,7 +235,10 @@ func TestGatePerpPrivateSubscriptionsIncludeVenueUserIDPlaceholder(t *testing.T)
 
 func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	spotOrderRaw := []byte(`{"time":1720000000,"channel":"spot.orders","event":"update","result":[{"id":"11","text":"101","currency_pair":"BTC_USDT","type":"limit","side":"buy","amount":"1","price":"99","left":"0","filled_amount":"1","status":"closed","finish_as":"filled"}]}`)
-	spotOrderEvents, err := gateSpotOrderEvents(spotOrderRaw)
+	spotInstrument := gateTestInstrument(exchange.ProductSpot)
+	perpInstrument := gateTestInstrument(exchange.ProductPerp)
+
+	spotOrderEvents, err := gateSpotOrderEvents(spotOrderRaw, spotInstrument)
 	if err != nil {
 		t.Fatalf("spot order events: %v", err)
 	}
@@ -212,7 +247,7 @@ func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	}
 
 	spotFillRaw := []byte(`{"time":1720000000,"channel":"spot.usertrades","event":"update","result":[{"id":"1","currency_pair":"BTC_USDT","order_id":"11","side":"buy","role":"maker","amount":"1","price":"99","fee":"0.01","fee_currency":"USDT","create_time_ms":"1720000000000","text":"101"}]}`)
-	spotFillEvents, err := gateSpotFillEvents(spotFillRaw)
+	spotFillEvents, err := gateSpotFillEvents(spotFillRaw, spotInstrument)
 	if err != nil {
 		t.Fatalf("spot fill events: %v", err)
 	}
@@ -221,7 +256,7 @@ func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	}
 
 	perpOrderRaw := []byte(`{"time":1720000000,"channel":"futures.orders","event":"update","result":[{"id":21,"contract":"BTC_USDT","size":1,"price":"99","left":0,"status":"finished","finish_as":"filled"}]}`)
-	perpOrderEvents, err := gateFuturesOrderEvents(perpOrderRaw, decimal.RequireFromString("0.001"))
+	perpOrderEvents, err := gateFuturesOrderEvents(perpOrderRaw, perpInstrument, decimal.RequireFromString("0.001"))
 	if err != nil {
 		t.Fatalf("perp order events: %v", err)
 	}
@@ -230,7 +265,7 @@ func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	}
 
 	perpPositionRaw := []byte(`{"time":1720000000,"channel":"futures.positions","event":"update","result":[{"contract":"BTC_USDT","size":-2,"leverage":"5","margin":"10","entry_price":"99","mark_price":"100","unrealised_pnl":"1"}]}`)
-	positionEvents, err := gateFuturesPositionEvents(perpPositionRaw, "BTC_USDT", decimal.RequireFromString("0.001"))
+	positionEvents, err := gateFuturesPositionEvents(perpPositionRaw, perpInstrument, decimal.RequireFromString("0.001"))
 	if err != nil {
 		t.Fatalf("position events: %v", err)
 	}
@@ -242,6 +277,13 @@ func TestGateWebSocketParsesPrivateEnvelopeResultArrays(t *testing.T) {
 	}
 }
 
+func TestGatePrivateWebSocketUnknownNativeIdentityFailsMetadataResolution(t *testing.T) {
+	instrument := gateTestInstrument(exchange.ProductSpot)
+	raw := []byte(`{"time":1720000000,"channel":"spot.orders","event":"update","result":[{"id":"11","text":"101","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"1","price":"99","left":"0","filled_amount":"1","status":"closed","finish_as":"filled"}]}`)
+	_, err := gateSpotOrderEvents(raw, instrument)
+	assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+}
+
 func TestGateWebSocketCommandsUseRESTBridge(t *testing.T) {
 	router := &gateOpenAPIRouter{}
 	client := NewGateSpot("key", "secret", Settings{
@@ -251,7 +293,7 @@ func TestGateWebSocketCommandsUseRESTBridge(t *testing.T) {
 		HTTPClient:        &http.Client{Transport: router},
 	})
 	ack, err := client.WebSocket().PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    "BTC_USDT",
+		Instrument:    gateTestInstrument(exchange.ProductSpot),
 		ClientOrderID: "101",
 		Side:          exchange.SideBuy,
 		Type:          exchange.OrderTypeLimit,
@@ -264,6 +306,40 @@ func TestGateWebSocketCommandsUseRESTBridge(t *testing.T) {
 	}
 	if ack.Venue != exchange.VenueGate || ack.OrderID != "11" {
 		t.Fatalf("WS PlaceOrder ack = %+v", ack)
+	}
+}
+
+func TestGatePerpPrivateWebSocketValidatesMultiplierBeforeUserID(t *testing.T) {
+	rest := &gatePerpRESTPreflightSpy{multiplierErr: clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}.catalogMetadataResolution("WatchOrders", "missing multiplier")}
+	backend := newGatePerpWSBackend(nil, rest)
+	instrument := gateTestInstrument(exchange.ProductPerp)
+	instrument.Encoding.ContractMultiplier = exchange.OptionalDecimal{}
+
+	for _, test := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "orders", run: func() error {
+			_, err := backend.StartOrders(context.Background(), instrument, streamCallbacks[exchange.OrderEvent]{})
+			return err
+		}},
+		{name: "fills", run: func() error {
+			_, err := backend.StartFills(context.Background(), instrument, streamCallbacks[exchange.FillEvent]{})
+			return err
+		}},
+		{name: "positions", run: func() error {
+			_, err := backend.StartPositions(context.Background(), instrument, streamCallbacks[exchange.PositionEvent]{})
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rest.userIDCalls = 0
+			err := test.run()
+			assertGateErrorKind(t, err, exchange.KindMetadataResolution)
+			if rest.userIDCalls != 0 {
+				t.Fatalf("fetched Gate user ID before multiplier validation: %d calls", rest.userIDCalls)
+			}
+		})
 	}
 }
 
@@ -292,4 +368,29 @@ func TestGateWebSocketExercisesEveryExposedMethod(t *testing.T) {
 			t.Fatalf("Gate perp websocket missing %s", method)
 		}
 	}
+}
+
+type gatePerpRESTPreflightSpy struct {
+	multiplierErr error
+	userIDCalls   int
+}
+
+func (spy *gatePerpRESTPreflightSpy) PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
+	return exchange.OrderAcknowledgement{}, nil
+}
+
+func (spy *gatePerpRESTPreflightSpy) CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
+	return exchange.OrderAcknowledgement{}, nil
+}
+
+func (spy *gatePerpRESTPreflightSpy) gateFuturesUserID(context.Context) (string, error) {
+	spy.userIDCalls++
+	return "20011", nil
+}
+
+func (spy *gatePerpRESTPreflightSpy) gateContractMultiplier(string, exchange.Instrument) (decimal.Decimal, error) {
+	if spy.multiplierErr != nil {
+		return decimal.Zero, spy.multiplierErr
+	}
+	return decimal.RequireFromString("0.001"), nil
 }

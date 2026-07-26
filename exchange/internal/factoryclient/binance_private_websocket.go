@@ -68,13 +68,13 @@ type binanceSpotPrivateWSBackend struct {
 }
 
 type binanceSpotOrderRoute struct {
-	instrument  string
+	instrument  exchange.Instrument
 	venueSymbol string
 	callbacks   streamCallbacks[exchange.OrderEvent]
 }
 
 type binanceSpotFillRoute struct {
-	instrument  string
+	instrument  exchange.Instrument
 	venueSymbol string
 	callbacks   streamCallbacks[exchange.FillEvent]
 }
@@ -105,7 +105,7 @@ func newBinanceSpotPrivateWSBackendForTest(api binanceSpotPrivateAPI, account bi
 	return backend
 }
 
-func (backend *binanceSpotPrivateWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *binanceSpotPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	venueSymbol, canonical, err := binanceSpotSymbols(instrument, "WatchOrders")
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (backend *binanceSpotPrivateWSBackend) StartOrders(ctx context.Context, ins
 	return stop, nil
 }
 
-func (backend *binanceSpotPrivateWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *binanceSpotPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	venueSymbol, canonical, err := binanceSpotSymbols(instrument, "WatchFills")
 	if err != nil {
 		return nil, err
@@ -434,12 +434,12 @@ type binancePerpPrivateWSBackend struct {
 }
 
 type binancePerpOrderRoute struct {
-	instrument string
+	instrument exchange.Instrument
 	callbacks  streamCallbacks[exchange.OrderEvent]
 }
 
 type binancePerpFillRoute struct {
-	instrument string
+	instrument exchange.Instrument
 	callbacks  streamCallbacks[exchange.FillEvent]
 }
 
@@ -448,7 +448,7 @@ type binancePerpBalanceRoute struct {
 }
 
 type binancePerpPositionRoute struct {
-	instrument string
+	instrument exchange.Instrument
 	callbacks  streamCallbacks[exchange.PositionEvent]
 }
 
@@ -474,7 +474,7 @@ func newBinancePerpPrivateWSBackendForTest(api binancePerpPrivateAPI, account bi
 	return backend
 }
 
-func (backend *binancePerpPrivateWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+func (backend *binancePerpPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	canonical, native, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchOrders", exchange.KindInvalidRequest, err.Error())
@@ -491,7 +491,7 @@ func (backend *binancePerpPrivateWSBackend) StartOrders(ctx context.Context, ins
 	return stop, nil
 }
 
-func (backend *binancePerpPrivateWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+func (backend *binancePerpPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	canonical, native, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchFills", exchange.KindInvalidRequest, err.Error())
@@ -521,7 +521,7 @@ func (backend *binancePerpPrivateWSBackend) StartBalances(ctx context.Context, c
 	return stop, nil
 }
 
-func (backend *binancePerpPrivateWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+func (backend *binancePerpPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	canonical, native, err := binancePerpRequestSymbols(instrument)
 	if err != nil {
 		return nil, websocketError(backend.meta, "WatchPositions", exchange.KindInvalidRequest, err.Error())
@@ -835,7 +835,7 @@ func (backend *binancePerpPrivateWSBackend) dispatchAccountUpdate(event *binance
 	}
 }
 
-func binanceSpotWSOrderEvent(instrument, expectedSymbol string, native *binancespot.ExecutionReportEvent) (exchange.Order, error) {
+func binanceSpotWSOrderEvent(instrument exchange.Instrument, expectedSymbol string, native *binancespot.ExecutionReportEvent) (exchange.Order, error) {
 	if native == nil {
 		return exchange.Order{}, binanceSpotMalformed("WatchOrders", "missing execution report")
 	}
@@ -866,7 +866,7 @@ func binanceSpotWSOrderEvent(instrument, expectedSymbol string, native *binances
 		return exchange.Order{}, binanceSpotMalformed("WatchOrders", err.Error())
 	}
 	order := exchange.Order{
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderID:       strconv.FormatInt(native.OrderID, 10),
 		ClientOrderID: native.ClientOrderID,
 		Side:          side,
@@ -885,7 +885,7 @@ func binanceSpotWSOrderEvent(instrument, expectedSymbol string, native *binances
 	return order, nil
 }
 
-func binanceSpotWSFillEvent(instrument, expectedSymbol string, native *binancespot.ExecutionReportEvent) (exchange.Fill, bool, error) {
+func binanceSpotWSFillEvent(instrument exchange.Instrument, expectedSymbol string, native *binancespot.ExecutionReportEvent) (exchange.Fill, bool, error) {
 	if native == nil {
 		return exchange.Fill{}, false, binanceSpotMalformed("WatchFills", "missing execution report")
 	}
@@ -922,7 +922,7 @@ func binanceSpotWSFillEvent(instrument, expectedSymbol string, native *binancesp
 		liquidity = exchange.LiquidityMaker
 	}
 	return exchange.Fill{
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderID:       strconv.FormatInt(native.OrderID, 10),
 		ClientOrderID: native.ClientOrderID,
 		FillID:        strconv.FormatInt(native.TradeID, 10),
@@ -958,14 +958,14 @@ func binanceSpotWSBalances(event *binancespot.AccountPositionEvent) ([]exchange.
 	return balances, nil
 }
 
-func binanceSpotWSPlaceAck(instrument string, req exchange.PlaceOrderRequest, res *binancespot.OrderResponse) (exchange.OrderAcknowledgement, error) {
+func binanceSpotWSPlaceAck(instrument exchange.Instrument, req exchange.PlaceOrderRequest, res *binancespot.OrderResponse) (exchange.OrderAcknowledgement, error) {
 	if res == nil {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("PlaceOrder", "missing order response")
 	}
 	if res.OrderID <= 0 {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("PlaceOrder", "response order id must be positive")
 	}
-	if res.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if res.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("PlaceOrder", "response symbol does not match requested instrument")
 	}
 	if req.ClientOrderID != "" && res.ClientOrderID != req.ClientOrderID {
@@ -980,7 +980,7 @@ func binanceSpotWSPlaceAck(instrument string, req exchange.PlaceOrderRequest, re
 		Product:       binanceSpotProduct,
 		Operation:     exchange.OrderOperationPlace,
 		State:         state,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderType:     req.Type,
 		OrderID:       strconv.FormatInt(res.OrderID, 10),
 		ClientOrderID: res.ClientOrderID,
@@ -1002,14 +1002,14 @@ func binanceSpotWSPlaceAck(instrument string, req exchange.PlaceOrderRequest, re
 	return ack, ack.Validate()
 }
 
-func binanceSpotWSCancelAck(instrument string, req exchange.CancelOrderRequest, res *binancespot.OrderResponse) (exchange.OrderAcknowledgement, error) {
+func binanceSpotWSCancelAck(instrument exchange.Instrument, req exchange.CancelOrderRequest, res *binancespot.OrderResponse) (exchange.OrderAcknowledgement, error) {
 	if res == nil {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("CancelOrder", "missing order response")
 	}
 	if res.OrderID <= 0 {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("CancelOrder", "response order id must be positive")
 	}
-	if res.Symbol != strings.ReplaceAll(instrument, "-", "") {
+	if res.Symbol != instrument.Identity.NativeSymbol {
 		return exchange.OrderAcknowledgement{}, binanceSpotMalformed("CancelOrder", "response symbol does not match requested instrument")
 	}
 	orderID := strconv.FormatInt(res.OrderID, 10)
@@ -1021,14 +1021,14 @@ func binanceSpotWSCancelAck(instrument string, req exchange.CancelOrderRequest, 
 		Product:       binanceSpotProduct,
 		Operation:     exchange.OrderOperationCancel,
 		State:         exchange.AckCanceled,
-		Instrument:    instrument,
+		NativeSymbol:  instrument.Identity.NativeSymbol,
 		OrderID:       orderID,
 		ClientOrderID: res.ClientOrderID,
 	}
 	return ack, ack.Validate()
 }
 
-func binancePerpWSOrderEvent(expectedInstrument string, native *binanceperp.OrderUpdateEvent) (exchange.Order, error) {
+func binancePerpWSOrderEvent(expectedInstrument exchange.Instrument, native *binanceperp.OrderUpdateEvent) (exchange.Order, error) {
 	if native == nil {
 		return exchange.Order{}, binancePerpMalformed("WatchOrders", "missing order update")
 	}
@@ -1053,13 +1053,13 @@ func binancePerpWSOrderEvent(expectedInstrument string, native *binanceperp.Orde
 	if err != nil {
 		return exchange.Order{}, binancePerpMalformed("WatchOrders", err.Error())
 	}
-	if order.Instrument != expectedInstrument {
+	if order.NativeSymbol != expectedInstrument.Identity.NativeSymbol {
 		return exchange.Order{}, binanceSkipEvent
 	}
 	return order, nil
 }
 
-func binancePerpWSFillEvent(expectedInstrument string, native *binanceperp.OrderUpdateEvent) (exchange.Fill, bool, error) {
+func binancePerpWSFillEvent(expectedInstrument exchange.Instrument, native *binanceperp.OrderUpdateEvent) (exchange.Fill, bool, error) {
 	if native == nil {
 		return exchange.Fill{}, false, binancePerpMalformed("WatchFills", "missing order update")
 	}
@@ -1067,7 +1067,7 @@ func binancePerpWSFillEvent(expectedInstrument string, native *binanceperp.Order
 	if err != nil {
 		return exchange.Fill{}, false, binancePerpMalformed("WatchFills", err.Error())
 	}
-	if canonical != expectedInstrument {
+	if canonical.Identity.NativeSymbol != expectedInstrument.Identity.NativeSymbol {
 		return exchange.Fill{}, false, nil
 	}
 	qty, err := binancePositiveDecimal(native.Order.LastFilledQty)
@@ -1097,7 +1097,7 @@ func binancePerpWSFillEvent(expectedInstrument string, native *binanceperp.Order
 		liquidity = exchange.LiquidityMaker
 	}
 	return exchange.Fill{
-		Instrument:    canonical,
+		NativeSymbol:  canonical.Identity.NativeSymbol,
 		OrderID:       strconv.FormatInt(native.Order.OrderID, 10),
 		ClientOrderID: native.Order.ClientOrderID,
 		FillID:        strconv.FormatInt(native.Order.TradeID, 10),
@@ -1137,7 +1137,7 @@ func binancePerpWSBalances(event *binanceperp.AccountUpdateEvent) ([]exchange.Ba
 	return balances, nil
 }
 
-func binancePerpWSPositions(expectedInstrument string, event *binanceperp.AccountUpdateEvent) ([]exchange.Position, error) {
+func binancePerpWSPositions(expectedInstrument exchange.Instrument, event *binanceperp.AccountUpdateEvent) ([]exchange.Position, error) {
 	if event == nil {
 		return nil, binancePerpMalformed("WatchPositions", "missing account update")
 	}
@@ -1147,7 +1147,7 @@ func binancePerpWSPositions(expectedInstrument string, event *binanceperp.Accoun
 		if err != nil {
 			return nil, binancePerpMalformed("WatchPositions", err.Error())
 		}
-		if canonical != expectedInstrument {
+		if canonical.Identity.NativeSymbol != expectedInstrument.Identity.NativeSymbol {
 			continue
 		}
 		if row.PositionSide != "" && row.PositionSide != "BOTH" {
@@ -1180,7 +1180,7 @@ func binancePerpWSPositions(expectedInstrument string, event *binanceperp.Accoun
 			margin = exchange.OptionalDecimal{Value: value, Valid: true}
 		}
 		positions = append(positions, exchange.Position{
-			Instrument:    canonical,
+			NativeSymbol:  canonical.Identity.NativeSymbol,
 			Side:          side,
 			Quantity:      quantity,
 			EntryPrice:    entry,

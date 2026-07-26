@@ -17,6 +17,7 @@ func (n *NumberString) UnmarshalJSON(data []byte) error {
 type Instrument struct {
 	Symbol             string `json:"symbol"`
 	Category           string `json:"category"`
+	SymbolType         string `json:"symbolType"`
 	BaseCoin           string `json:"baseCoin"`
 	QuoteCoin          string `json:"quoteCoin"`
 	MinOrderQty        string `json:"minOrderQty"`

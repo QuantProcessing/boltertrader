@@ -21,7 +21,7 @@ func TestBinancePrivateWSSpotConnectSingleflightAndCloseRace(t *testing.T) {
 
 	runConcurrent(t, 12, func() {
 		if _, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-			Instrument: "ETH-USDT", ClientOrderID: "1001", Side: exchange.SideBuy,
+			Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1001", Side: exchange.SideBuy,
 			Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1),
 		}); err != nil {
 			t.Errorf("PlaceOrder: %v", err)
@@ -32,7 +32,7 @@ func TestBinancePrivateWSSpotConnectSingleflightAndCloseRace(t *testing.T) {
 	}
 
 	runConcurrent(t, 12, func() {
-		stop, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) {}})
+		stop, err := backend.StartOrders(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) {}})
 		if err != nil {
 			t.Errorf("StartOrders: %v", err)
 			return
@@ -56,7 +56,7 @@ func TestBinancePrivateWSSpotConnectSingleflightAndCloseRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		_, _ = raceBackend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-			Instrument: "ETH-USDT", ClientOrderID: "1002", Side: exchange.SideBuy,
+			Instrument: binanceSpotETHUSDTInstrument(), ClientOrderID: "1002", Side: exchange.SideBuy,
 			Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1),
 		})
 		close(done)
@@ -89,15 +89,15 @@ func TestBinancePrivateWSSpotRegistersOneNativeCallbackAndRemovesRoutes(t *testi
 	backend := newBinanceSpotPrivateWSBackendForTest(&fakeBinanceSpotPrivateAPI{}, account, "key", "secret")
 
 	var ordersA, ordersB, fills, balances int
-	stopA, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { ordersA++ }})
+	stopA, err := backend.StartOrders(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { ordersA++ }})
 	if err != nil {
 		t.Fatalf("StartOrders A: %v", err)
 	}
-	stopB, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { ordersB++ }})
+	stopB, err := backend.StartOrders(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { ordersB++ }})
 	if err != nil {
 		t.Fatalf("StartOrders B: %v", err)
 	}
-	stopFill, err := backend.StartFills(context.Background(), "ETH-USDT", streamCallbacks[exchange.FillEvent]{Event: func(exchange.FillEvent) { fills++ }})
+	stopFill, err := backend.StartFills(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.FillEvent]{Event: func(exchange.FillEvent) { fills++ }})
 	if err != nil {
 		t.Fatalf("StartFills: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestBinancePrivateWSPerpConnectSingleflightAndCallbacks(t *testing.T) {
 
 	runConcurrent(t, 12, func() {
 		if _, err := backend.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-			Instrument: "ETH-USDT", ClientOrderID: "1001", Side: exchange.SideBuy,
+			Instrument: binancePerpETHUSDTInstrument(), ClientOrderID: "1001", Side: exchange.SideBuy,
 			Type: exchange.OrderTypeMarket, Quantity: decimal.NewFromInt(1),
 		}); err != nil {
 			t.Errorf("PlaceOrder: %v", err)
@@ -181,11 +181,11 @@ func TestBinancePrivateWSPerpConnectSingleflightAndCallbacks(t *testing.T) {
 	}
 
 	var orders, fills, balances, positions int
-	stopOrder, err := backend.StartOrders(context.Background(), "ETH-USDT", streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { orders++ }})
+	stopOrder, err := backend.StartOrders(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.OrderEvent]{Event: func(exchange.OrderEvent) { orders++ }})
 	if err != nil {
 		t.Fatalf("StartOrders: %v", err)
 	}
-	stopFill, err := backend.StartFills(context.Background(), "ETH-USDT", streamCallbacks[exchange.FillEvent]{Event: func(exchange.FillEvent) { fills++ }})
+	stopFill, err := backend.StartFills(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.FillEvent]{Event: func(exchange.FillEvent) { fills++ }})
 	if err != nil {
 		t.Fatalf("StartFills: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestBinancePrivateWSPerpConnectSingleflightAndCallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartBalances: %v", err)
 	}
-	stopPosition, err := backend.StartPositions(context.Background(), "ETH-USDT", streamCallbacks[exchange.PositionEvent]{Event: func(exchange.PositionEvent) { positions++ }})
+	stopPosition, err := backend.StartPositions(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.PositionEvent]{Event: func(exchange.PositionEvent) { positions++ }})
 	if err != nil {
 		t.Fatalf("StartPositions: %v", err)
 	}

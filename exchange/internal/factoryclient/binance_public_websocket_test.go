@@ -20,7 +20,7 @@ func TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5(t *testing.T) {
 		t.Fatalf("constructor connected websocket")
 	}
 	var got exchange.BookEvent
-	stop, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	stop, err := backend.StartOrderBook(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) { got = event },
 	})
 	if err != nil {
@@ -40,7 +40,7 @@ func TestBinancePublicWSBackendIsLazyConnectAndUsesSpotDepth5(t *testing.T) {
 		Bids:          [][]string{{"100.50", "2.5"}},
 		Asks:          [][]string{{"100.80", "1.2"}},
 	})
-	if got.Kind != exchange.EventSnapshot || got.Instrument != "ETH-USDT" || got.Resync ||
+	if got.Kind != exchange.EventSnapshot || got.Instrument.Identity.NativeSymbol != "ETHUSDT" || got.Resync ||
 		!got.Bids[0].Price.Equal(decimal.RequireFromString("100.50")) ||
 		!got.Asks[0].Quantity.Equal(decimal.RequireFromString("1.2")) {
 		t.Fatalf("book event = %+v", got)
@@ -60,7 +60,7 @@ func TestBinancePublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 	ws := newFakeBinancePublicWSClient()
 	backend := newBinanceSpotWSBackendWithClient(ws)
 	var bbo exchange.BBOEvent
-	if _, err := backend.StartBBO(context.Background(), "ETH-USDT", streamCallbacks[exchange.BBOEvent]{
+	if _, err := backend.StartBBO(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.BBOEvent]{
 		Event: func(event exchange.BBOEvent) { bbo = event },
 	}); err != nil {
 		t.Fatalf("StartBBO: %v", err)
@@ -75,13 +75,13 @@ func TestBinancePublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 		BestAskPrice: "101.2",
 		BestAskQty:   "4",
 	})
-	if bbo.Instrument != "ETH-USDT" || !bbo.Bid.Price.Equal(decimal.RequireFromString("101.1")) ||
+	if bbo.Instrument.Identity.NativeSymbol != "ETHUSDT" || !bbo.Bid.Price.Equal(decimal.RequireFromString("101.1")) ||
 		!bbo.Ask.Quantity.Equal(decimal.RequireFromString("4")) || bbo.Time.IsZero() {
 		t.Fatalf("bbo event = %+v", bbo)
 	}
 
 	var trade exchange.PublicTradeEvent
-	if _, err := backend.StartPublicTrades(context.Background(), "ETH-USDT", streamCallbacks[exchange.PublicTradeEvent]{
+	if _, err := backend.StartPublicTrades(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.PublicTradeEvent]{
 		Event: func(event exchange.PublicTradeEvent) { trade = event },
 	}); err != nil {
 		t.Fatalf("StartPublicTrades: %v", err)
@@ -97,7 +97,7 @@ func TestBinancePublicWSBackendNormalizesBBOAndTrades(t *testing.T) {
 		TradeTime:    1700000000002,
 		IsBuyerMaker: true,
 	})
-	if trade.Instrument != "ETH-USDT" || trade.TradeID != "777" || trade.Side != exchange.SideSell ||
+	if trade.Instrument.Identity.NativeSymbol != "ETHUSDT" || trade.TradeID != "777" || trade.Side != exchange.SideSell ||
 		!trade.Price.Equal(decimal.RequireFromString("102.2")) || trade.Time.UnixMilli() != 1700000000002 {
 		t.Fatalf("trade event = %+v", trade)
 	}
@@ -108,7 +108,7 @@ func TestBinancePublicWSBackendReconnectStatusMarksNextBookResync(t *testing.T) 
 	backend := newBinanceSpotWSBackendWithClient(ws)
 	var statuses []backendStatus
 	var book exchange.BookEvent
-	if _, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	if _, err := backend.StartOrderBook(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.BookEvent]{
 		Event:  func(event exchange.BookEvent) { book = event },
 		Status: func(status backendStatus) { statuses = append(statuses, status) },
 	}); err != nil {
@@ -156,7 +156,7 @@ func TestBinancePublicWSBackendCandlesAndMalformedErrors(t *testing.T) {
 	backend := newBinanceSpotWSBackendWithClient(ws)
 	var got exchange.CandleEvent
 	var gotErr error
-	stop, err := backend.StartCandles(context.Background(), "ETH-USDT", "5m", streamCallbacks[exchange.CandleEvent]{
+	stop, err := backend.StartCandles(context.Background(), binanceSpotETHUSDTInstrument(), "5m", streamCallbacks[exchange.CandleEvent]{
 		Event: func(event exchange.CandleEvent) { got = event },
 		Error: func(err error) { gotErr = err },
 	})
@@ -182,7 +182,7 @@ func TestBinancePublicWSBackendCandlesAndMalformedErrors(t *testing.T) {
 	row.Kline.Volume = "12.5"
 	row.Kline.IsClosed = true
 	ws.emitCandle(row)
-	if got.Instrument != "ETH-USDT" || got.Interval != "5m" ||
+	if got.Instrument.Identity.NativeSymbol != "ETHUSDT" || got.Interval != "5m" ||
 		got.Candle.OpenTime.UnixMilli() != 1700000000000 ||
 		got.Candle.CloseTime.UnixMilli() != 1700000300000 ||
 		!got.Candle.High.Equal(decimal.RequireFromString("105")) ||
@@ -206,28 +206,28 @@ func TestBinancePublicWSBackendCandlesAndMalformedErrors(t *testing.T) {
 
 func TestBinancePublicWSConvertersRejectZeroIdentityAndEmptyTopSize(t *testing.T) {
 	first := true
-	if _, err := binanceSpotWSBookEvent("ETH-USDT", &binancespot.DepthEvent{
+	if _, err := binanceSpotWSBookEvent(binanceSpotETHUSDTInstrument(), &binancespot.DepthEvent{
 		Symbol: "ETHUSDT",
 		Bids:   [][]string{{"100", "1"}},
 		Asks:   [][]string{{"101", "1"}},
 	}, &first, nil); !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("spot zero-sequence book error = %v", err)
 	}
-	if _, err := binanceSpotWSPublicTrade("ETH-USDT", &binancespot.AggTradeEvent{
+	if _, err := binanceSpotWSPublicTrade(binanceSpotETHUSDTInstrument(), &binancespot.AggTradeEvent{
 		Symbol:   "ETHUSDT",
 		Price:    "100",
 		Quantity: "1",
 	}); !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("spot zero-identity trade error = %v", err)
 	}
-	if _, err := binancePerpWSPublicTrade("ETH-USDT", &binanceperp.WsAggTradeEvent{
+	if _, err := binancePerpWSPublicTrade(binancePerpETHUSDTInstrument(), &binanceperp.WsAggTradeEvent{
 		Symbol:   "ETHUSDT",
 		Price:    "100",
 		Quantity: "1",
 	}); !errors.Is(err, exchange.ErrMalformedResponse) {
 		t.Fatalf("perp zero-identity trade error = %v", err)
 	}
-	if _, err := binanceSpotWSBBOEvent("ETH-USDT", &binancespot.BookTickerEvent{
+	if _, err := binanceSpotWSBBOEvent(binanceSpotETHUSDTInstrument(), &binancespot.BookTickerEvent{
 		Symbol:       "ETHUSDT",
 		BestBidPrice: "100",
 		BestBidQty:   "0",
@@ -242,7 +242,7 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	ws := newFakeBinancePerpPublicWSClient()
 	backend := newBinancePerpWSBackendWithClient(ws)
 	var book exchange.BookEvent
-	if _, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	if _, err := backend.StartOrderBook(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) { book = event },
 	}); err != nil {
 		t.Fatalf("StartOrderBook: %v", err)
@@ -262,7 +262,7 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}
 
 	var bbo exchange.BBOEvent
-	if _, err := backend.StartBBO(context.Background(), "ETH-USDT", streamCallbacks[exchange.BBOEvent]{
+	if _, err := backend.StartBBO(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.BBOEvent]{
 		Event: func(event exchange.BBOEvent) { bbo = event },
 	}); err != nil {
 		t.Fatalf("StartBBO: %v", err)
@@ -274,12 +274,12 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 		BestAskPrice: "102",
 		BestAskQty:   "5",
 	})
-	if bbo.Instrument != "ETH-USDT" || bbo.Time.IsZero() || !bbo.Ask.Price.Equal(decimal.RequireFromString("102")) {
+	if bbo.Instrument.Identity.NativeSymbol != "ETHUSDT" || bbo.Time.IsZero() || !bbo.Ask.Price.Equal(decimal.RequireFromString("102")) {
 		t.Fatalf("perp bbo event = %+v", bbo)
 	}
 
 	var trade exchange.PublicTradeEvent
-	if _, err := backend.StartPublicTrades(context.Background(), "ETH-USDT", streamCallbacks[exchange.PublicTradeEvent]{
+	if _, err := backend.StartPublicTrades(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.PublicTradeEvent]{
 		Event: func(event exchange.PublicTradeEvent) { trade = event },
 	}); err != nil {
 		t.Fatalf("StartPublicTrades: %v", err)
@@ -297,7 +297,7 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}
 
 	var candle exchange.CandleEvent
-	if _, err := backend.StartCandles(context.Background(), "ETH-USDT", "1h", streamCallbacks[exchange.CandleEvent]{
+	if _, err := backend.StartCandles(context.Background(), binancePerpETHUSDTInstrument(), "1h", streamCallbacks[exchange.CandleEvent]{
 		Event: func(event exchange.CandleEvent) { candle = event },
 	}); err != nil {
 		t.Fatalf("StartCandles: %v", err)
@@ -319,7 +319,7 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}
 
 	var reference perpReferenceEvent
-	stopReference, err := backend.StartReference(context.Background(), "ETH-USDT", streamCallbacks[perpReferenceEvent]{
+	stopReference, err := backend.StartReference(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[perpReferenceEvent]{
 		Event: func(event perpReferenceEvent) { reference = event },
 	})
 	if err != nil {
@@ -335,7 +335,7 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 		FundingRate:     "-0.0001",
 		NextFundingTime: 1700028800000,
 	})
-	if reference.MarkPrice.Instrument != "ETH-USDT" ||
+	if reference.MarkPrice.Instrument.Identity.NativeSymbol != "ETHUSDT" ||
 		!reference.MarkPrice.Price.Equal(decimal.RequireFromString("104.25")) ||
 		!reference.FundingRate.Rate.Equal(decimal.RequireFromString("-0.0001")) ||
 		reference.FundingRate.EffectiveAt.UnixMilli() != 1700000000200 ||
@@ -354,7 +354,7 @@ func TestBinancePerpDemoOrderBookUsesDiffDepthPayload(t *testing.T) {
 	ws := newFakeBinancePerpPublicWSClient()
 	backend := newBinancePerpDemoWSBackendWithClient(ws)
 	var got exchange.BookEvent
-	stop, err := backend.StartOrderBook(context.Background(), "ETH-USDT", streamCallbacks[exchange.BookEvent]{
+	stop, err := backend.StartOrderBook(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.BookEvent]{
 		Event: func(event exchange.BookEvent) { got = event },
 	})
 	if err != nil {
@@ -381,7 +381,7 @@ func TestBinancePerpDemoOrderBookUsesDiffDepthPayload(t *testing.T) {
 		Bids:              [][]interface{}{{"100.1", "0"}},
 	})
 	if got.Kind != exchange.EventDelta ||
-		got.Instrument != "ETH-USDT" ||
+		got.Instrument.Identity.NativeSymbol != "ETHUSDT" ||
 		got.Sequence != "12" ||
 		got.Previous != "9" ||
 		len(got.Bids) != 1 ||
@@ -452,12 +452,12 @@ func TestBinancePublicWSBackendConcurrentTopicsSharePendingConnect(t *testing.T)
 	backend := newBinanceSpotWSBackendWithClient(ws)
 	results := make(chan error, 2)
 	go func() {
-		_, err := backend.StartBBO(context.Background(), "ETH-USDT", streamCallbacks[exchange.BBOEvent]{})
+		_, err := backend.StartBBO(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.BBOEvent]{})
 		results <- err
 	}()
 	<-ws.entered
 	go func() {
-		_, err := backend.StartPublicTrades(context.Background(), "ETH-USDT", streamCallbacks[exchange.PublicTradeEvent]{})
+		_, err := backend.StartPublicTrades(context.Background(), binanceSpotETHUSDTInstrument(), streamCallbacks[exchange.PublicTradeEvent]{})
 		results <- err
 	}()
 	select {

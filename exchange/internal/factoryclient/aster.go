@@ -48,7 +48,7 @@ func NewAsterSpot(userAddress, apiWalletPrivateKey, expectedSigner string, setti
 		sdk.WithHTTPClient(settings.HTTPClient)
 	}
 	return &asterSpotClient{
-		spotClient: spotClient{meta: clientMeta{venue: exchange.VenueAster, product: exchange.ProductSpot}},
+		spotClient: spotClient{meta: clientMetaFromSettings(exchange.VenueAster, exchange.ProductSpot, settings)},
 		sdk:        sdk,
 		profile:    profile,
 		security:   security,
@@ -65,7 +65,7 @@ func NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner string, s
 		sdk.WithHTTPClient(settings.HTTPClient)
 	}
 	return &asterPerpClient{
-		perpClient: perpClient{meta: clientMeta{venue: exchange.VenueAster, product: exchange.ProductPerp}},
+		perpClient: perpClient{meta: clientMetaFromSettings(exchange.VenueAster, exchange.ProductPerp, settings)},
 		sdk:        sdk,
 		profile:    profile,
 		security:   security,
@@ -104,73 +104,18 @@ func (client *asterPerpClient) ready(operation string) error {
 }
 
 func (client *asterSpotClient) Instruments(ctx context.Context) ([]exchange.Instrument, error) {
-	if err := client.ready("Instruments"); err != nil {
-		return nil, err
-	}
-	resp, err := client.sdk.ExchangeInfo(ctx)
-	if err != nil {
-		return nil, asterNormalizeErr(exchange.ProductSpot, "Instruments", err)
-	}
-	out := make([]exchange.Instrument, 0, len(resp.Symbols))
-	for _, row := range resp.Symbols {
-		if row.Status != "TRADING" {
-			continue
-		}
-		price, qty, minQty, minNotional, err := asterSpotFilters(row.Filters)
-		if err != nil {
-			return nil, asterMalformed(exchange.ProductSpot, "Instruments", err.Error())
-		}
-		out = append(out, exchange.Instrument{
-			Symbol:            asterCanonical(row.Symbol),
-			BaseAsset:         row.BaseAsset,
-			QuoteAsset:        row.QuoteAsset,
-			Product:           exchange.ProductSpot,
-			PriceIncrement:    price,
-			QuantityIncrement: qty,
-			MinQuantity:       minQty,
-			MinNotional:       minNotional,
-		})
-	}
-	return out, nil
+	return client.spotClient.RefreshInstruments(ctx)
 }
 
 func (client *asterPerpClient) Instruments(ctx context.Context) ([]exchange.Instrument, error) {
-	if err := client.ready("Instruments"); err != nil {
-		return nil, err
-	}
-	resp, err := client.sdk.ExchangeInfo(ctx)
-	if err != nil {
-		return nil, asterNormalizeErr(exchange.ProductPerp, "Instruments", err)
-	}
-	out := make([]exchange.Instrument, 0, len(resp.Symbols))
-	for _, row := range resp.Symbols {
-		if row.Status != "TRADING" || row.ContractType != "PERPETUAL" || row.MarginAsset != "USDT" {
-			continue
-		}
-		price, qty, minQty, minNotional, err := asterPerpFilters(row.Filters)
-		if err != nil {
-			return nil, asterMalformed(exchange.ProductPerp, "Instruments", err.Error())
-		}
-		out = append(out, exchange.Instrument{
-			Symbol:            asterCanonical(row.Symbol),
-			BaseAsset:         row.BaseAsset,
-			QuoteAsset:        row.QuoteAsset,
-			SettleAsset:       row.MarginAsset,
-			Product:           exchange.ProductPerp,
-			PriceIncrement:    price,
-			QuantityIncrement: qty,
-			MinQuantity:       minQty,
-			MinNotional:       minNotional,
-		})
-	}
-	return out, nil
+	return client.perpClient.RefreshInstruments(ctx)
 }
 
 func (client *asterSpotClient) OrderBook(ctx context.Context, req exchange.OrderBookRequest) (exchange.OrderBook, error) {
 	if err := client.ready("OrderBook"); err != nil {
 		return exchange.OrderBook{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OrderBook", exchange.ProductSpot)
+	native, _, err := asterSymbols(req.Instrument, "OrderBook", exchange.ProductSpot)
 	if err != nil {
 		return exchange.OrderBook{}, err
 	}
@@ -182,14 +127,14 @@ func (client *asterSpotClient) OrderBook(ctx context.Context, req exchange.Order
 	if err != nil {
 		return exchange.OrderBook{}, asterNormalizeErr(exchange.ProductSpot, "OrderBook", err)
 	}
-	return asterOrderBook(canonical, req.Limit, resp.Bids, resp.Asks, resp.LastUpdateID, resp.TransactionTime, exchange.ProductSpot)
+	return asterOrderBook(req.Instrument, req.Limit, resp.Bids, resp.Asks, resp.LastUpdateID, resp.TransactionTime, exchange.ProductSpot)
 }
 
 func (client *asterPerpClient) OrderBook(ctx context.Context, req exchange.OrderBookRequest) (exchange.OrderBook, error) {
 	if err := client.ready("OrderBook"); err != nil {
 		return exchange.OrderBook{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OrderBook", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "OrderBook", exchange.ProductPerp)
 	if err != nil {
 		return exchange.OrderBook{}, err
 	}
@@ -201,7 +146,7 @@ func (client *asterPerpClient) OrderBook(ctx context.Context, req exchange.Order
 	if err != nil {
 		return exchange.OrderBook{}, asterNormalizeErr(exchange.ProductPerp, "OrderBook", err)
 	}
-	return asterOrderBook(canonical, req.Limit, resp.Bids, resp.Asks, resp.LastUpdateID, resp.TransactionTime, exchange.ProductPerp)
+	return asterOrderBook(req.Instrument, req.Limit, resp.Bids, resp.Asks, resp.LastUpdateID, resp.TransactionTime, exchange.ProductPerp)
 }
 
 func (client *asterSpotClient) Candles(ctx context.Context, req exchange.CandlesRequest) (exchange.CandlePage, error) {
@@ -246,7 +191,7 @@ func (client *asterSpotClient) PublicTrades(ctx context.Context, req exchange.Pu
 	if err := client.ready("PublicTrades"); err != nil {
 		return exchange.PublicTradePage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "PublicTrades", exchange.ProductSpot)
+	native, _, err := asterSymbols(req.Instrument, "PublicTrades", exchange.ProductSpot)
 	if err != nil {
 		return exchange.PublicTradePage{}, err
 	}
@@ -264,7 +209,7 @@ func (client *asterSpotClient) PublicTrades(ctx context.Context, req exchange.Pu
 		if row.IsBuyerMaker {
 			side = exchange.SideSell
 		}
-		trades = append(trades, exchange.PublicTrade{Instrument: canonical, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(row.Time).UTC()})
+		trades = append(trades, exchange.PublicTrade{Instrument: req.Instrument, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(row.Time).UTC()})
 	}
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: req.Limit}}, nil
 }
@@ -273,7 +218,7 @@ func (client *asterPerpClient) PublicTrades(ctx context.Context, req exchange.Pu
 	if err := client.ready("PublicTrades"); err != nil {
 		return exchange.PublicTradePage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "PublicTrades", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "PublicTrades", exchange.ProductPerp)
 	if err != nil {
 		return exchange.PublicTradePage{}, err
 	}
@@ -291,7 +236,7 @@ func (client *asterPerpClient) PublicTrades(ctx context.Context, req exchange.Pu
 		if row.IsBuyerMaker {
 			side = exchange.SideSell
 		}
-		trades = append(trades, exchange.PublicTrade{Instrument: canonical, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(row.Timestamp).UTC()})
+		trades = append(trades, exchange.PublicTrade{Instrument: req.Instrument, TradeID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(row.Timestamp).UTC()})
 	}
 	return exchange.PublicTradePage{Trades: trades, Page: exchange.PageInfo{Limit: req.Limit}}, nil
 }
@@ -303,15 +248,15 @@ func (client *asterSpotClient) PlaceOrder(ctx context.Context, req exchange.Plac
 	if err := req.Validate(exchange.ProductSpot); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "PlaceOrder", exchange.ProductSpot)
+	native, _, err := asterSymbols(req.Instrument, "PlaceOrder", exchange.ProductSpot)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := client.sdk.PlaceOrder(ctx, asterSpotPlaceParams(native, req))
 	if err != nil {
-		return asterCommandAck(exchange.ProductSpot, exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		return asterCommandAck(exchange.ProductSpot, exchange.OrderOperationPlace, req.Instrument.NativeSymbol(), "", req.ClientOrderID, err)
 	}
-	return asterSpotAck(exchange.OrderOperationPlace, canonical, resp)
+	return asterSpotAck(exchange.OrderOperationPlace, req.Instrument.NativeSymbol(), req.ClientOrderID, "", resp)
 }
 
 func (client *asterPerpClient) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -321,15 +266,15 @@ func (client *asterPerpClient) PlaceOrder(ctx context.Context, req exchange.Plac
 	if err := req.Validate(exchange.ProductPerp); err != nil {
 		return exchange.OrderAcknowledgement{}, withExchangeOperation(err, "PlaceOrder")
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "PlaceOrder", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "PlaceOrder", exchange.ProductPerp)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := client.sdk.PlaceOrder(ctx, asterPerpPlaceParams(native, req))
 	if err != nil {
-		return asterCommandAck(exchange.ProductPerp, exchange.OrderOperationPlace, canonical, "", req.ClientOrderID, err)
+		return asterCommandAck(exchange.ProductPerp, exchange.OrderOperationPlace, req.Instrument.NativeSymbol(), "", req.ClientOrderID, err)
 	}
-	return asterPerpAck(exchange.OrderOperationPlace, canonical, resp)
+	return asterPerpAck(exchange.OrderOperationPlace, req.Instrument.NativeSymbol(), req.ClientOrderID, "", resp)
 }
 
 func (client *asterSpotClient) CancelOrder(ctx context.Context, req exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -343,15 +288,15 @@ func (client *asterSpotClient) CancelOrder(ctx context.Context, req exchange.Can
 	if err != nil || id <= 0 {
 		return exchange.OrderAcknowledgement{}, asterErr(exchange.ProductSpot, "CancelOrder", exchange.KindInvalidRequest, "order id must be a positive integer")
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "CancelOrder", exchange.ProductSpot)
+	native, _, err := asterSymbols(req.Instrument, "CancelOrder", exchange.ProductSpot)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := client.sdk.CancelOrder(ctx, asterspot.CancelOrderParams{Symbol: native, OrderID: &id})
 	if err != nil {
-		return asterCommandAck(exchange.ProductSpot, exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		return asterCommandAck(exchange.ProductSpot, exchange.OrderOperationCancel, req.Instrument.NativeSymbol(), req.OrderID, "", err)
 	}
-	return asterSpotAck(exchange.OrderOperationCancel, canonical, resp)
+	return asterSpotAck(exchange.OrderOperationCancel, req.Instrument.NativeSymbol(), "", req.OrderID, resp)
 }
 
 func (client *asterPerpClient) CancelOrder(ctx context.Context, req exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
@@ -365,32 +310,36 @@ func (client *asterPerpClient) CancelOrder(ctx context.Context, req exchange.Can
 	if err != nil || id <= 0 {
 		return exchange.OrderAcknowledgement{}, asterErr(exchange.ProductPerp, "CancelOrder", exchange.KindInvalidRequest, "order id must be a positive integer")
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "CancelOrder", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "CancelOrder", exchange.ProductPerp)
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
 	resp, err := client.sdk.CancelOrder(ctx, asterperp.CancelOrderParams{Symbol: native, OrderID: &id})
 	if err != nil {
-		return asterCommandAck(exchange.ProductPerp, exchange.OrderOperationCancel, canonical, req.OrderID, "", err)
+		return asterCommandAck(exchange.ProductPerp, exchange.OrderOperationCancel, req.Instrument.NativeSymbol(), req.OrderID, "", err)
 	}
-	return asterPerpAck(exchange.OrderOperationCancel, canonical, resp)
+	return asterPerpAck(exchange.OrderOperationCancel, req.Instrument.NativeSymbol(), "", req.OrderID, resp)
 }
 
 func (client *asterSpotClient) OpenOrders(ctx context.Context, req exchange.OpenOrdersRequest) (exchange.OrderPage, error) {
 	if err := client.ready("OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OpenOrders", exchange.ProductSpot)
+	natives, err := asterSpotRequestNatives(ctx, client, req.Instrument, "OpenOrders")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	resp, err := client.sdk.OpenOrders(ctx, asterspot.OpenOrdersQuery{Symbol: native})
-	if err != nil {
-		return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductSpot, "OpenOrders", err)
-	}
-	orders, err := asterSpotOrders(resp, canonical)
-	if err != nil {
-		return exchange.OrderPage{}, err
+	orders := make([]exchange.Order, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.OpenOrders(ctx, asterspot.OpenOrdersQuery{Symbol: native})
+		if err != nil {
+			return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductSpot, "OpenOrders", err)
+		}
+		next, err := asterSpotOrders(resp, native)
+		if err != nil {
+			return exchange.OrderPage{}, err
+		}
+		orders = append(orders, next...)
 	}
 	return boundedOrderPage(orders, req.Limit, ""), nil
 }
@@ -399,17 +348,21 @@ func (client *asterPerpClient) OpenOrders(ctx context.Context, req exchange.Open
 	if err := client.ready("OpenOrders"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OpenOrders", exchange.ProductPerp)
+	natives, err := asterPerpRequestNatives(ctx, client, req.Instrument, "OpenOrders")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	resp, err := client.sdk.OpenOrders(ctx, asterperp.OpenOrdersQuery{Symbol: native})
-	if err != nil {
-		return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductPerp, "OpenOrders", err)
-	}
-	orders, err := asterPerpOrders(resp, canonical)
-	if err != nil {
-		return exchange.OrderPage{}, err
+	orders := make([]exchange.Order, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.OpenOrders(ctx, asterperp.OpenOrdersQuery{Symbol: native})
+		if err != nil {
+			return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductPerp, "OpenOrders", err)
+		}
+		next, err := asterPerpOrders(resp, native)
+		if err != nil {
+			return exchange.OrderPage{}, err
+		}
+		orders = append(orders, next...)
 	}
 	return boundedOrderPage(orders, req.Limit, ""), nil
 }
@@ -418,17 +371,21 @@ func (client *asterSpotClient) OrderHistory(ctx context.Context, req exchange.Or
 	if err := client.ready("OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OrderHistory", exchange.ProductSpot)
+	natives, err := asterSpotRequestNatives(ctx, client, req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	resp, err := client.sdk.AllOrders(ctx, asterspot.AllOrdersQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
-	if err != nil {
-		return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductSpot, "OrderHistory", err)
-	}
-	orders, err := asterSpotOrders(resp, canonical)
-	if err != nil {
-		return exchange.OrderPage{}, err
+	orders := make([]exchange.Order, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.AllOrders(ctx, asterspot.AllOrdersQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
+		if err != nil {
+			return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductSpot, "OrderHistory", err)
+		}
+		next, err := asterSpotOrders(resp, native)
+		if err != nil {
+			return exchange.OrderPage{}, err
+		}
+		orders = append(orders, next...)
 	}
 	return exchange.OrderPage{Orders: orders, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -437,17 +394,21 @@ func (client *asterPerpClient) OrderHistory(ctx context.Context, req exchange.Or
 	if err := client.ready("OrderHistory"); err != nil {
 		return exchange.OrderPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "OrderHistory", exchange.ProductPerp)
+	natives, err := asterPerpRequestNatives(ctx, client, req.Instrument, "OrderHistory")
 	if err != nil {
 		return exchange.OrderPage{}, err
 	}
-	resp, err := client.sdk.AllOrders(ctx, asterperp.AllOrdersQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
-	if err != nil {
-		return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductPerp, "OrderHistory", err)
-	}
-	orders, err := asterPerpOrders(resp, canonical)
-	if err != nil {
-		return exchange.OrderPage{}, err
+	orders := make([]exchange.Order, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.AllOrders(ctx, asterperp.AllOrdersQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
+		if err != nil {
+			return exchange.OrderPage{}, asterNormalizeErr(exchange.ProductPerp, "OrderHistory", err)
+		}
+		next, err := asterPerpOrders(resp, native)
+		if err != nil {
+			return exchange.OrderPage{}, err
+		}
+		orders = append(orders, next...)
 	}
 	return exchange.OrderPage{Orders: orders, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -456,21 +417,26 @@ func (client *asterSpotClient) Fills(ctx context.Context, req exchange.FillsRequ
 	if err := client.ready("Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "Fills", exchange.ProductSpot)
+	natives, err := asterSpotRequestNatives(ctx, client, req.Instrument, "Fills")
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
-	resp, err := client.sdk.UserTrades(ctx, asterspot.UserTradesQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
-	if err != nil {
-		return exchange.FillPage{}, asterNormalizeErr(exchange.ProductSpot, "Fills", err)
-	}
-	fills := make([]exchange.Fill, 0, len(resp))
-	for _, row := range resp {
-		fill, err := asterSpotFill(row, canonical)
+	fills := make([]exchange.Fill, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.UserTrades(ctx, asterspot.UserTradesQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
 		if err != nil {
-			return exchange.FillPage{}, err
+			return exchange.FillPage{}, asterNormalizeErr(exchange.ProductSpot, "Fills", err)
 		}
-		fills = append(fills, fill)
+		for _, row := range resp {
+			if !asterResponseSymbolMatchesFilter(row.Symbol, native) {
+				continue
+			}
+			fill, err := asterSpotFill(row)
+			if err != nil {
+				return exchange.FillPage{}, err
+			}
+			fills = append(fills, fill)
+		}
 	}
 	return exchange.FillPage{Fills: fills, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -479,21 +445,26 @@ func (client *asterPerpClient) Fills(ctx context.Context, req exchange.FillsRequ
 	if err := client.ready("Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "Fills", exchange.ProductPerp)
+	natives, err := asterPerpRequestNatives(ctx, client, req.Instrument, "Fills")
 	if err != nil {
 		return exchange.FillPage{}, err
 	}
-	resp, err := client.sdk.UserTrades(ctx, asterperp.UserTradesQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
-	if err != nil {
-		return exchange.FillPage{}, asterNormalizeErr(exchange.ProductPerp, "Fills", err)
-	}
-	fills := make([]exchange.Fill, 0, len(resp))
-	for _, row := range resp {
-		fill, err := asterPerpFill(row, canonical)
+	fills := make([]exchange.Fill, 0)
+	for _, native := range natives {
+		resp, err := client.sdk.UserTrades(ctx, asterperp.UserTradesQuery{Symbol: native, StartTime: ptrMillis(req.Start), EndTime: ptrMillis(req.End), Limit: ptrInt(req.Limit)})
 		if err != nil {
-			return exchange.FillPage{}, err
+			return exchange.FillPage{}, asterNormalizeErr(exchange.ProductPerp, "Fills", err)
 		}
-		fills = append(fills, fill)
+		for _, row := range resp {
+			if !asterResponseSymbolMatchesFilter(row.Symbol, native) {
+				continue
+			}
+			fill, err := asterPerpFill(row)
+			if err != nil {
+				return exchange.FillPage{}, err
+			}
+			fills = append(fills, fill)
+		}
 	}
 	return exchange.FillPage{Fills: fills, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -575,10 +546,9 @@ func (client *asterPerpClient) Positions(ctx context.Context, req exchange.Posit
 		return nil, err
 	}
 	native := ""
-	canonical := ""
 	var err error
-	if req.Instrument != "" {
-		native, canonical, err = asterSymbols(req.Instrument, "Positions", exchange.ProductPerp)
+	if req.Instrument != nil {
+		native, _, err = asterSymbols(*req.Instrument, "Positions", exchange.ProductPerp)
 		if err != nil {
 			return nil, err
 		}
@@ -589,11 +559,10 @@ func (client *asterPerpClient) Positions(ctx context.Context, req exchange.Posit
 	}
 	out := make([]exchange.Position, 0, len(resp))
 	for _, row := range resp {
-		inst := asterCanonical(row.Symbol)
-		if canonical != "" {
-			inst = canonical
+		if !asterResponseSymbolMatchesFilter(row.Symbol, native) {
+			continue
 		}
-		pos, err := asterPosition(row, inst)
+		pos, err := asterPosition(row)
 		if err != nil {
 			return nil, err
 		}
@@ -606,7 +575,7 @@ func (client *asterPerpClient) FundingRate(ctx context.Context, req exchange.Fun
 	if err := client.ready("FundingRate"); err != nil {
 		return exchange.FundingRate{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "FundingRate", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "FundingRate", exchange.ProductPerp)
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
@@ -618,14 +587,14 @@ func (client *asterPerpClient) FundingRate(ctx context.Context, req exchange.Fun
 	if err != nil {
 		return exchange.FundingRate{}, asterMalformed(exchange.ProductPerp, "FundingRate", err.Error())
 	}
-	return exchange.FundingRate{Instrument: canonical, Rate: rate, MarkPrice: exchange.OptionalDecimal{Value: mark, Valid: true}, ObservedAt: time.UnixMilli(resp.Time).UTC(), NextFundingTime: time.UnixMilli(resp.NextFundingTime).UTC()}, nil
+	return exchange.FundingRate{NativeSymbol: req.Instrument.NativeSymbol(), Rate: rate, MarkPrice: exchange.OptionalDecimal{Value: mark, Valid: true}, ObservedAt: time.UnixMilli(resp.Time).UTC(), NextFundingTime: time.UnixMilli(resp.NextFundingTime).UTC()}, nil
 }
 
 func (client *asterPerpClient) FundingRateHistory(ctx context.Context, req exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
 	if err := client.ready("FundingRateHistory"); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "FundingRateHistory", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "FundingRateHistory", exchange.ProductPerp)
 	if err != nil {
 		return exchange.FundingRatePage{}, err
 	}
@@ -639,7 +608,7 @@ func (client *asterPerpClient) FundingRateHistory(ctx context.Context, req excha
 		if err != nil {
 			return exchange.FundingRatePage{}, asterMalformed(exchange.ProductPerp, "FundingRateHistory", "invalid funding rate")
 		}
-		rates = append(rates, exchange.FundingRate{Instrument: canonical, Rate: rate, FundingTime: time.UnixMilli(row.FundingTime).UTC()})
+		rates = append(rates, exchange.FundingRate{NativeSymbol: req.Instrument.NativeSymbol(), Rate: rate, FundingTime: time.UnixMilli(row.FundingTime).UTC()})
 	}
 	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
@@ -648,7 +617,7 @@ func (client *asterPerpClient) SetLeverage(ctx context.Context, req exchange.Set
 	if err := client.ready("SetLeverage"); err != nil {
 		return exchange.Leverage{}, err
 	}
-	native, canonical, err := asterSymbols(req.Instrument, "SetLeverage", exchange.ProductPerp)
+	native, _, err := asterSymbols(req.Instrument, "SetLeverage", exchange.ProductPerp)
 	if err != nil {
 		return exchange.Leverage{}, err
 	}
@@ -662,7 +631,7 @@ func (client *asterPerpClient) SetLeverage(ctx context.Context, req exchange.Set
 	if resp.Symbol != native || resp.Leverage != req.Leverage {
 		return exchange.Leverage{}, asterMalformed(exchange.ProductPerp, "SetLeverage", "response does not match request")
 	}
-	return exchange.Leverage{Instrument: canonical, Effective: resp.Leverage}, nil
+	return exchange.Leverage{NativeSymbol: req.Instrument.NativeSymbol(), Effective: resp.Leverage}, nil
 }
 
 func (client *asterSpotClient) WebSocket() exchange.SpotWebSocket {
@@ -737,15 +706,83 @@ func asterNormalizeErr(product exchange.Product, operation string, err error) er
 	return asterErr(product, operation, exchange.KindTransport, "Aster request failed")
 }
 
-func asterSymbols(instrument, operation string, product exchange.Product) (native string, canonical string, err error) {
-	canonical = strings.TrimSpace(instrument)
-	if canonical == "" {
-		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "instrument is required")
+func asterSymbols(instrument exchange.Instrument, operation string, product exchange.Product) (native string, canonical string, err error) {
+	if err := instrument.Validate(); err != nil {
+		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, err.Error())
 	}
-	if canonical != instrument {
-		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "instrument must not have surrounding whitespace")
+	identity := instrument.Identity
+	if identity.Venue != exchange.VenueAster || identity.Product != product {
+		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "instrument venue/product does not match Aster client")
 	}
-	return strings.ReplaceAll(canonical, "-", ""), canonical, nil
+	if product == exchange.ProductPerp && identity.SettleAsset != "USDT" {
+		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "Aster perp requires USDT settlement")
+	}
+	if product == exchange.ProductSpot && identity.SettleAsset != "" {
+		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "Aster spot instrument must not set settlement")
+	}
+	expectedNative := strings.ReplaceAll(identity.Symbol, "-", "")
+	if identity.NativeSymbol != expectedNative {
+		return "", "", asterErr(product, operation, exchange.KindInvalidRequest, "instrument native symbol does not match Aster canonical symbol")
+	}
+	return identity.NativeSymbol, identity.Symbol, nil
+}
+
+func asterOptionalSymbols(instrument *exchange.Instrument, operation string, product exchange.Product) (native string, canonical string, err error) {
+	if instrument == nil {
+		return "", "", nil
+	}
+	native, _, err = asterSymbols(*instrument, operation, product)
+	return native, native, err
+}
+
+func asterSpotRequestNatives(ctx context.Context, client *asterSpotClient, instrument *exchange.Instrument, operation string) ([]string, error) {
+	if instrument != nil {
+		native, _, err := asterOptionalSymbols(instrument, operation, exchange.ProductSpot)
+		if err != nil {
+			return nil, err
+		}
+		return []string{native}, nil
+	}
+	rows, err := client.RefreshInstruments(ctx)
+	if err != nil {
+		return nil, withExchangeOperation(err, operation)
+	}
+	natives := make([]string, 0, len(rows))
+	for _, row := range rows {
+		native, _, err := asterSymbols(row, operation, exchange.ProductSpot)
+		if err != nil {
+			return nil, err
+		}
+		natives = append(natives, native)
+	}
+	return natives, nil
+}
+
+func asterPerpRequestNatives(ctx context.Context, client *asterPerpClient, instrument *exchange.Instrument, operation string) ([]string, error) {
+	if instrument != nil {
+		native, _, err := asterOptionalSymbols(instrument, operation, exchange.ProductPerp)
+		if err != nil {
+			return nil, err
+		}
+		return []string{native}, nil
+	}
+	rows, err := client.RefreshInstruments(ctx)
+	if err != nil {
+		return nil, withExchangeOperation(err, operation)
+	}
+	natives := make([]string, 0, len(rows))
+	for _, row := range rows {
+		native, _, err := asterSymbols(row, operation, exchange.ProductPerp)
+		if err != nil {
+			return nil, err
+		}
+		natives = append(natives, native)
+	}
+	return natives, nil
+}
+
+func asterResponseSymbolMatchesFilter(rawSymbol string, filterNative string) bool {
+	return filterNative == "" || rawSymbol == filterNative
 }
 
 func asterCanonical(native string) string {
@@ -794,10 +831,19 @@ func asterFilters(n int, row func(int) (string, string, string, string, string))
 			return price, qty, minQty, minNotional, err
 		}
 	}
+	if !price.IsPositive() {
+		return price, qty, minQty, minNotional, fmt.Errorf("missing positive PRICE_FILTER tick size")
+	}
+	if !qty.IsPositive() {
+		return price, qty, minQty, minNotional, fmt.Errorf("missing positive LOT_SIZE step size")
+	}
+	if minQty.IsNegative() {
+		return price, qty, minQty, minNotional, fmt.Errorf("LOT_SIZE min quantity must not be negative")
+	}
 	return price, qty, minQty, minNotional, nil
 }
 
-func asterOrderBook(instrument string, limit int, bidRows, askRows [][]string, seq, timestamp int64, product exchange.Product) (exchange.OrderBook, error) {
+func asterOrderBook(instrument exchange.Instrument, limit int, bidRows, askRows [][]string, seq, timestamp int64, product exchange.Product) (exchange.OrderBook, error) {
 	bids, err := levels(bidRows)
 	if err != nil {
 		return exchange.OrderBook{}, asterMalformed(product, "OrderBook", err.Error())
@@ -911,18 +957,48 @@ func asterPriceString(req exchange.PlaceOrderRequest) string {
 	return ""
 }
 
-func asterSpotAck(op exchange.OrderOperation, instrument string, resp *asterspot.OrderResponse) (exchange.OrderAcknowledgement, error) {
+func asterSpotAck(op exchange.OrderOperation, expectedNative string, expectedClientID string, expectedOrderID string, resp *asterspot.OrderResponse) (exchange.OrderAcknowledgement, error) {
 	if resp == nil {
 		return exchange.OrderAcknowledgement{}, asterMalformed(exchange.ProductSpot, string(op), "missing order response")
 	}
-	return asterAck(exchange.ProductSpot, op, instrument, resp.OrderID, resp.ClientOrderID, resp.Status, resp.Type, resp.ExecutedQty, resp.CumQuote)
+	if err := asterBindAckIdentity(exchange.ProductSpot, string(op), expectedNative, expectedClientID, expectedOrderID, resp.Symbol, resp.ClientOrderID, resp.OrderID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	return asterAck(exchange.ProductSpot, op, resp.Symbol, resp.OrderID, resp.ClientOrderID, resp.Status, resp.Type, resp.ExecutedQty, resp.CumQuote)
 }
 
-func asterPerpAck(op exchange.OrderOperation, instrument string, resp *asterperp.OrderResponse) (exchange.OrderAcknowledgement, error) {
+func asterPerpAck(op exchange.OrderOperation, expectedNative string, expectedClientID string, expectedOrderID string, resp *asterperp.OrderResponse) (exchange.OrderAcknowledgement, error) {
 	if resp == nil {
 		return exchange.OrderAcknowledgement{}, asterMalformed(exchange.ProductPerp, string(op), "missing order response")
 	}
-	return asterAck(exchange.ProductPerp, op, instrument, resp.OrderID, resp.ClientOrderID, resp.Status, resp.Type, resp.ExecutedQty, resp.CumQuote)
+	if err := asterBindAckIdentity(exchange.ProductPerp, string(op), expectedNative, expectedClientID, expectedOrderID, resp.Symbol, resp.ClientOrderID, resp.OrderID); err != nil {
+		return exchange.OrderAcknowledgement{}, err
+	}
+	return asterAck(exchange.ProductPerp, op, resp.Symbol, resp.OrderID, resp.ClientOrderID, resp.Status, resp.Type, resp.ExecutedQty, resp.CumQuote)
+}
+
+func asterBindAckIdentity(product exchange.Product, operation string, expectedNative string, expectedClientID string, expectedOrderID string, responseNative string, responseClientID string, responseOrderID int64) error {
+	if strings.TrimSpace(responseNative) == "" {
+		return asterMalformed(product, operation, "missing acknowledgement symbol")
+	}
+	if responseNative != expectedNative {
+		return asterMalformed(product, operation, "acknowledgement symbol mismatch")
+	}
+	if responseOrderID <= 0 {
+		return asterMalformed(product, operation, "invalid acknowledgement order id")
+	}
+	if expectedOrderID != "" && strconv.FormatInt(responseOrderID, 10) != expectedOrderID {
+		return asterMalformed(product, operation, "acknowledgement order id mismatch")
+	}
+	if expectedClientID != "" {
+		if strings.TrimSpace(responseClientID) == "" {
+			return asterMalformed(product, operation, "missing acknowledgement client order id")
+		}
+		if responseClientID != expectedClientID {
+			return asterMalformed(product, operation, "acknowledgement client order id mismatch")
+		}
+	}
+	return nil
 }
 
 func asterAck(product exchange.Product, op exchange.OrderOperation, instrument string, orderID int64, clientID, status, typ, filledText, quoteText string) (exchange.OrderAcknowledgement, error) {
@@ -953,7 +1029,7 @@ func asterAck(product exchange.Product, op exchange.OrderOperation, instrument s
 	if err != nil {
 		return exchange.OrderAcknowledgement{}, asterMalformed(product, string(op), err.Error())
 	}
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueAster, Product: product, Operation: op, State: state, Instrument: instrument, OrderType: orderType, OrderID: strconv.FormatInt(orderID, 10), ClientOrderID: clientID, FilledQuantity: filled}
+	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueAster, Product: product, Operation: op, State: state, NativeSymbol: instrument, OrderType: orderType, OrderID: strconv.FormatInt(orderID, 10), ClientOrderID: clientID, FilledQuantity: filled}
 	if filled.IsPositive() && quote.IsPositive() {
 		ack.AverageFillPrice = exchange.OptionalDecimal{Value: quote.Div(filled), Valid: true}
 	}
@@ -961,7 +1037,7 @@ func asterAck(product exchange.Product, op exchange.OrderOperation, instrument s
 }
 
 func asterCommandAck(product exchange.Product, op exchange.OrderOperation, instrument, orderID, clientID string, err error) (exchange.OrderAcknowledgement, error) {
-	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueAster, Product: product, Operation: op, State: exchange.AckAmbiguous, Instrument: instrument, OrderID: orderID, ClientOrderID: clientID}
+	ack := exchange.OrderAcknowledgement{Venue: exchange.VenueAster, Product: product, Operation: op, State: exchange.AckAmbiguous, NativeSymbol: instrument, OrderID: orderID, ClientOrderID: clientID}
 	var venueErr *astercommon.VenueError
 	if errors.As(err, &venueErr) {
 		ack.State = exchange.AckRejected
@@ -973,10 +1049,13 @@ func asterCommandAck(product exchange.Product, op exchange.OrderOperation, instr
 	return ack, exchange.NewError(exchange.KindAmbiguousOutcome, exchange.ErrorDetails{Venue: exchange.VenueAster, Product: product, Operation: string(op), SafeMessage: "order command outcome is unknown after possible send"})
 }
 
-func asterSpotOrders(rows []asterspot.OrderResponse, instrument string) ([]exchange.Order, error) {
+func asterSpotOrders(rows []asterspot.OrderResponse, filterNative string) ([]exchange.Order, error) {
 	out := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
-		order, err := asterOrder(exchange.ProductSpot, instrument, row.OrderID, row.ClientOrderID, row.Side, row.Type, row.TimeInForce, row.OrigQty, row.Price, row.ExecutedQty, row.Status, false)
+		if !asterResponseSymbolMatchesFilter(row.Symbol, filterNative) {
+			continue
+		}
+		order, err := asterOrder(exchange.ProductSpot, row.Symbol, row.OrderID, row.ClientOrderID, row.Side, row.Type, row.TimeInForce, row.OrigQty, row.Price, row.ExecutedQty, row.Status, false)
 		if err != nil {
 			return nil, err
 		}
@@ -985,10 +1064,13 @@ func asterSpotOrders(rows []asterspot.OrderResponse, instrument string) ([]excha
 	return out, nil
 }
 
-func asterPerpOrders(rows []asterperp.OrderResponse, instrument string) ([]exchange.Order, error) {
+func asterPerpOrders(rows []asterperp.OrderResponse, filterNative string) ([]exchange.Order, error) {
 	out := make([]exchange.Order, 0, len(rows))
 	for _, row := range rows {
-		order, err := asterOrder(exchange.ProductPerp, instrument, row.OrderID, row.ClientOrderID, row.Side, row.Type, row.TimeInForce, row.OrigQty, row.Price, row.ExecutedQty, row.Status, row.ReduceOnly)
+		if !asterResponseSymbolMatchesFilter(row.Symbol, filterNative) {
+			continue
+		}
+		order, err := asterOrder(exchange.ProductPerp, row.Symbol, row.OrderID, row.ClientOrderID, row.Side, row.Type, row.TimeInForce, row.OrigQty, row.Price, row.ExecutedQty, row.Status, row.ReduceOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -1014,7 +1096,7 @@ func asterOrder(product exchange.Product, instrument string, id int64, clientID,
 	if typeText == "MARKET" {
 		orderType = exchange.OrderTypeMarket
 	}
-	return exchange.Order{Instrument: instrument, OrderID: strconv.FormatInt(id, 10), ClientOrderID: clientID, Side: side, Type: orderType, LimitPrice: price, Quantity: qty, Filled: filled, LimitPolicy: asterLimitPolicy(typeText, tif), Status: strings.ToLower(status), ReduceOnly: reduce}, nil
+	return exchange.Order{NativeSymbol: instrument, OrderID: strconv.FormatInt(id, 10), ClientOrderID: clientID, Side: side, Type: orderType, LimitPrice: price, Quantity: qty, Filled: filled, LimitPolicy: asterLimitPolicy(typeText, tif), Status: strings.ToLower(status), ReduceOnly: reduce}, nil
 }
 
 func asterLimitPolicy(typ, tif string) exchange.LimitPolicy {
@@ -1031,7 +1113,7 @@ func asterLimitPolicy(typ, tif string) exchange.LimitPolicy {
 	}
 }
 
-func asterSpotFill(row asterspot.Trade, instrument string) (exchange.Fill, error) {
+func asterSpotFill(row asterspot.Trade) (exchange.Fill, error) {
 	price, qty, err := parse2(row.Price, row.Qty)
 	if err != nil {
 		return exchange.Fill{}, asterMalformed(exchange.ProductSpot, "Fills", err.Error())
@@ -1048,10 +1130,10 @@ func asterSpotFill(row asterspot.Trade, instrument string) (exchange.Fill, error
 	if row.Maker {
 		liq = exchange.LiquidityMaker
 	}
-	return exchange.Fill{Instrument: instrument, OrderID: strconv.FormatInt(row.OrderID, 10), FillID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: row.CommissionAsset, Liquidity: liq, Time: time.UnixMilli(row.Time).UTC()}, nil
+	return exchange.Fill{NativeSymbol: row.Symbol, OrderID: strconv.FormatInt(row.OrderID, 10), FillID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: row.CommissionAsset, Liquidity: liq, Time: time.UnixMilli(row.Time).UTC()}, nil
 }
 
-func asterPerpFill(row asterperp.Trade, instrument string) (exchange.Fill, error) {
+func asterPerpFill(row asterperp.Trade) (exchange.Fill, error) {
 	price, qty, err := parse2(row.Price, row.Qty)
 	if err != nil {
 		return exchange.Fill{}, asterMalformed(exchange.ProductPerp, "Fills", err.Error())
@@ -1068,7 +1150,7 @@ func asterPerpFill(row asterperp.Trade, instrument string) (exchange.Fill, error
 	if row.Maker {
 		liq = exchange.LiquidityMaker
 	}
-	return exchange.Fill{Instrument: instrument, OrderID: strconv.FormatInt(row.OrderID, 10), FillID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: row.CommissionAsset, Liquidity: liq, Time: time.UnixMilli(row.Time).UTC()}, nil
+	return exchange.Fill{NativeSymbol: row.Symbol, OrderID: strconv.FormatInt(row.OrderID, 10), FillID: strconv.FormatInt(row.ID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: row.CommissionAsset, Liquidity: liq, Time: time.UnixMilli(row.Time).UTC()}, nil
 }
 
 func asterSpotBalances(rows []asterspot.Balance) ([]exchange.Balance, error) {
@@ -1083,7 +1165,7 @@ func asterSpotBalances(rows []asterspot.Balance) ([]exchange.Balance, error) {
 	return out, nil
 }
 
-func asterPosition(row asterperp.PositionRiskResponse, instrument string) (exchange.Position, error) {
+func asterPosition(row asterperp.PositionRiskResponse) (exchange.Position, error) {
 	qty, entry, err := parse2(row.PositionAmt, row.EntryPrice)
 	if err != nil {
 		return exchange.Position{}, asterMalformed(exchange.ProductPerp, "Positions", err.Error())
@@ -1108,7 +1190,7 @@ func asterPosition(row asterperp.PositionRiskResponse, instrument string) (excha
 	if qty.IsNegative() || row.PositionSide == "SHORT" {
 		side = exchange.SideSell
 	}
-	return exchange.Position{Instrument: instrument, Side: side, Quantity: qty.Abs(), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: exchange.OptionalDecimal{Value: liq, Valid: !liq.IsZero()}, Leverage: exchange.OptionalDecimal{Value: lev, Valid: !lev.IsZero()}, MarginUsed: exchange.OptionalDecimal{Value: margin, Valid: true}}, nil
+	return exchange.Position{NativeSymbol: row.Symbol, Side: side, Quantity: qty.Abs(), EntryPrice: entry, MarkPrice: mark, UnrealizedPnL: pnl, LiquidationPrice: exchange.OptionalDecimal{Value: liq, Valid: !liq.IsZero()}, Leverage: exchange.OptionalDecimal{Value: lev, Valid: !lev.IsZero()}, MarginUsed: exchange.OptionalDecimal{Value: margin, Valid: true}}, nil
 }
 
 func parse2(a, b string) (decimal.Decimal, decimal.Decimal, error) {
@@ -1297,52 +1379,52 @@ func (backend *asterPerpWSBackend) ensureMarket(ctx context.Context) (*asterperp
 	return ws, nil
 }
 
-func (backend *asterSpotWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterSpotWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchOrderBook", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchOrderBook", exchange.ProductSpot)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
 	err = ws.SubscribeIncrementOrderBook(native, "", func(event *asterspot.WsDepthEvent) error {
-		book, err := asterOrderBook(canonical, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductSpot)
+		book, err := asterOrderBook(instrument, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductSpot)
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: book.Sequence, Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
 }
 
-func (backend *asterPerpWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterPerpWSBackend) StartOrderBook(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchOrderBook", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchOrderBook", exchange.ProductPerp)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
 	err = ws.SubscribeIncrementOrderBook(native, "", func(event *asterperp.WsDepthEvent) error {
-		book, err := asterOrderBook(canonical, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductPerp)
+		book, err := asterOrderBook(instrument, 0, event.Bids, event.Asks, event.FinalUpdateID, event.EventTime, exchange.ProductPerp)
 		if err != nil {
 			return err
 		}
-		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: canonical, Sequence: book.Sequence, Previous: strconv.FormatInt(event.FinalUpdateIDLast, 10), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
+		callbacks.Event(exchange.BookEvent{Kind: exchange.EventDelta, Instrument: instrument, Sequence: book.Sequence, Previous: strconv.FormatInt(event.FinalUpdateIDLast, 10), Bids: book.Bids, Asks: book.Asks, Time: book.Time})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeIncrementOrderBook(native, "") }, err
 }
 
-func (backend *asterSpotWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterSpotWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchBBO", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchBBO", exchange.ProductSpot)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1361,18 +1443,18 @@ func (backend *asterSpotWSBackend) StartBBO(ctx context.Context, instrument stri
 			callbacks.Error(asterMalformed(exchange.ProductSpot, "WatchBBO", err.Error()))
 			return nil
 		}
-		callbacks.Event(exchange.BBOEvent{Instrument: canonical, Bid: exchange.BookLevel{Price: bidP, Quantity: bidQ}, Ask: exchange.BookLevel{Price: askP, Quantity: askQ}})
+		callbacks.Event(exchange.BBOEvent{Instrument: instrument, Bid: exchange.BookLevel{Price: bidP, Quantity: bidQ}, Ask: exchange.BookLevel{Price: askP, Quantity: askQ}})
 		return nil
 	})
 	return stop, err
 }
 
-func (backend *asterPerpWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterPerpWSBackend) StartBBO(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchBBO", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchBBO", exchange.ProductPerp)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1387,18 +1469,18 @@ func (backend *asterPerpWSBackend) StartBBO(ctx context.Context, instrument stri
 			callbacks.Error(asterMalformed(exchange.ProductPerp, "WatchBBO", err.Error()))
 			return nil
 		}
-		callbacks.Event(exchange.BBOEvent{Instrument: canonical, Bid: exchange.BookLevel{Price: bidP, Quantity: bidQ}, Ask: exchange.BookLevel{Price: askP, Quantity: askQ}, Time: time.UnixMilli(event.EventTime).UTC()})
+		callbacks.Event(exchange.BBOEvent{Instrument: instrument, Bid: exchange.BookLevel{Price: bidP, Quantity: bidQ}, Ask: exchange.BookLevel{Price: askP, Quantity: askQ}, Time: time.UnixMilli(event.EventTime).UTC()})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeBookTicker(native) }, err
 }
 
-func (backend *asterSpotWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterSpotWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchPublicTrades", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchPublicTrades", exchange.ProductSpot)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1412,18 +1494,18 @@ func (backend *asterSpotWSBackend) StartPublicTrades(ctx context.Context, instru
 		if event.IsBuyerMaker {
 			side = exchange.SideSell
 		}
-		callbacks.Event(exchange.PublicTradeEvent{Instrument: canonical, TradeID: strconv.FormatInt(event.AggTradeID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(event.TradeTime).UTC()})
+		callbacks.Event(exchange.PublicTradeEvent{Instrument: instrument, TradeID: strconv.FormatInt(event.AggTradeID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(event.TradeTime).UTC()})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeAggTrade(native) }, err
 }
 
-func (backend *asterPerpWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterPerpWSBackend) StartPublicTrades(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchPublicTrades", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchPublicTrades", exchange.ProductPerp)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1437,18 +1519,18 @@ func (backend *asterPerpWSBackend) StartPublicTrades(ctx context.Context, instru
 		if event.IsBuyerMaker {
 			side = exchange.SideSell
 		}
-		callbacks.Event(exchange.PublicTradeEvent{Instrument: canonical, TradeID: strconv.FormatInt(event.AggTradeID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(event.TradeTime).UTC()})
+		callbacks.Event(exchange.PublicTradeEvent{Instrument: instrument, TradeID: strconv.FormatInt(event.AggTradeID, 10), Side: side, Price: price, Quantity: qty, Time: time.UnixMilli(event.TradeTime).UTC()})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeAggTrade(native) }, err
 }
 
-func (backend *asterSpotWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterSpotWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchCandles", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchCandles", exchange.ProductSpot)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1458,18 +1540,18 @@ func (backend *asterSpotWSBackend) StartCandles(ctx context.Context, instrument,
 			callbacks.Error(asterMalformed(exchange.ProductSpot, "WatchCandles", err.Error()))
 			return nil
 		}
-		callbacks.Event(exchange.CandleEvent{Instrument: canonical, Interval: interval, Candle: candle})
+		callbacks.Event(exchange.CandleEvent{Instrument: instrument, Interval: interval, Candle: candle})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeKline(native, interval) }, err
 }
 
-func (backend *asterPerpWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterPerpWSBackend) StartCandles(ctx context.Context, instrument exchange.Instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchCandles", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchCandles", exchange.ProductPerp)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1479,18 +1561,18 @@ func (backend *asterPerpWSBackend) StartCandles(ctx context.Context, instrument,
 			callbacks.Error(asterMalformed(exchange.ProductPerp, "WatchCandles", err.Error()))
 			return nil
 		}
-		callbacks.Event(exchange.CandleEvent{Instrument: canonical, Interval: interval, Candle: candle})
+		callbacks.Event(exchange.CandleEvent{Instrument: instrument, Interval: interval, Candle: candle})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeKline(native, interval) }, err
 }
 
-func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	account, err := backend.ensureAccount(ctx)
+func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	native, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	_, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductSpot)
+	account, err := backend.ensureAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1502,7 +1584,7 @@ func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument s
 		if event == nil || asterCanonical(event.Symbol) != canonical {
 			return
 		}
-		order, err := asterOrder(exchange.ProductSpot, canonical, event.OrderID, event.ClientOrderID, event.Side, event.OrderType, event.TimeInForce, event.Quantity, event.Price, event.CumulativeFilledQuantity, event.OrderStatus, false)
+		order, err := asterOrder(exchange.ProductSpot, native, event.OrderID, event.ClientOrderID, event.Side, event.OrderType, event.TimeInForce, event.Quantity, event.Price, event.CumulativeFilledQuantity, event.OrderStatus, false)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -1511,12 +1593,12 @@ func (backend *asterSpotWSBackend) StartOrders(ctx context.Context, instrument s
 	})
 	return stop, nil
 }
-func (backend *asterSpotWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	account, err := backend.ensureAccount(ctx)
+func (backend *asterSpotWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	native, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductSpot)
 	if err != nil {
 		return nil, err
 	}
-	_, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductSpot)
+	account, err := backend.ensureAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1553,7 +1635,7 @@ func (backend *asterSpotWSBackend) StartFills(ctx context.Context, instrument st
 		if event.IsMaker {
 			liquidity = exchange.LiquidityMaker
 		}
-		callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{Instrument: canonical, OrderID: strconv.FormatInt(event.OrderID, 10), FillID: strconv.FormatInt(event.TradeID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: feeAsset, Liquidity: liquidity, Time: time.UnixMilli(event.TransactionTime).UTC()}})
+		callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{NativeSymbol: native, OrderID: strconv.FormatInt(event.OrderID, 10), FillID: strconv.FormatInt(event.TradeID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: feeAsset, Liquidity: liquidity, Time: time.UnixMilli(event.TransactionTime).UTC()}})
 	})
 	return stop, nil
 }
@@ -1599,12 +1681,12 @@ func (backend *asterSpotWSBackend) Close() error {
 	return nil
 }
 
-func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
-	account, err := backend.ensureAccount(ctx)
+func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
+	native, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	_, canonical, err := asterSymbols(instrument, "WatchOrders", exchange.ProductPerp)
+	account, err := backend.ensureAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1616,7 +1698,7 @@ func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument s
 		if event == nil || asterCanonical(event.Order.Symbol) != canonical {
 			return
 		}
-		order, err := asterOrder(exchange.ProductPerp, canonical, event.Order.OrderID, event.Order.ClientOrderID, event.Order.Side, event.Order.OrderType, event.Order.TimeInForce, event.Order.OriginalQty, event.Order.OriginalPrice, event.Order.AccumulatedFilledQty, event.Order.OrderStatus, event.Order.IsReduceOnly)
+		order, err := asterOrder(exchange.ProductPerp, native, event.Order.OrderID, event.Order.ClientOrderID, event.Order.Side, event.Order.OrderType, event.Order.TimeInForce, event.Order.OriginalQty, event.Order.OriginalPrice, event.Order.AccumulatedFilledQty, event.Order.OrderStatus, event.Order.IsReduceOnly)
 		if err != nil {
 			callbacks.Error(err)
 			return
@@ -1625,12 +1707,12 @@ func (backend *asterPerpWSBackend) StartOrders(ctx context.Context, instrument s
 	})
 	return stop, nil
 }
-func (backend *asterPerpWSBackend) StartFills(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
-	account, err := backend.ensureAccount(ctx)
+func (backend *asterPerpWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
+	native, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	_, canonical, err := asterSymbols(instrument, "WatchFills", exchange.ProductPerp)
+	account, err := backend.ensureAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1663,7 +1745,7 @@ func (backend *asterPerpWSBackend) StartFills(ctx context.Context, instrument st
 		if event.Order.IsMaker {
 			liquidity = exchange.LiquidityMaker
 		}
-		callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{Instrument: canonical, OrderID: strconv.FormatInt(event.Order.OrderID, 10), FillID: strconv.FormatInt(event.Order.TradeID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: event.Order.CommissionAsset, Liquidity: liquidity, Time: time.UnixMilli(event.Order.TradeTime).UTC()}})
+		callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: exchange.Fill{NativeSymbol: native, OrderID: strconv.FormatInt(event.Order.OrderID, 10), FillID: strconv.FormatInt(event.Order.TradeID, 10), Side: side, Price: price, Quantity: qty, Fee: fee, FeeAsset: event.Order.CommissionAsset, Liquidity: liquidity, Time: time.UnixMilli(event.Order.TradeTime).UTC()}})
 	})
 	return stop, nil
 }
@@ -1689,12 +1771,12 @@ func (backend *asterPerpWSBackend) StartBalances(ctx context.Context, callbacks 
 	})
 	return stop, nil
 }
-func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
-	account, err := backend.ensureAccount(ctx)
+func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
+	native, canonical, err := asterSymbols(instrument, "WatchPositions", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	_, canonical, err := asterSymbols(instrument, "WatchPositions", exchange.ProductPerp)
+	account, err := backend.ensureAccount(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1725,18 +1807,18 @@ func (backend *asterPerpWSBackend) StartPositions(ctx context.Context, instrumen
 			if qty.IsNegative() || row.PositionSide == "SHORT" {
 				side = exchange.SideSell
 			}
-			positions = append(positions, exchange.Position{Instrument: canonical, Side: side, Quantity: qty.Abs(), EntryPrice: entry, UnrealizedPnL: pnl})
+			positions = append(positions, exchange.Position{NativeSymbol: native, Side: side, Quantity: qty.Abs(), EntryPrice: entry, UnrealizedPnL: pnl})
 		}
 		callbacks.Event(exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.UnixMilli(event.EventTime).UTC()})
 	})
 	return stop, nil
 }
-func (backend *asterPerpWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
-	ws, err := backend.ensureMarket(ctx)
+func (backend *asterPerpWSBackend) StartReference(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
+	native, _, err := asterSymbols(instrument, "WatchReference", exchange.ProductPerp)
 	if err != nil {
 		return nil, err
 	}
-	native, canonical, err := asterSymbols(instrument, "WatchReference", exchange.ProductPerp)
+	ws, err := backend.ensureMarket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1746,7 +1828,7 @@ func (backend *asterPerpWSBackend) StartReference(ctx context.Context, instrumen
 			callbacks.Error(asterMalformed(exchange.ProductPerp, "WatchReference", err.Error()))
 			return nil
 		}
-		callbacks.Event(perpReferenceEvent{MarkValid: true, FundingValid: true, MarkPrice: exchange.MarkPriceEvent{Instrument: canonical, Price: price, Time: time.UnixMilli(event.EventTime).UTC()}, FundingRate: exchange.FundingRateEvent{Instrument: canonical, Rate: rate, EffectiveAt: time.UnixMilli(event.EventTime).UTC(), NextAt: time.UnixMilli(event.NextFundingTime).UTC()}})
+		callbacks.Event(perpReferenceEvent{MarkValid: true, FundingValid: true, MarkPrice: exchange.MarkPriceEvent{Instrument: instrument, Price: price, Time: time.UnixMilli(event.EventTime).UTC()}, FundingRate: exchange.FundingRateEvent{Instrument: instrument, Rate: rate, EffectiveAt: time.UnixMilli(event.EventTime).UTC(), NextAt: time.UnixMilli(event.NextFundingTime).UTC()}})
 		return nil
 	})
 	return func() error { return ws.UnsubscribeMarkPrice(native, "1s") }, err
