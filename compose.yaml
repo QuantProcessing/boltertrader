@@ -1,0 +1,64 @@
+name: boltertrader-gateway
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:-boltertrader-gateway:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["run", "-config", "/etc/boltertrader/gateway.yaml"]
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-18080}:18080"
+    volumes:
+      - "${GATEWAY_CONFIG_FILE:-./docker/gateway.docker.yaml}:/etc/boltertrader/gateway.yaml:ro"
+    secrets:
+      - GATEWAY_AUTH_TOKEN
+      - GATEWAY_POSTGRES_DSN
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/exchange-gateway-docker-support", "health", "-config", "/etc/boltertrader/gateway.yaml", "-kind", "ready"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10s
+      retries: 6
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gateway}
+      POSTGRES_DB: ${POSTGRES_DB:-gateway}
+      POSTGRES_PASSWORD_FILE: /run/secrets/POSTGRES_PASSWORD
+    secrets:
+      - POSTGRES_PASSWORD
+    volumes:
+      - gateway_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+volumes:
+  gateway_postgres_data:
+
+secrets:
+  GATEWAY_AUTH_TOKEN:
+    file: ${GATEWAY_AUTH_TOKEN_FILE:?set GATEWAY_AUTH_TOKEN_FILE}
+  GATEWAY_POSTGRES_DSN:
+    file: ${GATEWAY_POSTGRES_DSN_FILE:?set GATEWAY_POSTGRES_DSN_FILE}
+  POSTGRES_PASSWORD:
+    file: ${POSTGRES_PASSWORD_FILE:?set POSTGRES_PASSWORD_FILE}

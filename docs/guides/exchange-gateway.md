@@ -195,6 +195,94 @@ in-flight command identity, closes private streams, closes exchange clients,
 releases account ownership, then closes PostgreSQL. A timeout is a failed drain
 and the next process must complete reconciliation before reopening writes.
 
+## Docker single-host deployment
+
+The reference deployment requires Docker Engine with Compose v2. It is a
+single-host operational example: one Gateway container, one PostgreSQL
+container, and one named PostgreSQL volume. It does not provide Kubernetes,
+multi-host scheduling, registry publishing, or high availability.
+
+Copy the public template and create the three referenced files outside the
+repository:
+
+```sh
+cp docker/gateway.env.example gateway.env
+chmod 600 gateway.env ./gateway-secrets/*
+```
+
+`gateway.env` contains paths and public settings only. The actual bearer token,
+Gateway PostgreSQL DSN, and PostgreSQL password live in those files and enter
+the containers as Docker secrets. The DSN used by the reference stack names
+the Compose service, for example
+`postgres://gateway:<password>@postgres:5432/gateway?sslmode=disable`.
+Do not put any secret value in `gateway.env`, the image, a build argument, or
+`docker/gateway.docker.yaml`.
+
+The supplied Docker config deliberately starts with `accounts: []`. Add
+accounts by copying that config to an operator-owned file. Each new
+`env://NAME` credential also needs a matching Compose secret mounted at
+`/run/secrets/NAME`; the Docker helper resolves only these explicit names and
+then execs Gateway as PID1.
+
+Build and start:
+
+```sh
+docker compose --env-file gateway.env config
+docker compose --env-file gateway.env up -d --build --wait
+```
+
+The host publication is `127.0.0.1:18080` by default. Inside the container,
+`allow_non_loopback_listen: true` explicitly permits `0.0.0.0:18080`; ordinary
+non-container configs remain loopback-only.
+
+Inspect authenticated health and logs without printing the bearer token:
+
+```sh
+docker compose --env-file gateway.env exec -T gateway \
+  /usr/local/bin/exchange-gateway-docker-support health \
+  -config /etc/boltertrader/gateway.yaml -kind live
+docker compose --env-file gateway.env exec -T gateway \
+  /usr/local/bin/exchange-gateway-docker-support health \
+  -config /etc/boltertrader/gateway.yaml -kind ready
+docker compose --env-file gateway.env logs --tail=200 gateway
+```
+
+`docker compose stop gateway` sends SIGTERM to Gateway as PID1. The reference
+stack allows 15 seconds, exceeding Gateway's 10-second drain budget. For an
+upgrade, build the new immutable image, run the Docker verification targets,
+then recreate Gateway. Startup migrations and reconciliation run before write
+readiness reopens.
+
+PostgreSQL persistence is the named `gateway_postgres_data` volume.
+`docker compose down` retains it; `docker compose down -v` deliberately deletes
+it. Back up and restore that volume using normal PostgreSQL tooling. The
+reference Compose file never publishes PostgreSQL to the host; the random
+loopback publication in `docker/compose.test.yaml` is test-only.
+
+For external PostgreSQL, deploy the Gateway image without the reference
+PostgreSQL service and point `GATEWAY_POSTGRES_DSN_FILE` at a TLS-enabled DSN
+for the external database. Run the migration and restart gates against a
+disposable copy before rollout. Keep the database and Gateway network private.
+
+Terminate TLS at a same-host ingress or reverse proxy. The default loopback
+publication is suitable for that shape. Publishing Gateway on another
+interface is an explicit operator security decision and requires firewall,
+TLS, bearer-token rotation, and access-log review. This single-host stack has
+no leader election or automatic failover; use only one Gateway owner for each
+configured exchange account.
+
+Docker verification:
+
+```sh
+make test-gateway-docker-config
+make test-gateway-docker-build
+make test-gateway-docker-security
+make test-gateway-docker-smoke
+make test-gateway-docker-persistence
+make test-gateway-docker-postgres
+make test-gateway-docker
+```
+
 ## Verification
 
 ```sh

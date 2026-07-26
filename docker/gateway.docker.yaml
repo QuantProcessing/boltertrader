@@ -1,0 +1,9 @@
+server:
+  listen: 0.0.0.0:18080
+  allow_non_loopback_listen: true
+  auth_token_ref: env://GATEWAY_AUTH_TOKEN
+
+postgres:
+  dsn_ref: env://GATEWAY_POSTGRES_DSN
+
+accounts: []

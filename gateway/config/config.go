@@ -21,8 +21,9 @@ type File struct {
 }
 
 type ServerConfig struct {
-	Listen       string     `yaml:"listen" json:"listen"`
-	AuthTokenRef secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
+	Listen                 string     `yaml:"listen" json:"listen"`
+	AllowNonLoopbackListen bool       `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
+	AuthTokenRef           secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
 }
 
 type PostgresConfig struct {
@@ -142,8 +143,12 @@ func (file File) Validate() error {
 		return fmt.Errorf("server listen is required")
 	}
 	host, _, err := net.SplitHostPort(file.Server.Listen)
-	if err != nil || net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback() {
-		return fmt.Errorf("server listen must be a loopback host:port")
+	address := net.ParseIP(host)
+	if err != nil || address == nil {
+		return fmt.Errorf("server listen must be an IP host:port")
+	}
+	if !address.IsLoopback() && !file.Server.AllowNonLoopbackListen {
+		return fmt.Errorf("server non-loopback listen requires allow_non_loopback_listen")
 	}
 	if file.Server.AuthTokenRef.IsZero() {
 		return fmt.Errorf("server auth_token_ref secret reference is required")
@@ -173,8 +178,9 @@ func (file File) Validate() error {
 func (file File) Hash() (string, error) {
 	sanitized := hashFile{
 		Server: hashServer{
-			Listen:       file.Server.Listen,
-			AuthTokenRef: file.Server.AuthTokenRef.Fingerprint(),
+			Listen:                 file.Server.Listen,
+			AllowNonLoopbackListen: file.Server.AllowNonLoopbackListen,
+			AuthTokenRef:           file.Server.AuthTokenRef.Fingerprint(),
 		},
 		Postgres: hashPostgres{
 			DSNRef: file.Postgres.DSNRef.Fingerprint(),
@@ -204,7 +210,10 @@ func (file File) Hash() (string, error) {
 }
 
 func (file File) String() string {
-	return "gateway/config.File{server:configured, postgres:redacted, accounts:" + strconv.Itoa(len(file.Accounts)) + ", credentials:redacted}"
+	return "gateway/config.File{server:configured, allow_non_loopback_listen:" +
+		strconv.FormatBool(file.Server.AllowNonLoopbackListen) +
+		", postgres:redacted, accounts:" + strconv.Itoa(len(file.Accounts)) +
+		", credentials:redacted}"
 }
 
 func (file File) GoString() string { return file.String() }
@@ -212,14 +221,36 @@ func (file File) GoString() string { return file.String() }
 func (file File) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"server": map[string]any{
-			"listen":         file.Server.Listen,
-			"auth_token_ref": "redacted",
+			"listen":                    file.Server.Listen,
+			"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
+			"auth_token_ref":            "redacted",
 		},
 		"postgres": map[string]any{
 			"dsn_ref": "redacted",
 		},
 		"accounts": file.redactedAccounts(),
 	})
+}
+
+func (file File) SecretRefs() []secret.Ref {
+	refs := []secret.Ref{file.Server.AuthTokenRef, file.Postgres.DSNRef}
+	for _, account := range file.Accounts {
+		switch credentials := account.Credentials.(type) {
+		case APIKeySecretCredentials:
+			refs = append(refs, credentials.APIKeyRef, credentials.APISecretRef)
+		case APIKeySecretPassphraseCredentials:
+			refs = append(refs, credentials.APIKeyRef, credentials.APISecretRef, credentials.PassphraseRef)
+		case LighterCredentials:
+			refs = append(refs, credentials.PrivateKeyRef)
+		case PrivateKeyCredentials:
+			refs = append(refs, credentials.PrivateKeyRef)
+		case AsterCredentials:
+			refs = append(refs, credentials.APIWalletPrivateKeyRef)
+		case NadoCredentials:
+			refs = append(refs, credentials.PrivateKeyRef)
+		}
+	}
+	return refs
 }
 
 func (file File) redactedAccounts() []map[string]any {
@@ -460,8 +491,9 @@ type hashFile struct {
 	Accounts []hashAccount `json:"accounts"`
 }
 type hashServer struct {
-	Listen       string `json:"listen"`
-	AuthTokenRef string `json:"auth_token_ref"`
+	Listen                 string `json:"listen"`
+	AllowNonLoopbackListen bool   `json:"allow_non_loopback_listen"`
+	AuthTokenRef           string `json:"auth_token_ref"`
 }
 type hashPostgres struct {
 	DSNRef string `json:"dsn_ref"`

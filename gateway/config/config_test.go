@@ -244,6 +244,79 @@ func TestConfigHashIncludesOperationalMetadataButNeverResolvedSecrets(t *testing
 	}
 }
 
+func TestNonLoopbackListenRequiresExplicitOptIn(t *testing.T) {
+	nonLoopback := strings.Replace(validOneAccountYAML(), "127.0.0.1:18080", "0.0.0.0:18080", 1)
+	if _, err := config.LoadYAML([]byte(nonLoopback)); err == nil || !strings.Contains(err.Error(), "non-loopback") {
+		t.Fatalf("non-loopback listen without opt-in error = %v, want explicit rejection", err)
+	}
+
+	optedIn := strings.Replace(
+		nonLoopback,
+		"  listen: 0.0.0.0:18080",
+		"  listen: 0.0.0.0:18080\n  allow_non_loopback_listen: true",
+		1,
+	)
+	file, err := config.LoadYAML([]byte(optedIn))
+	if err != nil {
+		t.Fatalf("LoadYAML opted-in Docker listen: %v", err)
+	}
+	if !file.Server.AllowNonLoopbackListen {
+		t.Fatal("allow_non_loopback_listen was not decoded")
+	}
+
+	loopbackWithOptIn := strings.Replace(
+		validOneAccountYAML(),
+		"  listen: 127.0.0.1:18080",
+		"  listen: 127.0.0.1:18080\n  allow_non_loopback_listen: true",
+		1,
+	)
+	if _, err := config.LoadYAML([]byte(loopbackWithOptIn)); err != nil {
+		t.Fatalf("loopback listen with explicit opt-in: %v", err)
+	}
+}
+
+func TestNonLoopbackOptInParticipatesInHashAndRedactedJSON(t *testing.T) {
+	base, err := config.LoadYAML([]byte(validOneAccountYAML()))
+	if err != nil {
+		t.Fatalf("LoadYAML base: %v", err)
+	}
+	optedInYAML := strings.Replace(
+		validOneAccountYAML(),
+		"  listen: 127.0.0.1:18080",
+		"  listen: 127.0.0.1:18080\n  allow_non_loopback_listen: true",
+		1,
+	)
+	optedIn, err := config.LoadYAML([]byte(optedInYAML))
+	if err != nil {
+		t.Fatalf("LoadYAML opted in: %v", err)
+	}
+	baseHash, err := base.Hash()
+	if err != nil {
+		t.Fatalf("base Hash: %v", err)
+	}
+	optedInHash, err := optedIn.Hash()
+	if err != nil {
+		t.Fatalf("opted-in Hash: %v", err)
+	}
+	if baseHash == optedInHash {
+		t.Fatal("hash did not change when allow_non_loopback_listen changed")
+	}
+
+	payload, err := json.Marshal(optedIn)
+	if err != nil {
+		t.Fatalf("MarshalJSON: %v", err)
+	}
+	output := string(payload)
+	if !strings.Contains(output, `"allow_non_loopback_listen":true`) {
+		t.Fatalf("redacted JSON omitted security-visible opt-in: %s", output)
+	}
+	for _, secretCanary := range []string{"env://TOKEN", "env://POSTGRES_DSN", "BINANCE_SECRET"} {
+		if strings.Contains(output, secretCanary) {
+			t.Fatalf("redacted JSON leaked %q: %s", secretCanary, output)
+		}
+	}
+}
+
 func TestConfigHashTracksPublicOperationalIdentityValues(t *testing.T) {
 	base, err := config.LoadYAML([]byte(validTwentyAccountYAML()))
 	if err != nil {

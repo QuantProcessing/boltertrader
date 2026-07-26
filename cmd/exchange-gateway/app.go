@@ -429,22 +429,10 @@ func waitForSignal(ctx context.Context, service *process.Service) error {
 }
 
 func allowedEnvRefs(file config.File) []string {
-	refs := []string{file.Server.AuthTokenRef.RawForProvider(), file.Postgres.DSNRef.RawForProvider()}
-	for _, account := range file.Accounts {
-		switch credentials := account.Credentials.(type) {
-		case config.APIKeySecretCredentials:
-			refs = append(refs, credentials.APIKeyRef.RawForProvider(), credentials.APISecretRef.RawForProvider())
-		case config.APIKeySecretPassphraseCredentials:
-			refs = append(refs, credentials.APIKeyRef.RawForProvider(), credentials.APISecretRef.RawForProvider(), credentials.PassphraseRef.RawForProvider())
-		case config.LighterCredentials:
-			refs = append(refs, credentials.PrivateKeyRef.RawForProvider())
-		case config.PrivateKeyCredentials:
-			refs = append(refs, credentials.PrivateKeyRef.RawForProvider())
-		case config.AsterCredentials:
-			refs = append(refs, credentials.APIWalletPrivateKeyRef.RawForProvider())
-		case config.NadoCredentials:
-			refs = append(refs, credentials.PrivateKeyRef.RawForProvider())
-		}
+	secretRefs := file.SecretRefs()
+	refs := make([]string, 0, len(secretRefs))
+	for _, ref := range secretRefs {
+		refs = append(refs, ref.RawForProvider())
 	}
 	return refs
 }

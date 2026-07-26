@@ -7,6 +7,7 @@
 .PHONY: test-nado-testnet test-nado-testnet-read test-nado-testnet-spot-read test-nado-testnet-perp-read test-nado-testnet-spot test-nado-testnet-runtime-spot test-nado-testnet-perp test-nado-testnet-runtime-perp test-nado-testnet-acceptance test-aster-nado-testnet-acceptance
 .PHONY: test-exchange-offline test-exchange-race test-exchange-redaction test-exchange-quality test-exchange-acceptance test-exchange-external-acceptance test-exchange-binance-demo-acceptance test-exchange-binance-demo-spot test-exchange-binance-demo-perp test-exchange-okx-demo-acceptance test-exchange-okx-demo-spot test-exchange-okx-demo-perp test-exchange-lighter-testnet-acceptance test-exchange-lighter-testnet-spot test-exchange-lighter-testnet-perp test-exchange-hyperliquid-testnet-acceptance test-exchange-hyperliquid-testnet-spot test-exchange-hyperliquid-testnet-perp test-exchange-bybit-demo-acceptance test-exchange-bybit-demo-spot test-exchange-bybit-demo-usdt-perp test-exchange-bybit-demo-usdc-perp test-exchange-bitget-demo-acceptance test-exchange-bitget-demo-spot test-exchange-bitget-demo-usdt-perp test-exchange-bitget-demo-usdc-perp test-exchange-gate-testnet-acceptance test-exchange-gate-testnet-spot test-exchange-gate-testnet-usdt-perp test-exchange-aster-testnet-acceptance test-exchange-aster-testnet-spot test-exchange-aster-testnet-usdt-perp test-exchange-nado-testnet-acceptance test-exchange-nado-testnet-spot test-exchange-nado-testnet-usdt0-perp
 .PHONY: test-gateway-contract test-gateway-offline test-gateway-race test-gateway-postgres test-gateway-restart test-gateway-security test-gateway
+.PHONY: gateway-compose-dsn test-gateway-docker-config test-gateway-docker-build test-gateway-docker-security test-gateway-docker-smoke test-gateway-docker-persistence test-gateway-docker-postgres test-gateway-docker
 .PHONY: test-gateway-demo-testnet test-gateway-binance-spot-demo test-gateway-binance-usd-perp-demo test-gateway-okx-spot-demo test-gateway-okx-usdt-perp-demo test-gateway-lighter-spot-testnet test-gateway-lighter-perp-testnet test-gateway-hyperliquid-spot-testnet test-gateway-hyperliquid-perp-testnet test-gateway-bybit-spot-demo test-gateway-bybit-usdt-perp-demo test-gateway-bybit-usdc-perp-demo test-gateway-bitget-spot-demo test-gateway-bitget-usdt-perp-demo test-gateway-bitget-usdc-perp-demo test-gateway-gate-spot-testnet test-gateway-gate-usdt-perp-testnet test-gateway-aster-spot-testnet test-gateway-aster-usdt-perp-testnet test-gateway-nado-spot-testnet test-gateway-nado-usdt0-perp-testnet
 
 .NOTPARALLEL:
@@ -64,6 +65,106 @@ test-gateway-security:
 	go test -short ./gateway/contracts ./gateway/config ./gateway/secret ./gateway/store/postgres -run 'Test(GatewayProductionImportBoundary|OpenAPI|ConfigFormatting|RefRejects|EnvProvider|RedactErr|AcceptanceCrosswalk|GatewayOperations)' -count=1
 
 test-gateway: test-gateway-offline test-gateway-race test-gateway-security
+
+gateway-compose-dsn:
+	@test -n "$$GATEWAY_COMPOSE_PROJECT" || (echo "GATEWAY_COMPOSE_PROJECT is required" >&2; exit 1)
+	@test -n "$$GATEWAY_COMPOSE_POSTGRES_PASSWORD" || (echo "GATEWAY_COMPOSE_POSTGRES_PASSWORD is required" >&2; exit 1)
+	@case "$$GATEWAY_COMPOSE_POSTGRES_PASSWORD" in *[!A-Za-z0-9_-]*|'') echo "GATEWAY_COMPOSE_POSTGRES_PASSWORD must use safe test characters" >&2; exit 1;; esac; \
+	endpoint=$$(docker compose -p "$$GATEWAY_COMPOSE_PROJECT" -f compose.yaml -f docker/compose.test.yaml port postgres 5432); \
+	case "$$endpoint" in 127.0.0.1:*) ;; *) echo "active Compose project did not publish PostgreSQL on loopback" >&2; exit 1;; esac; \
+	port=$${endpoint##*:}; \
+	case "$$port" in *[!0-9]*|'') echo "active Compose project returned an invalid PostgreSQL port" >&2; exit 1;; esac; \
+	printf 'postgres://%s:%s@127.0.0.1:%s/%s?sslmode=disable\n' "$${POSTGRES_USER:-gateway}" "$$GATEWAY_COMPOSE_POSTGRES_PASSWORD" "$$port" "$${POSTGRES_DB:-gateway}"
+
+test-gateway-docker-config:
+	@GATEWAY_AUTH_TOKEN_FILE=/dev/null GATEWAY_POSTGRES_DSN_FILE=/dev/null POSTGRES_PASSWORD_FILE=/dev/null docker compose -f compose.yaml config --quiet
+	@GATEWAY_AUTH_TOKEN_FILE=/dev/null GATEWAY_POSTGRES_DSN_FILE=/dev/null POSTGRES_PASSWORD_FILE=/dev/null docker compose -f compose.yaml -f docker/compose.test.yaml config --quiet
+	go test ./gateway/contracts ./gateway/config ./cmd/exchange-gateway-docker-support -run 'Test(GatewayDocker|GatewayCompose|DockerGateway|NonLoopback|RunLoads|RunRejects|Health)' -count=1
+
+test-gateway-docker-build:
+	docker build --build-arg GOPROXY="$${GATEWAY_DOCKER_GOPROXY:-https://proxy.golang.org,direct}" -f Dockerfile -t "$${GATEWAY_DOCKER_IMAGE:-boltertrader-gateway:local}" .
+
+test-gateway-docker-security:
+	@set -eu; \
+	image="$${GATEWAY_DOCKER_IMAGE:-boltertrader-gateway:local}"; \
+	user=$$(docker image inspect "$$image" --format '{{.Config.User}}'); \
+	test "$$user" != "" && test "$$user" != "0" && test "$$user" != "root"; \
+	entrypoint=$$(docker image inspect "$$image" --format '{{json .Config.Entrypoint}}'); \
+	test "$$entrypoint" = '["/usr/local/bin/exchange-gateway-docker-support"]'; \
+	tmp=$$(mktemp -d); cid=""; \
+	trap 'if test -n "$$cid"; then docker rm -f "$$cid" >/dev/null 2>&1 || true; fi; rm -rf "$$tmp"' EXIT INT TERM; \
+	cid=$$(docker create "$$image"); \
+	docker export "$$cid" -o "$$tmp/rootfs.tar"; \
+	if tar tf "$$tmp/rootfs.tar" | grep -E '(^|/)(\.env|\.git|\.omx)(/|$$)|(^|/)(cmd|gateway|exchange|sdk|adapter|runtime|core|internal|strategy|docs)(/|$$)|(^|/)go\.(mod|sum)$$|\.go$$|_test\.go$$' >/dev/null; then echo "forbidden path found in runtime image" >&2; exit 1; fi; \
+	tar tf "$$tmp/rootfs.tar" | grep -q '^etc/ssl/certs/ca-certificates\.crt$$'; \
+	tar tf "$$tmp/rootfs.tar" | grep -q '^usr/local/bin/exchange-gateway$$'; \
+	tar tf "$$tmp/rootfs.tar" | grep -q '^usr/local/bin/exchange-gateway-docker-support$$'; \
+	docker rm "$$cid" >/dev/null; cid=""; \
+	rm -rf "$$tmp"; \
+	trap - EXIT INT TERM
+
+test-gateway-docker-smoke:
+	@set -eu; \
+	project="boltertrader-gateway-$@-$$$$"; \
+	tmp=$$(mktemp -d); password="gateway-docker-test-password"; token="gateway-docker-test-token"; \
+	trap 'docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
+	umask 077; \
+	printf '%s\n' "$$password" >"$$tmp/postgres-password"; \
+	printf '%s\n' "$$token" >"$$tmp/gateway-token"; \
+	printf 'postgres://gateway:%s@postgres:5432/gateway?sslmode=disable\n' "$$password" >"$$tmp/gateway-dsn"; \
+	export GATEWAY_IMAGE="$${GATEWAY_DOCKER_IMAGE:-boltertrader-gateway:local}" GATEWAY_PORT=0 GATEWAY_AUTH_TOKEN_FILE="$$tmp/gateway-token" GATEWAY_POSTGRES_DSN_FILE="$$tmp/gateway-dsn" POSTGRES_PASSWORD_FILE="$$tmp/postgres-password"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml up -d --no-build --wait --wait-timeout 90; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T gateway /usr/local/bin/exchange-gateway-docker-support health -config /etc/boltertrader/gateway.yaml -kind live; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T gateway /usr/local/bin/exchange-gateway-docker-support health -config /etc/boltertrader/gateway.yaml -kind ready; \
+	account_count=$$(docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T postgres psql -U gateway -d gateway -tAc 'SELECT count(*) FROM gateway_accounts' | tr -d '[:space:]'); \
+	test "$$account_count" = "0"; \
+	gateway_id=$$(docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml ps -q gateway); \
+	started=$$(date +%s); docker kill --signal TERM "$$gateway_id" >/dev/null; \
+	while test "$$(docker inspect "$$gateway_id" --format '{{.State.Running}}')" = "true"; do now=$$(date +%s); test $$((now-started)) -le 15 || (echo "Gateway SIGTERM shutdown exceeded 15s" >&2; exit 1); sleep 1; done; \
+	test "$$(docker inspect "$$gateway_id" --format '{{.State.ExitCode}}')" = "0"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null; \
+	rm -rf "$$tmp"; \
+	trap - EXIT INT TERM
+
+test-gateway-docker-persistence:
+	@set -eu; \
+	project="boltertrader-gateway-$@-$$$$"; \
+	tmp=$$(mktemp -d); password="gateway-docker-test-password"; sentinel="gateway-volume-$@-$$$$"; \
+	trap 'docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
+	umask 077; \
+	printf '%s\n' "$$password" >"$$tmp/postgres-password"; \
+	printf '%s\n' "unused-token" >"$$tmp/gateway-token"; \
+	printf '%s\n' "unused-dsn" >"$$tmp/gateway-dsn"; \
+	export GATEWAY_AUTH_TOKEN_FILE="$$tmp/gateway-token" GATEWAY_POSTGRES_DSN_FILE="$$tmp/gateway-dsn" POSTGRES_PASSWORD_FILE="$$tmp/postgres-password"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml up -d --wait --wait-timeout 60 postgres; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T postgres psql -U gateway -d gateway -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS gateway_docker_persistence_test (value text PRIMARY KEY)' -c "INSERT INTO gateway_docker_persistence_test(value) VALUES ('$$sentinel')"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml up -d --force-recreate --no-deps --wait --wait-timeout 60 postgres; \
+	observed=$$(docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T postgres psql -U gateway -d gateway -tAc "SELECT value FROM gateway_docker_persistence_test WHERE value = '$$sentinel'" | tr -d '[:space:]'); \
+	test "$$observed" = "$$sentinel"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml exec -T postgres psql -U gateway -d gateway -c 'DROP TABLE gateway_docker_persistence_test' >/dev/null; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null; \
+	rm -rf "$$tmp"; \
+	trap - EXIT INT TERM
+
+test-gateway-docker-postgres:
+	@set -eu; \
+	project="boltertrader-gateway-$@-$$$$"; \
+	tmp=$$(mktemp -d); password="gateway-docker-test-password"; \
+	trap 'docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
+	umask 077; \
+	printf '%s\n' "$$password" >"$$tmp/postgres-password"; \
+	printf '%s\n' "unused-token" >"$$tmp/gateway-token"; \
+	printf '%s\n' "unused-dsn" >"$$tmp/gateway-dsn"; \
+	export GATEWAY_AUTH_TOKEN_FILE="$$tmp/gateway-token" GATEWAY_POSTGRES_DSN_FILE="$$tmp/gateway-dsn" POSTGRES_PASSWORD_FILE="$$tmp/postgres-password"; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml up -d --wait --wait-timeout 60 postgres; \
+	dsn=$$(GATEWAY_COMPOSE_PROJECT="$$project" GATEWAY_COMPOSE_POSTGRES_PASSWORD="$$password" $(MAKE) --no-print-directory -s gateway-compose-dsn); \
+	GATEWAY_TEST_POSTGRES_DSN="$$dsn" $(MAKE) --no-print-directory test-gateway-postgres; \
+	GATEWAY_TEST_POSTGRES_DSN="$$dsn" $(MAKE) --no-print-directory test-gateway-restart; \
+	docker compose -p "$$project" -f compose.yaml -f docker/compose.test.yaml down -v --remove-orphans >/dev/null; \
+	rm -rf "$$tmp"; \
+	trap - EXIT INT TERM
+
+test-gateway-docker: test-gateway-docker-config test-gateway-docker-build test-gateway-docker-security test-gateway-docker-smoke test-gateway-docker-persistence test-gateway-docker-postgres
 
 test-exchange-acceptance: test-exchange-binance-demo-acceptance test-exchange-okx-demo-acceptance test-exchange-lighter-testnet-acceptance test-exchange-hyperliquid-testnet-acceptance test-exchange-bybit-demo-acceptance test-exchange-bitget-demo-acceptance test-exchange-gate-testnet-acceptance test-exchange-aster-testnet-acceptance test-exchange-nado-testnet-acceptance
 
