@@ -796,11 +796,16 @@ func (c *bitgetBase) Fills(ctx context.Context, req exchange.FillsRequest) (exch
 	if err := ctxErr(ctx, c.meta, "Fills"); err != nil {
 		return exchange.FillPage{}, err
 	}
-	_, canonical, err := c.symbols(req.Instrument, "Fills")
-	if err != nil {
-		return exchange.FillPage{}, err
+	native := ""
+	canonical := ""
+	if req.Instrument != "" {
+		var err error
+		native, canonical, err = c.symbols(req.Instrument, "Fills")
+		if err != nil {
+			return exchange.FillPage{}, err
+		}
 	}
-	rows, hasMore, err := c.sdk.GetFillsBounded(ctx, bitget.GetFillsRequest{Category: c.bitgetPrivateCategory(), OrderID: req.OrderID, StartTime: milliString(req.Start), EndTime: milliString(req.End), Limit: limitString(req.Limit), Cursor: req.Cursor})
+	rows, hasMore, err := c.sdk.GetFillsBounded(ctx, bitget.GetFillsRequest{Category: c.bitgetPrivateCategory(), Symbol: native, OrderID: req.OrderID, StartTime: milliString(req.Start), EndTime: milliString(req.End), Limit: limitString(req.Limit), Cursor: req.Cursor})
 	if err != nil {
 		return exchange.FillPage{}, normErr(c.meta, "Fills", err)
 	}
@@ -1461,11 +1466,14 @@ func convertBybitPositions(meta clientMeta, op string, rows []bybit.PositionReco
 func convertBitgetPositions(meta clientMeta, op string, rows []bitget.PositionRecord, canonical string) ([]exchange.Position, error) {
 	out := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
-		side, err := parseSide(meta, op, firstNonEmpty(row.PosSide, row.HoldSide))
+		quantity, err := firstPositiveDecimalStrict(meta, op, row.Qty, row.Total, row.Size)
 		if err != nil {
 			return nil, err
 		}
-		quantity, err := firstPositiveDecimalStrict(meta, op, row.Qty, row.Total, row.Size)
+		if !quantity.IsPositive() {
+			continue
+		}
+		side, err := parseSide(meta, op, firstNonEmpty(row.PosSide, row.HoldSide))
 		if err != nil {
 			return nil, err
 		}
@@ -1477,7 +1485,7 @@ func convertBitgetPositions(meta clientMeta, op string, rows []bitget.PositionRe
 		if err != nil {
 			return nil, err
 		}
-		unrealizedPnL, err := firstPositiveDecimalStrict(meta, op, row.UnrealisedPnl, row.UnrealizedPL)
+		unrealizedPnL, err := parseOptionalDecimal(meta, op, firstNonEmpty(row.UnrealisedPnl, row.UnrealizedPL))
 		if err != nil {
 			return nil, err
 		}
@@ -2403,7 +2411,7 @@ func (b *bybitWSBackend) StartOrderBook(ctx context.Context, instrument string, 
 	}); err != nil {
 		return nil, normErr(b.client.meta, "WatchOrderBook", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, topic) }, nil
+	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
 }
 func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BBOEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchBBO")
@@ -2444,7 +2452,7 @@ func (b *bybitWSBackend) StartBBO(ctx context.Context, instrument string, callba
 	}); err != nil {
 		return nil, normErr(b.client.meta, "WatchBBO", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, topic) }, nil
+	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
 }
 func (b *bybitWSBackend) StartPublicTrades(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.PublicTradeEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchPublicTrades")
@@ -2487,7 +2495,7 @@ func (b *bybitWSBackend) StartPublicTrades(ctx context.Context, instrument strin
 	}); err != nil {
 		return nil, normErr(b.client.meta, "WatchPublicTrades", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, topic) }, nil
+	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
 }
 func (b *bybitWSBackend) StartCandles(ctx context.Context, instrument, interval string, callbacks streamCallbacks[exchange.CandleEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchCandles")
@@ -2526,7 +2534,7 @@ func (b *bybitWSBackend) StartCandles(ctx context.Context, instrument, interval 
 	}); err != nil {
 		return nil, normErr(b.client.meta, "WatchCandles", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, topic) }, nil
+	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
 }
 func (b *bybitWSBackend) StartReference(ctx context.Context, instrument string, callbacks streamCallbacks[perpReferenceEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchReference")
@@ -2558,9 +2566,15 @@ func (b *bybitWSBackend) StartReference(ctx context.Context, instrument string, 
 	}); err != nil {
 		return nil, normErr(b.client.meta, "WatchReference", err)
 	}
-	return func() error { return ws.Unsubscribe(ctx, topic) }, nil
+	return func() error { return closeBybitPublicSubscription(ws, topic) }, nil
 }
 func (b *bybitWSBackend) Close() error { return nil }
+
+func closeBybitPublicSubscription(ws *bybit.PublicWSClient, topic string) error {
+	unsubscribeErr := ws.Unsubscribe(context.Background(), topic)
+	closeErr := ws.Close()
+	return errors.Join(unsubscribeErr, closeErr)
+}
 
 func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument string, callbacks streamCallbacks[exchange.BookEvent]) (func() error, error) {
 	native, canonical, err := b.client.symbols(instrument, "WatchOrderBook")

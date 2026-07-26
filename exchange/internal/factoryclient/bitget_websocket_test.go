@@ -66,6 +66,7 @@ func (transport *bitgetWSAuxTransport) RoundTrip(request *http.Request) (*http.R
 
 func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	t.Helper()
+	publicCloses := bitgetScriptedWSClosedConnections(t)
 	book, err := ws.WatchOrderBook(t.Context(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
 		t.Fatalf("WatchOrderBook: %v", err)
@@ -78,6 +79,7 @@ func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 		t.Fatal("timeout waiting for Bitget order book event")
 	}
 	_ = book.Close()
+	publicCloses.expectNext("book")
 
 	bbo, err := ws.WatchBBO(t.Context(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -85,6 +87,7 @@ func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, bbo.Events(), "bbo")
 	_ = bbo.Close()
+	publicCloses.expectNext("bbo")
 
 	trades, err := ws.WatchPublicTrades(t.Context(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -92,6 +95,7 @@ func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, trades.Events(), "public trades")
 	_ = trades.Close()
+	publicCloses.expectNext("public trades")
 
 	candles, err := ws.WatchCandles(t.Context(), exchange.WatchCandlesRequest{Instrument: "BTC-USDT", Interval: "1m"})
 	if err != nil {
@@ -99,6 +103,7 @@ func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, candles.Events(), "candles")
 	_ = candles.Close()
+	publicCloses.expectNext("candles")
 
 	orders, err := ws.WatchOrders(t.Context(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -124,6 +129,7 @@ func exerciseBitgetSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 
 func exerciseBitgetPerpStreams(t *testing.T, ws exchange.PerpWebSocket, instrument string) {
 	t.Helper()
+	publicCloses := bitgetScriptedWSClosedConnections(t)
 	positions, err := ws.WatchPositions(t.Context(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
 		t.Fatalf("WatchPositions: %v", err)
@@ -137,6 +143,7 @@ func exerciseBitgetPerpStreams(t *testing.T, ws exchange.PerpWebSocket, instrume
 	}
 	assertReceive(t, mark.Events(), "mark")
 	_ = mark.Close()
+	publicCloses.expectNext("mark")
 
 	funding, err := ws.WatchFundingRate(t.Context(), exchange.WatchRequest{Instrument: instrument})
 	if err != nil {
@@ -144,18 +151,36 @@ func exerciseBitgetPerpStreams(t *testing.T, ws exchange.PerpWebSocket, instrume
 	}
 	assertReceive(t, funding.Events(), "funding")
 	_ = funding.Close()
+	publicCloses.expectNext("funding")
+}
+
+var bitgetScriptedWSConnections atomic.Pointer[scriptedWSConnectionTracker]
+
+func bitgetScriptedWSClosedConnections(t *testing.T) *scriptedWSConnectionTracker {
+	t.Helper()
+	tracker := bitgetScriptedWSConnections.Load()
+	if tracker == nil {
+		t.Fatal("Bitget scripted WS tracker is not installed")
+	}
+	return tracker
 }
 
 func newBitgetScriptedWSServer(t *testing.T) (string, func()) {
 	t.Helper()
 	upgrader := websocket.Upgrader{}
+	tracker := &scriptedWSConnectionTracker{closed: make(chan struct{}, 64), count: &atomic.Int64{}}
+	bitgetScriptedWSConnections.Store(tracker)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+			tracker.count.Add(1)
+			tracker.closed <- struct{}{}
+		}()
 		authenticated := false
 		for {
 			_, payload, err := conn.ReadMessage()
@@ -207,7 +232,10 @@ func newBitgetScriptedWSServer(t *testing.T) (string, func()) {
 			}
 		}
 	}))
-	return "ws" + strings.TrimPrefix(server.URL, "http"), server.Close
+	return "ws" + strings.TrimPrefix(server.URL, "http"), func() {
+		server.Close()
+		bitgetScriptedWSConnections.Store(nil)
+	}
 }
 
 func bitgetExpectedV3WSArg(instType, topic, symbol string) bool {

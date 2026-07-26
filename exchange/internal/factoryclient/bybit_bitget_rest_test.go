@@ -137,6 +137,10 @@ func bitgetData(data string) *http.Response {
 	return openAPIJSONResponse(`{"code":"00000","msg":"success","requestTime":1720000000000,"data":` + data + `}`)
 }
 
+func bitgetDataError(code, message string) *http.Response {
+	return openAPIJSONResponse(`{"code":"` + code + `","msg":"` + message + `","requestTime":1720000000000,"data":{}}`)
+}
+
 func bitgetOrderJSON(orderID, clientID, status string, reduceOnly bool) string {
 	return `{"orderId":"` + orderID + `","clientOid":"` + clientID + `","symbol":"BTCUSDT","side":"buy","orderType":"limit","timeInForce":"gtc","price":"99","qty":"1","filledQty":"1","avgPrice":"99","orderStatus":"` + status + `","reduceOnly":"` + boolString(reduceOnly) + `","createdTime":"1720000000000","updatedTime":"1720000001000"}`
 }

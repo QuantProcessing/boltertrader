@@ -546,6 +546,7 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 
 	got, err := client.GetFills(context.Background(), GetFillsRequest{
 		Category: bitgetPerpCategory,
+		Symbol:   "BTCUSDT",
 		OrderID:  "100",
 		Limit:    "100",
 	})
@@ -558,7 +559,7 @@ func TestClient_GetFillsBuildsTradeFillsQuery(t *testing.T) {
 	if seenPath != "/api/v3/trade/fills" {
 		t.Fatalf("unexpected path: %s", seenPath)
 	}
-	for _, want := range []string{"category=USDT-FUTURES", "orderId=100", "limit=100"} {
+	for _, want := range []string{"category=USDT-FUTURES", "symbol=BTCUSDT", "orderId=100", "limit=100"} {
 		if !strings.Contains(seenQuery, want) {
 			t.Fatalf("expected query to contain %s, got %s", want, seenQuery)
 		}

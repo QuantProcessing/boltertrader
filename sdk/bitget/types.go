@@ -150,6 +150,7 @@ type GetOrderHistoryRequest struct {
 
 type GetFillsRequest struct {
 	Category  string
+	Symbol    string
 	OrderID   string
 	StartTime string
 	EndTime   string

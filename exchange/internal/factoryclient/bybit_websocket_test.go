@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +160,7 @@ func assertCanceledWS(t *testing.T, operation string, run func() error) {
 
 func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	t.Helper()
+	publicCloses := bybitScriptedWSClosedConnections(t)
 	book, err := ws.WatchOrderBook(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
 		t.Fatalf("WatchOrderBook: %v", err)
@@ -167,6 +169,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	if err := book.Close(); err != nil {
 		t.Fatalf("close book: %v", err)
 	}
+	publicCloses.expectNext("book")
 
 	bbo, err := ws.WatchBBO(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -174,6 +177,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, bbo.Events(), "bbo")
 	_ = bbo.Close()
+	publicCloses.expectNext("bbo")
 
 	trades, err := ws.WatchPublicTrades(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -181,6 +185,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, trades.Events(), "public trades")
 	_ = trades.Close()
+	publicCloses.expectNext("public trades")
 
 	candles, err := ws.WatchCandles(context.Background(), exchange.WatchCandlesRequest{Instrument: "BTC-USDT", Interval: "1m"})
 	if err != nil {
@@ -188,6 +193,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 	}
 	assertReceive(t, candles.Events(), "candles")
 	_ = candles.Close()
+	publicCloses.expectNext("candles")
 
 	orders, err := ws.WatchOrders(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -213,6 +219,7 @@ func exerciseBybitSpotStreams(t *testing.T, ws exchange.SpotWebSocket) {
 
 func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket) {
 	t.Helper()
+	publicCloses := bybitScriptedWSClosedConnections(t)
 	positions, err := ws.WatchPositions(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
 		t.Fatalf("WatchPositions: %v", err)
@@ -226,6 +233,7 @@ func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket) {
 	}
 	assertReceive(t, mark.Events(), "mark")
 	_ = mark.Close()
+	publicCloses.expectNext("mark")
 
 	funding, err := ws.WatchFundingRate(context.Background(), exchange.WatchRequest{Instrument: "BTC-USDT"})
 	if err != nil {
@@ -233,6 +241,7 @@ func exerciseBybitPerpStreams(t *testing.T, ws exchange.PerpWebSocket) {
 	}
 	assertReceive(t, funding.Events(), "funding")
 	_ = funding.Close()
+	publicCloses.expectNext("funding")
 }
 
 func assertReceive[T any](t *testing.T, ch <-chan T, label string) T {
@@ -247,16 +256,53 @@ func assertReceive[T any](t *testing.T, ch <-chan T, label string) T {
 	}
 }
 
+type scriptedWSConnectionTracker struct {
+	closed chan struct{}
+	count  *atomic.Int64
+}
+
+var bybitScriptedWSConnections atomic.Pointer[scriptedWSConnectionTracker]
+
+func bybitScriptedWSClosedConnections(t *testing.T) *scriptedWSConnectionTracker {
+	t.Helper()
+	tracker := bybitScriptedWSConnections.Load()
+	if tracker == nil {
+		t.Fatal("Bybit scripted WS tracker is not installed")
+	}
+	return tracker
+}
+
+func (tracker *scriptedWSConnectionTracker) expectNext(label string) {
+	deadline := time.After(3 * time.Second)
+	want := tracker.count.Load() + 1
+	for {
+		select {
+		case <-tracker.closed:
+			if tracker.count.Load() == want {
+				return
+			}
+		case <-deadline:
+			panic(fmt.Sprintf("timeout waiting for %s websocket close; closed=%d want=%d", label, tracker.count.Load(), want))
+		}
+	}
+}
+
 func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 	t.Helper()
 	upgrader := websocket.Upgrader{}
+	tracker := &scriptedWSConnectionTracker{closed: make(chan struct{}, 64), count: &atomic.Int64{}}
+	bybitScriptedWSConnections.Store(tracker)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() {
+			_ = conn.Close()
+			tracker.count.Add(1)
+			tracker.closed <- struct{}{}
+		}()
 		_, payload, err := conn.ReadMessage()
 		if err != nil {
 			return
@@ -314,9 +360,15 @@ func newBybitScriptedWSServer(t *testing.T) (string, func()) {
 			return
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(bybitWSEvent(topic)))
+		if _, _, err := conn.ReadMessage(); err != nil {
+			return
+		}
 		_, _, _ = conn.ReadMessage()
 	}))
-	return "ws" + strings.TrimPrefix(server.URL, "http"), server.Close
+	return "ws" + strings.TrimPrefix(server.URL, "http"), func() {
+		server.Close()
+		bybitScriptedWSConnections.Store(nil)
+	}
 }
 
 type bybitScriptedWSRequest struct {

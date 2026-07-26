@@ -33,6 +33,73 @@ func TestOpenAPIBitgetRESTExecutionMatrix(t *testing.T) {
 	assertPerpLifecycleMatrixWithFundingRequest(t, ctx, perp, "BTC-USDT", exchange.FundingRateHistoryRequest{Instrument: "BTC-USDT", Limit: 10})
 }
 
+func TestBitgetFillsScopesNativeSymbolOnlyWhenInstrumentProvided(t *testing.T) {
+	ctx := context.Background()
+	sawScoped := false
+	sawAccountWide := false
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{
+		Endpoint:    "https://openapi.invalid",
+		Environment: "demo",
+		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/api/v3/trade/fills":
+				symbol := request.URL.Query().Get("symbol")
+				if request.URL.Query().Get("orderId") == "scoped" {
+					sawScoped = true
+					if symbol != "BTCUSDT" {
+						return bitgetDataError("40001", "missing scoped symbol"), nil
+					}
+				} else {
+					sawAccountWide = true
+					if symbol != "" {
+						return bitgetDataError("40002", "account-wide fills must not include symbol"), nil
+					}
+				}
+				return bitgetData(`{"list":[{"category":"USDT-FUTURES","orderId":"10","clientOid":"100","execId":"e1","symbol":"BTCUSDT","side":"buy","execPrice":"99","execQty":"1","feeDetail":[{"feeCoin":"USDT","fee":"0.01"}],"execTime":"1720000000000"}],"cursor":""}`), nil
+			default:
+				return (&bitgetOpenAPIRouter{}).RoundTrip(request)
+			}
+		})},
+	})
+
+	if _, err := client.Fills(ctx, exchange.FillsRequest{Instrument: "BTC-USDT", OrderID: "scoped", Limit: 10}); err != nil {
+		t.Fatalf("scoped Fills: %v", err)
+	}
+	if _, err := client.Fills(ctx, exchange.FillsRequest{OrderID: "account-wide", Limit: 10}); err != nil {
+		t.Fatalf("account-wide Fills: %v", err)
+	}
+	if !sawScoped || !sawAccountWide {
+		t.Fatalf("sawScoped=%v sawAccountWide=%v, want both requests", sawScoped, sawAccountWide)
+	}
+}
+
+func TestBitgetPositionsPreserveSignedPnLAndSkipZeroQuantityRows(t *testing.T) {
+	ctx := context.Background()
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{
+		Endpoint:    "https://openapi.invalid",
+		Environment: "demo",
+		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/api/v3/position/current-position":
+				return bitgetData(`{"list":[{"symbol":"BTCUSDT","posSide":"long","qty":"1","averageOpenPrice":"99","markPrice":"100","liquidationPrice":"50","leverage":"5","unrealisedPnl":"-1.25"},{"symbol":"ETHUSDT","posSide":"short","qty":"0","averageOpenPrice":"","markPrice":"2000","liquidationPrice":"","leverage":"","unrealisedPnl":"0"}]}`), nil
+			default:
+				return (&bitgetOpenAPIRouter{}).RoundTrip(request)
+			}
+		})},
+	})
+
+	positions, err := client.Positions(ctx, exchange.PositionsRequest{})
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("positions len = %d, want 1: %+v", len(positions), positions)
+	}
+	if !positions[0].UnrealizedPnL.Equal(decimal.RequireFromString("-1.25")) {
+		t.Fatalf("unrealized PnL = %s, want -1.25", positions[0].UnrealizedPnL)
+	}
+}
+
 func TestBitgetBuildersSatisfyExchangeContracts(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
