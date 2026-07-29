@@ -330,6 +330,44 @@ func TestCoordinatorPrincipalScopedGetListAndCancelAreDurableAndIdempotent(t *te
 	}
 }
 
+func TestCoordinatorTerminalPrivateEventReopensGateAfterAmbiguousCancel(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+		t.Fatal(err)
+	}
+	placed, err := fixture.coordinator.Place(context.Background(), fixture.placeRequest())
+	if err != nil {
+		t.Fatalf("Place: %v", err)
+	}
+	fixture.router.mu.Lock()
+	fixture.router.route.Driver = ambiguousCancelDriver{Driver: fixture.driver}
+	fixture.router.mu.Unlock()
+
+	result, err := fixture.coordinator.Cancel(context.Background(), CancelRequest{
+		PrincipalID: "principal-a", GatewayOrderID: placed.GatewayOrderID,
+	})
+	if !errors.Is(err, ErrOutcomeUncertain) || result.State != domain.StateUncertain {
+		t.Fatalf("ambiguous Cancel result=%+v err=%v", result, err)
+	}
+	observed, err := fixture.coordinator.ObserveVenueOrder(context.Background(), VenueOrderObservation{
+		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		Product: exchange.ProductSpot,
+		Order: exchange.Order{
+			NativeSymbol: "BTCUSDT", OrderID: "venue-1", ClientOrderID: placed.ClientOrderID,
+			Status: string(domain.StateCanceled),
+		},
+	})
+	if err != nil || observed.State != domain.StateCanceled {
+		t.Fatalf("ObserveVenueOrder result=%+v err=%v", observed, err)
+	}
+
+	next := fixture.placeRequest()
+	next.IdempotencyKey = "strategy-a-2"
+	if _, err := fixture.coordinator.Place(context.Background(), next); err != nil {
+		t.Fatalf("Place after exact terminal private event: %v", err)
+	}
+}
+
 func TestCoordinatorRestartWindowsNeverDuplicateVenueWrite(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -660,6 +698,14 @@ type blockingDriver struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type ambiguousCancelDriver struct {
+	Driver
+}
+
+func (driver ambiguousCancelDriver) CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
+	return exchange.OrderAcknowledgement{}, exchange.ErrAmbiguousOutcome
 }
 
 func (driver *blockingDriver) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {

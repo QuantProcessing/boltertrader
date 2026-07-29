@@ -515,6 +515,9 @@ func TestCommandStoreRealPostgresTransitionsUseCASAndRecoverableLoad(t *testing.
 	if dispatching.State != domain.StateDispatching || dispatching.ResourceVersion != 1 {
 		t.Fatalf("dispatching stored command = %+v", dispatching)
 	}
+	if dispatching.PrincipalID != "principal-a" {
+		t.Fatalf("dispatching principal = %q, want principal-a", dispatching.PrincipalID)
+	}
 
 	accepted, err := postgresStore.RecordVenueResult(ctx, store.RecordVenueResultRequest{
 		CommandID:       reserved.CommandID,

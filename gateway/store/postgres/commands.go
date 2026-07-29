@@ -543,7 +543,7 @@ func reservationConflict(existing reservationRecord, request store.ReserveComman
 
 func loadCommandForUpdate(ctx context.Context, tx pgx.Tx, commandID domain.CommandID) (store.StoredCommand, error) {
 	row := tx.QueryRow(ctx, `
-		SELECT c.command_id::text, o.gateway_order_id::text, o.account_id, o.instrument_id,
+		SELECT c.command_id::text, o.gateway_order_id::text, c.principal_id, o.account_id, o.instrument_id,
 		       c.portable_client_order_id::text, o.state, o.resource_version, COALESCE(o.venue_order_id, ''),
 		       COALESCE((SELECT e.event_id::text FROM order_events e WHERE e.gateway_order_id = o.gateway_order_id ORDER BY e.resource_version DESC LIMIT 1), ''),
 		       c.request_payload
@@ -552,7 +552,7 @@ func loadCommandForUpdate(ctx context.Context, tx pgx.Tx, commandID domain.Comma
 		WHERE c.command_id = $1
 		FOR UPDATE OF o
 	`, commandID)
-	command, err := scanStoredCommand(row)
+	command, err := scanStoredCommandWithPrincipal(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return store.StoredCommand{}, ErrNotFound
 	}

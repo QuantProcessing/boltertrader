@@ -281,6 +281,12 @@ func (coordinator *Coordinator) ObserveVenueOrder(ctx context.Context, observati
 	if err != nil {
 		return resultFromStored(command), err
 	}
+	if command.State == domain.StateUncertain && terminalOrderState(updated.State) {
+		report, recoveryErr := coordinator.recoverAccount(ctx, command.AccountID)
+		if recoveryErr != nil || !report.WriteReady {
+			return resultFromStored(updated), ErrRecoveryIncomplete
+		}
+	}
 	return resultFromStored(updated), nil
 }
 
