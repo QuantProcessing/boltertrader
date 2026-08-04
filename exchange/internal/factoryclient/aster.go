@@ -566,6 +566,9 @@ func (client *asterPerpClient) Positions(ctx context.Context, req exchange.Posit
 		if err != nil {
 			return nil, err
 		}
+		if pos.Quantity.IsZero() {
+			continue
+		}
 		out = append(out, pos)
 	}
 	return out, nil
@@ -701,6 +704,9 @@ func asterNormalizeErr(product exchange.Product, operation string, err error) er
 	}
 	var spotVenue *astercommon.VenueError
 	if errors.As(err, &spotVenue) {
+		if spotVenue.StatusCode() >= http.StatusInternalServerError {
+			return exchange.NewError(exchange.KindTransport, exchange.ErrorDetails{Venue: exchange.VenueAster, Product: product, Operation: operation, SafeMessage: "Aster upstream is unavailable"})
+		}
 		return exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{Venue: exchange.VenueAster, Product: product, Operation: operation, Code: strconv.Itoa(spotVenue.Code()), SafeMessage: "Aster rejected the request"})
 	}
 	return asterErr(product, operation, exchange.KindTransport, "Aster request failed")

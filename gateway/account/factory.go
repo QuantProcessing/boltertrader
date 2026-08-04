@@ -18,6 +18,10 @@ func (handle spotHandle) refresh(ctx context.Context) ([]exchange.Instrument, er
 func (handle spotHandle) close() error                      { return handle.client.Close() }
 func (handle spotHandle) spot() (exchange.SpotClient, bool) { return handle.client, true }
 func (handle spotHandle) perp() (exchange.PerpClient, bool) { return nil, false }
+func (handle spotHandle) exactLookupReady() bool {
+	_, ok := handle.client.(exchange.ExactOrderLookup)
+	return ok
+}
 
 type perpHandle struct{ client exchange.PerpClient }
 
@@ -27,6 +31,10 @@ func (handle perpHandle) refresh(ctx context.Context) ([]exchange.Instrument, er
 func (handle perpHandle) close() error                      { return handle.client.Close() }
 func (handle perpHandle) spot() (exchange.SpotClient, bool) { return nil, false }
 func (handle perpHandle) perp() (exchange.PerpClient, bool) { return handle.client, true }
+func (handle perpHandle) exactLookupReady() bool {
+	_, ok := handle.client.(exchange.ExactOrderLookup)
+	return ok
+}
 
 func buildFactoryClient(ctx context.Context, account config.AccountConfig, options Options) (clientHandle, error) {
 	environment, err := factoryEnvironment(account.Environment)

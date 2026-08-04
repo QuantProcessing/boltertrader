@@ -63,14 +63,14 @@ type bitgetPerpClient struct {
 func NewBybitSpot(apiKey, secretKey string, settings Settings) exchange.SpotClient {
 	base := newBybitBase(apiKey, secretKey, settings, exchange.ProductSpot, "spot", "")
 	client := &bybitSpotClient{bybitBase: base}
-	client.ws = newSpotWebSocket(newPublicWebSocket(base.meta, &bybitWSBackend{client: base}), &bybitPrivateWSBackend{client: base})
+	client.ws = newSpotWebSocket(newPublicWebSocket(base.meta, &bybitWSBackend{client: base}), newBybitPrivateWSBackend(base))
 	return client
 }
 
 func NewBybitLinearPerp(apiKey, secretKey, settleCoin string, settings Settings) exchange.PerpClient {
 	base := newBybitBase(apiKey, secretKey, settings, exchange.ProductPerp, "linear", strings.ToUpper(strings.TrimSpace(settleCoin)))
 	client := &bybitPerpClient{bybitBase: base}
-	client.ws = newPerpWebSocket(base.meta, &bybitWSBackend{client: base}, &bybitPrivateWSBackend{client: base})
+	client.ws = newPerpWebSocket(base.meta, &bybitWSBackend{client: base}, newBybitPrivateWSBackend(base))
 	return client
 }
 
@@ -1144,34 +1144,287 @@ func (c *bybitBase) FundingRateHistory(ctx context.Context, req exchange.Funding
 	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End}}, nil
 }
 
+func (c *bybitPerpClient) FundingPayments(ctx context.Context, req exchange.FundingPaymentHistoryRequest) (exchange.FundingPaymentPage, error) {
+	const operation = "FundingPayments"
+	if err := ctxErr(ctx, c.meta, operation); err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	if c.category != "linear" || c.settleCoin != "USDT" {
+		return exchange.FundingPaymentPage{}, invalid(c.meta, operation, "bybit funding payments support only USDT linear settlement")
+	}
+	settlement := strings.ToUpper(strings.TrimSpace(req.SettlementAsset))
+	if settlement == "" {
+		settlement = c.settleCoin
+	}
+	if settlement != "USDT" {
+		return exchange.FundingPaymentPage{}, invalid(c.meta, operation, "bybit funding payments support only USDT settlement")
+	}
+
+	native := ""
+	baseCoin := ""
+	if req.Instrument != nil {
+		resolvedNative, _, err := c.symbols(*req.Instrument, operation)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, err
+		}
+		native = resolvedNative
+		baseCoin = strings.ToUpper(strings.TrimSpace(req.Instrument.Identity.BaseAsset))
+	}
+	if err := validateBoundedHistory(req.Cursor, req.Limit, req.Start, req.End); err != nil {
+		return exchange.FundingPaymentPage{}, invalid(c.meta, operation, err.Error())
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > bybitFundingPaymentPortableLimit {
+		return exchange.FundingPaymentPage{}, invalid(c.meta, operation, "limit must be between 1 and 500")
+	}
+
+	cursorScope := fundingPaymentCursorScope(req.Instrument, settlement, req.Start, req.End, limit)
+	cursorKey := c.bybitFundingPaymentCursorKey()
+	cursorEnvelope, err := decodeFundingPaymentCursor(req.Cursor, cursorKey, cursorScope)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, invalid(c.meta, operation, err.Error())
+	}
+
+	items := make([]exchange.FundingPayment, 0, limit)
+	observedAt := time.Now().UTC()
+	hasMore := false
+	cursor := ""
+	sliceStart := req.Start
+	if cursorEnvelope.SliceStartMillis > 0 {
+		sliceStart = time.UnixMilli(cursorEnvelope.SliceStartMillis).UTC()
+	}
+	splitWindow := bybitFundingPaymentSplitWindow(req.Start, req.End)
+	venueCursor := cursorEnvelope.VenueCursor
+	for {
+		nativeStart := req.Start
+		nativeEnd := req.End
+		if splitWindow {
+			if sliceStart.Before(req.Start) || !sliceStart.Before(req.End) {
+				return exchange.FundingPaymentPage{}, invalid(c.meta, operation, "cursor slice is outside funding payment window")
+			}
+			nativeStart = sliceStart
+			nativeEnd = sliceStart.Add(bybitFundingPaymentNativeWindow)
+			if nativeEnd.After(req.End) {
+				nativeEnd = req.End
+			}
+		}
+		nativeQueryEnd := nativeEnd
+		if splitWindow && nativeEnd.Before(req.End) {
+			nativeQueryEnd = nativeEnd.Add(-time.Millisecond)
+		}
+		remaining := limit - len(items)
+		if remaining <= 0 {
+			if splitWindow && nativeStart.Before(req.End) {
+				next := cursorScope
+				next.ItemsSeen = cursorEnvelope.ItemsSeen + len(items)
+				next.SliceStartMillis = optionalMillis(nativeStart)
+				cursor = encodeFundingPaymentCursor(cursorKey, next)
+				hasMore = true
+			}
+			break
+		}
+		nativeLimit := remaining
+		if nativeLimit > bybitFundingPaymentNativeLimit {
+			nativeLimit = bybitFundingPaymentNativeLimit
+		}
+		result, err := c.sdk.GetTransactionLog(ctx, bybit.TransactionLogRequest{
+			AccountType: "UNIFIED",
+			Category:    c.category,
+			Currency:    settlement,
+			BaseCoin:    baseCoin,
+			Type:        "SETTLEMENT",
+			StartMillis: optionalMillis(nativeStart),
+			EndMillis:   optionalMillis(nativeQueryEnd),
+			Limit:       nativeLimit,
+			Cursor:      venueCursor,
+		})
+		if err != nil {
+			return exchange.FundingPaymentPage{}, normErr(c.meta, operation, err)
+		}
+
+		for _, row := range result.List {
+			if row.Type != "SETTLEMENT" {
+				return exchange.FundingPaymentPage{}, malformed(c.meta, operation, "response transaction type does not match request")
+			}
+			if row.Category != "" && row.Category != c.category {
+				return exchange.FundingPaymentPage{}, malformed(c.meta, operation, "response category does not match request")
+			}
+			if native != "" && row.Symbol != native {
+				return exchange.FundingPaymentPage{}, malformed(c.meta, operation, "response instrument does not match request")
+			}
+			if row.Currency != settlement {
+				return exchange.FundingPaymentPage{}, malformed(c.meta, operation, "response settlement asset does not match request")
+			}
+			payment, err := c.bybitFundingPayment(operation, req.Instrument, row, observedAt)
+			if err != nil {
+				return exchange.FundingPaymentPage{}, err
+			}
+			if !withinHalfOpen(payment.EffectiveAt, req.Start, req.End) {
+				continue
+			}
+			items = append(items, payment)
+		}
+
+		if result.NextPageCursor != "" {
+			next := cursorScope
+			next.VenueCursor = result.NextPageCursor
+			next.ItemsSeen = cursorEnvelope.ItemsSeen + len(items)
+			if splitWindow {
+				next.SliceStartMillis = optionalMillis(nativeStart)
+			}
+			cursor = encodeFundingPaymentCursor(cursorKey, next)
+			hasMore = true
+			break
+		}
+		venueCursor = ""
+		if len(items) >= limit {
+			if splitWindow && nativeEnd.Before(req.End) {
+				next := cursorScope
+				next.ItemsSeen = cursorEnvelope.ItemsSeen + len(items)
+				next.SliceStartMillis = optionalMillis(nativeEnd)
+				cursor = encodeFundingPaymentCursor(cursorKey, next)
+				hasMore = true
+			}
+			break
+		}
+		if !splitWindow || !nativeEnd.Before(req.End) {
+			break
+		}
+		sliceStart = nativeEnd
+	}
+	status := fundingPaymentCompletionStatus(cursorEnvelope.ItemsSeen+len(items), hasMore, req.Start, req.End, fundingPaymentRetainedSince(req.Start, observedAt, 24), observedAt)
+	return exchange.FundingPaymentPage{
+		Items: items,
+		Page: exchange.PageInfo{
+			Cursor: cursor, Limit: limit, WindowStart: req.Start, WindowEnd: req.End,
+			HasMoreKnown: true, HasMore: hasMore,
+		},
+		Status:          status,
+		Watermark:       fundingPaymentWatermark(cursor, req.End, status, observedAt),
+		CompleteThrough: fundingPaymentCompleteThrough(req.End, status),
+		Revision:        1,
+	}, nil
+}
+
+const (
+	bybitFundingPaymentNativeLimit   = 50
+	bybitFundingPaymentPortableLimit = 500
+	bybitFundingPaymentNativeWindow  = 7 * 24 * time.Hour
+)
+
+func bybitFundingPaymentSplitWindow(start, end time.Time) bool {
+	return !start.IsZero() && !end.IsZero() && end.Sub(start) > bybitFundingPaymentNativeWindow
+}
+
+func (c *bybitPerpClient) bybitFundingPaymentCursorKey() []byte {
+	return fundingPaymentCursorKey(
+		"venue="+string(exchange.VenueBybit),
+		"product="+string(exchange.ProductPerp),
+		"category="+c.category,
+		"settle="+c.settleCoin,
+		"base_url="+c.profile.RESTBaseURL,
+		"api_key="+c.apiKey,
+		"secret_key="+c.secretKey,
+	)
+}
+
+func (c *bybitPerpClient) bybitFundingPayment(operation string, instrument *exchange.Instrument, row bybit.TransactionLogRecord, observedAt time.Time) (exchange.FundingPayment, error) {
+	paymentID := strings.TrimSpace(row.ID)
+	if paymentID == "" {
+		return exchange.FundingPayment{}, malformed(c.meta, operation, "bybit funding payment id is missing")
+	}
+	nativeSymbol := strings.TrimSpace(row.Symbol)
+	if nativeSymbol == "" {
+		return exchange.FundingPayment{}, malformed(c.meta, operation, "bybit funding payment symbol is missing")
+	}
+	amount, err := parseRequiredDecimal(c.meta, operation, "funding payment amount", row.Funding)
+	if err != nil {
+		return exchange.FundingPayment{}, err
+	}
+	effectiveAt, err := parseRequiredMilli(c.meta, operation, "transaction timestamp", row.TransactionTime)
+	if err != nil {
+		return exchange.FundingPayment{}, err
+	}
+	nativeID := ""
+	if instrument != nil {
+		nativeID = instrument.Identity.NativeID
+	}
+	sourceRef := "bybit:v5:account:transaction-log:SETTLEMENT:" + paymentID
+	return exchange.FundingPayment{
+		PaymentID:       paymentID,
+		FactID:          stableFundingPaymentFactID(sourceRef, nativeSymbol, row.Funding, row.TransactionTime),
+		NativeSymbol:    nativeSymbol,
+		NativeID:        nativeID,
+		SettlementAsset: row.Currency,
+		Amount:          amount,
+		EffectiveAt:     effectiveAt,
+		ObservedAt:      observedAt,
+		Revision:        1,
+		Version:         "bybit-v5-transaction-log-v1",
+		SourceRef:       sourceRef,
+		FormulaVersion:  "actual-funding-payment-v1",
+	}, nil
+}
+
 func (c *bitgetBase) FundingRateHistory(ctx context.Context, req exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
 	if err := ctxErr(ctx, c.meta, "FundingRateHistory"); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	if err := validateFundingHistoryRequest(c.meta, "FundingRateHistory", req, false); err != nil {
+	if err := validateFundingHistoryRequest(c.meta, "FundingRateHistory", req, true); err != nil {
 		return exchange.FundingRatePage{}, err
 	}
 	native, _, err := c.symbols(req.Instrument, "FundingRateHistory")
 	if err != nil {
 		return exchange.FundingRatePage{}, err
 	}
-	rows, err := c.sdk.GetHistoryFundRate(ctx, native, c.productType, req.Limit, 1)
-	if err != nil {
-		return exchange.FundingRatePage{}, normErr(c.meta, "FundingRateHistory", err)
+	resultLimit := req.Limit
+	if resultLimit <= 0 {
+		resultLimit = 20
 	}
-	rates := make([]exchange.FundingRate, 0, len(rows))
-	for _, row := range rows {
-		rate, err := parseRequiredDecimal(c.meta, "FundingRateHistory", "funding rate", row.FundingRate)
-		if err != nil {
-			return exchange.FundingRatePage{}, err
-		}
-		fundingTime, err := parseRequiredMilli(c.meta, "FundingRateHistory", "funding timestamp", row.FundingTime)
-		if err != nil {
-			return exchange.FundingRatePage{}, err
-		}
-		rates = append(rates, exchange.FundingRate{NativeSymbol: native, Rate: rate, FundingTime: fundingTime})
+	pageSize := resultLimit
+	if !req.Start.IsZero() || !req.End.IsZero() || pageSize > 100 {
+		pageSize = 100
 	}
-	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{Limit: req.Limit}}, nil
+	rates := make([]exchange.FundingRate, 0, resultLimit)
+	for pageNo := 1; len(rates) < resultLimit; pageNo++ {
+		rows, err := c.sdk.GetHistoryFundRate(ctx, native, c.productType, pageSize, pageNo)
+		if err != nil {
+			return exchange.FundingRatePage{}, normErr(c.meta, "FundingRateHistory", err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		oldest := time.Time{}
+		for _, row := range rows {
+			fundingTime, err := parseRequiredMilli(c.meta, "FundingRateHistory", "funding timestamp", row.FundingTime)
+			if err != nil {
+				return exchange.FundingRatePage{}, err
+			}
+			if oldest.IsZero() || fundingTime.Before(oldest) {
+				oldest = fundingTime
+			}
+			if !withinHalfOpen(fundingTime, req.Start, req.End) {
+				continue
+			}
+			rate, err := parseRequiredDecimal(c.meta, "FundingRateHistory", "funding rate", row.FundingRate)
+			if err != nil {
+				return exchange.FundingRatePage{}, err
+			}
+			rates = append(rates, exchange.FundingRate{NativeSymbol: native, Rate: rate, FundingTime: fundingTime})
+			if len(rates) == resultLimit {
+				break
+			}
+		}
+		if len(rows) < pageSize || (!req.Start.IsZero() && !oldest.After(req.Start)) {
+			break
+		}
+	}
+	return exchange.FundingRatePage{Rates: rates, Page: exchange.PageInfo{
+		Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End,
+	}}, nil
 }
 
 func (c *bybitBase) SetLeverage(ctx context.Context, req exchange.SetLeverageRequest) (exchange.Leverage, error) {
@@ -2192,10 +2445,157 @@ func bybitInterval(meta clientMeta, op, interval string) (string, error) {
 
 type bybitWSBackend struct{ client *bybitBase }
 type bitgetWSBackend struct{ client *bitgetBase }
-type bybitPrivateWSBackend struct{ client *bybitBase }
+type bybitPrivateWSBackend struct {
+	client    *bybitBase
+	orders    *bybitPrivateTopicHub[exchange.OrderEvent]
+	fills     *bybitPrivateTopicHub[exchange.FillEvent]
+	positions *bybitPrivateTopicHub[exchange.PositionEvent]
+	balances  *bybitPrivateTopicHub[exchange.BalanceEvent]
+}
 type bitgetPrivateWSBackend struct {
 	client *bitgetBase
 	ws     *bitget.PrivateWSClient
+}
+
+func newBybitPrivateWSBackend(client *bybitBase) *bybitPrivateWSBackend {
+	return &bybitPrivateWSBackend{
+		client:    client,
+		orders:    newBybitPrivateTopicHub[exchange.OrderEvent](client, "order"),
+		fills:     newBybitPrivateTopicHub[exchange.FillEvent](client, "execution"),
+		positions: newBybitPrivateTopicHub[exchange.PositionEvent](client, "position"),
+		balances:  newBybitPrivateTopicHub[exchange.BalanceEvent](client, "wallet"),
+	}
+}
+
+type bybitPrivateTopicHub[T any] struct {
+	mu        sync.Mutex
+	client    *bybitBase
+	topic     string
+	ws        *bybit.PrivateWSClient
+	nextID    uint64
+	callbacks map[string]map[uint64]streamCallbacks[T]
+}
+
+func newBybitPrivateTopicHub[T any](client *bybitBase, topic string) *bybitPrivateTopicHub[T] {
+	return &bybitPrivateTopicHub[T]{
+		client:    client,
+		topic:     topic,
+		callbacks: make(map[string]map[uint64]streamCallbacks[T]),
+	}
+}
+
+func (hub *bybitPrivateTopicHub[T]) start(
+	native string,
+	callbacks streamCallbacks[T],
+	handler func(*bybit.PrivateWSClient) error,
+) (func() error, error) {
+	hub.mu.Lock()
+	if hub.callbacks == nil {
+		hub.callbacks = make(map[string]map[uint64]streamCallbacks[T])
+	}
+	hub.nextID++
+	id := hub.nextID
+	if hub.callbacks[native] == nil {
+		hub.callbacks[native] = make(map[uint64]streamCallbacks[T])
+	}
+	hub.callbacks[native][id] = callbacks
+	if hub.ws != nil {
+		hub.mu.Unlock()
+		return func() error { return hub.remove(native, id) }, nil
+	}
+	ws := bybit.NewPrivateWSClientWithProfile(hub.client.profile).WithCredentials(hub.client.apiKey, hub.client.secretKey)
+	hub.ws = ws
+	hub.mu.Unlock()
+
+	if err := handler(ws); err != nil {
+		_ = ws.Close()
+		hub.mu.Lock()
+		if hub.ws == ws {
+			hub.ws = nil
+		}
+		if routes := hub.callbacks[native]; routes != nil {
+			delete(routes, id)
+			if len(routes) == 0 {
+				delete(hub.callbacks, native)
+			}
+		}
+		hub.mu.Unlock()
+		return nil, err
+	}
+	return func() error { return hub.remove(native, id) }, nil
+}
+
+func (hub *bybitPrivateTopicHub[T]) remove(native string, id uint64) error {
+	hub.mu.Lock()
+	if routes := hub.callbacks[native]; routes != nil {
+		delete(routes, id)
+		if len(routes) == 0 {
+			delete(hub.callbacks, native)
+		}
+	}
+	empty := len(hub.callbacks) == 0
+	ws := hub.ws
+	if empty {
+		hub.ws = nil
+	}
+	hub.mu.Unlock()
+	if empty && ws != nil {
+		return ws.Close()
+	}
+	return nil
+}
+
+func (hub *bybitPrivateTopicHub[T]) close() error {
+	hub.mu.Lock()
+	ws := hub.ws
+	hub.ws = nil
+	hub.callbacks = make(map[string]map[uint64]streamCallbacks[T])
+	hub.mu.Unlock()
+	if ws != nil {
+		return ws.Close()
+	}
+	return nil
+}
+
+func (hub *bybitPrivateTopicHub[T]) emit(native string, event T) {
+	for _, callbacks := range hub.snapshot(native) {
+		callbacks.Event(event)
+	}
+}
+
+func (hub *bybitPrivateTopicHub[T]) emitError(native string, err error) {
+	for _, callbacks := range hub.snapshot(native) {
+		callbacks.Error(err)
+	}
+}
+
+func (hub *bybitPrivateTopicHub[T]) emitAllError(err error) {
+	for _, callbacks := range hub.snapshotAll() {
+		callbacks.Error(err)
+	}
+}
+
+func (hub *bybitPrivateTopicHub[T]) snapshot(native string) []streamCallbacks[T] {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	routes := hub.callbacks[native]
+	out := make([]streamCallbacks[T], 0, len(routes))
+	for _, callbacks := range routes {
+		out = append(out, callbacks)
+	}
+	return out
+}
+
+func (hub *bybitPrivateTopicHub[T]) snapshotAll() []streamCallbacks[T] {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	var out []streamCallbacks[T]
+	for _, routes := range hub.callbacks {
+		for _, callbacks := range routes {
+			out = append(out, callbacks)
+		}
+	}
+	return out
 }
 
 func newBitgetPrivateWSBackend(client *bitgetBase) *bitgetPrivateWSBackend {
@@ -2352,112 +2752,131 @@ func (b *bybitPrivateWSBackend) StartOrders(ctx context.Context, instrument exch
 	if err != nil {
 		return nil, err
 	}
-	ws := bybit.NewPrivateWSClientWithProfile(b.client.profile).WithCredentials(b.client.apiKey, b.client.secretKey)
-	if err := ws.Subscribe(ctx, "order", func(payload json.RawMessage) {
-		msg, err := bybit.DecodeOrderMessage(payload)
-		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchOrders", err.Error()))
-			return
-		}
-		for _, row := range msg.Data {
-			if row.Symbol == native || native == "" {
-				orders, err := convertBybitOrders(ctx, b.client.meta, "WatchOrders", []bybit.OrderRecord{row}, native)
+	stop, err := b.orders.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
+		return ws.Subscribe(ctx, "order", func(payload json.RawMessage) {
+			msg, err := bybit.DecodeOrderMessage(payload)
+			if err != nil {
+				b.orders.emitAllError(malformed(b.client.meta, "WatchOrders", err.Error()))
+				return
+			}
+			for _, row := range msg.Data {
+				orders, err := convertBybitOrders(ctx, b.client.meta, "WatchOrders", []bybit.OrderRecord{row}, row.Symbol)
 				if err != nil {
-					callbacks.Error(err)
+					b.orders.emitError(row.Symbol, err)
 					continue
 				}
 				for _, order := range orders {
-					callbacks.Event(exchange.OrderEvent{Kind: exchange.EventDelta, Order: order})
+					b.orders.emit(row.Symbol, exchange.OrderEvent{Kind: exchange.EventDelta, Order: order})
 				}
 			}
-		}
-	}); err != nil {
+		})
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchOrders", err)
 	}
-	return ws.Close, nil
+	return stop, nil
 }
 func (b *bybitPrivateWSBackend) StartFills(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.FillEvent]) (func() error, error) {
 	native, _, err := b.client.symbols(instrument, "WatchFills")
 	if err != nil {
 		return nil, err
 	}
-	ws := bybit.NewPrivateWSClientWithProfile(b.client.profile).WithCredentials(b.client.apiKey, b.client.secretKey)
-	if err := ws.Subscribe(ctx, "execution", func(payload json.RawMessage) {
-		msg, err := bybit.DecodeExecutionMessage(payload)
-		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchFills", err.Error()))
-			return
-		}
-		for _, row := range msg.Data {
-			if row.Symbol == native || native == "" {
-				fills, err := convertBybitFills(ctx, b.client.meta, "WatchFills", []bybit.ExecutionRecord{row}, native)
+	stop, err := b.fills.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
+		return ws.Subscribe(ctx, "execution", func(payload json.RawMessage) {
+			msg, err := bybit.DecodeExecutionMessage(payload)
+			if err != nil {
+				b.fills.emitAllError(malformed(b.client.meta, "WatchFills", err.Error()))
+				return
+			}
+			for _, row := range msg.Data {
+				fills, err := convertBybitFills(ctx, b.client.meta, "WatchFills", []bybit.ExecutionRecord{row}, row.Symbol)
 				if err != nil {
-					callbacks.Error(err)
+					b.fills.emitError(row.Symbol, err)
 					continue
 				}
 				for _, fill := range fills {
-					callbacks.Event(exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
+					b.fills.emit(row.Symbol, exchange.FillEvent{Kind: exchange.EventDelta, Fill: fill})
 				}
 			}
-		}
-	}); err != nil {
+		})
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchFills", err)
 	}
-	return ws.Close, nil
+	return stop, nil
 }
 func (b *bybitPrivateWSBackend) StartBalances(ctx context.Context, callbacks streamCallbacks[exchange.BalanceEvent]) (func() error, error) {
-	ws := bybit.NewPrivateWSClientWithProfile(b.client.profile).WithCredentials(b.client.apiKey, b.client.secretKey)
-	if err := ws.Subscribe(ctx, "wallet", func(payload json.RawMessage) {
-		msg, err := bybit.DecodeWalletMessage(payload)
-		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchBalances", err.Error()))
-			return
-		}
-		resp := &bybit.WalletBalanceResult{}
-		for _, account := range msg.Data {
-			resp.List = append(resp.List, bybit.WalletAccount{AccountType: account.AccountType, Coin: account.Coins})
-		}
-		balances, err := bybitBalances(b.client.meta, "WatchBalances", resp)
-		if err != nil {
-			callbacks.Error(err)
-			return
-		}
-		callbacks.Event(exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: time.Now().UTC()})
-	}); err != nil {
+	stop, err := b.balances.start("account", callbacks, func(ws *bybit.PrivateWSClient) error {
+		return ws.Subscribe(ctx, "wallet", func(payload json.RawMessage) {
+			msg, err := bybit.DecodeWalletMessage(payload)
+			if err != nil {
+				b.balances.emitAllError(malformed(b.client.meta, "WatchBalances", err.Error()))
+				return
+			}
+			resp := &bybit.WalletBalanceResult{}
+			for _, account := range msg.Data {
+				resp.List = append(resp.List, bybit.WalletAccount{AccountType: account.AccountType, Coin: account.Coins})
+			}
+			balances, err := bybitBalances(b.client.meta, "WatchBalances", resp)
+			if err != nil {
+				b.balances.emitAllError(err)
+				return
+			}
+			b.balances.emit("account", exchange.BalanceEvent{Kind: exchange.EventDelta, Balances: balances, Time: time.Now().UTC()})
+		})
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchBalances", err)
 	}
-	return ws.Close, nil
+	return stop, nil
 }
 func (b *bybitPrivateWSBackend) StartPositions(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.PositionEvent]) (func() error, error) {
 	native, _, err := b.client.symbols(instrument, "WatchPositions")
 	if err != nil {
 		return nil, err
 	}
-	ws := bybit.NewPrivateWSClientWithProfile(b.client.profile).WithCredentials(b.client.apiKey, b.client.secretKey)
-	if err := ws.Subscribe(ctx, "position", func(payload json.RawMessage) {
-		msg, err := bybit.DecodePositionMessage(payload)
-		if err != nil {
-			callbacks.Error(malformed(b.client.meta, "WatchPositions", err.Error()))
-			return
-		}
-		rows := make([]bybit.PositionRecord, 0, len(msg.Data))
-		for _, row := range msg.Data {
-			if row.Symbol == native || native == "" {
-				rows = append(rows, row)
+	stop, err := b.positions.start(native, callbacks, func(ws *bybit.PrivateWSClient) error {
+		return ws.Subscribe(ctx, "position", func(payload json.RawMessage) {
+			msg, err := bybit.DecodePositionMessage(payload)
+			if err != nil {
+				b.positions.emitAllError(malformed(b.client.meta, "WatchPositions", err.Error()))
+				return
 			}
-		}
-		positions, err := convertBybitPositions(ctx, b.client.meta, "WatchPositions", rows, native)
-		if err != nil {
-			callbacks.Error(err)
-			return
-		}
-		callbacks.Event(exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()})
-	}); err != nil {
+			rowsBySymbol := make(map[string][]bybit.PositionRecord)
+			for _, row := range msg.Data {
+				rowsBySymbol[row.Symbol] = append(rowsBySymbol[row.Symbol], row)
+			}
+			for symbol, rows := range rowsBySymbol {
+				positions, err := convertBybitPositions(ctx, b.client.meta, "WatchPositions", rows, symbol)
+				if err != nil {
+					b.positions.emitError(symbol, err)
+					continue
+				}
+				b.positions.emit(symbol, exchange.PositionEvent{Kind: exchange.EventDelta, Positions: positions, Time: time.Now().UTC()})
+			}
+		})
+	})
+	if err != nil {
 		return nil, normErr(b.client.meta, "WatchPositions", err)
 	}
-	return ws.Close, nil
+	return stop, nil
 }
-func (b *bybitPrivateWSBackend) Close() error { return nil }
+func (b *bybitPrivateWSBackend) Close() error {
+	var errs []error
+	if b.orders != nil {
+		errs = append(errs, b.orders.close())
+	}
+	if b.fills != nil {
+		errs = append(errs, b.fills.close())
+	}
+	if b.positions != nil {
+		errs = append(errs, b.positions.close())
+	}
+	if b.balances != nil {
+		errs = append(errs, b.balances.close())
+	}
+	return errors.Join(errs...)
+}
 
 func (b *bitgetPrivateWSBackend) StartOrders(ctx context.Context, instrument exchange.Instrument, callbacks streamCallbacks[exchange.OrderEvent]) (func() error, error) {
 	native, _, err := b.client.symbols(instrument, "WatchOrders")

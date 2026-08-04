@@ -285,8 +285,8 @@ func TestExternalAcceptanceLedgerBuildsExpectedCellTotals(t *testing.T) {
 	manifest := loadExternalAcceptanceManifest(t)
 	ledger := buildExternalAcceptanceLedger(t, manifest)
 
-	if got := ledger.PublicAPICellCount(); got != 545 {
-		t.Fatalf("public API cell count = %d, want 545", got)
+	if got := ledger.PublicAPICellCount(); got != 548 {
+		t.Fatalf("public API cell count = %d, want 548", got)
 	}
 	if got := ledger.ParameterCaseCellCount(); got != 451 {
 		t.Fatalf("parameter-case cell count = %d, want 451", got)

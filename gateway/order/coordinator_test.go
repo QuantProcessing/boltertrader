@@ -88,6 +88,24 @@ func TestCoordinatorSuspendAccountClosesWritesUntilRecovery(t *testing.T) {
 	}
 }
 
+func TestCoordinatorReconcileDueRecoversClosedGateWithoutClaimedTasks(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+		t.Fatalf("initial recovery: %v", err)
+	}
+	if err := fixture.coordinator.SuspendAccount(fixture.accountID); err != nil {
+		t.Fatalf("SuspendAccount: %v", err)
+	}
+
+	report, err := fixture.coordinator.ReconcileDue(context.Background(), fixture.accountID)
+	if err != nil || !report.WriteReady || report.Claimed != 0 {
+		t.Fatalf("ReconcileDue report=%+v err=%v", report, err)
+	}
+	if _, err := fixture.coordinator.Place(context.Background(), fixture.placeRequest()); err != nil {
+		t.Fatalf("Place after idle recovery: %v", err)
+	}
+}
+
 func TestCoordinatorPersistsOwnedPrivateOrderEventsBeforePublishing(t *testing.T) {
 	fixture := newCoordinatorFixture(t)
 	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {

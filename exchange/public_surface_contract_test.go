@@ -569,7 +569,7 @@ func expectedRESTMethodsForProduct(product string) []string {
 func expectedRESTMethodsForRow(code, product string) []string {
 	methods := expectedRESTMethodsForProduct(product)
 	switch code {
-	case "BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP":
+	case "BNS", "BNP", "OXS", "OXP", "LIS", "LIP", "HLS", "HLP", "BYS", "BYU", "BYC":
 		return append(methods, "LookupExactOrder")
 	default:
 		return methods

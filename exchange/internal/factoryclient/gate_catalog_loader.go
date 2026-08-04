@@ -84,7 +84,7 @@ func gateSpotCatalogInstruments(rows []gate.CurrencyPair) ([]exchange.Instrument
 		out = append(out, newInstrument(
 			exchange.VenueGate,
 			exchange.ProductSpot,
-			row.ID,
+			gateCanonicalSymbol(row.Base, row.Quote, row.ID),
 			row.Base,
 			row.Quote,
 			"",
@@ -118,7 +118,7 @@ func gatePerpCatalogInstruments(rows []gate.Contract, settle string) ([]exchange
 		out = append(out, newInstrument(
 			exchange.VenueGate,
 			exchange.ProductPerp,
-			row.Name,
+			gateCanonicalSymbol(base, quote, row.Name),
 			base,
 			quote,
 			strings.ToUpper(settle),
@@ -132,6 +132,13 @@ func gatePerpCatalogInstruments(rows []gate.Contract, settle string) ([]exchange
 		))
 	}
 	return out, nil
+}
+
+func gateCanonicalSymbol(base, quote, native string) string {
+	if base != "" && quote != "" {
+		return strings.ToUpper(base) + "-" + strings.ToUpper(quote)
+	}
+	return strings.ReplaceAll(native, "_", "-")
 }
 
 func gateValidateSpotInstrumentRow(meta clientMeta, operation string, row gate.CurrencyPair) error {

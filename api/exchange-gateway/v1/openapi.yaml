@@ -98,9 +98,16 @@ paths:
       parameters:
         - {name: account_id, in: query, schema: {type: string}}
         - {name: instrument_id, in: query, schema: {type: string}}
+        - name: gateway_order_id
+          in: query
+          schema: {type: string}
+          description: Optional Gateway order UUID. When present, the gateway verifies ownership, checks any account_id/instrument_id query scope against the stored order identity, maps to the internal venue order id, and returns only fills for that order. Venue order ids are never exposed by this filter.
         - {$ref: '#/components/parameters/PaginationLimit'}
         - {$ref: '#/components/parameters/PaginationCursor'}
-      responses: {'200': {description: fills}, default: {$ref: '#/components/responses/Error'}}
+      responses:
+        '200':
+          description: Fills. next_cursor is present only when the venue page proves a known continuation.
+        default: {$ref: '#/components/responses/Error'}
   /v1/balances:
     get:
       operationId: listBalances
@@ -116,13 +123,94 @@ paths:
         - {name: instrument_id, in: query, schema: {type: string}}
         - {$ref: '#/components/parameters/PaginationLimit'}
       responses: {'200': {description: positions}, default: {$ref: '#/components/responses/Error'}}
+  /v1/funding-payments:
+    get:
+      operationId: listFundingPayments
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, schema: {type: string}}
+        - {name: settlement_asset, in: query, schema: {type: string}}
+        - {name: start, in: query, required: true, schema: {type: string, format: date-time}}
+        - {name: end, in: query, required: true, schema: {type: string, format: date-time}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses:
+        '200':
+          description: account-scoped actual signed funding-payment facts; unsupported and incomplete states are explicit and never inferred as zero
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FundingPaymentPage'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/funding-rates:
     get:
       operationId: listFundingRates
       parameters:
         - {name: account_id, in: query, required: true, schema: {type: string}}
         - {name: instrument_id, in: query, required: true, schema: {type: string}}
-      responses: {'200': {description: funding rates}, default: {$ref: '#/components/responses/Error'}}
+      responses:
+        '200':
+          description: normalized current funding rate with venue-native identifiers redacted
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FundingRateResponse'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/funding-rates/history:
+    get:
+      operationId: listFundingRateHistory
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        - {name: start, in: query, schema: {type: string, format: date-time}}
+        - {name: end, in: query, schema: {type: string, format: date-time}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses:
+        '200':
+          description: account-scoped normalized funding history with an opaque continuation cursor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FundingHistoryProjection'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/order-book:
+    get:
+      operationId: getOrderBook
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 20}}
+      responses:
+        '200':
+          description: account-scoped normalized order-book snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrderBookProjection'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/bbo:
+    get:
+      operationId: getBBO
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: account-scoped normalized two-sided best bid and offer
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BBOProjection'}
+        default: {$ref: '#/components/responses/Error'}
+  /v1/mark-price:
+    get:
+      operationId: getMarkPrice
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: account-scoped normalized positive mark price
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MarkPriceProjection'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/accounts/{account_id}/instruments/{instrument_id}/leverage:
     put:
       operationId: setLeverage
@@ -156,6 +244,21 @@ paths:
       responses:
         '101':
           description: private event stream; each server message is a PrivateEvent
+        default: {$ref: '#/components/responses/Error'}
+  /v1/public/ws:
+    get:
+      operationId: streamPublicMarket
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        - name: kind
+          in: query
+          required: true
+          schema: {type: string, enum: [order_book, bbo, mark_price, funding_rate]}
+      responses:
+        '101':
+          description: Each connection starts with a snapshot and has no cursor replay; a gap or upstream error emits resync_required and closes with policy violation so the client reconnects for a fresh snapshot.
+          x-websocket-message-schema: {$ref: '#/components/schemas/PublicMarketEvent'}
         default: {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
@@ -226,6 +329,195 @@ components:
             correlation_id: {type: string}
             retryable: {type: boolean}
         existing_command_id: {type: string}
+    BookLevel:
+      type: object
+      required: [price, quantity]
+      additionalProperties: false
+      properties:
+        price: {type: string, pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        quantity: {type: string, pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+    PageInfo:
+      type: object
+      required: [has_more_known, has_more]
+      additionalProperties: false
+      properties:
+        cursor: {type: string}
+        limit: {type: integer, minimum: 0, maximum: 500}
+        window_start: {type: string, format: date-time}
+        window_end: {type: string, format: date-time}
+        has_more_known: {type: boolean}
+        has_more: {type: boolean}
+    OptionalDecimal:
+      type: object
+      required: [value, valid]
+      additionalProperties: false
+      properties:
+        value: {type: string, pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        valid: {type: boolean}
+    FundingRateProjection:
+      type: object
+      required: [rate, mark_price]
+      additionalProperties: false
+      properties:
+        rate: {type: string, pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        mark_price: {$ref: '#/components/schemas/OptionalDecimal'}
+        observed_at: {type: string, format: date-time}
+        funding_time: {type: string, format: date-time}
+        next_funding_time: {type: string, format: date-time}
+    FundingRateResponse:
+      type: object
+      required: [account_id, instrument_id, funding_rate]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        funding_rate: {$ref: '#/components/schemas/FundingRateProjection'}
+    OrderBookProjection:
+      type: object
+      required: [account_id, instrument_id, bids, asks, observed_at, page]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        bids: {type: array, items: {$ref: '#/components/schemas/BookLevel'}}
+        asks: {type: array, items: {$ref: '#/components/schemas/BookLevel'}}
+        observed_at: {type: string, format: date-time}
+        sequence: {type: string}
+        page: {$ref: '#/components/schemas/PageInfo'}
+    BBOProjection:
+      type: object
+      required: [account_id, instrument_id, bid, ask, observed_at]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        bid: {$ref: '#/components/schemas/BookLevel'}
+        ask: {$ref: '#/components/schemas/BookLevel'}
+        observed_at: {type: string, format: date-time}
+    MarkPriceProjection:
+      type: object
+      required: [account_id, instrument_id, price, observed_at]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        price: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        observed_at: {type: string, format: date-time}
+    FundingHistoryProjection:
+      type: object
+      required: [account_id, instrument_id, items]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        items: {type: array, items: {$ref: '#/components/schemas/FundingRateProjection'}}
+        next_cursor: {type: string}
+    CapabilityOperations:
+      type: object
+      additionalProperties: false
+      properties:
+        place: {type: boolean}
+        amend: {type: boolean}
+        cancel: {type: boolean}
+        open_orders: {type: boolean}
+        order_history: {type: boolean}
+        fills: {type: boolean}
+        balances: {type: boolean}
+        account: {type: boolean}
+        positions: {type: boolean}
+        funding: {type: boolean}
+        account_funding_payments: {type: boolean}
+        leverage: {type: boolean}
+        private_stream: {type: boolean}
+        margin_mode: {type: boolean}
+        position_mode: {type: boolean}
+        funds_transfer: {type: boolean}
+    FundingPayment:
+      type: object
+      required: [fact_id, account_id, instrument_id, venue, venue_environment, product, settlement_asset, amount]
+      additionalProperties: false
+      properties:
+        payment_id: {type: string}
+        fact_id: {type: string}
+        supersedes_fact_id: {type: string}
+        account_id: {type: string}
+        instrument_id: {type: string}
+        venue: {type: string}
+        venue_environment: {type: string, enum: [demo, testnet, live]}
+        product: {type: string}
+        settlement_asset: {type: string}
+        amount: {type: string, pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        effective_at: {type: string, format: date-time}
+        observed_at: {type: string, format: date-time}
+        revision: {type: integer, minimum: 0}
+        version: {type: string}
+        source_ref: {type: string}
+        formula_version: {type: string}
+    FundingPaymentScope:
+      type: object
+      required: [account_id, all_instruments, start, end]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        all_instruments: {type: boolean}
+        settlement_asset: {type: string}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+    FundingPaymentTraversal:
+      type: object
+      required: [has_more_known, has_more]
+      additionalProperties: false
+      properties:
+        cursor: {type: string}
+        limit: {type: integer, minimum: 0, maximum: 500}
+        has_more_known: {type: boolean}
+        has_more: {type: boolean}
+    FundingPaymentWatermark:
+      type: object
+      required: [revision, observed_at, verified]
+      additionalProperties: false
+      properties:
+        cursor: {type: string}
+        revision: {type: integer, minimum: 0}
+        observed_at: {type: string, format: date-time}
+        effective_through: {type: string, format: date-time}
+        complete_through: {type: string, format: date-time}
+        verified: {type: boolean}
+    FundingPaymentPage:
+      type: object
+      required: [items, scope, account_id, pagination_traversal, start, end, page, watermark, status, as_of]
+      additionalProperties: false
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/FundingPayment'}}
+        next_cursor: {type: string}
+        scope: {$ref: '#/components/schemas/FundingPaymentScope'}
+        account_id: {type: string}
+        instrument_id: {type: string}
+        settlement_asset: {type: string}
+        pagination_traversal: {$ref: '#/components/schemas/FundingPaymentTraversal'}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        page: {$ref: '#/components/schemas/PageInfo'}
+        watermark: {$ref: '#/components/schemas/FundingPaymentWatermark'}
+        status: {type: string, enum: [unsupported, temporarily_unavailable, incomplete, complete_empty, complete]}
+        as_of: {type: string, format: date-time}
+        complete_through: {type: string, format: date-time}
+        revision: {type: integer, minimum: 0}
+    PublicMarketEvent:
+      type: object
+      required: [boot_id, sequence, event_id, account_id, instrument_id, kind, event_type, occurred_at, payload]
+      additionalProperties: false
+      properties:
+        boot_id: {type: string}
+        sequence: {type: integer, minimum: 1}
+        event_id: {type: string}
+        account_id: {type: string}
+        instrument_id: {type: string}
+        kind: {type: string, enum: [order_book, bbo, mark_price, funding_rate]}
+        event_type: {type: string, enum: [snapshot, update, resync_required]}
+        occurred_at: {type: string, format: date-time}
+        payload: {type: object, additionalProperties: true}
     PrivateEvent:
       type: object
       required: [boot_id, sequence, event_id, account_id, resource_version, kind, occurred_at, payload]

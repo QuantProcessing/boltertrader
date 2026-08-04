@@ -315,6 +315,107 @@ func (client *lighterPerpClient) Positions(ctx context.Context, req exchange.Pos
 	return out, nil
 }
 
+func (client *lighterPerpClient) FundingPayments(ctx context.Context, req exchange.FundingPaymentHistoryRequest) (exchange.FundingPaymentPage, error) {
+	const operation = "FundingPayments"
+	if err := lighterReady(ctx, exchange.ProductPerp, operation, client.sdk); err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	if err := validateBoundedHistory(req.Cursor, req.Limit, req.Start, req.End); err != nil {
+		return exchange.FundingPaymentPage{}, lighterInvalid(exchange.ProductPerp, operation, err.Error())
+	}
+	limit := int64(req.Limit)
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 100 {
+		return exchange.FundingPaymentPage{}, lighterInvalid(exchange.ProductPerp, operation, "limit must be between 1 and 100")
+	}
+	var requested lighterMarketMeta
+	var marketIDs []int
+	if req.Instrument != nil {
+		meta, err := client.lighterMeta(ctx, operation, exchange.ProductPerp, lighterPerp, *req.Instrument)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, err
+		}
+		requested = meta
+		marketIDs = []int{meta.marketID}
+	}
+	cursorScope := fundingPaymentCursorScope(req.Instrument, req.SettlementAsset, req.Start, req.End, int(limit))
+	cursorKey := client.lighterFundingPaymentCursorKey()
+	cursorEnvelope, err := decodeFundingPaymentCursor(req.Cursor, cursorKey, cursorScope)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, lighterInvalid(exchange.ProductPerp, operation, err.Error())
+	}
+	resp, err := client.sdk.GetPositionFundingPage(ctx, lighter.PositionFundingRequest{
+		Cursor: cursorEnvelope.VenueCursor, Limit: limit, Side: "all", MarketIDs: marketIDs,
+		StartTimestamp: optionalUnix(req.Start), EndTimestamp: optionalUnix(req.End),
+	})
+	if err != nil {
+		return exchange.FundingPaymentPage{}, lighterNormalizeErr(exchange.ProductPerp, operation, err)
+	}
+	metadata, err := client.lighterMetadata(ctx, operation, exchange.ProductPerp, lighterPerp)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	items := make([]exchange.FundingPayment, 0, len(resp.PositionFundings))
+	for _, row := range resp.PositionFundings {
+		if row == nil {
+			return exchange.FundingPaymentPage{}, lighterMalformed(exchange.ProductPerp, operation, "nil position funding row")
+		}
+		meta, ok := metadata.byID[row.MarketId]
+		if !ok || meta.marketType != lighterPerp {
+			return exchange.FundingPaymentPage{}, lighterMalformed(exchange.ProductPerp, operation, "unknown position funding market")
+		}
+		if req.Instrument != nil && row.MarketId != requested.marketID {
+			continue
+		}
+		payment, err := lighterFundingPayment(*row, meta)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, lighterMalformed(exchange.ProductPerp, operation, err.Error())
+		}
+		if req.SettlementAsset != "" && payment.SettlementAsset != req.SettlementAsset {
+			return exchange.FundingPaymentPage{}, lighterMalformed(exchange.ProductPerp, operation, "response settlement asset does not match request")
+		}
+		if !withinHalfOpen(payment.EffectiveAt, req.Start, req.End) {
+			continue
+		}
+		items = append(items, payment)
+	}
+	hasMore := resp.NextCursor != ""
+	cursor := ""
+	if hasMore {
+		next := cursorScope
+		next.VenueCursor = resp.NextCursor
+		next.ItemsSeen = cursorEnvelope.ItemsSeen + len(items)
+		cursor = encodeFundingPaymentCursor(cursorKey, next)
+	}
+	observedAt := time.Now().UTC()
+	status := fundingPaymentCompletionStatus(cursorEnvelope.ItemsSeen+len(items), hasMore, req.Start, req.End, true, observedAt)
+	return exchange.FundingPaymentPage{
+		Items: items,
+		Page: exchange.PageInfo{
+			Cursor: cursor, Limit: int(limit), WindowStart: req.Start, WindowEnd: req.End,
+			HasMoreKnown: true, HasMore: hasMore,
+		},
+		Status:          status,
+		Watermark:       fundingPaymentWatermark(cursor, req.End, status, observedAt),
+		CompleteThrough: fundingPaymentCompleteThrough(req.End, status),
+		Revision:        1,
+	}, nil
+}
+
+func (client *lighterPerpClient) lighterFundingPaymentCursorKey() []byte {
+	return fundingPaymentCursorKey(
+		"venue="+string(exchange.VenueLighter),
+		"product="+string(exchange.ProductPerp),
+		"base_url="+client.sdk.BaseURL,
+		"chain_id="+strconv.FormatUint(uint64(client.sdk.ChainId), 10),
+		"account_index="+strconv.FormatInt(client.sdk.AccountIndex, 10),
+		"key_index="+strconv.FormatUint(uint64(client.sdk.KeyIndex), 10),
+		"private_key="+client.sdk.PrivateKey,
+	)
+}
+
 func (client *lighterSpotClient) lighterMetas(ctx context.Context, operation string, product exchange.Product, marketType string) (map[string]lighterMarketMeta, error) {
 	metadata, err := lighterLoadMetadata(ctx, client.sdk, client.state, operation, product, marketType)
 	if err != nil {
@@ -479,6 +580,37 @@ func lighterOptionalMeta(ctx context.Context, sdk *lighter.Client, state *lighte
 	return meta, true, err
 }
 
+func lighterFundingPayment(row lighter.PositionFunding, meta lighterMarketMeta) (exchange.FundingPayment, error) {
+	amount, err := decimal.NewFromString(row.Change)
+	if err != nil {
+		return exchange.FundingPayment{}, err
+	}
+	effectiveAt := time.Unix(row.Timestamp, 0).UTC()
+	paymentID := strconv.FormatInt(row.FundingId, 10)
+	sourceRef := "lighter:positionFunding:" + paymentID
+	return exchange.FundingPayment{
+		PaymentID:       paymentID,
+		FactID:          stableFundingPaymentFactID(sourceRef, row.Change, effectiveAt, row.MarketId),
+		NativeSymbol:    meta.instrument.Identity.NativeSymbol,
+		NativeID:        meta.instrument.Identity.NativeID,
+		SettlementAsset: meta.instrument.Identity.SettleAsset,
+		Amount:          amount,
+		EffectiveAt:     effectiveAt,
+		ObservedAt:      time.Now().UTC(),
+		Revision:        1,
+		Version:         "lighter-position-funding-v1",
+		SourceRef:       sourceRef,
+		FormulaVersion:  "actual-funding-payment-v1",
+	}, nil
+}
+
+func optionalUnix(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.Unix()
+}
+
 func validateLighterInstrument(product exchange.Product, instrument exchange.Instrument) error {
 	if err := instrument.Validate(); err != nil {
 		return err
@@ -548,10 +680,11 @@ func lighterBuildMetas(res *lighter.OrderBookDetailsResponse, product exchange.P
 		if product == exchange.ProductPerp {
 			settle = quote
 		}
+		canonicalSymbol := base + "-" + quote
 		inst := newInstrument(
 			lighterVenue,
 			product,
-			row.Symbol,
+			canonicalSymbol,
 			base,
 			quote,
 			settle,
@@ -571,13 +704,13 @@ func lighterBuildMetas(res *lighter.OrderBookDetailsResponse, product exchange.P
 			return nil, nil, err
 		}
 		meta := lighterMarketMeta{instrument: inst, marketID: row.MarketId, marketType: marketType, priceScale: priceScale, sizeScale: sizeScale, quoteScale: quoteScale}
-		if _, exists := metas[row.Symbol]; exists {
+		if _, exists := metas[canonicalSymbol]; exists {
 			return nil, nil, errors.New("duplicate market symbol")
 		}
 		if _, exists := byID[row.MarketId]; exists {
 			return nil, nil, errors.New("duplicate market id")
 		}
-		metas[row.Symbol] = meta
+		metas[canonicalSymbol] = meta
 		byID[row.MarketId] = meta
 	}
 	return metas, byID, nil

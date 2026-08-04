@@ -20,21 +20,22 @@ type Row struct {
 }
 
 type Operations struct {
-	Place         bool `json:"place"`
-	Amend         bool `json:"amend"`
-	Cancel        bool `json:"cancel"`
-	OpenOrders    bool `json:"open_orders"`
-	OrderHistory  bool `json:"order_history"`
-	Fills         bool `json:"fills"`
-	Balances      bool `json:"balances"`
-	Account       bool `json:"account"`
-	Positions     bool `json:"positions"`
-	Funding       bool `json:"funding"`
-	Leverage      bool `json:"leverage"`
-	PrivateStream bool `json:"private_stream"`
-	MarginMode    bool `json:"margin_mode"`
-	PositionMode  bool `json:"position_mode"`
-	FundsTransfer bool `json:"funds_transfer"`
+	Place                  bool `json:"place"`
+	Amend                  bool `json:"amend"`
+	Cancel                 bool `json:"cancel"`
+	OpenOrders             bool `json:"open_orders"`
+	OrderHistory           bool `json:"order_history"`
+	Fills                  bool `json:"fills"`
+	Balances               bool `json:"balances"`
+	Account                bool `json:"account"`
+	Positions              bool `json:"positions"`
+	Funding                bool `json:"funding"`
+	AccountFundingPayments bool `json:"account_funding_payments"`
+	Leverage               bool `json:"leverage"`
+	PrivateStream          bool `json:"private_stream"`
+	MarginMode             bool `json:"margin_mode"`
+	PositionMode           bool `json:"position_mode"`
+	FundsTransfer          bool `json:"funds_transfer"`
 }
 
 func StaticMatrix() Matrix {
@@ -69,8 +70,11 @@ func spotSettled(code, venue, settlement string) Row {
 func perp(code, venue, settlement string) Row {
 	operations := Operations{
 		Place: true, Cancel: true, OpenOrders: true, OrderHistory: true, Fills: true,
-		Balances: true, Account: true, Positions: true, Funding: true,
+		Balances: true, Account: true, Positions: true, Funding: code != "ATP",
 		PrivateStream: true,
+	}
+	if code == "BNP" || code == "LIP" || code == "BYU" || code == "GTU" {
+		operations.AccountFundingPayments = true
 	}
 	return row(code, venue, "perp", settlement, operations)
 }

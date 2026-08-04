@@ -37,7 +37,7 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 	})
 
 	page, err := client.Candles(context.Background(), exchange.CandlesRequest{
-		Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH/USDC", "ETH/USDC", "2048"),
+		Instrument: lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH/USDC", "2048"),
 		Interval:   "1m",
 		Limit:      2,
 	})
@@ -90,7 +90,7 @@ func TestLighterOrderHistoryFiltersTriggerOrdersOutsideExchangeSubset(t *testing
 		HTTPClient:  &http.Client{Transport: transport},
 	})
 
-	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH/USDC", "ETH/USDC", "2048")
+	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH/USDC", "2048")
 	page, err := client.OrderHistory(context.Background(), exchange.OrderHistoryRequest{
 		Instrument: &instrument,
 		Limit:      20,
@@ -127,7 +127,7 @@ func TestLighterFundingRateHistoryDerivesNativeWindowWhenPortableBoundsAreOmitte
 	})
 
 	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
-		Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH", "ETH", "0"),
+		Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH", "0"),
 		Limit:      10,
 	})
 	if err != nil {
@@ -146,5 +146,50 @@ func TestLighterFundingRateHistoryDerivesNativeWindowWhenPortableBoundsAreOmitte
 	if page.Page.WindowStart.IsZero() || page.Page.WindowEnd.IsZero() ||
 		page.Page.WindowEnd.Sub(page.Page.WindowStart) != 10*time.Hour {
 		t.Fatalf("portable funding page window = %s..%s, want ten hours", page.Page.WindowStart, page.Page.WindowEnd)
+	}
+}
+
+func TestLighterFundingRateHistoryEnforcesPortableLimitWhenVenueOverReturns(t *testing.T) {
+	transport := lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/api/v1/orderBookDetails":
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","order_book_details":[{"symbol":"ETH","market_id":0,"market_type":"perp","min_base_amount":"0.001","min_quote_amount":"5","size_decimals":3,"price_decimals":2,"supported_quote_decimals":6}]}`), nil
+		case "/api/v1/fundings":
+			return lighterOpenAPIJSONResponse(`{"code":200,"message":"","resolution":"1h","fundings":[
+				{"timestamp":1720000000,"rate":"0.0001","value":"0","direction":"long"},
+				{"timestamp":1720003600,"rate":"0.0002","value":"0","direction":"long"},
+				{"timestamp":1720007200,"rate":"0.0003","value":"0","direction":"long"}
+			]}`), nil
+		default:
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"code":404}`)),
+			}, nil
+		}
+	})
+	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
+		Endpoint:    "https://openapi.invalid",
+		Environment: "testnet",
+		HTTPClient:  &http.Client{Transport: transport},
+	})
+
+	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
+		Instrument: lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH", "0"),
+		Start:      time.Unix(1719996400, 0).UTC(),
+		End:        time.Unix(1720010800, 0).UTC(),
+		Limit:      2,
+	})
+	if err != nil {
+		t.Fatalf("FundingRateHistory: %v", err)
+	}
+	if len(page.Rates) != 2 {
+		t.Fatalf("portable funding history length = %d, want 2", len(page.Rates))
+	}
+	if got, want := page.Rates[0].FundingTime, time.Unix(1720003600, 0).UTC(); !got.Equal(want) {
+		t.Fatalf("first retained funding time = %s, want %s", got, want)
+	}
+	if got, want := page.Rates[1].FundingTime, time.Unix(1720007200, 0).UTC(); !got.Equal(want) {
+		t.Fatalf("last retained funding time = %s, want %s", got, want)
 	}
 }

@@ -107,6 +107,15 @@ func (router *binanceOpenAPIRouter) RoundTrip(request *http.Request) (*http.Resp
 	case "/api/v3/allOrders":
 		return openAPIJSONResponse(`[{"symbol":"BTCUSDT","orderId":10,"clientOrderId":"100","price":"99","origQty":"1","executedQty":"1","cummulativeQuoteQty":"99","status":"FILLED","timeInForce":"GTC","type":"LIMIT","side":"BUY"}]`), nil
 	case "/api/v3/myTrades":
+		if query.Get("limit") == "3" {
+			return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":9223372036854775805,"orderId":10,"price":"99","qty":"1","quoteQty":"99","commission":"0.001","commissionAsset":"BTC","time":1720000000000,"isBuyer":true,"isMaker":false},{"symbol":"BTCUSDT","id":9223372036854775806,"orderId":10,"price":"100","qty":"1","quoteQty":"100","commission":"0.001","commissionAsset":"BTC","time":1720000001000,"isBuyer":true,"isMaker":false},{"symbol":"BTCUSDT","id":9223372036854775807,"orderId":10,"price":"101","qty":"1","quoteQty":"101","commission":"0.001","commissionAsset":"BTC","time":1720000002000,"isBuyer":true,"isMaker":false}]`), nil
+		}
+		if query.Get("limit") == "2" {
+			if query.Get("fromId") == "102" {
+				return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":102,"orderId":10,"price":"99","qty":"1","quoteQty":"99","commission":"0.001","commissionAsset":"BTC","time":1720000000000,"isBuyer":true,"isMaker":false}]`), nil
+			}
+			return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":100,"orderId":10,"price":"99","qty":"1","quoteQty":"99","commission":"0.001","commissionAsset":"BTC","time":1720000000000,"isBuyer":true,"isMaker":false},{"symbol":"BTCUSDT","id":101,"orderId":10,"price":"100","qty":"1","quoteQty":"100","commission":"0.001","commissionAsset":"BTC","time":1720000001000,"isBuyer":true,"isMaker":false}]`), nil
+		}
 		return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":1,"orderId":10,"price":"99","qty":"1","quoteQty":"99","commission":"0.001","commissionAsset":"BTC","time":1720000000000,"isBuyer":true,"isMaker":false}]`), nil
 	case "/api/v3/account":
 		return openAPIJSONResponse(`{"balances":[{"asset":"USDT","free":"100","locked":"2"}]}`), nil
@@ -127,6 +136,15 @@ func (router *binanceOpenAPIRouter) RoundTrip(request *http.Request) (*http.Resp
 	case "/fapi/v1/allOrders":
 		return openAPIJSONResponse(`[{"symbol":"BTCUSDT","orderId":20,"clientOrderId":"100","price":"99","origQty":"1","executedQty":"1","avgPrice":"99","status":"FILLED","timeInForce":"GTC","type":"LIMIT","side":"BUY","positionSide":"BOTH","reduceOnly":true,"updateTime":1720000000000}]`), nil
 	case "/fapi/v1/userTrades":
+		if query.Get("limit") == "3" {
+			return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":9223372036854775805,"orderId":20,"price":"99","qty":"1","quoteQty":"99","commission":"0.01","commissionAsset":"USDT","time":1720000000000,"side":"BUY","maker":false,"positionSide":"BOTH"},{"symbol":"BTCUSDT","id":9223372036854775806,"orderId":20,"price":"100","qty":"1","quoteQty":"100","commission":"0.01","commissionAsset":"USDT","time":1720000001000,"side":"BUY","maker":false,"positionSide":"BOTH"},{"symbol":"BTCUSDT","id":9223372036854775807,"orderId":20,"price":"101","qty":"1","quoteQty":"101","commission":"0.01","commissionAsset":"USDT","time":1720000002000,"side":"BUY","maker":false,"positionSide":"BOTH"}]`), nil
+		}
+		if query.Get("limit") == "2" {
+			if query.Get("fromId") == "202" {
+				return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":202,"orderId":20,"price":"99","qty":"1","quoteQty":"99","commission":"0.01","commissionAsset":"USDT","time":1720000000000,"side":"BUY","maker":false,"positionSide":"BOTH"}]`), nil
+			}
+			return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":200,"orderId":20,"price":"99","qty":"1","quoteQty":"99","commission":"0.01","commissionAsset":"USDT","time":1720000000000,"side":"BUY","maker":false,"positionSide":"BOTH"},{"symbol":"BTCUSDT","id":201,"orderId":20,"price":"100","qty":"1","quoteQty":"100","commission":"0.01","commissionAsset":"USDT","time":1720000001000,"side":"BUY","maker":false,"positionSide":"BOTH"}]`), nil
+		}
 		return openAPIJSONResponse(`[{"symbol":"BTCUSDT","id":2,"orderId":20,"price":"99","qty":"1","quoteQty":"99","commission":"0.01","commissionAsset":"USDT","time":1720000000000,"side":"BUY","maker":false,"positionSide":"BOTH"}]`), nil
 	case "/fapi/v2/balance":
 		return openAPIJSONResponse(`[{"asset":"USDT","balance":"100","availableBalance":"90"}]`), nil
@@ -167,6 +185,81 @@ func TestOpenAPIBinanceRESTExecutionMatrix(t *testing.T) {
 	assertPerpLifecycleMatrix(t, ctx, perp, perpInstrument)
 
 	assertBinanceOpenAPIPlaceShapes(t, router.placeShapes)
+}
+
+func TestOpenAPIBinanceFillsCursorAdvancesPastInclusiveFromID(t *testing.T) {
+	router := newBinanceOpenAPIRouter()
+	httpClient := &http.Client{Transport: router}
+	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: httpClient}
+	ctx := context.Background()
+
+	spot := NewBinanceSpot("key", "secret", settings)
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	spotPage, err := spot.Fills(ctx, exchange.FillsRequest{Instrument: &spotInstrument, Limit: 2})
+	if err != nil {
+		t.Fatalf("spot Fills: %v", err)
+	}
+	if len(spotPage.Fills) != 2 || !spotPage.Page.HasMoreKnown || !spotPage.Page.HasMore || spotPage.Page.Cursor != "102" {
+		t.Fatalf("spot page=%+v fills=%+v, want cursor 102 with known continuation", spotPage.Page, spotPage.Fills)
+	}
+	spotNext, err := spot.Fills(ctx, exchange.FillsRequest{Instrument: &spotInstrument, Limit: 2, Cursor: spotPage.Page.Cursor})
+	if err != nil {
+		t.Fatalf("spot next Fills: %v", err)
+	}
+	if len(spotNext.Fills) != 1 || spotNext.Fills[0].FillID != "102" || spotNext.Page.Cursor != "" || spotNext.Page.HasMore {
+		t.Fatalf("spot next page=%+v fills=%+v, want non-duplicating terminal page", spotNext.Page, spotNext.Fills)
+	}
+
+	perp := NewBinanceUSDPerp("key", "secret", settings)
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
+	perpPage, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: &perpInstrument, Limit: 2})
+	if err != nil {
+		t.Fatalf("perp Fills: %v", err)
+	}
+	if len(perpPage.Fills) != 2 || !perpPage.Page.HasMoreKnown || !perpPage.Page.HasMore || perpPage.Page.Cursor != "202" {
+		t.Fatalf("perp page=%+v fills=%+v, want cursor 202 with known continuation", perpPage.Page, perpPage.Fills)
+	}
+	perpNext, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: &perpInstrument, Limit: 2, Cursor: perpPage.Page.Cursor})
+	if err != nil {
+		t.Fatalf("perp next Fills: %v", err)
+	}
+	if len(perpNext.Fills) != 1 || perpNext.Fills[0].FillID != "202" || perpNext.Page.Cursor != "" || perpNext.Page.HasMore {
+		t.Fatalf("perp next page=%+v fills=%+v, want non-duplicating terminal page", perpNext.Page, perpNext.Fills)
+	}
+}
+
+func TestOpenAPIBinanceFillsCursorDoesNotOverflowAndPerpRejectsNonPositiveCursor(t *testing.T) {
+	router := newBinanceOpenAPIRouter()
+	httpClient := &http.Client{Transport: router}
+	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: httpClient}
+	ctx := context.Background()
+
+	spot := NewBinanceSpot("key", "secret", settings)
+	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "BTC-USDT")
+	spotPage, err := spot.Fills(ctx, exchange.FillsRequest{Instrument: &spotInstrument, Limit: 3})
+	if err != nil {
+		t.Fatalf("spot max-id Fills: %v", err)
+	}
+	if len(spotPage.Fills) != 3 || spotPage.Fills[2].FillID != "9223372036854775807" ||
+		spotPage.Page.Cursor != "" || spotPage.Page.HasMore {
+		t.Fatalf("spot max-id page=%+v fills=%+v, want terminal page without overflow cursor", spotPage.Page, spotPage.Fills)
+	}
+
+	perp := NewBinanceUSDPerp("key", "secret", settings)
+	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDT")
+	perpPage, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: &perpInstrument, Limit: 3})
+	if err != nil {
+		t.Fatalf("perp max-id Fills: %v", err)
+	}
+	if len(perpPage.Fills) != 3 || perpPage.Fills[2].FillID != "9223372036854775807" ||
+		perpPage.Page.Cursor != "" || perpPage.Page.HasMore {
+		t.Fatalf("perp max-id page=%+v fills=%+v, want terminal page without overflow cursor", perpPage.Page, perpPage.Fills)
+	}
+	for _, cursor := range []string{"0", "-1"} {
+		if _, err := perp.Fills(ctx, exchange.FillsRequest{Instrument: &perpInstrument, Limit: 2, Cursor: cursor}); err == nil {
+			t.Fatalf("perp cursor %q accepted, want invalid request", cursor)
+		}
+	}
 }
 
 func exerciseOpenAPIOrderBranches(t *testing.T, ctx context.Context, product exchange.Product, client any, instrument exchange.Instrument) {
@@ -669,7 +762,7 @@ func TestOpenAPILighterRESTExecutionMatrix(t *testing.T) {
 	}
 	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
-	perpRouter := &lighterOpenAPIRouter{product: exchange.ProductPerp, marketID: 2, instrument: "BTC"}
+	perpRouter := &lighterOpenAPIRouter{product: exchange.ProductPerp, marketID: 2, instrument: "BTC-USDC"}
 	perpSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}
 	perp := NewLighterPerp(openAPILighterPrivateKey, 7, 2, perpSettings)
 	perpInstrument := assertPerpReadMatrix(t, ctx, perp, perpRouter.instrument)

@@ -197,6 +197,103 @@ func (client *binancePerpClient) FundingRateHistory(ctx context.Context, req exc
 	return exchange.FundingRatePage{Rates: rates, Page: historyPage("", req.Limit, req.Start, req.End)}, nil
 }
 
+func (client *binancePerpClient) FundingPayments(ctx context.Context, req exchange.FundingPaymentHistoryRequest) (exchange.FundingPaymentPage, error) {
+	const operation = "FundingPayments"
+	if err := client.binancePerpReady(ctx, operation); err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	var instrument exchange.Instrument
+	var symbol string
+	if req.Instrument != nil {
+		resolved, native, err := binancePerpRequestSymbols(*req.Instrument)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, binancePerpInvalidRequest(operation, err.Error())
+		}
+		instrument = resolved
+		symbol = native
+	}
+	if err := validateBoundedHistory(req.Cursor, req.Limit, req.Start, req.End); err != nil {
+		return exchange.FundingPaymentPage{}, binancePerpInvalidRequest(operation, err.Error())
+	}
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 1000
+	}
+	if limit > 1000 {
+		return exchange.FundingPaymentPage{}, binancePerpInvalidRequest(operation, "limit must be between 1 and 1000")
+	}
+	cursorScope := fundingPaymentCursorScope(req.Instrument, req.SettlementAsset, req.Start, req.End, limit)
+	cursorKey := client.binanceFundingPaymentCursorKey()
+	cursorEnvelope, err := decodeFundingPaymentCursor(req.Cursor, cursorKey, cursorScope)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, binancePerpInvalidRequest(operation, err.Error())
+	}
+	pageNumber := cursorEnvelope.Page
+	if pageNumber == 0 {
+		pageNumber = 1
+	}
+	endMillis := optionalMillis(req.End)
+	if endMillis > 0 {
+		endMillis--
+	}
+	rows, err := client.sdk.GetIncomeHistory(ctx, binanceperp.IncomeHistoryQuery{
+		Symbol: symbol, IncomeType: "FUNDING_FEE", StartTime: optionalMillis(req.Start),
+		EndTime: endMillis, Page: pageNumber, Limit: limit,
+	})
+	if err != nil {
+		return exchange.FundingPaymentPage{}, binancePerpNormalizeError(operation, err)
+	}
+	items := make([]exchange.FundingPayment, 0, len(rows))
+	for _, row := range rows {
+		if row.IncomeType != "FUNDING_FEE" || (symbol != "" && row.Symbol != symbol) {
+			return exchange.FundingPaymentPage{}, binancePerpMalformed(operation, "response instrument or income type does not match request")
+		}
+		if req.SettlementAsset != "" && row.Asset != req.SettlementAsset {
+			return exchange.FundingPaymentPage{}, binancePerpMalformed(operation, "response settlement asset does not match request")
+		}
+		payment, err := binanceFundingPayment(instrument, row)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, binancePerpMalformed(operation, err.Error())
+		}
+		if !withinHalfOpen(payment.EffectiveAt, req.Start, req.End) {
+			continue
+		}
+		items = append(items, payment)
+	}
+	hasMore := len(rows) >= limit
+	cursor := ""
+	if hasMore {
+		next := cursorScope
+		next.Page = pageNumber + 1
+		next.ItemsSeen = cursorEnvelope.ItemsSeen + len(items)
+		cursor = encodeFundingPaymentCursor(cursorKey, next)
+	}
+	observedAt := time.Now().UTC()
+	status := fundingPaymentCompletionStatus(cursorEnvelope.ItemsSeen+len(items), hasMore, req.Start, req.End, fundingPaymentRetainedSince(req.Start, observedAt, 3), observedAt)
+	return exchange.FundingPaymentPage{
+		Items: items,
+		Page: exchange.PageInfo{
+			Cursor: cursor, Limit: limit, WindowStart: req.Start, WindowEnd: req.End,
+			HasMoreKnown: true, HasMore: hasMore,
+		},
+		Status:          status,
+		Watermark:       fundingPaymentWatermark(cursor, req.End, status, observedAt),
+		CompleteThrough: fundingPaymentCompleteThrough(req.End, status),
+		Revision:        1,
+	}, nil
+}
+
+func (client *binancePerpClient) binanceFundingPaymentCursorKey() []byte {
+	return fundingPaymentCursorKey(
+		"venue="+string(exchange.VenueBinance),
+		"product="+string(exchange.ProductPerp),
+		"base_url="+client.sdk.BaseURL,
+		"endpoint_prefix="+client.sdk.EndpointPrefix,
+		"api_key="+client.sdk.APIKey,
+		"secret_key="+client.sdk.SecretKey,
+	)
+}
+
 func (client *binancePerpClient) SetLeverage(ctx context.Context, req exchange.SetLeverageRequest) (exchange.Leverage, error) {
 	if err := client.binancePerpReady(ctx, "SetLeverage"); err != nil {
 		return exchange.Leverage{}, err
@@ -284,6 +381,40 @@ func binanceFundingHistory(instrument exchange.Instrument, row binanceperp.Fundi
 	return out, nil
 }
 
+func binanceFundingPayment(instrument exchange.Instrument, row binanceperp.IncomeHistoryResponse) (exchange.FundingPayment, error) {
+	amount, err := positiveOrNegativeDecimal(row.Income)
+	if err != nil {
+		return exchange.FundingPayment{}, err
+	}
+	effectiveAt := time.UnixMilli(row.Time).UTC()
+	paymentID := strconv.FormatInt(row.TranID, 10)
+	if row.TranID == 0 {
+		paymentID = row.TradeID
+	}
+	sourceRef := "binance:fapi:v1:income:FUNDING_FEE:" + paymentID
+	return exchange.FundingPayment{
+		PaymentID:       paymentID,
+		FactID:          stableFundingPaymentFactID(sourceRef, row.Asset, row.Income, effectiveAt),
+		NativeSymbol:    nativeSymbolOr(row.Symbol, instrument),
+		NativeID:        instrument.Identity.NativeID,
+		SettlementAsset: row.Asset,
+		Amount:          amount,
+		EffectiveAt:     effectiveAt,
+		ObservedAt:      time.Now().UTC(),
+		Revision:        1,
+		Version:         "binance-fapi-income-v1",
+		SourceRef:       sourceRef,
+		FormulaVersion:  "actual-funding-payment-v1",
+	}, nil
+}
+
+func nativeSymbolOr(fallback string, instrument exchange.Instrument) string {
+	if instrument.Identity.NativeSymbol != "" {
+		return instrument.Identity.NativeSymbol
+	}
+	return fallback
+}
+
 func positiveDecimal(value string) (decimal.Decimal, error) {
 	parsed, err := decimal.NewFromString(value)
 	if err != nil || !parsed.IsPositive() {
@@ -305,6 +436,17 @@ func positiveInt64Cursor(cursor string) (int64, error) {
 		return 0, nil
 	}
 	value, err := strconv.ParseInt(cursor, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, strconv.ErrSyntax
+	}
+	return value, nil
+}
+
+func positivePageCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(cursor)
 	if err != nil || value <= 0 {
 		return 0, strconv.ErrSyntax
 	}

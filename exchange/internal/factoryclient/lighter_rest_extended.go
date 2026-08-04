@@ -69,6 +69,38 @@ func (client *lighterPerpClient) FundingRate(ctx context.Context, req exchange.F
 	}, nil
 }
 
+func (client *lighterPerpClient) MarkPrice(ctx context.Context, instrument exchange.Instrument) (exchange.MarkPriceEvent, error) {
+	const operation = "MarkPrice"
+	meta, err := client.lighterMeta(ctx, operation, exchange.ProductPerp, lighterPerp, instrument)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, err
+	}
+	rows, err := client.sdk.GetOrderBookDetails(ctx, &meta.marketID, nil)
+	receivedAt := time.Now().UTC()
+	if err != nil {
+		return exchange.MarkPriceEvent{}, lighterNormalizeErr(exchange.ProductPerp, operation, err)
+	}
+	if rows == nil || rows.Code != 200 || len(rows.OrderBookDetails) != 1 {
+		return exchange.MarkPriceEvent{}, lighterMalformed(exchange.ProductPerp, operation, "mark price response must contain exactly one perp row")
+	}
+	row := rows.OrderBookDetails[0]
+	if row == nil ||
+		row.MarketId != meta.marketID ||
+		row.MarketType != lighterPerp ||
+		row.Symbol != meta.instrument.Identity.NativeSymbol {
+		return exchange.MarkPriceEvent{}, lighterMalformed(exchange.ProductPerp, operation, "mark price response identity does not match request")
+	}
+	price, err := lighterPositiveDecimal(row.MarkPrice)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, lighterMalformed(exchange.ProductPerp, operation, "invalid mark price")
+	}
+	return exchange.MarkPriceEvent{
+		Instrument: meta.instrument,
+		Price:      price,
+		Time:       receivedAt,
+	}, nil
+}
+
 func (client *lighterPerpClient) FundingRateHistory(ctx context.Context, req exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
 	meta, err := client.lighterMeta(ctx, "FundingRateHistory", exchange.ProductPerp, lighterPerp, req.Instrument)
 	if err != nil {
@@ -101,6 +133,9 @@ func (client *lighterPerpClient) FundingRateHistory(ctx context.Context, req exc
 	}
 	if rows.Code != 200 {
 		return exchange.FundingRatePage{}, lighterMalformed(exchange.ProductPerp, "FundingRateHistory", "response code is not 200")
+	}
+	if req.Limit > 0 && len(rows.Fundings) > req.Limit {
+		rows.Fundings = rows.Fundings[len(rows.Fundings)-req.Limit:]
 	}
 	rates := make([]exchange.FundingRate, 0, len(rows.Fundings))
 	for _, row := range rows.Fundings {

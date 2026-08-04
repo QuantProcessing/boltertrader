@@ -25,20 +25,21 @@ Gateway 构建在 `exchange` 之上；它不使用 `runtime`，也不替代另�
 ## 服务形态
 
 ```text
-REST + 私有 WebSocket + /metrics
-                 |
-          Exchange Gateway
-        /        |          \
-   Catalog   Order engine   Event hub
-        \        |          /
-        Account/client manager
-                 |
-            exchange clients
+REST + 公共/私有 WebSocket + /metrics
+                      |
+               Exchange Gateway
+             /        |          \
+        Catalog   Order engine   Event hub
+             \        |          /
+             Account/client manager
+                      |
+                 exchange clients
 ```
 
 进程提供：
 
 - `/v1` 下带 Bearer 认证的版本化 REST；
+- `/v1/public/ws` 带认证、按账户限定的公共行情事件；
 - `/v1/ws` 私有事件流；
 - `/metrics` Prometheus 指标；
 - `/v1/health/live` 存活检查和 `/v1/health/ready` 就绪检查。
@@ -113,14 +114,38 @@ Gateway 在首次交易所 write 前先提交 command intent。相同 idempotenc
 write handoff 后超时会进入 `uncertain`，绝不盲目重发。
 
 查询包括 `/v1/orders`、`/v1/open-orders`、`/v1/fills`、`/v1/balances`、
-`/v1/positions`、`/v1/funding-rates`、`/v1/accounts`、
+`/v1/positions`、`/v1/funding-rates`、`/v1/funding-rates/history`、
+`/v1/order-book`、`/v1/bbo`、`/v1/mark-price`、`/v1/accounts`、
 `/v1/capabilities`、`/v1/rules` 和 `/v1/risk-limits`。完整接口见
 [OpenAPI 3.1](../../../api/exchange-gateway/v1/openapi.yaml)。
+
+`/v1/fills` 可选传入 `gateway_order_id` 精确查询某个 Gateway 订单的成交。
+Gateway 会先验证调用方拥有该订单，再映射到内部 venue order id 并过滤交易所
+fills；响应不暴露 venue order id。如果同时传入 `account_id` 或
+`instrument_id`，它们必须与订单保存的身份一致。只有当交易所分页明确证明还有
+下一页时才返回 `next_cursor`。
 
 Gateway V1 不执行 leverage mutation。稳定的 leverage 路由会返回 `501`，
 并记录安全的 unsupported audit；只有当 leverage 具备与订单相同的持久
 idempotency 和重启 reconciliation 模型后才会开放。底层
 `exchange.PerpClient` 的直接驱动能力不受影响。
+
+## 公共行情
+
+公共行情读取仍必须携带 Gateway Bearer token、`account_id` 和规范化
+`instrument_id`。账户决定使用哪个由 Gateway 持有的交易所 client，并把请求
+绑定到已配置的 product/environment。调用方既不提交也不会收到交易所凭证、
+native symbol、native ID、instrument encoding 或原始交易所错误。
+
+`/v1/public/ws` 支持 `order_book`、`bbo`、`mark_price` 和
+`funding_rate`。Gateway 先建立交易所订阅，再取得权威 snapshot，并以
+sequence 1 发送。Order book、BBO 和 funding 使用规范化 REST snapshot；
+mark price 使用有界等待得到的首个 mark stream 事件，因为统一 exchange
+契约将 mark 定义为独立 stream 能力，而不是 funding 的附属能力。此流明确
+不提供 cursor replay：每个连接都有 boot ID，并从新的 snapshot 开始。遇到
+交易所 gap、畸形 update、过大 payload 或上游错误时，服务发送有界
+`resync_required`，随后以 WebSocket policy violation 关闭；客户端重连后会
+获得新 snapshot。
 
 ## 私有事件
 

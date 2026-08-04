@@ -84,6 +84,59 @@ func (c *Client) GetBalance(ctx context.Context) ([]BalanceResponse, error) {
 	return res, nil
 }
 
+type IncomeHistoryQuery struct {
+	Symbol     string
+	IncomeType string
+	StartTime  int64
+	EndTime    int64
+	Page       int
+	Limit      int
+}
+
+type IncomeHistoryResponse struct {
+	Symbol     string `json:"symbol"`
+	IncomeType string `json:"incomeType"`
+	Income     string `json:"income"`
+	Asset      string `json:"asset"`
+	Time       int64  `json:"time"`
+	TranID     int64  `json:"tranId"`
+	TradeID    string `json:"tradeId"`
+	Info       string `json:"info"`
+}
+
+func (c *Client) GetIncomeHistory(ctx context.Context, query IncomeHistoryQuery) ([]IncomeHistoryResponse, error) {
+	if query.Limit < 0 || query.Limit > 1000 {
+		return nil, fmt.Errorf("limit must be between 0 and 1000")
+	}
+	if query.Page < 0 {
+		return nil, fmt.Errorf("page must be non-negative")
+	}
+	params := map[string]interface{}{}
+	if query.Symbol != "" {
+		params["symbol"] = query.Symbol
+	}
+	if query.IncomeType != "" {
+		params["incomeType"] = query.IncomeType
+	}
+	if query.StartTime > 0 {
+		params["startTime"] = query.StartTime
+	}
+	if query.EndTime > 0 {
+		params["endTime"] = query.EndTime
+	}
+	if query.Page > 0 {
+		params["page"] = query.Page
+	}
+	if query.Limit > 0 {
+		params["limit"] = query.Limit
+	}
+	var res []IncomeHistoryResponse
+	if err := c.Get(ctx, c.apiV1("income"), params, true, &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
 // Position Risk
 
 type PositionRiskResponse struct {

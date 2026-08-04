@@ -270,6 +270,17 @@ type FuturesAccountHistory struct {
 	Time  int64  `json:"time"`
 }
 
+type FuturesAccountBookEntry struct {
+	Time     NumberString `json:"time"`
+	Change   string       `json:"change"`
+	Balance  string       `json:"balance"`
+	Text     string       `json:"text"`
+	Type     string       `json:"type"`
+	Contract string       `json:"contract"`
+	TradeID  string       `json:"trade_id"`
+	ID       string       `json:"id"`
+}
+
 type Position struct {
 	User               int64      `json:"user"`
 	Contract           string     `json:"contract"`

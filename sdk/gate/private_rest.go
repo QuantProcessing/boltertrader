@@ -138,8 +138,12 @@ func (c *Client) ListFuturesOpenOrders(ctx context.Context, settle, contract str
 }
 
 func (c *Client) GetFuturesOrder(ctx context.Context, settle string, orderID int64) (*FuturesOrder, error) {
+	return c.GetFuturesOrderByID(ctx, settle, strconv.FormatInt(orderID, 10))
+}
+
+func (c *Client) GetFuturesOrderByID(ctx context.Context, settle, orderID string) (*FuturesOrder, error) {
 	var out FuturesOrder
-	err := c.getPrivate(ctx, futuresPath(settle, "orders", strconv.FormatInt(orderID, 10)), nil, &out)
+	err := c.getPrivate(ctx, futuresPath(settle, "orders", orderID), nil, &out)
 	return &out, err
 }
 

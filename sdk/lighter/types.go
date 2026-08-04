@@ -247,6 +247,8 @@ type OrderBookDetail struct {
 	Symbol                       string  `json:"symbol"`
 	MarketId                     int     `json:"market_id"`
 	MarketType                   string  `json:"market_type"`
+	MarkPrice                    string  `json:"mark_price"`
+	IndexPrice                   string  `json:"index_price"`
 	BaseAssetId                  int     `json:"base_asset_id"`
 	QuoteAssetId                 int     `json:"quote_asset_id"`
 	Status                       string  `json:"status"`
@@ -573,6 +575,7 @@ type PositionFundingResponse struct {
 	Code             int32              `json:"code"`
 	Msg              string             `json:"message"`
 	PositionFundings []*PositionFunding `json:"position_fundings"`
+	NextCursor       string             `json:"next_cursor"`
 }
 
 type PositionFunding struct {

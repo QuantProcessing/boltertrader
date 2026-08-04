@@ -2,6 +2,7 @@ package factoryclient
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -344,20 +345,23 @@ func (client *gatePerpClient) Positions(ctx context.Context, request exchange.Po
 	if err := gateContext(ctx, client.meta, "Positions"); err != nil {
 		return nil, err
 	}
-	rows, err := client.sdk.ListPositions(ctx, client.settle, false)
+	rows, err := client.sdk.ListPositions(ctx, client.settle, true)
 	if err != nil {
 		return nil, gateNormalizeErr(client.meta, "Positions", err)
 	}
 	if err := gateValidatePositions(client.meta, "Positions", rows); err != nil {
 		return nil, err
 	}
+	native, filtered, err := gateOptionalNativeInstrument(client.meta, "Positions", request.Instrument)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]exchange.Position, 0, len(rows))
 	for _, row := range rows {
-		native, filtered, err := gateOptionalNativeInstrument(client.meta, "Positions", request.Instrument)
-		if err != nil {
-			return nil, err
-		}
 		if filtered && row.Contract != native {
+			continue
+		}
+		if row.Size == 0 {
 			continue
 		}
 		instrument, err := gateCatalogInstrumentByNative(ctx, client.meta, "Positions", row.Contract)
@@ -402,6 +406,7 @@ func (client *gatePerpClient) FundingRate(ctx context.Context, request exchange.
 	if err != nil {
 		return exchange.FundingRate{}, gateNormalizeErr(client.meta, "FundingRate", err)
 	}
+	observedAt := time.Now().UTC()
 	if err := gateValidateDecimal(client.meta, "FundingRate", "funding rate", contract.FundingRate); err != nil {
 		return exchange.FundingRate{}, err
 	}
@@ -412,7 +417,33 @@ func (client *gatePerpClient) FundingRate(ctx context.Context, request exchange.
 		return exchange.FundingRate{}, err
 	}
 	next := time.Unix(int64(contract.FundingNextApply), 0).UTC()
-	return exchange.FundingRate{NativeSymbol: contract.Name, NativeID: request.Instrument.Identity.NativeID, Rate: gateDecimal(contract.FundingRate), MarkPrice: gateOptionalDecimal(contract.MarkPrice), NextFundingTime: next}, nil
+	return exchange.FundingRate{NativeSymbol: contract.Name, NativeID: request.Instrument.Identity.NativeID, Rate: gateDecimal(contract.FundingRate), MarkPrice: gateOptionalDecimal(contract.MarkPrice), ObservedAt: observedAt, NextFundingTime: next}, nil
+}
+
+func (client *gatePerpClient) MarkPrice(ctx context.Context, instrument exchange.Instrument) (exchange.MarkPriceEvent, error) {
+	const operation = "MarkPrice"
+	if err := gateContext(ctx, client.meta, operation); err != nil {
+		return exchange.MarkPriceEvent{}, err
+	}
+	native, err := gateRequiredNativeInstrument(client.meta, operation, instrument)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, err
+	}
+	contract, err := client.sdk.GetFuturesContract(ctx, client.settle, native)
+	observedAt := time.Now().UTC()
+	if err != nil {
+		return exchange.MarkPriceEvent{}, gateNormalizeErr(client.meta, operation, err)
+	}
+	if contract == nil {
+		return exchange.MarkPriceEvent{}, gateMalformed(client.meta, operation, "gate futures contract response is missing")
+	}
+	if strings.TrimSpace(contract.Name) == "" || contract.Name != native {
+		return exchange.MarkPriceEvent{}, gateMalformed(client.meta, operation, "gate futures contract response does not match requested instrument")
+	}
+	if err := gateValidatePositiveDecimal(client.meta, operation, "mark price", contract.MarkPrice); err != nil {
+		return exchange.MarkPriceEvent{}, err
+	}
+	return exchange.MarkPriceEvent{Instrument: instrument, Price: gateDecimal(contract.MarkPrice), Time: observedAt}, nil
 }
 
 func (client *gatePerpClient) FundingRateHistory(ctx context.Context, request exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
@@ -438,6 +469,141 @@ func (client *gatePerpClient) FundingRateHistory(ctx context.Context, request ex
 		out = append(out, exchange.FundingRate{NativeSymbol: native, NativeID: request.Instrument.Identity.NativeID, Rate: gateDecimal(row.Rate), FundingTime: time.Unix(row.Time, 0).UTC()})
 	}
 	return exchange.FundingRatePage{Rates: out, Page: exchange.PageInfo{Cursor: request.Cursor, Limit: request.Limit, WindowStart: request.Start, WindowEnd: request.End}}, nil
+}
+
+func (client *gatePerpClient) FundingPayments(ctx context.Context, request exchange.FundingPaymentHistoryRequest) (exchange.FundingPaymentPage, error) {
+	const operation = "FundingPayments"
+	if err := gateContext(ctx, client.meta, operation); err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	if strings.ToLower(strings.TrimSpace(client.settle)) != gate.SettleUSDT {
+		return exchange.FundingPaymentPage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: operation, SafeMessage: "gate funding payments support only USDT settlement"})
+	}
+	if request.SettlementAsset != "" && request.SettlementAsset != "USDT" {
+		return exchange.FundingPaymentPage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: operation, SafeMessage: "gate funding payments support only USDT settlement"})
+	}
+	native, filtered, err := gateOptionalNativeInstrument(client.meta, operation, request.Instrument)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, err
+	}
+	if err := validateBoundedHistory(request.Cursor, request.Limit, request.Start, request.End); err != nil {
+		return exchange.FundingPaymentPage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: operation, SafeMessage: err.Error()})
+	}
+	limit := request.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		return exchange.FundingPaymentPage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: operation, SafeMessage: "limit must be between 1 and 1000"})
+	}
+	cursorScope := fundingPaymentCursorScope(request.Instrument, "USDT", request.Start, request.End, limit)
+	cursorKey := client.gateFundingPaymentCursorKey()
+	cursorEnvelope, err := decodeFundingPaymentCursor(request.Cursor, cursorKey, cursorScope)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, exchange.NewError(exchange.KindInvalidRequest, exchange.ErrorDetails{Venue: client.meta.venue, Product: client.meta.product, Operation: operation, SafeMessage: err.Error()})
+	}
+	offset := cursorEnvelope.ItemsSeen
+	rows, err := client.sdk.ListFuturesAccountBook(ctx, client.settle, native, "fund", request.Start, request.End, limit, offset)
+	if err != nil {
+		return exchange.FundingPaymentPage{}, gateNormalizeErr(client.meta, operation, err)
+	}
+	items := make([]exchange.FundingPayment, 0, len(rows))
+	for _, row := range rows {
+		if row.Type != "fund" {
+			return exchange.FundingPaymentPage{}, gateMalformed(client.meta, operation, "response account book type does not match request")
+		}
+		if filtered && row.Contract != native {
+			return exchange.FundingPaymentPage{}, gateMalformed(client.meta, operation, "response instrument does not match request")
+		}
+		payment, err := gateFundingPayment(request.Instrument, row)
+		if err != nil {
+			return exchange.FundingPaymentPage{}, gateMalformed(client.meta, operation, err.Error())
+		}
+		if request.SettlementAsset != "" && payment.SettlementAsset != request.SettlementAsset {
+			return exchange.FundingPaymentPage{}, gateMalformed(client.meta, operation, "response settlement asset does not match request")
+		}
+		if !withinHalfOpen(payment.EffectiveAt, request.Start, request.End) {
+			continue
+		}
+		items = append(items, payment)
+	}
+	hasMore := len(rows) >= limit
+	cursor := ""
+	if hasMore {
+		next := cursorScope
+		next.ItemsSeen = cursorEnvelope.ItemsSeen + len(rows)
+		cursor = encodeFundingPaymentCursor(cursorKey, next)
+	}
+	observedAt := time.Now().UTC()
+	// Gate documents the account-book window and pagination but not a retention
+	// guarantee. A terminal page is therefore useful evidence, not proof that an
+	// empty or partial historical window is complete.
+	status := fundingPaymentCompletionStatus(cursorEnvelope.ItemsSeen+len(items), hasMore, request.Start, request.End, false, observedAt)
+	return exchange.FundingPaymentPage{
+		Items: items,
+		Page: exchange.PageInfo{
+			Cursor: cursor, Limit: limit, WindowStart: request.Start, WindowEnd: request.End,
+			HasMoreKnown: true, HasMore: hasMore,
+		},
+		Status:          status,
+		Watermark:       fundingPaymentWatermark(cursor, request.End, status, observedAt),
+		CompleteThrough: fundingPaymentCompleteThrough(request.End, status),
+		Revision:        1,
+	}, nil
+}
+
+func (client *gatePerpClient) gateFundingPaymentCursorKey() []byte {
+	if len(client.fundingPaymentCursorKey) > 0 {
+		return client.fundingPaymentCursorKey
+	}
+	return gateFundingPaymentCursorKey(client.settle, "", "", "")
+}
+
+func gateFundingPaymentCursorKey(settle, restBaseURL, apiKey, secretKey string) []byte {
+	return fundingPaymentCursorKey(
+		"venue="+string(exchange.VenueGate),
+		"product="+string(exchange.ProductPerp),
+		"settle="+settle,
+		"base_url="+restBaseURL,
+		"api_key="+apiKey,
+		"secret_key="+secretKey,
+	)
+}
+
+func gateFundingPayment(instrument *exchange.Instrument, row gate.FuturesAccountBookEntry) (exchange.FundingPayment, error) {
+	if strings.TrimSpace(row.ID) == "" {
+		return exchange.FundingPayment{}, errors.New("gate funding payment id is missing")
+	}
+	if strings.TrimSpace(row.Contract) == "" {
+		return exchange.FundingPayment{}, errors.New("gate funding payment contract is missing")
+	}
+	amount, err := decimal.NewFromString(row.Change)
+	if err != nil {
+		return exchange.FundingPayment{}, errors.New("invalid gate funding payment amount")
+	}
+	effectiveAt := gateUnixSecondDecimalString(string(row.Time))
+	if effectiveAt.IsZero() {
+		return exchange.FundingPayment{}, errors.New("invalid gate funding payment timestamp")
+	}
+	nativeID := row.Contract
+	if instrument != nil && instrument.Identity.NativeID != "" {
+		nativeID = instrument.Identity.NativeID
+	}
+	sourceRef := "gate:futures:account_book:fund:" + row.ID
+	return exchange.FundingPayment{
+		PaymentID:       row.ID,
+		FactID:          stableFundingPaymentFactID(sourceRef, row.Contract, row.Change, string(row.Time)),
+		NativeSymbol:    row.Contract,
+		NativeID:        nativeID,
+		SettlementAsset: "USDT",
+		Amount:          amount,
+		EffectiveAt:     effectiveAt,
+		ObservedAt:      time.Now().UTC(),
+		Revision:        1,
+		Version:         "gate-futures-account-book-v1",
+		SourceRef:       sourceRef,
+		FormulaVersion:  "actual-funding-payment-v1",
+	}, nil
 }
 
 func (client *gatePerpClient) SetLeverage(ctx context.Context, request exchange.SetLeverageRequest) (exchange.Leverage, error) {
@@ -824,7 +990,7 @@ func gateFuturesFills(rows []gate.MyFuturesTrade, instrument exchange.Instrument
 			side = exchange.SideSell
 			size = -size
 		}
-		out = append(out, exchange.Fill{NativeSymbol: row.Contract, NativeID: instrument.Identity.NativeID, OrderID: gateOrderID(row.OrderID), ClientOrderID: gatePortableClientOrderID(row.Text), FillID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: decimal.NewFromInt(size).Mul(multiplier), Fee: gateDecimal(row.Fee), FeeAsset: strings.ToUpper(gate.SettleUSDT), Liquidity: gateLiquidity(row.Role), Time: gateUnixSecondString(string(row.CreateTime))})
+		out = append(out, exchange.Fill{NativeSymbol: row.Contract, NativeID: instrument.Identity.NativeID, OrderID: gateOrderID(row.OrderID), ClientOrderID: gatePortableClientOrderID(row.Text), FillID: gateOrderID(row.ID), Side: side, Price: gateDecimal(row.Price), Quantity: decimal.NewFromInt(size).Mul(multiplier), Fee: gateDecimal(row.Fee), FeeAsset: strings.ToUpper(gate.SettleUSDT), Liquidity: gateLiquidity(row.Role), Time: gateUnixSecondDecimalString(string(row.CreateTime))})
 	}
 	return out
 }

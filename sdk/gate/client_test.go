@@ -83,6 +83,47 @@ func TestClientSignsPrivateGetWithGateHeaders(t *testing.T) {
 	}
 }
 
+func TestClientListsFuturesAccountBookFundingRows(t *testing.T) {
+	fixed := time.Unix(1700000000, 0)
+	client := NewClient().
+		WithBaseURL("https://example.test/api/v4").
+		WithCredentials("key", "secret").
+		WithClock(func() time.Time { return fixed })
+	client.WithHTTPClient(testHTTPClient(t, func(req *http.Request) (int, string) {
+		if req.Method != http.MethodGet || req.URL.Path != "/api/v4/futures/usdt/account_book" {
+			t.Fatalf("unexpected request %s %s", req.Method, req.URL.String())
+		}
+		query := req.URL.Query()
+		if query.Get("contract") != "BTC_USDT" || query.Get("type") != "fund" ||
+			query.Get("from") != "1782864000" || query.Get("to") != "1782867600" ||
+			query.Get("limit") != "50" || query.Get("offset") != "100" {
+			t.Fatalf("unexpected query %q", req.URL.RawQuery)
+		}
+		wantPayload := buildSigningPayload(http.MethodGet, req.URL.Path, req.URL.RawQuery, "", "1700000000")
+		if got, want := req.Header.Get("KEY"), "key"; got != want {
+			t.Fatalf("KEY=%q want %q", got, want)
+		}
+		if got, want := req.Header.Get("Timestamp"), "1700000000"; got != want {
+			t.Fatalf("Timestamp=%q want %q", got, want)
+		}
+		if got, want := req.Header.Get("SIGN"), sign("secret", wantPayload); got != want {
+			t.Fatalf("SIGN=%q want %q", got, want)
+		}
+		return http.StatusOK, `[{"time":1782864001.123,"change":"-0.125","balance":"999.875","text":"funding fee","type":"fund","contract":"BTC_USDT","trade_id":"456","id":"789"}]`
+	}))
+
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(time.Hour)
+	rows, err := client.ListFuturesAccountBook(context.Background(), SettleUSDT, "BTC_USDT", "fund", start, end, 50, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || string(rows[0].Time) != "1782864001.123" || rows[0].Change != "-0.125" ||
+		rows[0].Type != "fund" || rows[0].Contract != "BTC_USDT" || rows[0].ID != "789" || rows[0].TradeID != "456" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
 func TestClientReadsUnifiedModeAndBalances(t *testing.T) {
 	client := NewClient().WithBaseURL("https://example.test/api/v4").WithCredentials("key", "secret")
 	client.WithHTTPClient(testHTTPClient(t, func(req *http.Request) (int, string) {
@@ -158,9 +199,9 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 	}{
 		{
 			name: "spot create missing order id",
-			body: `{"currency_pair":"ETH_USDT","text":"client-1"}`,
+			body: `{"currency_pair":"ETH_USDT","text":"12345"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "12345"})
 				return err
 			},
 			want: "without order id",
@@ -169,16 +210,16 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 			name: "spot create client text mismatch",
 			body: `{"id":"100","currency_pair":"ETH_USDT","text":"other"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "12345"})
 				return err
 			},
 			want: "mismatched client text",
 		},
 		{
 			name: "spot create currency pair mismatch",
-			body: `{"id":"100","currency_pair":"BTC_USDT","text":"client-1"}`,
+			body: `{"id":"100","currency_pair":"BTC_USDT","text":"12345"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "client-1"})
+				_, err := client.CreateSpotOrder(context.Background(), Order{CurrencyPair: "ETH_USDT", Text: "12345"})
 				return err
 			},
 			want: "mismatched currency pair",
@@ -194,9 +235,9 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 		},
 		{
 			name: "futures create missing order id",
-			body: `{"contract":"BTC_USDT","text":"client-1"}`,
+			body: `{"contract":"BTC_USDT","text":"12345"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "12345"})
 				return err
 			},
 			want: "without order id",
@@ -205,16 +246,16 @@ func TestOrderCommandsRejectMalformedSuccessResponses(t *testing.T) {
 			name: "futures create client text mismatch",
 			body: `{"id":100,"contract":"BTC_USDT","text":"other"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "12345"})
 				return err
 			},
 			want: "mismatched client text",
 		},
 		{
 			name: "futures create contract mismatch",
-			body: `{"id":100,"contract":"ETH_USDT","text":"client-1"}`,
+			body: `{"id":100,"contract":"ETH_USDT","text":"12345"}`,
 			run: func(client *Client) error {
-				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "client-1"})
+				_, err := client.CreateFuturesOrder(context.Background(), SettleUSDT, FuturesOrder{Contract: "BTC_USDT", Text: "12345"})
 				return err
 			},
 			want: "mismatched contract",

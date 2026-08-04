@@ -113,7 +113,7 @@ func newLighterExactLookupClient(
 ) (exchange.ExactOrderLookup, exchange.Instrument, *lighterExactLookupTransport) {
 	t.Helper()
 	marketID := 1
-	instrument := lighterExactInstrument(exchange.ProductSpot, "BTC-USDC", "1")
+	instrument := lighterExactInstrument(exchange.ProductSpot, "BTC-USDC", "BTC-USDC", "1")
 	transport := &lighterExactLookupTransport{marketID: marketID}
 	settings := Settings{
 		Endpoint:    "https://exact.invalid",
@@ -124,7 +124,7 @@ func newLighterExactLookupClient(
 	if product == exchange.ProductPerp {
 		marketID = 2
 		transport.marketID = marketID
-		instrument = lighterExactInstrument(exchange.ProductPerp, "BTC", "2")
+		instrument = lighterExactInstrument(exchange.ProductPerp, "BTC-USDC", "BTC", "2")
 		raw = NewLighterPerp(openAPILighterPrivateKey, 7, 2, settings)
 	} else {
 		raw = NewLighterSpot(openAPILighterPrivateKey, 7, 2, settings)
@@ -148,7 +148,7 @@ func int64String(value int64) string {
 	return intString(int(value))
 }
 
-func lighterExactInstrument(product exchange.Product, symbol, nativeID string) exchange.Instrument {
+func lighterExactInstrument(product exchange.Product, symbol, nativeSymbol, nativeID string) exchange.Instrument {
 	settlement := ""
 	if product == exchange.ProductPerp {
 		settlement = "USDC"
@@ -160,7 +160,7 @@ func lighterExactInstrument(product exchange.Product, symbol, nativeID string) e
 		"BTC",
 		"USDC",
 		settlement,
-		symbol,
+		nativeSymbol,
 		nativeID,
 		decimal.RequireFromString("0.1"),
 		decimal.RequireFromString("0.001"),

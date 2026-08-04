@@ -38,7 +38,7 @@ func TestRegisteredRoutesExactlyMatchOpenAPIAndExcludeForbiddenSurfaces(t *testi
 	}
 
 	forbidden := []string{
-		"order-book", "orderbook", "candles", "ticker", "public-trades",
+		"orderbook", "candles", "ticker", "public-trades",
 		"transfer", "deposit", "withdraw", "credential", "route-order",
 		"custody", "grpc",
 	}

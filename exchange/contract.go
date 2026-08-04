@@ -42,6 +42,23 @@ type PerpREST interface {
 	SetLeverage(context.Context, SetLeverageRequest) (Leverage, error)
 }
 
+// PerpMarkPriceREST is an optional public mark-price REST facet. It is
+// discovered by type assertion and is intentionally not embedded in PerpClient.
+type PerpMarkPriceREST interface {
+	MarkPrice(context.Context, Instrument) (MarkPriceEvent, error)
+}
+
+// FundingPaymentREST is an optional account funding-payment facet. It is
+// discovered by type assertion and is intentionally not embedded in PerpClient.
+type FundingPaymentREST interface {
+	FundingPayments(context.Context, FundingPaymentHistoryRequest) (FundingPaymentPage, error)
+}
+
+// PerpFundingPaymentREST names the optional perp account funding-payment facet.
+type PerpFundingPaymentREST interface {
+	FundingPaymentREST
+}
+
 // SpotClient is the compile-time surface for spot products. It intentionally
 // excludes derivative-only account and position methods.
 type SpotClient interface {

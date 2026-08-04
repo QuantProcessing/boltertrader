@@ -55,6 +55,7 @@ type OrderService interface {
 	Get(context.Context, domain.PrincipalID, domain.GatewayOrderID) (order.Result, error)
 	List(context.Context, order.ListRequest) ([]order.Result, error)
 	Cancel(context.Context, order.CancelRequest) (order.Result, error)
+	AccountWriteStatus(domain.AccountID) order.AccountWriteStatus
 }
 
 type Options struct {
@@ -104,7 +105,13 @@ var routes = []Route{
 	{http.MethodGet, "/v1/fills"},
 	{http.MethodGet, "/v1/balances"},
 	{http.MethodGet, "/v1/positions"},
+	{http.MethodGet, "/v1/funding-payments"},
 	{http.MethodGet, "/v1/funding-rates"},
+	{http.MethodGet, "/v1/funding-rates/history"},
+	{http.MethodGet, "/v1/order-book"},
+	{http.MethodGet, "/v1/bbo"},
+	{http.MethodGet, "/v1/mark-price"},
+	{http.MethodGet, "/v1/public/ws"},
 	{http.MethodPut, "/v1/accounts/{account_id}/instruments/{instrument_id}/leverage"},
 	{http.MethodGet, "/v1/ws"},
 }
@@ -159,7 +166,13 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("GET /v1/fills", handler.listFills)
 	handler.mux.HandleFunc("GET /v1/balances", handler.listBalances)
 	handler.mux.HandleFunc("GET /v1/positions", handler.listPositions)
+	handler.mux.HandleFunc("GET /v1/funding-payments", handler.listFundingPayments)
 	handler.mux.HandleFunc("GET /v1/funding-rates", handler.listFundingRates)
+	handler.mux.HandleFunc("GET /v1/funding-rates/history", handler.listFundingRateHistory)
+	handler.mux.HandleFunc("GET /v1/order-book", handler.getOrderBook)
+	handler.mux.HandleFunc("GET /v1/bbo", handler.getBBO)
+	handler.mux.HandleFunc("GET /v1/mark-price", handler.getMarkPrice)
+	handler.mux.HandleFunc("GET /v1/public/ws", handler.publicMarketEvents)
 	handler.mux.HandleFunc("PUT /v1/accounts/{account_id}/instruments/{instrument_id}/leverage", handler.setLeverage)
 	handler.mux.HandleFunc("GET /v1/ws", handler.privateEvents)
 
@@ -194,6 +207,9 @@ func (handler *Handler) listAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := handler.references.Accounts()
+	for index := range items {
+		items[index] = handler.effectiveAccountResource(items[index])
+	}
 	if len(items) > limit {
 		items = items[:limit]
 	}
@@ -211,7 +227,21 @@ func (handler *Handler) getAccount(w http.ResponseWriter, r *http.Request) {
 		handler.fail(w, err)
 		return
 	}
+	status.Resource = handler.effectiveAccountResource(status.Resource)
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (handler *Handler) effectiveAccountResource(resource account.Resource) account.Resource {
+	if !resource.WriteReady {
+		return resource
+	}
+	writeStatus := handler.orders.AccountWriteStatus(resource.AccountID)
+	if writeStatus.WriteReady {
+		return resource
+	}
+	resource.WriteReady = false
+	resource.Reason = writeStatus.Reason
+	return resource
 }
 
 func (handler *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {

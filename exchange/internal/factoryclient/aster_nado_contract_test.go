@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 	"github.com/shopspring/decimal"
 )
 
@@ -23,6 +25,26 @@ func TestAsterAndNadoBuildersSatisfyPublicContracts(t *testing.T) {
 	var _ exchange.PerpClient = NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
 	var _ exchange.SpotClient = NewNadoSpot(testAsterPrivateKey, "default", settings)
 	var _ exchange.PerpClient = NewNadoUSDT0Perp(testAsterPrivateKey, "default", settings)
+}
+
+func TestAsterNormalizeErrTreatsUpstreamServerFailuresAsTransport(t *testing.T) {
+	err := asterNormalizeErr(
+		exchange.ProductPerp,
+		"FundingRateHistory",
+		astercommon.NewVenueError(http.StatusBadGateway, http.MethodGet, "/fapi/v3/fundingRate", 0, "upstream unavailable"),
+	)
+	if !errors.Is(err, exchange.ErrTransport) {
+		t.Fatalf("Aster HTTP 502 kind = %v, want transport", err)
+	}
+
+	err = asterNormalizeErr(
+		exchange.ProductPerp,
+		"FundingRateHistory",
+		astercommon.NewVenueError(http.StatusBadRequest, http.MethodGet, "/fapi/v3/fundingRate", -1102, "invalid request"),
+	)
+	if !errors.Is(err, exchange.ErrVenueRejected) {
+		t.Fatalf("Aster HTTP 400 kind = %v, want venue rejected", err)
+	}
 }
 
 func TestOpenAPIAsterRESTExecutionMatrix(t *testing.T) {
@@ -152,7 +174,10 @@ func (router *asterOpenAPIRouter) RoundTrip(request *http.Request) (*http.Respon
 	case "/fapi/v3/accountWithJoinMargin":
 		return asterOpenAPIJSONResponse(`{"totalMarginBalance":"100","availableBalance":"90","totalInitialMargin":"10","totalUnrealizedProfit":"1","assets":[{"asset":"USDT","walletBalance":"100","availableBalance":"90"}]}`), nil
 	case "/fapi/v3/positionRisk":
-		return asterOpenAPIJSONResponse(`[{"symbol":"BTCUSDT","positionAmt":"1","entryPrice":"99","markPrice":"100","unRealizedProfit":"1","liquidationPrice":"50","leverage":"5","isolatedMargin":"0","positionSide":"BOTH"}]`), nil
+		return asterOpenAPIJSONResponse(`[
+			{"symbol":"BTCUSDT","positionAmt":"1","entryPrice":"99","markPrice":"100","unRealizedProfit":"1","liquidationPrice":"50","leverage":"5","isolatedMargin":"0","positionSide":"BOTH"},
+			{"symbol":"ETHUSDT","positionAmt":"0","entryPrice":"0","markPrice":"2000","unRealizedProfit":"0","liquidationPrice":"0","leverage":"20","isolatedMargin":"0","positionSide":"BOTH"}
+		]`), nil
 	case "/fapi/v3/premiumIndex":
 		return asterOpenAPIJSONResponse(`{"symbol":"BTCUSDT","markPrice":"100","lastFundingRate":"0.0001","nextFundingTime":1720003600000,"time":1720000000000}`), nil
 	case "/fapi/v3/fundingRate":
@@ -244,6 +269,9 @@ func assertAsterPerpLifecycleMatrix(t *testing.T, ctx context.Context, client ex
 	}
 	if rows, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument}); err != nil || len(rows) != 1 || rows[0].NativeSymbol == "" {
 		t.Fatalf("Positions: rows=%d err=%v", len(rows), err)
+	}
+	if rows, err := client.Positions(ctx, exchange.PositionsRequest{}); err != nil || len(rows) != 1 || rows[0].NativeSymbol == "" || rows[0].Quantity.IsZero() {
+		t.Fatalf("unscoped Positions must omit zero-quantity venue rows: rows=%d values=%+v err=%v", len(rows), rows, err)
 	}
 	if row, err := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument}); err != nil || !row.Rate.Equal(decimal.RequireFromString("0.0001")) {
 		t.Fatalf("FundingRate: rate=%s err=%v", row.Rate, err)

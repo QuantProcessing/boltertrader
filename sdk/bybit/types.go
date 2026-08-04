@@ -526,6 +526,25 @@ type ExecutionsResult struct {
 	NextPageCursor string            `json:"nextPageCursor"`
 }
 
+type TransactionLogResult struct {
+	List           []TransactionLogRecord `json:"list"`
+	NextPageCursor string                 `json:"nextPageCursor"`
+}
+
+type TransactionLogRecord struct {
+	ID              string `json:"id"`
+	Symbol          string `json:"symbol"`
+	Category        string `json:"category"`
+	Side            string `json:"side"`
+	TransactionTime string `json:"transactionTime"`
+	Type            string `json:"type"`
+	Currency        string `json:"currency"`
+	Funding         string `json:"funding"`
+	FeeRate         string `json:"feeRate"`
+	TradeID         string `json:"tradeId"`
+	OrderID         string `json:"orderId"`
+}
+
 // OpenInterestEntry is one row of the open-interest history list.
 type OpenInterestEntry struct {
 	OpenInterest string `json:"openInterest"`

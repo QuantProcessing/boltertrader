@@ -25,11 +25,12 @@ var (
 )
 
 const (
-	ReasonCapabilityNotPromoted = "capability_not_promoted"
-	ReasonClientUnavailable     = "client_unavailable"
-	ReasonManagerClosed         = "manager_closed"
-	ReasonPrivateStreamGap      = "private_stream_gap"
-	ReasonPrivateStreamStarting = "private_stream_starting"
+	ReasonCapabilityNotPromoted  = "capability_not_promoted"
+	ReasonClientUnavailable      = "client_unavailable"
+	ReasonExactLookupUnavailable = "exact_lookup_unavailable"
+	ReasonManagerClosed          = "manager_closed"
+	ReasonPrivateStreamGap       = "private_stream_gap"
+	ReasonPrivateStreamStarting  = "private_stream_starting"
 )
 
 type Options struct {
@@ -90,6 +91,7 @@ type clientHandle interface {
 	close() error
 	spot() (exchange.SpotClient, bool)
 	perp() (exchange.PerpClient, bool)
+	exactLookupReady() bool
 }
 
 type clientBuilder func(context.Context, config.AccountConfig, Options) (clientHandle, error)
@@ -375,6 +377,11 @@ func (manager *Manager) statusLocked(accountID domain.AccountID, requirePrivateS
 	status.WriteReady = entry.capability.WriteReadyDefault
 	if !status.WriteReady {
 		status.Reason = ReasonCapabilityNotPromoted
+		return status, nil
+	}
+	if !entry.handle.exactLookupReady() {
+		status.WriteReady = false
+		status.Reason = ReasonExactLookupUnavailable
 	}
 	return status, nil
 }

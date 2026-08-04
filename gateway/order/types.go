@@ -15,6 +15,8 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const ReasonRecoveryRequired = "order_recovery_required"
+
 var (
 	ErrWriteNotReady       = errors.New("account write not ready")
 	ErrIdempotencyConflict = errors.New("idempotency conflict")
@@ -64,6 +66,8 @@ type Result struct {
 	ClientOrderID   string                 `json:"client_order_id"`
 	State           domain.OrderState      `json:"state"`
 	ResourceVersion domain.ResourceVersion `json:"resource_version"`
+	AccountID       domain.AccountID       `json:"-"`
+	InstrumentID    domain.InstrumentID    `json:"-"`
 	VenueOrderID    string                 `json:"-"`
 	Replayed        bool                   `json:"-"`
 }
@@ -213,6 +217,11 @@ type ReconciliationReport struct {
 	Resolved   int
 	Unresolved int
 	WriteReady bool
+}
+
+type AccountWriteStatus struct {
+	WriteReady bool
+	Reason     string
 }
 
 type Coordinator struct {

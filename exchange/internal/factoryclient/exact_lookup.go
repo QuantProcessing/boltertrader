@@ -145,7 +145,7 @@ func exactPortableOrderStatus(raw string) (string, error) {
 		return "pending", nil
 	case "new", "live", "open", "resting":
 		return "open", nil
-	case "partially_filled", "partial":
+	case "partially_filled", "partiallyfilled", "partial":
 		return "partially_filled", nil
 	case "filled":
 		return "filled", nil

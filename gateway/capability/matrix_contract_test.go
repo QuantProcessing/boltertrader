@@ -47,6 +47,14 @@ func TestMatrixHasTwentyRowsNineteenPromotedAndLISReadOnly(t *testing.T) {
 		if row.Operations.Leverage {
 			t.Fatalf("row %s exposes non-durable leverage mutation in Gateway V1", row.RowID)
 		}
+		wantFunding := row.Product == "perp" && row.Code != "ATP"
+		if row.Operations.Funding != wantFunding {
+			t.Fatalf("row %s funding capability=%t, want %t", row.RowID, row.Operations.Funding, wantFunding)
+		}
+		wantFundingPayments := row.Code == "BNP" || row.Code == "LIP" || row.Code == "BYU" || row.Code == "GTU"
+		if row.Operations.AccountFundingPayments != wantFundingPayments {
+			t.Fatalf("row %s account funding-payment capability=%t, want %t", row.RowID, row.Operations.AccountFundingPayments, wantFundingPayments)
+		}
 		if row.Operations.Amend || row.Operations.MarginMode || row.Operations.PositionMode || row.Operations.FundsTransfer {
 			t.Fatalf("row %s claims unsupported operation: %+v", row.RowID, row.Operations)
 		}

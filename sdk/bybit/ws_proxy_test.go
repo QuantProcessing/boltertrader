@@ -45,3 +45,43 @@ func TestWebSocketProxyFromEnvironmentPreservesValidFallbackProxy(t *testing.T) 
 		t.Fatalf("proxy user info was not preserved")
 	}
 }
+
+func TestWebSocketProxyFromEnvironmentUsesAllProxyFallback(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("PROXY", "")
+	t.Setenv("ALL_PROXY", "http://proxy.example:10900")
+
+	req, err := http.NewRequest(http.MethodGet, "wss://stream-demo.bybit.com/v5/private", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	proxyURL, err := websocketProxyFromEnvironment(req)
+	if err != nil {
+		t.Fatalf("websocketProxyFromEnvironment: %v", err)
+	}
+	if proxyURL == nil || proxyURL.Scheme != "http" || proxyURL.Host != "proxy.example:10900" {
+		t.Fatalf("proxy URL = %v", proxyURL)
+	}
+}
+
+func TestWebSocketProxyFromEnvironmentBypassesFallbackProxyForLoopback(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("PROXY", "")
+	t.Setenv("ALL_PROXY", "http://proxy.example:10900")
+
+	req, err := http.NewRequest(http.MethodGet, "ws://127.0.0.1:8080/ws", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	proxyURL, err := websocketProxyFromEnvironment(req)
+	if err != nil {
+		t.Fatalf("websocketProxyFromEnvironment: %v", err)
+	}
+	if proxyURL != nil {
+		t.Fatalf("loopback proxy URL = %v, want nil", proxyURL)
+	}
+}

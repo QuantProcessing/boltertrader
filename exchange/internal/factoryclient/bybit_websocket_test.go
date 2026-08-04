@@ -116,6 +116,35 @@ func TestBybitPublicWebSocketSubscriptionCloseClosesDedicatedSDKClient(t *testin
 	waitClosed("Bybit public socket")
 }
 
+func TestBybitPrivateWebSocketReusesAllInOneOrderTopicAcrossInstruments(t *testing.T) {
+	wsURL, subscribeCount, closeServer := newBybitCountingPrivateWSServer(t)
+	defer closeServer()
+	settings := Settings{
+		Endpoint:          "https://openapi.invalid",
+		WebSocketEndpoint: wsURL,
+		Environment:       "demo",
+		HTTPClient:        &http.Client{Transport: bybitOpenAPIRouter{}},
+	}
+	client := NewBybitLinearPerp("key", "secret", "USDT", settings)
+	btc := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
+	eth := bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductPerp, "ETH-USDT")
+
+	first, err := client.WebSocket().WatchOrders(context.Background(), exchange.WatchRequest{Instrument: btc})
+	if err != nil {
+		t.Fatalf("first WatchOrders: %v", err)
+	}
+	defer first.Close()
+	second, err := client.WebSocket().WatchOrders(context.Background(), exchange.WatchRequest{Instrument: eth})
+	if err != nil {
+		t.Fatalf("second WatchOrders: %v", err)
+	}
+	defer second.Close()
+
+	if got := subscribeCount("order"); got != 1 {
+		t.Fatalf("order subscriptions = %d, want 1 all-in-one Bybit private topic", got)
+	}
+}
+
 func exerciseSpotWebSocketEveryMethod(t *testing.T, ws exchange.SpotWebSocket, instrument exchange.Instrument, orderID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -462,6 +491,69 @@ func newBybitLifecycleWSServer(t *testing.T) (string, func(string), func()) {
 		server.Close()
 	}
 	return "ws" + strings.TrimPrefix(server.URL, "http"), waitClosed, closeServer
+}
+
+func newBybitCountingPrivateWSServer(t *testing.T) (string, func(string) int64, func()) {
+	t.Helper()
+	upgrader := websocket.Upgrader{}
+	var counts sync.Map
+	var mu sync.Mutex
+	var conns []*websocket.Conn
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		mu.Lock()
+		conns = append(conns, conn)
+		mu.Unlock()
+		defer conn.Close()
+		for {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req bybitScriptedWSRequest
+			if err := json.Unmarshal(payload, &req); err != nil {
+				t.Errorf("decode request: %v", err)
+				return
+			}
+			switch req.Op {
+			case "auth":
+				_ = conn.WriteJSON(map[string]any{"op": "auth", "success": true, "retCode": 0})
+			case "subscribe":
+				if len(req.Args) == 0 {
+					t.Errorf("subscribe missing topic")
+					return
+				}
+				var topic string
+				if err := json.Unmarshal(req.Args[0], &topic); err != nil {
+					t.Errorf("decode topic: %v", err)
+					return
+				}
+				value, _ := counts.LoadOrStore(topic, &atomic.Int64{})
+				value.(*atomic.Int64).Add(1)
+				_ = conn.WriteJSON(map[string]any{"op": "subscribe", "req_id": req.ReqID, "success": true})
+			}
+		}
+	}))
+	subscribeCount := func(topic string) int64 {
+		value, ok := counts.Load(topic)
+		if !ok {
+			return 0
+		}
+		return value.(*atomic.Int64).Load()
+	}
+	closeServer := func() {
+		mu.Lock()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+		mu.Unlock()
+		server.Close()
+	}
+	return "ws" + strings.TrimPrefix(server.URL, "http"), subscribeCount, closeServer
 }
 
 type bybitScriptedWSRequest struct {

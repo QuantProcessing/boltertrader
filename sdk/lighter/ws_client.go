@@ -45,6 +45,11 @@ type websocketConn interface {
 	Close() error
 }
 
+type pongDeadlineConn interface {
+	SetReadDeadline(time.Time) error
+	SetPongHandler(func(string) error)
+}
+
 type subscription struct {
 	authToken   *string
 	rawHandler  func([]byte)
@@ -185,6 +190,10 @@ func (c *WebsocketClient) Connect() error {
 	if err != nil {
 		return err
 	}
+	if err := installPongDeadline(conn, time.Now, c.readDeadlineTimeout()); err != nil {
+		_ = conn.Close()
+		return err
+	}
 
 	c.Conn = conn
 	c.conn = conn
@@ -254,14 +263,38 @@ func (c *WebsocketClient) readLoop() {
 				c.reportError(err)
 				return
 			}
-			// Extend read deadline on any message received
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			// Extend read deadline on any application message received. Control
+			// pongs refresh the same deadline through the handler installed at
+			// connection time, so an otherwise quiet private stream stays alive.
+			_ = conn.SetReadDeadline(time.Now().Add(c.readDeadlineTimeout()))
 			if err := c.handleIncomingFrame(messageType, message); err != nil {
 				c.Logger.Errorw("failed to handle websocket frame", "error", err)
 				c.reportError(err)
 			}
 		}
 	}
+}
+
+func (c *WebsocketClient) readDeadlineTimeout() time.Duration {
+	timeout := 2 * c.config.KeepaliveInterval
+	if timeout <= 0 {
+		return 60 * time.Second
+	}
+	return timeout
+}
+
+func installPongDeadline(conn pongDeadlineConn, now func() time.Time, timeout time.Duration) error {
+	if conn == nil || now == nil || timeout <= 0 {
+		return fmt.Errorf("websocket pong deadline configuration is invalid")
+	}
+	refresh := func(string) error {
+		return conn.SetReadDeadline(now().Add(timeout))
+	}
+	if err := refresh(""); err != nil {
+		return err
+	}
+	conn.SetPongHandler(refresh)
+	return nil
 }
 
 func (c *WebsocketClient) pingLoop() {

@@ -142,6 +142,20 @@ func TestFirstPromotionSliceImplementsExactOrderLookup(t *testing.T) {
 	}
 }
 
+func TestBybitPromotionSliceImplementsExactOrderLookup(t *testing.T) {
+	transport := new(noSendTransport)
+	for _, row := range openAPIRows(transport)[8:11] {
+		t.Run(row.name, func(t *testing.T) {
+			if _, ok := row.client.(exchange.ExactOrderLookup); !ok {
+				t.Fatalf("%s does not implement exchange.ExactOrderLookup", row.name)
+			}
+		})
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("constructing Bybit exact lookup clients performed %d network calls", got)
+	}
+}
+
 func TestOpenAPIPlaceOrderRejectsInvalidNormalizedRequestBeforeNetwork(t *testing.T) {
 	transport := &noSendTransport{}
 	for _, row := range openAPIRows(transport) {

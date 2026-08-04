@@ -452,6 +452,18 @@ func (coordinator *Coordinator) ReconcileDue(ctx context.Context, accountID doma
 		return report, ErrRecoveryIncomplete
 	}
 	if report.Claimed == 0 {
+		status := coordinator.AccountWriteStatus(accountID)
+		if status.WriteReady {
+			report.WriteReady = true
+			return report, nil
+		}
+		recovery, recoveryErr := coordinator.recoverAccount(ctx, accountID)
+		report.WriteReady = recovery.WriteReady
+		report.Resolved += recovery.Resolved
+		report.Unresolved += recovery.Unresolved
+		if recoveryErr != nil {
+			return report, recoveryErr
+		}
 		return report, nil
 	}
 
@@ -462,6 +474,16 @@ func (coordinator *Coordinator) ReconcileDue(ctx context.Context, accountID doma
 		return report, recoveryErr
 	}
 	return report, nil
+}
+
+func (coordinator *Coordinator) AccountWriteStatus(accountID domain.AccountID) AccountWriteStatus {
+	gate := coordinator.gate(accountID)
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if gate.ready && !gate.recovering {
+		return AccountWriteStatus{WriteReady: true}
+	}
+	return AccountWriteStatus{Reason: ReasonRecoveryRequired}
 }
 
 // SuspendAccount closes the in-memory write gate immediately. It is used when
@@ -852,7 +874,8 @@ func resultFromStored(command store.StoredCommand) Result {
 	return Result{
 		CommandID: command.CommandID, GatewayOrderID: command.GatewayOrderID,
 		ClientOrderID: command.ClientOrderID, State: command.State,
-		ResourceVersion: command.ResourceVersion, VenueOrderID: command.VenueOrderID,
+		ResourceVersion: command.ResourceVersion, AccountID: command.AccountID,
+		InstrumentID: command.InstrumentID, VenueOrderID: command.VenueOrderID,
 	}
 }
 

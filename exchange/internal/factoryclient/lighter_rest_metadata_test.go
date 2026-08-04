@@ -44,11 +44,59 @@ func TestLighterBuildMetasAcceptsZeroMarketID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lighterBuildMetas: %v", err)
 	}
-	if got := metas["ETH"].marketID; got != 0 {
+	if got := metas["ETH-USDC"].marketID; got != 0 {
 		t.Fatalf("symbol market id = %d, want 0", got)
 	}
-	if got := byID[0].instrument.Identity.Symbol; got != "ETH" {
-		t.Fatalf("id 0 symbol = %q, want ETH", got)
+	if got := byID[0].instrument.Identity.Symbol; got != "ETH-USDC" {
+		t.Fatalf("id 0 symbol = %q, want ETH-USDC", got)
+	}
+}
+
+func TestLighterBuildMetasSeparatesCanonicalAndNativeSymbols(t *testing.T) {
+	tests := []struct {
+		name       string
+		product    exchange.Product
+		marketType string
+		response   *lighter.OrderBookDetailsResponse
+		wantSymbol string
+	}{
+		{
+			name:       "spot slash symbol",
+			product:    exchange.ProductSpot,
+			marketType: lighterSpot,
+			response: &lighter.OrderBookDetailsResponse{Code: 200, SpotOrderBookDetails: []*lighter.OrderBookDetail{{
+				Symbol: "ETH/USDC", MarketId: 2048, MarketType: lighterSpot,
+				MinBaseAmount: "0.001", MinQuoteAmount: "5", SizeDecimals: 3, PriceDecimals: 2, SupportedQuoteDecimals: 6,
+			}}},
+			wantSymbol: "ETH-USDC",
+		},
+		{
+			name:       "perp base-only symbol",
+			product:    exchange.ProductPerp,
+			marketType: lighterPerp,
+			response: &lighter.OrderBookDetailsResponse{Code: 200, OrderBookDetails: []*lighter.OrderBookDetail{{
+				Symbol: "BTC", MarketId: 1, MarketType: lighterPerp,
+				MinBaseAmount: "0.001", MinQuoteAmount: "5", SizeDecimals: 3, PriceDecimals: 2, SupportedQuoteDecimals: 6,
+			}}},
+			wantSymbol: "BTC-USDC",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			metas, _, err := lighterBuildMetas(test.response, test.product, test.marketType)
+			if err != nil {
+				t.Fatalf("lighterBuildMetas: %v", err)
+			}
+			meta, ok := metas[test.wantSymbol]
+			if !ok {
+				t.Fatalf("canonical metadata key %q is missing", test.wantSymbol)
+			}
+			identity := meta.instrument.Identity
+			if identity.Symbol != test.wantSymbol || identity.NativeSymbol == identity.Symbol {
+				t.Fatalf("symbols = canonical %q native %q, want distinct canonical %q", identity.Symbol, identity.NativeSymbol, test.wantSymbol)
+			}
+		})
 	}
 }
 
@@ -73,7 +121,7 @@ func TestLighterBuildMetasPublishesEncodingScales(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lighterBuildMetas: %v", err)
 	}
-	encoding := metas["BTC"].instrument.Encoding
+	encoding := metas["BTC-USDC"].instrument.Encoding
 	if !encoding.PriceScale.Valid || encoding.PriceScale.Value != 100 {
 		t.Fatalf("price scale = %+v, want 100", encoding.PriceScale)
 	}

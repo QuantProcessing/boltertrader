@@ -372,6 +372,34 @@ func TestWSClientPingLoopSendsControlPing(t *testing.T) {
 	require.Zero(t, rec.jsonCount.Load())
 }
 
+func TestInstallPongDeadlineRefreshesReadDeadline(t *testing.T) {
+	start := time.Date(2026, 8, 2, 1, 0, 0, 0, time.UTC)
+	now := start
+	rec := &pongDeadlineRecorder{}
+
+	require.NoError(t, installPongDeadline(rec, func() time.Time { return now }, time.Minute))
+	require.Equal(t, []time.Time{start.Add(time.Minute)}, rec.deadlines)
+	require.NotNil(t, rec.handler)
+
+	now = start.Add(30 * time.Second)
+	require.NoError(t, rec.handler("pong"))
+	require.Equal(t, []time.Time{start.Add(time.Minute), start.Add(90 * time.Second)}, rec.deadlines)
+}
+
+type pongDeadlineRecorder struct {
+	deadlines []time.Time
+	handler   func(string) error
+}
+
+func (rec *pongDeadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	rec.deadlines = append(rec.deadlines, deadline)
+	return nil
+}
+
+func (rec *pongDeadlineRecorder) SetPongHandler(handler func(string) error) {
+	rec.handler = handler
+}
+
 type recordingConn struct {
 	pingCount atomic.Int64
 	jsonCount atomic.Int64

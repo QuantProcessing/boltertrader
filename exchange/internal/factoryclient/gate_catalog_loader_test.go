@@ -28,7 +28,7 @@ func TestGateInstrumentLoaderLoadsSpotAndUSDTPerpCatalogMetadata(t *testing.T) {
 		t.Fatalf("spot instruments = %d, want 1", len(spotSnapshot.Instruments))
 	}
 	spot := spotSnapshot.Instruments[0]
-	if spot.Identity.NativeSymbol != "BTC_USDT" || spot.Identity.Symbol != "BTC_USDT" ||
+	if spot.Identity.NativeSymbol != "BTC_USDT" || spot.Identity.Symbol != "BTC-USDT" ||
 		spot.Identity.SettleAsset != "" || spot.Identity.Venue != exchange.VenueGate ||
 		spot.Identity.Product != exchange.ProductSpot {
 		t.Fatalf("spot identity = %+v", spot.Identity)
@@ -52,7 +52,7 @@ func TestGateInstrumentLoaderLoadsSpotAndUSDTPerpCatalogMetadata(t *testing.T) {
 		t.Fatalf("perp instruments = %d, want 1", len(perpSnapshot.Instruments))
 	}
 	perp := perpSnapshot.Instruments[0]
-	if perp.Identity.NativeSymbol != "BTC_USDT" || perp.Identity.Symbol != "BTC_USDT" ||
+	if perp.Identity.NativeSymbol != "BTC_USDT" || perp.Identity.Symbol != "BTC-USDT" ||
 		perp.Identity.SettleAsset != "USDT" || perp.Identity.Venue != exchange.VenueGate ||
 		perp.Identity.Product != exchange.ProductPerp {
 		t.Fatalf("perp identity = %+v", perp.Identity)
@@ -143,7 +143,7 @@ func TestGateCatalogFiltersUnsupportedRowsBeforeValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spot catalog instruments: %v", err)
 	}
-	if len(spot) != 1 || spot[0].Identity.NativeSymbol != "BTC_USDT" {
+	if len(spot) != 1 || spot[0].Identity.NativeSymbol != "BTC_USDT" || spot[0].Identity.Symbol != "BTC-USDT" {
 		t.Fatalf("spot instruments = %+v", spot)
 	}
 
@@ -155,7 +155,7 @@ func TestGateCatalogFiltersUnsupportedRowsBeforeValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("perp catalog instruments: %v", err)
 	}
-	if len(perp) != 1 || perp[0].Identity.NativeSymbol != "BTC_USDT" {
+	if len(perp) != 1 || perp[0].Identity.NativeSymbol != "BTC_USDT" || perp[0].Identity.Symbol != "BTC-USDT" {
 		t.Fatalf("perp instruments = %+v", perp)
 	}
 }

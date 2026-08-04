@@ -161,6 +161,41 @@ func TestManagerPrivateStreamStateParticipatesInWriteReadiness(t *testing.T) {
 	}
 }
 
+func TestManagerWriteReadinessRequiresExactLookupClient(t *testing.T) {
+	service, _ := catalog.NewService(time.Minute, time.Now)
+	handle := &fakeHandle{
+		exactLookupUnavailable: true,
+		instruments: []exchange.Instrument{
+			accountTestInstrument(exchange.VenueGate, exchange.ProductPerp, "ETH-USDT", "ETH_USDT", "USDT"),
+		},
+	}
+	manager, err := newManager(context.Background(), []config.AccountConfig{
+		{AccountID: "gate", Venue: "gate", Product: "perp", Environment: "testnet", Settlement: "USDT", Credentials: apiCredentials(t)},
+	}, Options{GatewayCatalog: service}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
+		return handle, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	if _, err := manager.Refresh(context.Background(), "gate"); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := manager.Status("gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.ReadReady || status.WriteReady || status.Reason != "exact_lookup_unavailable" {
+		t.Fatalf("status=%+v, want read-ready write-blocked by exact lookup", status)
+	}
+
+	resources := manager.Accounts()
+	if len(resources) != 1 || resources[0].WriteReady || resources[0].Reason != "exact_lookup_unavailable" {
+		t.Fatalf("accounts=%+v, want write-blocked by exact lookup", resources)
+	}
+}
+
 func TestManagerConstructionFailureClosesPriorClientsAndRedactsCause(t *testing.T) {
 	service, _ := catalog.NewService(time.Minute, time.Now)
 	first := new(fakeHandle)
@@ -286,11 +321,12 @@ func (transport *countingTransport) RoundTrip(*http.Request) (*http.Response, er
 }
 
 type fakeHandle struct {
-	instruments   []exchange.Instrument
-	refreshErr    error
-	refreshes     atomic.Int64
-	closes        atomic.Int64
-	closeFailures int64
+	instruments            []exchange.Instrument
+	exactLookupUnavailable bool
+	refreshErr             error
+	refreshes              atomic.Int64
+	closes                 atomic.Int64
+	closeFailures          int64
 }
 
 func (handle *fakeHandle) refresh(context.Context) ([]exchange.Instrument, error) {
@@ -308,6 +344,7 @@ func (handle *fakeHandle) close() error {
 
 func (handle *fakeHandle) spot() (exchange.SpotClient, bool) { return nil, false }
 func (handle *fakeHandle) perp() (exchange.PerpClient, bool) { return nil, false }
+func (handle *fakeHandle) exactLookupReady() bool            { return !handle.exactLookupUnavailable }
 
 func allTwentyAccountConfigs(t *testing.T) ([]config.AccountConfig, secret.StaticProvider) {
 	t.Helper()

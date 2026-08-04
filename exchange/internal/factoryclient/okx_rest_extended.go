@@ -102,6 +102,31 @@ func (client *okxPerpClient) FundingRate(ctx context.Context, req exchange.Fundi
 	}, nil
 }
 
+func (client *okxPerpClient) MarkPrice(ctx context.Context, instrument exchange.Instrument) (exchange.MarkPriceEvent, error) {
+	if err := okxReady(ctx, exchange.ProductPerp, "MarkPrice", client.sdk); err != nil {
+		return exchange.MarkPriceEvent{}, err
+	}
+	if err := okxValidateSwapInstrument(instrument); err != nil {
+		return exchange.MarkPriceEvent{}, okxInvalid(exchange.ProductPerp, "MarkPrice", err.Error())
+	}
+	row, err := client.sdk.GetMarkPrice(ctx, okxSwapType, instrument.Identity.NativeSymbol)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, okxNormalizeErr(exchange.ProductPerp, "MarkPrice", err)
+	}
+	if row == nil || row.InstId != instrument.Identity.NativeSymbol {
+		return exchange.MarkPriceEvent{}, okxMalformed(exchange.ProductPerp, "MarkPrice", "response instrument does not match request")
+	}
+	price, err := okxPositiveDecimal(row.MarkPx)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, okxMalformed(exchange.ProductPerp, "MarkPrice", "invalid mark price")
+	}
+	at, err := okxMillis(row.Ts)
+	if err != nil {
+		return exchange.MarkPriceEvent{}, okxMalformed(exchange.ProductPerp, "MarkPrice", "invalid mark timestamp")
+	}
+	return exchange.MarkPriceEvent{Instrument: instrument, Price: price, Time: at}, nil
+}
+
 func (client *okxPerpClient) FundingRateHistory(ctx context.Context, req exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error) {
 	if err := okxReady(ctx, exchange.ProductPerp, "FundingRateHistory", client.sdk); err != nil {
 		return exchange.FundingRatePage{}, err

@@ -57,6 +57,37 @@ func TestClient_AccountAndModeEndpointPaths(t *testing.T) {
 	}
 }
 
+func TestClient_GetIncomeHistorySendsFundingFeePagination(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fapi/v1/income", func(w http.ResponseWriter, r *http.Request) {
+		assertSignedGet(t, r)
+		query := r.URL.Query()
+		if query.Get("incomeType") != "FUNDING_FEE" || query.Get("symbol") != "BTCUSDT" ||
+			query.Get("startTime") != "1700000000000" || query.Get("endTime") != "1700003600000" ||
+			query.Get("page") != "2" || query.Get("limit") != "1000" {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`[{"symbol":"BTCUSDT","incomeType":"FUNDING_FEE","income":"-0.12","asset":"USDT","time":1700000001000,"tranId":123,"tradeId":"456","info":"funding fee"}]`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient().
+		WithBaseURL(server.URL).
+		WithCredentials("key", "secret").
+		WithRateLimiter(nil)
+	rows, err := client.GetIncomeHistory(context.Background(), IncomeHistoryQuery{
+		Symbol: "BTCUSDT", IncomeType: "FUNDING_FEE", StartTime: 1700000000000,
+		EndTime: 1700003600000, Page: 2, Limit: 1000,
+	})
+	if err != nil {
+		t.Fatalf("GetIncomeHistory: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TranID != 123 || rows[0].Income != "-0.12" {
+		t.Fatalf("income rows=%+v", rows)
+	}
+}
+
 func assertSignedGet(t *testing.T, r *http.Request) {
 	t.Helper()
 	if r.Method != http.MethodGet {

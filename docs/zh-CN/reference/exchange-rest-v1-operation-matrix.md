@@ -62,7 +62,7 @@ compile time 不包含该 method。
 | OpenOrders | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | OrderHistory | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | Fills | `OrderREST` | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
-| LookupExactOrder | `ExactOrderLookup` | A | A | A | A | A | A | A | A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| LookupExactOrder | `ExactOrderLookup` | A | A | A | A | A | A | A | A | A | A | A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Balances | account REST | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A | A |
 | SpotAccount | `SpotAccountREST` | A | N/A | A | N/A | A | N/A | A | N/A | A | N/A | N/A | A | N/A | N/A | A | N/A | A | N/A | A | N/A |
 | PerpAccount | `PerpAccountREST` | N/A | A | N/A | A | N/A | A | N/A | A | N/A | A | A | N/A | A | A | N/A | A | N/A | A | N/A | A |

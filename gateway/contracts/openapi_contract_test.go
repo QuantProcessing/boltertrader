@@ -57,7 +57,13 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 		"/v1/fills":                       {"get": "listFills"},
 		"/v1/balances":                    {"get": "listBalances"},
 		"/v1/positions":                   {"get": "listPositions"},
+		"/v1/funding-payments":            {"get": "listFundingPayments"},
 		"/v1/funding-rates":               {"get": "listFundingRates"},
+		"/v1/funding-rates/history":       {"get": "listFundingRateHistory"},
+		"/v1/order-book":                  {"get": "getOrderBook"},
+		"/v1/bbo":                         {"get": "getBBO"},
+		"/v1/mark-price":                  {"get": "getMarkPrice"},
+		"/v1/public/ws":                   {"get": "streamPublicMarket"},
 		"/v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"put": "setLeverage"},
 		"/v1/ws": {"get": "streamPrivateEvents"},
 	}
@@ -120,6 +126,70 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		"PrivateEvent": {
 			required:   []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
 			properties: []string{"account_id", "boot_id", "event_id", "kind", "occurred_at", "payload", "resource_version", "sequence"},
+		},
+		"PublicMarketEvent": {
+			required:   []string{"account_id", "boot_id", "event_id", "event_type", "instrument_id", "kind", "occurred_at", "payload", "sequence"},
+			properties: []string{"account_id", "boot_id", "event_id", "event_type", "instrument_id", "kind", "occurred_at", "payload", "sequence"},
+		},
+		"BookLevel": {
+			required:   []string{"price", "quantity"},
+			properties: []string{"price", "quantity"},
+		},
+		"PageInfo": {
+			required:   []string{"has_more", "has_more_known"},
+			properties: []string{"cursor", "has_more", "has_more_known", "limit", "window_end", "window_start"},
+		},
+		"OptionalDecimal": {
+			required:   []string{"valid", "value"},
+			properties: []string{"valid", "value"},
+		},
+		"FundingRateProjection": {
+			required:   []string{"mark_price", "rate"},
+			properties: []string{"funding_time", "mark_price", "next_funding_time", "observed_at", "rate"},
+		},
+		"FundingRateResponse": {
+			required:   []string{"account_id", "funding_rate", "instrument_id"},
+			properties: []string{"account_id", "funding_rate", "instrument_id"},
+		},
+		"OrderBookProjection": {
+			required:   []string{"account_id", "asks", "bids", "instrument_id", "observed_at", "page"},
+			properties: []string{"account_id", "asks", "bids", "instrument_id", "observed_at", "page", "sequence"},
+		},
+		"BBOProjection": {
+			required:   []string{"account_id", "ask", "bid", "instrument_id", "observed_at"},
+			properties: []string{"account_id", "ask", "bid", "instrument_id", "observed_at"},
+		},
+		"MarkPriceProjection": {
+			required:   []string{"account_id", "instrument_id", "observed_at", "price"},
+			properties: []string{"account_id", "instrument_id", "observed_at", "price"},
+		},
+		"FundingHistoryProjection": {
+			required:   []string{"account_id", "instrument_id", "items"},
+			properties: []string{"account_id", "instrument_id", "items", "next_cursor"},
+		},
+		"CapabilityOperations": {
+			required:   nil,
+			properties: []string{"account", "account_funding_payments", "amend", "balances", "cancel", "fills", "funding", "funds_transfer", "leverage", "margin_mode", "open_orders", "order_history", "place", "position_mode", "positions", "private_stream"},
+		},
+		"FundingPayment": {
+			required:   []string{"account_id", "amount", "fact_id", "instrument_id", "product", "settlement_asset", "venue", "venue_environment"},
+			properties: []string{"account_id", "amount", "effective_at", "fact_id", "formula_version", "instrument_id", "observed_at", "payment_id", "product", "revision", "settlement_asset", "source_ref", "supersedes_fact_id", "venue", "venue_environment", "version"},
+		},
+		"FundingPaymentScope": {
+			required:   []string{"account_id", "all_instruments", "end", "start"},
+			properties: []string{"account_id", "all_instruments", "end", "instrument_id", "settlement_asset", "start"},
+		},
+		"FundingPaymentTraversal": {
+			required:   []string{"has_more", "has_more_known"},
+			properties: []string{"cursor", "has_more", "has_more_known", "limit"},
+		},
+		"FundingPaymentWatermark": {
+			required:   []string{"observed_at", "revision", "verified"},
+			properties: []string{"complete_through", "cursor", "effective_through", "observed_at", "revision", "verified"},
+		},
+		"FundingPaymentPage": {
+			required:   []string{"account_id", "as_of", "end", "items", "page", "pagination_traversal", "scope", "start", "status", "watermark"},
+			properties: []string{"account_id", "as_of", "complete_through", "end", "instrument_id", "items", "next_cursor", "page", "pagination_traversal", "revision", "scope", "settlement_asset", "start", "status", "watermark"},
 		},
 		"ResyncRequiredEvent": {
 			required:   nil,

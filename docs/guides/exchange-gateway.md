@@ -27,20 +27,21 @@ peer product.
 ## Service shape
 
 ```text
-REST + private WebSocket + /metrics
-                 |
-          Exchange Gateway
-        /        |          \
-   Catalog   Order engine   Event hub
-        \        |          /
-        Account/client manager
-                 |
-            exchange clients
+REST + public/private WebSocket + /metrics
+                      |
+               Exchange Gateway
+             /        |          \
+        Catalog   Order engine   Event hub
+             \        |          /
+             Account/client manager
+                      |
+                 exchange clients
 ```
 
 The process exposes:
 
 - authenticated versioned REST under `/v1`;
+- authenticated account-scoped public market events at `/v1/public/ws`;
 - authenticated private events at `/v1/ws`;
 - authenticated Prometheus metrics at `/metrics`;
 - health at `/v1/health/live` and readiness at `/v1/health/ready`.
@@ -118,15 +119,42 @@ reusing it with a different payload returns a conflict. A post-handoff timeout
 becomes `uncertain`. The gateway never blindly resends it.
 
 Queries include `/v1/orders`, `/v1/open-orders`, `/v1/fills`, `/v1/balances`,
-`/v1/positions`, `/v1/funding-rates`, `/v1/accounts`, `/v1/capabilities`,
-`/v1/rules`, and `/v1/risk-limits`. The complete contract is
+`/v1/positions`, `/v1/funding-rates`, `/v1/funding-rates/history`,
+`/v1/order-book`, `/v1/bbo`, `/v1/mark-price`, `/v1/accounts`,
+`/v1/capabilities`, `/v1/rules`, and `/v1/risk-limits`. The complete contract is
 [OpenAPI 3.1](../../api/exchange-gateway/v1/openapi.yaml).
+
+`/v1/fills` accepts an optional `gateway_order_id` for exact order fills. The
+gateway first verifies the caller owns that Gateway order, then maps it to the
+internal venue order id and filters venue fills without exposing the venue id.
+If `account_id` or `instrument_id` is also supplied, it must match the stored
+order identity. `next_cursor` is emitted only when the venue page proves a known
+continuation.
 
 Gateway V1 does not execute leverage mutations. The stable leverage route
 returns `501` and records a safe unsupported audit event until leverage changes
 have the same durable idempotency and restart-reconciliation model as orders.
 The underlying `exchange.PerpClient` capability remains available to direct
 driver users.
+
+## Public market data
+
+Public market reads still require the Gateway bearer token plus an
+`account_id` and canonical `instrument_id`. The account selects the
+Gateway-owned venue client and binds the request to its configured
+product/environment; callers never provide or receive venue credentials,
+native symbols, native IDs, instrument encodings, or raw venue errors.
+
+`/v1/public/ws` accepts one of `order_book`, `bbo`, `mark_price`, or
+`funding_rate`. The Gateway subscribes to the venue stream before establishing
+the authoritative snapshot, then sends that snapshot as sequence 1. Order book,
+BBO, and funding use normalized REST snapshots; mark price uses the first
+bounded mark stream event because the exchange contract exposes mark as an
+independent stream capability rather than coupling it to funding. This stream
+deliberately has no cursor replay: every connection has a boot ID and starts
+from a fresh snapshot. A venue gap, malformed update, oversized payload, or
+upstream error emits a bounded `resync_required` event and closes with
+WebSocket policy violation; the client reconnects and receives a new snapshot.
 
 ## Private events
 

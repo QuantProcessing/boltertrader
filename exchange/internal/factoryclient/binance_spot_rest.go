@@ -352,22 +352,46 @@ func (client *binanceSpotClient) Fills(ctx context.Context, request exchange.Fil
 		return exchange.FillPage{}, binanceSpotNormalizeErr(err, "Fills")
 	}
 	fills := make([]exchange.Fill, 0, len(res))
+	nextCursor := ""
 	for _, native := range res {
 		fill, err := binanceSpotFill(native, symbol, instrument.Identity.NativeSymbol)
 		if err != nil {
 			return exchange.FillPage{}, binanceSpotMalformed("Fills", err.Error())
+		}
+		if request.Limit > 0 && len(res) >= request.Limit {
+			cursor, ok, parseErr := binanceFillNextCursor(fill.FillID)
+			if parseErr != nil {
+				return exchange.FillPage{}, binanceSpotMalformed("Fills", "fill id is not a numeric trade id")
+			}
+			if ok {
+				nextCursor = cursor
+			} else {
+				nextCursor = ""
+			}
 		}
 		fills = append(fills, fill)
 	}
 	return exchange.FillPage{
 		Fills: fills,
 		Page: exchange.PageInfo{
-			Cursor:      request.Cursor,
-			Limit:       request.Limit,
-			WindowStart: request.Start,
-			WindowEnd:   request.End,
+			Cursor: nextCursor, Limit: request.Limit, WindowStart: request.Start, WindowEnd: request.End,
+			HasMoreKnown: true, HasMore: nextCursor != "",
 		},
 	}, nil
+}
+
+func binanceFillNextCursor(fillID string) (string, bool, error) {
+	id, err := strconv.ParseInt(fillID, 10, 64)
+	if err != nil || id < 0 {
+		if err == nil {
+			err = fmt.Errorf("negative fill id")
+		}
+		return "", false, err
+	}
+	if id == 1<<63-1 {
+		return "", false, nil
+	}
+	return strconv.FormatInt(id+1, 10), true, nil
 }
 
 func (client *binanceSpotClient) Balances(ctx context.Context) ([]exchange.Balance, error) {

@@ -400,6 +400,7 @@
         "Candles",
         "Fills",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -422,6 +423,7 @@
         "WatchPublicTrades"
       ],
       "fixtures": [
+        "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
       ],
@@ -444,6 +446,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -471,6 +474,7 @@
         "WatchPublicTrades"
       ],
       "fixtures": [
+        "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
       ],
@@ -493,6 +497,7 @@
         "FundingRate",
         "FundingRateHistory",
         "Instruments",
+        "LookupExactOrder",
         "OpenOrders",
         "OrderBook",
         "OrderHistory",
@@ -520,6 +525,7 @@
         "WatchPublicTrades"
       ],
       "fixtures": [
+        "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
       ],
@@ -4808,6 +4814,78 @@
       ]
     },
     {
+      "id": "exchange.FundingPayment",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.FundingPaymentHistoryRequest",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.FundingPaymentPage",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentREST",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.FundingPaymentREST.FundingPayments",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.FundingPaymentStatus",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentWatermark",
+      "kind": "type",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentsComplete",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentsCompleteEmpty",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentsIncomplete",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentsTemporarilyUnavailable",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
+      "id": "exchange.FundingPaymentsUnsupported",
+      "kind": "const",
+      "coverage": "contract",
+      "tests": ["TestFundingPaymentPageStatusesAreExactScopeOnly"]
+    },
+    {
       "id": "exchange.FundingRate",
       "kind": "type",
       "coverage": "contract",
@@ -5800,6 +5878,24 @@
       "tests": [
         "TestProductClientMethodSets"
       ]
+    },
+    {
+      "id": "exchange.PerpFundingPaymentREST",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestFundingPaymentRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.PerpMarkPriceREST",
+      "kind": "interface",
+      "coverage": "compile",
+      "tests": ["TestPerpMarkPriceRESTIsOptionalPerpFacet"]
+    },
+    {
+      "id": "exchange.PerpMarkPriceREST.MarkPrice",
+      "kind": "interface_method",
+      "coverage": "compile",
+      "tests": ["TestPerpMarkPriceRESTIsOptionalPerpFacet"]
     },
     {
       "id": "exchange.PerpClient.Close",

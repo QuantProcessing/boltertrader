@@ -23,11 +23,12 @@ var (
 )
 
 type gateOpenAPIRouter struct {
-	mu                sync.Mutex
-	placeBodies       []map[string]any
-	futuresSettleSeen string
-	seen              []string
-	failLeverage      bool
+	mu                       sync.Mutex
+	placeBodies              []map[string]any
+	futuresSettleSeen        string
+	seen                     []string
+	failLeverage             bool
+	futuresPositionsResponse string
 }
 
 func (router *gateOpenAPIRouter) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -130,6 +131,9 @@ func (router *gateOpenAPIRouter) RoundTrip(request *http.Request) (*http.Respons
 	case "/futures/usdt/accounts":
 		return gateOpenAPIJSONResponse(`{"total":"100","available":"90","position_margin":"10","unrealised_pnl":"1","currency":"USDT"}`), nil
 	case "/futures/usdt/positions":
+		if router.futuresPositionsResponse != "" {
+			return gateOpenAPIJSONResponse(router.futuresPositionsResponse), nil
+		}
 		return gateOpenAPIJSONResponse(`[{"contract":"BTC_USDT","size":1,"leverage":"5","value":"100","margin":"10","entry_price":"99","liq_price":"50","mark_price":"100","unrealised_pnl":"1"}]`), nil
 	case "/futures/usdt/funding_rate":
 		return gateOpenAPIJSONResponse(`[{"t":1720000000,"r":"0.0001"}]`), nil
@@ -166,6 +170,26 @@ func TestOpenAPIGateRESTExecutionMatrix(t *testing.T) {
 	assertGateOpenAPIPlaceShapes(t, router.placeBodies)
 }
 
+func TestGatePerpPositionsSkipsZeroSizeRows(t *testing.T) {
+	ctx := context.Background()
+	router := &gateOpenAPIRouter{
+		futuresPositionsResponse: `[{"contract":"BTC_USDT","size":0,"leverage":"5","value":"0","margin":"0","entry_price":"0","liq_price":"0","mark_price":"100","unrealised_pnl":"0"}]`,
+	}
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, router))
+	instrument := gateTestInstrument(exchange.ProductPerp)
+
+	positions, err := client.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
+	if err != nil {
+		t.Fatalf("Positions: %v", err)
+	}
+	if len(positions) != 0 {
+		t.Fatalf("positions = %+v, want zero-size Gate rows omitted", positions)
+	}
+	if !router.saw("GET /futures/usdt/positions?", "holding=true") {
+		t.Fatalf("Gate positions request did not ask for holding=true: %#v", router.seen)
+	}
+}
+
 func TestGateSDKFundingHistoryAndSetLeverageMethods(t *testing.T) {
 	router := &gateOpenAPIRouter{}
 	client := gate.NewClient().WithCredentials("key", "secret").WithBaseURL("https://openapi.invalid").WithHTTPClient(&http.Client{Transport: router})
@@ -176,6 +200,28 @@ func TestGateSDKFundingHistoryAndSetLeverageMethods(t *testing.T) {
 	leverage, err := client.SetFuturesLeverage(context.Background(), gate.SettleUSDT, "BTC_USDT", 5)
 	if err != nil || leverage.Leverage != "5" {
 		t.Fatalf("SetFuturesLeverage = %+v err=%v", leverage, err)
+	}
+}
+
+func TestGateFundingRateSetsObservedAtFromReceiveTime(t *testing.T) {
+	ctx := context.Background()
+	client := NewGateUSDTPerp("key", "secret", gateTestSettings(exchange.ProductPerp, &gateOpenAPIRouter{}))
+	instrument := gateTestInstrument(exchange.ProductPerp)
+
+	before := time.Now().UTC()
+	row, err := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("FundingRate: %v", err)
+	}
+	if row.ObservedAt.IsZero() {
+		t.Fatalf("FundingRate ObservedAt is zero: %+v", row)
+	}
+	if row.ObservedAt.Before(before) || row.ObservedAt.After(after) {
+		t.Fatalf("FundingRate ObservedAt = %s, want within [%s, %s]", row.ObservedAt, before, after)
+	}
+	if !row.FundingTime.IsZero() {
+		t.Fatalf("FundingRate FundingTime = %s, want zero because Gate current funding does not provide current period funding time", row.FundingTime)
 	}
 }
 
@@ -284,6 +330,29 @@ func TestGatePerpPlaceOrderConvertsNeutralBaseQuantityToContractCount(t *testing
 	}
 	if !ack.FilledQuantity.Equal(decimal.RequireFromString("0.05")) {
 		t.Fatalf("ack filled quantity = %s, want neutral base quantity 0.05", ack.FilledQuantity)
+	}
+}
+
+func TestGatePerpFillsPreserveFractionalCreateTime(t *testing.T) {
+	instrument := gateTestInstrument(exchange.ProductPerp)
+	fills := gateFuturesFills([]gate.MyFuturesTrade{{
+		ID:         2,
+		CreateTime: gate.NumberString("1783486598.248"),
+		Contract:   "BTC_USDT",
+		OrderID:    21,
+		Size:       50,
+		Price:      "1874.1",
+		Role:       "taker",
+		Text:       "t-101",
+		Fee:        "0.0468525",
+	}}, instrument, decimal.RequireFromString("0.001"))
+
+	if len(fills) != 1 {
+		t.Fatalf("fills = %d, want 1", len(fills))
+	}
+	want := time.Unix(1783486598, 248000000).UTC()
+	if got := fills[0].Time; !got.Equal(want) {
+		t.Fatalf("fill Time = %s, want %s", got, want)
 	}
 }
 

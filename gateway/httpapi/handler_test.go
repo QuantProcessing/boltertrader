@@ -20,6 +20,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
 
 func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *testing.T) {
@@ -66,7 +67,7 @@ func TestHandlerRejectsMalformedBodiesAndUnsupportedOrForbiddenSurfacesBeforeBac
 		{"duplicate key", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","account_id":"acct-b"}`, http.StatusBadRequest},
 		{"unknown field", http.MethodPost, "/v1/orders", `{"unknown":true}`, http.StatusBadRequest},
 		{"amend unsupported", http.MethodPatch, "/v1/orders/018f0000-0000-7000-8000-000000000002", `{}`, http.StatusNotImplemented},
-		{"order book absent", http.MethodGet, "/v1/order-book", "", http.StatusNotFound},
+		{"order book requires scope", http.MethodGet, "/v1/order-book", "", http.StatusBadRequest},
 		{"transfer absent", http.MethodPost, "/v1/transfers", `{}`, http.StatusNotFound},
 		{"credentials absent", http.MethodPost, "/v1/accounts/acct-a/credentials", `{}`, http.StatusNotFound},
 	}
@@ -116,6 +117,26 @@ func TestHandlerRegistersReferenceOrderAndPrivateAccountRESTInventory(t *testing
 		fixture.handler.ServeHTTP(recorder, request)
 		if recorder.Code != test.status {
 			t.Errorf("%s %s status=%d body=%s", test.method, test.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestHandlerAccountReadinessIncludesCoordinatorWriteGate(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.orders.writeBlocked = true
+	fixture.orders.writeReason = order.ReasonRecoveryRequired
+
+	for _, path := range []string{"/v1/accounts", "/v1/accounts/acct-a"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer test-token")
+		recorder := httptest.NewRecorder()
+		fixture.handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), `"write_ready":false`) ||
+			!strings.Contains(recorder.Body.String(), `"reason":"order_recovery_required"`) {
+			t.Fatalf("GET %s did not expose coordinator gate: %s", path, recorder.Body.String())
 		}
 	}
 }
@@ -273,6 +294,183 @@ func TestHandlerIdempotencyConflictReturnsExistingCommandAndRequestCorrelation(t
 	}
 }
 
+func TestHandlerListFillsByGatewayOrderIDFiltersNativeOrderAndHidesVenueOrderID(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	gatewayOrderID := domain.GatewayOrderID("018f0000-0000-7000-8000-000000000099")
+	fixture.orders.getResult = order.Result{
+		GatewayOrderID: gatewayOrderID,
+		AccountID:      "acct-a",
+		InstrumentID:   "binance:demo:spot:BTC-USDT",
+		VenueOrderID:   "venue-2",
+	}
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
+		Fills: []exchange.Fill{
+			{OrderID: "venue-1", FillID: "fill-1"},
+			{OrderID: "venue-2", FillID: "fill-2"},
+		},
+		Page: exchange.PageInfo{Cursor: "fill-2", HasMoreKnown: false, HasMore: false},
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fixture.orders.getCalls != 1 || fixture.orders.getPrincipal == "" || fixture.orders.getGatewayOrderID != gatewayOrderID {
+		t.Fatalf("order ownership lookup principal=%q gateway=%q calls=%d", fixture.orders.getPrincipal, fixture.orders.getGatewayOrderID, fixture.orders.getCalls)
+	}
+	var response struct {
+		Items []struct {
+			GatewayOrderID domain.GatewayOrderID `json:"gateway_order_id"`
+			Fill           exchange.Fill         `json:"fill"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor,omitempty"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items[0].GatewayOrderID != gatewayOrderID ||
+		response.Items[0].Fill.FillID != "fill-2" || response.Items[0].Fill.OrderID != "" || response.NextCursor != "" {
+		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
+	}
+}
+
+func TestHandlerListFillsByGatewayOrderIDAllowsInstrumentScopeWithoutAccountID(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	gatewayOrderID := domain.GatewayOrderID("018f0000-0000-7000-8000-000000000099")
+	fixture.orders.getResult = order.Result{
+		GatewayOrderID: gatewayOrderID,
+		AccountID:      "acct-a",
+		InstrumentID:   "binance:demo:spot:BTC-USDT",
+		VenueOrderID:   "venue-2",
+	}
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
+		Fills: []exchange.Fill{{OrderID: "venue-2", FillID: "fill-2"}},
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	ordinary := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:demo:spot:BTC-USDT", nil)
+	ordinary.Header.Set("Authorization", "Bearer test-token")
+	ordinaryRecorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(ordinaryRecorder, ordinary)
+	if ordinaryRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("ordinary instrument-only status=%d body=%s", ordinaryRecorder.Code, ordinaryRecorder.Body.String())
+	}
+}
+
+func TestHandlerListFillsByGatewayOrderIDFailsClosedOnMissingVenueOrScopeMismatch(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     order.Result
+		requestURL string
+		wantStatus int
+	}{
+		{
+			name: "missing venue order id",
+			result: order.Result{
+				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
+				AccountID:      "acct-a",
+				InstrumentID:   "binance:demo:spot:BTC-USDT",
+			},
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "account mismatch",
+			result: order.Result{
+				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
+				AccountID:      "acct-b",
+				InstrumentID:   "binance:demo:spot:BTC-USDT",
+				VenueOrderID:   "venue-2",
+			},
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "instrument mismatch",
+			result: order.Result{
+				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
+				AccountID:      "acct-a",
+				InstrumentID:   "binance:demo:spot:ETH-USDT",
+				VenueOrderID:   "venue-2",
+			},
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			wantStatus: http.StatusNotFound,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newHTTPFixture(t)
+			fixture.orders.getResult = test.result
+			fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{Fills: []exchange.Fill{{OrderID: "venue-2", FillID: "fill-2"}}}}
+
+			request := httptest.NewRequest(http.MethodGet, test.requestURL, nil)
+			request.Header.Set("Authorization", "Bearer test-token")
+			recorder := httptest.NewRecorder()
+
+			fixture.handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", recorder.Code, test.wantStatus, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerListFillsByGatewayOrderIDNotFoundDoesNotQueryVenue(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.orders.getErr = store.ErrNotFound
+	spot := &countingSpotClient{}
+	fixture.accounts.spot = spot
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?gateway_order_id=018f0000-0000-7000-8000-000000000099", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if spot.fillsCalls != 0 {
+		t.Fatalf("venue fills calls=%d, want 0", spot.fillsCalls)
+	}
+}
+
+func TestHandlerListFillsNextCursorRequiresKnownHasMore(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
+		Fills: []exchange.Fill{{FillID: "fill-1"}},
+		Page:  exchange.PageInfo{Cursor: "native-next", HasMoreKnown: false, HasMore: false},
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&pagination.limit=10", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "next_cursor") {
+		t.Fatalf("unexpected next_cursor: %s", recorder.Body.String())
+	}
+}
+
 type httpFixture struct {
 	handler  http.Handler
 	accounts *fakeHTTPAccounts
@@ -327,12 +525,23 @@ func newTestEventHub(t *testing.T) *gatewayevent.Hub {
 }
 
 type fakeHTTPOrders struct {
-	place       order.PlaceRequest
-	placeCalls  int
-	placeErr    error
-	placeResult order.Result
-	listCalls   int
-	cancelCalls int
+	place             order.PlaceRequest
+	placeCalls        int
+	placeErr          error
+	placeResult       order.Result
+	getCalls          int
+	getPrincipal      domain.PrincipalID
+	getGatewayOrderID domain.GatewayOrderID
+	getErr            error
+	getResult         order.Result
+	listCalls         int
+	cancelCalls       int
+	writeBlocked      bool
+	writeReason       string
+}
+
+func (orders *fakeHTTPOrders) AccountWriteStatus(domain.AccountID) order.AccountWriteStatus {
+	return order.AccountWriteStatus{WriteReady: !orders.writeBlocked, Reason: orders.writeReason}
 }
 
 func (orders *fakeHTTPOrders) Place(_ context.Context, request order.PlaceRequest) (order.Result, error) {
@@ -347,8 +556,17 @@ func (orders *fakeHTTPOrders) Place(_ context.Context, request order.PlaceReques
 	}, nil
 }
 
-func (*fakeHTTPOrders) Get(context.Context, domain.PrincipalID, domain.GatewayOrderID) (order.Result, error) {
-	return order.Result{}, nil
+func (orders *fakeHTTPOrders) Get(_ context.Context, principalID domain.PrincipalID, gatewayOrderID domain.GatewayOrderID) (order.Result, error) {
+	orders.getCalls++
+	orders.getPrincipal = principalID
+	orders.getGatewayOrderID = gatewayOrderID
+	if orders.getErr != nil {
+		return order.Result{}, orders.getErr
+	}
+	if orders.getResult.GatewayOrderID == "" {
+		return order.Result{}, store.ErrNotFound
+	}
+	return orders.getResult, nil
 }
 
 func (orders *fakeHTTPOrders) List(context.Context, order.ListRequest) ([]order.Result, error) {
@@ -362,13 +580,15 @@ func (orders *fakeHTTPOrders) Cancel(context.Context, order.CancelRequest) (orde
 }
 
 type fakeHTTPAccounts struct {
-	resource   account.Resource
-	status     account.Status
-	instrument exchange.Instrument
-	public     catalog.Instrument
-	capability capability.Row
-	spot       exchange.SpotClient
-	perp       exchange.PerpClient
+	resource    account.Resource
+	status      account.Status
+	instrument  exchange.Instrument
+	public      catalog.Instrument
+	instruments []catalog.Instrument
+	resolved    map[domain.InstrumentID]exchange.Instrument
+	capability  capability.Row
+	spot        exchange.SpotClient
+	perp        exchange.PerpClient
 }
 
 func (accounts *fakeHTTPAccounts) Accounts() []account.Resource {
@@ -387,9 +607,18 @@ func (accounts *fakeHTTPAccounts) Capability(domain.AccountID) (capability.Row, 
 	return capability.StaticMatrix().Rows[0], nil
 }
 func (accounts *fakeHTTPAccounts) Instruments(domain.AccountID) (catalog.Snapshot, error) {
+	if len(accounts.instruments) > 0 {
+		return catalog.Snapshot{Instruments: accounts.instruments}, nil
+	}
 	return catalog.Snapshot{Instruments: []catalog.Instrument{accounts.public}}, nil
 }
-func (accounts *fakeHTTPAccounts) Resolve(context.Context, domain.AccountID, domain.InstrumentID) (exchange.Instrument, error) {
+func (accounts *fakeHTTPAccounts) Resolve(_ context.Context, _ domain.AccountID, instrumentID domain.InstrumentID) (exchange.Instrument, error) {
+	if accounts.resolved != nil {
+		if instrument, ok := accounts.resolved[instrumentID]; ok {
+			return instrument, nil
+		}
+		return exchange.Instrument{}, account.ErrUnknownAccount
+	}
 	return accounts.instrument, nil
 }
 func (accounts *fakeHTTPAccounts) Spot(domain.AccountID) (exchange.SpotClient, error) {
@@ -414,6 +643,41 @@ func (fakeHTTPSpotClient) Balances(context.Context) ([]exchange.Balance, error) 
 	return []exchange.Balance{}, nil
 }
 func (fakeHTTPSpotClient) SpotAccount(context.Context) (exchange.SpotAccount, error) {
+	return exchange.SpotAccount{}, nil
+}
+
+type recordingSpotClient struct {
+	exchange.SpotClient
+	page exchange.FillPage
+	err  error
+}
+
+func (client recordingSpotClient) Fills(context.Context, exchange.FillsRequest) (exchange.FillPage, error) {
+	if client.err != nil {
+		return exchange.FillPage{}, client.err
+	}
+	return client.page, nil
+}
+func (recordingSpotClient) Balances(context.Context) ([]exchange.Balance, error) {
+	return []exchange.Balance{}, nil
+}
+func (recordingSpotClient) SpotAccount(context.Context) (exchange.SpotAccount, error) {
+	return exchange.SpotAccount{}, nil
+}
+
+type countingSpotClient struct {
+	exchange.SpotClient
+	fillsCalls int
+}
+
+func (client *countingSpotClient) Fills(context.Context, exchange.FillsRequest) (exchange.FillPage, error) {
+	client.fillsCalls++
+	return exchange.FillPage{}, nil
+}
+func (*countingSpotClient) Balances(context.Context) ([]exchange.Balance, error) {
+	return []exchange.Balance{}, nil
+}
+func (*countingSpotClient) SpotAccount(context.Context) (exchange.SpotAccount, error) {
 	return exchange.SpotAccount{}, nil
 }
 

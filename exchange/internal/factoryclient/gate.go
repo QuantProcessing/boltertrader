@@ -22,9 +22,10 @@ type gateSpotClient struct {
 
 type gatePerpClient struct {
 	*perpClient
-	sdk    *gate.Client
-	ws     exchange.PerpWebSocket
-	settle string
+	sdk                     *gate.Client
+	ws                      exchange.PerpWebSocket
+	settle                  string
+	fundingPaymentCursorKey []byte
 }
 
 func NewGateSpot(apiKey, secretKey string, settings Settings) exchange.SpotClient {
@@ -49,9 +50,10 @@ func NewGateSpot(apiKey, secretKey string, settings Settings) exchange.SpotClien
 func NewGateUSDTPerp(apiKey, secretKey string, settings Settings) exchange.PerpClient {
 	sdkClient, profile := newGateSDK(apiKey, secretKey, settings)
 	client := &gatePerpClient{
-		perpClient: &perpClient{meta: clientMetaFromSettings(exchange.VenueGate, exchange.ProductPerp, settings)},
-		sdk:        sdkClient,
-		settle:     gate.SettleUSDT,
+		perpClient:              &perpClient{meta: clientMetaFromSettings(exchange.VenueGate, exchange.ProductPerp, settings)},
+		sdk:                     sdkClient,
+		settle:                  gate.SettleUSDT,
+		fundingPaymentCursorKey: gateFundingPaymentCursorKey(gate.SettleUSDT, profile.RESTBaseURL, apiKey, secretKey),
 	}
 	wsClient, _ := gate.NewWSClientWithProfile(profile, gate.ProductFuturesUSDT)
 	if wsClient == nil {

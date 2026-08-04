@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,7 +34,9 @@ func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *t
 		Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT",
 		BaseAsset: "BTC", QuoteAsset: "USDT",
 	}
-	perp := &fakeHTTPPerpClient{}
+	perp := &fakeHTTPPerpClient{positions: []exchange.Position{{
+		NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT", Quantity: decimal.NewFromInt(1),
+	}}}
 	accounts := &fakeHTTPAccounts{
 		resource: account.Resource{
 			AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
@@ -91,6 +94,21 @@ func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *t
 	if perp.lastInstrument.Identity.NativeSymbol != "BTCUSDT" {
 		t.Fatalf("resolved instrument=%+v", perp.lastInstrument.Identity)
 	}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/positions?account_id=acct-p", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+	authenticated.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unscoped positions status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var positions collection[positionResource]
+	if err := json.NewDecoder(recorder.Body).Decode(&positions); err != nil {
+		t.Fatalf("decode unscoped positions: %v", err)
+	}
+	if len(positions.Items) != 1 || positions.Items[0].InstrumentID != instrumentID {
+		t.Fatalf("unscoped positions=%+v, want mapped instrument %s", positions.Items, instrumentID)
+	}
 }
 
 func TestHandlerRejectsPerpOnlyResourcesForSpotBeforeClientIO(t *testing.T) {
@@ -118,6 +136,7 @@ type fakeHTTPPerpClient struct {
 	leverageCalls  int
 	leverageErr    error
 	lastInstrument exchange.Instrument
+	positions      []exchange.Position
 }
 
 func (client *fakeHTTPPerpClient) Fills(_ context.Context, request exchange.FillsRequest) (exchange.FillPage, error) {
@@ -133,6 +152,9 @@ func (client *fakeHTTPPerpClient) Balances(context.Context) ([]exchange.Balance,
 
 func (client *fakeHTTPPerpClient) Positions(_ context.Context, request exchange.PositionsRequest) ([]exchange.Position, error) {
 	client.positionCalls++
+	if request.Instrument == nil {
+		return append([]exchange.Position(nil), client.positions...), nil
+	}
 	client.lastInstrument = *request.Instrument
 	return []exchange.Position{{NativeSymbol: request.Instrument.Identity.NativeSymbol}}, nil
 }

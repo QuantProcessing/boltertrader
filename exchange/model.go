@@ -456,6 +456,59 @@ type FundingRate struct {
 	NextFundingTime time.Time       `json:"next_funding_time,omitempty"`
 }
 
+type FundingPaymentStatus string
+
+const (
+	FundingPaymentsUnsupported            FundingPaymentStatus = "unsupported"
+	FundingPaymentsTemporarilyUnavailable FundingPaymentStatus = "temporarily_unavailable"
+	FundingPaymentsIncomplete             FundingPaymentStatus = "incomplete"
+	FundingPaymentsCompleteEmpty          FundingPaymentStatus = "complete_empty"
+	FundingPaymentsComplete               FundingPaymentStatus = "complete"
+)
+
+type FundingPaymentHistoryRequest struct {
+	Instrument      *Instrument `json:"instrument,omitempty"`
+	Start           time.Time   `json:"start,omitempty"`
+	End             time.Time   `json:"end,omitempty"`
+	Cursor          string      `json:"cursor,omitempty"`
+	Limit           int         `json:"limit,omitempty"`
+	SettlementAsset string      `json:"settlement_asset,omitempty"`
+}
+
+type FundingPaymentPage struct {
+	Items           []FundingPayment        `json:"items,omitempty"`
+	Page            PageInfo                `json:"page"`
+	Status          FundingPaymentStatus    `json:"status"`
+	Watermark       FundingPaymentWatermark `json:"watermark"`
+	CompleteThrough time.Time               `json:"complete_through,omitempty"`
+	Revision        int64                   `json:"revision,omitempty"`
+}
+
+type FundingPaymentWatermark struct {
+	Cursor           string    `json:"cursor,omitempty"`
+	Revision         int64     `json:"revision,omitempty"`
+	ObservedAt       time.Time `json:"observed_at,omitempty"`
+	EffectiveThrough time.Time `json:"effective_through,omitempty"`
+	CompleteThrough  time.Time `json:"complete_through,omitempty"`
+	Verified         bool      `json:"verified"`
+}
+
+type FundingPayment struct {
+	PaymentID        string          `json:"payment_id,omitempty"`
+	FactID           string          `json:"fact_id,omitempty"`
+	SupersedesFactID string          `json:"supersedes_fact_id,omitempty"`
+	NativeSymbol     string          `json:"native_symbol,omitempty"`
+	NativeID         string          `json:"native_id,omitempty"`
+	SettlementAsset  string          `json:"settlement_asset,omitempty"`
+	Amount           decimal.Decimal `json:"amount"`
+	EffectiveAt      time.Time       `json:"effective_at,omitempty"`
+	ObservedAt       time.Time       `json:"observed_at,omitempty"`
+	Revision         int64           `json:"revision,omitempty"`
+	Version          string          `json:"version,omitempty"`
+	SourceRef        string          `json:"source_ref,omitempty"`
+	FormulaVersion   string          `json:"formula_version,omitempty"`
+}
+
 type SetLeverageRequest struct {
 	Instrument Instrument `json:"instrument"`
 	Leverage   int        `json:"leverage"`

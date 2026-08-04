@@ -320,7 +320,7 @@ func (client *binancePerpClient) Fills(ctx context.Context, req exchange.FillsRe
 		return exchange.FillPage{}, binancePerpNormalizeError("Fills", err)
 	}
 	fills := make([]exchange.Fill, 0, len(resp))
-	cursor := req.Cursor
+	nextCursor := ""
 	for _, trade := range resp {
 		fill, err := binancePerpFill(trade)
 		if err != nil {
@@ -329,16 +329,24 @@ func (client *binancePerpClient) Fills(ctx context.Context, req exchange.FillsRe
 		if nativeSymbol != "" && fill.NativeSymbol != nativeSymbol {
 			return exchange.FillPage{}, binancePerpMalformed("Fills", "response instrument mismatch")
 		}
-		cursor = fill.FillID
+		if req.Limit > 0 && len(resp) >= req.Limit {
+			cursor, ok, parseErr := binanceFillNextCursor(fill.FillID)
+			if parseErr != nil {
+				return exchange.FillPage{}, binancePerpMalformed("Fills", "fill id is not a numeric trade id")
+			}
+			if ok {
+				nextCursor = cursor
+			} else {
+				nextCursor = ""
+			}
+		}
 		fills = append(fills, fill)
 	}
 	return exchange.FillPage{
 		Fills: fills,
 		Page: exchange.PageInfo{
-			Cursor:      cursor,
-			Limit:       req.Limit,
-			WindowStart: req.Start,
-			WindowEnd:   req.End,
+			Cursor: nextCursor, Limit: req.Limit, WindowStart: req.Start, WindowEnd: req.End,
+			HasMoreKnown: true, HasMore: nextCursor != "",
 		},
 	}, nil
 }
@@ -383,6 +391,15 @@ func (client *binancePerpClient) Positions(ctx context.Context, req exchange.Pos
 	}
 	positions := make([]exchange.Position, 0, len(resp))
 	for _, native := range resp {
+		if nativeSymbol == "" {
+			quantity, err := binancePerpDecimal(native.PositionAmt)
+			if err != nil {
+				return nil, binancePerpMalformed("Positions", err.Error())
+			}
+			if quantity.IsZero() {
+				continue
+			}
+		}
 		position, err := binancePerpPosition(native)
 		if err != nil {
 			return nil, binancePerpMalformed("Positions", err.Error())
@@ -1070,7 +1087,14 @@ func binancePerpParseCursor(cursor string) (int64, error) {
 	if cursor == "" {
 		return 0, nil
 	}
-	return strconv.ParseInt(cursor, 10, 64)
+	fromID, err := strconv.ParseInt(cursor, 10, 64)
+	if err != nil || fromID <= 0 {
+		if err == nil {
+			err = fmt.Errorf("non-positive fromId")
+		}
+		return 0, err
+	}
+	return fromID, nil
 }
 
 func binancePerpMillis(t time.Time) int64 {

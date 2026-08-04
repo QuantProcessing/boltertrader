@@ -86,6 +86,31 @@ func (c *Client) ListFuturesFundingRateHistory(ctx context.Context, settle, cont
 	return out, err
 }
 
+func (c *Client) ListFuturesAccountBook(ctx context.Context, settle, contract, bookType string, start, end time.Time, limit, offset int) ([]FuturesAccountBookEntry, error) {
+	query := map[string]string{}
+	if contract != "" {
+		query["contract"] = contract
+	}
+	if bookType != "" {
+		query["type"] = bookType
+	}
+	if !start.IsZero() {
+		query["from"] = strconv.FormatInt(start.Unix(), 10)
+	}
+	if !end.IsZero() {
+		query["to"] = strconv.FormatInt(end.Unix(), 10)
+	}
+	if limit > 0 {
+		query["limit"] = strconv.Itoa(limit)
+	}
+	if offset > 0 {
+		query["offset"] = strconv.Itoa(offset)
+	}
+	var out []FuturesAccountBookEntry
+	err := c.getPrivate(ctx, futuresPath(settle, "account_book"), query, &out)
+	return out, err
+}
+
 func (c *Client) SetFuturesLeverage(ctx context.Context, settle, contract string, leverage int) (*LeverageResponse, error) {
 	query := map[string]string{"leverage": strconv.Itoa(leverage)}
 	var out LeverageResponse

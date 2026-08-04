@@ -314,6 +314,39 @@ func TestClient_GetPositionFunding(t *testing.T) {
 	}
 }
 
+func TestClient_GetPositionFundingQuerySupportsCursorBoundsAndMarkets(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/positionFunding", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			t.Fatal("missing authorization")
+		}
+		query := r.URL.Query()
+		if query.Get("account_index") != "42" || query.Get("cursor") != "opaque" ||
+			query.Get("limit") != "100" || query.Get("side") != "all" ||
+			query.Get("start_timestamp") != "1700000000" || query.Get("end_timestamp") != "1700003600" ||
+			query.Get("market_ids") != "1,2" {
+			t.Fatalf("query=%s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"code":200,"message":"ok","position_fundings":[{"timestamp":1700000010,"market_id":1,"funding_id":99,"change":"0.25","rate":"0.0001","position_size":"2","position_side":"long","discount":"0"}],"next_cursor":"next"}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewClient().
+		WithBaseURL(server.URL).
+		WithCredentials(strings.Repeat("01", 40), 42, 1)
+	resp, err := client.GetPositionFundingPage(context.Background(), PositionFundingRequest{
+		Cursor: "opaque", Limit: 100, Side: "all", MarketIDs: []int{1, 2},
+		StartTimestamp: 1700000000, EndTimestamp: 1700003600,
+	})
+	if err != nil {
+		t.Fatalf("GetPositionFundingPage: %v", err)
+	}
+	if resp.NextCursor != "next" || len(resp.PositionFundings) != 1 || resp.PositionFundings[0].FundingId != 99 {
+		t.Fatalf("position funding response=%+v", resp)
+	}
+}
+
 func TestClient_GetApiKeys(t *testing.T) {
 	got, err := newLivePrivateClient(t).GetApiKeys(context.Background())
 	if err != nil {

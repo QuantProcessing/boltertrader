@@ -418,15 +418,65 @@ func (c *Client) ChangeAccountTier(ctx context.Context, newTier string) (*Change
 	return &res, nil
 }
 
-// GetPositionFunding fetches position funding history
+type PositionFundingRequest struct {
+	Cursor         string
+	Limit          int64
+	Side           string
+	StartTimestamp int64
+	EndTimestamp   int64
+	MarketIDs      []int
+}
+
+// GetPositionFunding fetches position funding history.
 func (c *Client) GetPositionFunding(ctx context.Context, marketId *int, limit int64, side *string) (*PositionFundingResponse, error) {
-	path := fmt.Sprintf("/api/v1/positionFunding?account_index=%d&limit=%d", c.AccountIndex, limit)
+	request := PositionFundingRequest{Limit: limit}
 	if marketId != nil {
-		path = fmt.Sprintf("%s&market_id=%d", path, *marketId)
+		request.MarketIDs = []int{*marketId}
 	}
 	if side != nil {
-		path = fmt.Sprintf("%s&side=%s", path, *side)
+		request.Side = *side
 	}
+	return c.GetPositionFundingPage(ctx, request)
+}
+
+func (c *Client) GetPositionFundingPage(ctx context.Context, request PositionFundingRequest) (*PositionFundingResponse, error) {
+	if request.Limit < 1 || request.Limit > 100 {
+		return nil, fmt.Errorf("position funding limit must be between 1 and 100")
+	}
+	switch request.Side {
+	case "", "long", "short", "all":
+	default:
+		return nil, fmt.Errorf("position funding side must be long, short, or all")
+	}
+	query := url.Values{}
+	query.Set("account_index", strconv.FormatInt(c.AccountIndex, 10))
+	query.Set("limit", strconv.FormatInt(request.Limit, 10))
+	if request.Cursor != "" {
+		query.Set("cursor", request.Cursor)
+	}
+	if request.Side != "" {
+		query.Set("side", request.Side)
+	}
+	if request.StartTimestamp > 0 {
+		query.Set("start_timestamp", strconv.FormatInt(request.StartTimestamp, 10))
+	}
+	if request.EndTimestamp > 0 {
+		query.Set("end_timestamp", strconv.FormatInt(request.EndTimestamp, 10))
+	}
+	if len(request.MarketIDs) > 0 {
+		markets := make([]byte, 0, len(request.MarketIDs)*3)
+		for index, marketID := range request.MarketIDs {
+			if marketID < 0 {
+				return nil, fmt.Errorf("position funding market id must be non-negative")
+			}
+			if index > 0 {
+				markets = append(markets, ',')
+			}
+			markets = strconv.AppendInt(markets, int64(marketID), 10)
+		}
+		query.Set("market_ids", string(markets))
+	}
+	path := "/api/v1/positionFunding?" + query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {

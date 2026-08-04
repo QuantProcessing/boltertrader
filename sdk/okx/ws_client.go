@@ -8,9 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
-	"net/http"
-	"net/url"
-	"os"
 	"sync"
 	"time"
 
@@ -95,20 +92,7 @@ func NewWSClient(ctx context.Context) *WSClient {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Proxy check
-	dialer := &websocket.Dialer{
-		ReadBufferSize:    65535,
-		WriteBufferSize:   8192,
-		HandshakeTimeout:  45 * time.Second,
-		EnableCompression: true, // Enable compression to handle OKX compressed frames
-	}
-	proxyEnv := os.Getenv("PROXY")
-	if proxyEnv != "" {
-		proxyURL, err := url.Parse(proxyEnv)
-		if err == nil {
-			dialer.Proxy = http.ProxyURL(proxyURL)
-		}
-	}
+	dialer := okxWebSocketDialerFromEnvironment()
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(ctx)
 

@@ -3,6 +3,7 @@ package factoryclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -235,27 +236,73 @@ func TestFundingHistoryRequestSemanticsAreTruthful(t *testing.T) {
 		}
 	})
 
-	t.Run("Bitget rejects unsupported window and cursor before network", func(t *testing.T) {
+	t.Run("Bitget rejects unsupported cursor before network", func(t *testing.T) {
 		transport := &noSendTransport{}
 		client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}})
-		start := time.UnixMilli(1719990000000)
 		instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
-		for name, request := range map[string]exchange.FundingRateHistoryRequest{
-			"start":  {Instrument: instrument, Start: start},
-			"end":    {Instrument: instrument, End: start.Add(time.Hour)},
-			"cursor": {Instrument: instrument, Cursor: "next"},
-		} {
-			t.Run(name, func(t *testing.T) {
-				_, err := client.FundingRateHistory(context.Background(), request)
-				if !errors.Is(err, exchange.ErrInvalidRequest) {
-					t.Fatalf("error = %v, want ErrInvalidRequest", err)
-				}
-			})
+		_, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
+			Instrument: instrument, Cursor: "next",
+		})
+		if !errors.Is(err, exchange.ErrInvalidRequest) {
+			t.Fatalf("error = %v, want ErrInvalidRequest", err)
 		}
 		if got := transport.calls.Load(); got != 0 {
-			t.Fatalf("unsupported Bitget funding filters made %d network calls", got)
+			t.Fatalf("unsupported Bitget funding cursor made %d network calls", got)
 		}
 	})
+}
+
+func TestBitgetFundingHistoryPaginatesAndFiltersPortableWindow(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(30 * 24 * time.Hour)
+	calls := 0
+	client := NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", Settings{
+		Endpoint: "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls++
+			if request.URL.Path != "/api/v2/mix/market/history-fund-rate" {
+				t.Fatalf("unexpected path %s", request.URL.Path)
+			}
+			if got := request.URL.Query().Get("pageSize"); got != "100" {
+				t.Fatalf("pageSize = %q, want 100", got)
+			}
+			if got := request.URL.Query().Get("pageNo"); got != fmt.Sprint(calls) {
+				t.Fatalf("pageNo = %q, want %d", got, calls)
+			}
+			rows := make([]string, 0, 100)
+			switch calls {
+			case 1:
+				for index := 0; index < 100; index++ {
+					timestamp := end.Add(time.Duration(100-index) * time.Hour).UnixMilli()
+					rows = append(rows, fmt.Sprintf(`{"symbol":"BTCUSDT","fundingRate":"0.0001","fundingTime":"%d"}`, timestamp))
+				}
+			case 2:
+				rows = append(rows,
+					fmt.Sprintf(`{"symbol":"BTCUSDT","fundingRate":"0.0002","fundingTime":"%d"}`, end.Add(-time.Hour).UnixMilli()),
+					fmt.Sprintf(`{"symbol":"BTCUSDT","fundingRate":"0.0003","fundingTime":"%d"}`, start.Add(-time.Hour).UnixMilli()),
+				)
+			default:
+				t.Fatalf("unexpected funding history page %d", calls)
+			}
+			return bitgetData("[" + strings.Join(rows, ",") + "]"), nil
+		})},
+	})
+	instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
+	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
+		Instrument: instrument, Start: start, End: end, Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("FundingRateHistory: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("history calls = %d, want 2", calls)
+	}
+	if len(page.Rates) != 1 || !page.Rates[0].FundingTime.Equal(end.Add(-time.Hour)) {
+		t.Fatalf("filtered rates = %+v, want the one rate inside the portable window", page.Rates)
+	}
+	if !page.Page.WindowStart.Equal(start) || !page.Page.WindowEnd.Equal(end) || page.Page.Limit != 10 {
+		t.Fatalf("page metadata = %+v", page.Page)
+	}
 }
 
 func TestRequiredRESTTimestampsReturnMalformedResponse(t *testing.T) {
