@@ -1,0 +1,2 @@
+-- Migration scaffold for the product platform backend.
+-- Later lanes will fill in the durable schema and ownership fences.
