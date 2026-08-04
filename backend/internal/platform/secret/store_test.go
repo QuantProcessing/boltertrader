@@ -16,6 +16,16 @@ type recordingProvider struct {
 	namespace    string
 	keyVersion   string
 	secret       []byte
+	deleteRef    string
+	deleteErr    error
+}
+
+func (provider *recordingProvider) Delete(_ context.Context, scope Scope, reference string) error {
+	provider.mode = scope.Mode
+	provider.namespace = scope.Namespace
+	provider.keyVersion = scope.KeyVersion
+	provider.deleteRef = reference
+	return provider.deleteErr
 }
 
 func (provider *recordingProvider) Check(_ context.Context, scope Scope) error {
@@ -128,5 +138,23 @@ func TestReadinessMapsStableFailureCodesWithoutProviderDetails(t *testing.T) {
 		if strings.Contains(err.Error(), canary) {
 			t.Fatalf("Readiness leaked provider detail: %v", err)
 		}
+	}
+}
+
+func TestDeleteUsesOpaqueProviderReferenceAndRedactsFailure(t *testing.T) {
+	provider := &recordingProvider{}
+	store, err := NewStore(Config{Mode: ModeTest, Namespace: TestNamespace, KeyVersion: "v1"}, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), "provider-ref-1"); err != nil {
+		t.Fatal(err)
+	}
+	if provider.deleteRef != "provider-ref-1" {
+		t.Fatalf("delete ref = %q", provider.deleteRef)
+	}
+	provider.deleteErr = errors.New("delete provider-ref-1 with secret-canary")
+	if err := store.Delete(context.Background(), "provider-ref-1"); err == nil || strings.Contains(err.Error(), "provider-ref-1") || strings.Contains(err.Error(), "secret-canary") {
+		t.Fatalf("Delete error = %v", err)
 	}
 }

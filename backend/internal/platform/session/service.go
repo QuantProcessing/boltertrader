@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -20,9 +19,10 @@ const DefaultPrincipalID = "browser-session"
 const dummyPasswordHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoOHIhi6qMt4u9yjIzhP4sJy.6WjeTi4tC"
 
 var (
-	ErrInvalidCredentials = errors.New("invalid credentials")
-	ErrInvalidCSRF        = errors.New("invalid csrf token")
-	ErrInvalidSession     = errors.New("invalid session")
+	ErrInvalidCredentials  = errors.New("invalid credentials")
+	ErrInvalidCSRF         = errors.New("invalid csrf token")
+	ErrInvalidSession      = errors.New("invalid session")
+	ErrIdentityUnavailable = errors.New("identity store unavailable")
 )
 
 type Options struct {
@@ -32,6 +32,8 @@ type Options struct {
 	TTL          time.Duration
 	CookieSecure bool
 	Now          func() time.Time
+	Store        Store
+	Identities   IdentityStore
 }
 
 type Principal struct {
@@ -51,10 +53,28 @@ type Result struct {
 	Session   Session   `json:"session"`
 }
 
-type record struct {
-	principal  Principal
-	csrfDigest [sha256.Size]byte
-	expiresAt  time.Time
+type StoredSession struct {
+	TokenDigest string
+	Principal   Principal
+	CSRFDigest  string
+	ExpiresAt   time.Time
+}
+
+type Store interface {
+	Save(context.Context, StoredSession) error
+	Get(context.Context, string) (StoredSession, error)
+	Delete(context.Context, string) error
+}
+
+type Identity struct {
+	PrincipalID  string
+	Username     string
+	PasswordHash string
+	Mode         string
+}
+
+type IdentityStore interface {
+	FindByUsername(context.Context, string, string) (Identity, error)
 }
 
 type Service struct {
@@ -65,8 +85,8 @@ type Service struct {
 	cookieSecure bool
 	now          func() time.Time
 
-	mu       sync.Mutex
-	sessions map[[sha256.Size]byte]record
+	store      Store
+	identities IdentityStore
 }
 
 func HashPassword(password string) (string, error) {
@@ -98,16 +118,34 @@ func New(options Options) (*Service, error) {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	store := options.Store
+	if store == nil {
+		store = NewMemoryStore()
+	}
 	return &Service{
 		username: username, passwordHash: options.PasswordHash, mode: options.Mode,
 		ttl: options.TTL, cookieSecure: options.CookieSecure, now: now,
-		sessions: make(map[[sha256.Size]byte]record),
+		store: store, identities: options.Identities,
 	}, nil
 }
 
-func (service *Service) Login(_ context.Context, username, password string) (Result, error) {
-	usernameMatches := subtle.ConstantTimeCompare([]byte(strings.TrimSpace(username)), []byte(service.username)) == 1
+func (service *Service) Login(ctx context.Context, username, password string) (Result, error) {
+	requestedUsername := strings.TrimSpace(username)
+	principalID := DefaultPrincipalID
+	configuredUsername := service.username
 	hash := service.passwordHash
+	if service.identities != nil {
+		identity, err := service.identities.FindByUsername(ctx, service.mode, requestedUsername)
+		switch {
+		case err == nil:
+			configuredUsername, hash, principalID = identity.Username, identity.PasswordHash, identity.PrincipalID
+		case errors.Is(err, ErrNotFound):
+			hash = dummyPasswordHash
+		default:
+			return Result{}, ErrIdentityUnavailable
+		}
+	}
+	usernameMatches := subtle.ConstantTimeCompare([]byte(requestedUsername), []byte(configuredUsername)) == 1
 	if !usernameMatches {
 		hash = dummyPasswordHash
 	}
@@ -121,28 +159,25 @@ func (service *Service) Login(_ context.Context, username, password string) (Res
 	}
 	csrf := csrfToken(token)
 	expiresAt := service.now().Add(service.ttl).UTC()
-	principal := Principal{ID: DefaultPrincipalID, Mode: service.mode, Username: service.username}
-	service.mu.Lock()
-	service.sessions[sha256.Sum256([]byte(token))] = record{
-		principal: principal, csrfDigest: sha256.Sum256([]byte(csrf)), expiresAt: expiresAt,
+	principal := Principal{ID: principalID, Mode: service.mode, Username: configuredUsername}
+	if err := service.store.Save(ctx, StoredSession{
+		TokenDigest: digest(token), Principal: principal, CSRFDigest: digest(csrf), ExpiresAt: expiresAt,
+	}); err != nil {
+		return Result{}, fmt.Errorf("persist session: %w", err)
 	}
-	service.mu.Unlock()
 	return Result{Principal: principal, Session: Session{Token: token, CSRFToken: csrf, ExpiresAt: expiresAt}}, nil
 }
 
-func (service *Service) Current(_ context.Context, token string) (Result, error) {
-	digest := sha256.Sum256([]byte(token))
-	service.mu.Lock()
-	stored, ok := service.sessions[digest]
-	if !ok || !service.now().Before(stored.expiresAt) {
-		delete(service.sessions, digest)
-		service.mu.Unlock()
+func (service *Service) Current(ctx context.Context, token string) (Result, error) {
+	tokenDigest := digest(token)
+	stored, err := service.store.Get(ctx, tokenDigest)
+	if err != nil || !service.now().Before(stored.ExpiresAt) {
+		_ = service.store.Delete(ctx, tokenDigest)
 		return Result{}, ErrInvalidSession
 	}
-	service.mu.Unlock()
 	return Result{
-		Principal: stored.principal,
-		Session:   Session{Token: token, CSRFToken: csrfToken(token), ExpiresAt: stored.expiresAt},
+		Principal: stored.Principal,
+		Session:   Session{Token: token, CSRFToken: csrfToken(token), ExpiresAt: stored.ExpiresAt},
 	}, nil
 }
 
@@ -150,12 +185,8 @@ func (service *Service) RequireCSRF(ctx context.Context, token, csrf string) err
 	if _, err := service.Current(ctx, token); err != nil {
 		return err
 	}
-	digest := sha256.Sum256([]byte(token))
-	candidate := sha256.Sum256([]byte(csrf))
-	service.mu.Lock()
-	stored, ok := service.sessions[digest]
-	service.mu.Unlock()
-	if !ok || subtle.ConstantTimeCompare(candidate[:], stored.csrfDigest[:]) != 1 {
+	stored, err := service.store.Get(ctx, digest(token))
+	if err != nil || subtle.ConstantTimeCompare([]byte(digest(csrf)), []byte(stored.CSRFDigest)) != 1 {
 		return ErrInvalidCSRF
 	}
 	return nil
@@ -165,10 +196,7 @@ func (service *Service) Logout(ctx context.Context, token, csrf string) error {
 	if err := service.RequireCSRF(ctx, token, csrf); err != nil {
 		return err
 	}
-	service.mu.Lock()
-	delete(service.sessions, sha256.Sum256([]byte(token)))
-	service.mu.Unlock()
-	return nil
+	return service.store.Delete(ctx, digest(token))
 }
 
 func (service *Service) CookieSecure() bool { return service.cookieSecure }
@@ -184,4 +212,9 @@ func randomToken() (string, error) {
 		return "", fmt.Errorf("generate session token: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func digest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

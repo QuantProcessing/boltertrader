@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,5 +90,66 @@ func TestNewRejectsIncompleteOrUnsafeOptions(t *testing.T) {
 				t.Fatal("New() error = nil")
 			}
 		})
+	}
+}
+
+func TestServicePersistsOnlyDigestsAcrossInstances(t *testing.T) {
+	passwordHash, _ := HashPassword("password verifier")
+	store := NewMemoryStore()
+	options := Options{Username: "owner", PasswordHash: passwordHash, Mode: "test", TTL: time.Hour, Store: store}
+	first, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := first.Login(context.Background(), "owner", "password verifier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.ContainsRaw(login.Session.Token) || store.ContainsRaw(login.Session.CSRFToken) {
+		t.Fatal("session store persisted a raw bearer or CSRF token")
+	}
+	second, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Current(context.Background(), login.Session.Token); err != nil {
+		t.Fatalf("Current after service restart: %v", err)
+	}
+}
+
+func TestServiceAuthenticatesPersistedIdentity(t *testing.T) {
+	configuredHash, _ := HashPassword("unused bootstrap password")
+	persistedHash, _ := HashPassword("persisted password")
+	identities := NewMemoryIdentityStore(Identity{PrincipalID: "principal_1", Username: "persisted-owner", PasswordHash: persistedHash, Mode: "test"})
+	service, err := New(Options{Username: "bootstrap", PasswordHash: configuredHash, Mode: "test", TTL: time.Hour, Identities: identities})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Login(context.Background(), "persisted-owner", "persisted password")
+	if err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if result.Principal.ID != "principal_1" || result.Principal.Username != "persisted-owner" {
+		t.Fatalf("principal = %#v", result.Principal)
+	}
+	if _, err := service.Login(context.Background(), "missing", "persisted password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("missing identity error = %v", err)
+	}
+}
+
+type failingIdentityStore struct{}
+
+func (failingIdentityStore) FindByUsername(context.Context, string, string) (Identity, error) {
+	return Identity{}, errors.New("database unavailable with private detail")
+}
+
+func TestServiceDistinguishesIdentityStoreFailureFromBadCredentials(t *testing.T) {
+	hash, _ := HashPassword("bootstrap password")
+	service, err := New(Options{Username: "bootstrap", PasswordHash: hash, Mode: "test", TTL: time.Hour, Identities: failingIdentityStore{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Login(context.Background(), "owner", "password"); !errors.Is(err, ErrIdentityUnavailable) || strings.Contains(err.Error(), "private detail") {
+		t.Fatalf("Login error = %v", err)
 	}
 }

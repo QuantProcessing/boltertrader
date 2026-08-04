@@ -69,6 +69,10 @@ type Store struct {
 	scope    Scope
 }
 
+type deletingProvider interface {
+	Delete(context.Context, Scope, string) error
+}
+
 func NewStore(config Config, provider Provider) (*Store, error) {
 	if provider == nil {
 		return nil, coded(CodeUnavailable)
@@ -120,6 +124,17 @@ func (store *Store) Put(ctx context.Context, value []byte) (Reference, error) {
 		namespace:  store.scope.Namespace,
 		keyVersion: store.scope.KeyVersion,
 	}, nil
+}
+
+func (store *Store) Delete(ctx context.Context, rawReference string) error {
+	provider, ok := store.provider.(deletingProvider)
+	if !ok || strings.TrimSpace(rawReference) == "" {
+		return coded(CodeUnavailable)
+	}
+	if err := provider.Delete(ctx, store.scope, rawReference); err != nil {
+		return mapProviderError(err)
+	}
+	return nil
 }
 
 type Reference struct {
