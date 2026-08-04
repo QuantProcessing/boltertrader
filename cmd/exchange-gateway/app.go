@@ -38,9 +38,17 @@ type runtimeDeps struct {
 	buildAccountManager   func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error)
 	buildOrderCoordinator func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
 	buildHandler          func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
+	buildInternalHandler  func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
 	listen                func(network, address string) (net.Listener, error)
+	listenInternal        func(network, address string) (net.Listener, error)
 	wait                  func(context.Context, *process.Service) error
 	metrics               *observability.Metrics
+	runtimeMode           account.RuntimeMode
+	runtimeLifecycle      account.RuntimeLifecycle
+	resolveRuntimeSecret  func(context.Context, secret.OpaqueRef) (string, error)
+	activateRuntime       func(context.Context, account.DesiredRuntime, string) error
+	deactivateRuntime     func(context.Context, domain.AccountID) error
+	runtimeBlockers       func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
 }
 
 func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error) {
@@ -74,24 +82,77 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	migrate := defaultMigrate(deps.migrate)
 	registerAccount := defaultRegisterAccount(deps.registerAccount)
 	acquireOwnership := defaultAcquireOwnership(deps.acquireOwnership)
+	runtimeMode := deps.runtimeMode
+	if runtimeMode == "" {
+		runtimeMode = account.RuntimeModeTest
+	}
+	runtimeLifecycle := deps.runtimeLifecycle
+	if file.Server.InternalListen != "" && deps.buildInternalHandler == nil && runtimeLifecycle == nil {
+		runtimeLifecycle, err = newOpaqueRuntimeLifecycle(
+			deps.resolveRuntimeSecret, deps.activateRuntime, deps.deactivateRuntime, deps.runtimeBlockers,
+		)
+		if err != nil {
+			return fmt.Errorf("configure internal runtime lifecycle failed")
+		}
+	}
+	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
+	var internalHandler http.Handler
+	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
+	if file.Server.InternalListen != "" {
+		internalAuth, authErr := auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
+		if authErr != nil {
+			return fmt.Errorf("configure internal auth failed")
+		}
+		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, runtimeMode)
+	}
 	processDeps := process.Dependencies{
 		ResolveSecret:         provider.Resolve,
 		ConnectPostgres:       observedConnectPostgres(metrics, connectPostgres),
 		Migrate:               observedMigrate(metrics, migrate),
 		RegisterAccount:       observedRegisterAccount(metrics, registerAccount),
 		AcquireOwnership:      observedAcquireOwnership(metrics, acquireOwnership),
-		BuildAccountManager:   defaultBuildAccountManager(deps.buildAccountManager),
+		BuildAccountManager:   defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, runtimeMode),
 		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
 		Listen:                defaultListen(deps.listen),
-		HandlerFactory:        defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics),
+		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
+			publicHandler, handlerErr := publicHandlerFactory(monitor, pool, accounts, orders)
+			if handlerErr != nil {
+				return nil, handlerErr
+			}
+			if internalHandlerFactory != nil {
+				internalHandler, handlerErr = internalHandlerFactory(ctx, pool, accounts)
+				if handlerErr != nil {
+					return nil, handlerErr
+				}
+			}
+			return publicHandler, nil
+		},
 	}
 	service, err := process.Start(ctx, file, processDeps)
 	if err != nil {
 		return err
 	}
+	var internalService *authorityHTTPServer
+	if file.Server.InternalListen != "" {
+		if internalHandler == nil {
+			_ = service.Shutdown(context.Background())
+			return fmt.Errorf("internal HTTP API setup")
+		}
+		listener, listenErr := defaultListen(deps.listenInternal)("tcp", file.Server.InternalListen)
+		if listenErr != nil {
+			_ = service.Shutdown(context.Background())
+			return fmt.Errorf("internal listen failed")
+		}
+		internalService = startAuthorityHTTPServer(listener, internalHandler)
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if internalService != nil {
+			if err := internalService.Shutdown(shutdownCtx); err != nil {
+				returnErr = errors.Join(returnErr, err)
+			}
+		}
 		if err := service.Shutdown(shutdownCtx); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				metrics.RecordShutdown(observability.ShutdownTimedOut)
@@ -108,6 +169,76 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		wait = waitForSignal
 	}
 	return wait(ctx, service)
+}
+
+func defaultInternalHandlerFactory(
+	override func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error),
+	authMiddleware auth.BearerMiddleware,
+	mode account.RuntimeMode,
+) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
+	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
+		var handler http.Handler
+		var err error
+		if override != nil {
+			handler, err = override(ctx, pool, accounts)
+		} else {
+			realPool, poolOK := pool.(*pgxpool.Pool)
+			manager, managerOK := accounts.(*account.Manager)
+			if !poolOK || !managerOK {
+				return nil, fmt.Errorf("internal authority dependency type")
+			}
+			authority, authorityErr := newGatewayAuthority(ctx, postgres.NewStore(realPool), manager, mode)
+			if authorityErr != nil {
+				return nil, authorityErr
+			}
+			handler, err = httpapi.NewInternalHandler(httpapi.InternalOptions{
+				Authority: authority,
+				Authenticate: func(request *http.Request) error {
+					if _, ok := auth.Principal(request.Context()); !ok {
+						return errors.New("internal authentication required")
+					}
+					return nil
+				},
+			})
+		}
+		if err != nil || handler == nil {
+			return nil, fmt.Errorf("internal HTTP API setup")
+		}
+		return authMiddleware.Wrap(handler), nil
+	}
+}
+
+type authorityHTTPServer struct {
+	server   *http.Server
+	listener net.Listener
+	done     chan error
+}
+
+func startAuthorityHTTPServer(listener net.Listener, handler http.Handler) *authorityHTTPServer {
+	service := &authorityHTTPServer{
+		server:   &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second},
+		listener: listener,
+		done:     make(chan error, 1),
+	}
+	go func() {
+		err := service.server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		service.done <- err
+	}()
+	return service
+}
+
+func (service *authorityHTTPServer) Shutdown(ctx context.Context) error {
+	if service == nil || service.server == nil {
+		return nil
+	}
+	err := service.server.Shutdown(ctx)
+	if closeErr := service.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		err = errors.Join(err, closeErr)
+	}
+	return err
 }
 
 func defaultHandlerFactory(
@@ -318,7 +449,11 @@ func (coordinator processOrderCoordinator) Close(ctx context.Context) error {
 	return err
 }
 
-func defaultBuildAccountManager(override func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error)) func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
+func defaultBuildAccountManager(
+	override func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error),
+	lifecycle account.RuntimeLifecycle,
+	mode account.RuntimeMode,
+) func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
 	if override != nil {
 		return override
 	}
@@ -332,6 +467,8 @@ func defaultBuildAccountManager(override func(context.Context, []config.AccountC
 			ExchangeCatalog: exchange.NewDefaultMemoryCatalog(),
 			GatewayCatalog:  gatewayCatalog,
 			HTTPClient:      &http.Client{Timeout: 30 * time.Second},
+			RuntimeMode:     mode,
+			Lifecycle:       lifecycle,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("account manager setup")

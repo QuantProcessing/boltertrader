@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"gopkg.in/yaml.v3"
 )
@@ -24,6 +25,8 @@ type ServerConfig struct {
 	Listen                 string     `yaml:"listen" json:"listen"`
 	AllowNonLoopbackListen bool       `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
 	AuthTokenRef           secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
+	InternalListen         string     `yaml:"internal_listen,omitempty" json:"internal_listen,omitempty"`
+	InternalAuthTokenRef   secret.Ref `yaml:"internal_auth_token_ref,omitempty" json:"internal_auth_token_ref,omitempty"`
 }
 
 type PostgresConfig struct {
@@ -37,6 +40,32 @@ type AccountConfig struct {
 	Environment string
 	Settlement  string
 	Credentials any
+}
+
+// ValidateRuntimeIdentity validates the product-agnostic portion of a dynamic
+// account request. Product and settlement stay runtime-discovered facts.
+func ValidateRuntimeIdentity(accountID, venue, environment string) error {
+	if strings.TrimSpace(accountID) == "" {
+		return fmt.Errorf("account_id is required")
+	}
+	venue = strings.ToLower(strings.TrimSpace(venue))
+	environment = strings.ToLower(strings.TrimSpace(environment))
+	venueKnown := false
+	for _, row := range capability.StaticMatrix().Rows {
+		if row.Venue != venue {
+			continue
+		}
+		venueKnown = true
+		if validateProfile(AccountConfig{
+			Venue: venue, Product: row.Product, Settlement: row.Settlement, Environment: environment,
+		}) == nil {
+			return nil
+		}
+	}
+	if !venueKnown {
+		return fmt.Errorf("unknown venue %q", venue)
+	}
+	return fmt.Errorf("unknown environment %q for venue %q", environment, venue)
 }
 
 type APIKeySecretCredentials struct {
@@ -153,6 +182,16 @@ func (file File) Validate() error {
 	if file.Server.AuthTokenRef.IsZero() {
 		return fmt.Errorf("server auth_token_ref secret reference is required")
 	}
+	if (file.Server.InternalListen == "") != file.Server.InternalAuthTokenRef.IsZero() {
+		return fmt.Errorf("server internal listener and auth token must be configured together")
+	}
+	if file.Server.InternalListen != "" {
+		internalHost, _, internalErr := net.SplitHostPort(file.Server.InternalListen)
+		internalAddress := net.ParseIP(internalHost)
+		if internalErr != nil || internalAddress == nil || !internalAddress.IsLoopback() {
+			return fmt.Errorf("server internal listener must be a loopback IP host:port")
+		}
+	}
 	if file.Postgres.DSNRef.IsZero() {
 		return fmt.Errorf("postgres dsn_ref secret reference is required")
 	}
@@ -181,6 +220,8 @@ func (file File) Hash() (string, error) {
 			Listen:                 file.Server.Listen,
 			AllowNonLoopbackListen: file.Server.AllowNonLoopbackListen,
 			AuthTokenRef:           file.Server.AuthTokenRef.Fingerprint(),
+			InternalListen:         file.Server.InternalListen,
+			InternalAuthTokenRef:   file.Server.InternalAuthTokenRef.Fingerprint(),
 		},
 		Postgres: hashPostgres{
 			DSNRef: file.Postgres.DSNRef.Fingerprint(),
@@ -219,12 +260,17 @@ func (file File) String() string {
 func (file File) GoString() string { return file.String() }
 
 func (file File) MarshalJSON() ([]byte, error) {
+	server := map[string]any{
+		"listen":                    file.Server.Listen,
+		"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
+		"auth_token_ref":            "redacted",
+	}
+	if file.Server.InternalListen != "" {
+		server["internal_listen"] = file.Server.InternalListen
+		server["internal_auth_token_ref"] = "redacted"
+	}
 	return json.Marshal(map[string]any{
-		"server": map[string]any{
-			"listen":                    file.Server.Listen,
-			"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
-			"auth_token_ref":            "redacted",
-		},
+		"server": server,
 		"postgres": map[string]any{
 			"dsn_ref": "redacted",
 		},
@@ -234,6 +280,9 @@ func (file File) MarshalJSON() ([]byte, error) {
 
 func (file File) SecretRefs() []secret.Ref {
 	refs := []secret.Ref{file.Server.AuthTokenRef, file.Postgres.DSNRef}
+	if !file.Server.InternalAuthTokenRef.IsZero() {
+		refs = append(refs, file.Server.InternalAuthTokenRef)
+	}
 	for _, account := range file.Accounts {
 		switch credentials := account.Credentials.(type) {
 		case APIKeySecretCredentials:
@@ -494,6 +543,8 @@ type hashServer struct {
 	Listen                 string `json:"listen"`
 	AllowNonLoopbackListen bool   `json:"allow_non_loopback_listen"`
 	AuthTokenRef           string `json:"auth_token_ref"`
+	InternalListen         string `json:"internal_listen,omitempty"`
+	InternalAuthTokenRef   string `json:"internal_auth_token_ref,omitempty"`
 }
 type hashPostgres struct {
 	DSNRef string `json:"dsn_ref"`

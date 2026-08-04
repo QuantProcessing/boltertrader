@@ -12,3 +12,11 @@ func InitialMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func DesiredAccountsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/002_desired_accounts.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

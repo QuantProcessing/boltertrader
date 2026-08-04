@@ -90,6 +90,78 @@ func TestRunRequiresConfigFlagAndLoadsStrictConfigBeforeStart(t *testing.T) {
 	}
 }
 
+func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "gateway.yaml")
+	yaml := strings.Replace(minimalConfigYAML(),
+		"  auth_token_ref: env://TOKEN",
+		"  auth_token_ref: env://TOKEN\n  internal_listen: 127.0.0.1:0\n  internal_auth_token_ref: env://INTERNAL_TOKEN", 1)
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TOKEN", "public-token")
+	t.Setenv("INTERNAL_TOKEN", "gateway-adapter-token")
+	t.Setenv("POSTGRES_DSN", "postgres://user:pass@127.0.0.1/db?sslmode=disable")
+	t.Setenv("API_KEY", "key")
+	t.Setenv("API_SECRET", "secret")
+
+	var internalAddress string
+	err := run(context.Background(), []string{"-config", configPath}, runtimeDeps{
+		connectPostgres: func(context.Context, string) (process.PostgresPool, error) { return fakePool{}, nil },
+		migrate:         func(context.Context, process.PostgresPool) error { return nil },
+		registerAccount: func(context.Context, process.PostgresPool, process.AccountRegistration) error { return nil },
+		acquireOwnership: func(context.Context, process.PostgresPool, process.AccountRegistration) (process.Ownership, error) {
+			return fakeOwnership{}, nil
+		},
+		buildAccountManager: func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
+			return noopAccountManager{}, nil
+		},
+		buildOrderCoordinator: testBuildOrderCoordinator,
+		buildHandler:          testBuildHandler,
+		buildInternalHandler: func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/internal/v1/runtime/status" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}), nil
+		},
+		listen: func(network, _ string) (net.Listener, error) { return net.Listen(network, "127.0.0.1:0") },
+		listenInternal: func(network, address string) (net.Listener, error) {
+			listener, err := net.Listen(network, address)
+			if err == nil {
+				internalAddress = listener.Addr().String()
+			}
+			return listener, err
+		},
+		wait: func(ctx context.Context, service *process.Service) error {
+			unauthorized, err := http.Get("http://" + internalAddress + "/internal/v1/runtime/status")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer unauthorized.Body.Close()
+			if unauthorized.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("unauthorized status=%d", unauthorized.StatusCode)
+			}
+			request, _ := http.NewRequest(http.MethodGet, "http://"+internalAddress+"/internal/v1/runtime/status", nil)
+			request.Header.Set("Authorization", "Bearer gateway-adapter-token")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				t.Fatalf("authorized status=%d", response.StatusCode)
+			}
+			return service.Shutdown(ctx)
+		},
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}
+
 func TestRunFailsClosedForMissingConfigAndUnsupportedSecretProvider(t *testing.T) {
 	if err := run(context.Background(), nil, runtimeDeps{}); err == nil {
 		t.Fatal("run without -config succeeded")

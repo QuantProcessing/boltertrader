@@ -135,6 +135,45 @@ accounts: []
 	}
 }
 
+func TestInternalAuthorityListenerRequiresPairedLoopbackAuthConfiguration(t *testing.T) {
+	configured := strings.Replace(validOneAccountYAML(),
+		"  auth_token_ref: env://TOKEN",
+		"  auth_token_ref: env://TOKEN\n  internal_listen: 127.0.0.1:18082\n  internal_auth_token_ref: env://GATEWAY_ADAPTER_TOKEN", 1)
+	file, err := config.LoadYAML([]byte(configured))
+	if err != nil {
+		t.Fatalf("LoadYAML configured internal authority: %v", err)
+	}
+	if file.Server.InternalListen != "127.0.0.1:18082" || file.Server.InternalAuthTokenRef.IsZero() {
+		t.Fatalf("internal server config=%+v", file.Server)
+	}
+	if got := len(file.SecretRefs()); got != len(configuredSecretRefs(file))+1 {
+		t.Fatalf("SecretRefs count=%d, want internal token included", got)
+	}
+
+	for name, yaml := range map[string]string{
+		"missing token":    strings.Replace(validOneAccountYAML(), "  auth_token_ref: env://TOKEN", "  auth_token_ref: env://TOKEN\n  internal_listen: 127.0.0.1:18082", 1),
+		"missing listener": strings.Replace(validOneAccountYAML(), "  auth_token_ref: env://TOKEN", "  auth_token_ref: env://TOKEN\n  internal_auth_token_ref: env://GATEWAY_ADAPTER_TOKEN", 1),
+		"non-loopback":     strings.Replace(validOneAccountYAML(), "  auth_token_ref: env://TOKEN", "  auth_token_ref: env://TOKEN\n  internal_listen: 0.0.0.0:18082\n  internal_auth_token_ref: env://GATEWAY_ADAPTER_TOKEN", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := config.LoadYAML([]byte(yaml)); err == nil {
+				t.Fatal("LoadYAML accepted unsafe internal authority config")
+			}
+		})
+	}
+}
+
+func configuredSecretRefs(file config.File) []secret.Ref {
+	refs := file.SecretRefs()
+	result := make([]secret.Ref, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Fingerprint() != file.Server.InternalAuthTokenRef.Fingerprint() {
+			result = append(result, ref)
+		}
+	}
+	return result
+}
+
 func TestLoadStrictYAMLValidatesPublicEVMIdentityAddresses(t *testing.T) {
 	zeroAddress := "0x0000000000000000000000000000000000000000"
 	tests := []struct {

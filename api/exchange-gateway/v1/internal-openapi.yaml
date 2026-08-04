@@ -1,0 +1,179 @@
+openapi: 3.1.0
+info:
+  title: Exchange Gateway Internal Authority API
+  version: v1
+security:
+  - gatewayAdapterAuth: []
+paths:
+  /internal/v1/runtime/status:
+    get: {operationId: getInternalRuntimeStatus, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/runtime/readiness:
+    get: {operationId: getInternalRuntimeReadiness, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/runtime/open-orders:
+    get: {operationId: listInternalOpenOrders, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/runtime/positions:
+    get: {operationId: listInternalPositions, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/runtime/uncertain-commands:
+    get: {operationId: listInternalUncertainCommands, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/accounts/desired:
+    get:
+      operationId: listDesiredAccounts
+      responses: {'200': {$ref: '#/components/responses/DesiredAccounts'}, default: {$ref: '#/components/responses/Error'}}
+    post:
+      operationId: createDesiredAccount
+      parameters: [{$ref: '#/components/parameters/IfNoneMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredAccount'}
+      responses: {'201': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}:
+    get:
+      operationId: getDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}]
+      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '404': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+    put:
+      operationId: updateDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
+      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      operationId: deleteDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      responses: {'204': {description: desired account removed}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/validate:
+    post:
+      operationId: validateDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/GenerationFence'}
+      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/rotate:
+    post:
+      operationId: rotateDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
+      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/disable:
+    post:
+      operationId: disableDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
+      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/drain:
+    post:
+      operationId: drainDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
+      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/runtime:
+    get: {operationId: listRuntimeAccounts, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/accounts/runtime/{accountId}:
+    get:
+      operationId: getRuntimeAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}]
+      responses: {'200': {description: redacted runtime account, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeAccount'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/runtime/{accountId}/events:
+    get:
+      operationId: listRuntimeAccountEvents
+      parameters: [{$ref: '#/components/parameters/AccountID'}]
+      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/catalog/venues:
+    get: {operationId: listInternalVenues, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/catalog/instruments:
+    get: {operationId: listInternalInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/market-data:
+    get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/private-events:
+    get: {operationId: listInternalPrivateEvents, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+components:
+  securitySchemes:
+    gatewayAdapterAuth: {type: http, scheme: bearer}
+  parameters:
+    AccountID: {name: accountId, in: path, required: true, schema: {type: string, minLength: 1}}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string, pattern: '^"desired-state-revision-[1-9][0-9]*"$'}}
+    IfNoneMatch: {name: If-None-Match, in: header, required: true, schema: {type: string, const: '*'}}
+  requestBodies:
+    DesiredAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredAccount'}}}}
+    DesiredMutation: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredMutation'}}}}
+    GenerationFence: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GenerationFence'}}}}
+  responses:
+    DesiredAccount:
+      description: acknowledged desired account
+      headers: {ETag: {schema: {type: string}}}
+      content: {application/json: {schema: {$ref: '#/components/schemas/DesiredAccount'}}}
+    DesiredAccounts: {description: desired accounts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredAccount'}}}}}
+    RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
+    Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
+  schemas:
+    DesiredAccount:
+      type: object
+      additionalProperties: false
+      required: [accountId, venue, venueEnvironment, secretRef, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState]
+      properties:
+        accountId: {type: string, minLength: 1}
+        venue: {type: string, minLength: 1}
+        venueEnvironment: {type: string, enum: [demo, testnet, live]}
+        secretRef: {type: string, minLength: 1, description: opaque reference; never credential material}
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        rotationFence: {$ref: '#/components/schemas/RotationFence'}
+    DesiredMutation:
+      type: object
+      additionalProperties: false
+      required: [desiredStateRevision, runtimeGeneration, credentialVersion]
+      properties:
+        secretRef: {type: string, minLength: 1, description: opaque reference; never credential material}
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        rotationFence: {$ref: '#/components/schemas/RotationFence'}
+    GenerationFence:
+      type: object
+      additionalProperties: false
+      required: [desiredStateRevision, runtimeGeneration, credentialVersion]
+      properties:
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+    RotationFence:
+      type: object
+      additionalProperties: false
+      required: [rotationFenceId, state, fromCredentialVersion, toCredentialVersion, fromRuntimeGeneration, toRuntimeGeneration]
+      properties:
+        rotationFenceId: {type: string, minLength: 1}
+        state: {type: string, enum: [armed, replacement_ready, released, expired, blocked]}
+        fromCredentialVersion: {type: integer, minimum: 1}
+        toCredentialVersion: {type: integer, minimum: 1}
+        fromRuntimeGeneration: {type: integer, minimum: 1}
+        toRuntimeGeneration: {type: integer, minimum: 1}
+    RuntimeAccount:
+      type: object
+      additionalProperties: false
+      required: [accountId, desiredStateRevision, runtimeGeneration, credentialVersion, runtimeVersion, readiness, writeReadiness, lastAppliedDesiredStateRevision, lastAppliedRuntimeGeneration, observedAt]
+      properties:
+        accountId: {type: string}
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        runtimeVersion: {type: integer, minimum: 0}
+        readiness: {type: object}
+        writeReadiness: {type: object}
+        lastAppliedDesiredStateRevision: {type: integer, minimum: 0}
+        lastAppliedRuntimeGeneration: {type: integer, minimum: 0}
+        blockedReason: {type: [string, 'null']}
+        observedAt: {type: string, format: date-time}
+    InternalErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, requestId, retryable]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            requestId: {type: string}
+            retryable: {type: boolean}
+            details: {type: object}

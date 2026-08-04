@@ -95,3 +95,25 @@ func TestInitialMigrationPreventsTerminalOrderStateRegression(t *testing.T) {
 func TestMigrationsAreEmbedded(t *testing.T) {
 	var _ embed.FS = Migrations
 }
+
+func TestDesiredAccountMigrationFreezesRecoveryAndCredentialFences(t *testing.T) {
+	sql := strings.ToLower(DesiredAccountsMigrationSQL())
+	required := []string{
+		"gateway_desired_accounts", "secret_ref text not null", "previous_secret_ref text",
+		"desired_state_revision bigint not null", "runtime_generation bigint not null",
+		"credential_version bigint not null", "rotation_fence_id text",
+		"rotation_from_credential_version", "rotation_to_credential_version",
+		"rotation_from_runtime_generation", "rotation_to_runtime_generation",
+		"requested_state in ('creating', 'active', 'rotating', 'draining')",
+	}
+	for _, value := range required {
+		if !strings.Contains(sql, value) {
+			t.Errorf("desired account migration missing %q", value)
+		}
+	}
+	for _, forbidden := range []string{"api_secret", "secret_value", "secret_material", "private_key", "raw_credential"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("desired account migration contains forbidden credential field %q", forbidden)
+		}
+	}
+}

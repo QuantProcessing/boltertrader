@@ -9,10 +9,13 @@ import (
 )
 
 var (
-	ErrConflict             = errors.New("gateway postgres conflict")
-	ErrNotFound             = store.ErrNotFound
-	ErrOwnershipUnavailable = errors.New("gateway postgres ownership unavailable")
-	ErrMigrationMismatch    = errors.New("gateway postgres migration mismatch")
+	ErrConflict                     = errors.New("gateway postgres conflict")
+	ErrNotFound                     = store.ErrNotFound
+	ErrDesiredStateRevisionConflict = store.ErrDesiredStateRevisionConflict
+	ErrStaleRuntimeGeneration       = store.ErrStaleRuntimeGeneration
+	ErrInvalidAccountTransition     = store.ErrInvalidAccountTransition
+	ErrOwnershipUnavailable         = errors.New("gateway postgres ownership unavailable")
+	ErrMigrationMismatch            = errors.New("gateway postgres migration mismatch")
 )
 
 func redactErr(operation string, err error) error {
@@ -76,6 +79,9 @@ func approvedCause(err error) error {
 		context.DeadlineExceeded,
 		ErrConflict,
 		ErrNotFound,
+		ErrDesiredStateRevisionConflict,
+		ErrStaleRuntimeGeneration,
+		ErrInvalidAccountTransition,
 		ErrOwnershipUnavailable,
 		ErrMigrationMismatch,
 	}

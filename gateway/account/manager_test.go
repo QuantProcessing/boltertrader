@@ -418,3 +418,149 @@ func accountTestInstrument(venue exchange.Venue, product exchange.Product, symbo
 		},
 	}
 }
+
+func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRotation(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	initial := desiredTestAccount(t, 1, 1, 1, "opaque_initial")
+	if _, err := manager.CreateRuntime(context.Background(), initial); err != nil {
+		t.Fatalf("CreateRuntime: %v", err)
+	}
+	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
+		t.Fatalf("initial CheckWriteFence: %v", err)
+	}
+
+	manager.lifecycle.(*fakeRuntimeLifecycle).validateErr = errors.New("credential-canary")
+	replacement := desiredTestAccount(t, 2, 2, 2, "opaque_replacement")
+	if _, err := manager.RotateRuntime(context.Background(), replacement, 1); err == nil || strings.Contains(err.Error(), "credential-canary") {
+		t.Fatalf("RotateRuntime error=%v, want redacted validation failure", err)
+	}
+	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
+		t.Fatalf("failed rotation fenced old generation: %v", err)
+	}
+
+	manager.lifecycle.(*fakeRuntimeLifecycle).validateErr = nil
+	if _, err := manager.RotateRuntime(context.Background(), replacement, 1); err != nil {
+		t.Fatalf("RotateRuntime: %v", err)
+	}
+	if !errors.Is(manager.CheckWriteFence(initial.Fence()), ErrStaleWriteFence) {
+		t.Fatalf("old fence error=%v, want ErrStaleWriteFence", manager.CheckWriteFence(initial.Fence()))
+	}
+	if err := manager.CheckWriteFence(replacement.Fence()); err != nil {
+		t.Fatalf("replacement CheckWriteFence: %v", err)
+	}
+}
+
+func TestManagerDynamicLifecycleIsolationBlockersAndRestore(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	desired := desiredTestAccount(t, 1, 1, 1, "opaque_test")
+	desired.Mode = RuntimeModeLive
+	if _, err := manager.CreateRuntime(context.Background(), desired); !errors.Is(err, ErrRuntimeModeMismatch) {
+		t.Fatalf("cross-mode CreateRuntime error=%v", err)
+	}
+	desired.Mode = RuntimeModeTest
+	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := manager.lifecycle.(*fakeRuntimeLifecycle)
+	lifecycle.blockers = RuntimeBlockers{OpenOrders: 1}
+	if _, err := manager.DrainRuntime(context.Background(), desired.AccountID, 1, 2); !errors.Is(err, ErrRuntimeBlocked) {
+		t.Fatalf("DrainRuntime error=%v, want ErrRuntimeBlocked", err)
+	}
+	lifecycle.blockers = RuntimeBlockers{}
+	drained, err := manager.DrainRuntime(context.Background(), desired.AccountID, 1, 2)
+	if err != nil || drained.State != RuntimeStateDraining {
+		t.Fatalf("DrainRuntime=%+v err=%v", drained, err)
+	}
+	if !errors.Is(manager.CheckWriteFence(desired.Fence()), ErrStaleWriteFence) {
+		t.Fatal("drain did not fence old writes")
+	}
+
+	restored := newLifecycleTestManager(t, RuntimeModeTest)
+	if err := restored.RestoreRuntimes(context.Background(), []DesiredRuntime{drained.Desired}); err != nil {
+		t.Fatalf("RestoreRuntimes: %v", err)
+	}
+	got, err := restored.Runtime(desired.AccountID)
+	if err != nil || got.State != RuntimeStateDraining || restored.lifecycle.(*fakeRuntimeLifecycle).activations != 0 {
+		t.Fatalf("restored=%+v err=%v activations=%d", got, err, restored.lifecycle.(*fakeRuntimeLifecycle).activations)
+	}
+}
+
+func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeLive)
+	desired := desiredTestAccount(t, 1, 1, 1, "opaque_live")
+	desired.Mode = RuntimeModeLive
+	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(manager.CheckWriteFence(desired.Fence()), ErrLiveWriteDisabled) {
+		t.Fatalf("live CheckWriteFence error=%v", manager.CheckWriteFence(desired.Fence()))
+	}
+}
+
+func TestManagerCloseDeactivatesActiveDynamicRuntime(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	if _, err := manager.CreateRuntime(context.Background(), desiredTestAccount(t, 1, 1, 1, "opaque_close")); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := manager.lifecycle.(*fakeRuntimeLifecycle)
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.deactivations != 1 {
+		t.Fatalf("deactivations=%d, want 1", lifecycle.deactivations)
+	}
+}
+
+type fakeRuntimeLifecycle struct {
+	validateErr   error
+	blockers      RuntimeBlockers
+	activations   int
+	deactivations int
+}
+
+func (lifecycle *fakeRuntimeLifecycle) Validate(context.Context, DesiredRuntime) error {
+	return lifecycle.validateErr
+}
+func (lifecycle *fakeRuntimeLifecycle) Activate(context.Context, DesiredRuntime) error {
+	lifecycle.activations++
+	return nil
+}
+
+func (lifecycle *fakeRuntimeLifecycle) Deactivate(context.Context, domain.AccountID) error {
+	lifecycle.deactivations++
+	return nil
+}
+func (lifecycle *fakeRuntimeLifecycle) Blockers(context.Context, domain.AccountID) (RuntimeBlockers, error) {
+	return lifecycle.blockers, nil
+}
+
+func newLifecycleTestManager(t *testing.T, mode RuntimeMode) *Manager {
+	t.Helper()
+	service, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newManager(context.Background(), nil, Options{
+		GatewayCatalog: service, RuntimeMode: mode, Lifecycle: &fakeRuntimeLifecycle{},
+	}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
+		return nil, errors.New("unexpected static build")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	return manager
+}
+
+func desiredTestAccount(t *testing.T, revision, generation, credential uint64, refValue string) DesiredRuntime {
+	t.Helper()
+	ref, err := secret.ParseOpaqueRef(refValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return DesiredRuntime{
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", Mode: RuntimeModeTest,
+		SecretRef: ref, DesiredStateRevision: revision, RuntimeGeneration: generation,
+		CredentialVersion: credential, RequestedState: RuntimeStateActive, RotationFence: "rotation-fence",
+	}
+}

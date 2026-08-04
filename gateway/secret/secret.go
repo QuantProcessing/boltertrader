@@ -17,6 +17,44 @@ type Ref struct {
 	name   string
 }
 
+// OpaqueRef identifies secret material owned by an external secret store. Its
+// value is available only to Provider implementations and is redacted from all
+// ordinary formatting and serialization paths.
+type OpaqueRef struct{ raw string }
+
+func ParseOpaqueRef(value string) (OpaqueRef, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") {
+		return OpaqueRef{}, fmt.Errorf("invalid opaque secret reference")
+	}
+	return OpaqueRef{raw: value}, nil
+}
+
+func (ref OpaqueRef) IsZero() bool { return ref.raw == "" }
+
+func (ref OpaqueRef) Fingerprint() string {
+	if ref.raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(ref.raw))
+	return "opaque:" + hex.EncodeToString(sum[:])
+}
+
+func (ref OpaqueRef) ProviderRef() Ref {
+	return Ref{raw: ref.raw, scheme: "opaque", name: ref.raw}
+}
+
+func (ref OpaqueRef) String() string {
+	if ref.raw == "" {
+		return "secret.OpaqueRef{redacted, invalid}"
+	}
+	return "secret.OpaqueRef{value:redacted}"
+}
+
+func (ref OpaqueRef) GoString() string { return ref.String() }
+
+func (ref OpaqueRef) MarshalJSON() ([]byte, error) { return json.Marshal(ref.String()) }
+
 func ParseRef(value string) (Ref, error) {
 	value = strings.TrimSpace(value)
 	parsed, err := url.Parse(value)

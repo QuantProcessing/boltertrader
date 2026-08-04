@@ -97,3 +97,23 @@ func TestEnvProviderOnlyResolvesExplicitAllowlistAndRedactsErrors(t *testing.T) 
 		t.Fatal("Resolve ignored canceled context")
 	}
 }
+
+func TestOpaqueRefIsProviderResolvableAndAlwaysRedacted(t *testing.T) {
+	ref, err := secret.ParseOpaqueRef("opaque_ref_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := secret.StaticProvider{"opaque_ref_1": "credential-canary"}
+	value, err := provider.Resolve(context.Background(), ref.ProviderRef())
+	if err != nil || value != "credential-canary" {
+		t.Fatalf("Resolve() value=%q err=%v", value, err)
+	}
+	formatted := fmt.Sprintf("%s %#v", ref, ref)
+	if strings.Contains(formatted, "opaque_ref_1") || !strings.Contains(formatted, "redacted") {
+		t.Fatalf("opaque reference formatting was not redacted: %s", formatted)
+	}
+	payload, err := json.Marshal(ref)
+	if err != nil || strings.Contains(string(payload), "opaque_ref_1") {
+		t.Fatalf("opaque reference JSON leaked: %s err=%v", payload, err)
+	}
+}
