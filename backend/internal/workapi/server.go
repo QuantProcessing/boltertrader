@@ -12,6 +12,7 @@ import (
 	"time"
 
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
 )
 
 const ContractVersion = "boltertrader-product-platform-upgrade/v4"
@@ -20,6 +21,8 @@ type Options struct {
 	TokenDigest     [sha256.Size]byte
 	Mode            string
 	ContractVersion string
+	Service         *work.Service
+	OnReadiness     func(bool)
 }
 
 type handler struct {
@@ -27,6 +30,8 @@ type handler struct {
 	mode        string
 	contract    frozencontract.Contract
 	mux         *http.ServeMux
+	service     *work.Service
+	onReadiness func(bool)
 }
 
 func New(options Options) (http.Handler, error) {
@@ -45,7 +50,11 @@ func New(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux()}
+	service := options.Service
+	if service == nil {
+		service = work.New(ContractVersion, 15*time.Second)
+	}
+	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux(), service: service, onReadiness: options.OnReadiness}
 	h.register()
 	return h, nil
 }
@@ -86,7 +95,7 @@ func (h *handler) register() {
 func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 	switch route {
 	case "GET /internal/v1/funding-work/status":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"mode": h.mode, "state": "scaffold"}})
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Status()})
 	case "POST /internal/v1/funding-work/workers/registrations":
 		req, ok := decodeStrict[registrationRequest](w, r, h.contract, route)
 		if !ok {
@@ -96,55 +105,86 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 			writeError(w, http.StatusForbidden, "WORKER_SCOPE_DENIED", "worker scope denied", nil, false, requestID(r))
 			return
 		}
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"meta": meta(r), "data": map[string]any{"accepted": false, "reason": "scaffold"}})
+		registration := h.service.Register(work.RegistrationRequest(req))
+		if h.onReadiness != nil {
+			h.onReadiness(true)
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"meta": meta(r), "data": registration})
 	case "PUT /internal/v1/funding-work/workers/{workerId}/heartbeat":
 		req, ok := decodeStrict[heartbeatRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"workerId": r.PathValue("workerId"), "workerGeneration": req.WorkerGeneration, "state": req.State}})
+		registration, err := h.service.Heartbeat(r.PathValue("workerId"), work.HeartbeatRequest(req))
+		if err != nil {
+			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": registration})
 	case "GET /internal/v1/funding-work/workers/{workerId}/readiness":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"workerId": r.PathValue("workerId"), "canClaim": false, "state": "scaffold", "observedAt": time.Now().UTC().Format(time.RFC3339)}})
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Readiness(r.PathValue("workerId"))})
 	case "POST /internal/v1/funding-work/workers/{workerId}/drain":
-		_, ok := decodeStrict[drainRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[drainRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"draining": true}})
+		registration, err := h.service.Drain(r.PathValue("workerId"), work.DrainRequest(req))
+		if err != nil {
+			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+			return
+		}
+		if h.onReadiness != nil {
+			h.onReadiness(false)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": registration})
 	case "POST /internal/v1/funding-work/claims":
-		_, ok := decodeStrict[claimRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[claimRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": []any{}}})
+		items, err := h.service.Claim(work.ClaimRequest(req))
+		if err != nil {
+			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
 	case "GET /internal/v1/funding-work/facts":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": []any{}, "cursor": "cursor_0001"}})
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Facts()})
 	case "GET /internal/v1/funding-work/facts/snapshot":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": []any{}, "cursor": "cursor_0001", "snapshot": true}})
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Snapshot()})
 	case "POST /internal/v1/funding-work/leases/{leaseId}/renew":
-		_, ok := decodeStrict[leaseRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[leaseRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"leaseId": r.PathValue("leaseId"), "renewed": true}})
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Renew(r.PathValue("leaseId"), work.LeaseRequest(req))})
 	case "POST /internal/v1/funding-work/leases/{leaseId}/command-intents":
-		_, ok := decodeStrict[intentRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[intentRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"meta": meta(r), "data": map[string]any{"leaseId": r.PathValue("leaseId"), "accepted": true}})
+		if !validateNested(w, r, h.contract, "intent."+req.IntentKind, req.Payload) {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{"meta": meta(r), "data": h.service.Intent(r.PathValue("leaseId"), work.IntentRequest(req))})
 	case "POST /internal/v1/funding-work/leases/{leaseId}/complete":
-		_, ok := decodeStrict[completeRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[completeRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"leaseId": r.PathValue("leaseId"), "completed": true}})
+		if !validateNested(w, r, h.contract, "complete.result", req.Result) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Complete(r.PathValue("leaseId"), work.CompleteRequest(req))})
 	case "POST /internal/v1/funding-work/leases/{leaseId}/fail":
-		_, ok := decodeStrict[failRequest](w, r, h.contract, route)
+		req, ok := decodeStrict[failRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"leaseId": r.PathValue("leaseId"), "failed": true}})
+		if !validateNested(w, r, h.contract, "fail.details", req.Details) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Fail(r.PathValue("leaseId"), work.FailRequest(req))})
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"route": route, "scaffold": true}})
 	}
@@ -251,6 +291,14 @@ func decodeStrict[T any](w http.ResponseWriter, r *http.Request, contract frozen
 		return zero, false
 	}
 	return req, true
+}
+
+func validateNested(w http.ResponseWriter, r *http.Request, contract frozencontract.Contract, name string, body []byte) bool {
+	if err := contract.ValidateNested(name, normalizedBody(body)); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"body": err.Error()}, false, requestID(r))
+		return false
+	}
+	return true
 }
 
 func meta(r *http.Request) map[string]any {

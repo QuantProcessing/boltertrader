@@ -13,15 +13,16 @@ import (
 )
 
 type TradingOptions struct {
-	Reservations *reservations.Service
-	Commands     *orders.Service
-	Portfolio    *portfolio.Projection
-	Ledger       *ledger.Service
-	Principal    func(*http.Request) (principalID, mode string, err error)
+	Reservations      *reservations.Service
+	Commands          *orders.Service
+	Portfolio         *portfolio.Projection
+	Ledger            *ledger.Service
+	Principal         func(*http.Request) (principalID, mode string, err error)
+	AuthorizeMutation func(*http.Request) error
 }
 
 func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
-	if mux == nil || options.Reservations == nil || options.Commands == nil || options.Portfolio == nil || options.Ledger == nil || options.Principal == nil {
+	if mux == nil || options.Reservations == nil || options.Commands == nil || options.Portfolio == nil || options.Ledger == nil || options.Principal == nil || options.AuthorizeMutation == nil {
 		return fmt.Errorf("complete trading options are required")
 	}
 	handler := &tradingHandler{options: options}
@@ -52,6 +53,9 @@ type reservationRequest struct {
 func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.Request) {
 	principal, mode, ok := handler.identity(w, r)
 	if !ok {
+		return
+	}
+	if !handler.authorizeMutation(w, r) {
 		return
 	}
 	var request reservationRequest
@@ -100,6 +104,9 @@ func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http
 	if !ok {
 		return
 	}
+	if !handler.authorizeMutation(w, r) {
+		return
+	}
 	item, err := handler.options.Reservations.Release(r.Context(), principal, reservations.Mode(mode), r.PathValue("reservationId"))
 	if err != nil {
 		tradingError(w, statusForTradingError(err), codeForTradingError(err))
@@ -116,6 +123,9 @@ type commandRequest struct {
 func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Request) {
 	principal, mode, ok := handler.identity(w, r)
 	if !ok {
+		return
+	}
+	if !handler.authorizeMutation(w, r) {
 		return
 	}
 	var request commandRequest
@@ -196,6 +206,14 @@ func (handler *tradingHandler) identity(w http.ResponseWriter, r *http.Request) 
 		return "", "", false
 	}
 	return principal, mode, true
+}
+
+func (handler *tradingHandler) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	if err := handler.options.AuthorizeMutation(r); err != nil {
+		tradingError(w, http.StatusForbidden, "AUTH_REQUIRED")
+		return false
+	}
+	return true
 }
 
 func decodeTrading(w http.ResponseWriter, r *http.Request, target any) bool {

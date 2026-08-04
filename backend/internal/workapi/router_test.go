@@ -57,7 +57,7 @@ func TestRegistrationSkeletonRejectsUnknownFieldsBeforeServiceHandoff(t *testing
 	}{
 		{name: "unknown field", body: `{"workerId":"worker-a","instanceId":"instance-a","productId":"funding","mode":"test","contractVersion":"boltertrader-product-platform-upgrade/v4","token":"must-not-be-accepted"}`, want: http.StatusBadRequest},
 		{name: "wrong mode", body: `{"workerId":"worker-a","instanceId":"instance-a","productId":"funding","mode":"live","contractVersion":"boltertrader-product-platform-upgrade/v4"}`, want: http.StatusForbidden},
-		{name: "valid skeleton", body: `{"workerId":"worker-a","instanceId":"instance-a","productId":"funding","mode":"test","contractVersion":"boltertrader-product-platform-upgrade/v4"}`, want: http.StatusServiceUnavailable},
+		{name: "valid registration", body: `{"workerId":"worker-a","instanceId":"instance-a","productId":"funding","mode":"test","contractVersion":"boltertrader-product-platform-upgrade/v4"}`, want: http.StatusCreated},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -70,5 +70,23 @@ func TestRegistrationSkeletonRejectsUnknownFieldsBeforeServiceHandoff(t *testing
 				t.Fatalf("status = %d want %d body=%s", response.Code, test.want, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestWorkerTerminalAndIntentPayloadsRejectUnknownNestedFields(t *testing.T) {
+	handler := newTestHandler(t)
+	tests := []struct{ path, body string }{
+		{path: "/internal/v1/funding-work/leases/lease-1/command-intents", body: `{"workerId":"worker-a","workerGeneration":1,"workItemId":"work-1","workRevision":1,"leaseGeneration":1,"idempotencyKey":"intent-1","intentKind":"funding.open","factsCursor":"cursor-1","accountFences":{},"payload":{"unexpected":true}}`},
+		{path: "/internal/v1/funding-work/leases/lease-1/complete", body: `{"workerId":"worker-a","workerGeneration":1,"workItemId":"work-1","workRevision":1,"leaseGeneration":1,"idempotencyKey":"complete-1","factsCursor":"cursor-1","result":{"unexpected":true}}`},
+		{path: "/internal/v1/funding-work/leases/lease-1/fail", body: `{"workerId":"worker-a","workerGeneration":1,"workItemId":"work-1","workRevision":1,"leaseGeneration":1,"idempotencyKey":"fail-1","factsCursor":"cursor-1","errorCode":"FAILED","retryable":false,"details":{"unexpected":true}}`},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer test-worker-token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
+			t.Fatalf("%s status=%d body=%s", test.path, response.Code, response.Body.String())
+		}
 	}
 }

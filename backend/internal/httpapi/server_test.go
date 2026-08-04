@@ -2,12 +2,27 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
+	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 )
+
+type correlationAudit struct {
+	records []platformaccounts.AuditRecord
+}
+
+func (audit *correlationAudit) Append(_ context.Context, record platformaccounts.AuditRecord) error {
+	audit.records = append(audit.records, record)
+	return nil
+}
 
 func TestBrowserAuthAndStrictLoginValidation(t *testing.T) {
 	srv := newTestHandler(t)
@@ -67,5 +82,60 @@ func TestBrowserRoutesMatchFrozenContract(t *testing.T) {
 	}
 	if routes[len(routes)-1] != "GET /api/v1/realtime/stream" {
 		t.Fatalf("unexpected last route %q", routes[len(routes)-1])
+	}
+}
+
+func TestGeneratedRequestIDIsStableAcrossAccountAuditAndResponse(t *testing.T) {
+	hash, err := session.HashPassword("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: hash, Mode: "test", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := sessions.Login(context.Background(), "owner", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := &correlationAudit{}
+	accountService, err := platformaccounts.New(platformaccounts.Options{
+		Store: platformaccounts.NewMemoryStore(), Secrets: routeSecretWriter{ref: "opaque-ref"}, Audit: audit,
+		ID: func() string { return "acct-correlation" },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(Options{
+		Sessions: sessions, Mode: "test", ContractVersion: ContractVersion,
+		Accounts: &AccountRoutesOptions{
+			Service: accountService, Authenticate: SessionAuthenticator(sessions), AuthorizeMutation: SessionMutationAuthorizer(sessions),
+			Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+				return platformaccounts.Blockers{}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"venue":"binance","venueEnvironment":"testnet","displayName":"Correlation","productIds":["manual"],"secretMaterial":{"apiKey":"canary"}}`))
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: login.Session.Token})
+	request.Header.Set("X-CSRF-Token", login.Session.CSRFToken)
+	request.Header.Set("Idempotency-Key", "create-correlation")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Meta struct {
+			RequestID string `json:"requestId"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Meta.RequestID == "" || len(audit.records) != 1 || audit.records[0].RequestID != body.Meta.RequestID {
+		t.Fatalf("response requestId=%q audit=%+v", body.Meta.RequestID, audit.records)
 	}
 }

@@ -35,7 +35,7 @@ func TestAuthRouteHookStrictLoginSessionAndCSRF(t *testing.T) {
 		t.Fatalf("login status=%d body=%s", loginRec.Code, loginRec.Body.String())
 	}
 	cookies := loginRec.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("cookies=%#v", cookies)
 	}
 

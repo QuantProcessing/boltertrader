@@ -50,7 +50,7 @@ func RegisterAuthRoutes(mux *http.ServeMux, options AuthRoutesOptions) error {
 			writeError(w, status, "AUTH_REQUIRED", "authentication required", nil, false, requestID(r))
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: options.Sessions.CookieSecure(), SameSite: http.SameSiteLaxMode})
+		http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: options.Sessions.CookieSecure(), SameSite: http.SameSiteStrictMode})
 		w.WriteHeader(http.StatusNoContent)
 	})
 	return nil
@@ -95,5 +95,5 @@ func writeCurrentSession(w http.ResponseWriter, r *http.Request, sessions *sessi
 }
 
 func setSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time, secure bool) {
-	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: token, Path: "/", Expires: expiresAt, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: token, Path: "/", Expires: expiresAt, HttpOnly: true, Secure: secure, SameSite: http.SameSiteStrictMode})
 }

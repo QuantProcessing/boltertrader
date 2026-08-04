@@ -23,6 +23,10 @@ type Options struct {
 	Sessions        *session.Service
 	Mode            string
 	ContractVersion string
+	Accounts        *AccountRoutesOptions
+	Audit           *AuditRouteOptions
+	PublicData      *PublicDataAPI
+	Trading         *TradingOptions
 }
 
 type Server struct {
@@ -49,11 +53,16 @@ func New(options Options) (http.Handler, error) {
 		return nil, err
 	}
 	s := &Server{sessions: options.Sessions, mode: options.Mode, contract: contract, mux: http.NewServeMux()}
-	s.register()
+	if err := s.register(options); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.TrimSpace(r.Header.Get("X-Request-Id")) == "" {
+		r.Header.Set("X-Request-Id", requestID(r))
+	}
 	if _, pattern := s.mux.Handler(r); pattern == "" {
 		s.mux.ServeHTTP(w, r)
 		return
@@ -69,18 +78,59 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) register() {
+func (s *Server) register(options Options) error {
+	owned := map[string]bool{
+		"POST /api/v1/auth/login": true, "GET /api/v1/auth/session": true,
+		"DELETE /api/v1/auth/session": true, "GET /api/v1/me": true,
+	}
+	if err := RegisterAuthRoutes(s.mux, AuthRoutesOptions{Sessions: s.sessions}); err != nil {
+		return err
+	}
+	if options.Accounts != nil {
+		if err := RegisterAccountRoutes(s.mux, *options.Accounts); err != nil {
+			return err
+		}
+		for _, route := range []string{"GET /api/v1/accounts", "POST /api/v1/accounts", "GET /api/v1/accounts/{accountId}", "PATCH /api/v1/accounts/{accountId}", "POST /api/v1/accounts/{accountId}/validate", "POST /api/v1/accounts/{accountId}/rotate", "POST /api/v1/accounts/{accountId}/disable", "POST /api/v1/accounts/{accountId}/drain", "DELETE /api/v1/accounts/{accountId}"} {
+			owned[route] = true
+		}
+	}
+	if options.Audit != nil {
+		if err := RegisterAuditRoute(s.mux, *options.Audit); err != nil {
+			return err
+		}
+		owned["GET /api/v1/audit"] = true
+	}
+	if options.PublicData != nil {
+		if err := options.PublicData.Register(s.mux); err != nil {
+			return err
+		}
+		for _, route := range []string{"GET /api/v1/system/status", "GET /api/v1/system/readiness", "GET /api/v1/catalog/venues", "GET /api/v1/catalog/instruments", "GET /api/v1/market-data", "GET /api/v1/realtime/stream"} {
+			owned[route] = true
+		}
+	}
+	if options.Trading != nil {
+		if err := RegisterTradingRoutes(s.mux, *options.Trading); err != nil {
+			return err
+		}
+		for _, route := range []string{"POST /api/v1/reservations", "GET /api/v1/reservations", "DELETE /api/v1/reservations/{reservationId}", "POST /api/v1/commands", "GET /api/v1/commands/{commandId}", "GET /api/v1/positions", "GET /api/v1/ledger", "GET /api/v1/pnl"} {
+			owned[route] = true
+		}
+	}
 	for _, listener := range s.contract.Listeners {
 		if listener.ID != "platform-browser" {
 			continue
 		}
 		for _, route := range listener.Routes {
+			if owned[route] {
+				continue
+			}
 			route := route
 			s.mux.HandleFunc(route, func(w http.ResponseWriter, r *http.Request) {
 				s.route(w, r, route)
 			})
 		}
 	}
+	return nil
 }
 
 func (s *Server) route(w http.ResponseWriter, r *http.Request, route string) {

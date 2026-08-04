@@ -307,8 +307,6 @@ func (store *LedgerStore) Unrealized(ctx context.Context, q ledger.Query) (decim
 	return value, asOf, nil
 }
 
-type scanner interface{ Scan(...any) error }
-
 func nullString(value *string) any {
 	if value == nil {
 		return nil
