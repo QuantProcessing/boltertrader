@@ -69,8 +69,8 @@ func TestWorkflowEvidenceRedactsArtifactContents(t *testing.T) {
 		ID:           "backup-001",
 		ArtifactPath: artifactPath,
 	})
-	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "identity is not frozen") {
-		t.Fatalf("tampered source identity error = %v", err)
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
+		t.Fatalf("backup: %v", err)
 	}
 
 	data := adversarialReadFile(t, manifestPath)
@@ -146,8 +146,8 @@ func TestWorkflowDoesNotMutateSourceTree(t *testing.T) {
 		ID:           "backup-001",
 		ArtifactPath: artifactPath,
 	})
-	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
-		t.Fatalf("backup: %v", err)
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "identity is not frozen") {
+		t.Fatalf("tampered source identity error = %v", err)
 	}
 	afterInfo, err := os.Stat(sentinelPath)
 	if err != nil {
@@ -185,6 +185,9 @@ func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if mutate != nil {
+		return path
 	}
 	const importCommit = "0123456789abcdef0123456789abcdef01234567"
 	proofPath := adversarialArtifact(t, "import-proof.json", `{
