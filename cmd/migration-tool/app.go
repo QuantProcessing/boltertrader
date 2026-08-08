@@ -70,7 +70,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("--manifest is required and positional arguments are not accepted")
 	}
 	var result migration.Result
-	executable := operation == migration.Backup || operation == migration.Restore || operation == migration.FinalDelta || operation == migration.Fence || operation == migration.Backfill || operation == migration.Validate || operation == migration.Rollback
+	executable := operation == migration.RecordImport || operation == migration.Backup || operation == migration.Restore || operation == migration.FinalDelta || operation == migration.Fence || operation == migration.Backfill || operation == migration.Validate || operation == migration.Rollback
 	if executable {
 		if strings.TrimSpace(*proof) != "" {
 			return fmt.Errorf("--proof is not accepted for executable operations; evidence is generated after command success")

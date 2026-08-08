@@ -23,6 +23,10 @@ in the evidence directory.
 ```sh
 export BT_MIGRATION_SOURCE_SERVICE=funding_source_migration
 export BT_MIGRATION_TARGET_SERVICE=bolter_target_migration
+export BT_MIGRATION_SOURCE_DATABASE=funding_source
+export BT_MIGRATION_TARGET_DATABASE=bolter_target
+export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_writer
+export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_writer
 ```
 
 The immutable Git provenance gate must already be recorded and verified before
@@ -30,6 +34,18 @@ backup. Confirm the current phase without changing state:
 
 ```sh
 .local/bin/migration-tool status --manifest migration/manifest.json
+```
+
+Record the reviewed subtree import commit. The command resolves the real Git
+objects, reachability, remotes, branches, and subtree before it generates proof;
+it does not accept caller-authored proof JSON:
+
+```sh
+export BT_MIGRATION_IMPORT_COMMIT='<reviewed 40-character import commit>'
+.local/bin/migration-tool record-import \
+  --manifest migration/manifest.json \
+  --id "$BT_MIGRATION_IMPORT_COMMIT" \
+  --evidence-dir .local/migration/evidence
 ```
 
 ## Ordered Operations
@@ -56,25 +72,38 @@ source-side final delta:
   --artifact .local/migration/artifacts/backup.dump \
   --verifier operator-id \
   --evidence-dir .local/migration/evidence \
-  --target-service "$BT_MIGRATION_TARGET_SERVICE"
-
-.local/bin/migration-tool final-delta \
-  --manifest migration/manifest.json \
-  --artifact .local/migration/artifacts/final-delta.sql \
-  --evidence-dir .local/migration/evidence \
-  --source-service "$BT_MIGRATION_SOURCE_SERVICE"
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE"
 ```
 
-Raise the database-level one-writer fence. The tool changes both database
-defaults to read-only and verifies each setting from a new connection before it
-records the fence:
+Raise the database-level one-writer fence before the final snapshot. The tool
+revokes database connection rights, sets both canonical writer roles to
+`NOLOGIN`, terminates existing sessions for those roles, and verifies role,
+connect, and session state before it records the fence:
 
 ```sh
 .local/bin/migration-tool fence \
   --manifest migration/manifest.json \
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
-  --target-service "$BT_MIGRATION_TARGET_SERVICE"
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
+  --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
+```
+
+Capture the fenced source twice in read-only sessions, require identical
+digests, and apply the verified final snapshot to the restored target:
+
+```sh
+.local/bin/migration-tool final-delta \
+  --manifest migration/manifest.json \
+  --artifact .local/migration/artifacts/final-snapshot.dump \
+  --evidence-dir .local/migration/evidence \
+  --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE"
 ```
 
 Apply each repository-owned SQL backfill by exact path. The runner hashes the
@@ -86,7 +115,8 @@ target write override, and rejects any pre/post content drift:
   --manifest migration/manifest.json \
   --backfill-script backend/migrations/0013_principal_scoped_accounting.sql \
   --evidence-dir .local/migration/evidence \
-  --target-service "$BT_MIGRATION_TARGET_SERVICE"
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE"
 ```
 
 Run offline, browser, read-only real-Test, and restart/recovery gates. The real
@@ -123,9 +153,13 @@ phase:
   --reason 'pre-backfill verification failed' \
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
-  --target-service "$BT_MIGRATION_TARGET_SERVICE"
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
+  --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
 
-Rollback verifies that source defaults accept writes again while target
-canonical writes remain disabled. After the first backfill, rollback is
+Rollback restores source-role login/connect privileges and verifies that the
+target canonical writer remains fenced. After the first backfill, rollback is
 rejected and recovery must proceed forward in the target.

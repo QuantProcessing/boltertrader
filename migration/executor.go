@@ -90,6 +90,9 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if err := validateWorkflow(manifest); err != nil {
 		return ExecutionResult{}, err
 	}
+	if request.Operation == RecordImport {
+		return executeRecordImportLocked(request, options, manifestData, manifest)
+	}
 	priorOperation := false
 	for _, event := range manifest.Workflow.Events {
 		priorOperation = priorOperation || event.Operation == request.Operation
@@ -161,6 +164,36 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
+}
+
+func executeRecordImportLocked(request ExecutionRequest, options ExecuteOptions, manifestData []byte, manifest Manifest) (ExecutionResult, error) {
+	if request.ID == "" || strings.TrimSpace(request.EvidenceDir) == "" {
+		return ExecutionResult{}, fmt.Errorf("record-import requires an import commit and evidence directory")
+	}
+	if err := validateGitProvenance(manifest, request.ID); err != nil {
+		return ExecutionResult{}, err
+	}
+	command := commandEvidence{
+		Executable: "git-provenance-verifier",
+		ArgvSHA256: sha256Hex([]byte(request.ID)),
+		OutputSHA:  sha256Hex([]byte("verified")),
+	}
+	proof := operationProof{
+		SchemaVersion: 1, Operation: RecordImport, Status: "pass", MigrationID: manifest.MigrationID,
+		Subject: request.ID, Checks: []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"},
+		GeneratedBy: evidenceGenerator, PreStateSHA: sha256Hex(manifestData), InputSHA: sha256Hex([]byte(request.ID)), Commands: []commandEvidence{command},
+	}
+	path, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, RecordImport, proof)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	applyRequest := Request{Operation: RecordImport, ID: request.ID, ProofPath: path, generatedEvidence: &proof}
+	result, err := applyLocked(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now, execution: &executionCapability{}})
+	if err != nil {
+		_ = os.Remove(path)
+		return ExecutionResult{}, err
+	}
+	return ExecutionResult{Result: result, EvidencePath: path, InputSHA256: proof.InputSHA}, nil
 }
 
 func replayExecution(manifest Manifest, evidenceDir string, request Request, commands []Command, inputSHA string) (*ExecutionResult, error) {
@@ -436,6 +469,10 @@ func canonicalBackfillPath(root, value string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("backfill script is unavailable")
+	}
+	tracked := exec.Command("git", "--no-replace-objects", "-C", root, "ls-files", "--error-unmatch", "--", filepath.ToSlash(relative))
+	if tracked.Run() != nil {
+		return "", fmt.Errorf("backfill script is not tracked by the frozen repository")
 	}
 	return path, nil
 }
