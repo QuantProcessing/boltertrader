@@ -41,6 +41,7 @@ type ExecutionRequest struct {
 	Reason        string
 	SourceService string
 	TargetService string
+	repositoryRoot string
 }
 
 type ExecuteOptions struct {
@@ -157,16 +158,25 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	switch request.Operation {
 	case Backup:
 		apply.ArtifactPath = request.ArtifactPath
-		return []Command{{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"consistent-snapshot", "restorable-format"}, "", nil
+		return []Command{
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}},
+			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
+		}, apply, []string{"dump-created", "dump-format-readable"}, "", nil
 	case Restore:
 		apply.ArtifactPath = request.ArtifactPath
 		return []Command{
 			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target, request.ArtifactPath}},
 			psql(target, "SELECT current_database()"),
-		}, apply, []string{"clean-restore", "source-stack-boot"}, "", nil
+		}, apply, []string{"restore-command-succeeded", "target-query-succeeded"}, "", nil
 	case FinalDelta:
 		apply.ArtifactPath = request.ArtifactPath
-		return []Command{{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"deterministic", "source-read-only"}, "", nil
+		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
+		check := psql(source, "SHOW transaction_read_only")
+		check.Env = readOnly
+		return []Command{
+			check,
+			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
+		}, apply, []string{"capture-session-read-only", "artifact-created"}, "", nil
 	case Fence:
 		return []Command{
 			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
@@ -175,17 +185,21 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
-		info, statErr := os.Stat(request.BackfillPath)
-		if statErr != nil || !info.Mode().IsRegular() {
-			return nil, Request{}, nil, "", fmt.Errorf("backfill script is unavailable")
+		root := manifest.TargetRepo
+		if request.repositoryRoot != "" {
+			root = request.repositoryRoot
 		}
-		apply.Name, apply.ArtifactPath = filepath.Base(request.BackfillPath), request.BackfillPath
-		inputSHA, digestErr := digestFile(request.BackfillPath, true)
+		backfillPath, pathErr := canonicalBackfillPath(root, request.BackfillPath)
+		if pathErr != nil {
+			return nil, Request{}, nil, "", pathErr
+		}
+		apply.Name, apply.ArtifactPath = filepath.Base(backfillPath), backfillPath
+		inputSHA, digestErr := digestFile(backfillPath, true)
 		if digestErr != nil {
 			return nil, Request{}, nil, "", digestErr
 		}
-		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target, "--file", request.BackfillPath}, Env: []string{"PGOPTIONS=-c default_transaction_read_only=off"}}
-		return []Command{command}, apply, []string{"authoritative-ownership-mapped", "deterministic"}, inputSHA, nil
+		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target, "--file", backfillPath}, Env: []string{"PGOPTIONS=-c default_transaction_read_only=off"}}
+		return []Command{command}, apply, []string{"script-content-stable", "single-transaction"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
 		return []Command{
@@ -226,7 +240,7 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 	}
 	query := command.Args[len(command.Args)-1]
 	got := strings.TrimSpace(string(result.Output))
-	if query == "SHOW default_transaction_read_only" {
+	if query == "SHOW default_transaction_read_only" || query == "SHOW transaction_read_only" {
 		want := "on"
 		if operation == Rollback && index == 1 {
 			want = "off"
@@ -236,6 +250,38 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 		}
 	}
 	return nil
+}
+
+func canonicalBackfillPath(root, value string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	path := value
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is unavailable")
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) != 3 || parts[0] != "backend" || parts[1] != "migrations" || filepath.Ext(parts[2]) != ".sql" {
+		return "", fmt.Errorf("backfill script must be a repository-owned backend migration")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("backfill script is unavailable")
+	}
+	return path, nil
 }
 
 func postgresService(value string) (string, error) {
