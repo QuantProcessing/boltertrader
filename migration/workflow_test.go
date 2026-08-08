@@ -103,7 +103,7 @@ func TestWorkflowReplayIsIdempotentAndConflictsFailClosed(t *testing.T) {
 
 func TestWorkflowRollbackAllowedBeforeBackfill(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	result, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}, ApplyOptions{})
+	result, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}), ApplyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestWorkflowRequiresForwardRecoveryAfterBackfill(t *testing.T) {
 
 func TestWorkflowReappliesIdenticalDeltaAndFenceAfterRollback(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	if _, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}, ApplyOptions{}); err != nil {
+	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	delta := writeArtifact(t, "delta.sql", "final delta")
@@ -164,7 +164,7 @@ func TestWorkflowRejectsStaleFenceProofAfterRollbackEpoch(t *testing.T) {
 	if _, err := Apply(manifestPath, staleFence, ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "new epoch"}, ApplyOptions{}); err != nil {
+	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "new epoch"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
