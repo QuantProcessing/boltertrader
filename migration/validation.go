@@ -63,12 +63,17 @@ func validateBaseline(manifest Manifest) error {
 	if problems := collectBaselineProblems(manifest); len(problems) > 0 {
 		return fmt.Errorf("baseline rejected: %s", strings.Join(problems, "; "))
 	}
+	if manifest.ImportCommit != nil {
+		if err := verifyGitProvenance(manifest, *manifest.ImportCommit); err != nil {
+			return fmt.Errorf("baseline rejected: %w", err)
+		}
+	}
 	return nil
 }
 
 func collectBaselineProblems(manifest Manifest) []string {
 	var problems []string
-	if manifest.SchemaVersion != 1 || manifest.MigrationID == "" {
+	if !matchesFrozenBaseline(manifest) {
 		problems = append(problems, "manifest identity is not frozen")
 	}
 	if manifest.SourceCommit == "" || manifest.SourceTreeHash == "" || manifest.TargetCommit == "" || manifest.TargetTreeHash == "" {
