@@ -53,15 +53,6 @@ func TestRunRejectsCallerProofForExecutableOperation(t *testing.T) {
 	}
 }
 
-func writeCLIArtifact(t *testing.T, name, value string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func TestRunDoesNotExposeActivationOrRetirementExecutionCommands(t *testing.T) {
 	for _, command := range []string{"activate", "retire"} {
 		var stdout, stderr bytes.Buffer
