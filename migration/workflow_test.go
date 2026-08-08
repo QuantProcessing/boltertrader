@@ -27,7 +27,7 @@ func TestWorkflowPreparesActivationWithoutActivatingTarget(t *testing.T) {
 	}
 	for index, request := range steps {
 		request = withProof(t, manifestPath, request)
-		if _, err := Apply(manifestPath, request, ApplyOptions{Now: func() time.Time {
+		if _, err := applyExecuted(manifestPath, request, ApplyOptions{Now: func() time.Time {
 			return now.Add(time.Duration(index+1) * time.Minute)
 		}}); err != nil {
 			t.Fatalf("apply %s: %v", request.Operation, err)
@@ -60,7 +60,7 @@ func TestWorkflowRejectsOutOfOrderStepWithoutChangingManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Apply(manifestPath, Request{Operation: Restore}, ApplyOptions{})
+	_, err = applyExecuted(manifestPath, Request{Operation: Restore}, ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "requires backup") {
 		t.Fatalf("restore error = %v, want ordering rejection", err)
 	}
@@ -75,15 +75,15 @@ func TestWorkflowRejectsOutOfOrderStepWithoutChangingManifest(t *testing.T) {
 
 func TestWorkflowReplayIsIdempotentAndConflictsFailClosed(t *testing.T) {
 	manifestPath := copyManifest(t)
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	artifact := writeArtifact(t, "backup.dump", "verified backup")
 	request := withProof(t, manifestPath, Request{Operation: Backup, ID: "backup-001", ArtifactPath: artifact})
-	if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Apply(manifestPath, request, ApplyOptions{})
+	result, err := applyExecuted(manifestPath, request, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("idempotent replay: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestWorkflowReplayIsIdempotentAndConflictsFailClosed(t *testing.T) {
 	}
 
 	other := writeArtifact(t, "other.dump", "different backup")
-	_, err = Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Backup, ID: "backup-001", ArtifactPath: other}), ApplyOptions{})
+	_, err = applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backup, ID: "backup-001", ArtifactPath: other}), ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "replay conflict") {
 		t.Fatalf("conflicting replay error = %v", err)
 	}
@@ -103,7 +103,7 @@ func TestWorkflowReplayIsIdempotentAndConflictsFailClosed(t *testing.T) {
 
 func TestWorkflowRollbackAllowedBeforeBackfill(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	result, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}), ApplyOptions{})
+	result, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}), ApplyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +121,10 @@ func TestWorkflowRollbackAllowedBeforeBackfill(t *testing.T) {
 
 func TestWorkflowRequiresForwardRecoveryAfterBackfill(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "001-platform.sql"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "001-platform.sql"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "too late"}, ApplyOptions{})
+	_, err := applyExecuted(manifestPath, Request{Operation: Rollback, Reason: "too late"}, ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "forward recovery required") {
 		t.Fatalf("post-boundary rollback error = %v", err)
 	}
@@ -132,15 +132,15 @@ func TestWorkflowRequiresForwardRecoveryAfterBackfill(t *testing.T) {
 
 func TestWorkflowReappliesIdenticalDeltaAndFenceAfterRollback(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	delta := writeArtifact(t, "delta.sql", "final delta")
-	result, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{})
+	result, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{})
 	if err != nil || result.Replayed || result.Phase != PhaseDeltaCaptured {
 		t.Fatalf("delta retry result=%+v err=%v", result, err)
 	}
-	result, err = Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{})
+	result, err = applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{})
 	if err != nil || result.Replayed || result.Phase != PhaseFenced {
 		t.Fatalf("fence retry result=%+v err=%v", result, err)
 	}
@@ -156,32 +156,32 @@ func TestWorkflowRejectsStaleFenceProofAfterRollbackEpoch(t *testing.T) {
 		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
 		{Operation: FinalDelta, ArtifactPath: delta},
 	} {
-		if _, err := Apply(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
+		if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	staleFence := withProof(t, manifestPath, Request{Operation: Fence})
-	if _, err := Apply(manifestPath, staleFence, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, staleFence, ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "new epoch"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "new epoch"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(manifestPath, staleFence, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "proof") {
+	if _, err := applyExecuted(manifestPath, staleFence, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "proof") {
 		t.Fatalf("stale fence proof error = %v", err)
 	}
 }
 
 func TestWorkflowPreservesFirstIrreversibleBackfillBoundary(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "001-platform.sql"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "001-platform.sql"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	first := readWorkflowManifest(t, manifestPath).Workflow
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "002-gateway.sql"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "002-gateway.sql"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	got := readWorkflowManifest(t, manifestPath).Workflow
@@ -201,7 +201,7 @@ func TestWorkflowRejectsTamperedPhaseThatSkipsEvidence(t *testing.T) {
 	if err := os.WriteFile(manifestPath, []byte(tampered), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = Apply(manifestPath, Request{Operation: PrepareActivation}, ApplyOptions{})
+	_, err = applyExecuted(manifestPath, Request{Operation: PrepareActivation}, ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "workflow state is inconsistent") {
 		t.Fatalf("tampered workflow error = %v", err)
 	}
@@ -209,7 +209,7 @@ func TestWorkflowRejectsTamperedPhaseThatSkipsEvidence(t *testing.T) {
 
 func TestWorkflowRejectsFutureEvidenceInEarlierPhase(t *testing.T) {
 	manifestPath := copyManifest(t)
-	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"}), ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	manifest := readWorkflowManifest(t, manifestPath)
@@ -218,7 +218,7 @@ func TestWorkflowRejectsFutureEvidenceInEarlierPhase(t *testing.T) {
 	if err := writeManifestAtomic(manifestPath, manifest); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Apply(manifestPath, Request{Operation: Backup, ID: "real", ArtifactPath: writeArtifact(t, "backup", "data")}, ApplyOptions{})
+	_, err := applyExecuted(manifestPath, Request{Operation: Backup, ID: "real", ArtifactPath: writeArtifact(t, "backup", "data")}, ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "workflow state is inconsistent") {
 		t.Fatalf("future evidence error = %v", err)
 	}
@@ -244,14 +244,14 @@ func TestWorkflowRejectsGenericUntypedProof(t *testing.T) {
 	manifestPath := copyManifest(t)
 	proof := writeArtifact(t, "proof.json", `{"status":"pass"}`)
 	request := Request{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567", ProofPath: proof}
-	if _, err := Apply(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "operation proof") {
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "operation proof") {
 		t.Fatalf("generic proof error = %v", err)
 	}
 }
 
 func TestWorkflowRejectsUnsafeBackfillName(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	_, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "../unsafe.sql"}), ApplyOptions{})
+	_, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "../unsafe.sql"}), ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "backfill name") {
 		t.Fatalf("unsafe backfill error = %v", err)
 	}
@@ -262,12 +262,12 @@ func TestWorkflowPreparesRetirementOnlyAfterExternallyRecordedActivation(t *test
 	activation := time.Date(2026, 8, 9, 3, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	cutover := time.Date(2026, 8, 9, 3, 1, 0, 0, time.UTC).Format(time.RFC3339)
 	activationRequest := withProof(t, manifestPath, Request{Operation: RecordActivation, ActivationAt: activation, CutoverAt: cutover})
-	if _, err := Apply(manifestPath, activationRequest, ApplyOptions{Now: func() time.Time {
+	if _, err := applyExecuted(manifestPath, activationRequest, ApplyOptions{Now: func() time.Time {
 		return time.Date(2026, 8, 9, 3, 1, 30, 0, time.UTC)
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := Apply(manifestPath, Request{Operation: PrepareRetirement}, ApplyOptions{
+	result, err := applyExecuted(manifestPath, Request{Operation: PrepareRetirement}, ApplyOptions{
 		Now: func() time.Time { return time.Date(2026, 8, 9, 3, 2, 0, 0, time.UTC) },
 	})
 	if err != nil {
@@ -286,7 +286,7 @@ func TestWorkflowRejectsFutureActivationEvidence(t *testing.T) {
 	activation := time.Date(2026, 8, 10, 1, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	cutover := time.Date(2026, 8, 10, 1, 1, 0, 0, time.UTC).Format(time.RFC3339)
 	request := withProof(t, manifestPath, Request{Operation: RecordActivation, ActivationAt: activation, CutoverAt: cutover})
-	_, err := Apply(manifestPath, request, ApplyOptions{Now: func() time.Time {
+	_, err := applyExecuted(manifestPath, request, ApplyOptions{Now: func() time.Time {
 		return time.Date(2026, 8, 9, 1, 0, 0, 0, time.UTC)
 	}})
 	if err == nil || !strings.Contains(err.Error(), "later than") {
@@ -301,7 +301,7 @@ func TestWorkflowLockFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Release()
-	_, err = Apply(manifestPath, Request{Operation: Backup, ID: "backup", ArtifactPath: writeArtifact(t, "backup", "x")}, ApplyOptions{})
+	_, err = applyExecuted(manifestPath, Request{Operation: Backup, ID: "backup", ArtifactPath: writeArtifact(t, "backup", "x")}, ApplyOptions{})
 	if err == nil || !strings.Contains(err.Error(), "migration lock is held") {
 		t.Fatalf("lock contention error = %v", err)
 	}
@@ -318,7 +318,7 @@ func TestWorkflowRejectsNonIncreasingTimestampsWithoutCommit(t *testing.T) {
 	} {
 		request = withProof(t, manifestPath, request)
 		at := fixed.Add(time.Duration(index) * time.Minute)
-		if _, err := Apply(manifestPath, request, ApplyOptions{Now: func() time.Time { return at }}); err != nil {
+		if _, err := applyExecuted(manifestPath, request, ApplyOptions{Now: func() time.Time { return at }}); err != nil {
 			t.Fatalf("apply %s: %v", request.Operation, err)
 		}
 	}
@@ -327,7 +327,7 @@ func TestWorkflowRejectsNonIncreasingTimestampsWithoutCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: writeArtifact(t, "delta", "delta")})
-	_, err = Apply(manifestPath, request, ApplyOptions{Now: func() time.Time { return fixed.Add(2 * time.Minute) }})
+	_, err = applyExecuted(manifestPath, request, ApplyOptions{Now: func() time.Time { return fixed.Add(2 * time.Minute) }})
 	if err == nil || !strings.Contains(err.Error(), "strictly after") {
 		t.Fatalf("equal-time delta error = %v", err)
 	}
@@ -353,7 +353,7 @@ func preparedThroughFence(t *testing.T) string {
 		{Operation: Fence},
 	} {
 		request = withProof(t, manifestPath, request)
-		if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+		if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 			t.Fatalf("apply %s: %v", request.Operation, err)
 		}
 	}
@@ -369,7 +369,7 @@ func preparedForActivation(t *testing.T) string {
 		{Operation: PrepareActivation},
 	} {
 		request = withProof(t, manifestPath, request)
-		if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+		if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 			t.Fatalf("apply %s: %v", request.Operation, err)
 		}
 	}

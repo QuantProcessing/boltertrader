@@ -84,8 +84,11 @@ type Request struct {
 }
 
 type ApplyOptions struct {
-	Now func() time.Time
+	Now       func() time.Time
+	execution *executionCapability
 }
+
+type executionCapability struct{}
 
 type Result struct {
 	Phase    Phase
@@ -125,6 +128,9 @@ func (lock *Lock) Release() error {
 }
 
 func Apply(manifestPath string, request Request, options ApplyOptions) (Result, error) {
+	if operationRequiresExecution(request.Operation) && options.execution == nil {
+		return Result{}, fmt.Errorf("%s requires canonical execution; caller-authored proof is not accepted", request.Operation)
+	}
 	lock, err := AcquireLock(manifestPath)
 	if err != nil {
 		return Result{}, err
@@ -203,6 +209,20 @@ func Apply(manifestPath string, request Request, options ApplyOptions) (Result, 
 		return Result{}, err
 	}
 	return Result{Phase: manifest.Workflow.Phase}, nil
+}
+
+func applyExecuted(manifestPath string, request Request, options ApplyOptions) (Result, error) {
+	options.execution = &executionCapability{}
+	return Apply(manifestPath, request, options)
+}
+
+func operationRequiresExecution(operation Operation) bool {
+	switch operation {
+	case Backup, Restore, FinalDelta, Fence, Backfill, Validate, Rollback:
+		return true
+	default:
+		return false
+	}
 }
 
 func requestDigests(manifest Manifest, request Request) (string, string, error) {
