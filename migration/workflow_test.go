@@ -467,7 +467,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}
+		proof.Checks = []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	default:
 		return request
 	}

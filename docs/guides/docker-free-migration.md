@@ -79,9 +79,10 @@ source-side final delta:
 ```
 
 Raise the database-level one-writer fence before the final snapshot. The tool
-revokes database connection rights, sets both canonical writer roles to
-`NOLOGIN`, terminates existing sessions for those roles, and verifies role,
-connect, and session state before it records the fence:
+executes a role-scoped `REVOKE CONNECT`, sets both canonical writer roles to
+`NOLOGIN`, terminates existing sessions for those roles, and verifies writer
+login and session state before it records the fence. It does not claim an
+effective `CONNECT` result because PostgreSQL may grant it through `PUBLIC`:
 
 ```sh
 .local/bin/migration-tool fence \
@@ -166,6 +167,8 @@ phase:
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
 
-Rollback restores source-role login/connect privileges and verifies that the
-target canonical writer remains fenced. After the first backfill, rollback is
-rejected and recovery must proceed forward in the target.
+Rollback executes the source-role `GRANT CONNECT`, restores `LOGIN`, verifies
+source login/session state, and verifies that the target canonical writer
+remains fenced. The evidence does not claim effective `CONNECT` verification.
+After the first backfill, rollback is rejected and recovery must proceed
+forward in the target.
