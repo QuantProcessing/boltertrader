@@ -443,7 +443,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"dump-created", "dump-format-readable"}
 	case Restore:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"restore-command-succeeded", "target-query-succeeded"}
+		proof.Checks = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		proof.Subject = artifactSHA
 		proof.Checks = []string{"capture-session-read-only", "repeat-capture-matches"}

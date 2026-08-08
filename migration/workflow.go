@@ -73,15 +73,15 @@ type Event struct {
 }
 
 type Request struct {
-	Operation    Operation
-	ID           string
-	Name         string
-	ArtifactPath string
-	ProofPath    string
-	Verifier     string
-	Reason       string
-	ActivationAt string
-	CutoverAt    string
+	Operation         Operation
+	ID                string
+	Name              string
+	ArtifactPath      string
+	ProofPath         string
+	Verifier          string
+	Reason            string
+	ActivationAt      string
+	CutoverAt         string
 	generatedEvidence *operationProof
 }
 
@@ -310,7 +310,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"dump-created", "dump-format-readable"}
 	case Restore:
 		subject = artifactSHA
-		required = []string{"restore-command-succeeded", "target-query-succeeded"}
+		required = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
 		required = []string{"capture-session-read-only", "repeat-capture-matches"}

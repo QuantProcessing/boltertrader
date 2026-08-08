@@ -102,7 +102,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	result, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		if command.Name != "psql" {
 			t.Fatalf("command = %+v", command)
@@ -122,7 +122,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 	if _, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, nil
 	}}); err == nil || !strings.Contains(err.Error(), "replay conflict") {
@@ -139,7 +139,7 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 	_, err = Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
 	}})
@@ -169,17 +169,19 @@ func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
 func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
+		SourceDatabase: "funding_source", TargetDatabase: "bolter_target", SourceWriterRole: "funding_writer", TargetWriterRole: "bolter_writer",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 4 {
+	if len(commands) != 5 {
 		t.Fatalf("commands = %+v", commands)
 	}
-	for _, index := range []int{0, 2} {
+	for _, index := range []int{1, 3} {
 		command := commands[index]
 		args := strings.Join(command.Args, " ")
-		if strings.Contains(args, "\\gexec") || strings.Contains(string(command.Stdin), "DO $do$") || !strings.Contains(string(command.Stdin), "\\gexec") || command.Args[len(command.Args)-1] != "-" {
+		stdin := string(command.Stdin)
+		if strings.Contains(args, "default_transaction_read_only") || strings.Contains(stdin, "DO $do$") || !strings.Contains(stdin, "NOLOGIN") || !strings.Contains(stdin, "REVOKE CONNECT") || !strings.Contains(stdin, "pg_terminate_backend") || command.Args[len(command.Args)-1] != "-" {
 			t.Fatalf("unsafe fence command = %+v stdin=%q", command, command.Stdin)
 		}
 		if commandDigest(command, nil).InputSHA == "" {
