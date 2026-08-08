@@ -17,11 +17,12 @@ import (
 const evidenceGenerator = "boltertrader-migration-tool"
 
 type Command struct {
-	Name  string
-	Args  []string
-	Env   []string
-	Dir   string
-	Stdin []byte
+	Name           string
+	Args           []string
+	Env            []string
+	Dir            string
+	Stdin          []byte
+	ExpectedOutput string
 }
 
 type CommandResult struct {
@@ -31,16 +32,21 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation     Operation
-	ManifestPath  string
-	EvidenceDir   string
-	ArtifactPath  string
-	BackfillPath  string
-	ID            string
-	Verifier      string
-	Reason        string
-	SourceService string
-	TargetService string
+	Operation        Operation
+	ManifestPath     string
+	EvidenceDir      string
+	ArtifactPath     string
+	BackfillPath     string
+	ID               string
+	Verifier         string
+	Reason           string
+	SourceService    string
+	TargetService    string
+	SourceDatabase   string
+	TargetDatabase   string
+	SourceWriterRole string
+	TargetWriterRole string
+	repositoryRoot   string
 }
 
 type ExecuteOptions struct {
@@ -62,6 +68,11 @@ type commandEvidence struct {
 }
 
 func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptions) (ExecutionResult, error) {
+	lock, err := AcquireLock(request.ManifestPath)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	defer lock.Release()
 	manifestData, err := os.ReadFile(request.ManifestPath)
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("read migration manifest: %w", err)
@@ -92,6 +103,14 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	if priorOperation {
+		if replay, replayErr := replayExecution(manifest, request.EvidenceDir, applyRequest, commands, inputSHA); replayErr != nil || replay != nil {
+			if replayErr != nil {
+				return ExecutionResult{}, replayErr
+			}
+			return *replay, nil
+		}
+	}
 	run := options.Run
 	if run == nil {
 		run = runCommand
@@ -117,22 +136,65 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		}
 		inputSHA = artifactSHA
 	}
+	if request.Operation == FinalDelta {
+		verificationPath := request.ArtifactPath + ".verify"
+		verificationSHA, verifyErr := digestFile(verificationPath, true)
+		_ = os.Remove(verificationPath)
+		if verifyErr != nil || verificationSHA != artifactSHA {
+			return ExecutionResult{}, fmt.Errorf("final-delta repeat capture did not match")
+		}
+	}
 	proof := operationProof{
 		SchemaVersion: 1, Operation: request.Operation, Status: "pass", MigrationID: manifest.MigrationID,
 		Subject: proofSubject(manifest, applyRequest, artifactSHA), Checks: checks,
 		GeneratedBy: evidenceGenerator, PreStateSHA: sha256Hex(manifestData), InputSHA: inputSHA, Commands: commandProofs,
 	}
+	applyRequest.generatedEvidence = &proof
 	evidencePath, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, request.Operation, proof)
 	if err != nil {
 		return ExecutionResult{}, err
 	}
 	applyRequest.ProofPath = evidencePath
-	result, err := Apply(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now})
+	result, err := applyLocked(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now, execution: &executionCapability{}})
 	if err != nil {
 		_ = os.Remove(evidencePath)
 		return ExecutionResult{}, err
 	}
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
+}
+
+func replayExecution(manifest Manifest, evidenceDir string, request Request, commands []Command, inputSHA string) (*ExecutionResult, error) {
+	if !operationPostconditionHolds(manifest, request) {
+		return nil, nil
+	}
+	for index := len(manifest.Workflow.Events) - 1; index >= 0; index-- {
+		event := manifest.Workflow.Events[index]
+		if event.Operation != request.Operation {
+			continue
+		}
+		path := filepath.Join(evidenceDir, fmt.Sprintf("%03d-%s.json", event.Sequence, event.Operation))
+		data, digest, err := readProof(path)
+		if err != nil || digest != event.ProofSHA {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		var proof operationProof
+		if json.Unmarshal(data, &proof) != nil || proof.GeneratedBy != evidenceGenerator || !validSHA256(proof.PreStateSHA) || len(proof.Commands) != len(commands) {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		for commandIndex, command := range commands {
+			planned := commandDigest(command, nil)
+			recorded := proof.Commands[commandIndex]
+			if recorded.Executable != planned.Executable || recorded.ArgvSHA256 != planned.ArgvSHA256 || recorded.InputSHA != planned.InputSHA || !validSHA256(recorded.OutputSHA) {
+				return nil, fmt.Errorf("%s replay conflict", request.Operation)
+			}
+		}
+		artifactSHA, digestErr := digestFile(request.ArtifactPath, operationNeedsArtifact(request.Operation))
+		if digestErr != nil || artifactSHA != event.ArtifactSHA || (inputSHA != "" && proof.InputSHA != inputSHA) || requestFingerprint(request, artifactSHA, event.ProofSHA) != event.Fingerprint {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		return &ExecutionResult{Result: Result{Phase: manifest.Workflow.Phase, Replayed: true}, EvidencePath: path, InputSHA256: proof.InputSHA}, nil
+	}
+	return nil, fmt.Errorf("%s replay conflict", request.Operation)
 }
 
 func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Request, []string, string, error) {
@@ -145,11 +207,27 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return nil, Request{}, nil, "", err
 	}
 	target, targetErr := postgresService(request.TargetService)
-	if targetErr != nil && (request.Operation == Restore || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
+	if targetErr != nil && (request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
 		return nil, Request{}, nil, "", targetErr
 	}
-	psql := func(service, query string) Command {
-		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--tuples-only", "--no-align", "--command", query}}
+	psql := func(service, database, query string) Command {
+		connection := "service=" + service
+		if database != "" {
+			connection += " dbname=" + database
+		}
+		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align", "--command", query}}
+	}
+	psqlInput := func(service, database, script string, variables ...string) Command {
+		connection := "service=" + service
+		if database != "" {
+			connection += " dbname=" + database
+		}
+		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection}
+		for _, variable := range variables {
+			args = append(args, "--set", variable)
+		}
+		args = append(args, "--file", "-")
+		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
 	}
 	psqlInput := func(service, script string) Command {
 		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--file", "-"}, Stdin: []byte(script)}
@@ -157,35 +235,79 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	switch request.Operation {
 	case Backup:
 		apply.ArtifactPath = request.ArtifactPath
-		return []Command{{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"consistent-snapshot", "restorable-format"}, "", nil
+		return []Command{
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}},
+			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
+		}, apply, []string{"dump-created", "dump-format-readable"}, "", nil
 	case Restore:
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
+		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
+		verify.ExpectedOutput = "true"
 		return []Command{
-			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target, request.ArtifactPath}},
-			psql(target, "SELECT current_database()"),
-		}, apply, []string{"clean-restore", "source-stack-boot"}, "", nil
+			psqlInput(target, "", `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+			verify,
+		}, apply, []string{"clean-target-created", "restored-schema-nonempty"}, "", nil
 	case FinalDelta:
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
-		return []Command{{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"deterministic", "source-read-only"}, "", nil
-	case Fence:
+		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
+		check := psql(source, "", "SHOW transaction_read_only")
+		check.Env = readOnly
+		check.ExpectedOutput = "on"
 		return []Command{
-			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psqlInput(target, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(target, "SHOW default_transaction_read_only"),
+			check,
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
+			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+		}, apply, []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}, "", nil
+	case Fence:
+		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
+		if identityErr != nil {
+			return nil, Request{}, nil, "", identityErr
+		}
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		fenceSQL := `REVOKE CONNECT ON DATABASE :"database" FROM :"writer_role"; ALTER ROLE :"writer_role" NOLOGIN; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=:'writer_role' AND pid<>pg_backend_pid();` + "\n"
+		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore.ExpectedOutput = "true|true|0"
+		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter.ExpectedOutput = "false|false|0"
+		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter.ExpectedOutput = "false|false|0"
+		return []Command{
+			sourceBefore,
+			psqlInput(source, "", fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			sourceAfter,
+			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
+			targetAfter,
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
-		info, statErr := os.Stat(request.BackfillPath)
-		if statErr != nil || !info.Mode().IsRegular() {
-			return nil, Request{}, nil, "", fmt.Errorf("backfill script is unavailable")
+		root := manifest.TargetRepo
+		if request.repositoryRoot != "" {
+			root = request.repositoryRoot
 		}
-		apply.Name, apply.ArtifactPath = filepath.Base(request.BackfillPath), request.BackfillPath
-		inputSHA, digestErr := digestFile(request.BackfillPath, true)
+		backfillPath, pathErr := canonicalBackfillPath(root, request.BackfillPath)
+		if pathErr != nil {
+			return nil, Request{}, nil, "", pathErr
+		}
+		apply.Name, apply.ArtifactPath = filepath.Base(backfillPath), backfillPath
+		inputSHA, digestErr := digestFile(backfillPath, true)
 		if digestErr != nil {
 			return nil, Request{}, nil, "", digestErr
 		}
-		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target, "--file", request.BackfillPath}, Env: []string{"PGOPTIONS=-c default_transaction_read_only=off"}}
-		return []Command{command}, apply, []string{"authoritative-ownership-mapped", "deterministic"}, inputSHA, nil
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target + " dbname=" + targetDatabase, "--file", backfillPath}}
+		return []Command{command}, apply, []string{"script-content-stable", "single-transaction"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
 		return []Command{
@@ -197,10 +319,23 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			{Name: "make", Args: []string{"dev-platform-status"}, Dir: manifest.TargetRepo},
 		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
 	case Rollback:
+		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
+		if identityErr != nil {
+			return nil, Request{}, nil, "", identityErr
+		}
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		restoreSQL := `ALTER ROLE :"writer_role" LOGIN; GRANT CONNECT ON DATABASE :"database" TO :"writer_role";` + "\n"
+		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore.ExpectedOutput = "false|false|0"
+		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter.ExpectedOutput = "true|true|0"
+		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter.ExpectedOutput = "false|false|0"
 		return []Command{
-			psqlInput(source, "SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, "SHOW default_transaction_read_only"),
+			sourceBefore,
+			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			sourceAfter,
+			targetAfter,
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
@@ -221,12 +356,15 @@ func proofSubject(manifest Manifest, request Request, artifactSHA string) string
 }
 
 func verifyCommandPostcondition(operation Operation, index int, command Command, result CommandResult) error {
+	if command.ExpectedOutput != "" && strings.TrimSpace(string(result.Output)) != command.ExpectedOutput {
+		return fmt.Errorf("%s postcondition verification failed", operation)
+	}
 	if command.Name != "psql" || len(command.Args) == 0 {
 		return nil
 	}
 	query := command.Args[len(command.Args)-1]
 	got := strings.TrimSpace(string(result.Output))
-	if query == "SHOW default_transaction_read_only" {
+	if query == "SHOW default_transaction_read_only" || query == "SHOW transaction_read_only" {
 		want := "on"
 		if operation == Rollback && index == 1 {
 			want = "off"
@@ -236,6 +374,70 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 		}
 	}
 	return nil
+}
+
+func fenceIdentities(request ExecutionRequest) (string, string, string, string, error) {
+	sourceDatabase, err := postgresIdentifier("source database", request.SourceDatabase)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	sourceRole, err := postgresIdentifier("source writer role", request.SourceWriterRole)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	targetDatabase, err := postgresIdentifier("target database", request.TargetDatabase)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	targetRole, err := postgresIdentifier("target writer role", request.TargetWriterRole)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return sourceDatabase, sourceRole, targetDatabase, targetRole, nil
+}
+
+func postgresIdentifier(label, value string) (string, error) {
+	if value == "" || len(value) > 63 || !((value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
+		return "", fmt.Errorf("%s is required and must be a lowercase PostgreSQL identifier", label)
+	}
+	for _, char := range value[1:] {
+		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_') {
+			return "", fmt.Errorf("%s is required and must be a lowercase PostgreSQL identifier", label)
+		}
+	}
+	return value, nil
+}
+
+func canonicalBackfillPath(root, value string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	path := value
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("backfill script is unavailable")
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("backfill script is outside the frozen repository")
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) != 3 || parts[0] != "backend" || parts[1] != "migrations" || filepath.Ext(parts[2]) != ".sql" {
+		return "", fmt.Errorf("backfill script must be a repository-owned backend migration")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("backfill script is unavailable")
+	}
+	return path, nil
 }
 
 func postgresService(value string) (string, error) {

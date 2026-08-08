@@ -14,7 +14,7 @@ func TestWorkflowRejectsTamperedReplayWithoutMutation(t *testing.T) {
 	manifestPath := adversarialManifestCopy(t, nil)
 	artifactPath := adversarialArtifact(t, "backup.dump", "original backup")
 	request := adversarialWithProof(t, manifestPath, Request{Operation: Backup, ID: "backup-001", ArtifactPath: artifactPath})
-	if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 		t.Fatalf("initial backup: %v", err)
 	}
 	if err := os.WriteFile(artifactPath, []byte("tampered backup"), 0o600); err != nil {
@@ -22,7 +22,7 @@ func TestWorkflowRejectsTamperedReplayWithoutMutation(t *testing.T) {
 	}
 	before := adversarialReadFile(t, manifestPath)
 
-	_, err := Apply(manifestPath, request, ApplyOptions{})
+	_, err := applyExecuted(manifestPath, request, ApplyOptions{})
 	if err == nil {
 		t.Fatal("tampered replay was accepted")
 	}
@@ -40,15 +40,15 @@ func TestWorkflowCompletedRestoreReplayIsIdempotent(t *testing.T) {
 		ArtifactPath: artifactPath,
 		Verifier:     "adversarial-test",
 	})
-	if _, err := Apply(manifestPath, backup, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, backup, ApplyOptions{}); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
-	if _, err := Apply(manifestPath, restore, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, restore, ApplyOptions{}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	before := adversarialReadFile(t, manifestPath)
 
-	result, err := Apply(manifestPath, restore, ApplyOptions{})
+	result, err := applyExecuted(manifestPath, restore, ApplyOptions{})
 	if err != nil {
 		t.Fatalf("restore replay: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestWorkflowEvidenceRedactsArtifactContents(t *testing.T) {
 		ID:           "backup-001",
 		ArtifactPath: artifactPath,
 	})
-	if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
 
@@ -91,12 +91,12 @@ func TestWorkflowFailedTransitionIsAtomic(t *testing.T) {
 		ID:           "backup-001",
 		ArtifactPath: backupPath,
 	})
-	if _, err := Apply(manifestPath, request, ApplyOptions{}); err != nil {
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
 	before := adversarialReadFile(t, manifestPath)
 
-	_, err := Apply(manifestPath, Request{
+	_, err := applyExecuted(manifestPath, Request{
 		Operation:    Restore,
 		ArtifactPath: backupPath,
 		ProofPath:    filepath.Join(t.TempDir(), "missing-proof.json"),
@@ -113,7 +113,7 @@ func TestWorkflowFailedTransitionIsAtomic(t *testing.T) {
 func TestWorkflowErrorsRedactSecretBearingPaths(t *testing.T) {
 	manifestPath := adversarialManifestCopy(t, nil)
 	secret := "do-not-leak-private-key"
-	_, err := Apply(manifestPath, Request{
+	_, err := applyExecuted(manifestPath, Request{
 		Operation:    Backup,
 		ID:           "backup-001",
 		ArtifactPath: filepath.Join(t.TempDir(), secret),
@@ -234,9 +234,9 @@ func adversarialWithProof(t *testing.T, manifestPath string, request Request) Re
 	}
 	switch request.Operation {
 	case Backup:
-		proof.Checks = []string{"consistent-snapshot", "restorable-format"}
+		proof.Checks = []string{"dump-created", "dump-format-readable"}
 	case Restore:
-		proof.Checks = []string{"clean-restore", "source-stack-boot"}
+		proof.Checks = []string{"clean-target-created", "restored-schema-nonempty"}
 	default:
 		t.Fatalf("unsupported adversarial proof operation %q for %s", request.Operation, manifestPath)
 	}
