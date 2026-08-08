@@ -32,21 +32,21 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation      Operation
-	ManifestPath   string
-	EvidenceDir    string
-	ArtifactPath   string
-	BackfillPath   string
-	ID             string
-	Verifier       string
-	Reason         string
-	SourceService  string
-	TargetService  string
-	SourceDatabase string
-	TargetDatabase string
+	Operation        Operation
+	ManifestPath     string
+	EvidenceDir      string
+	ArtifactPath     string
+	BackfillPath     string
+	ID               string
+	Verifier         string
+	Reason           string
+	SourceService    string
+	TargetService    string
+	SourceDatabase   string
+	TargetDatabase   string
 	SourceWriterRole string
 	TargetWriterRole string
-	repositoryRoot string
+	repositoryRoot   string
 }
 
 type ExecuteOptions struct {
@@ -348,6 +348,9 @@ func proofSubject(manifest Manifest, request Request, artifactSHA string) string
 }
 
 func verifyCommandPostcondition(operation Operation, index int, command Command, result CommandResult) error {
+	if command.ExpectedOutput != "" && strings.TrimSpace(string(result.Output)) != command.ExpectedOutput {
+		return fmt.Errorf("%s postcondition verification failed", operation)
+	}
 	if command.Name != "psql" || len(command.Args) == 0 {
 		return nil
 	}
@@ -363,6 +366,38 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 		}
 	}
 	return nil
+}
+
+func fenceIdentities(request ExecutionRequest) (string, string, string, string, error) {
+	sourceDatabase, err := postgresIdentifier("source database", request.SourceDatabase)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	sourceRole, err := postgresIdentifier("source writer role", request.SourceWriterRole)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	targetDatabase, err := postgresIdentifier("target database", request.TargetDatabase)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	targetRole, err := postgresIdentifier("target writer role", request.TargetWriterRole)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	return sourceDatabase, sourceRole, targetDatabase, targetRole, nil
+}
+
+func postgresIdentifier(label, value string) (string, error) {
+	if value == "" || len(value) > 63 || !((value[0] >= 'a' && value[0] <= 'z') || value[0] == '_') {
+		return "", fmt.Errorf("%s is required and must be a lowercase PostgreSQL identifier", label)
+	}
+	for _, char := range value[1:] {
+		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '_') {
+			return "", fmt.Errorf("%s is required and must be a lowercase PostgreSQL identifier", label)
+		}
+	}
+	return value, nil
 }
 
 func canonicalBackfillPath(root, value string) (string, error) {
