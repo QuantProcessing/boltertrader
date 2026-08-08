@@ -237,10 +237,10 @@ func TestFundingHandoffPersistsGatewayEvidenceAndRejectsWithoutUncertainty(t *te
 	if replay, replayErr := processor.RecordHandoff(context.Background(), ready[0], orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: accepted.ExecutionEvidence}); replayErr != nil || replay.CommandID != accepted.CommandID {
 		t.Fatalf("evidence replay=%+v err=%v", replay, replayErr)
 	}
-	if got := positions.List(portfolio.ModeTest, ready[0].AccountID, "funding"); len(got) != 1 || got[0].Quantity != "0.005" {
+	if got := positions.List(parent.PrincipalID, portfolio.ModeTest, ready[0].AccountID, "funding"); len(got) != 1 || got[0].Quantity != "0.005" {
 		t.Fatalf("positions=%+v", got)
 	}
-	entries, _ := ledgerService.List(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: parent.LineageID, AccountID: ready[0].AccountID, InstrumentID: "BTC-USDT-LONG"})
+	entries, _ := ledgerService.List(context.Background(), ledger.Query{PrincipalID: parent.PrincipalID, Mode: ledger.ModeTest, ProductID: "funding", LineageID: parent.LineageID, AccountID: ready[0].AccountID, InstrumentID: "BTC-USDT-LONG"})
 	if len(entries) != 1 || entries[0].EntryID != "fill-1:fee" {
 		t.Fatalf("ledger entries=%+v", entries)
 	}

@@ -3,13 +3,16 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/shopspring/decimal"
 )
@@ -43,6 +46,7 @@ type manualPreviewAuthority struct {
 	CatalogRevision  string               `json:"catalogRevision"`
 	Venue            string               `json:"venue"`
 	VenueEnvironment string               `json:"venueEnvironment"`
+	Product          string               `json:"product"`
 	IssuedAt         time.Time            `json:"issuedAt"`
 	ExpiresAt        time.Time            `json:"expiresAt"`
 }
@@ -65,6 +69,7 @@ type manualPreviewCodec interface {
 }
 
 const manualPreviewTTL = 30 * time.Second
+const manualTestMaxNotional int64 = 100
 
 func registerManualProductRoutes(mux *http.ServeMux, trading *tradingHandler) {
 	handler := &manualProductHandler{trading: trading}
@@ -118,6 +123,17 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 	if !ok {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
+	}
+	if mode == string(orders.ModeTest) {
+		allowed, err := manualTestNotionalAllowed(r.Context(), request, authority, handler.trading.options.ManualMarketData)
+		if err != nil {
+			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+			return
+		}
+		if !allowed {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
 	}
 	codec, ok := handler.trading.options.Manual.(manualPreviewCodec)
 	if !ok {
@@ -179,7 +195,31 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 	if !decodeTrading(w, r, &request) {
 		return
 	}
-	if request.Action != "place" || request.OrderID != "" || request.LineageID == "" || request.IdempotencyKey == "" || request.IdempotencyKey != strings.TrimSpace(r.Header.Get("Idempotency-Key")) {
+	if request.LineageID == "" || request.IdempotencyKey == "" || request.IdempotencyKey != strings.TrimSpace(r.Header.Get("Idempotency-Key")) {
+		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+		return
+	}
+	switch request.Action {
+	case "cancel":
+		if request.PreviewID != "" || request.OrderID == "" {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
+		handler.cancelCommand(w, r, principal, mode, request)
+		return
+	case "close":
+		if request.PreviewID != "" || request.OrderID != "" {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
+		handler.closePosition(w, r, principal, mode, request)
+		return
+	case "place":
+		if request.PreviewID == "" || request.OrderID != "" {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
+	default:
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
@@ -216,11 +256,167 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		return
 	}
 	currentRoute, routeReady := manualCatalogAuthority(snapshot, account, authority.Request.InstrumentID, mode)
-	if !routeReady || snapshot.Revision != authority.CatalogRevision || currentRoute.Venue != authority.Venue || currentRoute.VenueEnvironment != authority.VenueEnvironment {
+	if !routeReady || snapshot.Revision != authority.CatalogRevision || currentRoute.Venue != authority.Venue || currentRoute.VenueEnvironment != authority.VenueEnvironment || currentRoute.Product != authority.Product {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
+	if mode == string(orders.ModeTest) {
+		allowed, err := manualTestNotionalAllowed(r.Context(), authority.Request, currentRoute, handler.trading.options.ManualMarketData)
+		if err != nil {
+			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+			return
+		}
+		if !allowed {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
+	}
 	preview := manualPreview{PreviewID: request.PreviewID, manualPreviewRequest: authority.Request, PrincipalID: principal}
+	handler.submitPlace(w, r, principal, mode, request, preview, authority)
+}
+
+func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest) {
+	if mode == string(orders.ModeLive) {
+		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
+		return
+	}
+	if !handler.trading.options.Manual.Ready() {
+		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+		return
+	}
+	command, err := handler.trading.options.Commands.GetOwned(r.Context(), principal, orders.Mode(mode), request.OrderID)
+	if err != nil || command.ProductID != "manual" || command.LineageID != request.LineageID {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
+	status := http.StatusOK
+	if resumableManualState(command.State) {
+		command, err = handler.trading.options.Manual.Cancel(r.Context(), command)
+		if err != nil {
+			tradingError(w, statusForTradingError(err), codeForTradingError(err))
+			return
+		}
+		publishCommandActivity(handler.trading.options.Activity, command)
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
+}
+
+func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest) {
+	if mode == string(orders.ModeLive) {
+		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
+		return
+	}
+	commands, err := handler.trading.options.Commands.ListOwned(r.Context(), principal, orders.Mode(mode), "manual")
+	if err != nil {
+		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+		return
+	}
+	for _, command := range commands {
+		if command.IdempotencyKey != request.IdempotencyKey {
+			continue
+		}
+		var intent struct {
+			OrderType  string `json:"orderType"`
+			ReduceOnly bool   `json:"reduceOnly"`
+		}
+		if command.LineageID != request.LineageID || json.Unmarshal(command.Payload, &intent) != nil || intent.OrderType != "market" || !intent.ReduceOnly {
+			tradingError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
+			return
+		}
+		if resumableManualState(command.State) {
+			command, err = handler.trading.options.Manual.Execute(r.Context(), command)
+			if err != nil {
+				tradingError(w, statusForTradingError(err), codeForTradingError(err))
+				return
+			}
+		} else if command.State == orders.StateFailed || command.State == orders.StateCanceled {
+			tradingError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": command})
+		return
+	}
+	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), "", "manual")
+	if err != nil {
+		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+		return
+	}
+	var position portfolio.Position
+	matches := 0
+	for _, item := range positions {
+		quantity, quantityErr := decimal.NewFromString(item.Quantity)
+		if item.LineageID == request.LineageID && quantityErr == nil && !quantity.IsZero() {
+			position = item
+			matches++
+		}
+	}
+	quantity, quantityErr := decimal.NewFromString(position.Quantity)
+	if matches != 1 || quantityErr != nil || quantity.IsZero() || !manualPositionOwned(commands, position) {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
+	if handler.trading.options.ManualAccounts == nil {
+		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+		return
+	}
+	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), position.AccountID)
+	if err != nil || !manualAccountReady(account, mode) {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
+	snapshot, err := handler.trading.options.Catalog.Snapshot(r.Context())
+	if err != nil {
+		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+		return
+	}
+	authority, routeReady := manualCatalogAuthority(snapshot, account, position.InstrumentID, mode)
+	if !routeReady {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
+	side := "sell"
+	if quantity.IsNegative() {
+		side = "buy"
+	}
+	closeRequest := manualPreviewRequest{
+		AccountID: position.AccountID, InstrumentID: position.InstrumentID, Side: side,
+		OrderType: "market", Quantity: quantity.Abs().String(), ReduceOnly: true, Mode: mode,
+	}
+	if mode == string(orders.ModeTest) {
+		allowed, err := manualTestNotionalAllowed(r.Context(), closeRequest, authority, handler.trading.options.ManualMarketData)
+		if err != nil {
+			tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
+			return
+		}
+		if !allowed {
+			tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+			return
+		}
+	}
+	authority.AccountFence = manualAccountFence{
+		AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
+		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
+	}
+	preview := manualPreview{manualPreviewRequest: closeRequest, PrincipalID: principal}
+	handler.submitPlace(w, r, principal, mode, request, preview, authority)
+}
+
+func manualPositionOwned(commands []orders.Command, position portfolio.Position) bool {
+	for _, command := range commands {
+		var intent struct {
+			InstrumentID string `json:"instrumentId"`
+			ReduceOnly   bool   `json:"reduceOnly"`
+		}
+		if command.LineageID == position.LineageID && command.AccountID == position.AccountID &&
+			json.Unmarshal(command.Payload, &intent) == nil && intent.InstrumentID == position.InstrumentID && !intent.ReduceOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest, preview manualPreview, authority manualPreviewAuthority) {
 	if mode == string(orders.ModeLive) {
 		tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
 		return
@@ -281,19 +477,47 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 
 func manualCatalogAuthority(snapshot catalog.Snapshot, account platformaccounts.Account, instrumentID, mode string) (manualPreviewAuthority, bool) {
 	venueID := ""
+	product := ""
 	for _, instrument := range snapshot.Instruments {
 		if instrument.InstrumentID == instrumentID && instrument.Ready {
 			venueID = instrument.Venue
+			product = instrument.Product
 			break
 		}
 	}
 	for _, venue := range snapshot.Venues {
 		live := venue.Environment == "live"
 		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == string(account.VenueEnvironment) && venue.Ready && live == (mode == string(orders.ModeLive)) {
-			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment}, true
+			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product}, true
 		}
 	}
 	return manualPreviewAuthority{}, false
+}
+
+func manualTestNotionalAllowed(ctx context.Context, request manualPreviewRequest, authority manualPreviewAuthority, source ManualMarketAuthority) (bool, error) {
+	quantity, err := decimal.NewFromString(request.Quantity)
+	if err != nil || !quantity.IsPositive() {
+		return false, nil
+	}
+	if source == nil {
+		return false, fmt.Errorf("manual market-data authority is unavailable")
+	}
+	fact, err := source.Get(ctx, marketdata.Query{
+		Venue: authority.Venue, Environment: authority.VenueEnvironment,
+		Product: authority.Product, InstrumentID: request.InstrumentID,
+	})
+	if err != nil {
+		return false, err
+	}
+	priceText := fact.BestAsk
+	if request.Side == "sell" {
+		priceText = fact.BestBid
+	}
+	price, err := decimal.NewFromString(priceText)
+	if err != nil || !price.IsPositive() {
+		return false, nil
+	}
+	return !quantity.Mul(price).GreaterThan(decimal.NewFromInt(manualTestMaxNotional)), nil
 }
 
 func manualAccountReady(account platformaccounts.Account, mode string) bool {

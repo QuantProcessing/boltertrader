@@ -18,6 +18,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 )
 
@@ -134,6 +135,7 @@ type gatewayFillCollection struct {
 	Items []struct {
 		AccountID       string `json:"account_id"`
 		InstrumentID    string `json:"instrument_id"`
+		GatewayOrderID  string `json:"gateway_order_id"`
 		SettlementAsset string `json:"settlement_asset"`
 		Fill            struct {
 			FillID   string    `json:"fill_id"`
@@ -145,6 +147,65 @@ type gatewayFillCollection struct {
 			Time     time.Time `json:"time"`
 		} `json:"fill"`
 	} `json:"items"`
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+type gatewayMarkPrice struct {
+	AccountID    string    `json:"account_id"`
+	InstrumentID string    `json:"instrument_id"`
+	Price        string    `json:"price"`
+	ObservedAt   time.Time `json:"observed_at"`
+}
+
+type gatewayFundingPaymentPage struct {
+	Items      []gatewayFundingPayment `json:"items"`
+	NextCursor string                  `json:"next_cursor,omitempty"`
+	Scope      struct {
+		AccountID       string    `json:"account_id"`
+		InstrumentID    string    `json:"instrument_id,omitempty"`
+		AllInstruments  bool      `json:"all_instruments"`
+		SettlementAsset string    `json:"settlement_asset,omitempty"`
+		Start           time.Time `json:"start"`
+		End             time.Time `json:"end"`
+	} `json:"scope"`
+	AccountID       string    `json:"account_id"`
+	InstrumentID    string    `json:"instrument_id,omitempty"`
+	SettlementAsset string    `json:"settlement_asset,omitempty"`
+	Start           time.Time `json:"start"`
+	End             time.Time `json:"end"`
+	Watermark       struct {
+		Revision         int64     `json:"revision"`
+		ObservedAt       time.Time `json:"observed_at"`
+		CompleteThrough  time.Time `json:"complete_through"`
+		Verified         bool      `json:"verified"`
+		Cursor           string    `json:"cursor,omitempty"`
+		EffectiveThrough time.Time `json:"effective_through,omitempty"`
+	} `json:"watermark"`
+	Status              string          `json:"status"`
+	AsOf                time.Time       `json:"as_of"`
+	CompleteThrough     time.Time       `json:"complete_through,omitempty"`
+	Revision            int64           `json:"revision"`
+	Page                json.RawMessage `json:"page"`
+	PaginationTraversal json.RawMessage `json:"pagination_traversal"`
+}
+
+type gatewayFundingPayment struct {
+	FactID           string    `json:"fact_id"`
+	SupersedesFactID string    `json:"supersedes_fact_id,omitempty"`
+	AccountID        string    `json:"account_id"`
+	InstrumentID     string    `json:"instrument_id"`
+	SettlementAsset  string    `json:"settlement_asset"`
+	Amount           string    `json:"amount"`
+	EffectiveAt      time.Time `json:"effective_at"`
+	ObservedAt       time.Time `json:"observed_at,omitempty"`
+	Revision         int64     `json:"revision,omitempty"`
+	PaymentID        string    `json:"payment_id,omitempty"`
+	Venue            string    `json:"venue"`
+	VenueEnvironment string    `json:"venue_environment"`
+	Product          string    `json:"product"`
+	Version          string    `json:"version,omitempty"`
+	SourceRef        string    `json:"source_ref,omitempty"`
+	FormulaVersion   string    `json:"formula_version,omitempty"`
 }
 
 func newGatewayAdapter(rawURL string, token []byte, client *http.Client) (*gatewayAdapter, error) {
@@ -195,13 +256,41 @@ func (adapter *gatewayAdapter) Execute(ctx context.Context, request manual.Gatew
 	return result, nil
 }
 
+func (adapter *gatewayAdapter) Cancel(ctx context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
+	if request.Mode != adapter.mode || (request.Mode == orders.ModeLive && !adapter.liveWrites) {
+		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
+	}
+	if request.CommandID == "" || request.AccountID == "" || request.InstrumentID == "" || request.GatewayOrderID == "" {
+		return manual.GatewayResult{}, fmt.Errorf("Gateway cancel identity is incomplete")
+	}
+	handoff, err := adapter.cancel(ctx, request)
+	result := manual.GatewayResult{
+		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		State: manualState(handoff.Evidence.State), Handoff: handoff,
+	}
+	for _, fill := range handoff.Evidence.Fills {
+		result.Fills = append(result.Fills, manual.FillFact{
+			FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID,
+			InstrumentID: fill.InstrumentID, Mode: request.Mode, Side: portfolio.Side(fill.Side),
+			Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency,
+			SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
+		})
+	}
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 func manualState(state string) manual.GatewayState {
 	switch strings.ToLower(state) {
 	case "filled":
 		return manual.GatewayStateFilled
 	case "partially_filled":
 		return manual.GatewayStatePartiallyFilled
-	case "rejected", "failed", "canceled", "cancelled":
+	case "canceled", "cancelled":
+		return manual.GatewayStateCanceled
+	case "rejected", "failed":
 		return manual.GatewayStateDenied
 	default:
 		return manual.GatewayStateSubmitted
@@ -244,7 +333,7 @@ func (adapter *gatewayAdapter) Reconcile(ctx context.Context, command orders.Com
 	}
 	evidence := orders.ExecutionEvidence{CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID, State: result.State, ResourceVersion: result.ResourceVersion,
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}}}
-	if result.State == "filled" || result.State == "partially_filled" {
+	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
 		fills, err := adapter.fetchFills(ctx, result.GatewayOrderID, command.AccountID, "")
 		if err != nil {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, err
@@ -320,6 +409,53 @@ func (adapter *gatewayAdapter) fetchMarketData(ctx context.Context, query market
 	return result.Data, nil
 }
 
+func (adapter *gatewayAdapter) MarkPrice(ctx context.Context, accountID, instrumentID string) (accounting.MarkPrice, error) {
+	if accountID == "" || instrumentID == "" {
+		return accounting.MarkPrice{}, fmt.Errorf("Gateway mark-price scope is invalid")
+	}
+	var result gatewayMarkPrice
+	if err := adapter.read(ctx, "/v1/mark-price", url.Values{"account_id": {accountID}, "instrument_id": {instrumentID}}, &result); err != nil {
+		return accounting.MarkPrice{}, fmt.Errorf("read Gateway mark price: %w", err)
+	}
+	if result.AccountID != accountID || result.InstrumentID != instrumentID || result.Price == "" || result.ObservedAt.IsZero() {
+		return accounting.MarkPrice{}, fmt.Errorf("Gateway mark-price response is invalid")
+	}
+	return accounting.MarkPrice{AccountID: result.AccountID, InstrumentID: result.InstrumentID, Price: result.Price, ObservedAt: result.ObservedAt.UTC()}, nil
+}
+
+func (adapter *gatewayAdapter) FundingPayments(ctx context.Context, query accounting.FundingPaymentQuery) (accounting.FundingPaymentPage, error) {
+	if query.AccountID == "" || query.InstrumentID == "" || query.SettlementAsset == "" || query.Start.IsZero() || query.End.IsZero() || !query.Start.Before(query.End) || query.Limit < 1 || query.Limit > 500 {
+		return accounting.FundingPaymentPage{}, fmt.Errorf("Gateway funding-payment scope is invalid")
+	}
+	values := url.Values{
+		"account_id": {query.AccountID}, "instrument_id": {query.InstrumentID}, "settlement_asset": {query.SettlementAsset},
+		"start": {query.Start.UTC().Format(time.RFC3339Nano)}, "end": {query.End.UTC().Format(time.RFC3339Nano)}, "pagination.limit": {strconv.Itoa(query.Limit)},
+	}
+	if query.Cursor != "" {
+		values.Set("pagination.cursor", query.Cursor)
+	}
+	var result gatewayFundingPaymentPage
+	if err := adapter.readLimit(ctx, "/v1/funding-payments", values, &result, 1<<20); err != nil {
+		return accounting.FundingPaymentPage{}, fmt.Errorf("read Gateway funding payments: %w", err)
+	}
+	if result.AccountID != query.AccountID || result.InstrumentID != query.InstrumentID || result.SettlementAsset != query.SettlementAsset || result.Scope.AccountID != query.AccountID || result.Scope.InstrumentID != query.InstrumentID || result.Scope.SettlementAsset != query.SettlementAsset || !result.Start.Equal(query.Start) || !result.End.Equal(query.End) || !result.Scope.Start.Equal(query.Start) || !result.Scope.End.Equal(query.End) || result.AsOf.IsZero() {
+		return accounting.FundingPaymentPage{}, fmt.Errorf("Gateway funding-payment response is invalid")
+	}
+	page := accounting.FundingPaymentPage{
+		AccountID: result.AccountID, InstrumentID: result.InstrumentID, NextCursor: result.NextCursor,
+		Start: result.Start.UTC(), End: result.End.UTC(), CompleteThrough: result.CompleteThrough.UTC(), ObservedAt: result.Watermark.ObservedAt.UTC(),
+		Revision: result.Revision, Status: accounting.Completeness(result.Status), Verified: result.Watermark.Verified,
+		Items: make([]accounting.FundingPayment, 0, len(result.Items)),
+	}
+	for _, item := range result.Items {
+		page.Items = append(page.Items, accounting.FundingPayment{
+			FactID: item.FactID, SupersedesFactID: item.SupersedesFactID, AccountID: item.AccountID, InstrumentID: item.InstrumentID,
+			SettlementAsset: item.SettlementAsset, Amount: item.Amount, EffectiveAt: item.EffectiveAt.UTC(), ObservedAt: item.ObservedAt.UTC(), Revision: item.Revision,
+		})
+	}
+	return page, nil
+}
+
 func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
 	var result gatewayReadEnvelope[struct {
 		Ready bool `json:"ready"`
@@ -334,6 +470,10 @@ func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
 }
 
 func (adapter *gatewayAdapter) read(ctx context.Context, path string, query url.Values, target any) error {
+	return adapter.readLimit(ctx, path, query, target, 64<<10)
+}
+
+func (adapter *gatewayAdapter) readLimit(ctx context.Context, path string, query url.Values, target any, limit int64) error {
 	requestURL := adapter.baseURL + path
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
@@ -356,7 +496,7 @@ func (adapter *gatewayAdapter) read(ctx context.Context, path string, query url.
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
 		return fmt.Errorf("Gateway read rejected with status %d", response.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("Gateway read response is invalid")
@@ -428,7 +568,7 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 		State: result.State, ResourceVersion: result.ResourceVersion,
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
 	}
-	if result.State == "filled" || result.State == "partially_filled" {
+	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
 		fills, fillErr := adapter.fetchFills(ctx, result.GatewayOrderID, intent.AccountID, intent.InstrumentID)
 		if fillErr != nil {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
@@ -438,39 +578,80 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
 }
 
-func (adapter *gatewayAdapter) fetchFills(ctx context.Context, gatewayOrderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
-	query := url.Values{"gateway_order_id": {gatewayOrderID}, "account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, adapter.baseURL+"/v1/fills?"+query.Encode(), nil)
+func (adapter *gatewayAdapter) cancel(ctx context.Context, request manual.GatewayCancelRequest) (orders.HandoffResult, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, adapter.baseURL+"/v1/orders/"+url.PathEscape(request.GatewayOrderID), nil)
 	if err != nil {
-		return nil, fmt.Errorf("construct Gateway fill request")
+		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway cancel request")
 	}
-	request.Header.Set("Authorization", "Bearer "+string(adapter.token))
-	adapter.attest(request)
-	response, err := adapter.client.Do(request)
+	httpRequest.Header.Set("Authorization", "Bearer "+string(adapter.token))
+	adapter.attest(httpRequest)
+	response, err := adapter.client.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("Gateway fill read failed")
+		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel handoff failed")
 	}
 	defer response.Body.Close()
 	if err := adapter.verifyAttestation(response); err != nil {
-		return nil, err
+		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, err
 	}
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusAccepted {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return nil, fmt.Errorf("Gateway fill read rejected with status %d", response.StatusCode)
-	}
-	var result gatewayFillCollection
-	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
-	if err := decoder.Decode(&result); err != nil {
-		return nil, fmt.Errorf("Gateway fill response is invalid")
-	}
-	fills := make([]orders.FillEvidence, 0, len(result.Items))
-	for _, item := range result.Items {
-		if item.SettlementAsset == "" {
-			return nil, fmt.Errorf("Gateway fill response is missing settlement currency")
+		outcome := orders.HandoffOutcomeUnknown
+		if response.StatusCode >= 400 && response.StatusCode < 500 && response.StatusCode != http.StatusRequestTimeout {
+			outcome = orders.HandoffRejected
 		}
-		fills = append(fills, orders.FillEvidence{FillID: item.Fill.FillID, AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: item.Fill.Side, Quantity: item.Fill.Quantity, Price: item.Fill.Price, Fee: item.Fill.Fee, FeeCurrency: item.Fill.FeeAsset, SettlementCurrency: item.SettlementAsset, OccurredAt: item.Fill.Time})
+		return orders.HandoffResult{Outcome: outcome}, fmt.Errorf("Gateway cancel handoff rejected with status %d", response.StatusCode)
 	}
-	return fills, nil
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
+	decoder.DisallowUnknownFields()
+	var result gatewayPlaceResponse
+	if err := decoder.Decode(&result); err != nil || result.CommandID != request.CommandID || result.GatewayOrderID != request.GatewayOrderID || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
+		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
+	}
+	evidence := orders.ExecutionEvidence{
+		CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID,
+		State: result.State, ResourceVersion: result.ResourceVersion,
+		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
+	}
+	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
+		fills, fillErr := adapter.fetchFills(ctx, result.GatewayOrderID, request.AccountID, request.InstrumentID)
+		if fillErr != nil {
+			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
+		}
+		evidence.Fills = fills
+	}
+	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
+}
+
+const maxGatewayFillPages = 100
+
+func (adapter *gatewayAdapter) fetchFills(ctx context.Context, gatewayOrderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
+	query := url.Values{"gateway_order_id": {gatewayOrderID}, "account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
+	fills := make([]orders.FillEvidence, 0)
+	seenCursors := map[string]struct{}{"": {}}
+	for page := 0; page < maxGatewayFillPages; page++ {
+		var result gatewayFillCollection
+		if err := adapter.read(ctx, "/v1/fills", query, &result); err != nil {
+			return nil, fmt.Errorf("read Gateway fills: %w", err)
+		}
+		for _, item := range result.Items {
+			if item.SettlementAsset == "" {
+				return nil, fmt.Errorf("Gateway fill response is missing settlement currency")
+			}
+			fills = append(fills, orders.FillEvidence{FillID: item.Fill.FillID, AccountID: item.AccountID, InstrumentID: item.InstrumentID, Side: item.Fill.Side, Quantity: item.Fill.Quantity, Price: item.Fill.Price, Fee: item.Fill.Fee, FeeCurrency: item.Fill.FeeAsset, SettlementCurrency: item.SettlementAsset, OccurredAt: item.Fill.Time})
+		}
+		if result.NextCursor == "" {
+			return fills, nil
+		}
+		if _, seen := seenCursors[result.NextCursor]; seen {
+			return nil, fmt.Errorf("Gateway fill pagination cursor cycled")
+		}
+		seenCursors[result.NextCursor] = struct{}{}
+		query.Set("pagination.cursor", result.NextCursor)
+	}
+	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxGatewayFillPages)
 }
 
 func (adapter *gatewayAdapter) attest(request *http.Request) {

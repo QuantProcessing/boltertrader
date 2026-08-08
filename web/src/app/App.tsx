@@ -92,6 +92,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "The request could not be completed.";
 }
 
+function isTerminalIdempotencyConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { status?: unknown; code?: unknown };
+  return candidate.status === 409 && candidate.code === "IDEMPOTENCY_CONFLICT";
+}
+
 function initialTheme(): Theme {
   try {
     const stored = typeof window.localStorage?.getItem === "function" ? window.localStorage.getItem("bt-theme") : null;
@@ -298,11 +304,27 @@ export function App() {
     const key = apiClient.idempotencyKey(`manual.place:${request.previewId}:${lineageID}`);
     return perform(() => apiClient.post("/products/manual/commands", { ...request, lineageId: lineageID, orderId: "", idempotencyKey: key }, { idempotencyKey: key }), "Manual order accepted.");
   };
+	  const manualCancel = (order: Command) => {
+	    const key = apiClient.idempotencyKey(`manual.cancel:${order.commandId}`);
+	    return perform(() => apiClient.post("/products/manual/commands", { previewId: "", action: "cancel", lineageId: order.lineageId, orderId: order.commandId, idempotencyKey: key }, { idempotencyKey: key }), "Manual order canceled.");
+	  };
+  const manualClose = (position: Position) => {
+    const scope = `manual.close:${position.lineageId}`;
+    const key = apiClient.idempotencyKey(scope);
+    return perform(async () => {
+      try {
+        await apiClient.post("/products/manual/commands", { previewId: "", action: "close", lineageId: position.lineageId, orderId: "", idempotencyKey: key }, { idempotencyKey: key });
+      } catch (closeError) {
+        if (isTerminalIdempotencyConflict(closeError)) apiClient.clearIdempotencyKey(scope);
+        throw closeError;
+      }
+    }, "Manual close accepted.");
+  };
 
   const page = useMemo(() => {
     switch (path) {
       case "/funding": return <FundingRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} opportunities={snapshot.opportunities} positions={snapshot.positions.filter((item) => item.productId === "funding")} commands={snapshot.commands.filter((item) => item.productId === "funding")} preview={fundingPreview} busy={busy} onPreview={async (request) => perform(async () => setFundingPreview(unwrap(await apiClient.post<FundingPreview>("/products/funding/execution-previews", request))), "Preview refreshed.", false)} onSubmit={fundingSubmit} onClose={fundingClose} onRefresh={load} />;
-      case "/manual": return <ManualRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} instruments={snapshot.instruments} orders={snapshot.manualOrders} positions={snapshot.positions.filter((item) => item.productId === "manual")} preview={manualPreview} busy={busy} onPreview={async (request) => perform(async () => setManualPreview(unwrap(await apiClient.post<Preview>("/products/manual/execution-previews", request))), "Preview refreshed.", false)} onSubmit={manualSubmit} onRefresh={load} />;
+      case "/manual": return <ManualRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} instruments={snapshot.instruments} orders={snapshot.manualOrders} positions={snapshot.positions.filter((item) => item.productId === "manual")} preview={manualPreview} busy={busy} onPreview={async (request) => perform(async () => setManualPreview(unwrap(await apiClient.post<Preview>("/products/manual/execution-previews", request))), "Preview refreshed.", false)} onSubmit={manualSubmit} onCancel={manualCancel} onClose={manualClose} onRefresh={load} />;
       case "/accounts": return <AccountsRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} runtimes={snapshot.runtimes} venues={snapshot.venues} capabilities={snapshot.capabilities} busy={busy} onCreate={createAccount} onAction={accountAction} onRefresh={load} />;
       case "/activity": return <ActivityRoute activity={snapshot.activity} audit={snapshot.audit} onRefresh={load} />;
       case "/settings": return <SettingsRoute theme={theme} mode={session?.principal.mode ?? "test"} username={session?.principal.username ?? ""} contractVersion={contractVersion} onThemeChange={setTheme} />;

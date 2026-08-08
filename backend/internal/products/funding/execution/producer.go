@@ -42,7 +42,7 @@ func NewPlanProducer(plans work.FundingPlanStore, executions work.FundingExecuti
 }
 
 func (producer *PlanProducer) Prepare(ctx context.Context, record work.IntentRecord) error {
-	if err := producer.projectAccounting(ctx, record.Facts); err != nil {
+	if err := producer.projectAccounting(ctx, record.Command.PrincipalID, record.Facts); err != nil {
 		return err
 	}
 	if record.Command.CommandKind == "funding.reconcile" {
@@ -88,7 +88,7 @@ func (producer *PlanProducer) Prepare(ctx context.Context, record work.IntentRec
 	return producer.reserve(ctx, plan)
 }
 
-func (producer *PlanProducer) projectAccounting(ctx context.Context, source []work.Fact) error {
+func (producer *PlanProducer) projectAccounting(ctx context.Context, principalID string, source []work.Fact) error {
 	if producer.accounting == nil {
 		return nil
 	}
@@ -101,6 +101,10 @@ func (producer *PlanProducer) projectAccounting(ctx context.Context, source []wo
 		if json.Unmarshal(sourceFact.Payload, &fact) != nil {
 			return work.ErrWorkRevisionConflict
 		}
+		if principalID == "" {
+			return work.ErrWorkRevisionConflict
+		}
+		fact.PrincipalID = principalID
 		key := strings.Join([]string{fact.ProductID, fact.Mode, fact.LineageID, fact.PositionID}, "\x00")
 		groups[key] = append(groups[key], fact)
 	}

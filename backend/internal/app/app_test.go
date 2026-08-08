@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
@@ -319,10 +320,21 @@ func (appCatalogSource) Fetch(context.Context) (catalog.Snapshot, error) {
 	}, nil
 }
 
+type appMarketDataSource struct{}
+
+func (appMarketDataSource) Fetch(_ context.Context, query marketdata.Query) (marketdata.Fact, error) {
+	return marketdata.Fact{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product, InstrumentID: query.InstrumentID,
+		BestBid: "49", BestBidSize: "10", BestAsk: "50", BestAskSize: "10",
+		Bids: []marketdata.Level{{Price: "49", Quantity: "10"}}, Asks: []marketdata.Level{{Price: "50", Quantity: "10"}},
+		ObservedAt: time.Now().UTC(),
+	}, nil
+}
+
 func TestManualFrozenRoutesReachGatewayAndRecordAuthoritativeEffects(t *testing.T) {
 	gateway := &recordingManualGateway{}
 	dependencies := testDependencies()
-	dependencies.CatalogSource, dependencies.ManualGateway = appCatalogSource{}, gateway
+	dependencies.CatalogSource, dependencies.MarketDataSource, dependencies.ManualGateway = appCatalogSource{}, appMarketDataSource{}, gateway
 	app, err := NewWithDependencies(testConfig(t, "test"), dependencies)
 	if err != nil {
 		t.Fatal(err)

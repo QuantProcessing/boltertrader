@@ -79,6 +79,7 @@ func (residual Residual) Present() bool {
 // Fact is a normalized Platform fact. The Funding accounting package owns no
 // transport, venue client, credential, or persistence implementation.
 type Fact struct {
+	PrincipalID      string          `json:"-"`
 	FactID           string          `json:"factId"`
 	SupersedesFactID string          `json:"supersedesFactId,omitempty"`
 	Revision         int64           `json:"revision"`
@@ -310,7 +311,7 @@ func statusFor(state ExecutionState) PositionStatus {
 }
 
 func validateFact(fact Fact) error {
-	if fact.FactID == "" || fact.Revision <= 0 || fact.ProductID != "funding" || fact.Mode != "test" ||
+	if fact.PrincipalID == "" || fact.FactID == "" || fact.Revision <= 0 || fact.ProductID != "funding" || fact.Mode != "test" ||
 		fact.LineageID == "" || fact.PositionID == "" || fact.AccountID == "" || fact.InstrumentID == "" || fact.EffectiveAt.IsZero() {
 		return ErrInvalidFact
 	}

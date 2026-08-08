@@ -143,10 +143,10 @@ func TestPlanProducerFailsClosedBeforeSupersededAccountingCanDoublePnL(t *testin
 	adapter := accounting.NewPlatformAdapter(ledgerService, portfolioProjection)
 	producer, _ := NewPlanProducer(work.NewMemoryFundingPlanStore(), work.NewMemoryFundingExecutionStore())
 	producer.WithAccounting(adapter)
-	base := accounting.Fact{FactID: "fill-1", Revision: 1, Kind: accounting.KindFill, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", CommandID: "command-long", EffectiveAt: now, Side: accounting.SideBuy, Quantity: decimal.NewFromInt(1), Price: decimal.NewFromInt(100), Fee: decimal.NewFromInt(1), FeeAsset: "USDT", SettlementAsset: "USDT"}
-	fundingFact := accounting.Fact{FactID: "funding-1", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(time.Second), Amount: decimal.NewFromInt(2), Asset: "USDT"}
-	watermark := accounting.Fact{FactID: "watermark-1", Revision: 1, Kind: accounting.KindWatermark, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(2 * time.Second), Completeness: accounting.CompletenessComplete, Verified: true}
-	residual := accounting.Fact{FactID: "residual-1", Revision: 1, Kind: accounting.KindResidual, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(3 * time.Second), Residual: accounting.Residual{BlockerClass: "open_order"}}
+	base := accounting.Fact{PrincipalID: "principal-a", FactID: "fill-1", Revision: 1, Kind: accounting.KindFill, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", CommandID: "command-long", EffectiveAt: now, Side: accounting.SideBuy, Quantity: decimal.NewFromInt(1), Price: decimal.NewFromInt(100), Fee: decimal.NewFromInt(1), FeeAsset: "USDT", SettlementAsset: "USDT"}
+	fundingFact := accounting.Fact{PrincipalID: "principal-a", FactID: "funding-1", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(time.Second), Amount: decimal.NewFromInt(2), Asset: "USDT"}
+	watermark := accounting.Fact{PrincipalID: "principal-a", FactID: "watermark-1", Revision: 1, Kind: accounting.KindWatermark, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(2 * time.Second), Completeness: accounting.CompletenessComplete, Verified: true}
+	residual := accounting.Fact{PrincipalID: "principal-a", FactID: "residual-1", Revision: 1, Kind: accounting.KindResidual, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", EffectiveAt: now.Add(3 * time.Second), Residual: accounting.Residual{BlockerClass: "open_order"}}
 	baseFacts := []accounting.Fact{base, fundingFact, watermark, residual}
 	projection, err := accounting.Rebuild(baseFacts)
 	if err != nil || projection.Residual.BlockerClass != "open_order" || projection.VerificationStatus != "residual_exposure" {
@@ -162,12 +162,12 @@ func TestPlanProducerFailsClosedBeforeSupersededAccountingCanDoublePnL(t *testin
 	for _, fact := range baseFacts {
 		encodedBase = append(encodedBase, encode(fact))
 	}
-	baseRecord := work.IntentRecord{Command: orders.Command{CommandKind: "funding.reconcile"}, Facts: encodedBase}
+	baseRecord := work.IntentRecord{Command: orders.Command{PrincipalID: "principal-a", CommandKind: "funding.reconcile"}, Facts: encodedBase}
 	if err := producer.Prepare(context.Background(), baseRecord); err != nil {
 		t.Fatal(err)
 	}
 	correctedChain := append(append([]work.Fact(nil), encodedBase...), encode(corrected))
-	if err := producer.Prepare(context.Background(), work.IntentRecord{Command: orders.Command{CommandKind: "funding.reconcile"}, Facts: correctedChain}); err == nil {
+	if err := producer.Prepare(context.Background(), work.IntentRecord{Command: orders.Command{PrincipalID: "principal-a", CommandKind: "funding.reconcile"}, Facts: correctedChain}); err == nil {
 		t.Fatal("superseded accounting chain mutated non-replaceable Platform sinks")
 	}
 	restarted, _ := NewPlanProducer(work.NewMemoryFundingPlanStore(), work.NewMemoryFundingExecutionStore())
@@ -175,8 +175,8 @@ func TestPlanProducerFailsClosedBeforeSupersededAccountingCanDoublePnL(t *testin
 	if err := restarted.Prepare(context.Background(), baseRecord); err != nil {
 		t.Fatalf("immutable replay after restart: %v", err)
 	}
-	snapshot, err := ledgerService.PnL(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
-	positions := portfolioProjection.List(portfolio.ModeTest, "account-long", "funding")
+	snapshot, err := ledgerService.PnL(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
+	positions := portfolioProjection.List("principal-a", portfolio.ModeTest, "account-long", "funding")
 	if err != nil || snapshot.Funding != "2" || snapshot.Fees != "1" || snapshot.NetPnL != "1" || len(positions) != 1 || positions[0].Quantity != "1" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
@@ -184,8 +184,8 @@ func TestPlanProducerFailsClosedBeforeSupersededAccountingCanDoublePnL(t *testin
 
 func TestPlanProducerValidatesAllAccountingScopesBeforeAnySinkMutation(t *testing.T) {
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
-	clean := accounting.Fact{FactID: "clean-funding", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-clean", PositionID: "position-clean", AccountID: "account-clean", InstrumentID: "btc-clean", EffectiveAt: now, Amount: decimal.NewFromInt(4), Asset: "USDT"}
-	badBase := accounting.Fact{FactID: "bad-funding-1", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-bad", PositionID: "position-bad", AccountID: "account-bad", InstrumentID: "btc-bad", EffectiveAt: now, Amount: decimal.NewFromInt(2), Asset: "USDT"}
+	clean := accounting.Fact{PrincipalID: "principal-a", FactID: "clean-funding", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-clean", PositionID: "position-clean", AccountID: "account-clean", InstrumentID: "btc-clean", EffectiveAt: now, Amount: decimal.NewFromInt(4), Asset: "USDT"}
+	badBase := accounting.Fact{PrincipalID: "principal-a", FactID: "bad-funding-1", Revision: 1, Kind: accounting.KindFunding, ProductID: "funding", Mode: "test", LineageID: "lineage-bad", PositionID: "position-bad", AccountID: "account-bad", InstrumentID: "btc-bad", EffectiveAt: now, Amount: decimal.NewFromInt(2), Asset: "USDT"}
 	badSuccessor := badBase
 	badSuccessor.FactID, badSuccessor.SupersedesFactID, badSuccessor.Revision, badSuccessor.Amount = "bad-funding-2", badBase.FactID, 2, decimal.NewFromInt(3)
 	encode := func(fact accounting.Fact) work.Fact {
@@ -198,11 +198,11 @@ func TestPlanProducerValidatesAllAccountingScopesBeforeAnySinkMutation(t *testin
 		portfolioProjection := portfolio.NewProjection()
 		producer, _ := NewPlanProducer(work.NewMemoryFundingPlanStore(), work.NewMemoryFundingExecutionStore())
 		producer.WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))
-		if err := producer.Prepare(context.Background(), work.IntentRecord{Command: orders.Command{CommandKind: "funding.reconcile"}, Facts: facts}); err == nil {
+		if err := producer.Prepare(context.Background(), work.IntentRecord{Command: orders.Command{PrincipalID: "principal-a", CommandKind: "funding.reconcile"}, Facts: facts}); err == nil {
 			t.Fatalf("order %d: mixed invalid scopes accepted", index)
 		}
-		snapshot, err := ledgerService.PnL(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-clean", AccountID: "account-clean", InstrumentID: "btc-clean"})
-		if err != nil || snapshot.Funding != "0" || snapshot.NetPnL != "0" || len(portfolioProjection.List(portfolio.ModeTest, "", "funding")) != 0 {
+		snapshot, err := ledgerService.PnL(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-clean", AccountID: "account-clean", InstrumentID: "btc-clean"})
+		if err != nil || snapshot.Funding != "0" || snapshot.NetPnL != "0" || len(portfolioProjection.List("principal-a", portfolio.ModeTest, "", "funding")) != 0 {
 			t.Fatalf("order %d mutated sinks: snapshot=%+v err=%v", index, snapshot, err)
 		}
 	}
@@ -217,20 +217,20 @@ func TestPlanProducerReplaysMidBatchAccountingFailureWithoutDuplicateEffects(t *
 	producer, _ := NewPlanProducer(work.NewMemoryFundingPlanStore(), work.NewMemoryFundingExecutionStore())
 	producer.WithAccounting(accounting.NewPlatformAdapter(ledgerSink, portfolioProjection))
 
-	first := accounting.Fact{FactID: "fill-1", Revision: 1, Kind: accounting.KindFill, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", CommandID: "command-long", EffectiveAt: now, Side: accounting.SideBuy, Quantity: decimal.NewFromInt(1), Price: decimal.NewFromInt(100), Fee: decimal.NewFromInt(1), FeeAsset: "USDT", SettlementAsset: "USDT"}
+	first := accounting.Fact{PrincipalID: "principal-a", FactID: "fill-1", Revision: 1, Kind: accounting.KindFill, ProductID: "funding", Mode: "test", LineageID: "lineage-1", PositionID: "position-1", AccountID: "account-long", InstrumentID: "btc-a", CommandID: "command-long", EffectiveAt: now, Side: accounting.SideBuy, Quantity: decimal.NewFromInt(1), Price: decimal.NewFromInt(100), Fee: decimal.NewFromInt(1), FeeAsset: "USDT", SettlementAsset: "USDT"}
 	second := first
 	second.FactID, second.Revision, second.EffectiveAt = "fill-2", 2, now.Add(time.Second)
 	encode := func(fact accounting.Fact) work.Fact {
 		payload, _ := json.Marshal(fact)
 		return work.Fact{Kind: "funding.accounting.fill", Payload: payload}
 	}
-	record := work.IntentRecord{Command: orders.Command{CommandKind: "funding.reconcile"}, Facts: []work.Fact{encode(first), encode(second)}}
+	record := work.IntentRecord{Command: orders.Command{PrincipalID: "principal-a", CommandKind: "funding.reconcile"}, Facts: []work.Fact{encode(first), encode(second)}}
 
 	if err := producer.Prepare(context.Background(), record); !errors.Is(err, injected) {
 		t.Fatalf("first Prepare error=%v", err)
 	}
-	positions := portfolioProjection.List(portfolio.ModeTest, "account-long", "funding")
-	partial, err := ledgerService.PnL(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
+	positions := portfolioProjection.List("principal-a", portfolio.ModeTest, "account-long", "funding")
+	partial, err := ledgerService.PnL(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
 	if err != nil || len(positions) != 1 || positions[0].Quantity != "2" || partial.Fees != "1" {
 		t.Fatalf("failed attempt was not observable and replayable: positions=%+v snapshot=%+v err=%v", positions, partial, err)
 	}
@@ -241,9 +241,9 @@ func TestPlanProducerReplaysMidBatchAccountingFailureWithoutDuplicateEffects(t *
 	if err := producer.Prepare(context.Background(), record); err != nil {
 		t.Fatalf("stable replay: %v", err)
 	}
-	positions = portfolioProjection.List(portfolio.ModeTest, "account-long", "funding")
-	complete, err := ledgerService.PnL(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
-	entries, listErr := ledgerService.List(context.Background(), ledger.Query{Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
+	positions = portfolioProjection.List("principal-a", portfolio.ModeTest, "account-long", "funding")
+	complete, err := ledgerService.PnL(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
+	entries, listErr := ledgerService.List(context.Background(), ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-1", AccountID: "account-long", InstrumentID: "btc-a"})
 	if err != nil || listErr != nil || len(positions) != 1 || positions[0].Quantity != "2" || complete.Fees != "2" || complete.NetPnL != "-2" || len(entries) != 2 {
 		t.Fatalf("replay duplicated or omitted effects: positions=%+v snapshot=%+v entries=%+v err=%v listErr=%v", positions, complete, entries, err, listErr)
 	}

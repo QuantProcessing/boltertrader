@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { CircleOff, RefreshCw, X } from "lucide-react";
 import { type FormEvent, useMemo, useState } from "react";
 
 import type { Account, Command, Instrument, Mode, Position, Preview } from "../types";
@@ -15,6 +15,8 @@ interface ManualProps {
   busy: boolean;
   onPreview: (request: Record<string, unknown>) => Promise<void>;
   onSubmit: (request: Record<string, unknown>) => Promise<void>;
+  onCancel: (order: Command) => Promise<void>;
+  onClose: (position: Position) => Promise<void>;
   onRefresh: () => void;
 }
 
@@ -52,8 +54,8 @@ export function ManualRoute(props: ManualProps) {
         <button className="button button--secondary button--wide" disabled={props.busy || !accountID || !instrumentID}>Preview order</button>
         {props.preview && <div className="preview-result">{props.preview.blockers.map((item) => <div className="finding finding--danger" key={item}>{item.replaceAll("_", " ").toUpperCase()}</div>)}{props.preview.warnings.map((item) => <div className="finding finding--warning" key={item}>{item.replaceAll("_", " ").toUpperCase()}</div>)}<button type="button" className="button button--primary button--wide" disabled={props.busy || !previewReady} onClick={() => props.onSubmit({ previewId: props.preview?.previewId, action: "place" })}>Submit order</button></div>}
       </form>
-      <div className="surface surface--table"><div className="section-heading"><div><h2>Open positions</h2><span>{props.positions.length} open</span></div></div><div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Qty</th><th>Entry</th><th>Mark</th><th>Unrealized</th></tr></thead><tbody>{props.positions.map((position) => <tr key={`${position.accountId}:${position.instrumentId}:${position.lineageId}`}><td>{position.instrumentId}</td><td className="number">{position.quantity}</td><td className="number">{formatDecimal(position.averageEntryPrice)}</td><td className="number">{formatDecimal(position.markPrice)}</td><td className="number">{formatDecimal(position.unrealizedPnl, position.settlementCurrency)}</td></tr>)}</tbody></table></div>{props.positions.length === 0 && <div className="empty-row">No Manual positions.</div>}</div>
+      <div className="surface surface--table"><div className="section-heading"><div><h2>Open positions</h2><span>{props.positions.length} open</span></div></div><div className="table-scroll"><table><thead><tr><th>Instrument</th><th>Qty</th><th>Entry</th><th>Mark</th><th>Unrealized</th><th>Action</th></tr></thead><tbody>{props.positions.map((position) => <tr key={`${position.accountId}:${position.instrumentId}:${position.lineageId}`}><td>{position.instrumentId}</td><td className="number">{position.quantity}</td><td className="number">{formatDecimal(position.averageEntryPrice)}</td><td className="number">{formatDecimal(position.markPrice)}</td><td className="number">{formatDecimal(position.unrealizedPnl, position.settlementCurrency)}</td><td>{Number(position.quantity) !== 0 && <button className="button button--danger" disabled={props.busy} onClick={() => props.onClose(position)}><CircleOff />Close</button>}</td></tr>)}</tbody></table></div>{props.positions.length === 0 && <div className="empty-row">No Manual positions.</div>}</div>
     </section>
-    <section className="surface surface--table"><div className="section-heading"><div><h2>Orders</h2><span>{props.orders.length} total</span></div></div><div className="table-scroll"><table><thead><tr><th>Order</th><th>Account</th><th>Kind</th><th>State</th><th>Updated</th></tr></thead><tbody>{props.orders.map((order) => <tr key={order.commandId}><td><code>{order.commandId}</code></td><td>{order.accountId}</td><td>{order.commandKind}</td><td><StatusBadge state={order.state ?? "pending"} /></td><td>{order.updatedAt ?? "-"}</td></tr>)}</tbody></table></div></section>
+    <section className="surface surface--table"><div className="section-heading"><div><h2>Orders</h2><span>{props.orders.length} total</span></div></div><div className="table-scroll"><table><thead><tr><th>Order</th><th>Account</th><th>Kind</th><th>State</th><th>Updated</th><th>Action</th></tr></thead><tbody>{props.orders.map((order) => <tr key={order.commandId}><td><code>{order.commandId}</code></td><td>{order.accountId}</td><td>{order.commandKind}</td><td><StatusBadge state={order.state ?? "pending"} /></td><td>{order.updatedAt ?? "-"}</td><td>{order.commandId && ["accepted", "submitted", "uncertain"].includes(order.state ?? "") && <button className="button button--quiet" disabled={props.busy} onClick={() => props.onCancel(order)}><X />Cancel</button>}</td></tr>)}</tbody></table></div></section>
   </div>;
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
@@ -25,6 +27,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/calculation"
 	fundingexecution "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/execution"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/planning"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -405,7 +408,7 @@ func TestFundingBrowserPreviewPersistsExactFactsThroughClaimAndPlan(t *testing.T
 		{AccountID: "funding-long", Venue: "venue-a", InstrumentID: "btc-a", VenueEnvironment: "testnet"},
 		{AccountID: "funding-short", Venue: "venue-b", InstrumentID: "btc-b", VenueEnvironment: "testnet"},
 	} {
-		if _, err := reservationService.Create(ctx, reservations.CreateRequest{PrincipalID: "browser-a", Mode: reservations.ModeTest, ProductID: "funding", Kind: reservations.KindOpen, Scope: scope, Quantity: "1", IdempotencyKey: fmt.Sprintf("funding-reservation-%d", index)}); err != nil {
+		if _, err := reservationService.Create(ctx, reservations.CreateRequest{PrincipalID: "browser-a", Mode: reservations.ModeTest, ProductID: "funding", Kind: reservations.KindOpen, Scope: scope, Quantity: "0.5", Notional: "50", Currency: "USDT", IdempotencyKey: fmt.Sprintf("funding-reservation-%d", index)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -430,6 +433,10 @@ func TestFundingBrowserPreviewPersistsExactFactsThroughClaimAndPlan(t *testing.T
 		t.Fatalf("opportunities=%+v err=%v", opportunities, err)
 	}
 	preview, err := projection.CreatePreview(ctx, "browser-a", httpapi.FundingPreviewRequest{OpportunityID: opportunities[0].OpportunityID, LongAccountID: "funding-long", ShortAccountID: "funding-short", CanonicalMarketID: opportunities[0].CanonicalMarketID, NotionalPerLeg: "50", MaxSlippageBps: 10, HoldThroughSettlement: true, Mode: "test"})
+	if err != nil {
+		t.Fatalf("CreatePreview()=%+v err=%v", preview, err)
+	}
+	preview, err = projection.GetPreview(ctx, "browser-a", preview.PreviewID)
 	if err != nil || len(preview.Facts) != 1 {
 		t.Fatalf("preview=%+v err=%v", preview, err)
 	}
@@ -467,13 +474,13 @@ func TestFundingBrowserPreviewPersistsExactFactsThroughClaimAndPlan(t *testing.T
 	}
 	rebound := planning.NewPlanningFact(frozen.Input, frozen.PrincipalID, frozen.LongReservation, frozen.ShortReservation, frozen.ReservationAuthorities, frozen.PolicyAssumptions)
 	recomputed, computeErr := calculation.Compute(rebound.Input)
-	if frozen.Input.AuthorityIdentity != rebound.Input.AuthorityIdentity || computeErr != nil || recomputed.PreviewID != preview.PreviewID {
-		t.Fatalf("persisted planning identity=%q rebound=%q recomputed=%s preview=%s err=%v", frozen.Input.AuthorityIdentity, rebound.Input.AuthorityIdentity, recomputed.PreviewID, preview.PreviewID, computeErr)
+	if frozen.Input.AuthorityIdentity != rebound.Input.AuthorityIdentity || computeErr != nil || recomputed.PreviewID != preview.Plan.PreviewID {
+		t.Fatalf("persisted planning identity=%q rebound=%q recomputed=%s preview=%s err=%v", frozen.Input.AuthorityIdentity, rebound.Input.AuthorityIdentity, recomputed.PreviewID, preview.Plan.PreviewID, computeErr)
 	}
 	if err := producer.Prepare(ctx, record); err != nil {
 		t.Fatalf("Prepare() error=%v", err)
 	}
-	storedPlan, err := planStore.GetFundingPlan(ctx, "browser-a", orders.ModeTest, "open:"+preview.PreviewID)
+	storedPlan, err := planStore.GetFundingPlan(ctx, "browser-a", orders.ModeTest, "open:"+preview.Plan.PreviewID)
 	if err != nil || storedPlan.Mode != orders.ModeTest || len(storedPlan.Legs) != 2 {
 		t.Fatalf("stored plan=%+v err=%v", storedPlan, err)
 	}
@@ -943,7 +950,7 @@ func TestPortfolioProjectionPersistsPositionAndPnLAcrossDatabaseRestart(t *testi
 	database, reopen := openIntegrationDatabase(t)
 	projection := portfolio.NewPersistentProjection(NewPortfolioStore(database))
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
-	open := portfolio.Fill{
+	open := portfolio.Fill{PrincipalID: "principal-a",
 		FillID: "fill-open", CommandID: "command-open", LineageID: "lineage-a", ProductID: "funding",
 		Mode: portfolio.ModeTest, AccountID: "account-a", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
 		Quantity: "2", Price: "100", Fee: "1", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
@@ -951,7 +958,7 @@ func TestPortfolioProjectionPersistsPositionAndPnLAcrossDatabaseRestart(t *testi
 	if _, _, err := projection.ApplyFill(context.Background(), open); err != nil {
 		t.Fatal(err)
 	}
-	marked, err := projection.ApplyMark(portfolio.ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "110", now.Add(time.Second))
+	marked, err := projection.ApplyMark("principal-a", portfolio.ModeTest, "account-a", "funding", "lineage-a", "BTC-USDT", "110", now.Add(time.Second))
 	if err != nil || marked.UnrealizedPnL != "20" {
 		t.Fatalf("marked=%+v err=%v", marked, err)
 	}
@@ -961,7 +968,7 @@ func TestPortfolioProjectionPersistsPositionAndPnLAcrossDatabaseRestart(t *testi
 	}
 	database = reopen()
 	projection = portfolio.NewPersistentProjection(NewPortfolioStore(database))
-	positions := projection.List(portfolio.ModeTest, "account-a", "funding")
+	positions := projection.List("principal-a", portfolio.ModeTest, "account-a", "funding")
 	if len(positions) != 1 || positions[0].Quantity != "2" || positions[0].AverageEntryPrice != "100" || positions[0].MarkPrice != "110" || positions[0].UnrealizedPnL != "20" {
 		t.Fatalf("restarted positions=%+v", positions)
 	}
@@ -1076,6 +1083,140 @@ func TestSubmittedCommandReconciliationSurvivesDatabaseRestartAndClearsOnTermina
 	if due, err = service.ClaimDueReconciliation(ctx, orders.ModeTest, now.Add(time.Hour), time.Minute, 10); err != nil || len(due) != 0 {
 		t.Fatalf("terminal due=%+v err=%v", due, err)
 	}
+}
+
+func TestManualLifecyclePersistsCancelCloseAndReplayAcrossDatabaseRestart(t *testing.T) {
+	database, reopen := openIntegrationDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 8, 6, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	gateway := &persistentManualGateway{now: now}
+
+	newServices := func() (*orders.Service, *portfolio.Projection, *ledger.Service, *manual.Service) {
+		commands := orders.NewService(NewCommandStore(database), nil, clock)
+		positions := portfolio.NewPersistentProjection(NewPortfolioStore(database))
+		entries := ledger.NewService(NewLedgerStore(database), clock)
+		return commands, positions, entries, manual.NewGatewayService(commands, positions, entries, gateway, clock)
+	}
+	create := func(t *testing.T, commands *orders.Service, key, payload string) orders.Command {
+		t.Helper()
+		command, replay, err := commands.Create(ctx, orders.CreateRequest{
+			PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "manual-lineage-a",
+			IdempotencyKey: key, Method: http.MethodPost, Path: "/api/v1/products/manual/commands",
+			CommandKind: "manual.place", Mode: orders.ModeTest, Payload: json.RawMessage(payload),
+		})
+		if err != nil || replay {
+			t.Fatalf("create command=%+v replay=%v err=%v", command, replay, err)
+		}
+		return command
+	}
+
+	commands, _, _, service := newServices()
+	open := create(t, commands, "manual-open-a", `{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market"}`)
+	if result, err := service.Execute(ctx, open); err != nil || result.State != orders.StateFilled {
+		t.Fatalf("open=%+v err=%v", result, err)
+	}
+	resting := create(t, commands, "manual-resting-a", `{"instrumentId":"BTC-USDT","side":"sell","quantity":"1","orderType":"limit","limitPrice":"110","timeInForce":"gtc","reduceOnly":true}`)
+	if result, err := service.Execute(ctx, resting); err != nil || result.State != orders.StateSubmitted {
+		t.Fatalf("resting=%+v err=%v", result, err)
+	}
+
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database = reopen()
+	commands, positions, entries, service := newServices()
+	restored, err := commands.Get(ctx, resting.CommandID)
+	if err != nil || restored.State != orders.StateSubmitted || restored.ExecutionEvidence.GatewayOrderID == "" {
+		t.Fatalf("restored resting=%+v err=%v", restored, err)
+	}
+	if canceled, err := service.Cancel(ctx, restored); err != nil || canceled.State != orders.StateCanceled {
+		t.Fatalf("cancel=%+v err=%v", canceled, err)
+	}
+	closeCommand := create(t, commands, "manual-close-a", `{"instrumentId":"BTC-USDT","side":"sell","quantity":"2","orderType":"market","reduceOnly":true}`)
+	closed, err := service.Execute(ctx, closeCommand)
+	if err != nil || closed.State != orders.StateFilled {
+		t.Fatalf("close=%+v err=%v", closed, err)
+	}
+	if got := positions.List("principal-a", portfolio.ModeTest, "account-a", "manual"); len(got) != 1 || got[0].Quantity != "0" || got[0].RealizedPnL != "20" {
+		t.Fatalf("closed positions=%+v", got)
+	}
+	accounting, err := entries.List(ctx, ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "manual-lineage-a"})
+	if err != nil || len(accounting) != 3 {
+		t.Fatalf("accounting=%+v err=%v", accounting, err)
+	}
+
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database = reopen()
+	commands, positions, entries, service = newServices()
+	persistedClose, err := commands.Get(ctx, closeCommand.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed, err := service.Execute(ctx, persistedClose); err != nil || replayed.State != orders.StateFilled || gateway.executeCalls != 3 {
+		t.Fatalf("replayed close=%+v calls=%d err=%v", replayed, gateway.executeCalls, err)
+	}
+	if got := positions.List("principal-a", portfolio.ModeTest, "account-a", "manual"); len(got) != 1 || got[0].Quantity != "0" || got[0].RealizedPnL != "20" {
+		t.Fatalf("restarted positions=%+v", got)
+	}
+	accounting, err = entries.List(ctx, ledger.Query{PrincipalID: "principal-a", Mode: ledger.ModeTest, ProductID: "manual", LineageID: "manual-lineage-a"})
+	if err != nil || len(accounting) != 3 || gateway.cancelCalls != 1 {
+		t.Fatalf("restarted accounting=%+v cancel calls=%d err=%v", accounting, gateway.cancelCalls, err)
+	}
+}
+
+type persistentManualGateway struct {
+	now                       time.Time
+	executeCalls, cancelCalls int
+}
+
+func (gateway *persistentManualGateway) Execute(_ context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
+	gateway.executeCalls++
+	state := manual.GatewayStateFilled
+	evidenceState := "filled"
+	if request.OrderType == "limit" {
+		state, evidenceState = manual.GatewayStateSubmitted, "submitted"
+	}
+	evidence := orders.ExecutionEvidence{
+		CommandID: request.CommandID, GatewayOrderID: "gateway-" + request.CommandID,
+		ClientOrderID: "client-" + request.CommandID, State: evidenceState, ResourceVersion: 1,
+	}
+	result := manual.GatewayResult{
+		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode, State: state,
+		Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
+	}
+	if state == manual.GatewayStateFilled {
+		price := "100"
+		if request.ReduceOnly {
+			price = "110"
+		}
+		fill := manual.FillFact{
+			FillID: "fill-" + request.CommandID, CommandID: request.CommandID, AccountID: request.AccountID,
+			InstrumentID: request.InstrumentID, Mode: request.Mode, Side: portfolio.Side(request.Side),
+			Quantity: request.Quantity, Price: price, Fee: "1", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: gateway.now.Add(time.Duration(gateway.executeCalls) * time.Second),
+		}
+		result.Fills = []manual.FillFact{fill}
+		result.Handoff.Evidence.Fills = []orders.FillEvidence{{
+			FillID: fill.FillID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Side: string(fill.Side),
+			Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency,
+			SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
+		}}
+	}
+	return result, nil
+}
+
+func (gateway *persistentManualGateway) Cancel(_ context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
+	gateway.cancelCalls++
+	evidence := orders.ExecutionEvidence{
+		CommandID: request.CommandID, GatewayOrderID: request.GatewayOrderID,
+		ClientOrderID: "client-" + request.CommandID, State: "canceled", ResourceVersion: 2,
+	}
+	return manual.GatewayResult{
+		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		State: manual.GatewayStateCanceled, Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
+	}, nil
 }
 
 func seedClaimedWork(t *testing.T, database *sql.DB) (*WorkStore, work.Lease, work.IntentRequest, time.Time) {

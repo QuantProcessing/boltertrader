@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
@@ -16,7 +17,37 @@ import (
 
 type ManualExecutor interface {
 	Execute(context.Context, orders.Command) (orders.Command, error)
+	Cancel(context.Context, orders.Command) (orders.Command, error)
 	Ready() bool
+}
+
+type ManualMarketAuthority interface {
+	Get(context.Context, marketdata.Query) (marketdata.Fact, error)
+}
+
+type FundingAccountingRefresher interface {
+	RefreshAccounting(context.Context, string, string) (FundingReadScopes, error)
+}
+
+type unavailableFundingAccountingRefresher struct{}
+
+func (unavailableFundingAccountingRefresher) RefreshAccounting(context.Context, string, string) (FundingReadScopes, error) {
+	return nil, fmt.Errorf("authoritative Funding accounting is unavailable")
+}
+
+type FundingReadScope struct {
+	LineageID, AccountID, InstrumentID string
+}
+
+type FundingReadScopes []FundingReadScope
+
+func (scopes FundingReadScopes) owns(lineageID, accountID, instrumentID string) bool {
+	for _, scope := range scopes {
+		if scope.LineageID == lineageID && scope.AccountID == accountID && scope.InstrumentID == instrumentID {
+			return true
+		}
+	}
+	return false
 }
 
 type TradingOptions struct {
@@ -27,14 +58,19 @@ type TradingOptions struct {
 	Catalog           *catalog.Projection
 	Manual            ManualExecutor
 	ManualAccounts    ManualAccountAuthority
+	ManualMarketData  ManualMarketAuthority
 	Principal         func(*http.Request) (principalID, mode string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Activity          ActivityPublisher
+	FundingAccounting FundingAccountingRefresher
 }
 
 func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
 	if mux == nil || options.Reservations == nil || options.Commands == nil || options.Portfolio == nil || options.Ledger == nil || options.Principal == nil || options.AuthorizeMutation == nil {
 		return fmt.Errorf("complete trading options are required")
+	}
+	if options.FundingAccounting == nil {
+		options.FundingAccounting = unavailableFundingAccountingRefresher{}
 	}
 	handler := &tradingHandler{options: options}
 	mux.HandleFunc("POST /api/v1/reservations", handler.createReservation)
@@ -193,42 +229,101 @@ func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request
 }
 
 func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request) {
-	_, mode, ok := handler.identity(w, r)
+	principal, mode, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.options.Portfolio.ListContext(r.Context(), portfolio.Mode(mode), r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
+	scopes, ok := handler.refreshFundingAccounting(w, r, principal, mode)
+	if !ok {
+		return
+	}
+	items, err := handler.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
+	}
+	if scopes != nil {
+		items = filterFundingPositions(items, scopes)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Request) {
-	_, mode, ok := handler.identity(w, r)
+	principal, mode, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	items, err := handler.options.Ledger.List(r.Context(), ledger.Query{Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")})
+	scopes, ok := handler.refreshFundingAccounting(w, r, principal, mode)
+	if !ok {
+		return
+	}
+	items, err := handler.options.Ledger.List(r.Context(), ledger.Query{PrincipalID: principal, Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")})
 	if err != nil {
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
+	}
+	if scopes != nil {
+		items = filterFundingLedgerEntries(items, scopes)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *tradingHandler) pnl(w http.ResponseWriter, r *http.Request) {
-	_, mode, ok := handler.identity(w, r)
+	principal, mode, ok := handler.identity(w, r)
 	if !ok {
 		return
 	}
-	item, err := handler.options.Ledger.PnL(r.Context(), ledger.Query{Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")})
+	scopes, ok := handler.refreshFundingAccounting(w, r, principal, mode)
+	if !ok {
+		return
+	}
+	query := ledger.Query{PrincipalID: principal, Mode: ledger.Mode(mode), ProductID: r.URL.Query().Get("productId"), LineageID: r.URL.Query().Get("lineageId"), AccountID: r.URL.Query().Get("accountId"), InstrumentID: r.URL.Query().Get("instrumentId")}
+	if scopes != nil && query.ProductID == "funding" && !scopes.owns(query.LineageID, query.AccountID, query.InstrumentID) {
+		tradingError(w, http.StatusNotFound, "NOT_FOUND")
+		return
+	}
+	item, err := handler.options.Ledger.PnL(r.Context(), query)
 	if err != nil {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": item})
+}
+
+func (handler *tradingHandler) refreshFundingAccounting(w http.ResponseWriter, r *http.Request, principal, mode string) (FundingReadScopes, bool) {
+	productID := r.URL.Query().Get("productId")
+	if mode != "test" || (productID != "" && productID != "funding") {
+		return nil, true
+	}
+	scopes, err := handler.options.FundingAccounting.RefreshAccounting(r.Context(), principal, mode)
+	if err != nil {
+		tradingError(w, http.StatusServiceUnavailable, "AUTHORITATIVE_ACCOUNTING_UNAVAILABLE")
+		return nil, false
+	}
+	if scopes == nil {
+		scopes = FundingReadScopes{}
+	}
+	return scopes, true
+}
+
+func filterFundingPositions(items []portfolio.Position, scopes FundingReadScopes) []portfolio.Position {
+	filtered := make([]portfolio.Position, 0, len(items))
+	for _, item := range items {
+		if item.ProductID != "funding" || scopes.owns(item.LineageID, item.AccountID, item.InstrumentID) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func filterFundingLedgerEntries(items []ledger.Entry, scopes FundingReadScopes) []ledger.Entry {
+	filtered := make([]ledger.Entry, 0, len(items))
+	for _, item := range items {
+		if item.ProductID != "funding" || scopes.owns(item.LineageID, item.AccountID, item.InstrumentID) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 func (handler *tradingHandler) identity(w http.ResponseWriter, r *http.Request) (string, string, bool) {

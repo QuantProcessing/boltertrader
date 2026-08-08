@@ -25,6 +25,7 @@ const (
 	GatewayStateSubmitted       GatewayState = "submitted"
 	GatewayStatePartiallyFilled GatewayState = "partially_filled"
 	GatewayStateFilled          GatewayState = "filled"
+	GatewayStateCanceled        GatewayState = "canceled"
 	GatewayStateDenied          GatewayState = "denied"
 )
 
@@ -37,6 +38,11 @@ type GatewayRequest struct {
 	ReduceOnly                               bool
 	DesiredStateRevision, RuntimeGeneration  int64
 	CredentialVersion                        int64
+}
+
+type GatewayCancelRequest struct {
+	CommandID, AccountID, InstrumentID, GatewayOrderID string
+	Mode                                               orders.Mode
 }
 
 type FillFact struct {
@@ -58,6 +64,10 @@ type GatewayResult struct {
 
 type Gateway interface {
 	Execute(context.Context, GatewayRequest) (GatewayResult, error)
+}
+
+type CancelGateway interface {
+	Cancel(context.Context, GatewayCancelRequest) (GatewayResult, error)
 }
 
 type Service struct {
@@ -218,6 +228,62 @@ func (service *Service) Execute(ctx context.Context, command orders.Command) (or
 	return service.recordGatewayResult(ctx, current, request, result)
 }
 
+func (service *Service) Cancel(ctx context.Context, command orders.Command) (orders.Command, error) {
+	if !service.Ready() {
+		return command, fmt.Errorf("manual execution dependencies are required")
+	}
+	if command.ProductID != "manual" || command.CommandKind != "manual.place" {
+		return command, fmt.Errorf("manual cancel requires an order command")
+	}
+	if command.Mode != service.mode || (command.Mode == orders.ModeLive && !service.liveWrites) {
+		return command, orders.ErrLiveWriteDisabled
+	}
+	current, err := service.commands.Get(ctx, command.CommandID)
+	if err != nil {
+		return command, err
+	}
+	if current.State == orders.StateFilled || current.State == orders.StateCanceled || current.State == orders.StateFailed {
+		return current, nil
+	}
+	if current.ExecutionEvidence.CommandID != current.CommandID || current.ExecutionEvidence.GatewayOrderID == "" {
+		return current, fmt.Errorf("manual order has no authoritative Gateway identity")
+	}
+	intent, err := decodePlaceIntent(current.Payload)
+	if err != nil {
+		return current, fmt.Errorf("manual intent is invalid: %w", err)
+	}
+	authority := gatewayRequest(current, intent)
+	gateway, ok := service.gateway.(CancelGateway)
+	if !ok {
+		return current, fmt.Errorf("manual Gateway cancellation is unavailable")
+	}
+	request := GatewayCancelRequest{
+		CommandID: current.CommandID, AccountID: current.AccountID,
+		InstrumentID: authority.InstrumentID, GatewayOrderID: current.ExecutionEvidence.GatewayOrderID, Mode: current.Mode,
+	}
+	result, err := gateway.Cancel(ctx, request)
+	if err != nil {
+		switch result.Handoff.Outcome {
+		case orders.HandoffNotAttempted, orders.HandoffRejected:
+			return current, fmt.Errorf("Gateway cancel handoff: %w", err)
+		default:
+			updated, transitionErr := service.markUncertain(ctx, current, orders.ReconciliationAmbiguousHandoff, result.Handoff.Evidence)
+			if transitionErr != nil {
+				return updated, errors.Join(fmt.Errorf("Gateway cancel handoff: %w", err), transitionErr)
+			}
+			return updated, fmt.Errorf("Gateway cancel handoff: %w", err)
+		}
+	}
+	if err := validateGatewayResult(authority, result); err != nil {
+		updated, transitionErr := service.markUncertain(ctx, current, orders.ReconciliationEvidenceInvalid, result.Handoff.Evidence)
+		if transitionErr != nil {
+			return updated, errors.Join(fmt.Errorf("Gateway cancel facts are invalid: %w", err), transitionErr)
+		}
+		return updated, fmt.Errorf("Gateway cancel facts are invalid: %w", err)
+	}
+	return service.recordGatewayResult(ctx, current, authority, result)
+}
+
 func (service *Service) RecordReconciliation(ctx context.Context, command orders.Command, handoff orders.HandoffResult) (orders.Command, error) {
 	if handoff.Outcome == orders.HandoffRejected {
 		return service.commands.Transition(ctx, orders.TransitionRequest{CommandID: command.CommandID, State: orders.StateFailed, Evidence: handoff.Evidence})
@@ -257,7 +323,9 @@ func reconciledGatewayState(state string) GatewayState {
 		return GatewayStateFilled
 	case "partially_filled":
 		return GatewayStatePartiallyFilled
-	case "rejected", "failed", "canceled", "cancelled":
+	case "canceled", "cancelled":
+		return GatewayStateCanceled
+	case "rejected", "failed":
 		return GatewayStateDenied
 	default:
 		return GatewayStateSubmitted
@@ -284,6 +352,15 @@ func (service *Service) recordGatewayResult(ctx context.Context, current orders.
 			return updated, err
 		}
 		return service.commands.Transition(ctx, orders.TransitionRequest{CommandID: current.CommandID, State: orders.StateFilled, Evidence: result.Handoff.Evidence})
+	case GatewayStateCanceled:
+		if err := service.applyFills(ctx, current, result.Fills); err != nil {
+			updated, transitionErr := service.markUncertain(ctx, current, orders.ReconciliationEvidenceInvalid, result.Handoff.Evidence)
+			if transitionErr != nil {
+				return updated, errors.Join(err, transitionErr)
+			}
+			return updated, err
+		}
+		return service.commands.Transition(ctx, orders.TransitionRequest{CommandID: current.CommandID, State: orders.StateCanceled, Evidence: result.Handoff.Evidence})
 	default:
 		panic("validated Gateway state is unhandled")
 	}
@@ -362,6 +439,10 @@ func validateGatewayResult(request GatewayRequest, result GatewayResult) error {
 		if result.DenialCode != "" || len(result.Fills) == 0 {
 			return fmt.Errorf("filled result requires fill facts")
 		}
+	case GatewayStateCanceled:
+		if result.DenialCode != "" {
+			return fmt.Errorf("canceled result cannot contain denial")
+		}
 	default:
 		return fmt.Errorf("unknown Gateway state")
 	}
@@ -395,7 +476,7 @@ func validateFillFact(fill FillFact) error {
 func (service *Service) applyFills(ctx context.Context, command orders.Command, fills []FillFact) error {
 	for _, fact := range fills {
 		_, result, err := service.portfolio.ApplyFill(ctx, portfolio.Fill{
-			FillID: fact.FillID, CommandID: fact.CommandID, LineageID: command.LineageID, ProductID: command.ProductID,
+			PrincipalID: command.PrincipalID, FillID: fact.FillID, CommandID: fact.CommandID, LineageID: command.LineageID, ProductID: command.ProductID,
 			Mode: portfolio.Mode(fact.Mode), AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Side: fact.Side,
 			Quantity: fact.Quantity, Price: fact.Price, Fee: fact.Fee, FeeCurrency: fact.FeeCurrency, SettlementCurrency: fact.SettlementCurrency, OccurredAt: fact.OccurredAt,
 		})
@@ -403,7 +484,7 @@ func (service *Service) applyFills(ctx context.Context, command orders.Command, 
 			return fmt.Errorf("apply authoritative fill %q: %w", fact.FillID, err)
 		}
 		if err := service.ledger.Record(ctx, ledger.Entry{
-			EntryID: fact.FillID + ":fee", Mode: ledger.Mode(fact.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
+			PrincipalID: command.PrincipalID, EntryID: fact.FillID + ":fee", Mode: ledger.Mode(fact.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
 			AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Kind: ledger.KindFee, Amount: result.Fee,
 			Currency: fact.FeeCurrency, OccurredAt: fact.OccurredAt,
 		}); err != nil {
@@ -411,7 +492,7 @@ func (service *Service) applyFills(ctx context.Context, command orders.Command, 
 		}
 		if result.RealizedPnL != "0" {
 			if err := service.ledger.Record(ctx, ledger.Entry{
-				EntryID: fact.FillID + ":realized_pnl", Mode: ledger.Mode(fact.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
+				PrincipalID: command.PrincipalID, EntryID: fact.FillID + ":realized_pnl", Mode: ledger.Mode(fact.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
 				AccountID: fact.AccountID, InstrumentID: fact.InstrumentID, Kind: ledger.KindRealizedPnL, Amount: result.RealizedPnL,
 				Currency: fact.SettlementCurrency, OccurredAt: fact.OccurredAt,
 			}); err != nil {

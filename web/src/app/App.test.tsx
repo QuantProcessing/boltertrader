@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   patch: vi.fn(),
   delete: vi.fn(),
   clearSession: vi.fn(),
+  clearIdempotencyKey: vi.fn(),
+  idempotencyKey: vi.fn(() => "idempotency-test"),
   setSession: vi.fn(),
   onSessionExpired: vi.fn(() => () => undefined),
   snapshot: vi.fn(),
@@ -23,7 +25,8 @@ vi.mock("../api/client", () => ({
     clearSession: mocks.clearSession,
     setSession: mocks.setSession,
     onSessionExpired: mocks.onSessionExpired,
-    idempotencyKey: vi.fn(() => "idempotency-test"),
+    idempotencyKey: mocks.idempotencyKey,
+    clearIdempotencyKey: mocks.clearIdempotencyKey,
   },
   ApiError: class ApiError extends Error {},
 }));
@@ -62,6 +65,7 @@ describe("App", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.onSessionExpired.mockReturnValue(() => undefined);
+    mocks.idempotencyKey.mockReturnValue("idempotency-test");
     mocks.connectRealtime.mockReturnValue({ subscribe: vi.fn(() => () => undefined), getState: vi.fn(() => ({ status: "connected" })), close: vi.fn(), resumeAfterSnapshot: vi.fn() });
   });
 
@@ -156,6 +160,56 @@ describe("App", () => {
     ]);
     expect(mocks.post).toHaveBeenCalledWith("/reservations", requirements[0], expect.objectContaining({ idempotencyScope: expect.any(String) }));
     expect(mocks.post).toHaveBeenCalledWith("/reservations", requirements[1], expect.objectContaining({ idempotencyScope: expect.any(String) }));
+  });
+
+  it("uses a fresh idempotency key when retrying a rejected Manual close", async () => {
+    mocks.get.mockResolvedValue({ data: session });
+    mocks.idempotencyKey.mockReturnValueOnce("close-first").mockReturnValueOnce("close-second");
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error("terminal close replay"), { status: 409, code: "IDEMPOTENCY_CONFLICT" })).mockResolvedValueOnce({ data: { commandId: "close-command", state: "filled" } });
+    mocks.snapshot.mockResolvedValue({
+      ...emptySnapshot,
+      positions: [{
+        lineageId: "manual-lineage", productId: "manual", accountId: "account-a", instrumentId: "BTC-USDT",
+        settlementCurrency: "USDT", quantity: "2", averageEntryPrice: "49", markPrice: "50",
+        realizedPnl: "0", unrealizedPnl: "2", updatedAt: "2026-08-08T10:00:00Z",
+      }],
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Manual" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close" }));
+    await waitFor(() => expect(mocks.clearIdempotencyKey).toHaveBeenCalledWith("manual.close:manual-lineage"));
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenLastCalledWith(
+      "/products/manual/commands",
+      expect.objectContaining({ action: "close", lineageId: "manual-lineage", idempotencyKey: "close-second" }),
+      { idempotencyKey: "close-second" },
+    ));
+  });
+
+  it("retains the idempotency key when a Manual close outcome is ambiguous", async () => {
+    mocks.get.mockResolvedValue({ data: session });
+    mocks.idempotencyKey.mockReturnValue("close-stable");
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error("network request failed"), { status: 0, code: "NETWORK_ERROR", retryable: true })).mockResolvedValueOnce({ data: { commandId: "close-command", state: "filled" } });
+    mocks.snapshot.mockResolvedValue({
+      ...emptySnapshot,
+      positions: [{
+        lineageId: "manual-lineage", productId: "manual", accountId: "account-a", instrumentId: "BTC-USDT",
+        settlementCurrency: "USDT", quantity: "2", averageEntryPrice: "49", markPrice: "50",
+        realizedPnl: "0", unrealizedPnl: "2", updatedAt: "2026-08-08T10:00:00Z",
+      }],
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Manual" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Close" }));
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1));
+    expect(mocks.clearIdempotencyKey).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(2));
+    expect(mocks.post.mock.calls.map(([, body]) => body.idempotencyKey)).toEqual(["close-stable", "close-stable"]);
   });
 
   it("updates account metadata through the revision-fenced Platform route", async () => {

@@ -188,6 +188,39 @@ func TestPlatformAdapterEmitsAttributedLedgerAndPortfolioEffects(t *testing.T) {
 	if len(ledgerSink.entries) != 3 || ledgerSink.entries[2].Kind != ledger.KindFunding || ledgerSink.entries[2].Amount != "2.5" || ledgerSink.entries[2].Currency != "USDT" {
 		t.Fatalf("entries=%+v", ledgerSink.entries)
 	}
+	mark := markFact("mark-1", 3, "105")
+	if err := adapter.Apply(context.Background(), mark); err != nil {
+		t.Fatal(err)
+	}
+	if len(portfolioSink.marks) != 1 || portfolioSink.marks[0].mark != "105" || len(ledgerSink.unrealized) != 1 || ledgerSink.unrealized[0].Amount != "5" || ledgerSink.unrealized[0].Currency != "USDT" {
+		t.Fatalf("marks=%+v unrealized=%+v", portfolioSink.marks, ledgerSink.unrealized)
+	}
+}
+
+func TestPlatformAdapterSupersedesPriorFundingEconomicEffect(t *testing.T) {
+	store := ledger.NewMemoryStore()
+	ledgerService := ledger.NewService(store, time.Now)
+	adapter := NewPlatformAdapter(ledgerService, &recordingPortfolio{})
+	first := fundingFact("funding-1", 1, "1")
+	if err := adapter.Apply(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	revision := fundingFact("funding-2", 2, "2")
+	revision.SupersedesFactID = first.FactID
+	ledgerService = ledger.NewService(store, time.Now)
+	adapter = NewPlatformAdapter(ledgerService, &recordingPortfolio{})
+	if err := adapter.Apply(context.Background(), revision); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ledgerService.PnL(context.Background(), ledger.Query{PrincipalID: "principal-a",
+		Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a", AccountID: "account-a", InstrumentID: "BTC-USDT",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Funding != "2" {
+		t.Fatalf("funding after supersession=%s, want replacement effect 2", snapshot.Funding)
+	}
 }
 
 type recordingLedger struct {
@@ -205,16 +238,30 @@ func (sink *recordingLedger) SetUnrealized(_ context.Context, value ledger.Unrea
 	return nil
 }
 
-type recordingPortfolio struct{ fills []portfolio.Fill }
+type recordingMark struct {
+	mode                                                portfolio.Mode
+	accountID, productID, lineageID, instrumentID, mark string
+	asOf                                                time.Time
+}
+
+type recordingPortfolio struct {
+	fills []portfolio.Fill
+	marks []recordingMark
+}
 
 func (sink *recordingPortfolio) ApplyFill(_ context.Context, fill portfolio.Fill) (portfolio.Position, portfolio.FillResult, error) {
 	sink.fills = append(sink.fills, fill)
 	return portfolio.Position{}, portfolio.FillResult{RealizedPnL: "10", SettlementCurrency: fill.SettlementCurrency}, nil
 }
 
+func (sink *recordingPortfolio) ApplyMarkContext(_ context.Context, principalID string, mode portfolio.Mode, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (portfolio.Position, error) {
+	sink.marks = append(sink.marks, recordingMark{mode, accountID, productID, lineageID, instrumentID, mark, asOf})
+	return portfolio.Position{PrincipalID: principalID, SettlementCurrency: "USDT", UnrealizedPnL: "5"}, nil
+}
+
 func baseFact(id string, revision int64, kind Kind) Fact {
 	return Fact{
-		FactID: id, Revision: revision, Kind: kind, ProductID: "funding", Mode: "test",
+		PrincipalID: "principal-a", FactID: id, Revision: revision, Kind: kind, ProductID: "funding", Mode: "test",
 		LineageID: "lineage-a", PositionID: "position-a", AccountID: "account-a", InstrumentID: "BTC-USDT",
 		EffectiveAt: time.Date(2026, 8, 5, 0, 0, int(revision), 0, time.UTC),
 	}

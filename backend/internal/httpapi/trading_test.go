@@ -24,6 +24,7 @@ func TestPositionsReturnsInternalErrorWhenPortfolioRepositoryFails(t *testing.T)
 		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
 		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
 		Portfolio:    portfolio.NewPersistentProjection(store), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		FundingAccounting: &fundingRefreshFailure{},
 		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	})
@@ -43,6 +44,107 @@ func TestPositionsReturnsInternalErrorWhenPortfolioRepositoryFails(t *testing.T)
 	}
 }
 
+func TestFundingReadFailsExplicitlyWhenAuthoritativeAccountingRefreshFails(t *testing.T) {
+	refresher := &fundingRefreshFailure{err: errors.New("authoritative source unavailable")}
+	mux := http.NewServeMux()
+	err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
+		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		FundingAccounting: refresher,
+		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		AuthorizeMutation: func(*http.Request) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/positions?productId=funding", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"AUTHORITATIVE_ACCOUNTING_UNAVAILABLE"`) {
+		t.Fatalf("funding read response=%d %s", response.Code, response.Body.String())
+	}
+	if refresher.principal != "principal-a" || refresher.mode != "test" {
+		t.Fatalf("refresh attribution=%q/%q", refresher.principal, refresher.mode)
+	}
+}
+
+func TestTradingReadsSeparateExactAccountingTupleAcrossPrincipals(t *testing.T) {
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	positions := portfolio.NewProjection()
+	ledgerService := ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return now })
+	for _, principal := range []string{"principal-a", "principal-b"} {
+		fill := portfolio.Fill{
+			PrincipalID: principal, FillID: "shared-fill", CommandID: "command-" + principal, LineageID: "shared-lineage", ProductID: "funding",
+			Mode: portfolio.ModeTest, AccountID: "shared-account", InstrumentID: "BTC-USDT", Side: portfolio.SideBuy,
+			Quantity: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Price: "100", Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
+		}
+		if _, _, err := positions.ApplyFill(context.Background(), fill); err != nil {
+			t.Fatal(err)
+		}
+		if err := ledgerService.Record(context.Background(), ledger.Entry{
+			PrincipalID: principal, EntryID: "shared-entry", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "shared-lineage",
+			AccountID: "shared-account", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding,
+			Amount: map[string]string{"principal-a": "1", "principal-b": "2"}[principal], Currency: "USDT", OccurredAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	currentPrincipal := "principal-a"
+	accountingScopes := new(fundingScopeSuccess)
+	mux := http.NewServeMux()
+	if err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now),
+		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Portfolio:    positions, Ledger: ledgerService,
+		FundingAccounting: accountingScopes,
+		Principal:         func(*http.Request) (string, string, error) { return currentPrincipal, "test", nil },
+		AuthorizeMutation: func(*http.Request) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertRead := func(principal, wantQuantity, wantAmount string) {
+		t.Helper()
+		currentPrincipal = principal
+		for path, expected := range map[string]string{
+			"/api/v1/positions?productId=funding&accountId=shared-account":                                          `"quantity":"` + wantQuantity + `"`,
+			"/api/v1/ledger?productId=funding&lineageId=shared-lineage":                                             `"amount":"` + wantAmount + `"`,
+			"/api/v1/pnl?productId=funding&lineageId=shared-lineage&accountId=shared-account&instrumentId=BTC-USDT": `"netPnl":"` + wantAmount + `"`,
+		} {
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), expected) {
+				t.Fatalf("principal=%s path=%s response=%d %s, want %s", principal, path, response.Code, response.Body.String(), expected)
+			}
+			if strings.Contains(response.Body.String(), `"principalId"`) {
+				t.Fatalf("principal identity leaked in browser JSON: %s", response.Body.String())
+			}
+		}
+	}
+	assertRead("principal-a", "1", "1")
+	assertRead("principal-b", "2", "2")
+	if strings.Join(accountingScopes.principals, ",") != "principal-a,principal-a,principal-a,principal-b,principal-b,principal-b" {
+		t.Fatalf("accounting refresh principals=%v", accountingScopes.principals)
+	}
+}
+
+type fundingScopeSuccess struct{ principals []string }
+
+func (fixture *fundingScopeSuccess) RefreshAccounting(_ context.Context, principal, mode string) (FundingReadScopes, error) {
+	fixture.principals = append(fixture.principals, principal)
+	return FundingReadScopes{{LineageID: "shared-lineage", AccountID: "shared-account", InstrumentID: "BTC-USDT"}}, nil
+}
+
+type fundingRefreshFailure struct {
+	err             error
+	principal, mode string
+}
+
+func (fixture *fundingRefreshFailure) RefreshAccounting(_ context.Context, principal, mode string) (FundingReadScopes, error) {
+	fixture.principal, fixture.mode = principal, mode
+	return FundingReadScopes{}, fixture.err
+}
+
 type portfolioListFailureStore struct {
 	err     error
 	context context.Context
@@ -51,11 +153,11 @@ type portfolioListFailureStore struct {
 func (*portfolioListFailureStore) ApplyFill(context.Context, portfolio.Fill, func(portfolio.Position) (portfolio.Position, portfolio.FillResult, error)) (portfolio.Position, portfolio.FillResult, error) {
 	return portfolio.Position{}, portfolio.FillResult{}, nil
 }
-func (*portfolioListFailureStore) ApplyMark(context.Context, portfolio.Mode, string, string, string, string, func(portfolio.Position) (portfolio.Position, error)) (portfolio.Position, error) {
+func (*portfolioListFailureStore) ApplyMark(context.Context, string, portfolio.Mode, string, string, string, string, func(portfolio.Position) (portfolio.Position, error)) (portfolio.Position, error) {
 	return portfolio.Position{}, nil
 }
 func (*portfolioListFailureStore) Upsert(context.Context, portfolio.Position) error { return nil }
-func (store *portfolioListFailureStore) List(ctx context.Context, _ portfolio.Mode, _, _ string) ([]portfolio.Position, error) {
+func (store *portfolioListFailureStore) List(ctx context.Context, _ string, _ portfolio.Mode, _, _ string) ([]portfolio.Position, error) {
 	store.context = ctx
 	return nil, store.err
 }
@@ -260,12 +362,15 @@ func TestGenericCommandRouteRejectsManualBeforePersistenceAndGatewayHandoff(t *t
 }
 
 type manualGatewayFixture struct {
-	calls     int
-	failFirst bool
+	calls       int
+	cancelCalls int
+	failFirst   bool
+	lastRequest manual.GatewayRequest
 }
 
 func (fixture *manualGatewayFixture) Execute(_ context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
 	fixture.calls++
+	fixture.lastRequest = request
 	if fixture.failFirst && fixture.calls == 1 {
 		return manual.GatewayResult{}, errors.New("ambiguous Gateway handoff")
 	}
@@ -279,5 +384,17 @@ func (fixture *manualGatewayFixture) Execute(_ context.Context, request manual.G
 			InstrumentID: request.InstrumentID, Side: portfolio.Side(request.Side), Quantity: request.Quantity,
 			Price: "100", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC),
 		}},
+	}, nil
+}
+
+func (fixture *manualGatewayFixture) Cancel(_ context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
+	fixture.cancelCalls++
+	evidence := orders.ExecutionEvidence{
+		CommandID: request.CommandID, GatewayOrderID: request.GatewayOrderID,
+		ClientOrderID: "client-order-1", State: "canceled", ResourceVersion: 2,
+	}
+	return manual.GatewayResult{
+		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
+		State: manual.GatewayStateCanceled, Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
 	}, nil
 }

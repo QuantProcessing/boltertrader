@@ -12,6 +12,7 @@ import (
 	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
@@ -25,6 +26,7 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 	ledgerService := ledger.NewService(ledger.NewMemoryStore(), time.Now)
 	previewKey := []byte("shared-preview-signing-key-with-32-bytes")
 	gateway := &manualGatewayFixture{}
+	market := &manualMarketDataFixture{ask: "50"}
 
 	newInstance := func() *http.ServeMux {
 		projection, err := catalog.NewProjection(manualCatalogSource{}, time.Minute, time.Now)
@@ -40,6 +42,7 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 			Catalog:           projection,
 			Manual:            manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, time.Now, previewKey),
 			ManualAccounts:    &staticManualAccounts{account: readyManualAccount()},
+			ManualMarketData:  market,
 			Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
 			AuthorizeMutation: func(*http.Request) error { return nil },
 		})
@@ -49,8 +52,16 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 		return mux
 	}
 
+	oversizedResponse := httptest.NewRecorder()
+	newInstance().ServeHTTP(oversizedResponse, httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/execution-previews", strings.NewReader(`{"accountId":"account-a","instrumentId":"BTC-USDT","side":"buy","orderType":"market","quantity":"2.01","limitPrice":"","timeInForce":"ioc","reduceOnly":false,"mode":"test"}`)))
+	reservationsAfterOversized, reservationErr := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	commandsAfterOversized, commandErr := commandService.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if oversizedResponse.Code != http.StatusBadRequest || !strings.Contains(oversizedResponse.Body.String(), "VALIDATION_ERROR") || reservationErr != nil || commandErr != nil || len(reservationsAfterOversized) != 0 || len(commandsAfterOversized) != 0 || gateway.calls != 0 {
+		t.Fatalf("oversized preview=%d reservations=%+v commands=%+v gateway calls=%d reservation err=%v command err=%v body=%s", oversizedResponse.Code, reservationsAfterOversized, commandsAfterOversized, gateway.calls, reservationErr, commandErr, oversizedResponse.Body.String())
+	}
+
 	previewResponse := httptest.NewRecorder()
-	newInstance().ServeHTTP(previewResponse, httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/execution-previews", strings.NewReader(`{"accountId":"account-a","instrumentId":"BTC-USDT","side":"buy","orderType":"market","quantity":"2","limitPrice":"","timeInForce":"ioc","reduceOnly":false,"mode":"test"}`)))
+	newInstance().ServeHTTP(previewResponse, httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/execution-previews", strings.NewReader(`{"accountId":"account-a","instrumentId":"BTC-USDT","side":"buy","orderType":"limit","quantity":"2","limitPrice":"1","timeInForce":"gtc","reduceOnly":false,"mode":"test"}`)))
 	var previewBody struct {
 		Data struct {
 			PreviewID string `json:"previewId"`
@@ -61,6 +72,17 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 	}
 
 	commandRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"`+previewBody.Data.PreviewID+`","action":"place","lineageId":"lineage-a","orderId":"","idempotencyKey":"manual-restart-1"}`))
+	commandRequest.Header.Set("Idempotency-Key", "manual-restart-1")
+	market.ask = "50.01"
+	repricedResponse := httptest.NewRecorder()
+	newInstance().ServeHTTP(repricedResponse, commandRequest)
+	reservationsAfterReprice, reservationErr := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	commandsAfterReprice, commandErr := commandService.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if repricedResponse.Code != http.StatusBadRequest || !strings.Contains(repricedResponse.Body.String(), "VALIDATION_ERROR") || reservationErr != nil || commandErr != nil || len(reservationsAfterReprice) != 0 || len(commandsAfterReprice) != 0 || gateway.calls != 0 {
+		t.Fatalf("repriced command=%d reservations=%+v commands=%+v gateway calls=%d reservation err=%v command err=%v body=%s", repricedResponse.Code, reservationsAfterReprice, commandsAfterReprice, gateway.calls, reservationErr, commandErr, repricedResponse.Body.String())
+	}
+	market.ask = "50"
+	commandRequest = httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"`+previewBody.Data.PreviewID+`","action":"place","lineageId":"lineage-a","orderId":"","idempotencyKey":"manual-restart-1"}`))
 	commandRequest.Header.Set("Idempotency-Key", "manual-restart-1")
 	commandResponse := httptest.NewRecorder()
 	newInstance().ServeHTTP(commandResponse, commandRequest)
@@ -140,6 +162,34 @@ type staticManualAccounts struct {
 	account platformaccounts.Account
 }
 
+type manualMarketDataFixture struct{ ask string }
+
+func (fixture manualMarketDataFixture) Get(_ context.Context, query marketdata.Query) (marketdata.Fact, error) {
+	ask := fixture.ask
+	if ask == "" {
+		ask = "50"
+	}
+	return marketdata.Fact{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product, InstrumentID: query.InstrumentID,
+		BestBid: "49", BestBidSize: "10", BestAsk: ask, BestAskSize: "10",
+		Bids: []marketdata.Level{{Price: "49", Quantity: "10"}}, Asks: []marketdata.Level{{Price: ask, Quantity: "10"}},
+		ObservedAt: time.Now(),
+	}, nil
+}
+
+func TestManualTestNotionalCapUsesAuthoritativeMarketForLimitOrders(t *testing.T) {
+	request := manualPreviewRequest{InstrumentID: "BTC-USDT", Side: "buy", OrderType: "limit", Quantity: "2", LimitPrice: "1", Mode: "test"}
+	authority := manualPreviewAuthority{Venue: "binance", VenueEnvironment: "demo", Product: "perp"}
+	allowed, err := manualTestNotionalAllowed(context.Background(), request, authority, manualMarketDataFixture{ask: "50.01"})
+	if err != nil || allowed {
+		t.Fatalf("limit order priced from client input: allowed=%v err=%v", allowed, err)
+	}
+	allowed, err = manualTestNotionalAllowed(context.Background(), request, authority, manualMarketDataFixture{ask: "50"})
+	if err != nil || !allowed {
+		t.Fatalf("100 USDT authoritative limit order allowed=%v err=%v", allowed, err)
+	}
+}
+
 func (accounts *staticManualAccounts) Get(context.Context, string) (platformaccounts.Account, error) {
 	return accounts.account, nil
 }
@@ -165,7 +215,7 @@ func TestManualAccountReadyRequiresActiveState(t *testing.T) {
 	}
 }
 
-func TestManualCancelIsRejectedBeforeReservationCommandOrGatewayEffects(t *testing.T) {
+func TestManualCancelTransitionsOwnedRestingOrderWithoutNewReservation(t *testing.T) {
 	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
 	commandStore := orders.NewMemoryStore()
 	commandService := orders.NewService(commandStore, manualReservationGate{service: reservationService}, time.Now)
@@ -190,21 +240,149 @@ func TestManualCancelIsRejectedBeforeReservationCommandOrGatewayEffects(t *testi
 			[]byte("shared-preview-signing-key-with-32-bytes"),
 		),
 		ManualAccounts:    &staticManualAccounts{account: readyManualAccount()},
+		ManualMarketData:  manualMarketDataFixture{},
 		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
 		AuthorizeMutation: func(*http.Request) error { return nil },
 	}); err != nil {
 		t.Fatal(err)
 	}
+	command, _, err := commandService.Create(context.Background(), orders.CreateRequest{
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
+		IdempotencyKey: "manual-resting-a", Method: http.MethodPost, Path: "/api/v1/products/manual/commands",
+		CommandKind: "manual.place", Mode: orders.ModeTest,
+		Payload: []byte(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"limit","limitPrice":"50","timeInForce":"gtc"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err = commandService.Transition(context.Background(), orders.TransitionRequest{
+		CommandID: command.CommandID, State: orders.StateSubmitted,
+		Evidence: orders.ExecutionEvidence{CommandID: command.CommandID, GatewayOrderID: "gateway-order-a", ClientOrderID: "client-order-1", State: "submitted", ResourceVersion: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongLineageRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"cancel","lineageId":"lineage-b","orderId":"`+command.CommandID+`","idempotencyKey":"manual-cancel-wrong-lineage"}`))
+	wrongLineageRequest.Header.Set("Idempotency-Key", "manual-cancel-wrong-lineage")
+	wrongLineageResponse := httptest.NewRecorder()
+	mux.ServeHTTP(wrongLineageResponse, wrongLineageRequest)
+	commandsAfterWrongLineage, commandErr := commandStore.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if wrongLineageResponse.Code != http.StatusNotFound || commandErr != nil || len(commandsAfterWrongLineage) != 1 || gateway.cancelCalls != 0 {
+		t.Fatalf("wrong-lineage cancel=%d commands=%+v Gateway calls=%d err=%v body=%s", wrongLineageResponse.Code, commandsAfterWrongLineage, gateway.cancelCalls, commandErr, wrongLineageResponse.Body.String())
+	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"cancel","lineageId":"lineage-a","orderId":"venue-order-a","idempotencyKey":"manual-cancel-a"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"cancel","lineageId":"lineage-a","orderId":"`+command.CommandID+`","idempotencyKey":"manual-cancel-a"}`))
 	request.Header.Set("Idempotency-Key", "manual-cancel-a")
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 
 	reservationsAfter, reservationErr := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
 	commandsAfter, commandErr := commandStore.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") || reservationErr != nil || commandErr != nil || len(reservationsAfter) != 0 || len(commandsAfter) != 0 || gateway.calls != 0 {
-		t.Fatalf("cancel=%d reservations=%+v commands=%+v gateway calls=%d reservation err=%v command err=%v body=%s", response.Code, reservationsAfter, commandsAfter, gateway.calls, reservationErr, commandErr, response.Body.String())
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"state":"canceled"`) || reservationErr != nil || commandErr != nil || len(reservationsAfter) != 0 || len(commandsAfter) != 1 || gateway.calls != 0 || gateway.cancelCalls != 1 {
+		t.Fatalf("cancel=%d reservations=%+v commands=%+v gateway calls=%d/%d reservation err=%v command err=%v body=%s", response.Code, reservationsAfter, commandsAfter, gateway.calls, gateway.cancelCalls, reservationErr, commandErr, response.Body.String())
+	}
+	replayRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"cancel","lineageId":"lineage-a","orderId":"`+command.CommandID+`","idempotencyKey":"manual-cancel-a"}`))
+	replayRequest.Header.Set("Idempotency-Key", "manual-cancel-a")
+	replay := httptest.NewRecorder()
+	mux.ServeHTTP(replay, replayRequest)
+	if replay.Code != http.StatusOK || gateway.cancelCalls != 1 {
+		t.Fatalf("cancel replay=%d Gateway calls=%d body=%s", replay.Code, gateway.cancelCalls, replay.Body.String())
+	}
+}
+
+func TestManualSafeCloseDerivesReduceOnlyMarketIntentFromPosition(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 4, 0, 0, 0, time.UTC)
+	reservationService := reservations.NewService(reservations.NewMemoryStore(), func() time.Time { return now })
+	commandService := orders.NewService(orders.NewMemoryStore(), manualReservationGate{service: reservationService}, func() time.Time { return now })
+	portfolioProjection := portfolio.NewProjection()
+	if _, _, err := portfolioProjection.ApplyFill(context.Background(), portfolio.Fill{PrincipalID: "principal-a",
+		FillID: "open-fill-a", CommandID: "open-command-a", LineageID: "lineage-close-a", ProductID: "manual",
+		AccountID: "account-a", InstrumentID: "BTC-USDT", Mode: portfolio.ModeTest, Side: portfolio.SideBuy,
+		Quantity: "2", Price: "49", Fee: "0", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ledgerService := ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return now })
+	gateway := &manualGatewayFixture{}
+	projection, err := catalog.NewProjection(manualCatalogSource{now: func() time.Time { return now }}, time.Minute, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService,
+		Catalog: projection, Manual: manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, func() time.Time { return now }, []byte("shared-preview-signing-key-with-32-bytes")),
+		ManualAccounts: &staticManualAccounts{account: readyManualAccount()}, ManualMarketData: manualMarketDataFixture{ask: "50"},
+		Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unownedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"close","lineageId":"lineage-close-a","orderId":"","idempotencyKey":"manual-close-unowned"}`))
+	unownedRequest.Header.Set("Idempotency-Key", "manual-close-unowned")
+	unownedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(unownedResponse, unownedRequest)
+	if positions := portfolioProjection.List("principal-a", portfolio.ModeTest, "account-a", "manual"); unownedResponse.Code != http.StatusNotFound || len(positions) != 1 || positions[0].Quantity != "2" || gateway.calls != 0 {
+		t.Fatalf("unowned close=%d positions=%+v gateway=%d body=%s", unownedResponse.Code, positions, gateway.calls, unownedResponse.Body.String())
+	}
+	if _, _, err := commandService.Create(context.Background(), orders.CreateRequest{
+		PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-close-a",
+		IdempotencyKey: "manual-open-a", Method: http.MethodPost, Path: "/api/v1/products/manual/commands",
+		CommandKind: "manual.place", Mode: orders.ModeTest,
+		Payload: []byte(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"2","orderType":"market","reduceOnly":false}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminal := range []orders.State{orders.StateFailed, orders.StateCanceled} {
+		key := "manual-close-" + string(terminal)
+		terminalCommand, _, err := commandService.Create(context.Background(), orders.CreateRequest{
+			PrincipalID: "principal-a", AccountID: "account-a", ProductID: "manual", LineageID: "lineage-close-a",
+			IdempotencyKey: key, Method: http.MethodPost, Path: "/api/v1/products/manual/commands",
+			CommandKind: "manual.place", Mode: orders.ModeTest,
+			Payload: []byte(`{"instrumentId":"BTC-USDT","side":"sell","quantity":"2","orderType":"market","reduceOnly":true}`),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := commandService.Transition(context.Background(), orders.TransitionRequest{CommandID: terminalCommand.CommandID, State: terminal}); err != nil {
+			t.Fatal(err)
+		}
+		terminalRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"close","lineageId":"lineage-close-a","orderId":"","idempotencyKey":"`+key+`"}`))
+		terminalRequest.Header.Set("Idempotency-Key", key)
+		terminalResponse := httptest.NewRecorder()
+		mux.ServeHTTP(terminalResponse, terminalRequest)
+		if positions := portfolioProjection.List("principal-a", portfolio.ModeTest, "account-a", "manual"); terminalResponse.Code != http.StatusConflict || len(positions) != 1 || positions[0].Quantity != "2" || gateway.calls != 0 {
+			t.Fatalf("%s close replay=%d positions=%+v gateway=%d body=%s", terminal, terminalResponse.Code, positions, gateway.calls, terminalResponse.Body.String())
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"close","lineageId":"lineage-close-a","orderId":"","idempotencyKey":"manual-close-a"}`))
+	request.Header.Set("Idempotency-Key", "manual-close-a")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	positions := portfolioProjection.List("principal-a", portfolio.ModeTest, "account-a", "manual")
+	items, reservationErr := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	commands, commandErr := commandService.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if response.Code != http.StatusAccepted || reservationErr != nil || commandErr != nil || len(positions) != 1 || positions[0].Quantity != "0" || len(items) != 1 || items[0].Kind != reservations.KindClose || len(commands) != 4 || gateway.calls != 1 {
+		t.Fatalf("close=%d positions=%+v reservations=%+v commands=%+v gateway=%d errors=%v/%v body=%s", response.Code, positions, items, commands, gateway.calls, reservationErr, commandErr, response.Body.String())
+	}
+	if request := gateway.lastRequest; request.Side != "sell" || request.Quantity != "2" || request.OrderType != "market" || !request.ReduceOnly || request.InstrumentID != "BTC-USDT" {
+		t.Fatalf("safe-close Gateway request=%+v", request)
+	}
+	replayRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"close","lineageId":"lineage-close-a","orderId":"","idempotencyKey":"manual-close-a"}`))
+	replayRequest.Header.Set("Idempotency-Key", "manual-close-a")
+	replay := httptest.NewRecorder()
+	mux.ServeHTTP(replay, replayRequest)
+	if replay.Code != http.StatusOK || gateway.calls != 1 {
+		t.Fatalf("safe-close replay=%d Gateway calls=%d body=%s", replay.Code, gateway.calls, replay.Body.String())
+	}
+	closedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"close","lineageId":"lineage-close-a","orderId":"","idempotencyKey":"manual-close-after-zero"}`))
+	closedRequest.Header.Set("Idempotency-Key", "manual-close-after-zero")
+	closedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(closedResponse, closedRequest)
+	items, reservationErr = reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	commands, commandErr = commandService.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if closedResponse.Code != http.StatusNotFound || reservationErr != nil || commandErr != nil || len(items) != 1 || len(commands) != 4 || gateway.calls != 1 {
+		t.Fatalf("close-after-zero=%d reservations=%+v commands=%+v Gateway calls=%d errors=%v/%v body=%s", closedResponse.Code, items, commands, gateway.calls, reservationErr, commandErr, closedResponse.Body.String())
 	}
 }
 
@@ -245,8 +423,8 @@ func TestManualCommandRejectsChangedCatalogBeforeReservation(t *testing.T) {
 		err = RegisterTradingRoutes(mux, TradingOptions{
 			Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService,
 			Catalog: projection, Manual: manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, time.Now, previewKey),
-			ManualAccounts: &staticManualAccounts{account: readyManualAccount()},
-			Principal:      func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
+			ManualAccounts: &staticManualAccounts{account: readyManualAccount()}, ManualMarketData: manualMarketDataFixture{},
+			Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -308,7 +486,7 @@ func TestManualCommandRejectsExpiredOrChangedAccountBeforeReservation(t *testing
 			err = RegisterTradingRoutes(mux, TradingOptions{
 				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService,
 				Catalog: projection, Manual: manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, gateway, clock, []byte("shared-preview-signing-key-with-32-bytes")),
-				ManualAccounts: accountSource, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
+				ManualAccounts: accountSource, ManualMarketData: manualMarketDataFixture{}, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
 			})
 			if err != nil {
 				t.Fatal(err)

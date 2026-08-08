@@ -302,7 +302,7 @@ func (processor *FundingPayloadProcessor) ingestFills(ctx context.Context, comma
 			accountID = command.AccountID
 		}
 		_, result, err := processor.portfolio.ApplyFill(ctx, portfolio.Fill{
-			FillID: fill.FillID, CommandID: command.CommandID, LineageID: command.LineageID, ProductID: command.ProductID,
+			PrincipalID: command.PrincipalID, FillID: fill.FillID, CommandID: command.CommandID, LineageID: command.LineageID, ProductID: command.ProductID,
 			Mode: portfolio.Mode(command.Mode), AccountID: accountID, InstrumentID: fill.InstrumentID, Side: portfolio.Side(fill.Side),
 			Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
 		})
@@ -310,7 +310,7 @@ func (processor *FundingPayloadProcessor) ingestFills(ctx context.Context, comma
 			return fmt.Errorf("apply authoritative Gateway fill %q: %w", fill.FillID, err)
 		}
 		if err := processor.ledger.Record(ctx, ledger.Entry{
-			EntryID: fill.FillID + ":fee", Mode: ledger.Mode(command.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
+			PrincipalID: command.PrincipalID, EntryID: fill.FillID + ":fee", Mode: ledger.Mode(command.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
 			AccountID: accountID, InstrumentID: fill.InstrumentID, Kind: ledger.KindFee, Amount: result.Fee,
 			Currency: fill.FeeCurrency, OccurredAt: fill.OccurredAt,
 		}); err != nil {
@@ -318,7 +318,7 @@ func (processor *FundingPayloadProcessor) ingestFills(ctx context.Context, comma
 		}
 		if result.RealizedPnL != "0" {
 			if err := processor.ledger.Record(ctx, ledger.Entry{
-				EntryID: fill.FillID + ":realized_pnl", Mode: ledger.Mode(command.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
+				PrincipalID: command.PrincipalID, EntryID: fill.FillID + ":realized_pnl", Mode: ledger.Mode(command.Mode), LineageID: command.LineageID, ProductID: command.ProductID,
 				AccountID: accountID, InstrumentID: fill.InstrumentID, Kind: ledger.KindRealizedPnL, Amount: result.RealizedPnL,
 				Currency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt,
 			}); err != nil {

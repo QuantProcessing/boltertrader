@@ -64,6 +64,7 @@ type FundingExecutionTransition struct {
 type FundingExecutionStore interface {
 	ReserveFundingExecution(context.Context, FundingExecution) (FundingExecution, bool, error)
 	GetFundingExecution(context.Context, string, orders.Mode, string) (FundingExecution, error)
+	ListFundingExecutions(context.Context, string, orders.Mode) ([]FundingExecution, error)
 	PersistFundingExecution(context.Context, FundingExecution, int64, string) (FundingExecution, error)
 }
 
@@ -109,6 +110,18 @@ func (store *MemoryFundingExecutionStore) GetFundingExecution(_ context.Context,
 		return FundingExecution{}, ErrWorkRevisionConflict
 	}
 	return cloneFundingExecution(execution), nil
+}
+
+func (store *MemoryFundingExecutionStore) ListFundingExecutions(_ context.Context, principal string, mode orders.Mode) ([]FundingExecution, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	result := make([]FundingExecution, 0)
+	for _, execution := range store.executions {
+		if execution.PrincipalID == principal && execution.Mode == mode {
+			result = append(result, cloneFundingExecution(execution))
+		}
+	}
+	return result, nil
 }
 
 func (store *MemoryFundingExecutionStore) PersistFundingExecution(_ context.Context, execution FundingExecution, expectedVersion int64, kind string) (FundingExecution, error) {

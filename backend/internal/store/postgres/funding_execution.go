@@ -62,6 +62,30 @@ func (store *FundingExecutionStore) GetFundingExecution(ctx context.Context, pri
 	return execution, nil
 }
 
+func (store *FundingExecutionStore) ListFundingExecutions(ctx context.Context, principal string, mode orders.Mode) ([]work.FundingExecution, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT payload FROM platform_funding_executions WHERE principal_id=$1 AND mode=$2 ORDER BY created_at,execution_id`, principal, mode)
+	if err != nil {
+		return nil, fmt.Errorf("list Funding executions: %w", err)
+	}
+	defer rows.Close()
+	result := make([]work.FundingExecution, 0)
+	for rows.Next() {
+		var payload json.RawMessage
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan Funding execution: %w", err)
+		}
+		var execution work.FundingExecution
+		if err := json.Unmarshal(payload, &execution); err != nil {
+			return nil, fmt.Errorf("decode Funding execution: %w", err)
+		}
+		result = append(result, execution)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list Funding executions: %w", err)
+	}
+	return result, nil
+}
+
 func (store *FundingExecutionStore) PersistFundingExecution(ctx context.Context, execution work.FundingExecution, expectedVersion int64, kind string) (work.FundingExecution, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {

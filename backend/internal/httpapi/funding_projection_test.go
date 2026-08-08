@@ -15,6 +15,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/planning"
 	fundingpolicy "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/policy"
 )
@@ -85,8 +86,14 @@ func (store mismatchedFundingExecutionStore) GetFundingExecution(context.Context
 
 type fundingPositionFixture []portfolio.Position
 
-func (fixture fundingPositionFixture) ListContext(context.Context, portfolio.Mode, string, string) ([]portfolio.Position, error) {
-	return append([]portfolio.Position(nil), fixture...), nil
+func (fixture fundingPositionFixture) ListContext(_ context.Context, principalID string, _ portfolio.Mode, _, _ string) ([]portfolio.Position, error) {
+	result := make([]portfolio.Position, 0, len(fixture))
+	for _, item := range fixture {
+		if item.PrincipalID == "" || item.PrincipalID == principalID {
+			result = append(result, item)
+		}
+	}
+	return result, nil
 }
 
 func TestSharedFundingProjectionBindsCompositeFactsAndRevalidatesAuthority(t *testing.T) {
@@ -257,9 +264,10 @@ func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDur
 	}
 	executions := work.NewMemoryFundingExecutionStore()
 	positions := portfolio.NewProjection()
+	accountingSink := &fundingAccountingFixture{positions: positions}
 	projectionAPI, err := NewSharedFundingProjection(SharedFundingProjectionOptions{
 		Catalog: catalogSource, MarketData: marketSource, Accounts: accountSource, Reservations: reservationSource,
-		Executions: executions, Positions: positions, Admission: fundingpolicy.DefaultAdmission(), Now: func() time.Time { return now },
+		Executions: executions, Positions: positions, Accounting: accountingSink, Admission: fundingpolicy.DefaultAdmission(), Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -292,13 +300,20 @@ func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDur
 		t.Fatal(err)
 	}
 	for _, fill := range []portfolio.Fill{
-		{FillID: "fill-long", CommandID: "long-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-long", InstrumentID: "btc-a", Mode: portfolio.ModeTest, Side: portfolio.SideBuy, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
-		{FillID: "fill-short", CommandID: "short-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-short", InstrumentID: "btc-b", Mode: portfolio.ModeTest, Side: portfolio.SideSell, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
+		{PrincipalID: "browser-a", FillID: "fill-long", CommandID: "long-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-long", InstrumentID: "btc-a", Mode: portfolio.ModeTest, Side: portfolio.SideBuy, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
+		{PrincipalID: "browser-a", FillID: "fill-short", CommandID: "short-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-short", InstrumentID: "btc-b", Mode: portfolio.ModeTest, Side: portfolio.SideSell, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
 	} {
 		if _, _, err := positions.ApplyFill(context.Background(), fill); err != nil {
 			t.Fatal(err)
 		}
 	}
+	if _, err := sharedProjection.RefreshAccounting(context.Background(), "browser-a", "test"); err != nil {
+		t.Fatalf("normal accounting refresh error=%v", err)
+	}
+	if len(accountingSink.requests) != 2 {
+		t.Fatalf("normal accounting refresh requests=%+v", accountingSink.requests)
+	}
+	accountingSink.requests = nil
 
 	now = preview.ExpiresAt.Add(time.Second)
 	for query, fact := range fundingMarkets(now) {
@@ -307,6 +322,14 @@ func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDur
 	closeRequirements, err := projectionAPI.GetCloseReservationRequirements(context.Background(), "browser-a", "test", "lineage-a")
 	if err != nil || len(closeRequirements) != 2 {
 		t.Fatalf("GetCloseReservationRequirements()=%+v err=%v", closeRequirements, err)
+	}
+	if len(accountingSink.requests) != 2 {
+		t.Fatalf("authoritative accounting requests=%+v", accountingSink.requests)
+	}
+	for _, request := range accountingSink.requests {
+		if request.PrincipalID != "browser-a" || request.RequestID != "funding-accounting:execution-lineage-a" || request.ProductID != "funding" || request.Mode != "test" || request.LineageID != "lineage-a" || request.PositionID != "execution-lineage-a" || request.SettlementAsset != "USDT" || !request.Start.Equal(preview.ExpiresAt.Add(-30*time.Second)) || !request.End.Equal(now) {
+			t.Fatalf("accounting request=%+v", request)
+		}
 	}
 	for _, requirement := range closeRequirements {
 		if requirement.AccountID == "" || requirement.AccountID != requirement.NettingScope.AccountID || requirement.ProductID != "funding" || requirement.ReservationKind != reservations.KindClose || requirement.Mode != "test" || requirement.Quantity != "0.5" || requirement.Notional != "50" || requirement.Currency != "USDT" {
@@ -341,7 +364,7 @@ func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDur
 			}
 		})
 	}
-	currentPositions, err := positions.ListContext(context.Background(), portfolio.ModeTest, "", "funding")
+	currentPositions, err := positions.ListContext(context.Background(), "browser-a", portfolio.ModeTest, "", "funding")
 	if err != nil || len(currentPositions) != 2 {
 		t.Fatalf("positions=%+v err=%v", currentPositions, err)
 	}
@@ -376,6 +399,21 @@ func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDur
 			}
 		})
 	}
+}
+
+type fundingAccountingFixture struct {
+	positions *portfolio.Projection
+	requests  []accounting.IngestionRequest
+	err       error
+}
+
+func (fixture *fundingAccountingFixture) Ingest(ctx context.Context, request accounting.IngestionRequest) error {
+	fixture.requests = append(fixture.requests, request)
+	if fixture.err != nil {
+		return fixture.err
+	}
+	_, err := fixture.positions.ApplyMarkContext(ctx, request.PrincipalID, portfolio.Mode(request.Mode), request.AccountID, request.ProductID, request.LineageID, request.InstrumentID, "100", request.End)
+	return err
 }
 
 func fundingReservation(id, principal string, kind reservations.Kind, account, venue, instrument, notional string, now time.Time) reservations.Reservation {

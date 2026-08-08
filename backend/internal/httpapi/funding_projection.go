@@ -18,6 +18,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/calculation"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/planning"
 	fundingpolicy "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/policy"
@@ -43,7 +44,11 @@ type FundingReservationAuthority interface {
 }
 
 type FundingPositionAuthority interface {
-	ListContext(context.Context, portfolio.Mode, string, string) ([]portfolio.Position, error)
+	ListContext(context.Context, string, portfolio.Mode, string, string) ([]portfolio.Position, error)
+}
+
+type FundingAccountingIngestor interface {
+	Ingest(context.Context, accounting.IngestionRequest) error
 }
 
 type SharedFundingProjectionOptions struct {
@@ -53,6 +58,7 @@ type SharedFundingProjectionOptions struct {
 	Reservations FundingReservationAuthority
 	Executions   work.FundingExecutionStore
 	Positions    FundingPositionAuthority
+	Accounting   FundingAccountingIngestor
 	Admission    fundingpolicy.Admission
 	Now          func() time.Time
 }
@@ -123,6 +129,62 @@ func (projection *sharedFundingProjection) ListOpportunities(ctx context.Context
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].OpportunityID < items[j].OpportunityID })
 	return items, nil
+}
+
+// RefreshAccounting identifies every owned Funding scope and ingests
+// authoritative accounting wherever persisted exposure remains.
+func (projection *sharedFundingProjection) RefreshAccounting(ctx context.Context, principal, mode string) (FundingReadScopes, error) {
+	if principal == "" || mode != "test" || projection.options.Executions == nil || projection.options.Positions == nil || projection.options.Accounting == nil {
+		return nil, fmt.Errorf("Funding accounting refresh is unavailable")
+	}
+	executions, err := projection.options.Executions.ListFundingExecutions(ctx, principal, orders.Mode(mode))
+	if err != nil {
+		return nil, err
+	}
+	scopes := make(FundingReadScopes, 0)
+	positionsByAccount := make(map[string][]portfolio.Position)
+	for _, execution := range executions {
+		if execution.PrincipalID != principal || execution.Mode != orders.Mode(mode) {
+			return nil, fmt.Errorf("refresh authoritative Funding accounting: invalid execution scope")
+		}
+		for _, executionLeg := range execution.Legs {
+			scopes = append(scopes, FundingReadScope{LineageID: execution.LineageID, AccountID: executionLeg.Draft.AccountID, InstrumentID: executionLeg.Draft.InstrumentID})
+			positions, loaded := positionsByAccount[executionLeg.Draft.AccountID]
+			if !loaded {
+				positions, err = projection.options.Positions.ListContext(ctx, principal, portfolio.Mode(mode), executionLeg.Draft.AccountID, "funding")
+				if err != nil {
+					return nil, err
+				}
+				positionsByAccount[executionLeg.Draft.AccountID] = positions
+			}
+			position, ok := persistedFundingPosition(positions, mode, execution.LineageID, executionLeg.Draft)
+			if !ok {
+				if execution.State == work.FundingExecutionClosed {
+					return nil, fmt.Errorf("refresh authoritative Funding accounting: %w", ErrFundingPreviewStale)
+				}
+				continue
+			}
+			quantity, parseErr := decimal.NewFromString(position.Quantity)
+			if parseErr != nil {
+				return nil, fmt.Errorf("refresh authoritative Funding accounting: invalid position quantity")
+			}
+			if quantity.IsZero() {
+				continue
+			}
+			if position.SettlementCurrency == "" {
+				return nil, fmt.Errorf("refresh authoritative Funding accounting: %w", ErrFundingPreviewStale)
+			}
+			if err := projection.options.Accounting.Ingest(ctx, accounting.IngestionRequest{
+				PrincipalID: principal, RequestID: "funding-accounting:" + execution.ExecutionID,
+				ProductID: "funding", Mode: mode, LineageID: execution.LineageID, PositionID: execution.ExecutionID,
+				AccountID: executionLeg.Draft.AccountID, InstrumentID: executionLeg.Draft.InstrumentID, SettlementAsset: position.SettlementCurrency,
+				Start: execution.CreatedAt.UTC(), End: projection.options.Now().UTC(),
+			}); err != nil {
+				return nil, fmt.Errorf("refresh authoritative Funding accounting: %w", err)
+			}
+		}
+	}
+	return scopes, nil
 }
 
 func (projection *sharedFundingProjection) GetOpportunity(ctx context.Context, principal, mode, id string) (FundingOpportunity, error) {
@@ -307,9 +369,29 @@ func (projection *sharedFundingProjection) currentDurableCloseAuthority(ctx cont
 	if err != nil || execution.PrincipalID != principal || string(execution.Mode) != mode || execution.LineageID != lineageID || execution.State != work.FundingExecutionHedged || len(execution.Legs) != 2 {
 		return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
 	}
-	positions, err := projection.options.Positions.ListContext(ctx, portfolio.Mode(mode), "", "funding")
+	positions, err := projection.options.Positions.ListContext(ctx, principal, portfolio.Mode(mode), "", "funding")
 	if err != nil {
 		return fundingDurableCloseAuthority{}, err
+	}
+	if projection.options.Accounting != nil {
+		for _, executionLeg := range execution.Legs {
+			position, ok := currentFundingPosition(positions, mode, lineageID, executionLeg.Draft)
+			if !ok || position.SettlementCurrency == "" {
+				return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+			}
+			if err := projection.options.Accounting.Ingest(ctx, accounting.IngestionRequest{
+				PrincipalID: principal, RequestID: "funding-accounting:" + execution.ExecutionID,
+				ProductID: "funding", Mode: mode, LineageID: lineageID, PositionID: execution.ExecutionID,
+				AccountID: executionLeg.Draft.AccountID, InstrumentID: executionLeg.Draft.InstrumentID, SettlementAsset: position.SettlementCurrency,
+				Start: execution.CreatedAt.UTC(), End: projection.options.Now().UTC(),
+			}); err != nil {
+				return fundingDurableCloseAuthority{}, fmt.Errorf("refresh authoritative Funding accounting: %w", err)
+			}
+		}
+		positions, err = projection.options.Positions.ListContext(ctx, principal, portfolio.Mode(mode), "", "funding")
+		if err != nil {
+			return fundingDurableCloseAuthority{}, err
+		}
 	}
 	snapshot, err := projection.options.Catalog.Snapshot(ctx)
 	if err != nil {
@@ -358,8 +440,13 @@ func (projection *sharedFundingProjection) currentDurableCloseAuthority(ctx cont
 }
 
 func currentFundingPosition(positions []portfolio.Position, mode, lineageID string, draft work.FundingOrderDraft) (portfolio.Position, bool) {
+	position, ok := persistedFundingPosition(positions, mode, lineageID, draft)
+	return position, ok && position.Quantity != "0"
+}
+
+func persistedFundingPosition(positions []portfolio.Position, mode, lineageID string, draft work.FundingOrderDraft) (portfolio.Position, bool) {
 	for _, position := range positions {
-		if position.LineageID == lineageID && position.ProductID == "funding" && string(position.Mode) == mode && position.AccountID == draft.AccountID && position.InstrumentID == draft.InstrumentID && position.Quantity != "0" {
+		if position.LineageID == lineageID && position.ProductID == "funding" && string(position.Mode) == mode && position.AccountID == draft.AccountID && position.InstrumentID == draft.InstrumentID {
 			return position, true
 		}
 	}

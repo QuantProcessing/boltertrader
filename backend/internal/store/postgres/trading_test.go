@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
@@ -35,6 +36,20 @@ func TestTradingStoresImplementPlatformContracts(t *testing.T) {
 	}
 }
 
+func TestSameLedgerEntryUsesPostgresTimestampPrecision(t *testing.T) {
+	original := ledger.Entry{PrincipalID: "principal-a",
+		EntryID: "entry-a", Mode: ledger.ModeTest, ProductID: "funding", LineageID: "lineage-a",
+		AccountID: "account-a", InstrumentID: "BTC-USDT", Kind: ledger.KindFunding,
+		Amount: "1", Currency: "USDT", OccurredAt: time.Date(2026, 8, 8, 12, 0, 0, 789, time.FixedZone("test", 8*60*60)),
+	}
+	persisted := original
+	persisted.OccurredAt = original.OccurredAt.UTC().Truncate(time.Microsecond)
+
+	if !sameLedgerEntry(persisted, original) {
+		t.Fatalf("database timestamp %s conflicts with original %s", persisted.OccurredAt, original.OccurredAt)
+	}
+}
+
 func TestPortfolioStorePersistsFillAndPositionInOneTransaction(t *testing.T) {
 	source, err := os.ReadFile("trading.go")
 	if err != nil {
@@ -50,7 +65,7 @@ func TestPortfolioStorePersistsFillAndPositionInOneTransaction(t *testing.T) {
 		t.Fatal("portfolio fill transaction boundary missing")
 	}
 	applyFill := implementation[start : start+end]
-	for _, required := range []string{"BeginTx", "platform_portfolio_fills", "ON CONFLICT (fill_id) DO NOTHING", "platform_positions", "upsertPortfolioPosition", "tx.Commit"} {
+	for _, required := range []string{"BeginTx", "platform_portfolio_fills", "ON CONFLICT (principal_id,fill_id) DO NOTHING", "platform_positions", "upsertPortfolioPosition", "tx.Commit"} {
 		if !strings.Contains(applyFill, required) {
 			t.Errorf("portfolio fill transaction missing %q", required)
 		}
@@ -71,6 +86,31 @@ func TestPortfolioStorePersistsFillAndPositionInOneTransaction(t *testing.T) {
 		if !strings.Contains(mark, required) {
 			t.Errorf("portfolio mark transaction missing %q", required)
 		}
+	}
+}
+
+func TestLedgerFundingSupersessionIsAtomicAndUnrealizedIsMonotonic(t *testing.T) {
+	source, err := os.ReadFile("trading.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation := string(source)
+	start := strings.Index(implementation, "func (store *LedgerStore) SupersedeFunding")
+	if start < 0 {
+		t.Fatal("ledger funding supersession implementation missing")
+	}
+	end := strings.Index(implementation[start:], "func (store *LedgerStore) Entries")
+	if end < 0 {
+		t.Fatal("ledger funding supersession transaction boundary missing")
+	}
+	supersession := implementation[start : start+end]
+	for _, required := range []string{"BeginTx", "FOR UPDATE", "DELETE FROM platform_ledger_entries", "INSERT INTO platform_ledger_entries", "tx.Commit"} {
+		if !strings.Contains(supersession, required) {
+			t.Errorf("funding supersession transaction missing %q", required)
+		}
+	}
+	if !strings.Contains(implementation, "WHERE platform_unrealized_pnl.as_of < EXCLUDED.as_of") {
+		t.Error("unrealized persistence can overwrite a newer observation")
 	}
 }
 

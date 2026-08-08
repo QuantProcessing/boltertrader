@@ -91,6 +91,27 @@ test("degraded Live workspace shows authority failures without submitting an ord
   expect(platform.writes.filter((write) => write.path === "/products/manual/commands")).toHaveLength(0);
 });
 
+test("Manual resting order cancel and safe close preserve durable identity", async ({ page }) => {
+  const platform = await installFixturePlatform(page, { authenticated: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Manual" }).click();
+  await expect(page.getByRole("heading", { name: "Manual Trading" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByText("Manual order canceled.")).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.getByText("Manual close accepted.")).toBeVisible();
+
+  const commands = platform.writes.filter((write) => write.path === "/products/manual/commands");
+  expect(commands).toHaveLength(2);
+  expect(commands[0].body).toMatchObject({ action: "cancel", lineageId: "manual-lineage", orderId: "manual-command" });
+  expect(commands[1].body).toMatchObject({ action: "close", lineageId: "manual-lineage", orderId: "" });
+  for (const command of commands) {
+    expect(command.headers["x-csrf-token"]).toBe("csrf-fixture");
+    expect(command.headers["idempotency-key"]).toBeTruthy();
+  }
+});
+
 test("realtime resnapshot signal reloads authoritative workspace before resuming", async ({ page }) => {
   const platform = await installFixturePlatform(page, { authenticated: true });
   const sessionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/auth/session");

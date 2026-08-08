@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
 )
@@ -175,6 +177,46 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	}
 }
 
+func TestConfiguredGatewayAdapterFetchesAuthoritativeAccountingFacts(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	start := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	end := start.Add(8 * time.Hour)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/v1/mark-price":
+			if r.URL.Query().Get("account_id") != "account-a" || r.URL.Query().Get("instrument_id") != "BTC-USDT" {
+				t.Errorf("mark query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"account_id":"account-a","instrument_id":"BTC-USDT","price":"110.5","observed_at":"2026-08-05T07:59:59Z"}`))
+		case "/v1/funding-payments":
+			query := r.URL.Query()
+			if query.Get("account_id") != "account-a" || query.Get("instrument_id") != "BTC-USDT" || query.Get("settlement_asset") != "USDT" || query.Get("pagination.limit") != "500" || query.Get("pagination.cursor") != "" || query.Get("start") != start.Format(time.RFC3339Nano) || query.Get("end") != end.Format(time.RFC3339Nano) {
+				t.Errorf("funding query=%s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"items":[{"fact_id":"funding-1","account_id":"account-a","instrument_id":"BTC-USDT","venue":"binance","venue_environment":"demo","product":"perp","settlement_asset":"USDT","amount":"-1.25","effective_at":"2026-08-05T04:00:00Z","revision":9}],"scope":{"account_id":"account-a","instrument_id":"BTC-USDT","all_instruments":false,"settlement_asset":"USDT","start":"2026-08-05T00:00:00Z","end":"2026-08-05T08:00:00Z"},"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","pagination_traversal":{"has_more_known":true,"has_more":false},"start":"2026-08-05T00:00:00Z","end":"2026-08-05T08:00:00Z","page":{},"watermark":{"revision":9,"observed_at":"2026-08-05T08:00:00Z","complete_through":"2026-08-05T08:00:00Z","verified":true},"status":"complete","as_of":"2026-08-05T08:00:00Z","complete_through":"2026-08-05T08:00:00Z","revision":9}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark, err := adapter.MarkPrice(context.Background(), "account-a", "BTC-USDT")
+	if err != nil || mark.Price != "110.5" || !mark.ObservedAt.Equal(end.Add(-time.Second)) {
+		t.Fatalf("mark=%+v err=%v", mark, err)
+	}
+	page, err := adapter.FundingPayments(context.Background(), accounting.FundingPaymentQuery{AccountID: "account-a", InstrumentID: "BTC-USDT", SettlementAsset: "USDT", Start: start, End: end, Limit: 500})
+	if err != nil || len(page.Items) != 1 || page.Items[0].Amount != "-1.25" || page.Status != accounting.CompletenessComplete || !page.Verified || page.Revision != 9 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	var _ accounting.AuthoritativeSource = adapter
+}
+
 func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewayAccess(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	requests := make([]string, 0, 1)
@@ -281,6 +323,70 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	}
 	if requests[0].DesiredStateRevision != 11 || requests[0].RuntimeGeneration != 4 || requests[0].CredentialVersion != 3 {
 		t.Fatalf("Manual Gateway request lost account fence: %+v", requests[0])
+	}
+}
+
+func TestConfiguredGatewayAdapterCancelsManualOrderByGatewayIdentity(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"items":[],"next_cursor":""}`))
+			return
+		}
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/orders/018f0000-0000-7000-8000-000000000002" || r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("cancel request=%s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"command_manual_1","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"canceled","resource_version":2}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.Cancel(context.Background(), manual.GatewayCancelRequest{
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:demo:spot:BTC-USDT", Mode: orders.ModeTest,
+		GatewayOrderID: "018f0000-0000-7000-8000-000000000002",
+	})
+	if err != nil || result.State != manual.GatewayStateCanceled || result.Handoff.Outcome != orders.HandoffAccepted || result.Handoff.Evidence.ResourceVersion != 2 {
+		t.Fatalf("Cancel() result=%+v err=%v", result, err)
+	}
+}
+
+func TestConfiguredGatewayAdapterDrainsCanceledOrderFillPages(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"command_id":"command_manual_1","gateway_order_id":"gateway-order","client_order_id":"42","state":"canceled","resource_version":3}`))
+		case http.MethodGet:
+			cursors = append(cursors, r.URL.Query().Get("pagination.cursor"))
+			if len(cursors) == 1 {
+				_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","fill":{"fill_id":"fill-1","side":"buy","price":"100","quantity":"1","fee":"0.1","fee_asset":"USDT","time":"2026-08-05T00:00:00Z"}}],"next_cursor":"page-2"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","fill":{"fill_id":"fill-2","side":"buy","price":"101","quantity":"0.5","fee":"0.05","fee_asset":"USDT","time":"2026-08-05T00:00:01Z"}}],"next_cursor":""}`))
+		default:
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := adapter.Cancel(context.Background(), manual.GatewayCancelRequest{
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "BTC-USDT", Mode: orders.ModeTest, GatewayOrderID: "gateway-order",
+	})
+	if err != nil || result.State != manual.GatewayStateCanceled || len(result.Fills) != 2 || result.Fills[0].FillID != "fill-1" || result.Fills[1].FillID != "fill-2" {
+		t.Fatalf("Cancel() result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(cursors, []string{"", "page-2"}) {
+		t.Fatalf("fill cursors=%v", cursors)
 	}
 }
 

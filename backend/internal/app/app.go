@@ -63,6 +63,7 @@ type Dependencies struct {
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
 	FundingGateway        work.CommandGateway
+	AccountingSource      accounting.AuthoritativeSource
 	ReconciliationGateway orders.ReconciliationGateway
 }
 
@@ -71,7 +72,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, AccountingSource: adapter, ReconciliationGateway: adapter})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -267,10 +268,21 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return nil, err
 	}
 	fundingPlanProducer.WithAdmission(fundingAdmission).WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))
+	var accountingIngestor *accounting.Ingestor
+	if dependencies.AccountingSource != nil {
+		accountingObserver, observerErr := newAccountingFactObserver(activityLog, auditService)
+		if observerErr != nil {
+			return nil, observerErr
+		}
+		accountingIngestor, err = accounting.NewIngestor(dependencies.AccountingSource, accounting.NewPlatformAdapter(ledgerService, portfolioProjection), accountingObserver)
+		if err != nil {
+			return nil, err
+		}
+	}
 	fundingProjection, err := httpapi.NewSharedFundingProjection(httpapi.SharedFundingProjectionOptions{
 		Catalog: catalogProjection, MarketData: marketService, Accounts: accountService,
 		Reservations: reservationStore, Executions: fundingExecutionStore, Positions: portfolioProjection,
-		Admission: fundingAdmission, Now: now,
+		Accounting: accountingIngestor, Admission: fundingAdmission, Now: now,
 	})
 	if err != nil {
 		return nil, err
@@ -309,7 +321,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		Accounts:    &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
 		Audit:       &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
 		PublicData:  publicAPI,
-		Trading:     &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Trading:     &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog, FundingAccounting: fundingProjection.(httpapi.FundingAccountingRefresher)},
 		Funding:     &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
 		Projections: &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
 	})

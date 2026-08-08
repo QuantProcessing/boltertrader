@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	ErrEntryConflict    = errors.New("ledger entry conflict")
-	ErrCurrencyMismatch = errors.New("ledger PnL currency mismatch")
+	ErrEntryConflict           = errors.New("ledger entry conflict")
+	ErrCurrencyMismatch        = errors.New("ledger PnL currency mismatch")
+	ErrSupersessionUnsupported = errors.New("ledger funding supersession unsupported")
 )
 
 type Mode string
@@ -34,6 +35,7 @@ const (
 )
 
 type Entry struct {
+	PrincipalID  string    `json:"-"`
 	EntryID      string    `json:"entryId"`
 	Mode         Mode      `json:"mode"`
 	LineageID    string    `json:"lineageId"`
@@ -47,18 +49,20 @@ type Entry struct {
 }
 
 type Unrealized struct {
-	LineageID, ProductID, AccountID, InstrumentID string
-	Mode                                          Mode
-	Amount, Currency                              string
-	AsOf                                          time.Time
+	PrincipalID, LineageID, ProductID, AccountID, InstrumentID string
+	Mode                                                       Mode
+	Amount, Currency                                           string
+	AsOf                                                       time.Time
 }
 
 type Query struct {
+	PrincipalID                                   string
 	Mode                                          Mode
 	ProductID, LineageID, AccountID, InstrumentID string
 }
 
 type PnLSnapshot struct {
+	PrincipalID   string    `json:"-"`
 	PnLSnapshotID string    `json:"pnlSnapshotId"`
 	LineageID     string    `json:"lineageId"`
 	ProductID     string    `json:"productId"`
@@ -99,9 +103,25 @@ func (service *Service) Record(ctx context.Context, entry Entry) error {
 	return service.store.Append(ctx, entry)
 }
 
+func (service *Service) SupersedeFunding(ctx context.Context, priorEntryID string, replacement Entry) error {
+	if priorEntryID == "" || replacement.EntryID == priorEntryID || replacement.Kind != KindFunding {
+		return fmt.Errorf("invalid funding supersession")
+	}
+	if err := validateEntry(replacement); err != nil {
+		return err
+	}
+	store, ok := service.store.(interface {
+		SupersedeFunding(context.Context, string, Entry) error
+	})
+	if !ok {
+		return ErrSupersessionUnsupported
+	}
+	return store.SupersedeFunding(ctx, priorEntryID, replacement)
+}
+
 func (service *Service) SetUnrealized(ctx context.Context, value Unrealized) error {
 	amount, err := decimal.NewFromString(value.Amount)
-	if err != nil || (value.Mode != ModeTest && value.Mode != ModeLive) || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.Currency == "" || value.AsOf.IsZero() {
+	if err != nil || value.PrincipalID == "" || (value.Mode != ModeTest && value.Mode != ModeLive) || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.Currency == "" || value.AsOf.IsZero() {
 		return fmt.Errorf("invalid unrealized attribution")
 	}
 	value.Amount = amount.String()
@@ -109,7 +129,7 @@ func (service *Service) SetUnrealized(ctx context.Context, value Unrealized) err
 }
 
 func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, error) {
-	if query.Mode != ModeTest && query.Mode != ModeLive {
+	if query.PrincipalID == "" || (query.Mode != ModeTest && query.Mode != ModeLive) {
 		return PnLSnapshot{}, fmt.Errorf("invalid mode")
 	}
 	if query.ProductID == "" || query.LineageID == "" || query.AccountID == "" || query.InstrumentID == "" {
@@ -153,6 +173,7 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 	}
 	return PnLSnapshot{
 		PnLSnapshotID: fmt.Sprintf("pnl_%016x", service.next.Add(1)),
+		PrincipalID:   query.PrincipalID,
 		LineageID:     query.LineageID, ProductID: query.ProductID, AccountID: query.AccountID, InstrumentID: query.InstrumentID,
 		RealizedPnL: realized.String(), UnrealizedPnL: unrealized.String(), Fees: fees.String(), Funding: funding.String(),
 		NetPnL: realized.Add(unrealized).Add(funding).Sub(fees).String(), AsOf: asOf,
@@ -160,11 +181,14 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 }
 
 func (service *Service) List(ctx context.Context, query Query) ([]Entry, error) {
+	if query.PrincipalID == "" || (query.Mode != ModeTest && query.Mode != ModeLive) {
+		return nil, fmt.Errorf("invalid ledger query scope")
+	}
 	return service.store.Entries(ctx, query)
 }
 
 func validateEntry(entry Entry) error {
-	if entry.EntryID == "" || (entry.Mode != ModeTest && entry.Mode != ModeLive) || entry.LineageID == "" || entry.ProductID == "" || entry.AccountID == "" || entry.InstrumentID == "" || entry.Currency == "" || entry.OccurredAt.IsZero() {
+	if entry.PrincipalID == "" || entry.EntryID == "" || (entry.Mode != ModeTest && entry.Mode != ModeLive) || entry.LineageID == "" || entry.ProductID == "" || entry.AccountID == "" || entry.InstrumentID == "" || entry.Currency == "" || entry.OccurredAt.IsZero() {
 		return fmt.Errorf("ledger attribution is incomplete")
 	}
 	switch entry.Kind {
@@ -195,13 +219,40 @@ func NewMemoryStore() *MemoryStore {
 func (store *MemoryStore) Append(_ context.Context, entry Entry) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	if existing, ok := store.entries[entry.EntryID]; ok {
+	key := ledgerKey(entry.PrincipalID, entry.EntryID)
+	if existing, ok := store.entries[key]; ok {
 		if existing != entry {
 			return ErrEntryConflict
 		}
 		return nil
 	}
-	store.entries[entry.EntryID] = entry
+	store.entries[key] = entry
+	return nil
+}
+
+func (store *MemoryStore) SupersedeFunding(_ context.Context, priorEntryID string, replacement Entry) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	replacementKey := ledgerKey(replacement.PrincipalID, replacement.EntryID)
+	priorKey := ledgerKey(replacement.PrincipalID, priorEntryID)
+	if existing, ok := store.entries[replacementKey]; ok {
+		if existing != replacement {
+			return ErrEntryConflict
+		}
+		if prior, restored := store.entries[priorKey]; restored {
+			if !sameFundingScope(prior, replacement) {
+				return ErrEntryConflict
+			}
+			delete(store.entries, priorKey)
+		}
+		return nil
+	}
+	prior, ok := store.entries[priorKey]
+	if !ok || !sameFundingScope(prior, replacement) {
+		return ErrEntryConflict
+	}
+	delete(store.entries, priorKey)
+	store.entries[replacementKey] = replacement
 	return nil
 }
 
@@ -210,7 +261,7 @@ func (store *MemoryStore) Entries(_ context.Context, query Query) ([]Entry, erro
 	defer store.mu.Unlock()
 	result := make([]Entry, 0)
 	for _, entry := range store.entries {
-		if entry.Mode == query.Mode && matches(query, entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID) {
+		if entry.PrincipalID == query.PrincipalID && entry.Mode == query.Mode && matches(query, entry.ProductID, entry.LineageID, entry.AccountID, entry.InstrumentID) {
 			result = append(result, entry)
 		}
 	}
@@ -220,14 +271,18 @@ func (store *MemoryStore) Entries(_ context.Context, query Query) ([]Entry, erro
 func (store *MemoryStore) SetUnrealized(_ context.Context, value Unrealized) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.unrealized[ledgerKey(string(value.Mode), value.ProductID, value.LineageID, value.AccountID, value.InstrumentID)] = value
+	key := ledgerKey(value.PrincipalID, string(value.Mode), value.ProductID, value.LineageID, value.AccountID, value.InstrumentID)
+	if existing, ok := store.unrealized[key]; ok && !existing.AsOf.Before(value.AsOf) {
+		return nil
+	}
+	store.unrealized[key] = value
 	return nil
 }
 
 func (store *MemoryStore) Unrealized(_ context.Context, query Query) (decimal.Decimal, string, time.Time, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	value, ok := store.unrealized[ledgerKey(string(query.Mode), query.ProductID, query.LineageID, query.AccountID, query.InstrumentID)]
+	value, ok := store.unrealized[ledgerKey(query.PrincipalID, string(query.Mode), query.ProductID, query.LineageID, query.AccountID, query.InstrumentID)]
 	if !ok {
 		return decimal.Zero, "", time.Time{}, nil
 	}
@@ -241,3 +296,8 @@ func matches(query Query, product, lineage, account, instrument string) bool {
 }
 
 func ledgerKey(parts ...string) string { return strings.Join(parts, "\x00") }
+
+func sameFundingScope(left, right Entry) bool {
+	return left.Kind == KindFunding && right.Kind == KindFunding && left.Mode == right.Mode && left.ProductID == right.ProductID &&
+		left.PrincipalID == right.PrincipalID && left.LineageID == right.LineageID && left.AccountID == right.AccountID && left.InstrumentID == right.InstrumentID && left.Currency == right.Currency
+}
