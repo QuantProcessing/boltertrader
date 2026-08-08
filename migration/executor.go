@@ -262,6 +262,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		args = append(args, "--file", "-")
 		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
 	}
+	psqlInput := func(service, script string) Command {
+		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--file", "-"}, Stdin: []byte(script)}
+	}
 	switch request.Operation {
 	case Backup:
 		apply.ArtifactPath = request.ArtifactPath

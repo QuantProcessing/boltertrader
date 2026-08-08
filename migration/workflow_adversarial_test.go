@@ -132,22 +132,16 @@ func TestWorkflowDoesNotMutateSourceTree(t *testing.T) {
 	if err := os.WriteFile(sentinelPath, []byte("frozen source"), 0o444); err != nil {
 		t.Fatal(err)
 	}
-	manifestPath := adversarialManifestCopy(t, func(manifest map[string]any) {
+	manifestPath := adversarialRawManifestCopy(t, func(manifest map[string]any) {
 		manifest["sourceRepo"] = sourceDir
 	})
-	artifactPath := adversarialArtifact(t, "backup.dump", "backup")
 	beforeInfo, err := os.Stat(sentinelPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	request := adversarialWithProof(t, manifestPath, Request{
-		Operation:    Backup,
-		ID:           "backup-001",
-		ArtifactPath: artifactPath,
-	})
-	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "identity is not frozen") {
-		t.Fatalf("tampered source identity error = %v", err)
+	if _, err := Apply(manifestPath, adversarialImportRequest(t), ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "frozen") {
+		t.Fatalf("source repository tamper error = %v, want frozen-identity rejection", err)
 	}
 	afterInfo, err := os.Stat(sentinelPath)
 	if err != nil {
@@ -171,6 +165,15 @@ func TestWorkflowDoesNotMutateSourceTree(t *testing.T) {
 func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 	t.Helper()
 	stubGitProvenance(t)
+	path := adversarialRawManifestCopy(t, mutate)
+	if _, err := Apply(path, adversarialImportRequest(t), ApplyOptions{}); err != nil {
+		t.Fatalf("record import fixture: %v", err)
+	}
+	return path
+}
+
+func adversarialRawManifestCopy(t *testing.T, mutate func(map[string]any)) string {
+	t.Helper()
 	var manifest map[string]any
 	if err := json.Unmarshal(readManifest(t), &manifest); err != nil {
 		t.Fatal(err)
@@ -186,9 +189,11 @@ func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if mutate != nil {
-		return path
-	}
+	return path
+}
+
+func adversarialImportRequest(t *testing.T) Request {
+	t.Helper()
 	const importCommit = "0123456789abcdef0123456789abcdef01234567"
 	proofPath := adversarialArtifact(t, "import-proof.json", `{
 		"schemaVersion": 1,
@@ -198,14 +203,11 @@ func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 		"subject": "`+importCommit+`",
 		"checks": ["source-commit-matches", "source-tree-matches", "subtree-import-matches"]
 	}`)
-	if _, err := applyExecuted(path, Request{
+	return Request{
 		Operation: RecordImport,
 		ID:        importCommit,
 		ProofPath: proofPath,
-	}, ApplyOptions{}); err != nil {
-		t.Fatalf("record import fixture: %v", err)
 	}
-	return path
 }
 
 func adversarialArtifact(t *testing.T, name, content string) string {

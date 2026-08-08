@@ -3,6 +3,8 @@ package migration
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -95,5 +97,52 @@ func TestCrossLaneRejectsTamperedFrozenProvenance(t *testing.T) {
 				t.Fatal("ValidateBaseline mutated the supplied manifest")
 			}
 		})
+	}
+}
+
+func TestCrossLaneRejectsGitShapedImportWithFabricatedProof(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestPath, readManifest(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := withProof(t, manifestPath, Request{
+		Operation: RecordImport,
+		ID:        "0123456789abcdef0123456789abcdef01234567",
+	})
+
+	if _, err := Apply(manifestPath, request, ApplyOptions{}); err == nil {
+		t.Fatal("Apply accepted a Git-shaped import ID with caller-authored proof")
+	}
+	after, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("rejected fabricated import proof changed the manifest")
+	}
+}
+
+func TestCrossLaneRejectsBackfillOutsideRepository(t *testing.T) {
+	manifest, err := DecodeManifest(readManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "attacker-controlled.sql")
+	if err := os.WriteFile(scriptPath, []byte("select 1;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, _, err = executionPlan(manifest, ExecutionRequest{
+		Operation:     Backfill,
+		EvidenceDir:   t.TempDir(),
+		BackfillPath:  scriptPath,
+		TargetService: "bolter-target",
+	})
+	if err == nil {
+		t.Fatal("executionPlan accepted a backfill outside the frozen target repository")
 	}
 }
