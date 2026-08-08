@@ -317,6 +317,44 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 	}
 }
 
+func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	artifactPath := filepath.Join(t.TempDir(), "final.dump")
+	evidenceDir := t.TempDir()
+	request := ExecutionRequest{
+		Operation: FinalDelta, ManifestPath: manifestPath, EvidenceDir: evidenceDir, ArtifactPath: artifactPath,
+		SourceService: "source", SourceDatabase: "source_db",
+		TargetService: "target", TargetDatabase: "target_db",
+		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres",
+	}
+	var calls int
+	first, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		calls++
+		if command.Name == "pg_dump" {
+			if err := os.WriteFile(artifactPath, []byte("custom final snapshot"), 0o600); err != nil {
+				return CommandResult{}, err
+			}
+		}
+		if command.ExpectedOutput != "" {
+			return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
+		}
+		return CommandResult{Output: []byte("ok")}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 6 || first.EvidencePath == "" || readWorkflowManifest(t, manifestPath).Workflow.Phase != PhaseDeltaCaptured {
+		t.Fatalf("final snapshot result=%+v calls=%d", first, calls)
+	}
+	second, err := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		t.Fatal("completed final snapshot replay reran a command")
+		return CommandResult{}, nil
+	}})
+	if err != nil || !second.Replayed || second.EvidencePath != first.EvidencePath {
+		t.Fatalf("replay=%+v err=%v first=%+v", second, err, first)
+	}
+}
+
 func containsArg(values []string, want string) bool { return containsString(values, want) }
 
 func containsString(values []string, want string) bool {
