@@ -269,6 +269,29 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	}
 }
 
+func TestRollbackPlanDoesNotClaimEffectiveConnectVerification(t *testing.T) {
+	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
+		Operation: Rollback, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
+		SourceDatabase: "funding_source", TargetDatabase: "bolter_target", SourceWriterRole: "funding_writer", TargetWriterRole: "bolter_writer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 4 || !strings.Contains(string(commands[1].Stdin), "GRANT CONNECT") {
+		t.Fatalf("rollback no longer executes the role-scoped connect grant: %+v", commands)
+	}
+	for _, check := range checks {
+		if strings.Contains(check, "connect") {
+			t.Fatalf("rollback overclaims effective CONNECT verification: %v", checks)
+		}
+	}
+	for _, want := range []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"} {
+		if !containsString(checks, want) {
+			t.Fatalf("rollback checks %v missing %q", checks, want)
+		}
+	}
+}
+
 func TestRestorePlanUsesExplicitMaintenanceConnection(t *testing.T) {
 	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Restore, EvidenceDir: t.TempDir(), ArtifactPath: "backup.dump",
