@@ -34,14 +34,12 @@ func TestWorkflowRejectsTamperedReplayWithoutMutation(t *testing.T) {
 func TestWorkflowCompletedRestoreReplayIsIdempotent(t *testing.T) {
 	manifestPath := adversarialManifestCopy(t, nil)
 	artifactPath := adversarialArtifact(t, "backup.dump", "backup")
-	proofPath := adversarialArtifact(t, "restore-proof.json", `{"status":"pass"}`)
 	backup := adversarialWithProof(t, manifestPath, Request{Operation: Backup, ID: "backup-001", ArtifactPath: artifactPath})
 	restore := adversarialWithProof(t, manifestPath, Request{
 		Operation:    Restore,
 		ArtifactPath: artifactPath,
 		Verifier:     "adversarial-test",
 	})
-	restore.ProofPath = proofPath
 	if _, err := Apply(manifestPath, backup, ApplyOptions{}); err != nil {
 		t.Fatalf("backup: %v", err)
 	}
