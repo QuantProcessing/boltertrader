@@ -136,7 +136,10 @@ func Apply(manifestPath string, request Request, options ApplyOptions) (Result, 
 		return Result{}, err
 	}
 	defer lock.Release()
+	return applyLocked(manifestPath, request, options)
+}
 
+func applyLocked(manifestPath string, request Request, options ApplyOptions) (Result, error) {
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return Result{}, fmt.Errorf("read migration manifest: %w", err)
@@ -213,7 +216,12 @@ func Apply(manifestPath string, request Request, options ApplyOptions) (Result, 
 
 func applyExecuted(manifestPath string, request Request, options ApplyOptions) (Result, error) {
 	options.execution = &executionCapability{}
-	return Apply(manifestPath, request, options)
+	lock, err := AcquireLock(manifestPath)
+	if err != nil {
+		return Result{}, err
+	}
+	defer lock.Release()
+	return applyLocked(manifestPath, request, options)
 }
 
 func operationRequiresExecution(operation Operation) bool {
