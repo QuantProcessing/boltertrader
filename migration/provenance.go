@@ -16,6 +16,8 @@ var frozenContractHashes = map[string]string{
 	"migration-contract-boltertrader-product-platform-upgrade.md":     "52be2f1ff3e9034749864620863b622bc2e8843ce13679922275a08c739fb600",
 }
 
+var validateGitProvenance = verifyGitProvenance
+
 func matchesFrozenBaseline(manifest Manifest) bool {
 	if manifest.SchemaVersion != 1 ||
 		manifest.MigrationID != "boltertrader-product-platform-upgrade" ||

@@ -378,12 +378,20 @@ func preparedForActivation(t *testing.T) string {
 
 func copyManifest(t *testing.T) string {
 	t.Helper()
+	stubGitProvenance(t)
 	data := readManifest(t)
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func stubGitProvenance(t *testing.T) {
+	t.Helper()
+	prior := validateGitProvenance
+	validateGitProvenance = func(Manifest, string) error { return nil }
+	t.Cleanup(func() { validateGitProvenance = prior })
 }
 
 func writeArtifact(t *testing.T, name, content string) string {

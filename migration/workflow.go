@@ -205,6 +205,11 @@ func Apply(manifestPath string, request Request, options ApplyOptions) (Result, 
 }
 
 func requestDigests(manifest Manifest, request Request) (string, string, error) {
+	if request.Operation == RecordImport {
+		if err := validateGitProvenance(manifest, request.ID); err != nil {
+			return "", "", err
+		}
+	}
 	artifactSHA, err := digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore)
 	if err != nil {
 		return "", "", err
