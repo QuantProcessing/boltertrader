@@ -121,8 +121,8 @@ func validateActivationOrder(manifest Manifest) []string {
 	return validateTimeOrder([]timeField{
 		{"sourceQuiesceAt", &manifest.SourceQuiesceAt},
 		{"restoreVerifiedAt", manifest.RestoreVerifiedAt},
-		{"finalDeltaAt", manifest.FinalDeltaAt},
 		{"oneWriterFenceAt", manifest.OneWriterFenceAt},
+		{"finalDeltaAt", manifest.FinalDeltaAt},
 		{"validationAt", manifest.ValidationAt},
 	})
 }
