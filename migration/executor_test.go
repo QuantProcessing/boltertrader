@@ -261,6 +261,71 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 			t.Fatal("controlled psql input was not digest-bound")
 		}
 	}
+	if commands[0].ExpectedOutput != "" {
+		t.Fatal("fence incorrectly requires writer sessions to be drained before termination")
+	}
+	if strings.Contains(string(commands[2].Stdin), "has_database_privilege") || commands[2].ExpectedOutput != "false|0" {
+		t.Fatalf("fence verifies an ineffective CONNECT assertion: %+v", commands[2])
+	}
+}
+
+func TestRestorePlanUsesExplicitMaintenanceConnection(t *testing.T) {
+	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
+		Operation: Restore, EvidenceDir: t.TempDir(), ArtifactPath: "backup.dump",
+		TargetService: "target", TargetDatabase: "target_db",
+		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 3 || commands[0].Name != "psql" {
+		t.Fatalf("commands = %+v", commands)
+	}
+	args := strings.Join(commands[0].Args, " ")
+	if !strings.Contains(args, "service=target_admin dbname=postgres") || strings.Contains(args, "service=target dbname=target_db") {
+		t.Fatalf("restore does not use explicit maintenance connection: %+v", commands[0])
+	}
+}
+
+func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *testing.T) {
+	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
+		Operation: FinalDelta, EvidenceDir: t.TempDir(), ArtifactPath: "final.dump",
+		SourceService: "source", SourceDatabase: "source_db",
+		TargetService: "target", TargetDatabase: "target_db",
+		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 6 {
+		t.Fatalf("commands = %+v", commands)
+	}
+	var dumps int
+	for _, command := range commands {
+		if command.Name == "pg_dump" {
+			dumps++
+		}
+	}
+	if dumps != 1 || commands[2].Name != "pg_restore" || !containsArg(commands[2].Args, "--list") {
+		t.Fatalf("final snapshot is not captured once and archive-verified: %+v", commands)
+	}
+	if !strings.Contains(strings.Join(commands[3].Args, " "), "service=target_admin dbname=postgres") || !strings.Contains(string(commands[3].Stdin), "DROP DATABASE") {
+		t.Fatalf("final snapshot does not recreate through maintenance connection: %+v", commands[3])
+	}
+	if commands[4].Name != "pg_restore" || commands[5].ExpectedOutput != "true" || !containsString(checks, "restored-schema-nonempty") {
+		t.Fatalf("final snapshot is not applied and verified: commands=%+v checks=%v", commands, checks)
+	}
+}
+
+func containsArg(values []string, want string) bool { return containsString(values, want) }
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func executorManifest(t *testing.T) string {
