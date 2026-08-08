@@ -77,6 +77,26 @@ func TestExecuteFailureLeavesManifestAndEvidenceUnchanged(t *testing.T) {
 	}
 }
 
+func TestApplyRejectsCallerProofForExecutableOperations(t *testing.T) {
+	for _, operation := range []Operation{Backup, Fence} {
+		t.Run(string(operation), func(t *testing.T) {
+			manifestPath := copyManifest(t)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Apply(manifestPath, Request{Operation: operation, ProofPath: "fabricated.json"}, ApplyOptions{})
+			if err == nil || !strings.Contains(err.Error(), "requires canonical execution") {
+				t.Fatalf("error = %v", err)
+			}
+			after, readErr := os.ReadFile(manifestPath)
+			if readErr != nil || string(after) != string(before) {
+				t.Fatalf("direct Apply changed manifest: err=%v", readErr)
+			}
+		})
+	}
+}
+
 func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
 	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")

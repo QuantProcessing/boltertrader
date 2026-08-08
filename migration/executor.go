@@ -127,7 +127,7 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	applyRequest.ProofPath = evidencePath
-	result, err := Apply(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now})
+	result, err := applyExecuted(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now})
 	if err != nil {
 		_ = os.Remove(evidencePath)
 		return ExecutionResult{}, err
