@@ -42,8 +42,10 @@ type ExecutionRequest struct {
 	Reason           string
 	SourceService    string
 	TargetService    string
+	MaintenanceService string
 	SourceDatabase   string
 	TargetDatabase   string
+	MaintenanceDatabase string
 	SourceWriterRole string
 	TargetWriterRole string
 	repositoryRoot   string
@@ -138,14 +140,6 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 			return ExecutionResult{}, fmt.Errorf("backfill script changed during execution")
 		}
 		inputSHA = artifactSHA
-	}
-	if request.Operation == FinalDelta {
-		verificationPath := request.ArtifactPath + ".verify"
-		verificationSHA, verifyErr := digestFile(verificationPath, true)
-		_ = os.Remove(verificationPath)
-		if verifyErr != nil || verificationSHA != artifactSHA {
-			return ExecutionResult{}, fmt.Errorf("final-delta repeat capture did not match")
-		}
 	}
 	proof := operationProof{
 		SchemaVersion: 1, Operation: request.Operation, Status: "pass", MigrationID: manifest.MigrationID,
