@@ -210,11 +210,24 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	if targetErr != nil && (request.Operation == Restore || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
 		return nil, Request{}, nil, "", targetErr
 	}
-	psql := func(service, query string) Command {
-		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--tuples-only", "--no-align", "--command", query}}
+	psql := func(service, database, query string) Command {
+		connection := "service=" + service
+		if database != "" {
+			connection += " dbname=" + database
+		}
+		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align", "--command", query}}
 	}
-	psqlInput := func(service, script string) Command {
-		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--file", "-"}, Stdin: []byte(script)}
+	psqlInput := func(service, database, script string, variables ...string) Command {
+		connection := "service=" + service
+		if database != "" {
+			connection += " dbname=" + database
+		}
+		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection}
+		for _, variable := range variables {
+			args = append(args, "--set", variable)
+		}
+		args = append(args, "--file", "-")
+		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
 	}
 	switch request.Operation {
 	case Backup:
@@ -224,27 +237,48 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
 		}, apply, []string{"dump-created", "dump-format-readable"}, "", nil
 	case Restore:
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
+		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
+		verify.ExpectedOutput = "true"
 		return []Command{
-			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target, request.ArtifactPath}},
-			psql(target, "SELECT current_database()"),
-		}, apply, []string{"restore-command-succeeded", "target-query-succeeded"}, "", nil
+			psqlInput(target, "", `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+			verify,
+		}, apply, []string{"clean-target-created", "restored-schema-nonempty"}, "", nil
 	case FinalDelta:
 		apply.ArtifactPath = request.ArtifactPath
 		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
-		check := psql(source, "SHOW transaction_read_only")
+		check := psql(source, "", "SHOW transaction_read_only")
 		check.Env = readOnly
+		check.ExpectedOutput = "on"
 		return []Command{
 			check,
 			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
 			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
 		}, apply, []string{"capture-session-read-only", "repeat-capture-matches"}, "", nil
 	case Fence:
+		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
+		if identityErr != nil {
+			return nil, Request{}, nil, "", identityErr
+		}
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		fenceSQL := `REVOKE CONNECT ON DATABASE :"database" FROM :"writer_role"; ALTER ROLE :"writer_role" NOLOGIN; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=:'writer_role' AND pid<>pg_backend_pid();` + "\n"
+		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore.ExpectedOutput = "true|true|0"
+		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter.ExpectedOutput = "false|false|0"
+		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter.ExpectedOutput = "false|false|0"
 		return []Command{
-			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psqlInput(target, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(target, "SHOW default_transaction_read_only"),
+			sourceBefore,
+			psqlInput(source, "", fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			sourceAfter,
+			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
+			targetAfter,
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
 		root := manifest.TargetRepo
@@ -260,7 +294,11 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if digestErr != nil {
 			return nil, Request{}, nil, "", digestErr
 		}
-		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target, "--file", backfillPath}, Env: []string{"PGOPTIONS=-c default_transaction_read_only=off"}}
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target + " dbname=" + targetDatabase, "--file", backfillPath}}
 		return []Command{command}, apply, []string{"script-content-stable", "single-transaction"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
@@ -273,10 +311,23 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			{Name: "make", Args: []string{"dev-platform-status"}, Dir: manifest.TargetRepo},
 		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
 	case Rollback:
+		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
+		if identityErr != nil {
+			return nil, Request{}, nil, "", identityErr
+		}
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		restoreSQL := `ALTER ROLE :"writer_role" LOGIN; GRANT CONNECT ON DATABASE :"database" TO :"writer_role";` + "\n"
+		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore.ExpectedOutput = "false|false|0"
+		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter.ExpectedOutput = "true|true|0"
+		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter.ExpectedOutput = "false|false|0"
 		return []Command{
-			psqlInput(source, "SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, "SHOW default_transaction_read_only"),
+			sourceBefore,
+			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			sourceAfter,
+			targetAfter,
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
