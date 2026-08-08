@@ -17,11 +17,12 @@ import (
 const evidenceGenerator = "boltertrader-migration-tool"
 
 type Command struct {
-	Name  string
-	Args  []string
-	Env   []string
-	Dir   string
-	Stdin []byte
+	Name           string
+	Args           []string
+	Env            []string
+	Dir            string
+	Stdin          []byte
+	ExpectedOutput string
 }
 
 type CommandResult struct {
@@ -41,6 +42,10 @@ type ExecutionRequest struct {
 	Reason         string
 	SourceService  string
 	TargetService  string
+	SourceDatabase string
+	TargetDatabase string
+	SourceWriterRole string
+	TargetWriterRole string
 	repositoryRoot string
 }
 
