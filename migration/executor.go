@@ -32,23 +32,23 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation        Operation
-	ManifestPath     string
-	EvidenceDir      string
-	ArtifactPath     string
-	BackfillPath     string
-	ID               string
-	Verifier         string
-	Reason           string
-	SourceService    string
-	TargetService    string
-	MaintenanceService string
-	SourceDatabase   string
-	TargetDatabase   string
+	Operation           Operation
+	ManifestPath        string
+	EvidenceDir         string
+	ArtifactPath        string
+	BackfillPath        string
+	ID                  string
+	Verifier            string
+	Reason              string
+	SourceService       string
+	TargetService       string
+	MaintenanceService  string
+	SourceDatabase      string
+	TargetDatabase      string
 	MaintenanceDatabase string
-	SourceWriterRole string
-	TargetWriterRole string
-	repositoryRoot   string
+	SourceWriterRole    string
+	TargetWriterRole    string
+	repositoryRoot      string
 }
 
 type ExecuteOptions struct {
