@@ -53,6 +53,29 @@ func TestRunRejectsCallerProofForExecutableOperation(t *testing.T) {
 	}
 }
 
+func TestRunWiresFinalSnapshotDatabaseAndMaintenanceInputs(t *testing.T) {
+	originalExecute := executeMigration
+	t.Cleanup(func() { executeMigration = originalExecute })
+	var executed migration.ExecutionRequest
+	executeMigration = func(_ context.Context, request migration.ExecutionRequest, _ migration.ExecuteOptions) (migration.ExecutionResult, error) {
+		executed = request
+		return migration.ExecutionResult{Result: migration.Result{Phase: migration.PhaseDeltaCaptured}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{
+		"final-delta", "--manifest", copyFixture(t), "--artifact", "final.dump", "--evidence-dir", "evidence",
+		"--source-service", "source", "--source-database", "source_db",
+		"--target-service", "target", "--target-database", "target_db",
+		"--maintenance-service", "target_admin", "--maintenance-database", "postgres",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("final-delta: %v stderr=%s", err, stderr.String())
+	}
+	if executed.SourceDatabase != "source_db" || executed.TargetDatabase != "target_db" || executed.MaintenanceService != "target_admin" || executed.MaintenanceDatabase != "postgres" {
+		t.Fatalf("execution request = %+v", executed)
+	}
+}
+
 func TestRunDoesNotExposeActivationOrRetirementExecutionCommands(t *testing.T) {
 	for _, command := range []string{"activate", "retire"} {
 		var stdout, stderr bytes.Buffer
