@@ -3,6 +3,7 @@ package migration
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -95,5 +96,28 @@ func TestCrossLaneRejectsTamperedFrozenProvenance(t *testing.T) {
 				t.Fatal("ValidateBaseline mutated the supplied manifest")
 			}
 		})
+	}
+}
+
+func TestCrossLaneRejectsGitShapedImportWithFabricatedProof(t *testing.T) {
+	manifestPath := copyManifest(t)
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := withProof(t, manifestPath, Request{
+		Operation: RecordImport,
+		ID:        "0123456789abcdef0123456789abcdef01234567",
+	})
+
+	if _, err := Apply(manifestPath, request, ApplyOptions{}); err == nil {
+		t.Fatal("Apply accepted a Git-shaped import ID with caller-authored proof")
+	}
+	after, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("rejected fabricated import proof changed the manifest")
 	}
 }
