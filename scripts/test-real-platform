@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'test-real: %s\n' "$*" >&2; exit 1; }
+
+[ "${BT_DEV_REAL_STACK_ACCEPTANCE:-}" = 1 ] || fail "set BT_DEV_REAL_STACK_ACCEPTANCE=1 to attest the local Test stack"
+[ "${FT_MODE:-}" = test ] || fail "FT_MODE must be test"
+[ "${BT_DEV_ENABLE_LIVE_PRIVATE_WRITES:-0}" = 0 ] || fail "Live private writes must remain disabled"
+[ "${BT_LIVE_PRIVATE_WRITES_ENABLED:-0}" = 0 ] || fail "Live private writes must remain disabled"
+for name in $(env | sed -n 's/^\(BOLTER_ENABLE_[A-Z0-9_]*_WRITES\)=.*/\1/p'); do
+	fail "$name must be unset"
+done
+
+./scripts/dev-platform doctor
+./scripts/dev-platform status
+./scripts/dev-platform wait
+curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/readiness >/dev/null
+curl --fail --silent --show-error http://127.0.0.1:13001/ >/dev/null
+printf 'test-real: local Test stack is ready; no venue writes were performed\n'

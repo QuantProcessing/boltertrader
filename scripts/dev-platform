@@ -31,12 +31,17 @@ EXPECTED_GATEWAY_TOKEN_FILE="$CREDENTIAL_DIR/gateway-adapter.token"
 GATEWAY_TOKEN_FILE=${BT_GATEWAY_TOKEN_FILE:-$EXPECTED_GATEWAY_TOKEN_FILE}
 EXPECTED_MANUAL_PREVIEW_KEY_FILE="$CREDENTIAL_DIR/manual-preview-signing.key"
 MANUAL_PREVIEW_KEY_FILE=${BT_MANUAL_PREVIEW_SIGNING_KEY_FILE:-$EXPECTED_MANUAL_PREVIEW_KEY_FILE}
+EXPECTED_SECRET_MASTER_KEY_FILE="$CREDENTIAL_DIR/secret-store-master.key"
+SECRET_MASTER_KEY_FILE=${BT_SECRET_MASTER_KEY_FILE:-$EXPECTED_SECRET_MASTER_KEY_FILE}
 BT_GATEWAY_URL=${BT_GATEWAY_URL:-http://127.0.0.1:18082}
 BT_GATEWAY_TOKEN_FILE=$GATEWAY_TOKEN_FILE
 BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=$MANUAL_PREVIEW_KEY_FILE
 GATEWAY_AUTH_TOKEN_FILE=$GATEWAY_TOKEN_FILE
 export BT_GATEWAY_URL BT_GATEWAY_TOKEN_FILE GATEWAY_AUTH_TOKEN_FILE
 export BT_MANUAL_PREVIEW_SIGNING_KEY_FILE
+BT_SECRET_MASTER_KEY_FILE=$SECRET_MASTER_KEY_FILE
+BT_SECRET_STORE_NAMESPACE=boltertrader/$MODE
+export BT_SECRET_MASTER_KEY_FILE BT_SECRET_STORE_NAMESPACE
 export BT_MODE
 START_TIMEOUT=${BT_DEV_START_TIMEOUT_SECONDS:-30}
 STOP_TIMEOUT=${BT_DEV_STOP_TIMEOUT_SECONDS:-15}
@@ -101,6 +106,7 @@ validate_mode() {
 	[ "$TOKEN_FILE" = "$EXPECTED_TOKEN_FILE" ] || fail "BT_FUNDING_WORKER_TOKEN_FILE must be the mode-scoped path $EXPECTED_TOKEN_FILE"
 	[ "$GATEWAY_TOKEN_FILE" = "$EXPECTED_GATEWAY_TOKEN_FILE" ] || fail "BT_GATEWAY_TOKEN_FILE must be the mode-scoped path $EXPECTED_GATEWAY_TOKEN_FILE"
 	[ "$MANUAL_PREVIEW_KEY_FILE" = "$EXPECTED_MANUAL_PREVIEW_KEY_FILE" ] || fail "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE must be the mode-scoped path $EXPECTED_MANUAL_PREVIEW_KEY_FILE"
+	[ "$SECRET_MASTER_KEY_FILE" = "$EXPECTED_SECRET_MASTER_KEY_FILE" ] || fail "BT_SECRET_MASTER_KEY_FILE must be the mode-scoped path $EXPECTED_SECRET_MASTER_KEY_FILE"
 	[ "$BT_GATEWAY_URL" = "http://127.0.0.1:18082" ] || fail "BT_GATEWAY_URL must be http://127.0.0.1:18082"
 }
 
@@ -122,6 +128,7 @@ ensure_tokens() {
 	ensure_token "$TOKEN_FILE"
 	ensure_token "$GATEWAY_TOKEN_FILE"
 	ensure_token "$MANUAL_PREVIEW_KEY_FILE"
+	ensure_token "$SECRET_MASTER_KEY_FILE"
 }
 
 process_start_time() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
@@ -224,6 +231,26 @@ funding_worker_ready() {
 		printf 'header = "X-Worker-Instance-Id: %s"\n' "$instance_id"
 	} | curl --fail --silent --show-error --config - \
 		"http://127.0.0.1:18092/internal/v1/funding-work/workers/$WORKER_ID/readiness" >/dev/null
+}
+
+drain_funding_worker() {
+	validate_mode; prepare_directories
+	generation=$(funding_worker_generation) || fail "funding-worker generation is unavailable"
+	instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
+	idempotency_key="supervisor-drain:$WORKER_ID:$instance_id:$generation"
+	body=$(printf '{"workerGeneration":%s,"instanceId":"%s","idempotencyKey":"%s","reason":"shutdown"}' "$generation" "$instance_id" "$idempotency_key")
+	{
+		printf 'oauth2-bearer = "'
+		tr -d '\r\n' <"$TOKEN_FILE"
+		printf '"\n'
+	} | curl --fail --silent --show-error --config - \
+		--header 'Content-Type: application/json' \
+		--header "Idempotency-Key: $idempotency_key" \
+		--header "X-Worker-Id: $WORKER_ID" \
+		--header "X-Worker-Generation: $generation" \
+		--header "X-Worker-Instance-Id: $instance_id" \
+		--data "$body" \
+		"http://127.0.0.1:18092/internal/v1/funding-work/workers/$WORKER_ID/drain" >/dev/null
 }
 
 builtin_ready() {
@@ -398,17 +425,17 @@ doctor() {
 		[ -x ./backend/scripts/secret-bootstrap.sh ] || fail "Lane 2 Secret Store bootstrap is missing or not executable"
 		validate_runtime_config
 	fi
-	printf 'mode=%s\nruntime=%s\nworker-id=%s\nworker-token-file=%s\ngateway-token-file=%s\nmanual-preview-signing-key-file=%s\ngateway-url=%s\nlive-private-writes=%s\nfixed-ports=%s\nstart-order=%s\nstop-order=%s\n' "$MODE" "$RUNTIME_DIR" "$WORKER_ID" "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$BT_GATEWAY_URL" "$BT_LIVE_PRIVATE_WRITES_ENABLED" "$FIXED_PORTS" "$SERVICES_START" "$SERVICES_STOP"
+	printf 'mode=%s\nruntime=%s\nworker-id=%s\nworker-token-file=%s\ngateway-token-file=%s\nmanual-preview-signing-key-file=%s\nsecret-master-key-file=%s\ngateway-url=%s\nlive-private-writes=%s\nfixed-ports=%s\nstart-order=%s\nstop-order=%s\n' "$MODE" "$RUNTIME_DIR" "$WORKER_ID" "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE" "$BT_GATEWAY_URL" "$BT_LIVE_PRIVATE_WRITES_ENABLED" "$FIXED_PORTS" "$SERVICES_START" "$SERVICES_STOP"
 }
 
 reset() {
 	down
 	for service in $SERVICES_START; do [ ! -f "$PID_DIR/$service.pid" ] || fail "refusing reset while $service has an untrusted pid record"; done
-	rm -rf "$STATE_DIR"; rm -f "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE"
+	rm -rf "$STATE_DIR"; rm -f "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE"
 }
 
 case "${1:-}" in
 	up) up ;; down) down ;; restart) down; up ;; status|ps) status ;; wait) wait_all ;;
-	logs) logs ;; doctor) doctor ;; reset) reset ;;
-	*) fail "usage: scripts/dev-platform {up|down|restart|status|wait|logs|ps|doctor|reset}" ;;
+	logs) logs ;; doctor) doctor ;; reset) reset ;; drain-funding-worker) drain_funding_worker ;;
+	*) fail "usage: scripts/dev-platform {up|down|restart|status|wait|logs|ps|doctor|reset|drain-funding-worker}" ;;
 esac
