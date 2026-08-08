@@ -73,7 +73,9 @@ source-side final delta:
   --verifier operator-id \
   --evidence-dir .local/migration/evidence \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
-  --target-database "$BT_MIGRATION_TARGET_DATABASE"
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
 ```
 
 Raise the database-level one-writer fence before the final snapshot. The tool
@@ -93,8 +95,9 @@ connect, and session state before it records the fence:
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
 
-Capture the fenced source twice in read-only sessions, require identical
-digests, and apply the verified final snapshot to the restored target:
+Capture one full custom snapshot from the fenced source in a read-only session,
+verify the archive catalog, recreate the target through an explicit maintenance
+connection, restore the snapshot, and verify that the target schema is nonempty:
 
 ```sh
 .local/bin/migration-tool final-delta \
@@ -102,8 +105,11 @@ digests, and apply the verified final snapshot to the restored target:
   --artifact .local/migration/artifacts/final-snapshot.dump \
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
-  --target-database "$BT_MIGRATION_TARGET_DATABASE"
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
 ```
 
 Apply each repository-owned SQL backfill by exact path. The runner hashes the

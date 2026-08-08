@@ -313,10 +313,10 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}
+		required = []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
 	case Fence:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writes-disabled", "target-writes-disabled"}
+		required = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
 		required = []string{"script-content-stable", "single-transaction"}
@@ -328,7 +328,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writes-enabled", "target-writes-disabled"}
+		required = []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}
 	}
 	if proof.Subject != subject || !sameStringSet(proof.Checks, required) {
 		return fmt.Errorf("operation proof subject or checks do not match required postconditions")

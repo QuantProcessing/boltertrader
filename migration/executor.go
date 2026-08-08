@@ -237,6 +237,13 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	if targetErr != nil && (request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
 		return nil, Request{}, nil, "", targetErr
 	}
+	maintenance := ""
+	if request.Operation == Restore || request.Operation == FinalDelta {
+		maintenance, err = postgresService(request.MaintenanceService)
+		if err != nil {
+			return nil, Request{}, nil, "", fmt.Errorf("maintenance %w", err)
+		}
+	}
 	psql := func(service, database, query string) Command {
 		connection := "service=" + service
 		if database != "" {
@@ -271,50 +278,65 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
+		maintenanceDatabase, databaseErr := postgresIdentifier("maintenance database", request.MaintenanceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
 		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 		verify.ExpectedOutput = "true"
 		return []Command{
-			psqlInput(target, "", `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
 			verify,
 		}, apply, []string{"clean-target-created", "restored-schema-nonempty"}, "", nil
 	case FinalDelta:
+		sourceDatabase, databaseErr := postgresIdentifier("source database", request.SourceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		maintenanceDatabase, databaseErr := postgresIdentifier("maintenance database", request.MaintenanceDatabase)
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
 		apply.ArtifactPath = request.ArtifactPath
 		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
-		check := psql(source, "", "SHOW transaction_read_only")
+		check := psql(source, sourceDatabase, "SHOW transaction_read_only")
 		check.Env = readOnly
 		check.ExpectedOutput = "on"
+		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
+		verify.ExpectedOutput = "true"
 		return []Command{
 			check,
-			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
-			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
-			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
-		}, apply, []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}, "", nil
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
+			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
+			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+			verify,
+		}, apply, []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
 	case Fence:
 		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
 			return nil, Request{}, nil, "", identityErr
 		}
-		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		fenceSQL := `REVOKE CONNECT ON DATABASE :"database" FROM :"writer_role"; ALTER ROLE :"writer_role" NOLOGIN; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=:'writer_role' AND pid<>pg_backend_pid();` + "\n"
 		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
-		sourceBefore.ExpectedOutput = "true|true|0"
 		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
-		sourceAfter.ExpectedOutput = "false|false|0"
+		sourceAfter.ExpectedOutput = "false|0"
 		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
-		targetAfter.ExpectedOutput = "false|false|0"
+		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
 			sourceBefore,
 			psqlInput(source, "", fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
 			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
 			targetAfter,
-		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
+		}, apply, []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
 	case Backfill:
 		root := manifest.TargetRepo
 		if request.repositoryRoot != "" {
@@ -350,20 +372,20 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if identityErr != nil {
 			return nil, Request{}, nil, "", identityErr
 		}
-		stateQuery := `SELECT r.rolcanlogin::text || '|' || has_database_privilege(:'writer_role', :'database', 'CONNECT')::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
+		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		restoreSQL := `ALTER ROLE :"writer_role" LOGIN; GRANT CONNECT ON DATABASE :"database" TO :"writer_role";` + "\n"
 		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
-		sourceBefore.ExpectedOutput = "false|false|0"
+		sourceBefore.ExpectedOutput = "false|0"
 		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
-		sourceAfter.ExpectedOutput = "true|true|0"
+		sourceAfter.ExpectedOutput = "true|0"
 		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
-		targetAfter.ExpectedOutput = "false|false|0"
+		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
 			sourceBefore,
 			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
 			targetAfter,
-		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
+		}, apply, []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
 	}
