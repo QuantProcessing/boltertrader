@@ -313,7 +313,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"capture-session-read-only", "repeat-capture-matches"}
+		required = []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}
 	case Fence:
 		subject = proofStateDigest(manifest)
 		required = []string{"source-writes-disabled", "target-writes-disabled"}
