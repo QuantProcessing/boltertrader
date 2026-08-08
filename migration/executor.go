@@ -31,16 +31,16 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation     Operation
-	ManifestPath  string
-	EvidenceDir   string
-	ArtifactPath  string
-	BackfillPath  string
-	ID            string
-	Verifier      string
-	Reason        string
-	SourceService string
-	TargetService string
+	Operation      Operation
+	ManifestPath   string
+	EvidenceDir    string
+	ArtifactPath   string
+	BackfillPath   string
+	ID             string
+	Verifier       string
+	Reason         string
+	SourceService  string
+	TargetService  string
 	repositoryRoot string
 }
 
@@ -118,6 +118,14 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		}
 		inputSHA = artifactSHA
 	}
+	if request.Operation == FinalDelta {
+		verificationPath := request.ArtifactPath + ".verify"
+		verificationSHA, verifyErr := digestFile(verificationPath, true)
+		_ = os.Remove(verificationPath)
+		if verifyErr != nil || verificationSHA != artifactSHA {
+			return ExecutionResult{}, fmt.Errorf("final-delta repeat capture did not match")
+		}
+	}
 	proof := operationProof{
 		SchemaVersion: 1, Operation: request.Operation, Status: "pass", MigrationID: manifest.MigrationID,
 		Subject: proofSubject(manifest, applyRequest, artifactSHA), Checks: checks,
@@ -176,7 +184,8 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{
 			check,
 			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
-		}, apply, []string{"capture-session-read-only", "artifact-created"}, "", nil
+			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
+		}, apply, []string{"capture-session-read-only", "repeat-capture-matches"}, "", nil
 	case Fence:
 		return []Command{
 			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),

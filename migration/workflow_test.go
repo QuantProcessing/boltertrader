@@ -440,19 +440,19 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"}
 	case Backup:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"consistent-snapshot", "restorable-format"}
+		proof.Checks = []string{"dump-created", "dump-format-readable"}
 	case Restore:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"clean-restore", "source-stack-boot"}
+		proof.Checks = []string{"restore-command-succeeded", "target-query-succeeded"}
 	case FinalDelta:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"deterministic", "source-read-only"}
+		proof.Checks = []string{"capture-session-read-only", "repeat-capture-matches"}
 	case Fence:
 		proof.Subject = proofStateDigest(manifest)
 		proof.Checks = []string{"source-writes-disabled", "target-writes-disabled"}
 	case Backfill:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		proof.Checks = []string{"authoritative-ownership-mapped", "deterministic"}
+		proof.Checks = []string{"script-content-stable", "single-transaction"}
 	case Validate:
 		proof.Subject = proofStateDigest(manifest)
 		proof.Checks = []string{"browser", "offline", "real-test", "restart-recovery"}

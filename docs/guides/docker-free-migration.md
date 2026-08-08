@@ -84,7 +84,7 @@ target write override, and rejects any pre/post content drift:
 ```sh
 .local/bin/migration-tool backfill \
   --manifest migration/manifest.json \
-  --backfill-script backend/migrations/0001_example.sql \
+  --backfill-script backend/migrations/0013_principal_scoped_accounting.sql \
   --evidence-dir .local/migration/evidence \
   --target-service "$BT_MIGRATION_TARGET_SERVICE"
 ```

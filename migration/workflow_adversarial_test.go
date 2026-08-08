@@ -234,9 +234,9 @@ func adversarialWithProof(t *testing.T, manifestPath string, request Request) Re
 	}
 	switch request.Operation {
 	case Backup:
-		proof.Checks = []string{"consistent-snapshot", "restorable-format"}
+		proof.Checks = []string{"dump-created", "dump-format-readable"}
 	case Restore:
-		proof.Checks = []string{"clean-restore", "source-stack-boot"}
+		proof.Checks = []string{"restore-command-succeeded", "target-query-succeeded"}
 	default:
 		t.Fatalf("unsupported adversarial proof operation %q for %s", request.Operation, manifestPath)
 	}
