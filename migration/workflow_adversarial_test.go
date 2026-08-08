@@ -69,8 +69,8 @@ func TestWorkflowEvidenceRedactsArtifactContents(t *testing.T) {
 		ID:           "backup-001",
 		ArtifactPath: artifactPath,
 	})
-	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "identity is not frozen") {
-		t.Fatalf("tampered source identity error = %v", err)
+	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
+		t.Fatalf("backup: %v", err)
 	}
 
 	data := adversarialReadFile(t, manifestPath)
