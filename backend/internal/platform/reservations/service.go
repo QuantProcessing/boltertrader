@@ -217,19 +217,29 @@ func (request CreateRequest) validate() error {
 	if (request.Mode == ModeTest && request.Scope.VenueEnvironment == "live") || (request.Mode == ModeLive && request.Scope.VenueEnvironment != "live") {
 		return fmt.Errorf("venue environment does not match mode")
 	}
-	if (request.Quantity == "") == (request.Notional == "") {
+	hasQuantity := request.Quantity != ""
+	hasNotional := request.Notional != ""
+	if request.ProductID == "funding" {
+		if !hasQuantity && !hasNotional {
+			return fmt.Errorf("quantity or notional is required")
+		}
+	} else if hasQuantity == hasNotional {
 		return fmt.Errorf("exactly one of quantity or notional is required")
 	}
-	amount := request.Quantity
-	if amount == "" {
-		amount = request.Notional
+	if hasQuantity {
+		quantity, err := decimal.NewFromString(request.Quantity)
+		if err != nil || !quantity.IsPositive() {
+			return fmt.Errorf("reservation amount must be a positive decimal")
+		}
+	}
+	if hasNotional {
 		if request.Currency == "" {
 			return fmt.Errorf("currency is required for notional reservation")
 		}
-	}
-	parsed, err := decimal.NewFromString(amount)
-	if err != nil || !parsed.IsPositive() {
-		return fmt.Errorf("reservation amount must be a positive decimal")
+		notional, err := decimal.NewFromString(request.Notional)
+		if err != nil || !notional.IsPositive() {
+			return fmt.Errorf("reservation amount must be a positive decimal")
+		}
 	}
 	return nil
 }

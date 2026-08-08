@@ -165,6 +165,49 @@ func TestManualAccountReadyRequiresActiveState(t *testing.T) {
 	}
 }
 
+func TestManualCancelIsRejectedBeforeReservationCommandOrGatewayEffects(t *testing.T) {
+	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
+	commandStore := orders.NewMemoryStore()
+	commandService := orders.NewService(commandStore, manualReservationGate{service: reservationService}, time.Now)
+	gateway := &manualGatewayFixture{}
+	projection, err := catalog.NewProjection(manualCatalogSource{}, time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservationService,
+		Commands:     commandService,
+		Portfolio:    portfolio.NewProjection(),
+		Ledger:       ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		Catalog:      projection,
+		Manual: manual.NewGatewayServiceWithPreviewKey(
+			commandService,
+			portfolio.NewProjection(),
+			ledger.NewService(ledger.NewMemoryStore(), time.Now),
+			gateway,
+			time.Now,
+			[]byte("shared-preview-signing-key-with-32-bytes"),
+		),
+		ManualAccounts:    &staticManualAccounts{account: readyManualAccount()},
+		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		AuthorizeMutation: func(*http.Request) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"","action":"cancel","lineageId":"lineage-a","orderId":"venue-order-a","idempotencyKey":"manual-cancel-a"}`))
+	request.Header.Set("Idempotency-Key", "manual-cancel-a")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	reservationsAfter, reservationErr := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	commandsAfter, commandErr := commandStore.ListOwned(context.Background(), "principal-a", orders.ModeTest, "manual")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") || reservationErr != nil || commandErr != nil || len(reservationsAfter) != 0 || len(commandsAfter) != 0 || gateway.calls != 0 {
+		t.Fatalf("cancel=%d reservations=%+v commands=%+v gateway calls=%d reservation err=%v command err=%v body=%s", response.Code, reservationsAfter, commandsAfter, gateway.calls, reservationErr, commandErr, response.Body.String())
+	}
+}
+
 func (source manualCatalogSource) Fetch(context.Context) (catalog.Snapshot, error) {
 	revision := source.revision
 	if revision == "" {

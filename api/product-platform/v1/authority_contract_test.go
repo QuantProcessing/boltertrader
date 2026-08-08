@@ -261,6 +261,32 @@ func TestStaleWorkDenialsAreSideEffectFree(t *testing.T) {
 	}
 }
 
+func TestFundingOpportunityReservationScopeKindIsOpenOnly(t *testing.T) {
+	data, err := os.ReadFile("contract.schema.json")
+	if err != nil {
+		t.Fatalf("read product platform schema: %v", err)
+	}
+	var schema struct {
+		Definitions struct {
+			ScopeRequirement struct {
+				Properties struct {
+					ReservationKind struct {
+						Const string   `json:"const"`
+						Enum  []string `json:"enum"`
+					} `json:"reservationKind"`
+				} `json:"properties"`
+			} `json:"fundingReservationScopeRequirement"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("decode product platform schema: %v", err)
+	}
+	kind := schema.Definitions.ScopeRequirement.Properties.ReservationKind
+	if kind.Const != "open" || len(kind.Enum) != 0 {
+		t.Fatalf("Funding reservation scope kind = const %q enum %v, want open-only const", kind.Const, kind.Enum)
+	}
+}
+
 func readAuthorityContract(t *testing.T) authorityContract {
 	t.Helper()
 	path := os.Getenv("BT_PRODUCT_PLATFORM_CONTRACT")

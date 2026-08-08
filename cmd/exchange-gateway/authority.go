@@ -61,6 +61,35 @@ type authorityRuntimeStatus struct {
 	Accounts []account.RuntimeAccount `json:"accounts"`
 }
 
+type authorityProjectionReadiness struct {
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type authorityRuntimeCapability struct {
+	RowID      string                `json:"rowId"`
+	Venue      string                `json:"venue"`
+	Product    string                `json:"product"`
+	Settlement string                `json:"settlement,omitempty"`
+	WriteReady bool                  `json:"writeReady"`
+	Operations capability.Operations `json:"operations"`
+}
+
+type authorityRuntimeProjection struct {
+	AccountID                       string                       `json:"accountId"`
+	DesiredStateRevision            uint64                       `json:"desiredStateRevision"`
+	RuntimeGeneration               uint64                       `json:"runtimeGeneration"`
+	CredentialVersion               uint64                       `json:"credentialVersion"`
+	RuntimeVersion                  uint64                       `json:"runtimeVersion"`
+	Readiness                       authorityProjectionReadiness `json:"readiness"`
+	WriteReadiness                  authorityProjectionReadiness `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision uint64                       `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    uint64                       `json:"lastAppliedRuntimeGeneration"`
+	BlockedReason                   *string                      `json:"blockedReason"`
+	Capabilities                    []authorityRuntimeCapability `json:"capabilities"`
+	ObservedAt                      time.Time                    `json:"observedAt"`
+}
+
 type authorityTradeRules struct {
 	PriceIncrement    string `json:"priceIncrement"`
 	QuantityIncrement string `json:"quantityIncrement"`
@@ -109,6 +138,7 @@ type authorityReadSource interface {
 	Venues() []authorityVenue
 	Instruments() (authorityCatalogInstruments, error)
 	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
+	Runtime(string) (authorityRuntimeProjection, error)
 }
 
 type authorityAccountSource interface {
@@ -118,6 +148,8 @@ type authorityAccountSource interface {
 	Spot(domain.AccountID) (exchange.SpotClient, error)
 	Perp(domain.AccountID) (exchange.PerpClient, error)
 	Capability(domain.AccountID) (capability.Row, error)
+	Runtime(domain.AccountID) (account.RuntimeAccount, error)
+	Status(domain.AccountID) (account.Status, error)
 }
 
 type managerAuthorityReads struct{ manager authorityAccountSource }
@@ -222,7 +254,11 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	case httpapi.AuthorityListRuntimeAccounts:
 		response.Body = authority.manager.Runtimes()
 	case httpapi.AuthorityGetRuntimeAccount:
-		response.Body, err = authority.manager.Runtime(domain.AccountID(request.AccountID))
+		if len(request.Query) != 0 {
+			err = errors.New("runtime account query is not allowed")
+		} else {
+			response.Body, err = authority.reads.Runtime(request.AccountID)
+		}
 	case httpapi.AuthorityRuntimeStatus:
 		response.Body = authorityRuntimeStatus{Mode: authority.mode, Accounts: authority.manager.Runtimes()}
 	case httpapi.AuthorityRuntimeReadiness:
@@ -294,6 +330,57 @@ func (reads managerAuthorityReads) Venues() []authorityVenue {
 		return venues[i].Venue < venues[j].Venue
 	})
 	return venues
+}
+
+func (reads managerAuthorityReads) Runtime(accountID string) (authorityRuntimeProjection, error) {
+	id := domain.AccountID(accountID)
+	runtime, err := reads.manager.Runtime(id)
+	if err != nil {
+		return authorityRuntimeProjection{}, fmt.Errorf("read runtime account: %w", err)
+	}
+	status, err := reads.manager.Status(id)
+	if err != nil {
+		return authorityRuntimeProjection{}, fmt.Errorf("read runtime status: %w", err)
+	}
+	row, err := reads.manager.Capability(id)
+	if err != nil {
+		return authorityRuntimeProjection{}, fmt.Errorf("read runtime capability: %w", err)
+	}
+	if runtime.Desired.AccountID != id || runtime.Desired.DesiredStateRevision == 0 || runtime.Desired.RuntimeGeneration == 0 || runtime.Desired.CredentialVersion == 0 || runtime.RuntimeVersion == 0 || runtime.LastAppliedDesiredStateRevision == 0 || runtime.LastAppliedRuntimeGeneration == 0 || runtime.ObservedAt.IsZero() || status.AccountID != id || row.RowID == "" || row.Venue == "" || row.Product == "" {
+		return authorityRuntimeProjection{}, errors.New("runtime projection authority is incomplete")
+	}
+	readReady := runtime.State == account.RuntimeStateActive && runtime.Ready && status.ReadReady
+	readReason := runtime.Reason
+	if !readReady && readReason == "" {
+		readReason = status.Reason
+	}
+	if !readReady && readReason == "" {
+		readReason = "runtime_" + string(runtime.State)
+	}
+	writeReady := readReady && status.WriteReady
+	writeReason := ""
+	if !writeReady {
+		writeReason = status.Reason
+		if writeReason == "" {
+			writeReason = readReason
+		}
+	}
+	blockedReason := writeReason
+	if blockedReason == "" {
+		blockedReason = readReason
+	}
+	var blocked *string
+	if blockedReason != "" {
+		blocked = &blockedReason
+	}
+	return authorityRuntimeProjection{
+		AccountID: accountID, DesiredStateRevision: runtime.Desired.DesiredStateRevision, RuntimeGeneration: runtime.Desired.RuntimeGeneration,
+		CredentialVersion: runtime.Desired.CredentialVersion, RuntimeVersion: runtime.RuntimeVersion,
+		Readiness: authorityProjectionReadiness{Ready: readReady, Reason: readReason}, WriteReadiness: authorityProjectionReadiness{Ready: writeReady, Reason: writeReason},
+		LastAppliedDesiredStateRevision: runtime.LastAppliedDesiredStateRevision, LastAppliedRuntimeGeneration: runtime.LastAppliedRuntimeGeneration,
+		BlockedReason: blocked, Capabilities: []authorityRuntimeCapability{{RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: writeReady, Operations: row.Operations}},
+		ObservedAt: runtime.ObservedAt.UTC(),
+	}, nil
 }
 
 func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, error) {

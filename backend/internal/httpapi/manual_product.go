@@ -261,12 +261,16 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		tradingError(w, statusForTradingError(err), codeForTradingError(err))
 		return
 	}
-	if !replay || resumableManualState(command.State) {
+	publish := !replay || resumableManualState(command.State)
+	if publish {
 		command, err = handler.trading.options.Manual.Execute(r.Context(), command)
 		if err != nil {
 			tradingError(w, statusForTradingError(err), codeForTradingError(err))
 			return
 		}
+	}
+	if publish {
+		publishCommandActivity(handler.trading.options.Activity, command)
 	}
 	status := http.StatusAccepted
 	if replay {

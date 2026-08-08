@@ -422,8 +422,12 @@ func accountTestInstrument(venue exchange.Venue, product exchange.Product, symbo
 func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRotation(t *testing.T) {
 	manager := newLifecycleTestManager(t, RuntimeModeTest)
 	initial := desiredTestAccount(t, 1, 1, 1, "opaque_initial")
-	if _, err := manager.CreateRuntime(context.Background(), initial); err != nil {
+	created, err := manager.CreateRuntime(context.Background(), initial)
+	if err != nil {
 		t.Fatalf("CreateRuntime: %v", err)
+	}
+	if created.RuntimeVersion != 1 || created.LastAppliedDesiredStateRevision != 1 || created.LastAppliedRuntimeGeneration != 1 || created.ObservedAt.IsZero() {
+		t.Fatalf("created runtime facts=%+v", created)
 	}
 	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
 		t.Fatalf("initial CheckWriteFence: %v", err)
@@ -437,10 +441,17 @@ func TestManagerDynamicLifecycleFencesWritesAndPreservesOldGenerationOnFailedRot
 	if err := manager.CheckWriteFence(initial.Fence()); err != nil {
 		t.Fatalf("failed rotation fenced old generation: %v", err)
 	}
+	if current, err := manager.Runtime(initial.AccountID); err != nil || current.RuntimeVersion != 1 || current.LastAppliedDesiredStateRevision != 1 || current.LastAppliedRuntimeGeneration != 1 {
+		t.Fatalf("failed rotation advanced runtime facts=%+v err=%v", current, err)
+	}
 
 	manager.lifecycle.(*fakeRuntimeLifecycle).validateErr = nil
-	if _, err := manager.RotateRuntime(context.Background(), replacement, 1); err != nil {
+	rotated, err := manager.RotateRuntime(context.Background(), replacement, 1)
+	if err != nil {
 		t.Fatalf("RotateRuntime: %v", err)
+	}
+	if rotated.RuntimeVersion != 2 || rotated.LastAppliedDesiredStateRevision != 2 || rotated.LastAppliedRuntimeGeneration != 2 || rotated.ObservedAt.Before(created.ObservedAt) {
+		t.Fatalf("rotated runtime facts=%+v", rotated)
 	}
 	if !errors.Is(manager.CheckWriteFence(initial.Fence()), ErrStaleWriteFence) {
 		t.Fatalf("old fence error=%v, want ErrStaleWriteFence", manager.CheckWriteFence(initial.Fence()))

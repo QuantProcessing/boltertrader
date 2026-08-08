@@ -252,6 +252,124 @@ func TestFundingHandoffPersistsGatewayEvidenceAndRejectsWithoutUncertainty(t *te
 	}
 }
 
+func TestFundingHandoffPublishesPersistedActivityOnceAndOnlyAfterCompleteSuccess(t *testing.T) {
+	now := time.Date(2026, 8, 8, 14, 0, 0, 0, time.UTC)
+	newProcessor := func(t *testing.T, commandStore orders.Store, executionStore FundingExecutionStore) (*FundingPayloadProcessor, orders.Command, *fundingActivityRecorder) {
+		t.Helper()
+		payload := frozenOpenPayload("50")
+		plans := NewMemoryFundingPlanStore()
+		if _, _, err := plans.ReserveFundingPlan(context.Background(), openPlan(now, payload)); err != nil {
+			t.Fatal(err)
+		}
+		commands := orders.NewService(commandStore, nil, func() time.Time { return now })
+		processor, err := NewDurableFundingPayloadProcessor(commands, plans, executionStore, func() time.Time { return now.Add(time.Second) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		processor.WithExecutionEvidence(portfolio.NewProjection(), ledger.NewService(ledger.NewMemoryStore(), func() time.Time { return now }))
+		recorder := &fundingActivityRecorder{}
+		processor.WithActivityPublisher(recorder.PublishFundingCommand)
+		ready, err := processor.Process(context.Background(), fundingParent("funding.open", payload))
+		if err != nil || len(ready) != 1 {
+			t.Fatalf("Process()=%+v err=%v", ready, err)
+		}
+		if len(recorder.commands) != 0 {
+			t.Fatalf("child creation published activity=%+v", recorder.commands)
+		}
+		return processor, ready[0], recorder
+	}
+
+	t.Run("success and replay", func(t *testing.T) {
+		processor, child, recorder := newProcessor(t, orders.NewMemoryStore(), NewMemoryFundingExecutionStore())
+		evidence := orders.ExecutionEvidence{CommandID: "gateway-command", GatewayOrderID: "gateway-order", ClientOrderID: "client-order", State: "filled", ResourceVersion: 1, Fills: []orders.FillEvidence{{FillID: "fill-activity-1", AccountID: child.AccountID, InstrumentID: "BTC-USDT-LONG", Side: "buy", Quantity: "0.005", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}
+		updated, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence})
+		if err != nil || updated.State != orders.StateFilled {
+			t.Fatalf("RecordHandoff()=%+v err=%v", updated, err)
+		}
+		if len(recorder.commands) != 1 {
+			t.Fatalf("published commands=%+v", recorder.commands)
+		}
+		published := recorder.commands[0]
+		if published.PrincipalID != child.PrincipalID || published.Mode != child.Mode || published.ProductID != "funding" || published.CommandID != child.CommandID || published.State != orders.StateFilled || len(published.ExecutionEvidence.Fills) != 1 || published.ExecutionEvidence.Fills[0].FillID != "fill-activity-1" {
+			t.Fatalf("published scoped activity=%+v", published)
+		}
+		if _, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}); err != nil {
+			t.Fatalf("replay RecordHandoff() err=%v", err)
+		}
+		if len(recorder.commands) != 1 {
+			t.Fatalf("replay duplicated activity=%+v", recorder.commands)
+		}
+	})
+
+	t.Run("transition failure", func(t *testing.T) {
+		store := &switchableTransitionStore{Store: orders.NewMemoryStore()}
+		processor, child, recorder := newProcessor(t, store, NewMemoryFundingExecutionStore())
+		store.fail = true
+		if _, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffRejected}); err == nil {
+			t.Fatal("RecordHandoff() succeeded with failed command transition")
+		}
+		if len(recorder.commands) != 0 {
+			t.Fatalf("failed transition published activity=%+v", recorder.commands)
+		}
+	})
+
+	t.Run("execution persistence failure", func(t *testing.T) {
+		executions := &switchableFundingExecutionStore{FundingExecutionStore: NewMemoryFundingExecutionStore()}
+		processor, child, recorder := newProcessor(t, orders.NewMemoryStore(), executions)
+		evidence := orders.ExecutionEvidence{CommandID: "gateway-command-recovery", GatewayOrderID: "gateway-order-recovery", ClientOrderID: "client-order-recovery", State: "filled", ResourceVersion: 1, Fills: []orders.FillEvidence{{FillID: "fill-activity-recovery", AccountID: child.AccountID, InstrumentID: "BTC-USDT-LONG", Side: "buy", Quantity: "0.005", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}
+		executions.fail = true
+		if _, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}); err == nil {
+			t.Fatal("RecordHandoff() succeeded with failed Funding execution persistence")
+		}
+		if len(recorder.commands) != 0 {
+			t.Fatalf("failed execution persistence published activity=%+v", recorder.commands)
+		}
+		executions.fail = false
+		if _, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}); err != nil {
+			t.Fatalf("recovery RecordHandoff() err=%v", err)
+		}
+		if len(recorder.commands) != 1 || recorder.commands[0].PrincipalID != child.PrincipalID || recorder.commands[0].Mode != child.Mode || recorder.commands[0].State != orders.StateFilled || len(recorder.commands[0].ExecutionEvidence.Fills) != 1 || recorder.commands[0].ExecutionEvidence.Fills[0].FillID != "fill-activity-recovery" {
+			t.Fatalf("recovery activity=%+v", recorder.commands)
+		}
+		if _, err := processor.RecordHandoff(context.Background(), child, orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}); err != nil {
+			t.Fatalf("post-recovery replay RecordHandoff() err=%v", err)
+		}
+		if len(recorder.commands) != 1 {
+			t.Fatalf("post-recovery replay duplicated activity=%+v", recorder.commands)
+		}
+	})
+}
+
+type fundingActivityRecorder struct{ commands []orders.Command }
+
+func (recorder *fundingActivityRecorder) PublishFundingCommand(command orders.Command) {
+	recorder.commands = append(recorder.commands, command)
+}
+
+type switchableTransitionStore struct {
+	orders.Store
+	fail bool
+}
+
+func (store *switchableTransitionStore) Transition(ctx context.Context, request orders.TransitionRequest, now time.Time) (orders.Command, error) {
+	if store.fail {
+		return orders.Command{}, errors.New("command transition failed")
+	}
+	return store.Store.Transition(ctx, request, now)
+}
+
+type switchableFundingExecutionStore struct {
+	FundingExecutionStore
+	fail bool
+}
+
+func (store *switchableFundingExecutionStore) PersistFundingExecution(ctx context.Context, execution FundingExecution, expectedVersion int64, kind string) (FundingExecution, error) {
+	if store.fail {
+		return FundingExecution{}, errors.New("Funding execution persistence failed")
+	}
+	return store.FundingExecutionStore.PersistFundingExecution(ctx, execution, expectedVersion, kind)
+}
+
 func TestFundingReconcileReleasesSecondLegOnlyAfterAuthoritativeFirstFill(t *testing.T) {
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	payload := frozenOpenPayload("50")

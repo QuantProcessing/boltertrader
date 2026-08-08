@@ -29,6 +29,7 @@ type TradingOptions struct {
 	ManualAccounts    ManualAccountAuthority
 	Principal         func(*http.Request) (principalID, mode string, err error)
 	AuthorizeMutation func(*http.Request) error
+	Activity          ActivityPublisher
 }
 
 func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
@@ -168,6 +169,8 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 	status := http.StatusAccepted
 	if replay {
 		status = http.StatusOK
+	} else {
+		publishCommandActivity(handler.options.Activity, command)
 	}
 	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
 }
@@ -186,7 +189,7 @@ func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": command})
+	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": commandProjection(command)})
 }
 
 func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request) {

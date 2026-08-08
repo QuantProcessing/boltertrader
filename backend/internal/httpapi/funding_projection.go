@@ -14,6 +14,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/calculation"
@@ -40,11 +42,17 @@ type FundingReservationAuthority interface {
 	List(context.Context, string, reservations.Mode) ([]reservations.Reservation, error)
 }
 
+type FundingPositionAuthority interface {
+	ListContext(context.Context, portfolio.Mode, string, string) ([]portfolio.Position, error)
+}
+
 type SharedFundingProjectionOptions struct {
 	Catalog      CatalogProjection
 	MarketData   FundingMarketDataAuthority
 	Accounts     FundingAccountAuthority
 	Reservations FundingReservationAuthority
+	Executions   work.FundingExecutionStore
+	Positions    FundingPositionAuthority
 	Admission    fundingpolicy.Admission
 	Now          func() time.Time
 }
@@ -56,18 +64,36 @@ type sharedFundingProjection struct {
 }
 
 type previewAuthority struct {
-	preview          FundingExecutionPreview
-	factsRevision    string
-	longAccount      accounts.Account
-	shortAccount     accounts.Account
-	longReservation  reservations.Reservation
-	shortReservation reservations.Reservation
+	preview       FundingExecutionPreview
+	factsRevision string
+	input         calculation.Input
+	request       FundingPreviewRequest
+	longAccount   accounts.Account
+	shortAccount  accounts.Account
+	longCurrency  string
+	shortCurrency string
 }
 
 type fundingCandidate struct {
 	input         calculation.Input
 	plan          calculation.Plan
 	factsRevision string
+	longCurrency  string
+	shortCurrency string
+}
+
+type fundingCloseLegAuthority struct {
+	draft       work.FundingOrderDraft
+	account     accounts.Account
+	position    portfolio.Position
+	requirement FundingReservationRequirement
+}
+
+type fundingDurableCloseAuthority struct {
+	execution work.FundingExecution
+	snapshot  catalog.Snapshot
+	now       time.Time
+	legs      []fundingCloseLegAuthority
 }
 
 const conservativeTakerFeeAssumption = "conservative_taker_fee_rate"
@@ -88,8 +114,11 @@ func (projection *sharedFundingProjection) ListOpportunities(ctx context.Context
 	for _, candidate := range candidates {
 		items = append(items, FundingOpportunity{
 			OpportunityID: candidate.input.OpportunityID, CanonicalMarketID: candidate.plan.RouteID,
+			LongAccountID: candidate.input.Long.AccountFence.AccountID, ShortAccountID: candidate.input.Short.AccountFence.AccountID,
+			LongInstrumentID: candidate.input.Long.InstrumentID, ShortInstrumentID: candidate.input.Short.InstrumentID,
 			LongVenue: candidate.input.Long.Venue, ShortVenue: candidate.input.Short.Venue,
 			LongFundingRate: candidate.input.Long.Current.Rate.String(), ShortFundingRate: candidate.input.Short.Current.Rate.String(),
+			ReservationRequirements: reservationScopeRequirements(candidate.plan, reservations.KindOpen, mode),
 		})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].OpportunityID < items[j].OpportunityID })
@@ -118,10 +147,6 @@ func (projection *sharedFundingProjection) CreatePreview(ctx context.Context, pr
 	if err != nil {
 		return FundingExecutionPreview{}, err
 	}
-	available, err := projection.options.Reservations.List(ctx, principal, reservations.Mode(request.Mode))
-	if err != nil {
-		return FundingExecutionPreview{}, err
-	}
 	for _, candidate := range candidates {
 		input := candidate.input
 		if input.OpportunityID != request.OpportunityID || input.Long.AccountFence.AccountID != request.LongAccountID || input.Short.AccountFence.AccountID != request.ShortAccountID || candidate.plan.RouteID != request.CanonicalMarketID {
@@ -132,45 +157,34 @@ func (projection *sharedFundingProjection) CreatePreview(ctx context.Context, pr
 		if computeErr != nil || !preliminary.CanSubmit || len(preliminary.Legs) != 2 {
 			return FundingExecutionPreview{}, ErrFundingPreviewStale
 		}
-		longAccount, shortAccount, longReservation, shortReservation, authorityErr := projection.validateAuthority(ctx, principal, request.Mode, input, preliminary, available)
+		longAccount, shortAccount, authorityErr := projection.validateAccounts(ctx, request.Mode, input)
 		if authorityErr != nil {
 			return FundingExecutionPreview{}, authorityErr
-		}
-		longAuthority, shortAuthority := freezeReservation(longReservation), freezeReservation(shortReservation)
-		authorities := []planning.ReservationAuthority{longAuthority, shortAuthority}
-		planningFact := planning.NewPlanningFact(input, principal, longReservation.ReservationID, shortReservation.ReservationID, authorities, feeAssumptions(input))
-		input = planningFact.Input
-		plan, computeErr := calculation.ComputeWithAdmission(input, projection.options.Admission)
-		if computeErr != nil || !plan.CanSubmit {
-			return FundingExecutionPreview{}, ErrFundingPreviewStale
-		}
-		payload, marshalErr := json.Marshal(planning.OpenIntent{PreviewID: plan.PreviewID, OpportunityID: plan.OpportunityID, LongAccountID: request.LongAccountID, ShortAccountID: request.ShortAccountID, CanonicalMarketID: plan.RouteID, NotionalPerLeg: requested.String(), MaxSlippageBps: fmt.Sprint(request.MaxSlippageBps), HoldThroughSettlement: request.HoldThroughSettlement})
-		if marshalErr != nil {
-			return FundingExecutionPreview{}, marshalErr
 		}
 		fences, marshalErr := json.Marshal([]map[string]any{{"accountId": longAccount.ID, "desiredStateRevision": longAccount.DesiredStateRevision, "runtimeGeneration": longAccount.RuntimeGeneration, "credentialVersion": longAccount.CredentialVersion}, {"accountId": shortAccount.ID, "desiredStateRevision": shortAccount.DesiredStateRevision, "runtimeGeneration": shortAccount.RuntimeGeneration, "credentialVersion": shortAccount.CredentialVersion}})
 		if marshalErr != nil {
 			return FundingExecutionPreview{}, marshalErr
 		}
-		planningPayload, marshalErr := json.Marshal(planningFact)
-		if marshalErr != nil {
-			return FundingExecutionPreview{}, marshalErr
-		}
-		frozenCursor := "funding_preview_" + plan.NormalizedHash
-		frozenFact := work.Fact{FactID: "fact_" + frozenCursor, Cursor: frozenCursor, ProductID: "funding", Mode: request.Mode, Kind: planning.FactKind, Payload: planningPayload, EffectiveAt: projection.options.Now().UTC()}
-		preview := FundingExecutionPreview{PreviewID: plan.PreviewID, OpportunityID: plan.OpportunityID, CanSubmit: true, Blockers: []string{}, Warnings: findingMessages(plan.Warnings), Mode: request.Mode, ExpiresAt: projection.options.Now().UTC().Add(30 * time.Second), CatalogRevision: snapshot.Revision, FactsRevision: candidate.factsRevision, Plan: plan, PrincipalID: principal, Facts: []work.Fact{frozenFact}, AccountFences: fences, WorkPayload: payload}
+		previewID := "funding_preview_" + work.CanonicalRequestHash(struct {
+			Principal      string
+			NormalizedHash string
+		}{Principal: principal, NormalizedHash: preliminary.NormalizedHash})[:16]
+		preview := FundingExecutionPreview{PreviewID: previewID, OpportunityID: preliminary.OpportunityID, CanSubmit: true, Blockers: []string{}, Warnings: findingMessages(preliminary.Warnings), Mode: request.Mode, ExpiresAt: projection.options.Now().UTC().Add(30 * time.Second), CatalogRevision: snapshot.Revision, FactsRevision: candidate.factsRevision, Plan: preliminary, ReservationRequirements: reservationRequirements(input, preliminary, reservations.KindOpen, request.Mode, candidate.longCurrency, candidate.shortCurrency), PrincipalID: principal, AccountFences: fences}
 		projection.mu.Lock()
 		projection.evictExpiredPreviewsLocked(projection.options.Now().UTC())
-		projection.previews[preview.PreviewID] = previewAuthority{preview: preview, factsRevision: candidate.factsRevision, longAccount: longAccount, shortAccount: shortAccount, longReservation: longReservation, shortReservation: shortReservation}
+		projection.previews[preview.PreviewID] = previewAuthority{preview: preview, factsRevision: candidate.factsRevision, input: input, request: request, longAccount: longAccount, shortAccount: shortAccount, longCurrency: candidate.longCurrency, shortCurrency: candidate.shortCurrency}
 		projection.mu.Unlock()
 		return preview, nil
 	}
 	return FundingExecutionPreview{}, work.ErrWorkNotFound
 }
 
-func (projection *sharedFundingProjection) CreateCloseAuthority(ctx context.Context, principal, previewID, lineageID string) (FundingExecutionPreview, error) {
-	authority, err := projection.currentPreviewAuthority(ctx, principal, previewID, false)
-	if err != nil || lineageID == "" {
+func (projection *sharedFundingProjection) CreateCloseAuthority(ctx context.Context, principal, mode, previewID, lineageID string) (FundingExecutionPreview, error) {
+	if projection.options.Executions != nil && projection.options.Positions != nil {
+		return projection.createDurableCloseAuthority(ctx, principal, mode, lineageID)
+	}
+	authority, err := projection.currentPreviewAuthority(ctx, principal, previewID)
+	if err != nil || lineageID == "" || authority.preview.Mode != mode {
 		return FundingExecutionPreview{}, ErrFundingPreviewStale
 	}
 	available, err := projection.options.Reservations.List(ctx, principal, reservations.Mode(authority.preview.Mode))
@@ -217,15 +231,194 @@ func (projection *sharedFundingProjection) CreateCloseAuthority(ctx context.Cont
 	return closeAuthority, nil
 }
 
-func (projection *sharedFundingProjection) GetPreview(ctx context.Context, principal, id string) (FundingExecutionPreview, error) {
-	authority, err := projection.currentPreviewAuthority(ctx, principal, id, true)
+func (projection *sharedFundingProjection) GetCloseReservationRequirements(ctx context.Context, principal, mode, lineageID string) ([]FundingReservationRequirement, error) {
+	if projection.options.Executions == nil || projection.options.Positions == nil {
+		return nil, ErrFundingPreviewStale
+	}
+	authority, err := projection.currentDurableCloseAuthority(ctx, principal, mode, lineageID)
+	if err != nil {
+		return nil, err
+	}
+	requirements := make([]FundingReservationRequirement, 0, len(authority.legs))
+	for _, leg := range authority.legs {
+		requirements = append(requirements, leg.requirement)
+	}
+	return requirements, nil
+}
+
+func (projection *sharedFundingProjection) createDurableCloseAuthority(ctx context.Context, principal, mode, lineageID string) (FundingExecutionPreview, error) {
+	authority, err := projection.currentDurableCloseAuthority(ctx, principal, mode, lineageID)
 	if err != nil {
 		return FundingExecutionPreview{}, err
 	}
-	return authority.preview, nil
+	available, err := projection.options.Reservations.List(ctx, principal, reservations.Mode(mode))
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	selected := make([]reservations.Reservation, 0, 2)
+	frozen := make([]planning.ReservationAuthority, 0, 2)
+	facts := make([]work.Fact, 0, 2)
+	fences := make([]map[string]any, 0, 2)
+	requirements := make([]FundingReservationRequirement, 0, 2)
+	for _, leg := range authority.legs {
+		reservation, ok := projection.findReservationForDraft(available, principal, mode, leg.draft, reservations.KindClose, leg.requirement.Currency)
+		if !ok {
+			return FundingExecutionPreview{}, ErrFundingPreviewStale
+		}
+		selected = append(selected, reservation)
+		frozen = append(frozen, freezeReservation(reservation))
+		fences = append(fences, map[string]any{"accountId": leg.account.ID, "desiredStateRevision": leg.account.DesiredStateRevision, "runtimeGeneration": leg.account.RuntimeGeneration, "credentialVersion": leg.account.CredentialVersion})
+		requirements = append(requirements, leg.requirement)
+	}
+	if len(selected) != 2 {
+		return FundingExecutionPreview{}, ErrFundingPreviewStale
+	}
+	requestedAt := authority.now
+	identity := work.CanonicalRequestHash(struct {
+		Principal, Mode, LineageID string
+		ExecutionVersion           int64
+		RequestedAt                time.Time
+		Reservations               []planning.ReservationAuthority
+	}{principal, mode, lineageID, authority.execution.Version, requestedAt, frozen})
+	cursor := "funding_close_" + identity
+	for index, item := range frozen {
+		payload, marshalErr := json.Marshal(item)
+		if marshalErr != nil {
+			return FundingExecutionPreview{}, marshalErr
+		}
+		facts = append(facts, work.Fact{FactID: fmt.Sprintf("fact_%s_%d", cursor, index), Cursor: cursor, ProductID: "funding", Mode: mode, Kind: "funding.unwind-reservation", AccountID: item.AccountID, Payload: payload, EffectiveAt: requestedAt})
+	}
+	payload, err := json.Marshal(work.FundingCloseIntent{LineageID: lineageID, Reason: "browser_request", RequestedAt: requestedAt})
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	encodedFences, err := json.Marshal(fences)
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	return FundingExecutionPreview{PreviewID: "funding_close_preview_" + identity[:16], CanSubmit: true, Blockers: []string{}, Warnings: []string{}, Mode: mode, ExpiresAt: authority.now.Add(30 * time.Second), CatalogRevision: authority.snapshot.Revision, FactsRevision: identity, ReservationRequirements: requirements, PrincipalID: principal, Facts: facts, AccountFences: encodedFences, WorkPayload: payload}, nil
 }
 
-func (projection *sharedFundingProjection) currentPreviewAuthority(ctx context.Context, principal, id string, requireOpenReservations bool) (previewAuthority, error) {
+func (projection *sharedFundingProjection) currentDurableCloseAuthority(ctx context.Context, principal, mode, lineageID string) (fundingDurableCloseAuthority, error) {
+	if principal == "" || lineageID == "" || (mode != "test" && mode != "live") || projection.options.Executions == nil || projection.options.Positions == nil {
+		return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+	}
+	execution, err := projection.options.Executions.GetFundingExecution(ctx, principal, orders.Mode(mode), lineageID)
+	if err != nil || execution.PrincipalID != principal || string(execution.Mode) != mode || execution.LineageID != lineageID || execution.State != work.FundingExecutionHedged || len(execution.Legs) != 2 {
+		return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+	}
+	positions, err := projection.options.Positions.ListContext(ctx, portfolio.Mode(mode), "", "funding")
+	if err != nil {
+		return fundingDurableCloseAuthority{}, err
+	}
+	snapshot, err := projection.options.Catalog.Snapshot(ctx)
+	if err != nil {
+		return fundingDurableCloseAuthority{}, err
+	}
+	authority := fundingDurableCloseAuthority{execution: execution, snapshot: snapshot, now: projection.options.Now().UTC(), legs: make([]fundingCloseLegAuthority, 0, 2)}
+	seen := make(map[string]struct{}, 2)
+	for _, executionLeg := range execution.Legs {
+		draft := executionLeg.Draft
+		identity := draft.AccountID + "\x00" + draft.InstrumentID
+		if draft.AccountID == "" || draft.InstrumentID == "" {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		seen[identity] = struct{}{}
+		account, accountErr := projection.options.Accounts.Get(ctx, draft.AccountID)
+		if accountErr != nil || account.State != accounts.StateActive || account.DesiredStateRevision != draft.DesiredStateRevision || int(account.RuntimeGeneration) != draft.RuntimeGeneration || account.CredentialVersion != draft.CredentialVersion {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		position, ok := currentFundingPosition(positions, mode, lineageID, draft)
+		if !ok {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		positionQuantity, positionErr := decimal.NewFromString(position.Quantity)
+		draftQuantity, quantityErr := decimal.NewFromString(draft.Quantity)
+		draftNotional, notionalErr := decimal.NewFromString(draft.Notional)
+		directionMatches := (draft.Side == "buy" && positionQuantity.IsPositive()) || (draft.Side == "sell" && positionQuantity.IsNegative())
+		if positionErr != nil || quantityErr != nil || notionalErr != nil || !draftQuantity.IsPositive() || !draftNotional.IsPositive() || !positionQuantity.Abs().Equal(draftQuantity) || !directionMatches || position.SettlementCurrency == "" {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		if !currentFundingInstrument(snapshot, draft) {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		market, marketErr := projection.options.MarketData.Get(ctx, marketdata.Query{Venue: draft.Venue, Environment: draft.VenueEnvironment, Product: "perp", InstrumentID: draft.InstrumentID})
+		if marketErr != nil || market.Venue != draft.Venue || market.Environment != draft.VenueEnvironment || market.Product != "perp" || market.InstrumentID != draft.InstrumentID || market.ObservedAt.IsZero() {
+			return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+		}
+		authority.legs = append(authority.legs, fundingCloseLegAuthority{draft: draft, account: account, position: position, requirement: reservationRequirement(draft.AccountID, draft.Venue, draft.VenueEnvironment, draft.InstrumentID, reservations.KindClose, mode, draft.Quantity, draft.Notional, position.SettlementCurrency)})
+	}
+	if len(authority.legs) != 2 {
+		return fundingDurableCloseAuthority{}, ErrFundingPreviewStale
+	}
+	return authority, nil
+}
+
+func currentFundingPosition(positions []portfolio.Position, mode, lineageID string, draft work.FundingOrderDraft) (portfolio.Position, bool) {
+	for _, position := range positions {
+		if position.LineageID == lineageID && position.ProductID == "funding" && string(position.Mode) == mode && position.AccountID == draft.AccountID && position.InstrumentID == draft.InstrumentID && position.Quantity != "0" {
+			return position, true
+		}
+	}
+	return portfolio.Position{}, false
+}
+
+func currentFundingInstrument(snapshot catalog.Snapshot, draft work.FundingOrderDraft) bool {
+	for _, instrument := range snapshot.Instruments {
+		if instrument.Ready && instrument.Product == "perp" && instrument.Venue == draft.Venue && instrument.Environment == draft.VenueEnvironment && instrument.InstrumentID == draft.InstrumentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (projection *sharedFundingProjection) GetPreview(ctx context.Context, principal, id string) (FundingExecutionPreview, error) {
+	authority, err := projection.currentPreviewAuthority(ctx, principal, id)
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	return projection.finalizeOpenPreview(ctx, principal, authority)
+}
+
+func (projection *sharedFundingProjection) finalizeOpenPreview(ctx context.Context, principal string, authority previewAuthority) (FundingExecutionPreview, error) {
+	available, err := projection.options.Reservations.List(ctx, principal, reservations.Mode(authority.preview.Mode))
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	if len(authority.preview.Plan.Legs) != 2 {
+		return FundingExecutionPreview{}, ErrFundingPreviewStale
+	}
+	longReservation, longOK := projection.findExactOpenReservation(available, principal, authority.preview.Mode, authority.preview.Plan.Legs[0], authority.longCurrency)
+	shortReservation, shortOK := projection.findExactOpenReservation(available, principal, authority.preview.Mode, authority.preview.Plan.Legs[1], authority.shortCurrency)
+	if !longOK || !shortOK {
+		return FundingExecutionPreview{}, ErrFundingPreviewStale
+	}
+	authorities := []planning.ReservationAuthority{freezeReservation(longReservation), freezeReservation(shortReservation)}
+	planningFact := planning.NewPlanningFact(authority.input, principal, longReservation.ReservationID, shortReservation.ReservationID, authorities, feeAssumptions(authority.input))
+	plan, err := calculation.ComputeWithAdmission(planningFact.Input, projection.options.Admission)
+	if err != nil || !plan.CanSubmit || len(plan.Legs) != 2 {
+		return FundingExecutionPreview{}, ErrFundingPreviewStale
+	}
+	payload, err := json.Marshal(planning.OpenIntent{PreviewID: plan.PreviewID, OpportunityID: plan.OpportunityID, LongAccountID: authority.request.LongAccountID, ShortAccountID: authority.request.ShortAccountID, CanonicalMarketID: plan.RouteID, NotionalPerLeg: authority.input.RequestedNotionalPerLeg.String(), MaxSlippageBps: fmt.Sprint(authority.request.MaxSlippageBps), HoldThroughSettlement: authority.request.HoldThroughSettlement})
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	planningPayload, err := json.Marshal(planningFact)
+	if err != nil {
+		return FundingExecutionPreview{}, err
+	}
+	frozenCursor := "funding_preview_" + plan.NormalizedHash
+	preview := authority.preview
+	preview.Plan = plan
+	preview.Facts = []work.Fact{{FactID: "fact_" + frozenCursor, Cursor: frozenCursor, ProductID: "funding", Mode: preview.Mode, Kind: planning.FactKind, Payload: planningPayload, EffectiveAt: preview.Plan.ObservedAt.UTC()}}
+	preview.WorkPayload = payload
+	return preview, nil
+}
+
+func (projection *sharedFundingProjection) currentPreviewAuthority(ctx context.Context, principal, id string) (previewAuthority, error) {
 	projection.mu.Lock()
 	projection.evictExpiredPreviewsLocked(projection.options.Now().UTC())
 	authority, ok := projection.previews[id]
@@ -241,12 +434,21 @@ func (projection *sharedFundingProjection) currentPreviewAuthority(ctx context.C
 	current := false
 	for _, candidate := range candidates {
 		if candidate.input.OpportunityID == authority.preview.OpportunityID && candidate.factsRevision == authority.factsRevision && candidate.plan.RouteID == authority.preview.Plan.RouteID {
+			input := candidate.input
+			input.RequestedNotionalPerLeg = authority.input.RequestedNotionalPerLeg
+			plan, computeErr := calculation.ComputeWithAdmission(input, projection.options.Admission)
+			if computeErr != nil || !plan.CanSubmit || plan.NormalizedHash != authority.preview.Plan.NormalizedHash || len(plan.Legs) != 2 || plan.Legs[0].AccountID != authority.request.LongAccountID || plan.Legs[1].AccountID != authority.request.ShortAccountID {
+				break
+			}
+			authority.input = input
+			authority.preview.Plan = plan
+			authority.longCurrency = candidate.longCurrency
+			authority.shortCurrency = candidate.shortCurrency
 			current = true
 			break
 		}
 	}
-	reservationsCurrent := !requireOpenReservations || (projection.reservationCurrent(ctx, authority.longReservation) && projection.reservationCurrent(ctx, authority.shortReservation))
-	if !current || !projection.accountCurrent(ctx, authority.longAccount) || !projection.accountCurrent(ctx, authority.shortAccount) || !reservationsCurrent {
+	if !current || !projection.accountCurrent(ctx, authority.longAccount) || !projection.accountCurrent(ctx, authority.shortAccount) {
 		projection.evictPreview(id)
 		return previewAuthority{}, ErrFundingPreviewStale
 	}
@@ -331,7 +533,7 @@ func (projection *sharedFundingProjection) candidates(ctx context.Context, princ
 				Long    marketdata.Fact
 				Short   marketdata.Fact
 			}{snapshot.Revision, long.fact, short.fact})
-			items = append(items, fundingCandidate{input: input, plan: plan, factsRevision: revision})
+			items = append(items, fundingCandidate{input: input, plan: plan, factsRevision: revision, longCurrency: long.instrument.QuoteAsset, shortCurrency: short.instrument.QuoteAsset})
 		}
 	}
 	return items, snapshot, nil
@@ -415,27 +617,29 @@ func fundingLeg(account accounts.Account, instrument catalog.Instrument, fact ma
 	return calculation.LegFact{AccountFence: calculation.AccountFence{AccountID: account.ID, RuntimeGeneration: int(account.RuntimeGeneration)}, Venue: instrument.Venue, VenueEnvironment: instrument.Environment, MarketProduct: instrument.Product, InstrumentID: instrument.InstrumentID, Symbol: instrument.Symbol, Current: calculation.FundingPoint{Rate: rate, ObservedAt: fact.FundingObservedAt, FundingTime: fact.FundingTime, NextFunding: fact.NextFundingTime}, History: history, MarketObservedAt: fact.ObservedAt, MarkPrice: mark, BBO: calculation.Quote{BidPrice: bid, BidSize: bidSize, AskPrice: ask, AskSize: askSize}, Depth: depth, QuantityIncrement: quantityIncrement, MinQuantity: minQuantity, MinNotional: minNotional}, nil
 }
 
-func (projection *sharedFundingProjection) validateAuthority(ctx context.Context, principal, mode string, input calculation.Input, plan calculation.Plan, available []reservations.Reservation) (accounts.Account, accounts.Account, reservations.Reservation, reservations.Reservation, error) {
+func (projection *sharedFundingProjection) validateAccounts(ctx context.Context, mode string, input calculation.Input) (accounts.Account, accounts.Account, error) {
 	longAccount, err := projection.options.Accounts.Get(ctx, input.Long.AccountFence.AccountID)
 	if err != nil {
-		return accounts.Account{}, accounts.Account{}, reservations.Reservation{}, reservations.Reservation{}, ErrFundingPreviewStale
+		return accounts.Account{}, accounts.Account{}, ErrFundingPreviewStale
 	}
 	shortAccount, err := projection.options.Accounts.Get(ctx, input.Short.AccountFence.AccountID)
 	if err != nil || !validFundingAccount(longAccount, mode, input.Long) || !validFundingAccount(shortAccount, mode, input.Short) {
-		return accounts.Account{}, accounts.Account{}, reservations.Reservation{}, reservations.Reservation{}, ErrFundingPreviewStale
+		return accounts.Account{}, accounts.Account{}, ErrFundingPreviewStale
 	}
-	longReservation, longOK := projection.findReservation(available, principal, mode, input.Long)
-	shortReservation, shortOK := projection.findReservation(available, principal, mode, input.Short)
-	if !longOK || !shortOK || !reservationSufficient(longReservation, plan.Legs[0].Quantity, plan.Legs[0].Notional) || !reservationSufficient(shortReservation, plan.Legs[1].Quantity, plan.Legs[1].Notional) {
-		return accounts.Account{}, accounts.Account{}, reservations.Reservation{}, reservations.Reservation{}, ErrFundingPreviewStale
-	}
-	return longAccount, shortAccount, longReservation, shortReservation, nil
+	return longAccount, shortAccount, nil
 }
 
-func (projection *sharedFundingProjection) findReservation(available []reservations.Reservation, principal, mode string, leg calculation.LegFact) (reservations.Reservation, bool) {
+func (projection *sharedFundingProjection) findExactOpenReservation(available []reservations.Reservation, principal, mode string, leg calculation.PlannedLeg, currency string) (reservations.Reservation, bool) {
+	expectedScope := reservations.NettingScope{AccountID: leg.AccountID, Venue: leg.Venue, InstrumentID: leg.InstrumentID, VenueEnvironment: leg.VenueEnvironment}
+	fact := calculation.LegFact{AccountFence: calculation.AccountFence{AccountID: leg.AccountID}, Venue: leg.Venue, VenueEnvironment: leg.VenueEnvironment, InstrumentID: leg.InstrumentID}
 	sort.Slice(available, func(i, j int) bool { return available[i].ReservationID < available[j].ReservationID })
 	for _, item := range available {
-		if validFundingReservation(item, principal, mode, leg, reservations.KindOpen, projection.options.Now().UTC()) {
+		if !validFundingReservation(item, principal, mode, fact, reservations.KindOpen, projection.options.Now().UTC()) || item.Scope != expectedScope || item.Quantity == nil || item.Notional == nil || item.Currency == nil || *item.Currency != currency {
+			continue
+		}
+		quantity, quantityErr := decimal.NewFromString(*item.Quantity)
+		notional, notionalErr := decimal.NewFromString(*item.Notional)
+		if quantityErr == nil && notionalErr == nil && quantity.Equal(leg.Quantity) && notional.Equal(leg.Notional) {
 			return item, true
 		}
 	}
@@ -465,6 +669,65 @@ func (projection *sharedFundingProjection) findReservationForAmount(available []
 		}
 	}
 	return reservations.Reservation{}, false
+}
+
+func (projection *sharedFundingProjection) findReservationForDraft(available []reservations.Reservation, principal, mode string, draft work.FundingOrderDraft, kind reservations.Kind, currency string) (reservations.Reservation, bool) {
+	quantity, quantityErr := decimal.NewFromString(draft.Quantity)
+	notional, notionalErr := decimal.NewFromString(draft.Notional)
+	if quantityErr != nil || notionalErr != nil || !quantity.IsPositive() || !notional.IsPositive() || currency == "" {
+		return reservations.Reservation{}, false
+	}
+	expectedScope := reservations.NettingScope{AccountID: draft.AccountID, Venue: draft.Venue, InstrumentID: draft.InstrumentID, VenueEnvironment: draft.VenueEnvironment}
+	fact := calculation.LegFact{AccountFence: calculation.AccountFence{AccountID: draft.AccountID}, Venue: draft.Venue, VenueEnvironment: draft.VenueEnvironment, InstrumentID: draft.InstrumentID}
+	sort.Slice(available, func(i, j int) bool { return available[i].ReservationID < available[j].ReservationID })
+	for _, item := range available {
+		if !validFundingReservation(item, principal, mode, fact, kind, projection.options.Now().UTC()) || item.Scope != expectedScope || item.Quantity == nil || item.Notional == nil || item.Currency == nil || *item.Currency != currency {
+			continue
+		}
+		reservedQuantity, reservedQuantityErr := decimal.NewFromString(*item.Quantity)
+		reservedNotional, reservedNotionalErr := decimal.NewFromString(*item.Notional)
+		if reservedQuantityErr == nil && reservedNotionalErr == nil && reservedQuantity.Equal(quantity) && reservedNotional.Equal(notional) {
+			return item, true
+		}
+	}
+	return reservations.Reservation{}, false
+}
+
+func reservationScopeRequirements(plan calculation.Plan, kind reservations.Kind, mode string) []FundingReservationScopeRequirement {
+	if len(plan.Legs) != 2 {
+		return []FundingReservationScopeRequirement{}
+	}
+	result := make([]FundingReservationScopeRequirement, 0, 2)
+	for _, leg := range plan.Legs {
+		result = append(result, FundingReservationScopeRequirement{
+			AccountID: leg.AccountID, ProductID: "funding", ReservationKind: kind, Mode: mode,
+			NettingScope: reservations.NettingScope{AccountID: leg.AccountID, Venue: leg.Venue, InstrumentID: leg.InstrumentID, VenueEnvironment: leg.VenueEnvironment},
+		})
+	}
+	return result
+}
+
+func reservationRequirements(_ calculation.Input, plan calculation.Plan, kind reservations.Kind, mode string, currencies ...string) []FundingReservationRequirement {
+	if len(plan.Legs) != 2 {
+		return []FundingReservationRequirement{}
+	}
+	result := make([]FundingReservationRequirement, 0, 2)
+	for index, leg := range plan.Legs {
+		currency := ""
+		if index < len(currencies) {
+			currency = currencies[index]
+		}
+		requirement := reservationRequirement(leg.AccountID, leg.Venue, leg.VenueEnvironment, leg.InstrumentID, kind, mode, leg.Quantity.String(), leg.Notional.String(), currency)
+		result = append(result, requirement)
+	}
+	return result
+}
+
+func reservationRequirement(accountID, venue, environment, instrumentID string, kind reservations.Kind, mode, quantity, notional, currency string) FundingReservationRequirement {
+	return FundingReservationRequirement{
+		AccountID: accountID, ProductID: "funding", ReservationKind: kind, Mode: mode, Quantity: quantity, Notional: notional, Currency: currency,
+		NettingScope: reservations.NettingScope{AccountID: accountID, Venue: venue, InstrumentID: instrumentID, VenueEnvironment: environment},
+	}
 }
 
 func reservationSufficient(item reservations.Reservation, quantity, notional decimal.Decimal) bool {

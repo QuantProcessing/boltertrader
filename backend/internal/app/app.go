@@ -60,6 +60,7 @@ type Dependencies struct {
 	MarketDataSource      marketdata.Source
 	MarketDataProbe       marketDataRouteProbe
 	RuntimeProbe          runtimeRouteProbe
+	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
 	FundingGateway        work.CommandGateway
 	ReconciliationGateway orders.ReconciliationGateway
@@ -70,7 +71,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -185,6 +186,14 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
+	activityLog, err := httpapi.NewActivityLog(1024, now, hub)
+	if err != nil {
+		return nil, err
+	}
+	runtimeProjection := dependencies.RuntimeProjection
+	if runtimeProjection == nil {
+		runtimeProjection = httpapi.FailClosedAccountRuntimeProjectionReader{}
+	}
 	readiness := platformsystem.NewReadiness()
 	databaseReady := dependencies.Database != nil
 	secretReady := dependencies.SecretProvider != nil
@@ -209,7 +218,16 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	})
 	readiness.Update("accounts", readinessComponent(databaseReady && secretReady, "durable_account_dependencies_missing"))
 	readiness.Update("fundingWorker", readinessComponent(false, "worker_not_registered"))
-	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{Catalog: catalogProjection, MarketData: marketService, Readiness: readiness, Realtime: hub})
+	authenticate := httpapi.SessionAuthenticator(sessionService)
+	principal := func(r *http.Request) (string, string, error) {
+		cookie, cookieErr := r.Cookie(httpapi.SessionCookieName)
+		if cookieErr != nil {
+			return "", "", cookieErr
+		}
+		result, currentErr := sessionService.Current(r.Context(), cookie.Value)
+		return result.Principal.ID, result.Principal.Mode, currentErr
+	}
+	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{Catalog: catalogProjection, MarketData: marketService, Readiness: readiness, Realtime: hub, Principal: principal})
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +248,9 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	fundingProcessor.WithExecutionEvidence(portfolioProjection, ledgerService).WithAdmission(fundingAdmission)
+	fundingProcessor.WithExecutionEvidence(portfolioProjection, ledgerService).WithAdmission(fundingAdmission).WithActivityPublisher(func(command orders.Command) {
+		httpapi.PublishCommandActivity(activityLog, command)
+	})
 	reconciliationGateway := dependencies.ReconciliationGateway
 	if reconciliationGateway == nil {
 		reconciliationGateway, _ = dependencies.FundingGateway.(orders.ReconciliationGateway)
@@ -249,19 +269,11 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	fundingPlanProducer.WithAdmission(fundingAdmission).WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))
 	fundingProjection, err := httpapi.NewSharedFundingProjection(httpapi.SharedFundingProjectionOptions{
 		Catalog: catalogProjection, MarketData: marketService, Accounts: accountService,
-		Reservations: reservationStore, Admission: fundingAdmission, Now: now,
+		Reservations: reservationStore, Executions: fundingExecutionStore, Positions: portfolioProjection,
+		Admission: fundingAdmission, Now: now,
 	})
 	if err != nil {
 		return nil, err
-	}
-	authenticate := httpapi.SessionAuthenticator(sessionService)
-	principal := func(r *http.Request) (string, string, error) {
-		cookie, cookieErr := r.Cookie(httpapi.SessionCookieName)
-		if cookieErr != nil {
-			return "", "", cookieErr
-		}
-		result, currentErr := sessionService.Current(r.Context(), cookie.Value)
-		return result.Principal.ID, result.Principal.Mode, currentErr
 	}
 	workService := work.NewWithStoreGatewayProcessorAndPlanProducer(workapi.ContractVersion, 15*time.Second, workStore, fundingProcessor, fundingPlanProducer, dependencies.FundingGateway)
 	workService.SetDependencyReadinessEvaluator(work.DependencyReadinessFunc(func(ctx context.Context) error {
@@ -294,11 +306,12 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	workService.SetLiveWritesEnabled(cfg.FundingLiveEnabled)
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
-		Accounts:   &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }},
-		Audit:      &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
-		PublicData: publicAPI,
-		Trading:    &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService)},
-		Funding:    &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService)},
+		Accounts:    &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
+		Audit:       &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
+		PublicData:  publicAPI,
+		Trading:     &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Funding:     &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Projections: &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
 	})
 	if err != nil {
 		return nil, err
@@ -458,7 +471,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
 	if err != nil {
 		return err
 	}

@@ -19,6 +19,8 @@ type AccountRoutesOptions struct {
 	Authenticate      func(*http.Request) (string, error)
 	AuthorizeMutation func(*http.Request) error
 	Blockers          func(context.Context, string) (platformaccounts.Blockers, error)
+	Activity          ActivityPublisher
+	Mode              string
 }
 
 func RegisterAccountRoutes(mux *http.ServeMux, options AccountRoutesOptions) error {
@@ -105,6 +107,7 @@ func (routes *accountRoutes) create(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, err)
 		return
 	}
+	routes.publish(principal, "account.created", account)
 	routes.writeAccount(w, r, http.StatusCreated, account)
 }
 
@@ -123,6 +126,7 @@ func (routes *accountRoutes) update(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, err)
 		return
 	}
+	routes.publish(principal, "account.updated", account)
 	routes.writeAccount(w, r, http.StatusOK, account)
 }
 
@@ -149,6 +153,7 @@ func (routes *accountRoutes) validate(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, err)
 		return
 	}
+	routes.publish(principal, "account.validated", account)
 	routes.writeAccount(w, r, http.StatusOK, account)
 }
 
@@ -168,6 +173,7 @@ func (routes *accountRoutes) rotate(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, err)
 		return
 	}
+	routes.publish(principal, "account.rotated", account)
 	routes.writeAccount(w, r, http.StatusOK, account)
 }
 
@@ -202,6 +208,11 @@ func (routes *accountRoutes) blockedTransition(w http.ResponseWriter, r *http.Re
 		routes.failure(w, r, err)
 		return
 	}
+	kind := "account.draining"
+	if action == "disable" {
+		kind = "account.disabled"
+	}
+	routes.publish(principal, kind, account)
 	routes.writeAccount(w, r, http.StatusOK, account)
 }
 
@@ -228,7 +239,15 @@ func (routes *accountRoutes) remove(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, err)
 		return
 	}
+	routes.publish(principal, "account.removed", account)
 	routes.writeAccount(w, r, http.StatusAccepted, account)
+}
+
+func (routes *accountRoutes) publish(principal, kind string, account platformaccounts.Account) {
+	if routes.options.Activity == nil {
+		return
+	}
+	_, _ = routes.options.Activity.Publish(ActivityRecord{PrincipalID: principal, Mode: routes.options.Mode, Kind: kind, AccountID: account.ID, ResourceID: account.ID, Payload: account.Public()})
 }
 
 func (routes *accountRoutes) principal(w http.ResponseWriter, r *http.Request) (string, bool) {

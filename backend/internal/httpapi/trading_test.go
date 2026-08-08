@@ -90,6 +90,34 @@ func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
 	}
 }
 
+func TestTradingRoutesAcceptExactFundingReservationRequirement(t *testing.T) {
+	reservationService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
+	mux := http.NewServeMux()
+	err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservationService,
+		Commands:     orders.NewService(orders.NewMemoryStore(), nil, time.Now),
+		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
+		AuthorizeMutation: func(*http.Request) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"accountId":"account-long","productId":"funding","reservationKind":"close","nettingScope":{"accountId":"account-long","venue":"venue-a","instrumentId":"btc-a","positionMode":null,"settlementScope":null,"venueEnvironment":"testnet"},"quantity":"0.5","notional":"50","currency":"USDT","mode":"test"}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
+	request.Header.Set("Idempotency-Key", "funding-close-long")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create exact Funding reservation=%d body=%s", response.Code, response.Body.String())
+	}
+	items, err := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
+	if err != nil || len(items) != 1 || items[0].Quantity == nil || *items[0].Quantity != "0.5" || items[0].Notional == nil || *items[0].Notional != "50" || items[0].Currency == nil || *items[0].Currency != "USDT" {
+		t.Fatalf("persisted reservations=%+v err=%v", items, err)
+	}
+}
+
 func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 	reservationsService := reservations.NewService(reservations.NewMemoryStore(), time.Now)
 	allow := false
@@ -158,6 +186,41 @@ func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
 	}
 	if _, err := commandService.Get(context.Background(), "command_0000000000000001"); !errors.Is(err, orders.ErrNotFound) {
 		t.Fatalf("command side effect occurred: %v", err)
+	}
+}
+
+func TestCommandDetailUsesRedactedBrowserProjection(t *testing.T) {
+	commandService := orders.NewService(orders.NewMemoryStore(), nil, time.Now)
+	command, _, err := commandService.Create(context.Background(), orders.CreateRequest{
+		PrincipalID: "principal-a", Mode: orders.ModeTest, AccountID: "account-a", ProductID: "funding", LineageID: "lineage-a",
+		IdempotencyKey: "command-detail", Method: http.MethodPost, Path: "/api/v1/commands", CommandKind: "order.place", Payload: []byte(`{"private":"payload"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commandService.Transition(context.Background(), orders.TransitionRequest{
+		CommandID: command.CommandID, State: orders.StateSubmitted,
+		Evidence: orders.ExecutionEvidence{CommandID: command.CommandID, GatewayOrderID: "gateway-order", ClientOrderID: "client-order", State: "submitted", ResourceVersion: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterTradingRoutes(mux, TradingOptions{
+		Reservations: reservations.NewService(reservations.NewMemoryStore(), time.Now), Commands: commandService,
+		Portfolio: portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
+		Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }, AuthorizeMutation: func(*http.Request) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/commands/"+command.CommandID, nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"commandId":"`+command.CommandID+`"`) {
+		t.Fatalf("command detail=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, forbidden := range []string{`"payload"`, `"executionEvidence"`, `"gatewayOrderId"`, `"clientOrderId"`, `"principalId"`} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("command detail leaked %s: %s", forbidden, response.Body.String())
+		}
 	}
 }
 

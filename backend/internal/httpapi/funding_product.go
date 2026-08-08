@@ -9,17 +9,42 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/calculation"
 )
 
 type FundingOpportunity struct {
-	OpportunityID     string `json:"opportunityId"`
-	CanonicalMarketID string `json:"canonicalMarketId"`
-	LongVenue         string `json:"longVenue,omitempty"`
-	ShortVenue        string `json:"shortVenue,omitempty"`
-	LongFundingRate   string `json:"longFundingRate,omitempty"`
-	ShortFundingRate  string `json:"shortFundingRate,omitempty"`
+	OpportunityID           string                               `json:"opportunityId"`
+	CanonicalMarketID       string                               `json:"canonicalMarketId"`
+	LongAccountID           string                               `json:"longAccountId"`
+	ShortAccountID          string                               `json:"shortAccountId"`
+	LongInstrumentID        string                               `json:"longInstrumentId"`
+	ShortInstrumentID       string                               `json:"shortInstrumentId"`
+	LongVenue               string                               `json:"longVenue,omitempty"`
+	ShortVenue              string                               `json:"shortVenue,omitempty"`
+	LongFundingRate         string                               `json:"longFundingRate,omitempty"`
+	ShortFundingRate        string                               `json:"shortFundingRate,omitempty"`
+	ReservationRequirements []FundingReservationScopeRequirement `json:"reservationRequirements"`
+}
+
+type FundingReservationScopeRequirement struct {
+	AccountID       string                    `json:"accountId"`
+	ProductID       string                    `json:"productId"`
+	ReservationKind reservations.Kind         `json:"reservationKind"`
+	NettingScope    reservations.NettingScope `json:"nettingScope"`
+	Mode            string                    `json:"mode"`
+}
+
+type FundingReservationRequirement struct {
+	AccountID       string                    `json:"accountId"`
+	ProductID       string                    `json:"productId"`
+	ReservationKind reservations.Kind         `json:"reservationKind"`
+	NettingScope    reservations.NettingScope `json:"nettingScope"`
+	Mode            string                    `json:"mode"`
+	Quantity        string                    `json:"quantity"`
+	Notional        string                    `json:"notional"`
+	Currency        string                    `json:"currency"`
 }
 
 type FundingPreviewRequest struct {
@@ -34,20 +59,21 @@ type FundingPreviewRequest struct {
 }
 
 type FundingExecutionPreview struct {
-	PreviewID       string           `json:"previewId"`
-	OpportunityID   string           `json:"opportunityId"`
-	CanSubmit       bool             `json:"canSubmit"`
-	Blockers        []string         `json:"blockers"`
-	Warnings        []string         `json:"warnings"`
-	Mode            string           `json:"mode"`
-	ExpiresAt       time.Time        `json:"expiresAt"`
-	CatalogRevision string           `json:"catalogRevision"`
-	FactsRevision   string           `json:"factsRevision"`
-	Plan            calculation.Plan `json:"plan"`
-	PrincipalID     string           `json:"-"`
-	Facts           []work.Fact      `json:"-"`
-	AccountFences   json.RawMessage  `json:"-"`
-	WorkPayload     json.RawMessage  `json:"-"`
+	PreviewID               string                          `json:"previewId"`
+	OpportunityID           string                          `json:"opportunityId"`
+	CanSubmit               bool                            `json:"canSubmit"`
+	Blockers                []string                        `json:"blockers"`
+	Warnings                []string                        `json:"warnings"`
+	Mode                    string                          `json:"mode"`
+	ExpiresAt               time.Time                       `json:"expiresAt"`
+	CatalogRevision         string                          `json:"catalogRevision"`
+	FactsRevision           string                          `json:"factsRevision"`
+	Plan                    calculation.Plan                `json:"plan"`
+	ReservationRequirements []FundingReservationRequirement `json:"reservationRequirements"`
+	PrincipalID             string                          `json:"-"`
+	Facts                   []work.Fact                     `json:"-"`
+	AccountFences           json.RawMessage                 `json:"-"`
+	WorkPayload             json.RawMessage                 `json:"-"`
 }
 
 type FundingProjection interface {
@@ -55,7 +81,8 @@ type FundingProjection interface {
 	GetOpportunity(context.Context, string, string, string) (FundingOpportunity, error)
 	CreatePreview(context.Context, string, FundingPreviewRequest) (FundingExecutionPreview, error)
 	GetPreview(context.Context, string, string) (FundingExecutionPreview, error)
-	CreateCloseAuthority(context.Context, string, string, string) (FundingExecutionPreview, error)
+	GetCloseReservationRequirements(context.Context, string, string, string) ([]FundingReservationRequirement, error)
+	CreateCloseAuthority(context.Context, string, string, string, string) (FundingExecutionPreview, error)
 }
 
 type FailClosedFundingProjection struct{}
@@ -73,7 +100,10 @@ func (FailClosedFundingProjection) CreatePreview(context.Context, string, Fundin
 func (FailClosedFundingProjection) GetPreview(context.Context, string, string) (FundingExecutionPreview, error) {
 	return FundingExecutionPreview{}, work.ErrDependencyUnavailable
 }
-func (FailClosedFundingProjection) CreateCloseAuthority(context.Context, string, string, string) (FundingExecutionPreview, error) {
+func (FailClosedFundingProjection) GetCloseReservationRequirements(context.Context, string, string, string) ([]FundingReservationRequirement, error) {
+	return nil, work.ErrDependencyUnavailable
+}
+func (FailClosedFundingProjection) CreateCloseAuthority(context.Context, string, string, string, string) (FundingExecutionPreview, error) {
 	return FundingExecutionPreview{}, work.ErrDependencyUnavailable
 }
 
@@ -83,6 +113,7 @@ type FundingRoutesOptions struct {
 	Principal         func(*http.Request) (principalID, mode string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Executions        work.FundingExecutionStore
+	Activity          ActivityPublisher
 }
 
 type fundingProductHandler struct{ options FundingRoutesOptions }
@@ -164,7 +195,7 @@ func (h *fundingProductHandler) createCommand(w http.ResponseWriter, r *http.Req
 	if !decodeTrading(w, r, &request) {
 		return
 	}
-	if request.PreviewID == "" || request.Action == "" || request.LineageID == "" || request.IdempotencyKey == "" {
+	if request.Action == "" || request.LineageID == "" || request.IdempotencyKey == "" {
 		fundingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
@@ -173,10 +204,14 @@ func (h *fundingProductHandler) createCommand(w http.ResponseWriter, r *http.Req
 		fundingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
+	if kind == "open" && request.PreviewID == "" {
+		fundingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+		return
+	}
 	var preview FundingExecutionPreview
 	var err error
 	if kind == "close" {
-		preview, err = h.options.Projection.CreateCloseAuthority(r.Context(), principal, request.PreviewID, request.LineageID)
+		preview, err = h.options.Projection.CreateCloseAuthority(r.Context(), principal, mode, request.PreviewID, request.LineageID)
 	} else {
 		preview, err = h.options.Projection.GetPreview(r.Context(), principal, request.PreviewID)
 	}
@@ -196,6 +231,9 @@ func (h *fundingProductHandler) createCommand(w http.ResponseWriter, r *http.Req
 		}
 		fundingError(w, status, code)
 		return
+	}
+	if !replay && h.options.Activity != nil {
+		_, _ = h.options.Activity.Publish(ActivityRecord{PrincipalID: principal, Mode: mode, Kind: "funding.command.enqueued", ProductID: "funding", ResourceID: item.WorkItemID, Payload: map[string]any{"workItemId": item.WorkItemID, "workKind": item.WorkKind, "lineageId": item.LineageID, "productId": item.ProductID, "state": publicFundingWorkItem(item).Status}})
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"meta": meta(r), "data": publicFundingWorkItem(item), "replayed": replay})
 }
@@ -234,11 +272,16 @@ func (h *fundingProductHandler) getLineage(w http.ResponseWriter, r *http.Reques
 		fundingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
+	closeRequirements, err := h.options.Projection.GetCloseReservationRequirements(r.Context(), principal, mode, r.PathValue("lineageId"))
+	if err != nil {
+		writeError(w, http.StatusConflict, "FUNDING_CLOSE_NOT_READY", "Funding lineage is not currently closeable", map[string]any{"blockers": []string{"CURRENT_CLOSE_AUTHORITY_UNAVAILABLE"}}, false, requestID(r))
+		return
+	}
 	publicItems := make([]work.WorkItem, len(items))
 	for index, item := range items {
 		publicItems[index] = publicFundingWorkItem(item)
 	}
-	data := map[string]any{"lineageId": r.PathValue("lineageId"), "workItems": publicItems}
+	data := map[string]any{"lineageId": r.PathValue("lineageId"), "workItems": publicItems, "closeReservationRequirements": closeRequirements}
 	if h.options.Executions != nil {
 		if execution, executionErr := h.options.Executions.GetFundingExecution(r.Context(), principal, orders.Mode(mode), r.PathValue("lineageId")); executionErr == nil {
 			data["execution"] = execution

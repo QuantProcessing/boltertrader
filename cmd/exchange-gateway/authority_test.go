@@ -120,6 +120,22 @@ func TestManagerAuthorityReadsSelectsExactEnvironmentAndProduct(t *testing.T) {
 	}
 }
 
+func TestManagerAuthorityReadsProjectsGatewayRuntimeFacts(t *testing.T) {
+	observedAt := time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC)
+	accounts := &fakeAuthorityAccounts{
+		runtime: account.RuntimeAccount{
+			Desired: account.DesiredRuntime{AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
+			State:   account.RuntimeStateActive, Ready: true, RuntimeVersion: 9, LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3, ObservedAt: observedAt,
+		},
+		status:     account.Status{Resource: account.Resource{AccountID: "account-a", Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true, WriteReady: true}},
+		capability: capability.Row{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", Operations: capability.Operations{Place: true, Cancel: true, Fills: true, Positions: true}},
+	}
+	projection, err := (managerAuthorityReads{manager: accounts}).Runtime("account-a")
+	if err != nil || projection.AccountID != "account-a" || projection.RuntimeVersion != 9 || projection.LastAppliedDesiredStateRevision != 7 || !projection.Readiness.Ready || !projection.WriteReadiness.Ready || len(projection.Capabilities) != 1 || !projection.Capabilities[0].WriteReady || !projection.ObservedAt.Equal(observedAt) {
+		t.Fatalf("Runtime()=%+v err=%v", projection, err)
+	}
+}
+
 type fakeAuthorityAccounts struct {
 	resources       []account.Resource
 	instrumentErr   error
@@ -129,6 +145,8 @@ type fakeAuthorityAccounts struct {
 	capability      capability.Row
 	resolvedAccount domain.AccountID
 	snapshots       map[domain.AccountID]catalog.Snapshot
+	runtime         account.RuntimeAccount
+	status          account.Status
 }
 
 func (accounts *fakeAuthorityAccounts) Accounts() []account.Resource { return accounts.resources }
@@ -151,6 +169,12 @@ func (accounts *fakeAuthorityAccounts) Perp(domain.AccountID) (exchange.PerpClie
 }
 func (accounts *fakeAuthorityAccounts) Capability(domain.AccountID) (capability.Row, error) {
 	return accounts.capability, nil
+}
+func (accounts *fakeAuthorityAccounts) Runtime(domain.AccountID) (account.RuntimeAccount, error) {
+	return accounts.runtime, nil
+}
+func (accounts *fakeAuthorityAccounts) Status(domain.AccountID) (account.Status, error) {
+	return accounts.status, nil
 }
 
 type fakeAuthorityPerp struct {
@@ -230,6 +254,13 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 		venues:      []authorityVenue{{Venue: "binance", Environment: "demo", Ready: true}},
 		instruments: []authorityInstrument{{InstrumentID: "BTC-USDT", Venue: "binance", Ready: true}},
 		marketData:  authorityMarketData{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.5", ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)},
+		runtime: authorityRuntimeProjection{
+			AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2, RuntimeVersion: 9,
+			Readiness: authorityProjectionReadiness{Ready: true}, WriteReadiness: authorityProjectionReadiness{Ready: true},
+			LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3,
+			Capabilities: []authorityRuntimeCapability{{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", WriteReady: true, Operations: capability.Operations{Place: true, Cancel: true, Fills: true, Positions: true}}},
+			ObservedAt:   time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC),
+		},
 	}
 	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{
 		Authority: authority,
@@ -278,6 +309,12 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 			}
 			if err := json.Unmarshal(data, &readiness); err != nil || !readiness.Ready {
 				t.Fatalf("market-data readiness=%+v err=%v", readiness, err)
+			}
+		}},
+		{path: "/internal/v1/accounts/runtime/account-a", assert: func(t *testing.T, data json.RawMessage) {
+			var runtime authorityRuntimeProjection
+			if err := json.Unmarshal(data, &runtime); err != nil || runtime.AccountID != "account-a" || runtime.RuntimeVersion != 9 || runtime.LastAppliedDesiredStateRevision != 7 || len(runtime.Capabilities) != 1 || !runtime.Capabilities[0].WriteReady || runtime.ObservedAt.IsZero() || strings.Contains(string(data), "secretRef") {
+				t.Fatalf("runtime projection=%+v body=%s err=%v", runtime, data, err)
 			}
 		}},
 	} {
@@ -405,6 +442,7 @@ type staticAuthorityReads struct {
 	venues      []authorityVenue
 	instruments []authorityInstrument
 	marketData  authorityMarketData
+	runtime     authorityRuntimeProjection
 	err         error
 }
 
@@ -418,6 +456,10 @@ func (reads staticAuthorityReads) Instruments() (authorityCatalogInstruments, er
 
 func (reads staticAuthorityReads) MarketData(context.Context, string, string, string, string) (authorityMarketData, error) {
 	return reads.marketData, reads.err
+}
+
+func (reads staticAuthorityReads) Runtime(string) (authorityRuntimeProjection, error) {
+	return reads.runtime, reads.err
 }
 
 func TestGatewayAuthorityCreateActivateAndReadRedactsOpaqueReference(t *testing.T) {

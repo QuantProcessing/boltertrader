@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
@@ -44,6 +45,17 @@ func (authority *adapterContractAuthority) Execute(_ context.Context, request ga
 		return gatewayhttp.AuthorityResponse{Body: marketdata.Fact{
 			Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.05",
 			ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
+		}}, nil
+	case gatewayhttp.AuthorityGetRuntimeAccount:
+		if request.AccountID != "account-a" {
+			return gatewayhttp.AuthorityResponse{}, errors.New("unexpected runtime account")
+		}
+		return gatewayhttp.AuthorityResponse{Body: map[string]any{
+			"accountId": "account-a", "desiredStateRevision": 7, "runtimeGeneration": 3, "credentialVersion": 2, "runtimeVersion": 9,
+			"readiness": map[string]any{"ready": true}, "writeReadiness": map[string]any{"ready": true},
+			"lastAppliedDesiredStateRevision": 7, "lastAppliedRuntimeGeneration": 3, "blockedReason": nil,
+			"capabilities": []map[string]any{{"rowId": "binance:perp:USDT", "venue": "binance", "product": "perp", "settlement": "USDT", "writeReady": true, "operations": map[string]any{"place": true, "cancel": true, "fills": true, "positions": true}}},
+			"observedAt":   time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC),
 		}}, nil
 	default:
 		return gatewayhttp.AuthorityResponse{}, errors.New("unexpected authority operation")
@@ -97,12 +109,17 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 	if err != nil || fact.MarkPrice != "100.05" || !fact.ObservedAt.Equal(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)) {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
+	runtimes, err := adapter.ListAccountRuntimes(context.Background(), "browser-a", "test", "account-a")
+	if err != nil || len(runtimes) != 1 || runtimes[0].RuntimeVersion != 9 || runtimes[0].LastAppliedDesiredStateRevision != 7 || !runtimes[0].ObservedAt.Equal(time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC)) {
+		t.Fatalf("runtimes=%+v err=%v", runtimes, err)
+	}
 	wantOperations := []gatewayhttp.AuthorityOperation{
 		gatewayhttp.AuthorityMarketDataReadiness,
 		gatewayhttp.AuthorityRuntimeReadiness,
 		gatewayhttp.AuthorityCatalogVenues,
 		gatewayhttp.AuthorityCatalogInstruments,
 		gatewayhttp.AuthorityMarketData,
+		gatewayhttp.AuthorityGetRuntimeAccount,
 	}
 	if len(authority.requests) != len(wantOperations) {
 		t.Fatalf("authority requests=%+v", authority.requests)
@@ -156,6 +173,43 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	if err != nil || fact.MarkPrice != "100.05" {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
+}
+
+func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewayAccess(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	requests := make([]string, 0, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		requests = append(requests, r.URL.RequestURI())
+		switch r.URL.RequestURI() {
+		case "/internal/v1/accounts/runtime/account-a":
+			_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"place":true,"amend":false,"cancel":true,"open_orders":true,"order_history":true,"fills":true,"balances":true,"account":true,"positions":true,"funding":true,"account_funding_payments":true,"leverage":false,"private_stream":true,"margin_mode":false,"position_mode":false,"funds_transfer":false}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := adapter.ListAccountRuntimes(context.Background(), "browser-a", "test", "account-a")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListAccountRuntimes()=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.AccountID != "account-a" || item.DesiredStateRevision != 7 || item.RuntimeGeneration != 3 || item.RuntimeVersion != 9 || item.LastAppliedDesiredStateRevision != 7 || item.LastAppliedRuntimeGeneration != 3 || !item.Readiness.Ready || !item.WriteReadiness.Ready || len(item.Capabilities) != 1 || !item.Capabilities[0].WriteReady || !item.Capabilities[0].Operations.Cancel || !item.Capabilities[0].Operations.Fills || !item.ObservedAt.Equal(time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC)) {
+		t.Fatalf("runtime projection=%+v", item)
+	}
+	if _, err := adapter.ListAccountRuntimes(context.Background(), "browser-a", "live", "account-a"); err == nil {
+		t.Fatal("cross-mode runtime projection reached Gateway")
+	}
+	if len(requests) != 1 || requests[0] != "/internal/v1/accounts/runtime/account-a" {
+		t.Fatalf("Gateway projection requests=%+v", requests)
+	}
+	var _ httpapi.AccountRuntimeProjectionReader = adapter
 }
 
 func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T) {

@@ -100,6 +100,18 @@ func TestServiceRejectsCrossModeVenueEnvironment(t *testing.T) {
 	}
 }
 
+func TestServiceKeepsSingleAmountRuleOutsideFunding(t *testing.T) {
+	service := NewService(NewMemoryStore(), time.Now)
+	request := CreateRequest{
+		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
+		Scope:    NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "demo"},
+		Quantity: "0.5", Notional: "50", Currency: "USDT",
+	}
+	if _, err := service.Create(context.Background(), request); err == nil {
+		t.Fatal("non-Funding reservation accepted quantity and notional together")
+	}
+}
+
 func TestFreshServicesGenerateDistinctReservationIDs(t *testing.T) {
 	store := NewMemoryStore()
 	create := func(service *Service, key, instrument string) Reservation {

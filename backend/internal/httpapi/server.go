@@ -28,6 +28,7 @@ type Options struct {
 	PublicData      *PublicDataAPI
 	Trading         *TradingOptions
 	Funding         *FundingRoutesOptions
+	Projections     *BrowserProjectionRoutesOptions
 }
 
 type Server struct {
@@ -127,6 +128,14 @@ func (s *Server) register(options Options) error {
 			return err
 		}
 		for _, route := range []string{"GET /api/v1/products/funding/opportunities", "GET /api/v1/products/funding/opportunities/{opportunityId}", "POST /api/v1/products/funding/execution-previews", "POST /api/v1/products/funding/commands", "GET /api/v1/products/funding/commands/{commandId}", "GET /api/v1/products/funding/lineage/{lineageId}"} {
+			owned[route] = true
+		}
+	}
+	if options.Projections != nil {
+		if err := RegisterBrowserProjectionRoutes(s.mux, *options.Projections); err != nil {
+			return err
+		}
+		for _, route := range []string{"GET /api/v1/accounts/{accountId}/runtimes", "GET /api/v1/commands", "GET /api/v1/fills", "GET /api/v1/activity"} {
 			owned[route] = true
 		}
 	}

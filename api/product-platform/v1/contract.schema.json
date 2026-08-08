@@ -14,7 +14,7 @@
     "sources": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "conventions": {"$ref": "#/$defs/conventions"},
     "authority": {"$ref": "#/$defs/authority"},
-    "schemaIdentifiers": {"$ref": "#/$defs/stringSet"},
+    "schemaIdentifiers": {"$ref": "#/$defs/schemaIdentifiers"},
     "stableWorkerErrors": {
       "type": "object",
       "minProperties": 14,
@@ -49,6 +49,58 @@
   },
   "$defs": {
     "stringSet": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "schemaIdentifiers": {"type": "array", "minItems": 26, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "fundingReservationScopeRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "productId", "reservationKind", "nettingScope", "mode"],
+      "properties": {
+        "accountId": {"type": "string", "minLength": 1},
+        "productId": {"const": "funding"},
+        "reservationKind": {"const": "open"},
+        "nettingScope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accountId", "venue", "instrumentId", "positionMode", "settlementScope", "venueEnvironment"],
+          "properties": {
+            "accountId": {"type": "string", "minLength": 1},
+            "venue": {"type": "string", "minLength": 1},
+            "instrumentId": {"type": "string", "minLength": 1},
+            "positionMode": {"type": ["string", "null"]},
+            "settlementScope": {"type": ["string", "null"]},
+            "venueEnvironment": {"enum": ["demo", "testnet", "live"]}
+          }
+        },
+        "mode": {"enum": ["test", "live"]}
+      }
+    },
+    "fundingReservationRequirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "productId", "reservationKind", "nettingScope", "quantity", "notional", "currency", "mode"],
+      "properties": {
+        "accountId": {"type": "string", "minLength": 1},
+        "productId": {"const": "funding"},
+        "reservationKind": {"enum": ["open", "close"]},
+        "nettingScope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["accountId", "venue", "instrumentId", "positionMode", "settlementScope", "venueEnvironment"],
+          "properties": {
+            "accountId": {"type": "string", "minLength": 1},
+            "venue": {"type": "string", "minLength": 1},
+            "instrumentId": {"type": "string", "minLength": 1},
+            "positionMode": {"type": ["string", "null"]},
+            "settlementScope": {"type": ["string", "null"]},
+            "venueEnvironment": {"enum": ["demo", "testnet", "live"]}
+          }
+        },
+        "quantity": {"type": "string", "minLength": 1},
+        "notional": {"type": "string", "minLength": 1},
+        "currency": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["test", "live"]}
+      }
+    },
     "fieldAllowlists": {
       "type": "object",
       "minProperties": 1,

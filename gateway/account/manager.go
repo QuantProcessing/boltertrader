@@ -103,10 +103,14 @@ func (blockers RuntimeBlockers) Any() bool {
 }
 
 type RuntimeAccount struct {
-	Desired DesiredRuntime `json:"desired"`
-	State   RuntimeState   `json:"state"`
-	Ready   bool           `json:"ready"`
-	Reason  string         `json:"reason,omitempty"`
+	Desired                         DesiredRuntime `json:"desired"`
+	State                           RuntimeState   `json:"state"`
+	Ready                           bool           `json:"ready"`
+	Reason                          string         `json:"reason,omitempty"`
+	RuntimeVersion                  uint64         `json:"runtimeVersion"`
+	LastAppliedDesiredStateRevision uint64         `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    uint64         `json:"lastAppliedRuntimeGeneration"`
+	ObservedAt                      time.Time      `json:"observedAt"`
 }
 
 type RuntimeLifecycle interface {
@@ -530,7 +534,7 @@ func (manager *Manager) CreateRuntime(ctx context.Context, desired DesiredRuntim
 	if err := manager.validateAndActivate(ctx, desired); err != nil {
 		return RuntimeAccount{}, err
 	}
-	runtime := RuntimeAccount{Desired: desired, State: RuntimeStateActive, Ready: true}
+	runtime := appliedRuntime(desired, RuntimeStateActive, true, 1)
 	manager.mu.Lock()
 	manager.runtimes[desired.AccountID] = runtime
 	manager.mu.Unlock()
@@ -581,7 +585,7 @@ func (manager *Manager) RotateRuntime(ctx context.Context, desired DesiredRuntim
 	if err := manager.validateAndActivate(ctx, desired); err != nil {
 		return RuntimeAccount{}, err
 	}
-	runtime := RuntimeAccount{Desired: desired, State: RuntimeStateActive, Ready: true}
+	runtime := appliedRuntime(desired, RuntimeStateActive, true, current.RuntimeVersion+1)
 	manager.mu.Lock()
 	manager.runtimes[desired.AccountID] = runtime
 	manager.mu.Unlock()
@@ -622,6 +626,10 @@ func (manager *Manager) transitionRuntime(ctx context.Context, accountID domain.
 	current.Desired.RequestedState = state
 	current.State = state
 	current.Ready = !deactivate
+	current.RuntimeVersion++
+	current.LastAppliedDesiredStateRevision = current.Desired.DesiredStateRevision
+	current.LastAppliedRuntimeGeneration = current.Desired.RuntimeGeneration
+	current.ObservedAt = time.Now().UTC()
 	manager.mu.Lock()
 	manager.runtimes[accountID] = current
 	manager.mu.Unlock()
@@ -665,7 +673,7 @@ func (manager *Manager) RestoreRuntimes(ctx context.Context, desiredRuntimes []D
 			return ErrRuntimeExists
 		}
 		seen[desired.AccountID] = struct{}{}
-		runtime := RuntimeAccount{Desired: desired, State: desired.RequestedState}
+		runtime := appliedRuntime(desired, desired.RequestedState, false, 1)
 		if desired.RequestedState == RuntimeStateActive {
 			if err := manager.validateAndActivate(ctx, desired); err != nil {
 				manager.rollbackRestored(ctx, restored)
@@ -679,6 +687,15 @@ func (manager *Manager) RestoreRuntimes(ctx context.Context, desiredRuntimes []D
 		manager.mu.Unlock()
 	}
 	return nil
+}
+
+func appliedRuntime(desired DesiredRuntime, state RuntimeState, ready bool, version uint64) RuntimeAccount {
+	return RuntimeAccount{
+		Desired: desired, State: state, Ready: ready, RuntimeVersion: version,
+		LastAppliedDesiredStateRevision: desired.DesiredStateRevision,
+		LastAppliedRuntimeGeneration:    desired.RuntimeGeneration,
+		ObservedAt:                      time.Now().UTC(),
+	}
 }
 
 func (manager *Manager) rollbackRestored(ctx context.Context, accountIDs []domain.AccountID) {

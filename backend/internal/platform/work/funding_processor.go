@@ -102,6 +102,7 @@ type FundingPayloadProcessor struct {
 	portfolio  *portfolio.Projection
 	ledger     *ledger.Service
 	admission  fundingpolicy.Admission
+	activity   func(orders.Command)
 }
 
 func (processor *FundingPayloadProcessor) WithExecutionEvidence(portfolioProjection *portfolio.Projection, ledgerService *ledger.Service) *FundingPayloadProcessor {
@@ -114,6 +115,11 @@ func (processor *FundingPayloadProcessor) WithAdmission(admission fundingpolicy.
 	if executions, ok := processor.executions.(*MemoryFundingExecutionStore); ok {
 		executions.WithAdmission(admission)
 	}
+	return processor
+}
+
+func (processor *FundingPayloadProcessor) WithActivityPublisher(publish func(orders.Command)) *FundingPayloadProcessor {
+	processor.activity = publish
 	return processor
 }
 
@@ -231,8 +237,56 @@ func (processor *FundingPayloadProcessor) RecordHandoff(ctx context.Context, chi
 	if err != nil {
 		return updated, err
 	}
-	_, err = processor.syncExecution(ctx, execution, []orders.Command{updated}, "child_handoff")
-	return updated, err
+	before, publishable := fundingExecutionActivityBaseline(execution, updated)
+	if _, err = processor.syncExecution(ctx, execution, []orders.Command{updated}, "child_handoff"); err != nil {
+		return updated, err
+	}
+	if activity, changed := fundingActivityDelta(before, updated); publishable && changed && processor.activity != nil {
+		processor.activity(activity)
+	}
+	return updated, nil
+}
+
+func fundingExecutionActivityBaseline(execution FundingExecution, command orders.Command) (orders.Command, bool) {
+	for _, leg := range execution.Legs {
+		if leg.CommandID == command.CommandID {
+			baseline := command
+			baseline.State = leg.CommandState
+			baseline.ExecutionEvidence = leg.ExecutionEvidence
+			return baseline, true
+		}
+	}
+	return orders.Command{}, false
+}
+
+func fundingActivityDelta(before, after orders.Command) (orders.Command, bool) {
+	seenFills := make(map[string]struct{}, len(before.ExecutionEvidence.Fills))
+	for _, fill := range before.ExecutionEvidence.Fills {
+		seenFills[fill.FillID] = struct{}{}
+	}
+	newFills := make([]orders.FillEvidence, 0, len(after.ExecutionEvidence.Fills))
+	for _, fill := range after.ExecutionEvidence.Fills {
+		if _, exists := seenFills[fill.FillID]; !exists {
+			newFills = append(newFills, fill)
+		}
+	}
+	seenEvents := make(map[string]struct{}, len(before.ExecutionEvidence.OrderEvents))
+	for _, event := range before.ExecutionEvidence.OrderEvents {
+		seenEvents[event.EventID] = struct{}{}
+	}
+	newEvent := false
+	for _, event := range after.ExecutionEvidence.OrderEvents {
+		if _, exists := seenEvents[event.EventID]; !exists {
+			newEvent = true
+			break
+		}
+	}
+	changed := before.State != after.State || before.ExecutionEvidence.ResourceVersion != after.ExecutionEvidence.ResourceVersion || before.ExecutionEvidence.State != after.ExecutionEvidence.State || before.ExecutionEvidence.GatewayOrderID != after.ExecutionEvidence.GatewayOrderID || before.ExecutionEvidence.ClientOrderID != after.ExecutionEvidence.ClientOrderID || len(newFills) > 0 || newEvent
+	if !changed {
+		return orders.Command{}, false
+	}
+	after.ExecutionEvidence.Fills = newFills
+	return after, true
 }
 
 func (processor *FundingPayloadProcessor) ingestFills(ctx context.Context, command orders.Command, fills []orders.FillEvidence) error {

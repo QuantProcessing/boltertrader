@@ -11,7 +11,10 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/planning"
 	fundingpolicy "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/policy"
 )
@@ -71,6 +74,21 @@ func (source reservationFixture) List(_ context.Context, principal string, mode 
 	return items, nil
 }
 
+type mismatchedFundingExecutionStore struct {
+	work.FundingExecutionStore
+	execution work.FundingExecution
+}
+
+func (store mismatchedFundingExecutionStore) GetFundingExecution(context.Context, string, orders.Mode, string) (work.FundingExecution, error) {
+	return store.execution, nil
+}
+
+type fundingPositionFixture []portfolio.Position
+
+func (fixture fundingPositionFixture) ListContext(context.Context, portfolio.Mode, string, string) ([]portfolio.Position, error) {
+	return append([]portfolio.Position(nil), fixture...), nil
+}
+
 func TestSharedFundingProjectionBindsCompositeFactsAndRevalidatesAuthority(t *testing.T) {
 	now := time.Date(2026, 8, 6, 2, 30, 0, 0, time.UTC)
 	catalogSource := &catalogFixture{snapshot: fundingCatalog(now)}
@@ -80,12 +98,12 @@ func TestSharedFundingProjectionBindsCompositeFactsAndRevalidatesAuthority(t *te
 		"account-short": {ID: "account-short", Venue: "venue-b", VenueEnvironment: accounts.EnvironmentTestnet, ProductIDs: []string{"funding"}, DesiredStateRevision: 13, RuntimeGeneration: 7, CredentialVersion: 5, State: accounts.StateActive},
 	}
 	reservationSource := reservationFixture{
-		"reservation-long":        fundingReservation("reservation-long", "browser-a", reservations.KindOpen, "account-long", "venue-a", "btc-a", "50", now),
-		"reservation-short":       fundingReservation("reservation-short", "browser-a", reservations.KindOpen, "account-short", "venue-b", "btc-b", "50", now),
+		"reservation-long":        exactFundingReservation("reservation-long", "browser-a", reservations.KindOpen, "account-long", "venue-a", "btc-a", "0.5", "50", "USDT", now),
+		"reservation-short":       exactFundingReservation("reservation-short", "browser-a", reservations.KindOpen, "account-short", "venue-b", "btc-b", "0.5", "50", "USDT", now),
 		"reservation-close-long":  fundingReservation("reservation-close-long", "browser-a", reservations.KindClose, "account-long", "venue-a", "btc-a", "50", now),
 		"reservation-close-short": fundingReservation("reservation-close-short", "browser-a", reservations.KindClose, "account-short", "venue-b", "btc-b", "50", now),
-		"reservation-b-long":      fundingReservation("reservation-b-long", "browser-b", reservations.KindOpen, "account-long", "venue-a", "btc-a", "50", now),
-		"reservation-b-short":     fundingReservation("reservation-b-short", "browser-b", reservations.KindOpen, "account-short", "venue-b", "btc-b", "50", now),
+		"reservation-b-long":      exactFundingReservation("reservation-b-long", "browser-b", reservations.KindOpen, "account-long", "venue-a", "btc-a", "0.5", "50", "USDT", now),
+		"reservation-b-short":     exactFundingReservation("reservation-b-short", "browser-b", reservations.KindOpen, "account-short", "venue-b", "btc-b", "0.5", "50", "USDT", now),
 	}
 	projection, err := NewSharedFundingProjection(SharedFundingProjectionOptions{Catalog: catalogSource, MarketData: marketSource, Accounts: accountSource, Reservations: reservationSource, Now: func() time.Time { return now }})
 	if err != nil {
@@ -97,11 +115,15 @@ func TestSharedFundingProjectionBindsCompositeFactsAndRevalidatesAuthority(t *te
 	}
 	opportunity := opportunities[0]
 	preview, err := projection.CreatePreview(context.Background(), "browser-a", FundingPreviewRequest{OpportunityID: opportunity.OpportunityID, LongAccountID: "account-long", ShortAccountID: "account-short", CanonicalMarketID: opportunity.CanonicalMarketID, NotionalPerLeg: "50", MaxSlippageBps: 10, HoldThroughSettlement: true, Mode: "test"})
-	if err != nil || !preview.CanSubmit || preview.PrincipalID != "browser-a" || preview.Mode != "test" || preview.CatalogRevision != "catalog-rev-1" || preview.FactsRevision == "" || len(preview.Facts) != 1 || preview.Facts[0].Cursor == "" || !preview.ExpiresAt.Equal(now.Add(30*time.Second)) {
+	if err != nil || !preview.CanSubmit || preview.PrincipalID != "browser-a" || preview.Mode != "test" || preview.CatalogRevision != "catalog-rev-1" || preview.FactsRevision == "" || len(preview.Facts) != 0 || len(preview.ReservationRequirements) != 2 || !preview.ExpiresAt.Equal(now.Add(30*time.Second)) {
 		t.Fatalf("CreatePreview()=%+v err=%v", preview, err)
 	}
+	finalized, err := projection.GetPreview(context.Background(), "browser-a", preview.PreviewID)
+	if err != nil || len(finalized.Facts) != 1 || finalized.Facts[0].Cursor == "" || len(finalized.WorkPayload) == 0 {
+		t.Fatalf("GetPreview()=%+v err=%v", finalized, err)
+	}
 	var frozen planning.PlanningFact
-	if err := json.Unmarshal(preview.Facts[0].Payload, &frozen); err != nil || len(frozen.ReservationAuthorities) != 2 || len(frozen.PolicyAssumptions) != 2 || frozen.ReservationAuthorities[0].Revision.IsZero() {
+	if err := json.Unmarshal(finalized.Facts[0].Payload, &frozen); err != nil || len(frozen.ReservationAuthorities) != 2 || len(frozen.PolicyAssumptions) != 2 || frozen.ReservationAuthorities[0].Revision.IsZero() {
 		t.Fatalf("frozen planning authority=%+v err=%v", frozen, err)
 	}
 	if _, err := projection.GetPreview(context.Background(), "browser-b", preview.PreviewID); !errors.Is(err, ErrFundingPreviewStale) {
@@ -114,7 +136,7 @@ func TestSharedFundingProjectionBindsCompositeFactsAndRevalidatesAuthority(t *te
 	if err != nil || browserBPreview.PreviewID == preview.PreviewID {
 		t.Fatalf("principal authority identity collided: a=%s b=%s err=%v", preview.PreviewID, browserBPreview.PreviewID, err)
 	}
-	closeAuthority, err := projection.CreateCloseAuthority(context.Background(), "browser-a", preview.PreviewID, "lineage-a")
+	closeAuthority, err := projection.CreateCloseAuthority(context.Background(), "browser-a", "test", preview.PreviewID, "lineage-a")
 	if err != nil || len(closeAuthority.Facts) != 2 || closeAuthority.Facts[0].Kind != "funding.unwind-reservation" || closeAuthority.Facts[0].EffectiveAt != now || !bytes.Contains(closeAuthority.WorkPayload, []byte(`"requestedAt":"2026-08-06T02:30:00Z"`)) {
 		t.Fatalf("CreateCloseAuthority()=%+v err=%v", closeAuthority, err)
 	}
@@ -221,9 +243,148 @@ func TestSharedFundingProjectionEvictsExpiredAndStalePreviewAuthority(t *testing
 	}
 }
 
+func TestSharedFundingProjectionPublishesReservationRequirementsAndClosesFromDurableState(t *testing.T) {
+	now := time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC)
+	catalogSource := &catalogFixture{snapshot: fundingCatalog(now)}
+	marketSource := fundingMarkets(now)
+	accountSource := accountFixture{
+		"account-long":  {ID: "account-long", Venue: "venue-a", VenueEnvironment: accounts.EnvironmentTestnet, ProductIDs: []string{"funding"}, State: accounts.StateActive, DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3},
+		"account-short": {ID: "account-short", Venue: "venue-b", VenueEnvironment: accounts.EnvironmentTestnet, ProductIDs: []string{"funding"}, State: accounts.StateActive, DesiredStateRevision: 13, RuntimeGeneration: 7, CredentialVersion: 5},
+	}
+	reservationSource := reservationFixture{
+		"open-long":  fundingReservation("open-long", "browser-a", reservations.KindOpen, "account-long", "venue-a", "btc-a", "50", now),
+		"open-short": fundingReservation("open-short", "browser-a", reservations.KindOpen, "account-short", "venue-b", "btc-b", "50", now),
+	}
+	executions := work.NewMemoryFundingExecutionStore()
+	positions := portfolio.NewProjection()
+	projectionAPI, err := NewSharedFundingProjection(SharedFundingProjectionOptions{
+		Catalog: catalogSource, MarketData: marketSource, Accounts: accountSource, Reservations: reservationSource,
+		Executions: executions, Positions: positions, Admission: fundingpolicy.DefaultAdmission(), Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sharedProjection := projectionAPI.(*sharedFundingProjection)
+	opportunities, err := projectionAPI.ListOpportunities(context.Background(), "browser-a", "test")
+	if err != nil || len(opportunities) != 1 {
+		t.Fatalf("ListOpportunities()=%+v err=%v", opportunities, err)
+	}
+	opportunity := opportunities[0]
+	if opportunity.LongAccountID != "account-long" || opportunity.ShortAccountID != "account-short" || opportunity.LongInstrumentID != "btc-a" || opportunity.ShortInstrumentID != "btc-b" || len(opportunity.ReservationRequirements) != 2 {
+		t.Fatalf("opportunity lacks authoritative reservation scopes: %+v", opportunity)
+	}
+	for _, requirement := range opportunity.ReservationRequirements {
+		if requirement.ProductID != "funding" || requirement.ReservationKind != reservations.KindOpen || requirement.Mode != "test" || requirement.NettingScope.AccountID == "" || requirement.NettingScope.InstrumentID == "" {
+			t.Fatalf("reservation requirement=%+v", requirement)
+		}
+	}
+
+	preview, err := projectionAPI.CreatePreview(context.Background(), "browser-a", FundingPreviewRequest{OpportunityID: opportunity.OpportunityID, LongAccountID: opportunity.LongAccountID, ShortAccountID: opportunity.ShortAccountID, CanonicalMarketID: opportunity.CanonicalMarketID, NotionalPerLeg: "50", MaxSlippageBps: 10, Mode: "test"})
+	if err != nil || len(preview.ReservationRequirements) != 2 {
+		t.Fatalf("CreatePreview()=%+v err=%v", preview, err)
+	}
+	openDrafts := []work.FundingOrderDraft{
+		{LegID: "long", AccountID: "account-long", DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3, Venue: "venue-a", VenueEnvironment: "testnet", ReservationID: "open-long", InstrumentID: "btc-a", Side: "buy", Quantity: "0.5", Notional: "50", OrderType: "market"},
+		{LegID: "short", AccountID: "account-short", DesiredStateRevision: 13, RuntimeGeneration: 7, CredentialVersion: 5, Venue: "venue-b", VenueEnvironment: "testnet", ReservationID: "open-short", InstrumentID: "btc-b", Side: "sell", Quantity: "0.5", Notional: "50", OrderType: "market"},
+	}
+	_, _, err = executions.ReserveFundingExecution(context.Background(), work.FundingExecution{ExecutionID: "execution-lineage-a", PrincipalID: "browser-a", Mode: orders.ModeTest, LineageID: "lineage-a", ParentCommandID: "parent-open", PlanKey: "open:" + preview.PreviewID, PreviewHash: preview.FactsRevision, IntentKind: "funding.open", State: work.FundingExecutionHedged, Legs: []work.FundingExecutionLeg{{Role: "long", Draft: openDrafts[0], CommandID: "long-command", CommandState: orders.StateFilled, FilledQuantity: "0.5"}, {Role: "short", Draft: openDrafts[1], CommandID: "short-command", CommandState: orders.StateFilled, FilledQuantity: "0.5"}}, CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fill := range []portfolio.Fill{
+		{FillID: "fill-long", CommandID: "long-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-long", InstrumentID: "btc-a", Mode: portfolio.ModeTest, Side: portfolio.SideBuy, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
+		{FillID: "fill-short", CommandID: "short-command", LineageID: "lineage-a", ProductID: "funding", AccountID: "account-short", InstrumentID: "btc-b", Mode: portfolio.ModeTest, Side: portfolio.SideSell, Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now},
+	} {
+		if _, _, err := positions.ApplyFill(context.Background(), fill); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	now = preview.ExpiresAt.Add(time.Second)
+	for query, fact := range fundingMarkets(now) {
+		marketSource[query] = fact
+	}
+	closeRequirements, err := projectionAPI.GetCloseReservationRequirements(context.Background(), "browser-a", "test", "lineage-a")
+	if err != nil || len(closeRequirements) != 2 {
+		t.Fatalf("GetCloseReservationRequirements()=%+v err=%v", closeRequirements, err)
+	}
+	for _, requirement := range closeRequirements {
+		if requirement.AccountID == "" || requirement.AccountID != requirement.NettingScope.AccountID || requirement.ProductID != "funding" || requirement.ReservationKind != reservations.KindClose || requirement.Mode != "test" || requirement.Quantity != "0.5" || requirement.Notional != "50" || requirement.Currency != "USDT" {
+			t.Fatalf("close reservation requirement=%+v", requirement)
+		}
+	}
+	reservationSource["close-long"] = exactFundingReservation("close-long", "browser-a", reservations.KindClose, "account-long", "venue-a", "btc-a", "0.5", "50", "USDT", now)
+	reservationSource["close-short"] = exactFundingReservation("close-short", "browser-a", reservations.KindClose, "account-short", "venue-b", "btc-b", "0.5", "50", "USDT", now)
+	closeAuthority, err := projectionAPI.CreateCloseAuthority(context.Background(), "browser-a", "test", "", "lineage-a")
+	if err != nil || len(closeAuthority.Facts) != 2 || len(closeAuthority.AccountFences) == 0 || !bytes.Contains(closeAuthority.WorkPayload, []byte(`"lineageId":"lineage-a"`)) {
+		t.Fatalf("CreateCloseAuthority()=%+v err=%v", closeAuthority, err)
+	}
+	if closeAuthority.PreviewID == preview.PreviewID || !closeAuthority.ExpiresAt.Equal(now.Add(30*time.Second)) {
+		t.Fatalf("close authority reused expired open preview: %+v", closeAuthority)
+	}
+	storedExecution, err := executions.GetFundingExecution(context.Background(), "browser-a", orders.ModeTest, "lineage-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*work.FundingExecution){
+		"principal": func(item *work.FundingExecution) { item.PrincipalID = "browser-b" },
+		"mode":      func(item *work.FundingExecution) { item.Mode = orders.ModeLive },
+		"lineage":   func(item *work.FundingExecution) { item.LineageID = "lineage-b" },
+	} {
+		t.Run("returned execution "+name, func(t *testing.T) {
+			changed := storedExecution
+			mutate(&changed)
+			sharedProjection.options.Executions = mismatchedFundingExecutionStore{FundingExecutionStore: executions, execution: changed}
+			t.Cleanup(func() { sharedProjection.options.Executions = executions })
+			if _, err := projectionAPI.GetCloseReservationRequirements(context.Background(), "browser-a", "test", "lineage-a"); !errors.Is(err, ErrFundingPreviewStale) {
+				t.Fatalf("GetCloseReservationRequirements() error=%v, want ErrFundingPreviewStale", err)
+			}
+		})
+	}
+	currentPositions, err := positions.ListContext(context.Background(), portfolio.ModeTest, "", "funding")
+	if err != nil || len(currentPositions) != 2 {
+		t.Fatalf("positions=%+v err=%v", currentPositions, err)
+	}
+	reversed := append([]portfolio.Position(nil), currentPositions...)
+	for index := range reversed {
+		if reversed[index].AccountID == "account-long" {
+			reversed[index].Quantity = "-0.5"
+		}
+	}
+	sharedProjection.options.Positions = fundingPositionFixture(reversed)
+	if _, err := projectionAPI.GetCloseReservationRequirements(context.Background(), "browser-a", "test", "lineage-a"); !errors.Is(err, ErrFundingPreviewStale) {
+		t.Fatalf("reversed position GetCloseReservationRequirements() error=%v, want ErrFundingPreviewStale", err)
+	}
+	sharedProjection.options.Positions = positions
+
+	positionMode := "one-way"
+	for name, mutate := range map[string]func(*reservations.Reservation){
+		"missing quantity": func(item *reservations.Reservation) { item.Quantity = nil },
+		"larger quantity":  func(item *reservations.Reservation) { value := "0.6"; item.Quantity = &value },
+		"larger notional":  func(item *reservations.Reservation) { value := "60"; item.Notional = &value },
+		"wrong currency":   func(item *reservations.Reservation) { value := "USD"; item.Currency = &value },
+		"extra scope":      func(item *reservations.Reservation) { item.Scope.PositionMode = &positionMode },
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := reservationSource["close-long"]
+			changed := original
+			mutate(&changed)
+			reservationSource["close-long"] = changed
+			t.Cleanup(func() { reservationSource["close-long"] = original })
+			if _, err := projectionAPI.CreateCloseAuthority(context.Background(), "browser-a", "test", "", "lineage-a"); !errors.Is(err, ErrFundingPreviewStale) {
+				t.Fatalf("CreateCloseAuthority() error=%v, want ErrFundingPreviewStale", err)
+			}
+		})
+	}
+}
+
 func fundingReservation(id, principal string, kind reservations.Kind, account, venue, instrument, notional string, now time.Time) reservations.Reservation {
 	currency := "USDT"
 	return reservations.Reservation{ReservationID: id, PrincipalID: principal, Mode: reservations.ModeTest, ProductID: "funding", Kind: kind, Scope: reservations.NettingScope{AccountID: account, Venue: venue, InstrumentID: instrument, VenueEnvironment: "testnet"}, Notional: &notional, Currency: &currency, Status: reservations.StatusHeld, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)}
+}
+
+func exactFundingReservation(id, principal string, kind reservations.Kind, account, venue, instrument, quantity, notional, currency string, now time.Time) reservations.Reservation {
+	return reservations.Reservation{ReservationID: id, PrincipalID: principal, Mode: reservations.ModeTest, ProductID: "funding", Kind: kind, Scope: reservations.NettingScope{AccountID: account, Venue: venue, InstrumentID: instrument, VenueEnvironment: "testnet"}, Quantity: &quantity, Notional: &notional, Currency: &currency, Status: reservations.StatusHeld, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)}
 }
 
 func fundingCatalog(now time.Time) catalog.Snapshot {

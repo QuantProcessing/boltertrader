@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
@@ -33,6 +34,49 @@ const gatewayModeHeader = "X-Bolter-Mode"
 
 type gatewayReadEnvelope[T any] struct {
 	Data T `json:"data"`
+}
+
+type gatewayRuntimeProjection struct {
+	AccountID                       string                      `json:"accountId"`
+	DesiredStateRevision            int64                       `json:"desiredStateRevision"`
+	RuntimeGeneration               int64                       `json:"runtimeGeneration"`
+	CredentialVersion               int64                       `json:"credentialVersion"`
+	RuntimeVersion                  int64                       `json:"runtimeVersion"`
+	Readiness                       httpapi.ProjectionReadiness `json:"readiness"`
+	WriteReadiness                  httpapi.ProjectionReadiness `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision int64                       `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    int64                       `json:"lastAppliedRuntimeGeneration"`
+	BlockedReason                   *string                     `json:"blockedReason"`
+	Capabilities                    []gatewayRuntimeCapability  `json:"capabilities"`
+	ObservedAt                      time.Time                   `json:"observedAt"`
+}
+
+type gatewayRuntimeCapability struct {
+	RowID      string                      `json:"rowId"`
+	Venue      string                      `json:"venue"`
+	Product    string                      `json:"product"`
+	Settlement string                      `json:"settlement,omitempty"`
+	WriteReady bool                        `json:"writeReady"`
+	Operations gatewayCapabilityOperations `json:"operations"`
+}
+
+type gatewayCapabilityOperations struct {
+	Place                  bool `json:"place"`
+	Amend                  bool `json:"amend"`
+	Cancel                 bool `json:"cancel"`
+	OpenOrders             bool `json:"open_orders"`
+	OrderHistory           bool `json:"order_history"`
+	Fills                  bool `json:"fills"`
+	Balances               bool `json:"balances"`
+	Account                bool `json:"account"`
+	Positions              bool `json:"positions"`
+	Funding                bool `json:"funding"`
+	AccountFundingPayments bool `json:"account_funding_payments"`
+	Leverage               bool `json:"leverage"`
+	PrivateStream          bool `json:"private_stream"`
+	MarginMode             bool `json:"margin_mode"`
+	PositionMode           bool `json:"position_mode"`
+	FundsTransfer          bool `json:"funds_transfer"`
 }
 
 type gatewayMarketDataSource struct{ adapter *gatewayAdapter }
@@ -230,6 +274,37 @@ func (adapter *gatewayAdapter) Fetch(ctx context.Context) (catalog.Snapshot, err
 		Revision: instruments.Data.Revision, ObservedAt: instruments.Data.ObservedAt.UTC(),
 		Venues: venues.Data, Instruments: instruments.Data.Instruments,
 	}, nil
+}
+
+func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]httpapi.AccountRuntimeProjection, error) {
+	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || mode != string(adapter.mode) {
+		return nil, fmt.Errorf("Gateway runtime projection scope is invalid")
+	}
+	var runtime gatewayReadEnvelope[gatewayRuntimeProjection]
+	if err := adapter.read(ctx, "/internal/v1/accounts/runtime/"+url.PathEscape(accountID), nil, &runtime); err != nil {
+		return nil, fmt.Errorf("read Gateway runtime account: %w", err)
+	}
+	projection := runtime.Data
+	if projection.AccountID != accountID || projection.DesiredStateRevision < 1 || projection.RuntimeGeneration < 1 || projection.CredentialVersion < 1 || projection.RuntimeVersion < 1 || projection.LastAppliedDesiredStateRevision < 1 || projection.LastAppliedRuntimeGeneration < 1 || projection.LastAppliedDesiredStateRevision > projection.DesiredStateRevision || projection.LastAppliedRuntimeGeneration > projection.RuntimeGeneration || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
+		return nil, fmt.Errorf("Gateway runtime account response is invalid")
+	}
+	projectedCapabilities := make([]httpapi.AccountCapabilityProjection, 0, len(projection.Capabilities))
+	for _, row := range projection.Capabilities {
+		if row.RowID == "" || row.Venue == "" || row.Product == "" {
+			return nil, fmt.Errorf("Gateway account capability response is invalid")
+		}
+		operations := row.Operations
+		projectedCapabilities = append(projectedCapabilities, httpapi.AccountCapabilityProjection{
+			RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: row.WriteReady,
+			Operations: httpapi.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Funding: operations.Funding, AccountFundingPayments: operations.AccountFundingPayments, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
+		})
+	}
+	return []httpapi.AccountRuntimeProjection{{
+		AccountID: accountID, DesiredStateRevision: projection.DesiredStateRevision, RuntimeGeneration: projection.RuntimeGeneration,
+		CredentialVersion: projection.CredentialVersion, RuntimeVersion: projection.RuntimeVersion, Readiness: projection.Readiness, WriteReadiness: projection.WriteReadiness,
+		LastAppliedDesiredStateRevision: projection.LastAppliedDesiredStateRevision, LastAppliedRuntimeGeneration: projection.LastAppliedRuntimeGeneration,
+		BlockedReason: projection.BlockedReason, Capabilities: projectedCapabilities, ObservedAt: projection.ObservedAt.UTC(),
+	}}, nil
 }
 
 func (adapter *gatewayAdapter) fetchMarketData(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {

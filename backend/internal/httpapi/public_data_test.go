@@ -47,7 +47,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 		readiness.Update(component, platformsystem.Component{Ready: true, Reason: "ready", ObservedAt: now})
 	}
 	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Readiness: readiness, Realtime: hub})
+	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,12 +98,32 @@ func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
 	small, _ := realtime.NewHub(1, time.Now)
 	expired, _ := small.Publish("one", map[string]bool{"ready": true})
 	_, _ = small.Publish("two", map[string]bool{"ready": true})
-	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small})
+	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	expiredRequest := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+expired.Cursor, nil)
 	expiredResponse := httptest.NewRecorder()
 	api.Handle(expiredResponse, expiredRequest, "GET /api/v1/realtime/stream")
 	if expiredResponse.Code != http.StatusConflict || !strings.Contains(expiredResponse.Body.String(), "RESNAPSHOT_REQUIRED") {
 		t.Fatalf("expired response = %d %s", expiredResponse.Code, expiredResponse.Body.String())
+	}
+}
+
+func TestRealtimeStreamScopesPrivateReplayToPrincipal(t *testing.T) {
+	handler, hub := newPublicDataHandler(t)
+	activity, err := NewActivityLog(8, time.Now, hub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := hub.Publish("catalog.updated", map[string]string{"revision": "before-private-events"})
+	_, _ = activity.Publish(ActivityRecord{PrincipalID: "principal-a", Mode: "test", Kind: "command.accepted", ResourceID: "command-a"})
+	_, _ = activity.Publish(ActivityRecord{PrincipalID: "principal-b", Mode: "test", Kind: "command.accepted", ResourceID: "command-b"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+before.Cursor, nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "command-a") || strings.Contains(response.Body.String(), "command-b") {
+		t.Fatalf("scoped realtime response=%d %s", response.Code, response.Body.String())
 	}
 }
 

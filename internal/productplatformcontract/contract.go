@@ -407,9 +407,9 @@ func invalid(format string, args ...any) error {
 
 var requiredSchemaIdentifiers = []string{
 	"MetaEnvelope", "ErrorEnvelope", "AccountCore", "SecretReference",
-	"AccountDesiredStateCore", "AccountRuntimeCore", "RotationFenceCore", "NettingScope",
+	"AccountDesiredStateCore", "AccountRuntimeCore", "AccountCapabilityCore", "RotationFenceCore", "NettingScope",
 	"ReservationCore", "CommandCore", "FillCore", "FundingPaymentCore", "PnLCore",
-	"RealtimeEventCore", "WorkerRegistrationCore", "AccountFenceCore", "FundingWorkItemCore",
+	"RealtimeEventCore", "ActivityEventCore", "FundingReservationScopeRequirementCore", "FundingReservationRequirementCore", "WorkerRegistrationCore", "AccountFenceCore", "FundingWorkItemCore",
 	"WorkLeaseCore", "FundingFactPageCore", "FundingCommandIntentCore", "WorkTerminalCore",
 	"WorkerReadinessCore",
 }

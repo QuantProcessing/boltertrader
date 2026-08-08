@@ -293,12 +293,18 @@ type recordingManualGateway struct {
 
 func (gateway *recordingManualGateway) Execute(_ context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
 	gateway.requests = append(gateway.requests, request)
+	occurredAt := time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)
+	evidence := orders.ExecutionEvidence{
+		CommandID: request.CommandID, GatewayOrderID: "gateway-order-app-1", ClientOrderID: "client-order-app-1", State: "filled", ResourceVersion: 1,
+		Fills: []orders.FillEvidence{{FillID: "gateway-fill-app-1", AccountID: request.AccountID, InstrumentID: request.InstrumentID, Side: request.Side, Quantity: request.Quantity, Price: "101.25", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: occurredAt}},
+	}
 	return manual.GatewayResult{
 		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode, State: manual.GatewayStateFilled,
+		Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
 		Fills: []manual.FillFact{{
 			FillID: "gateway-fill-app-1", CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
 			InstrumentID: request.InstrumentID, Side: portfolio.Side(request.Side), Quantity: request.Quantity,
-			Price: "101.25", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC),
+			Price: "101.25", Fee: "1.5", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: occurredAt,
 		}},
 	}, nil
 }
@@ -383,6 +389,24 @@ func TestManualFrozenRoutesReachGatewayAndRecordAuthoritativeEffects(t *testing.
 	ledger := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/ledger?accountId="+accountID+"&productId=manual", "", "")
 	if ledger.Code != http.StatusOK || !strings.Contains(ledger.Body.String(), `"entryId":"gateway-fill-app-1:fee"`) || !strings.Contains(ledger.Body.String(), `"amount":"1.5"`) {
 		t.Fatalf("ledger=%d body=%s", ledger.Code, ledger.Body.String())
+	}
+	commands := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/commands?productId=manual", "", "")
+	if commands.Code != http.StatusOK || !strings.Contains(commands.Body.String(), commandResponse.Data.CommandID) || strings.Contains(commands.Body.String(), `"scaffold":true`) || strings.Contains(commands.Body.String(), `"payload"`) || strings.Contains(commands.Body.String(), `"principalId"`) {
+		t.Fatalf("commands=%d body=%s", commands.Code, commands.Body.String())
+	}
+	fills := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/fills?productId=manual", "", "")
+	if fills.Code != http.StatusOK || !strings.Contains(fills.Body.String(), `"fillId":"gateway-fill-app-1"`) || !strings.Contains(fills.Body.String(), `"productId":"manual"`) || strings.Contains(fills.Body.String(), `"scaffold":true`) {
+		t.Fatalf("fills=%d body=%s", fills.Code, fills.Body.String())
+	}
+	activity := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/activity", "", "")
+	for _, expected := range []string{`"kind":"account.created"`, `"kind":"command.filled"`, `"kind":"fill.recorded"`} {
+		if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), expected) || strings.Contains(activity.Body.String(), `"scaffold":true`) || strings.Contains(activity.Body.String(), `"principalId"`) {
+			t.Fatalf("activity missing %s: status=%d body=%s", expected, activity.Code, activity.Body.String())
+		}
+	}
+	runtimes := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/accounts/"+accountID+"/runtimes", "", "")
+	if runtimes.Code != http.StatusServiceUnavailable || !strings.Contains(runtimes.Body.String(), "RUNTIME_PROJECTION_UNAVAILABLE") || strings.Contains(runtimes.Body.String(), `"scaffold":true`) {
+		t.Fatalf("fail-closed runtimes=%d body=%s", runtimes.Code, runtimes.Body.String())
 	}
 }
 

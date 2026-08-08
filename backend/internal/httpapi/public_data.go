@@ -30,8 +30,8 @@ type ReadinessProjection interface {
 }
 
 type RealtimeProjection interface {
-	Replay(string) ([]realtime.Event, error)
-	Subscribe(int) (<-chan realtime.Event, func())
+	ReplayScoped(string, string, string) ([]realtime.Event, error)
+	SubscribeScoped(int, string, string) (<-chan realtime.Event, func())
 }
 
 type PublicDataDependencies struct {
@@ -39,12 +39,13 @@ type PublicDataDependencies struct {
 	MarketData MarketDataProjection
 	Readiness  ReadinessProjection
 	Realtime   RealtimeProjection
+	Principal  func(*http.Request) (principalID, mode string, err error)
 }
 
 type PublicDataAPI struct{ dependencies PublicDataDependencies }
 
 func NewPublicDataAPI(dependencies PublicDataDependencies) (*PublicDataAPI, error) {
-	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Readiness == nil || dependencies.Realtime == nil {
+	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
 		return nil, configErr("public-data dependencies are incomplete")
 	}
 	return &PublicDataAPI{dependencies: dependencies}, nil
@@ -155,7 +156,12 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 	if header := strings.TrimSpace(r.Header.Get("Last-Event-ID")); cursor == "" && header != "" {
 		cursor = header
 	}
-	events, err := api.dependencies.Realtime.Replay(cursor)
+	principal, mode, err := api.dependencies.Principal(r)
+	if err != nil || strings.TrimSpace(principal) == "" || (mode != "test" && mode != "live") {
+		writeError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "authentication required", nil, false, requestID(r))
+		return
+	}
+	events, err := api.dependencies.Realtime.ReplayScoped(cursor, principal, mode)
 	if errors.Is(err, realtime.ErrResnapshotRequired) {
 		writeError(w, http.StatusConflict, "RESNAPSHOT_REQUIRED", "realtime cursor cannot prove continuity", nil, true, requestID(r))
 		return
@@ -178,7 +184,7 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flusher.Flush()
-	updates, unsubscribe := api.dependencies.Realtime.Subscribe(16)
+	updates, unsubscribe := api.dependencies.Realtime.SubscribeScoped(16, principal, mode)
 	defer unsubscribe()
 	for {
 		select {
