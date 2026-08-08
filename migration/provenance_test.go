@@ -128,6 +128,28 @@ func TestVerifyGitProvenanceRejectsUntrackedSourceMutationAfterFreeze(t *testing
 	}
 }
 
+func TestRecordImportValidatesGitProvenanceBeforeAcceptingProof(t *testing.T) {
+	manifest, importCommit := provenanceFixture(t)
+	manifest.MigrationID = "boltertrader-product-platform-upgrade"
+	proofPath := writeArtifact(t, "import-proof.json", `{
+		"schemaVersion": 1,
+		"operation": "record-import",
+		"status": "pass",
+		"migrationId": "boltertrader-product-platform-upgrade",
+		"subject": "`+importCommit+`",
+		"checks": ["source-commit-matches", "source-tree-matches", "subtree-import-matches"]
+	}`)
+	request := Request{Operation: RecordImport, ID: importCommit, ProofPath: proofPath}
+	if _, _, err := requestDigests(manifest, request); err != nil {
+		t.Fatalf("requestDigests() error = %v", err)
+	}
+
+	request.ID = strings.Repeat("a", 40)
+	if _, _, err := requestDigests(manifest, request); err == nil || !strings.Contains(err.Error(), "git provenance") {
+		t.Fatalf("requestDigests() error = %v, want Git provenance rejection", err)
+	}
+}
+
 func provenanceFixture(t *testing.T) (Manifest, string) {
 	t.Helper()
 	source := initRepo(t, "https://example.test/source.git")

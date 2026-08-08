@@ -64,7 +64,7 @@ func validateBaseline(manifest Manifest) error {
 		return fmt.Errorf("baseline rejected: %s", strings.Join(problems, "; "))
 	}
 	if manifest.ImportCommit != nil {
-		if err := verifyGitProvenance(manifest, *manifest.ImportCommit); err != nil {
+		if err := validateGitProvenance(manifest, *manifest.ImportCommit); err != nil {
 			return fmt.Errorf("baseline rejected: %w", err)
 		}
 	}
