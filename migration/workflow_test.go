@@ -103,7 +103,7 @@ func TestWorkflowReplayIsIdempotentAndConflictsFailClosed(t *testing.T) {
 
 func TestWorkflowRollbackAllowedBeforeBackfill(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	result, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}, ApplyOptions{})
+	result, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "pre-boundary verification failed"}), ApplyOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestWorkflowRequiresForwardRecoveryAfterBackfill(t *testing.T) {
 
 func TestWorkflowReappliesIdenticalDeltaAndFenceAfterRollback(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	if _, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}, ApplyOptions{}); err != nil {
+	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	delta := writeArtifact(t, "delta.sql", "final delta")
@@ -164,7 +164,7 @@ func TestWorkflowRejectsStaleFenceProofAfterRollbackEpoch(t *testing.T) {
 	if _, err := Apply(manifestPath, staleFence, ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Apply(manifestPath, Request{Operation: Rollback, Reason: "new epoch"}, ApplyOptions{}); err != nil {
+	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "new epoch"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Apply(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
@@ -418,6 +418,9 @@ func readWorkflowManifest(t *testing.T, path string) Manifest {
 
 func withProof(t *testing.T, manifestPath string, request Request) Request {
 	t.Helper()
+	if request.Operation == Backfill && request.ArtifactPath == "" {
+		request.ArtifactPath = writeArtifact(t, request.Name, "-- canonical test backfill\nselect 1;\n")
+	}
 	manifest := readWorkflowManifest(t, manifestPath)
 	if manifest.Workflow.Phase == "" {
 		manifest.Workflow.Phase = inferPhase(manifest)
@@ -448,7 +451,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Subject = proofStateDigest(manifest)
 		proof.Checks = []string{"source-writes-disabled", "target-writes-disabled"}
 	case Backfill:
-		proof.Subject = proofStateDigest(manifest) + "/" + request.Name
+		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
 		proof.Checks = []string{"authoritative-ownership-mapped", "deterministic"}
 	case Validate:
 		proof.Subject = proofStateDigest(manifest)
@@ -456,6 +459,9 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 	case RecordActivation:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		proof.Checks = []string{"one-writer-target", "target-activated"}
+	case Rollback:
+		proof.Subject = proofStateDigest(manifest)
+		proof.Checks = []string{"source-writes-enabled", "target-writes-disabled"}
 	default:
 		return request
 	}
