@@ -226,15 +226,15 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 }
 
 type operationProof struct {
-	SchemaVersion int       `json:"schemaVersion"`
-	Operation     Operation `json:"operation"`
-	Status        string    `json:"status"`
-	MigrationID   string    `json:"migrationId"`
-	Subject       string    `json:"subject"`
-	Checks        []string  `json:"checks"`
-	GeneratedBy   string    `json:"generatedBy,omitempty"`
-	PreStateSHA   string    `json:"preStateSha256,omitempty"`
-	InputSHA      string    `json:"inputSha256,omitempty"`
+	SchemaVersion int               `json:"schemaVersion"`
+	Operation     Operation         `json:"operation"`
+	Status        string            `json:"status"`
+	MigrationID   string            `json:"migrationId"`
+	Subject       string            `json:"subject"`
+	Checks        []string          `json:"checks"`
+	GeneratedBy   string            `json:"generatedBy,omitempty"`
+	PreStateSHA   string            `json:"preStateSha256,omitempty"`
+	InputSHA      string            `json:"inputSha256,omitempty"`
 	Commands      []commandEvidence `json:"commands,omitempty"`
 }
 
@@ -873,11 +873,11 @@ func advanceLedger(phase Phase, epoch int, event Event) (Phase, int, error) {
 }
 
 func operationNeedsArtifact(operation Operation) bool {
-	return operation == Backup || operation == Restore || operation == FinalDelta
+	return operation == Backup || operation == Restore || operation == FinalDelta || operation == Backfill
 }
 
 func operationNeedsProof(operation Operation) bool {
-	return operation == RecordImport || operation == Backup || operation == Restore || operation == FinalDelta || operation == Fence || operation == Backfill || operation == Validate || operation == RecordActivation
+	return operation == RecordImport || operation == Backup || operation == Restore || operation == FinalDelta || operation == Fence || operation == Backfill || operation == Validate || operation == RecordActivation || operation == Rollback
 }
 
 func digestFile(path string, required bool) (string, error) {
