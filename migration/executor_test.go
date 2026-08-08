@@ -28,7 +28,7 @@ func TestExecuteBackupRunsCanonicalCommandAndGeneratesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 1 || commands[0].Name != "pg_dump" || strings.Contains(strings.Join(commands[0].Args, " "), "sh -c") {
+	if len(commands) != 2 || commands[0].Name != "pg_dump" || commands[1].Name != "pg_restore" || strings.Contains(strings.Join(commands[0].Args, " "), "sh -c") {
 		t.Fatalf("commands = %+v", commands)
 	}
 	if result.EvidencePath == "" {
@@ -99,10 +99,10 @@ func TestApplyRejectsCallerProofForExecutableOperations(t *testing.T) {
 
 func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")
+	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	result, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		if command.Name != "psql" {
 			t.Fatalf("command = %+v", command)
@@ -122,7 +122,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 	if _, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, nil
 	}}); err == nil || !strings.Contains(err.Error(), "replay conflict") {
@@ -132,14 +132,14 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 
 func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")
+	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	before, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
 	}})
@@ -150,6 +150,20 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	if readErr != nil || string(after) != string(before) {
 		t.Fatalf("script drift changed manifest: err=%v", readErr)
 	}
+}
+
+func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	directory := filepath.Join(root, "backend", "migrations")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "001-platform.sql")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, path
 }
 
 func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
