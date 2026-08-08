@@ -287,19 +287,19 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"}
 	case Backup:
 		subject = artifactSHA
-		required = []string{"consistent-snapshot", "restorable-format"}
+		required = []string{"dump-created", "dump-format-readable"}
 	case Restore:
 		subject = artifactSHA
-		required = []string{"clean-restore", "source-stack-boot"}
+		required = []string{"restore-command-succeeded", "target-query-succeeded"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"deterministic", "source-read-only"}
+		required = []string{"capture-session-read-only", "artifact-created"}
 	case Fence:
 		subject = proofStateDigest(manifest)
 		required = []string{"source-writes-disabled", "target-writes-disabled"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		required = []string{"authoritative-ownership-mapped", "deterministic"}
+		required = []string{"script-content-stable", "single-transaction"}
 	case Validate:
 		subject = proofStateDigest(manifest)
 		required = []string{"browser", "offline", "real-test", "restart-recovery"}
