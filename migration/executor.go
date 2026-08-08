@@ -207,7 +207,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return nil, Request{}, nil, "", err
 	}
 	target, targetErr := postgresService(request.TargetService)
-	if targetErr != nil && (request.Operation == Restore || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
+	if targetErr != nil && (request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
 		return nil, Request{}, nil, "", targetErr
 	}
 	psql := func(service, database, query string) Command {
@@ -250,6 +250,10 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			verify,
 		}, apply, []string{"clean-target-created", "restored-schema-nonempty"}, "", nil
 	case FinalDelta:
+		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
 		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
 		check := psql(source, "", "SHOW transaction_read_only")
@@ -257,9 +261,10 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		check.ExpectedOutput = "on"
 		return []Command{
 			check,
-			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
-			{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
-		}, apply, []string{"capture-session-read-only", "repeat-capture-matches"}, "", nil
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
+			{Name: "pg_restore", Args: []string{"--clean", "--if-exists", "--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+		}, apply, []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}, "", nil
 	case Fence:
 		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
