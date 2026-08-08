@@ -132,6 +132,28 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 }
 
+func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
+	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
+		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 4 {
+		t.Fatalf("commands = %+v", commands)
+	}
+	for _, index := range []int{0, 2} {
+		command := commands[index]
+		args := strings.Join(command.Args, " ")
+		if strings.Contains(args, "\\gexec") || strings.Contains(string(command.Stdin), "DO $do$") || !strings.Contains(string(command.Stdin), "\\gexec") || command.Args[len(command.Args)-1] != "-" {
+			t.Fatalf("unsafe fence command = %+v stdin=%q", command, command.Stdin)
+		}
+		if commandDigest(command, nil).InputSHA == "" {
+			t.Fatal("controlled psql input was not digest-bound")
+		}
+	}
+}
+
 func executorManifest(t *testing.T) string {
 	t.Helper()
 	manifestPath := copyManifest(t)
