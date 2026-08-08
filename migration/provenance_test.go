@@ -128,8 +128,6 @@ func TestVerifyGitProvenanceRejectsUntrackedSourceMutationAfterFreeze(t *testing
 	}
 }
 
-<<<<<<< HEAD
-=======
 func TestRecordImportValidatesGitProvenanceBeforeAcceptingProof(t *testing.T) {
 	manifest, importCommit := provenanceFixture(t)
 	manifest.MigrationID = "boltertrader-product-platform-upgrade"
@@ -152,7 +150,6 @@ func TestRecordImportValidatesGitProvenanceBeforeAcceptingProof(t *testing.T) {
 	}
 }
 
->>>>>>> cfb154b
 func provenanceFixture(t *testing.T) (Manifest, string) {
 	t.Helper()
 	source := initRepo(t, "https://example.test/source.git")
