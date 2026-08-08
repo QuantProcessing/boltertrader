@@ -127,6 +127,10 @@ func verifyFrozenSourceWorktree(manifest Manifest) error {
 	if err := gitRun(manifest.SourceRepo, "diff-index", "--quiet", manifest.SourceCommit, "--"); err != nil {
 		return fmt.Errorf("git provenance rejected: source worktree has tracked changes after freeze")
 	}
+	untracked, err := gitOutput(manifest.SourceRepo, "ls-files", "--others", "--exclude-standard")
+	if err != nil || untracked != "" {
+		return fmt.Errorf("git provenance rejected: source worktree has untracked changes after freeze")
+	}
 	return nil
 }
 
