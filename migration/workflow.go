@@ -241,7 +241,7 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 			return "", "", err
 		}
 	}
-	artifactSHA, err := digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore)
+	artifactSHA, err := digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore || request.Operation == Backfill)
 	if err != nil {
 		return "", "", err
 	}
