@@ -118,6 +118,16 @@ func TestVerifyGitProvenanceRejectsSourceMutationAfterFreeze(t *testing.T) {
 	}
 }
 
+func TestVerifyGitProvenanceRejectsUntrackedSourceMutationAfterFreeze(t *testing.T) {
+	manifest, importCommit := provenanceFixture(t)
+	if err := os.WriteFile(filepath.Join(manifest.SourceRepo, "untracked.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyGitProvenance(manifest, importCommit); err == nil || !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("verifyGitProvenance() error = %v, want source worktree rejection", err)
+	}
+}
+
 func provenanceFixture(t *testing.T) (Manifest, string) {
 	t.Helper()
 	source := initRepo(t, "https://example.test/source.git")
