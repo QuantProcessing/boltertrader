@@ -426,16 +426,16 @@ func validatePredecessor(manifest Manifest, operation Operation) error {
 			return fmt.Errorf("restore requires backup; current phase is %s", phase)
 		}
 	case FinalDelta:
-		if phase != PhaseRestored {
-			return fmt.Errorf("final delta requires verified restore; current phase is %s", phase)
+		if phase != PhaseFenced {
+			return fmt.Errorf("final delta requires durable fence; current phase is %s", phase)
 		}
 	case Fence:
-		if phase != PhaseDeltaCaptured {
-			return fmt.Errorf("fence requires final delta; current phase is %s", phase)
+		if phase != PhaseRestored {
+			return fmt.Errorf("fence requires verified restore; current phase is %s", phase)
 		}
 	case Backfill:
-		if phase != PhaseFenced && phase != PhaseBackfilled {
-			return fmt.Errorf("backfill requires durable fence; current phase is %s", phase)
+		if phase != PhaseDeltaCaptured && phase != PhaseBackfilled {
+			return fmt.Errorf("backfill requires applied final snapshot; current phase is %s", phase)
 		}
 	case Validate:
 		if phase != PhaseBackfilled {
@@ -501,14 +501,14 @@ func transition(manifest *Manifest, request Request, artifactSHA, at string) err
 		manifest.RestoreVerifiedAt = stringPtr(at)
 		manifest.Workflow.Phase = PhaseRestored
 	case FinalDelta:
-		if manifest.Workflow.Phase != PhaseRestored {
-			return fmt.Errorf("final delta requires verified restore; current phase is %s", manifest.Workflow.Phase)
+		if manifest.Workflow.Phase != PhaseFenced {
+			return fmt.Errorf("final delta requires durable fence; current phase is %s", manifest.Workflow.Phase)
 		}
 		manifest.FinalDeltaAt, manifest.FinalDeltaSHA256 = stringPtr(at), stringPtr(artifactSHA)
 		manifest.Workflow.Phase = PhaseDeltaCaptured
 	case Fence:
-		if manifest.Workflow.Phase != PhaseDeltaCaptured {
-			return fmt.Errorf("fence requires final delta; current phase is %s", manifest.Workflow.Phase)
+		if manifest.Workflow.Phase != PhaseRestored {
+			return fmt.Errorf("fence requires verified restore; current phase is %s", manifest.Workflow.Phase)
 		}
 		manifest.OneWriterFenceAt = stringPtr(at)
 		manifest.OneWriter.Owner = "BolterTrader"
@@ -516,8 +516,8 @@ func transition(manifest *Manifest, request Request, artifactSHA, at string) err
 		manifest.OneWriter.TargetCanonicalWritesEnabled = false
 		manifest.Workflow.Phase = PhaseFenced
 	case Backfill:
-		if manifest.Workflow.Phase != PhaseFenced && manifest.Workflow.Phase != PhaseBackfilled {
-			return fmt.Errorf("backfill requires durable fence; current phase is %s", manifest.Workflow.Phase)
+		if manifest.Workflow.Phase != PhaseDeltaCaptured && manifest.Workflow.Phase != PhaseBackfilled {
+			return fmt.Errorf("backfill requires applied final snapshot; current phase is %s", manifest.Workflow.Phase)
 		}
 		if err := safeBackfillName(request.Name); err != nil {
 			return err
@@ -598,10 +598,10 @@ func inferPhase(manifest Manifest) Phase {
 		return PhaseValidated
 	case len(manifest.BackfillScripts) > 0:
 		return PhaseBackfilled
-	case manifest.OneWriterFenceAt != nil:
-		return PhaseFenced
 	case manifest.FinalDeltaAt != nil:
 		return PhaseDeltaCaptured
+	case manifest.OneWriterFenceAt != nil:
+		return PhaseFenced
 	case manifest.RestoreVerifiedAt != nil:
 		return PhaseRestored
 	case manifest.BackupID != nil:
@@ -667,22 +667,22 @@ func validateWorkflowState(manifest Manifest) error {
 		}
 		return nil
 	}
-	if blank(manifest.FinalDeltaAt) || !validSHA256(pointerValue(manifest.FinalDeltaSHA256)) {
-		return problem("missing final delta evidence")
-	}
-	if phase == PhaseDeltaCaptured {
-		if hasFence || hasBackfill || hasValidation || hasActivation {
-			return problem("unexpected evidence after final delta")
-		}
-		return nil
-	}
 	activationObserved := phase == PhaseActivated || phase == PhaseRetirementReady
 	if blank(manifest.OneWriterFenceAt) || manifest.OneWriter.Owner != "BolterTrader" || !manifest.OneWriter.FenceRaised || (manifest.OneWriter.TargetCanonicalWritesEnabled && !activationObserved) {
 		return problem("missing safe one-writer fence")
 	}
 	if phase == PhaseFenced {
-		if hasBackfill || hasValidation || hasActivation {
+		if hasDelta || hasBackfill || hasValidation || hasActivation {
 			return problem("unexpected evidence after fence")
+		}
+		return nil
+	}
+	if blank(manifest.FinalDeltaAt) || !validSHA256(pointerValue(manifest.FinalDeltaSHA256)) {
+		return problem("missing final delta evidence")
+	}
+	if phase == PhaseDeltaCaptured {
+		if hasBackfill || hasValidation || hasActivation {
+			return problem("unexpected evidence after final delta")
 		}
 		return nil
 	}
@@ -843,7 +843,7 @@ func validateWorkflow(manifest Manifest) error {
 	}
 	wantLast := map[Phase]Operation{
 		PhaseProvenanceReady: RecordImport, PhaseBackedUp: Backup, PhaseRestored: Restore,
-		PhaseDeltaCaptured: FinalDelta, PhaseFenced: Fence, PhaseBackfilled: Backfill,
+		PhaseFenced: Fence, PhaseDeltaCaptured: FinalDelta, PhaseBackfilled: Backfill,
 		PhaseValidated: Validate, PhaseActivationReady: PrepareActivation,
 		PhaseActivated: RecordActivation, PhaseRetirementReady: PrepareRetirement,
 	}[manifest.Workflow.Phase]
@@ -882,15 +882,15 @@ func advanceLedger(phase Phase, epoch int, event Event) (Phase, int, error) {
 			return PhaseRestored, epoch, nil
 		}
 	case FinalDelta:
-		if phase == PhaseRestored {
+		if phase == PhaseFenced {
 			return PhaseDeltaCaptured, epoch, nil
 		}
 	case Fence:
-		if phase == PhaseDeltaCaptured {
+		if phase == PhaseRestored {
 			return PhaseFenced, epoch, nil
 		}
 	case Backfill:
-		if phase == PhaseFenced || phase == PhaseBackfilled {
+		if phase == PhaseDeltaCaptured || phase == PhaseBackfilled {
 			return PhaseBackfilled, epoch, nil
 		}
 	case Validate:
