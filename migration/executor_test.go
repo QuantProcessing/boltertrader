@@ -110,6 +110,28 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 }
 
+func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")
+	before, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Execute(context.Background(), ExecutionRequest{
+		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
+		BackfillPath: scriptPath, TargetService: "bolter-target",
+	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
+	}})
+	if err == nil || !strings.Contains(err.Error(), "changed during execution") {
+		t.Fatalf("error = %v", err)
+	}
+	after, readErr := os.ReadFile(manifestPath)
+	if readErr != nil || string(after) != string(before) {
+		t.Fatalf("script drift changed manifest: err=%v", readErr)
+	}
+}
+
 func executorManifest(t *testing.T) string {
 	t.Helper()
 	manifestPath := copyManifest(t)

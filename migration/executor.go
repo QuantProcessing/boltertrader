@@ -163,9 +163,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"deterministic", "source-read-only"}, "", nil
 	case Fence:
 		return []Command{
-			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$`),
+			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$;`),
 			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$`),
+			psql(target, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$;`),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
@@ -192,7 +192,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
 	case Rollback:
 		return []Command{
-			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()); END $do$`),
+			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()); END $do$;`),
 			psql(source, "SHOW default_transaction_read_only"),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
