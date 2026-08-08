@@ -38,7 +38,7 @@ func TestExecuteBackupRunsCanonicalCommandAndGeneratesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"generatedBy":"boltertrader-migration-tool"`, `"operation":"backup"`, `"executable":"pg_dump"`, `"preStateSha256"`} {
+	for _, want := range []string{`"generatedBy": "boltertrader-migration-tool"`, `"operation": "backup"`, `"executable": "pg_dump"`, `"preStateSha256"`} {
 		if !strings.Contains(string(evidence), want) {
 			t.Errorf("evidence missing %s: %s", want, evidence)
 		}
