@@ -234,6 +234,8 @@ func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	runGit(t, root, "init", "-b", "master")
+	runGit(t, root, "add", filepath.ToSlash(filepath.Join("backend", "migrations", "001-platform.sql")))
 	return root, path
 }
 

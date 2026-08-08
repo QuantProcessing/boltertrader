@@ -467,6 +467,10 @@ func canonicalBackfillPath(root, value string) (string, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("backfill script is unavailable")
 	}
+	tracked := exec.Command("git", "--no-replace-objects", "-C", root, "ls-files", "--error-unmatch", "--", filepath.ToSlash(relative))
+	if tracked.Run() != nil {
+		return "", fmt.Errorf("backfill script is not tracked by the frozen repository")
+	}
 	return path, nil
 }
 
