@@ -202,22 +202,25 @@ func replayExecution(manifest Manifest, evidenceDir string, request Request, com
 		path := filepath.Join(evidenceDir, fmt.Sprintf("%03d-%s.json", event.Sequence, event.Operation))
 		data, digest, err := readProof(path)
 		if err != nil || digest != event.ProofSHA {
-			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+			return nil, fmt.Errorf("%s replay conflict: evidence changed", request.Operation)
 		}
 		var proof operationProof
 		if json.Unmarshal(data, &proof) != nil || proof.GeneratedBy != evidenceGenerator || !validSHA256(proof.PreStateSHA) || len(proof.Commands) != len(commands) {
-			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+			return nil, fmt.Errorf("%s replay conflict: generated evidence is invalid", request.Operation)
 		}
 		for commandIndex, command := range commands {
 			planned := commandDigest(command, nil)
 			recorded := proof.Commands[commandIndex]
 			if recorded.Executable != planned.Executable || recorded.ArgvSHA256 != planned.ArgvSHA256 || recorded.InputSHA != planned.InputSHA || !validSHA256(recorded.OutputSHA) {
-				return nil, fmt.Errorf("%s replay conflict", request.Operation)
+				return nil, fmt.Errorf("%s replay conflict: command plan changed", request.Operation)
 			}
 		}
 		artifactSHA, digestErr := digestFile(request.ArtifactPath, operationNeedsArtifact(request.Operation))
-		if digestErr != nil || artifactSHA != event.ArtifactSHA || (inputSHA != "" && proof.InputSHA != inputSHA) || requestFingerprint(request, artifactSHA, event.ProofSHA) != event.Fingerprint {
-			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		if digestErr != nil || artifactSHA != event.ArtifactSHA {
+			return nil, fmt.Errorf("%s replay conflict: artifact changed", request.Operation)
+		}
+		if (inputSHA != "" && proof.InputSHA != inputSHA) || requestFingerprint(request, artifactSHA, event.ProofSHA) != event.Fingerprint {
+			return nil, fmt.Errorf("%s replay conflict: request changed", request.Operation)
 		}
 		return &ExecutionResult{Result: Result{Phase: manifest.Workflow.Phase, Replayed: true}, EvidencePath: path, InputSHA256: proof.InputSHA}, nil
 	}
