@@ -385,7 +385,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
 			targetAfter,
-		}, apply, []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}, "", nil
+		}, apply, []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
 	}

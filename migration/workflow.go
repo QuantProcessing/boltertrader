@@ -328,7 +328,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}
+		required = []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	}
 	if proof.Subject != subject || !sameStringSet(proof.Checks, required) {
 		return fmt.Errorf("operation proof subject or checks do not match required postconditions")
