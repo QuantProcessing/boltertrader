@@ -125,3 +125,24 @@ func TestCrossLaneRejectsGitShapedImportWithFabricatedProof(t *testing.T) {
 		t.Fatal("rejected fabricated import proof changed the manifest")
 	}
 }
+
+func TestCrossLaneRejectsBackfillOutsideRepository(t *testing.T) {
+	manifest, err := DecodeManifest(readManifest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(t.TempDir(), "attacker-controlled.sql")
+	if err := os.WriteFile(scriptPath, []byte("select 1;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, _, err = executionPlan(manifest, ExecutionRequest{
+		Operation:     Backfill,
+		EvidenceDir:   t.TempDir(),
+		BackfillPath:  scriptPath,
+		TargetService: "bolter-target",
+	})
+	if err == nil {
+		t.Fatal("executionPlan accepted a backfill outside the frozen target repository")
+	}
+}
