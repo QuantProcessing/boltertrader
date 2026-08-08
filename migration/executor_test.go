@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -74,6 +75,67 @@ func TestExecuteFailureLeavesManifestAndEvidenceUnchanged(t *testing.T) {
 	entries, err := os.ReadDir(evidenceDir)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("failed execution left evidence: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestExecuteReplayReturnsPriorEvidenceWithoutRunningCommands(t *testing.T) {
+	manifestPath := executorManifest(t)
+	artifactPath := filepath.Join(t.TempDir(), "backup.dump")
+	evidenceDir := t.TempDir()
+	request := ExecutionRequest{Operation: Backup, ManifestPath: manifestPath, EvidenceDir: evidenceDir, ArtifactPath: artifactPath, ID: "backup-001", SourceService: "source"}
+	first, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		if command.Name == "pg_dump" {
+			if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+				return CommandResult{}, err
+			}
+		}
+		return CommandResult{Output: []byte("ok")}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		t.Fatal("completed replay reran a command")
+		return CommandResult{}, nil
+	}})
+	if err != nil || !second.Replayed || second.EvidencePath != first.EvidencePath {
+		t.Fatalf("replay = %+v err=%v first=%+v", second, err, first)
+	}
+}
+
+func TestExecuteLockCoversExternalCommands(t *testing.T) {
+	manifestPath := executorManifest(t)
+	artifactPath := filepath.Join(t.TempDir(), "backup.dump")
+	request := ExecutionRequest{Operation: Backup, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), ArtifactPath: artifactPath, ID: "backup-001", SourceService: "source"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		var first atomic.Bool
+		_, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+			if command.Name == "pg_dump" && first.CompareAndSwap(false, true) {
+				close(started)
+				<-release
+				if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+					return CommandResult{}, err
+				}
+			}
+			return CommandResult{Output: []byte("ok")}, nil
+		}})
+		done <- err
+	}()
+	<-started
+	var duplicateCalls int
+	_, duplicateErr := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		duplicateCalls++
+		return CommandResult{}, nil
+	}})
+	close(release)
+	if firstErr := <-done; firstErr != nil {
+		t.Fatal(firstErr)
+	}
+	if duplicateErr == nil || !strings.Contains(duplicateErr.Error(), "migration lock is held") || duplicateCalls != 0 {
+		t.Fatalf("duplicate err=%v calls=%d", duplicateErr, duplicateCalls)
 	}
 }
 
@@ -149,6 +211,15 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	after, readErr := os.ReadFile(manifestPath)
 	if readErr != nil || string(after) != string(before) {
 		t.Fatalf("script drift changed manifest: err=%v", readErr)
+	}
+}
+
+func TestExecutionPlanRejectsBackfillOutsideRepository(t *testing.T) {
+	root := t.TempDir()
+	outside := writeArtifact(t, "outside.sql", "select 1;")
+	_, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{Operation: Backfill, EvidenceDir: t.TempDir(), BackfillPath: outside, TargetService: "target", TargetDatabase: "target_db", repositoryRoot: root})
+	if err == nil || !strings.Contains(err.Error(), "outside the frozen repository") {
+		t.Fatalf("outside backfill error = %v", err)
 	}
 }
 
