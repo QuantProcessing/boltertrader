@@ -80,10 +80,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		executed, executeErr := executeMigration(context.Background(), migration.ExecutionRequest{
 			Operation: operation, ManifestPath: *manifestPath, EvidenceDir: *evidenceDir,
 			ArtifactPath: *artifact, BackfillPath: *backfillScript, ID: *id,
-				Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, MaintenanceService: *maintenanceService,
-				SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase,
-				MaintenanceDatabase: *maintenanceDatabase,
-			SourceWriterRole: *sourceWriterRole, TargetWriterRole: *targetWriterRole,
+			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, MaintenanceService: *maintenanceService,
+			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase,
+			MaintenanceDatabase: *maintenanceDatabase,
+			SourceWriterRole:    *sourceWriterRole, TargetWriterRole: *targetWriterRole,
 		}, migration.ExecuteOptions{})
 		if executeErr != nil {
 			return executeErr

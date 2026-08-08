@@ -32,23 +32,23 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation        Operation
-	ManifestPath     string
-	EvidenceDir      string
-	ArtifactPath     string
-	BackfillPath     string
-	ID               string
-	Verifier         string
-	Reason           string
-	SourceService    string
-	TargetService    string
-	MaintenanceService string
-	SourceDatabase   string
-	TargetDatabase   string
+	Operation           Operation
+	ManifestPath        string
+	EvidenceDir         string
+	ArtifactPath        string
+	BackfillPath        string
+	ID                  string
+	Verifier            string
+	Reason              string
+	SourceService       string
+	TargetService       string
+	MaintenanceService  string
+	SourceDatabase      string
+	TargetDatabase      string
 	MaintenanceDatabase string
-	SourceWriterRole string
-	TargetWriterRole string
-	repositoryRoot   string
+	SourceWriterRole    string
+	TargetWriterRole    string
+	repositoryRoot      string
 }
 
 type ExecuteOptions struct {
@@ -262,9 +262,6 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		}
 		args = append(args, "--file", "-")
 		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
-	}
-	psqlInput := func(service, script string) Command {
-		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--file", "-"}, Stdin: []byte(script)}
 	}
 	switch request.Operation {
 	case Backup:
