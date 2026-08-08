@@ -156,7 +156,7 @@ func verifyCommitTree(repo, branch, commit, tree, label string) error {
 }
 
 func gitOutput(repo string, args ...string) (string, error) {
-	commandArgs := append([]string{"--no-replace-objects", "-C", repo}, args...)
+	commandArgs := append([]string{"-C", repo}, args...)
 	output, err := exec.Command("git", commandArgs...).Output()
 	if err != nil {
 		return "", err
@@ -165,6 +165,6 @@ func gitOutput(repo string, args ...string) (string, error) {
 }
 
 func gitRun(repo string, args ...string) error {
-	commandArgs := append([]string{"--no-replace-objects", "-C", repo}, args...)
+	commandArgs := append([]string{"-C", repo}, args...)
 	return exec.Command("git", commandArgs...).Run()
 }
