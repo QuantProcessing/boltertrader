@@ -6,8 +6,10 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,16 +24,25 @@ type Options struct {
 	Mode            string
 	ContractVersion string
 	Service         *work.Service
+	WorkerValidator WorkerValidator
 	OnReadiness     func(bool)
 }
 
+// WorkerValidator is the narrow platform/work interface consumed by workapi for
+// current-worker fencing. backend/internal/platform/work owns the implementation
+// semantics; workapi maps validation failures onto the frozen HTTP error surface.
+type WorkerValidator interface {
+	ValidateWorker(workerID string, generation int, instanceID string) error
+}
+
 type handler struct {
-	tokenDigest [sha256.Size]byte
-	mode        string
-	contract    frozencontract.Contract
-	mux         *http.ServeMux
-	service     *work.Service
-	onReadiness func(bool)
+	tokenDigest     [sha256.Size]byte
+	mode            string
+	contract        frozencontract.Contract
+	mux             *http.ServeMux
+	service         *work.Service
+	workerValidator WorkerValidator
+	onReadiness     func(bool)
 }
 
 func New(options Options) (http.Handler, error) {
@@ -54,7 +65,13 @@ func New(options Options) (http.Handler, error) {
 	if service == nil {
 		service = work.New(ContractVersion, 15*time.Second)
 	}
-	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux(), service: service, onReadiness: options.OnReadiness}
+	workerValidator := options.WorkerValidator
+	if workerValidator == nil {
+		if serviceValidator, ok := any(service).(WorkerValidator); ok {
+			workerValidator = serviceValidator
+		}
+	}
+	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux(), service: service, workerValidator: workerValidator, onReadiness: options.OnReadiness}
 	h.register()
 	return h, nil
 }
@@ -68,12 +85,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) authorized(r *http.Request) bool {
-	const prefix = "Bearer "
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(auth, prefix) {
+	scheme, token, ok := splitBearerAuthorization(r.Header.Get("Authorization"))
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" {
 		return false
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
 	sum := sha256.Sum256([]byte(token))
 	return subtle.ConstantTimeCompare(sum[:], h.tokenDigest[:]) == 1
 }
@@ -101,63 +116,113 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 		if !ok {
 			return
 		}
-		if req.Mode != h.mode {
+		if req.Mode != h.mode || req.ProductID != "funding" || req.ContractVersion != ContractVersion {
 			writeError(w, http.StatusForbidden, "WORKER_SCOPE_DENIED", "worker scope denied", nil, false, requestID(r))
 			return
 		}
-		registration := h.service.Register(work.RegistrationRequest(req))
-		if h.onReadiness != nil {
-			h.onReadiness(true)
+		if !requireIdempotencyHeader(w, r, "") {
+			return
 		}
+		workRequest := work.RegistrationRequest{
+			WorkerID: h.workerKey(req.WorkerID), InstanceID: req.InstanceID, ProductID: req.ProductID,
+			Mode: req.Mode, ContractVersion: req.ContractVersion, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
+		}
+		registration, err := h.service.RegisterResult(workRequest)
+		if err != nil {
+			writeWorkError(w, r, err, nil)
+			return
+		}
+		registration.WorkerID = req.WorkerID
 		writeJSON(w, http.StatusCreated, map[string]any{"meta": meta(r), "data": registration})
 	case "PUT /internal/v1/funding-work/workers/{workerId}/heartbeat":
 		req, ok := decodeStrict[heartbeatRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		registration, err := h.service.Heartbeat(r.PathValue("workerId"), work.HeartbeatRequest(req))
+		rawWorkerID := r.PathValue("workerId")
+		if !h.validateWorkerHeaders(w, r, rawWorkerID, req.WorkerGeneration, req.InstanceID) {
+			return
+		}
+		scopedWorkerID := h.workerKey(rawWorkerID)
+		registration, err := h.service.Heartbeat(scopedWorkerID, work.HeartbeatRequest(req))
 		if err != nil {
 			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
 			return
 		}
+		registration.WorkerID = rawWorkerID
+		if h.onReadiness != nil {
+			h.onReadiness(h.service.Readiness(scopedWorkerID).CanClaim)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": registration})
 	case "GET /internal/v1/funding-work/workers/{workerId}/readiness":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Readiness(r.PathValue("workerId"))})
+		rawWorkerID := r.PathValue("workerId")
+		if !h.validateWorkerHeaders(w, r, rawWorkerID, 0, "") {
+			return
+		}
+		scopedWorkerID := h.workerKey(rawWorkerID)
+		ready := h.service.Readiness(scopedWorkerID)
+		ready.WorkerID = rawWorkerID
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": ready})
 	case "POST /internal/v1/funding-work/workers/{workerId}/drain":
 		req, ok := decodeStrict[drainRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		registration, err := h.service.Drain(r.PathValue("workerId"), work.DrainRequest(req))
-		if err != nil {
-			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+		rawWorkerID := r.PathValue("workerId")
+		if !h.validateWorkerHeaders(w, r, rawWorkerID, req.WorkerGeneration, req.InstanceID) || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
 			return
 		}
+		scopedWorkerID := h.workerKey(rawWorkerID)
+		registration, err := h.service.Drain(scopedWorkerID, work.DrainRequest(req))
+		if err != nil {
+			writeWorkError(w, r, err, nil)
+			return
+		}
+		registration.WorkerID = rawWorkerID
 		if h.onReadiness != nil {
 			h.onReadiness(false)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": registration})
+		writeJSON(w, http.StatusAccepted, map[string]any{"meta": meta(r), "data": registration})
 	case "POST /internal/v1/funding-work/claims":
 		req, ok := decodeStrict[claimRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		items, err := h.service.Claim(work.ClaimRequest(req))
-		if err != nil {
-			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+		if req.MaxItems != 1 || req.WaitSeconds < 0 || req.WaitSeconds > 20 {
+			writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"maxItems": "must equal 1"}, false, requestID(r))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+		if !h.validateWorkerHeaders(w, r, req.WorkerID, req.WorkerGeneration, req.InstanceID) || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
+			return
+		}
+		req.WorkerID = h.workerKey(req.WorkerID)
+		page, err := h.service.ClaimPage(work.ClaimRequest(req))
+		if err != nil {
+			writeWorkError(w, r, err, nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": page})
 	case "GET /internal/v1/funding-work/facts":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Facts()})
+		if !h.validateWorkerHeaders(w, r, "", 0, "") {
+			return
+		}
+		h.writeFactPage(w, r, false)
 	case "GET /internal/v1/funding-work/facts/snapshot":
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Snapshot()})
+		if !h.validateWorkerHeaders(w, r, "", 0, "") {
+			return
+		}
+		h.writeFactPage(w, r, true)
 	case "POST /internal/v1/funding-work/leases/{leaseId}/renew":
 		req, ok := decodeStrict[leaseRequest](w, r, h.contract, route)
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Renew(r.PathValue("leaseId"), work.LeaseRequest(req))})
+		if !h.validateWorkerHeaders(w, r, req.WorkerID, req.WorkerGeneration, "") || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
+			return
+		}
+		req.WorkerID = h.workerKey(req.WorkerID)
+		data, err := h.service.RenewResult(r.PathValue("leaseId"), work.LeaseRequest(req))
+		writeWorkResult(w, r, data, err, req.WorkItemID, r.PathValue("leaseId"))
 	case "POST /internal/v1/funding-work/leases/{leaseId}/command-intents":
 		req, ok := decodeStrict[intentRequest](w, r, h.contract, route)
 		if !ok {
@@ -166,7 +231,12 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 		if !validateNested(w, r, h.contract, "intent."+req.IntentKind, req.Payload) {
 			return
 		}
-		writeJSON(w, http.StatusAccepted, map[string]any{"meta": meta(r), "data": h.service.Intent(r.PathValue("leaseId"), work.IntentRequest(req))})
+		if !h.validateWorkerHeaders(w, r, req.WorkerID, req.WorkerGeneration, "") || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
+			return
+		}
+		req.WorkerID = h.workerKey(req.WorkerID)
+		data, err := h.service.IntentResult(r.PathValue("leaseId"), work.IntentRequest(req))
+		writeWorkResult(w, r, data, err, req.WorkItemID, r.PathValue("leaseId"))
 	case "POST /internal/v1/funding-work/leases/{leaseId}/complete":
 		req, ok := decodeStrict[completeRequest](w, r, h.contract, route)
 		if !ok {
@@ -175,7 +245,12 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 		if !validateNested(w, r, h.contract, "complete.result", req.Result) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Complete(r.PathValue("leaseId"), work.CompleteRequest(req))})
+		if !h.validateWorkerHeaders(w, r, req.WorkerID, req.WorkerGeneration, "") || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
+			return
+		}
+		req.WorkerID = h.workerKey(req.WorkerID)
+		data, err := h.service.CompleteResult(r.PathValue("leaseId"), work.CompleteRequest(req))
+		writeWorkResult(w, r, data, err, req.WorkItemID, r.PathValue("leaseId"))
 	case "POST /internal/v1/funding-work/leases/{leaseId}/fail":
 		req, ok := decodeStrict[failRequest](w, r, h.contract, route)
 		if !ok {
@@ -184,7 +259,12 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 		if !validateNested(w, r, h.contract, "fail.details", req.Details) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": h.service.Fail(r.PathValue("leaseId"), work.FailRequest(req))})
+		if !h.validateWorkerHeaders(w, r, req.WorkerID, req.WorkerGeneration, "") || !requireIdempotencyHeader(w, r, req.IdempotencyKey) {
+			return
+		}
+		req.WorkerID = h.workerKey(req.WorkerID)
+		data, err := h.service.FailResult(r.PathValue("leaseId"), work.FailRequest(req))
+		writeWorkResult(w, r, data, err, req.WorkItemID, r.PathValue("leaseId"))
 	default:
 		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"route": route, "scaffold": true}})
 	}
@@ -299,6 +379,140 @@ func validateNested(w http.ResponseWriter, r *http.Request, contract frozencontr
 		return false
 	}
 	return true
+}
+
+func splitBearerAuthorization(header string) (scheme, token string, ok bool) {
+	if header == "" || strings.TrimSpace(header) != header {
+		return "", "", false
+	}
+	parts := strings.Split(header, " ")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func requireIdempotencyHeader(w http.ResponseWriter, r *http.Request, bodyKey string) bool {
+	headerKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if headerKey == "" {
+		writeError(w, http.StatusBadRequest, "IDEMPOTENCY_REQUIRED", "idempotency key is required", nil, false, requestID(r))
+		return false
+	}
+	if bodyKey != "" && headerKey != bodyKey {
+		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "idempotency key mismatch", nil, false, requestID(r))
+		return false
+	}
+	return true
+}
+
+func (h *handler) validateWorkerHeaders(w http.ResponseWriter, r *http.Request, bodyWorkerID string, bodyGeneration int, bodyInstanceID string) bool {
+	headerWorkerID := strings.TrimSpace(r.Header.Get("X-Worker-Id"))
+	headerGeneration := strings.TrimSpace(r.Header.Get("X-Worker-Generation"))
+	headerInstanceID := strings.TrimSpace(r.Header.Get("X-Worker-Instance-Id"))
+	if headerWorkerID == "" || headerGeneration == "" || headerInstanceID == "" {
+		writeError(w, http.StatusBadRequest, "WORKER_FENCE_REQUIRED", "worker fencing headers are required", nil, false, requestID(r))
+		return false
+	}
+	generation, err := strconv.Atoi(headerGeneration)
+	if err != nil || generation <= 0 {
+		writeError(w, http.StatusBadRequest, "WORKER_FENCE_REQUIRED", "worker generation header is invalid", nil, false, requestID(r))
+		return false
+	}
+	if bodyWorkerID != "" && headerWorkerID != bodyWorkerID {
+		writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker id header mismatch", nil, false, requestID(r))
+		return false
+	}
+	if bodyGeneration != 0 && generation != bodyGeneration {
+		writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation header mismatch", nil, false, requestID(r))
+		return false
+	}
+	if bodyInstanceID != "" && headerInstanceID != bodyInstanceID {
+		writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker instance header mismatch", nil, false, requestID(r))
+		return false
+	}
+	if h.workerValidator != nil {
+		if err := h.workerValidator.ValidateWorker(h.workerKey(headerWorkerID), generation, headerInstanceID); err != nil {
+			writeError(w, http.StatusConflict, "WORKER_GENERATION_STALE", "worker generation is stale", nil, false, requestID(r))
+			return false
+		}
+	}
+	return true
+}
+
+func (h *handler) workerKey(workerID string) string {
+	return h.mode + "\x00" + strings.TrimSpace(workerID)
+}
+
+func (h *handler) writeFactPage(w http.ResponseWriter, r *http.Request, snapshot bool) {
+	query := r.URL.Query()
+	workerGeneration, generationErr := strconv.Atoi(strings.TrimSpace(r.Header.Get("X-Worker-Generation")))
+	workRevision, revisionErr := strconv.Atoi(query.Get("workRevision"))
+	leaseGeneration, leaseErr := strconv.Atoi(query.Get("leaseGeneration"))
+	limit := 100
+	if query.Get("limit") != "" {
+		limit, _ = strconv.Atoi(query.Get("limit"))
+	}
+	request := work.FactRequest{
+		WorkerID: h.workerKey(strings.TrimSpace(r.Header.Get("X-Worker-Id"))), WorkerGeneration: workerGeneration,
+		WorkItemID: query.Get("workItemId"), WorkRevision: workRevision, LeaseID: query.Get("leaseId"),
+		LeaseGeneration: leaseGeneration, AfterCursor: query.Get("afterCursor"), Limit: limit,
+	}
+	if generationErr != nil || revisionErr != nil || leaseErr != nil || request.WorkItemID == "" || request.LeaseID == "" || workRevision <= 0 || leaseGeneration <= 0 || limit <= 0 || limit > 500 {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", nil, false, requestID(r))
+		return
+	}
+	page, err := h.service.FactPage(request, snapshot)
+	if err != nil {
+		writeWorkError(w, r, err, map[string]any{"leaseId": request.LeaseID, "workItemId": request.WorkItemID})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": page})
+}
+
+func writeWorkResult(w http.ResponseWriter, r *http.Request, data map[string]any, err error, workItemID, leaseID string) {
+	if err != nil {
+		writeWorkError(w, r, err, map[string]any{"leaseId": leaseID, "workItemId": workItemID})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": data})
+}
+
+func writeWorkError(w http.ResponseWriter, r *http.Request, err error, details map[string]any) {
+	status, code, retryable := workHTTPError(err)
+	writeError(w, status, code, err.Error(), details, retryable, requestID(r))
+}
+
+func workHTTPError(err error) (int, string, bool) {
+	switch {
+	case errors.Is(err, work.ErrWorkerAlreadyActive):
+		return http.StatusConflict, "WORKER_ALREADY_ACTIVE", true
+	case errors.Is(err, work.ErrWorkerDraining):
+		return http.StatusConflict, "WORKER_DRAINING", false
+	case errors.Is(err, work.ErrLeaseExpired):
+		return http.StatusConflict, "WORK_LEASE_EXPIRED", false
+	case errors.Is(err, work.ErrLeaseStale):
+		return http.StatusConflict, "WORK_LEASE_STALE", false
+	case errors.Is(err, work.ErrWorkRevisionConflict):
+		return http.StatusConflict, "WORK_REVISION_CONFLICT", true
+	case errors.Is(err, work.ErrAuthorizationStale):
+		return http.StatusConflict, "WORK_AUTHORIZATION_STALE", true
+	case errors.Is(err, work.ErrResnapshotRequired):
+		return http.StatusConflict, "RESNAPSHOT_REQUIRED", true
+	case errors.Is(err, work.ErrLiveWriteDisabled):
+		return http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED", false
+	case errors.Is(err, work.ErrAttemptsExhausted):
+		return http.StatusConflict, "WORK_ATTEMPTS_EXHAUSTED", false
+	case errors.Is(err, work.ErrIdempotencyConflict):
+		return http.StatusConflict, "IDEMPOTENCY_CONFLICT", false
+	case errors.Is(err, work.ErrWorkerNotRegistered), errors.Is(err, work.ErrWorkerStale):
+		return http.StatusConflict, "WORKER_GENERATION_STALE", false
+	case errors.Is(err, work.ErrWorkerNotReady), errors.Is(err, work.ErrDependencyUnavailable):
+		return http.StatusServiceUnavailable, "WORKER_NOT_READY", true
+	case errors.Is(err, work.ErrWorkNotFound):
+		return http.StatusNotFound, "WORK_NOT_FOUND", false
+	default:
+		return http.StatusServiceUnavailable, "WORKER_NOT_READY", true
+	}
 }
 
 func meta(r *http.Request) map[string]any {

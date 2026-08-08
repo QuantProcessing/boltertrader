@@ -1,22 +1,32 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 )
 
+type ManualExecutor interface {
+	Execute(context.Context, orders.Command) (orders.Command, error)
+	Ready() bool
+}
+
 type TradingOptions struct {
 	Reservations      *reservations.Service
 	Commands          *orders.Service
 	Portfolio         *portfolio.Projection
 	Ledger            *ledger.Service
+	Catalog           *catalog.Projection
+	Manual            ManualExecutor
+	ManualAccounts    ManualAccountAuthority
 	Principal         func(*http.Request) (principalID, mode string, err error)
 	AuthorizeMutation func(*http.Request) error
 }
@@ -34,6 +44,9 @@ func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
 	mux.HandleFunc("GET /api/v1/positions", handler.positions)
 	mux.HandleFunc("GET /api/v1/ledger", handler.ledgerEntries)
 	mux.HandleFunc("GET /api/v1/pnl", handler.pnl)
+	if options.Catalog != nil && options.Manual != nil {
+		registerManualProductRoutes(mux, handler)
+	}
 	return nil
 }
 
@@ -136,6 +149,14 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
+	if request.ProductID == "manual" {
+		if request.Mode == string(orders.ModeLive) {
+			tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
+			return
+		}
+		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
+		return
+	}
 	command, replay, err := handler.options.Commands.Create(r.Context(), orders.CreateRequest{
 		PrincipalID: principal, Mode: orders.Mode(mode), AccountID: request.AccountID, ProductID: request.ProductID, LineageID: request.LineageID,
 		ReservationID: request.ReservationID, IdempotencyKey: request.IdempotencyKey, Method: r.Method, Path: r.URL.Path, CommandKind: request.CommandKind, Payload: request.Payload,
@@ -149,6 +170,10 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
+}
+
+func resumableManualState(state orders.State) bool {
+	return state == orders.StateAccepted || state == orders.StateSubmitted || state == orders.StateUncertain
 }
 
 func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +194,11 @@ func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	items := handler.options.Portfolio.List(portfolio.Mode(mode), r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
+	items, err := handler.options.Portfolio.ListContext(r.Context(), portfolio.Mode(mode), r.URL.Query().Get("accountId"), r.URL.Query().Get("productId"))
+	if err != nil {
+		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
 }
 

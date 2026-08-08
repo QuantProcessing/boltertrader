@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	gatewaypostgres "github.com/QuantProcessing/boltertrader/gateway/store/postgres"
@@ -163,6 +164,7 @@ func runCoordinatorCrashChild(t *testing.T) {
 	}
 	router := &fakeRouter{route: Route{
 		Driver: driver, Instrument: instrument, Product: exchange.ProductSpot, WriteReady: true,
+		CheckWriteFence: func(account.WriteFence) error { return nil },
 	}}
 	phase := os.Getenv(crashPhaseEnv)
 	hooks := Hooks{}
@@ -197,6 +199,7 @@ func runCoordinatorCrashChild(t *testing.T) {
 		Side:           exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
 		LimitPolicy: exchange.LimitPolicyResting,
+		WriteFence:  account.WriteFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 	})
 	if phase == "during_venue" {
 		t.Fatal("during-venue child was not killed")

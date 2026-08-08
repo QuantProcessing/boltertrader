@@ -125,11 +125,11 @@ func (api *PublicDataAPI) catalog(w http.ResponseWriter, r *http.Request, venues
 }
 
 func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
-	if err := validateQuery(r, []string{"venue", "instrumentId"}); err != nil {
+	if err := validateQuery(r, []string{"venue", "environment", "product", "instrumentId"}); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
 		return
 	}
-	query := marketdata.Query{Venue: r.URL.Query().Get("venue"), InstrumentID: r.URL.Query().Get("instrumentId")}
+	query := marketdata.Query{Venue: r.URL.Query().Get("venue"), Environment: r.URL.Query().Get("environment"), Product: r.URL.Query().Get("product"), InstrumentID: r.URL.Query().Get("instrumentId")}
 	fact, err := api.dependencies.MarketData.Get(r.Context(), query)
 	if err != nil {
 		status := http.StatusServiceUnavailable

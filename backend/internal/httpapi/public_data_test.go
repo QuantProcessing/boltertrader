@@ -30,14 +30,14 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 	t.Helper()
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	catalogProjection, err := catalog.NewProjection(catalogSourceFunc(func(context.Context) (catalog.Snapshot, error) {
-		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "testnet", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Ready: true}}}, nil
+		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "testnet", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "testnet", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}, nil
 	}), time.Minute, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	budget, _ := marketdata.NewCoordinator(10, time.Minute, func() time.Time { return now })
 	marketProjection, err := marketdata.NewService(marketSourceFunc(func(_ context.Context, query marketdata.Query) (marketdata.Fact, error) {
-		return marketdata.Fact{Venue: query.Venue, InstrumentID: query.InstrumentID, MarkPrice: "100.00", ObservedAt: now}, nil
+		return marketdata.Fact{Venue: query.Venue, Environment: query.Environment, Product: query.Product, InstrumentID: query.InstrumentID, MarkPrice: "100.00", BestBid: "99", BestBidSize: "1", BestAsk: "101", BestAskSize: "2", Bids: []marketdata.Level{{Price: "99", Quantity: "1"}}, Asks: []marketdata.Level{{Price: "101", Quantity: "2"}}, ObservedAt: now}, nil
 	}), budget, time.Second, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -67,8 +67,9 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 	}{
 		{path: "/api/v1/catalog/venues", want: http.StatusOK, body: `"revision":"gateway-1"`},
 		{path: "/api/v1/catalog/instruments?accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
-		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
-		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
+		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt", want: http.StatusBadRequest, body: "request is invalid"},
 		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"fundingWorker"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)

@@ -99,3 +99,23 @@ func TestServiceRejectsCrossModeVenueEnvironment(t *testing.T) {
 		t.Fatal("Live reservation accepted Test environment")
 	}
 }
+
+func TestFreshServicesGenerateDistinctReservationIDs(t *testing.T) {
+	store := NewMemoryStore()
+	create := func(service *Service, key, instrument string) Reservation {
+		t.Helper()
+		item, err := service.Create(context.Background(), CreateRequest{
+			PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: key,
+			Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: instrument, VenueEnvironment: "demo"}, Quantity: "1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	first := create(NewService(store, time.Now), "first", "BTC-USDT")
+	second := create(NewService(store, time.Now), "second", "ETH-USDT")
+	if first.ReservationID == second.ReservationID {
+		t.Fatalf("fresh services generated colliding reservation id %q", first.ReservationID)
+	}
+}

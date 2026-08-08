@@ -283,7 +283,7 @@ components:
   schemas:
     PlaceOrderRequest:
       type: object
-      required: [account_id, instrument_id, idempotency_key, side, type, quantity]
+      required: [account_id, instrument_id, idempotency_key, side, type, quantity, desired_state_revision, runtime_generation, credential_version]
       additionalProperties: false
       properties:
         account_id: {type: string}
@@ -295,6 +295,9 @@ components:
         limit_price: {type: string}
         limit_policy: {type: string, enum: [resting, ioc, post_only]}
         reduce_only: {type: boolean}
+        desired_state_revision: {type: integer, minimum: 1}
+        runtime_generation: {type: integer, minimum: 1}
+        credential_version: {type: integer, minimum: 1}
     OrderResponse:
       type: object
       required: [command_id, gateway_order_id, client_order_id, state, resource_version]

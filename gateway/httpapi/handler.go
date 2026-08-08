@@ -336,15 +336,18 @@ func (handler *Handler) listRiskLimits(w http.ResponseWriter, r *http.Request) {
 }
 
 type placeOrderBody struct {
-	AccountID      string `json:"account_id"`
-	InstrumentID   string `json:"instrument_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Side           string `json:"side"`
-	Type           string `json:"type"`
-	Quantity       string `json:"quantity"`
-	LimitPrice     string `json:"limit_price"`
-	LimitPolicy    string `json:"limit_policy"`
-	ReduceOnly     bool   `json:"reduce_only"`
+	AccountID            string `json:"account_id"`
+	InstrumentID         string `json:"instrument_id"`
+	IdempotencyKey       string `json:"idempotency_key"`
+	Side                 string `json:"side"`
+	Type                 string `json:"type"`
+	Quantity             string `json:"quantity"`
+	LimitPrice           string `json:"limit_price"`
+	LimitPolicy          string `json:"limit_policy"`
+	ReduceOnly           bool   `json:"reduce_only"`
+	DesiredStateRevision uint64 `json:"desired_state_revision"`
+	RuntimeGeneration    uint64 `json:"runtime_generation"`
+	CredentialVersion    uint64 `json:"credential_version"`
 }
 
 func (handler *Handler) placeOrder(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +446,7 @@ func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlatio
 		PrincipalID: principal, AccountID: accountID, InstrumentID: instrumentID,
 		IdempotencyKey: key, CorrelationID: correlationID, Side: side, Type: orderType, Quantity: quantity,
 		LimitPrice: limitPrice, LimitPolicy: policy, ReduceOnly: body.ReduceOnly,
+		WriteFence: account.WriteFence{AccountID: accountID, DesiredStateRevision: body.DesiredStateRevision, RuntimeGeneration: body.RuntimeGeneration, CredentialVersion: body.CredentialVersion},
 	}, nil
 }
 

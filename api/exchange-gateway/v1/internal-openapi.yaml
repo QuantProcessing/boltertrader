@@ -6,9 +6,9 @@ security:
   - gatewayAdapterAuth: []
 paths:
   /internal/v1/runtime/status:
-    get: {operationId: getInternalRuntimeStatus, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+    get: {operationId: getInternalRuntimeStatus, responses: {'200': {$ref: '#/components/responses/RuntimeStatus'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/runtime/readiness:
-    get: {operationId: getInternalRuntimeReadiness, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+    get: {operationId: getInternalRuntimeReadiness, responses: {'200': {$ref: '#/components/responses/RuntimeReadiness'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/runtime/open-orders:
     get: {operationId: listInternalOpenOrders, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/runtime/positions:
@@ -94,6 +94,24 @@ components:
     DesiredMutation: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredMutation'}}}}
     GenerationFence: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GenerationFence'}}}}
   responses:
+    RuntimeStatus:
+      description: detailed runtime status
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [data]
+            properties: {data: {$ref: '#/components/schemas/RuntimeStatus'}}
+    RuntimeReadiness:
+      description: runtime readiness derived from authoritative runtime accounts
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [data]
+            properties: {data: {$ref: '#/components/schemas/RuntimeReadiness'}}
     DesiredAccount:
       description: acknowledged desired account
       headers: {ETag: {schema: {type: string}}}
@@ -102,6 +120,19 @@ components:
     RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
     Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
   schemas:
+    RuntimeStatus:
+      type: object
+      additionalProperties: false
+      required: [mode, accounts]
+      properties:
+        mode: {type: string, enum: [test, live]}
+        accounts: {type: array, items: {type: object}}
+    RuntimeReadiness:
+      type: object
+      additionalProperties: false
+      required: [ready]
+      properties:
+        ready: {type: boolean}
     DesiredAccount:
       type: object
       additionalProperties: false

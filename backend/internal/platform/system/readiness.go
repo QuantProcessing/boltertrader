@@ -24,9 +24,12 @@ type Snapshot struct {
 type Readiness struct {
 	mu         sync.RWMutex
 	components map[string]Component
+	evaluators map[string]func() Component
 }
 
-func NewReadiness() *Readiness { return &Readiness{components: make(map[string]Component)} }
+func NewReadiness() *Readiness {
+	return &Readiness{components: make(map[string]Component), evaluators: make(map[string]func() Component)}
+}
 
 func (service *Readiness) Update(name string, component Component) {
 	service.mu.Lock()
@@ -42,17 +45,38 @@ func (service *Readiness) Update(name string, component Component) {
 	service.components[name] = component
 }
 
+func (service *Readiness) SetEvaluator(name string, evaluator func() Component) {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if evaluator == nil {
+		delete(service.evaluators, name)
+		return
+	}
+	service.evaluators[name] = evaluator
+}
+
 func (service *Readiness) Status() Snapshot { return service.snapshot(false) }
 
 func (service *Readiness) Readiness() Snapshot { return service.snapshot(true) }
 
 func (service *Readiness) snapshot(requireAll bool) Snapshot {
 	service.mu.RLock()
-	defer service.mu.RUnlock()
+	stored := make(map[string]Component, len(service.components))
+	for name, component := range service.components {
+		stored[name] = component
+	}
+	evaluators := make(map[string]func() Component, len(service.evaluators))
+	for name, evaluator := range service.evaluators {
+		evaluators[name] = evaluator
+	}
+	service.mu.RUnlock()
 	components := make(map[string]Component, len(RequiredComponents))
 	ready := true
 	for _, name := range RequiredComponents {
-		component, ok := service.components[name]
+		component, ok := stored[name]
+		if evaluator := evaluators[name]; evaluator != nil {
+			component, ok = evaluator(), true
+		}
 		if !ok {
 			component = Component{Reason: "not_reported"}
 		}

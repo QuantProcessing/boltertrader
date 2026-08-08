@@ -119,7 +119,7 @@ func encodeAccountJSON(account accounts.Account) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	rotation := []byte("null")
+	var rotation []byte
 	if account.Rotation != nil {
 		rotation, err = json.Marshal(account.Rotation)
 		if err != nil {

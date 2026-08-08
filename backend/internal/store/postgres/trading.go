@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -46,25 +47,141 @@ func NewPortfolioStore(db *sql.DB) *PortfolioStore {
 	return &PortfolioStore{db: db}
 }
 
-func (store *PortfolioStore) Upsert(ctx context.Context, item portfolio.Position) error {
-	_, err := store.db.ExecContext(ctx, `INSERT INTO platform_positions(mode,product_id,lineage_id,account_id,instrument_id,quantity,average_entry_price,mark_price,realized_pnl,unrealized_pnl,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (mode,product_id,lineage_id,account_id,instrument_id) DO UPDATE SET quantity=EXCLUDED.quantity,average_entry_price=EXCLUDED.average_entry_price,mark_price=EXCLUDED.mark_price,realized_pnl=EXCLUDED.realized_pnl,unrealized_pnl=EXCLUDED.unrealized_pnl,updated_at=EXCLUDED.updated_at`, item.Mode, item.ProductID, item.LineageID, item.AccountID, item.InstrumentID, item.Quantity, item.AverageEntryPrice, item.MarkPrice, item.RealizedPnL, item.UnrealizedPnL, item.UpdatedAt)
+func (store *PortfolioStore) ApplyFill(ctx context.Context, fill portfolio.Fill, reduce func(portfolio.Position) (portfolio.Position, portfolio.FillResult, error)) (portfolio.Position, portfolio.FillResult, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("upsert portfolio position")
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("begin portfolio fill: %w", err)
+	}
+	defer tx.Rollback()
+
+	fingerprint := portfolio.FillFingerprint(fill)
+	insert, err := tx.ExecContext(ctx, `INSERT INTO platform_portfolio_fills
+		(fill_id,fill_hash,command_id,mode,product_id,lineage_id,account_id,instrument_id,side,quantity,price,fee,fee_currency,settlement_currency,realized_pnl,occurred_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0,$15) ON CONFLICT (fill_id) DO NOTHING`,
+		fill.FillID, fingerprint, fill.CommandID, fill.Mode, fill.ProductID, fill.LineageID, fill.AccountID, fill.InstrumentID,
+		fill.Side, fill.Quantity, fill.Price, fill.Fee, fill.FeeCurrency, fill.SettlementCurrency, fill.OccurredAt)
+	if err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("claim portfolio fill: %w", err)
+	}
+	inserted, err := insert.RowsAffected()
+	if err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("inspect portfolio fill claim: %w", err)
+	}
+	if inserted == 0 {
+		var recordedHash string
+		var result portfolio.FillResult
+		if err := tx.QueryRowContext(ctx, `SELECT fill_hash,realized_pnl::text,fee::text,settlement_currency FROM platform_portfolio_fills WHERE fill_id=$1`, fill.FillID).Scan(&recordedHash, &result.RealizedPnL, &result.Fee, &result.SettlementCurrency); err != nil {
+			return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("load portfolio fill replay: %w", err)
+		}
+		if recordedHash != fingerprint {
+			return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("%w: %s", portfolio.ErrFillConflict, fill.FillID)
+		}
+		position, err := loadPortfolioPosition(ctx, tx, fill, false)
+		if err != nil {
+			return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("load portfolio fill replay position: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("commit portfolio fill replay: %w", err)
+		}
+		return position, result, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `INSERT INTO platform_positions
+		(mode,product_id,lineage_id,account_id,instrument_id,settlement_currency,quantity,average_entry_price,mark_price,realized_pnl,unrealized_pnl,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,0,0,0,0,0,$7) ON CONFLICT (mode,product_id,lineage_id,account_id,instrument_id) DO NOTHING`,
+		fill.Mode, fill.ProductID, fill.LineageID, fill.AccountID, fill.InstrumentID, fill.SettlementCurrency, fill.OccurredAt); err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("initialize portfolio position: %w", err)
+	}
+	current, err := loadPortfolioPosition(ctx, tx, fill, true)
+	if err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("hydrate portfolio position: %w", err)
+	}
+	position, result, err := reduce(current)
+	if err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, err
+	}
+	if err := upsertPortfolioPosition(ctx, tx, position); err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE platform_portfolio_fills SET realized_pnl=$2,fee=$3 WHERE fill_id=$1`, fill.FillID, result.RealizedPnL, result.Fee); err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("persist portfolio fill result: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return portfolio.Position{}, portfolio.FillResult{}, fmt.Errorf("commit portfolio fill: %w", err)
+	}
+	return position, result, nil
+}
+
+func (store *PortfolioStore) ApplyMark(ctx context.Context, mode portfolio.Mode, accountID, productID, lineageID, instrumentID string, reduce func(portfolio.Position) (portfolio.Position, error)) (portfolio.Position, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return portfolio.Position{}, fmt.Errorf("begin portfolio mark: %w", err)
+	}
+	defer tx.Rollback()
+	identity := portfolio.Fill{
+		Mode: mode, AccountID: accountID, ProductID: productID, LineageID: lineageID, InstrumentID: instrumentID,
+	}
+	current, err := loadPortfolioPosition(ctx, tx, identity, true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return portfolio.Position{}, fmt.Errorf("position not found")
+	}
+	if err != nil {
+		return portfolio.Position{}, fmt.Errorf("hydrate portfolio mark position: %w", err)
+	}
+	position, err := reduce(current)
+	if err != nil {
+		return portfolio.Position{}, err
+	}
+	if err := upsertPortfolioPosition(ctx, tx, position); err != nil {
+		return portfolio.Position{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return portfolio.Position{}, fmt.Errorf("commit portfolio mark: %w", err)
+	}
+	return position, nil
+}
+
+func loadPortfolioPosition(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, fill portfolio.Fill, forUpdate bool) (portfolio.Position, error) {
+	query := `SELECT mode,product_id,lineage_id,account_id,instrument_id,settlement_currency,quantity::text,average_entry_price::text,mark_price::text,realized_pnl::text,unrealized_pnl::text,updated_at
+		FROM platform_positions WHERE mode=$1 AND product_id=$2 AND lineage_id=$3 AND account_id=$4 AND instrument_id=$5`
+	if forUpdate {
+		query += " FOR UPDATE"
+	}
+	var item portfolio.Position
+	err := queryer.QueryRowContext(ctx, query, fill.Mode, fill.ProductID, fill.LineageID, fill.AccountID, fill.InstrumentID).Scan(
+		&item.Mode, &item.ProductID, &item.LineageID, &item.AccountID, &item.InstrumentID, &item.SettlementCurrency, &item.Quantity,
+		&item.AverageEntryPrice, &item.MarkPrice, &item.RealizedPnL, &item.UnrealizedPnL, &item.UpdatedAt,
+	)
+	return item, err
+}
+
+func upsertPortfolioPosition(ctx context.Context, executor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, item portfolio.Position) error {
+	_, err := executor.ExecContext(ctx, `INSERT INTO platform_positions(mode,product_id,lineage_id,account_id,instrument_id,settlement_currency,quantity,average_entry_price,mark_price,realized_pnl,unrealized_pnl,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (mode,product_id,lineage_id,account_id,instrument_id) DO UPDATE SET settlement_currency=EXCLUDED.settlement_currency,quantity=EXCLUDED.quantity,average_entry_price=EXCLUDED.average_entry_price,mark_price=EXCLUDED.mark_price,realized_pnl=EXCLUDED.realized_pnl,unrealized_pnl=EXCLUDED.unrealized_pnl,updated_at=EXCLUDED.updated_at`, item.Mode, item.ProductID, item.LineageID, item.AccountID, item.InstrumentID, item.SettlementCurrency, item.Quantity, item.AverageEntryPrice, item.MarkPrice, item.RealizedPnL, item.UnrealizedPnL, item.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("upsert portfolio position: %w", err)
 	}
 	return nil
 }
+
+func (store *PortfolioStore) Upsert(ctx context.Context, item portfolio.Position) error {
+	return upsertPortfolioPosition(ctx, store.db, item)
+}
 func (store *PortfolioStore) List(ctx context.Context, mode portfolio.Mode, accountID, productID string) ([]portfolio.Position, error) {
-	rows, err := store.db.QueryContext(ctx, `SELECT mode,product_id,lineage_id,account_id,instrument_id,quantity::text,average_entry_price::text,mark_price::text,realized_pnl::text,unrealized_pnl::text,updated_at FROM platform_positions WHERE mode=$1 AND ($2='' OR account_id=$2) AND ($3='' OR product_id=$3) ORDER BY product_id,lineage_id,account_id,instrument_id`, mode, accountID, productID)
+	rows, err := store.db.QueryContext(ctx, `SELECT mode,product_id,lineage_id,account_id,instrument_id,settlement_currency,quantity::text,average_entry_price::text,mark_price::text,realized_pnl::text,unrealized_pnl::text,updated_at FROM platform_positions WHERE mode=$1 AND ($2='' OR account_id=$2) AND ($3='' OR product_id=$3) ORDER BY product_id,lineage_id,account_id,instrument_id`, mode, accountID, productID)
 	if err != nil {
-		return nil, fmt.Errorf("list portfolio positions")
+		return nil, fmt.Errorf("list portfolio positions: %w", err)
 	}
 	defer rows.Close()
 	items := make([]portfolio.Position, 0)
 	for rows.Next() {
 		var item portfolio.Position
-		if err := rows.Scan(&item.Mode, &item.ProductID, &item.LineageID, &item.AccountID, &item.InstrumentID, &item.Quantity, &item.AverageEntryPrice, &item.MarkPrice, &item.RealizedPnL, &item.UnrealizedPnL, &item.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan portfolio position")
+		if err := rows.Scan(&item.Mode, &item.ProductID, &item.LineageID, &item.AccountID, &item.InstrumentID, &item.SettlementCurrency, &item.Quantity, &item.AverageEntryPrice, &item.MarkPrice, &item.RealizedPnL, &item.UnrealizedPnL, &item.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan portfolio position: %w", err)
 		}
 		items = append(items, item)
 	}
@@ -171,10 +288,70 @@ func (store *CommandStore) Reserve(ctx context.Context, item orders.Command) (or
 	if err != nil {
 		return orders.Command{}, true, err
 	}
-	if existing.PayloadHash != item.PayloadHash || existing.AccountID != item.AccountID || existing.ProductID != item.ProductID || existing.LineageID != item.LineageID || existing.CommandKind != item.CommandKind || pointerValue(existing.ReservationID) != pointerValue(item.ReservationID) {
+	if !sameCommandAuthority(existing, item) {
 		return existing, true, orders.ErrIdempotencyConflict
 	}
 	return existing, true, nil
+}
+
+func (store *CommandStore) ReserveWithReservation(ctx context.Context, item orders.Command, claim orders.ReservationClaim) (orders.Command, bool, error) {
+	if item.ReservationID == nil || *item.ReservationID != claim.ReservationID || item.PrincipalID != claim.PrincipalID || item.Mode != claim.Mode || item.ProductID != claim.ProductID {
+		return orders.Command{}, false, reservations.ErrOwnership
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return orders.Command{}, false, fmt.Errorf("begin reservation command")
+	}
+	defer tx.Rollback()
+	blockers, _ := json.Marshal(item.Blockers)
+	result, err := tx.ExecContext(ctx, `INSERT INTO platform_commands
+		(command_id,principal_id,account_id,mode,product_id,lineage_id,reservation_id,idempotency_key,method,path,command_kind,state,payload,payload_hash,blockers,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+		ON CONFLICT (principal_id,mode,method,path,idempotency_key) DO NOTHING`, item.CommandID, item.PrincipalID, item.AccountID, item.Mode, item.ProductID, item.LineageID, nullString(item.ReservationID), item.IdempotencyKey, item.Method, item.Path, item.CommandKind, item.State, item.Payload, item.PayloadHash, blockers, item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return orders.Command{}, false, fmt.Errorf("insert reservation command")
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		existing, loadErr := scanCommand(tx.QueryRowContext(ctx, commandProjection+` WHERE principal_id=$1 AND mode=$2 AND method=$3 AND path=$4 AND idempotency_key=$5`, item.PrincipalID, item.Mode, item.Method, item.Path, item.IdempotencyKey))
+		if loadErr != nil {
+			return orders.Command{}, true, loadErr
+		}
+		if !sameCommandAuthority(existing, item) {
+			return existing, true, orders.ErrIdempotencyConflict
+		}
+		return existing, true, nil
+	}
+	var reservationID string
+	err = tx.QueryRowContext(ctx, `UPDATE platform_reservations SET status='consumed',updated_at=$5
+		WHERE reservation_id=$1 AND principal_id=$2 AND mode=$3 AND product_id=$4 AND status='held'
+		RETURNING reservation_id`, claim.ReservationID, claim.PrincipalID, claim.Mode, claim.ProductID, item.UpdatedAt).Scan(&reservationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		reservation, loadErr := scanReservation(tx.QueryRowContext(ctx, reservationProjection+` WHERE reservation_id=$1`, claim.ReservationID))
+		if loadErr != nil {
+			return orders.Command{}, false, loadErr
+		}
+		if reservation.PrincipalID != claim.PrincipalID || reservations.Mode(claim.Mode) != reservation.Mode || reservation.ProductID != claim.ProductID {
+			return orders.Command{}, false, reservations.ErrOwnership
+		}
+		return orders.Command{}, false, reservations.ErrNotHeld
+	}
+	if err != nil {
+		return orders.Command{}, false, fmt.Errorf("consume reservation command authority")
+	}
+	if reservationID != claim.ReservationID {
+		return orders.Command{}, false, reservations.ErrOwnership
+	}
+	if err := tx.Commit(); err != nil {
+		return orders.Command{}, false, fmt.Errorf("commit reservation command")
+	}
+	return item, false, nil
+}
+
+func sameCommandAuthority(existing, incoming orders.Command) bool {
+	return existing.PayloadHash == incoming.PayloadHash && existing.AccountID == incoming.AccountID &&
+		existing.ProductID == incoming.ProductID && existing.LineageID == incoming.LineageID &&
+		existing.CommandKind == incoming.CommandKind && pointerValue(existing.ReservationID) == pointerValue(incoming.ReservationID)
 }
 
 func (store *CommandStore) Abort(ctx context.Context, id string) error {
@@ -188,17 +365,35 @@ func (store *CommandStore) Get(ctx context.Context, id string) (orders.Command, 
 	return scanCommand(store.db.QueryRowContext(ctx, commandProjection+` WHERE command_id=$1`, id))
 }
 
+func (store *CommandStore) ListOwned(ctx context.Context, principal string, mode orders.Mode, productID string) ([]orders.Command, error) {
+	rows, err := store.db.QueryContext(ctx, commandProjection+` WHERE principal_id=$1 AND mode=$2 AND product_id=$3 ORDER BY created_at,command_id`, principal, mode, productID)
+	if err != nil {
+		return nil, fmt.Errorf("list owned commands")
+	}
+	defer rows.Close()
+	items := make([]orders.Command, 0)
+	for rows.Next() {
+		item, scanErr := scanCommand(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (store *CommandStore) Transition(ctx context.Context, request orders.TransitionRequest, now time.Time) (orders.Command, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return orders.Command{}, fmt.Errorf("begin command transition")
 	}
 	defer tx.Rollback()
-	item, err := scanCommand(tx.QueryRowContext(ctx, `UPDATE platform_commands SET state=$2,updated_at=$3 WHERE command_id=$1 RETURNING command_id,principal_id,account_id,mode,product_id,lineage_id,reservation_id,idempotency_key,method,path,command_kind,state,payload,payload_hash,blockers,created_at,updated_at`, request.CommandID, request.State, now))
+	evidence, _ := json.Marshal(request.Evidence)
+	item, err := scanCommand(tx.QueryRowContext(ctx, `UPDATE platform_commands SET state=$2,updated_at=$3,execution_evidence=CASE WHEN $4::jsonb='{}'::jsonb THEN execution_evidence ELSE $4::jsonb END WHERE command_id=$1 RETURNING command_id,principal_id,account_id,mode,product_id,lineage_id,reservation_id,idempotency_key,method,path,command_kind,state,payload,payload_hash,blockers,created_at,updated_at,execution_evidence`, request.CommandID, request.State, now, evidence))
 	if err != nil {
 		return orders.Command{}, err
 	}
-	if request.State == orders.StateUncertain {
+	if request.State == orders.StateUncertain || request.State == orders.StateSubmitted {
 		_, err = tx.ExecContext(ctx, `INSERT INTO platform_reconciliation_tasks(command_id,mode,reason,next_attempt_at) VALUES ($1,$2,$3,$4)
 			ON CONFLICT (command_id) DO UPDATE SET reason=EXCLUDED.reason,next_attempt_at=EXCLUDED.next_attempt_at,lease_until=NULL`, item.CommandID, item.Mode, request.Reason, request.NextAttemptAt)
 	} else {
@@ -231,17 +426,18 @@ func (store *CommandStore) ClaimDue(ctx context.Context, mode orders.Mode, now, 
 	return items, rows.Err()
 }
 
-const commandProjection = `SELECT command_id,principal_id,account_id,mode,product_id,lineage_id,reservation_id,idempotency_key,method,path,command_kind,state,payload,payload_hash,blockers,created_at,updated_at FROM platform_commands`
+const commandProjection = `SELECT command_id,principal_id,account_id,mode,product_id,lineage_id,reservation_id,idempotency_key,method,path,command_kind,state,payload,payload_hash,blockers,created_at,updated_at,execution_evidence FROM platform_commands`
 
 func scanCommand(row scanner) (orders.Command, error) {
 	var item orders.Command
 	var reservation sql.NullString
 	var blockers []byte
-	err := row.Scan(&item.CommandID, &item.PrincipalID, &item.AccountID, &item.Mode, &item.ProductID, &item.LineageID, &reservation, &item.IdempotencyKey, &item.Method, &item.Path, &item.CommandKind, &item.State, &item.Payload, &item.PayloadHash, &blockers, &item.CreatedAt, &item.UpdatedAt)
+	var evidence []byte
+	err := row.Scan(&item.CommandID, &item.PrincipalID, &item.AccountID, &item.Mode, &item.ProductID, &item.LineageID, &reservation, &item.IdempotencyKey, &item.Method, &item.Path, &item.CommandKind, &item.State, &item.Payload, &item.PayloadHash, &blockers, &item.CreatedAt, &item.UpdatedAt, &evidence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, orders.ErrNotFound
 	}
-	if err != nil || json.Unmarshal(blockers, &item.Blockers) != nil {
+	if err != nil || json.Unmarshal(blockers, &item.Blockers) != nil || json.Unmarshal(evidence, &item.ExecutionEvidence) != nil {
 		return item, fmt.Errorf("scan command")
 	}
 	item.ReservationID = stringPointer(reservation)
@@ -284,27 +480,30 @@ func (store *LedgerStore) Entries(ctx context.Context, q ledger.Query) ([]ledger
 	return items, rows.Err()
 }
 func (store *LedgerStore) SetUnrealized(ctx context.Context, v ledger.Unrealized) error {
-	_, err := store.db.ExecContext(ctx, `INSERT INTO platform_unrealized_pnl(mode,product_id,lineage_id,account_id,instrument_id,amount,as_of) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (mode,product_id,lineage_id,account_id,instrument_id) DO UPDATE SET amount=EXCLUDED.amount,as_of=EXCLUDED.as_of`, v.Mode, v.ProductID, v.LineageID, v.AccountID, v.InstrumentID, v.Amount, v.AsOf)
+	_, err := store.db.ExecContext(ctx, `INSERT INTO platform_unrealized_pnl(mode,product_id,lineage_id,account_id,instrument_id,amount,currency,as_of) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (mode,product_id,lineage_id,account_id,instrument_id) DO UPDATE SET amount=EXCLUDED.amount,currency=EXCLUDED.currency,as_of=EXCLUDED.as_of`, v.Mode, v.ProductID, v.LineageID, v.AccountID, v.InstrumentID, v.Amount, v.Currency, v.AsOf)
 	if err != nil {
 		return fmt.Errorf("set unrealized pnl")
 	}
 	return nil
 }
-func (store *LedgerStore) Unrealized(ctx context.Context, q ledger.Query) (decimal.Decimal, time.Time, error) {
-	var amount string
+func (store *LedgerStore) Unrealized(ctx context.Context, q ledger.Query) (decimal.Decimal, string, time.Time, error) {
+	var amount, currency string
 	var asOf time.Time
-	err := store.db.QueryRowContext(ctx, `SELECT amount::text,as_of FROM platform_unrealized_pnl WHERE mode=$1 AND product_id=$2 AND lineage_id=$3 AND account_id=$4 AND instrument_id=$5`, q.Mode, q.ProductID, q.LineageID, q.AccountID, q.InstrumentID).Scan(&amount, &asOf)
+	err := store.db.QueryRowContext(ctx, `SELECT amount::text,currency,as_of FROM platform_unrealized_pnl WHERE mode=$1 AND product_id=$2 AND lineage_id=$3 AND account_id=$4 AND instrument_id=$5`, q.Mode, q.ProductID, q.LineageID, q.AccountID, q.InstrumentID).Scan(&amount, &currency, &asOf)
 	if errors.Is(err, sql.ErrNoRows) {
-		return decimal.Zero, time.Time{}, nil
+		return decimal.Zero, "", time.Time{}, nil
 	}
 	if err != nil {
-		return decimal.Zero, time.Time{}, fmt.Errorf("load unrealized pnl")
+		return decimal.Zero, "", time.Time{}, fmt.Errorf("load unrealized pnl")
+	}
+	if currency == "" {
+		return decimal.Zero, "", time.Time{}, ledger.ErrCurrencyMismatch
 	}
 	value, err := decimal.NewFromString(amount)
 	if err != nil {
-		return decimal.Zero, time.Time{}, fmt.Errorf("decode unrealized pnl")
+		return decimal.Zero, "", time.Time{}, fmt.Errorf("decode unrealized pnl")
 	}
-	return value, asOf, nil
+	return value, currency, asOf, nil
 }
 
 func nullString(value *string) any {
@@ -328,5 +527,6 @@ func pointerValue(value *string) string {
 }
 func reservationScopeKey(item reservations.Reservation) string {
 	scope, _ := json.Marshal(item.Scope)
-	return string(item.Mode) + "\x00" + string(scope)
+	fingerprint := sha256.Sum256(append([]byte("boltertrader/reservation-scope/v1\x00"+item.Mode+"\x00"), scope...))
+	return fmt.Sprintf("scope_v1_%x", fingerprint)
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/shopspring/decimal"
@@ -144,7 +145,7 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 	defer endAccountWrite(gate)
 
 	route, err := coordinator.router.Route(ctx, request.AccountID, request.InstrumentID)
-	if err != nil || route.validate() != nil || !route.WriteReady {
+	if err != nil || route.validate() != nil || !route.WriteReady || route.CheckWriteFence == nil {
 		return Result{}, ErrWriteNotReady
 	}
 	payload, payloadHash, err := canonicalPlacePayload(request)
@@ -191,7 +192,7 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 		return result, err
 	}
 	preparedRequest.ClientOrderID = reserved.ClientOrderID
-	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest)
+	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest, request.WriteFence)
 	if err != nil {
 		markAccountNotReady(gate)
 	}
@@ -582,13 +583,20 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 		return false, fmt.Errorf("recover durable order payload failed")
 	}
 	if command.State == domain.StatePrepared {
-		result, dispatchErr := coordinator.dispatch(ctx, route, command, request)
+		fence := account.WriteFence{AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision, RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion}
+		if route.CheckWriteFence == nil || validateWriteFence(fence, command.AccountID) != nil {
+			return false, ErrWriteNotReady
+		}
+		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, fence)
 		return dispatchErr == nil && result.State != domain.StateUncertain, dispatchErr
 	}
 	return coordinator.reconcile(ctx, route, command)
 }
 
-func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest) (Result, error) {
+func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, fence account.WriteFence) (Result, error) {
+	if route.CheckWriteFence == nil || validateWriteFence(fence, prepared.AccountID) != nil {
+		return resultFromStored(prepared), ErrWriteNotReady
+	}
 	eventID, err := coordinator.identity.EventID()
 	if err != nil {
 		return resultFromStored(prepared), fmt.Errorf("allocate dispatch event failed")
@@ -602,6 +610,9 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	}
 	if err := runHook(ctx, coordinator.hooks.AfterDispatching, dispatching); err != nil {
 		return resultFromStored(dispatching), err
+	}
+	if err := route.CheckWriteFence(fence); err != nil {
+		return resultFromStored(dispatching), ErrWriteNotReady
 	}
 
 	ack, placeErr := route.Driver.PlaceOrder(ctx, request)

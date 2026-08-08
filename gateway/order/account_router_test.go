@@ -113,6 +113,8 @@ func (registry *routingRegistry) RecoveryStatus(domain.AccountID) (account.Statu
 	return registry.recoveryStatus, nil
 }
 
+func (*routingRegistry) CheckWriteFence(account.WriteFence) error { return nil }
+
 type routingSpotClient struct {
 	exchange.SpotClient
 	lookupResult exchange.ExactOrderLookupResult

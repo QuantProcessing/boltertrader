@@ -18,6 +18,18 @@ func (gate *reservationGate) Consume(_ context.Context, request ReservationClaim
 	return nil
 }
 
+type atomicReservationStore struct {
+	*MemoryStore
+	calls int
+	claim ReservationClaim
+}
+
+func (store *atomicReservationStore) ReserveWithReservation(ctx context.Context, command Command, claim ReservationClaim) (Command, bool, error) {
+	store.calls++
+	store.claim = claim
+	return store.MemoryStore.Reserve(ctx, command)
+}
+
 func TestServiceReplaysCanonicalEconomicCommandAndRejectsConflict(t *testing.T) {
 	gate := &reservationGate{}
 	service := NewService(NewMemoryStore(), gate, time.Now)
@@ -42,6 +54,45 @@ func TestServiceReplaysCanonicalEconomicCommandAndRejectsConflict(t *testing.T) 
 	conflict, _, err := service.Create(context.Background(), changed)
 	if !errors.Is(err, ErrIdempotencyConflict) || conflict.CommandID != first.CommandID || gate.calls != 1 {
 		t.Fatalf("conflict = %+v calls=%d err=%v", conflict, gate.calls, err)
+	}
+}
+
+func TestServiceDelegatesReservationAndCommandToAtomicStore(t *testing.T) {
+	store := &atomicReservationStore{MemoryStore: NewMemoryStore()}
+	gate := &reservationGate{}
+	service := NewService(store, gate, time.Now)
+	request := CreateRequest{
+		PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual",
+		LineageID: "lineage-a", ReservationID: "reservation-a", IdempotencyKey: "place-a",
+		Method: "POST", Path: "/api/v1/products/manual/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{"quantity":"1"}`),
+	}
+	first, replay, err := service.Create(context.Background(), request)
+	if err != nil || replay || first.ReservationID == nil || store.calls != 1 || gate.calls != 0 {
+		t.Fatalf("first=%+v replay=%v atomic calls=%d gate calls=%d err=%v", first, replay, store.calls, gate.calls, err)
+	}
+	if store.claim.ReservationID != "reservation-a" || store.claim.PrincipalID != "principal-a" || store.claim.Mode != ModeTest || store.claim.ProductID != "manual" {
+		t.Fatalf("atomic claim=%+v", store.claim)
+	}
+	second, replay, err := service.Create(context.Background(), request)
+	if err != nil || !replay || second.CommandID != first.CommandID || store.calls != 2 || gate.calls != 0 {
+		t.Fatalf("replay=%+v replay=%v atomic calls=%d gate calls=%d err=%v", second, replay, store.calls, gate.calls, err)
+	}
+}
+
+func TestListOwnedFiltersPrincipalModeAndProduct(t *testing.T) {
+	service := NewService(NewMemoryStore(), nil, time.Now)
+	for _, request := range []CreateRequest{
+		{PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a", IdempotencyKey: "a", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
+		{PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "funding", LineageID: "lineage-b", IdempotencyKey: "b", Method: "POST", Path: "/api/v1/commands", CommandKind: "funding.open", Payload: json.RawMessage(`{}`)},
+		{PrincipalID: "principal-b", Mode: ModeTest, AccountID: "account-b", ProductID: "manual", LineageID: "lineage-c", IdempotencyKey: "c", Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`)},
+	} {
+		if _, _, err := service.Create(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := service.ListOwned(context.Background(), "principal-a", ModeTest, "manual")
+	if err != nil || len(items) != 1 || items[0].ProductID != "manual" || items[0].PrincipalID != "principal-a" {
+		t.Fatalf("ListOwned()=%+v err=%v", items, err)
 	}
 }
 
@@ -121,5 +172,25 @@ func TestServiceFencesCommandReadsByPrincipalAndMode(t *testing.T) {
 	}
 	if _, err := service.GetOwned(context.Background(), "p", ModeLive, command.CommandID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-mode read err=%v", err)
+	}
+}
+
+func TestFreshServicesGenerateDistinctCommandIDs(t *testing.T) {
+	store := NewMemoryStore()
+	create := func(service *Service, key string) Command {
+		t.Helper()
+		item, replay, err := service.Create(context.Background(), CreateRequest{
+			PrincipalID: "principal-a", Mode: ModeTest, AccountID: "account-a", ProductID: "manual", LineageID: "lineage-a",
+			IdempotencyKey: key, Method: "POST", Path: "/api/v1/commands", CommandKind: "manual.place", Payload: json.RawMessage(`{}`),
+		})
+		if err != nil || replay {
+			t.Fatalf("Create() item=%+v replay=%v err=%v", item, replay, err)
+		}
+		return item
+	}
+	first := create(NewService(store, nil, time.Now), "first")
+	second := create(NewService(store, nil, time.Now), "second")
+	if first.CommandID == second.CommandID {
+		t.Fatalf("fresh services generated colliding command id %q", first.CommandID)
 	}
 }

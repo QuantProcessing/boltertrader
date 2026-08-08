@@ -25,7 +25,7 @@ import (
 
 func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting"}`
+	body := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
 
 	unauthorized := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body)))
@@ -50,7 +50,9 @@ func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *test
 		t.Fatalf("place status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if fixture.orders.place.PrincipalID == "" || fixture.orders.place.AccountID != "acct-a" ||
-		fixture.orders.place.Quantity.String() != "0.001" {
+		fixture.orders.place.Quantity.String() != "0.001" || fixture.orders.place.WriteFence != (account.WriteFence{
+		AccountID: "acct-a", DesiredStateRevision: 1, RuntimeGeneration: 2, CredentialVersion: 3,
+	}) {
 		t.Fatalf("place request=%+v", fixture.orders.place)
 	}
 }
@@ -468,6 +470,73 @@ func TestHandlerListFillsNextCursorRequiresKnownHasMore(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "next_cursor") {
 		t.Fatalf("unexpected next_cursor: %s", recorder.Body.String())
+	}
+}
+
+func TestHandlerListFillsProjectsSettlementAssetFromResolvedInstrument(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
+		Fills: []exchange.Fill{{FillID: "fill-1", FeeAsset: "BNB"}},
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			SettlementAsset string `json:"settlement_asset"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items[0].SettlementAsset != "USDT" {
+		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
+	}
+}
+
+func TestHandlerListFillsProjectsSettlementAssetWithoutInstrumentFilter(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
+		Fills: []exchange.Fill{{FillID: "fill-1", NativeSymbol: "BTCUSDT", FeeAsset: "BNB"}},
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Items []struct {
+			InstrumentID    domain.InstrumentID `json:"instrument_id"`
+			SettlementAsset string              `json:"settlement_asset"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Items) != 1 || response.Items[0].InstrumentID != "binance:demo:spot:BTC-USDT" || response.Items[0].SettlementAsset != "USDT" {
+		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
+	}
+}
+
+func TestHandlerListFillsRejectsMissingSettlementAuthority(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	fixture.accounts.instrument.Identity.QuoteAsset = ""
+	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{Fills: []exchange.Fill{{FillID: "fill-1"}}}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	recorder := httptest.NewRecorder()
+	fixture.handler.ServeHTTP(recorder, request)
+	if recorder.Code == http.StatusOK {
+		t.Fatalf("missing settlement authority accepted: %s", recorder.Body.String())
 	}
 }
 

@@ -35,6 +35,7 @@ const (
 	AuthorityCatalogVenues       AuthorityOperation = "catalog.venues"
 	AuthorityCatalogInstruments  AuthorityOperation = "catalog.instruments"
 	AuthorityMarketData          AuthorityOperation = "market_data"
+	AuthorityMarketDataReadiness AuthorityOperation = "market_data.readiness"
 	AuthorityPrivateEvents       AuthorityOperation = "private_events"
 )
 
@@ -80,6 +81,10 @@ type AuthorityRequest struct {
 type AuthorityResponse struct {
 	Body                 any
 	DesiredStateRevision int64
+}
+
+type RuntimeReadiness struct {
+	Ready bool `json:"ready"`
 }
 
 type InternalAuthority interface {
@@ -128,6 +133,7 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/catalog/venues"},
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
 	{http.MethodGet, "/internal/v1/market-data"},
+	{http.MethodGet, "/internal/v1/market-data/readiness"},
 	{http.MethodGet, "/internal/v1/private-events"},
 }
 
@@ -174,6 +180,7 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/catalog/venues", handler.read(AuthorityCatalogVenues))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
+	handler.mux.HandleFunc("GET /internal/v1/market-data/readiness", handler.read(AuthorityMarketDataReadiness))
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
 }
 

@@ -2,6 +2,10 @@ package portfolio
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,27 +29,34 @@ type Fill struct {
 	FillID, CommandID, LineageID, ProductID, AccountID, InstrumentID string
 	Mode                                                             Mode
 	Side                                                             Side
-	Quantity, Price, Fee, FeeCurrency                                string
+	Quantity, Price, Fee, FeeCurrency, SettlementCurrency            string
 	OccurredAt                                                       time.Time
 }
 
 type FillResult struct {
-	RealizedPnL string
-	Fee         string
+	RealizedPnL        string
+	Fee                string
+	SettlementCurrency string
 }
 
+var (
+	ErrFillConflict     = errors.New("fill identity conflict")
+	ErrCurrencyMismatch = errors.New("portfolio settlement currency mismatch")
+)
+
 type Position struct {
-	LineageID         string    `json:"lineageId"`
-	ProductID         string    `json:"productId"`
-	Mode              Mode      `json:"mode"`
-	AccountID         string    `json:"accountId"`
-	InstrumentID      string    `json:"instrumentId"`
-	Quantity          string    `json:"quantity"`
-	AverageEntryPrice string    `json:"averageEntryPrice"`
-	MarkPrice         string    `json:"markPrice"`
-	RealizedPnL       string    `json:"realizedPnl"`
-	UnrealizedPnL     string    `json:"unrealizedPnl"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	LineageID          string    `json:"lineageId"`
+	ProductID          string    `json:"productId"`
+	Mode               Mode      `json:"mode"`
+	AccountID          string    `json:"accountId"`
+	InstrumentID       string    `json:"instrumentId"`
+	SettlementCurrency string    `json:"settlementCurrency"`
+	Quantity           string    `json:"quantity"`
+	AverageEntryPrice  string    `json:"averageEntryPrice"`
+	MarkPrice          string    `json:"markPrice"`
+	RealizedPnL        string    `json:"realizedPnl"`
+	UnrealizedPnL      string    `json:"unrealizedPnl"`
+	UpdatedAt          time.Time `json:"updatedAt"`
 }
 
 type positionState struct {
@@ -53,20 +64,27 @@ type positionState struct {
 	quantity, average, mark, realized decimal.Decimal
 }
 
+type processedFill struct {
+	fingerprint string
+	result      FillResult
+}
+
 type Projection struct {
 	mu        sync.Mutex
 	positions map[string]positionState
-	fills     map[string]FillResult
+	fills     map[string]processedFill
 	store     Store
 }
 
 type Store interface {
+	ApplyFill(context.Context, Fill, func(Position) (Position, FillResult, error)) (Position, FillResult, error)
+	ApplyMark(context.Context, Mode, string, string, string, string, func(Position) (Position, error)) (Position, error)
 	Upsert(context.Context, Position) error
 	List(context.Context, Mode, string, string) ([]Position, error)
 }
 
 func NewProjection() *Projection {
-	return &Projection{positions: make(map[string]positionState), fills: make(map[string]FillResult)}
+	return &Projection{positions: make(map[string]positionState), fills: make(map[string]processedFill)}
 }
 
 func NewPersistentProjection(store Store) *Projection {
@@ -75,18 +93,47 @@ func NewPersistentProjection(store Store) *Projection {
 	return projection
 }
 
-func (projection *Projection) ApplyFill(_ context.Context, fill Fill) (Position, FillResult, error) {
+func (projection *Projection) ApplyFill(ctx context.Context, fill Fill) (Position, FillResult, error) {
 	quantity, price, fee, err := validateFill(fill)
 	if err != nil {
 		return Position{}, FillResult{}, err
 	}
+	if projection.store != nil {
+		return projection.store.ApplyFill(ctx, fill, func(current Position) (Position, FillResult, error) {
+			state, err := stateFromPosition(current)
+			if err != nil {
+				return Position{}, FillResult{}, err
+			}
+			return applyFill(state, fill, quantity, price, fee)
+		})
+	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
-	if result, exists := projection.fills[fill.FillID]; exists {
-		return projection.positions[positionKey(string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)].Position, result, nil
+	if recorded, exists := projection.fills[fill.FillID]; exists {
+		if recorded.fingerprint != FillFingerprint(fill) {
+			return Position{}, FillResult{}, fmt.Errorf("%w: %s", ErrFillConflict, fill.FillID)
+		}
+		return projection.positions[positionKey(string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)].Position, recorded.result, nil
 	}
 	key := positionKey(string(fill.Mode), fill.AccountID, fill.ProductID, fill.LineageID, fill.InstrumentID)
-	state := projection.positions[key]
+	position, result, err := applyFill(projection.positions[key], fill, quantity, price, fee)
+	if err != nil {
+		return Position{}, FillResult{}, err
+	}
+	state, err := stateFromPosition(position)
+	if err != nil {
+		return Position{}, FillResult{}, err
+	}
+	projection.positions[key] = state
+	projection.fills[fill.FillID] = processedFill{fingerprint: FillFingerprint(fill), result: result}
+	return position, result, nil
+}
+
+func applyFill(state positionState, fill Fill, quantity, price, fee decimal.Decimal) (Position, FillResult, error) {
+	if state.SettlementCurrency != "" && state.SettlementCurrency != fill.SettlementCurrency {
+		return Position{}, FillResult{}, ErrCurrencyMismatch
+	}
+	state.SettlementCurrency = fill.SettlementCurrency
 	state.LineageID, state.ProductID, state.Mode, state.AccountID, state.InstrumentID = fill.LineageID, fill.ProductID, fill.Mode, fill.AccountID, fill.InstrumentID
 	signed := quantity
 	if fill.Side == SideSell {
@@ -115,21 +162,61 @@ func (projection *Projection) ApplyFill(_ context.Context, fill Fill) (Position,
 	state.realized = state.realized.Add(realized)
 	state.UpdatedAt = fill.OccurredAt.UTC()
 	state.refresh()
-	if projection.store != nil {
-		if err := projection.store.Upsert(context.Background(), state.Position); err != nil {
-			return Position{}, FillResult{}, err
-		}
-	}
-	projection.positions[key] = state
-	result := FillResult{RealizedPnL: number(realized), Fee: number(fee)}
-	projection.fills[fill.FillID] = result
+	result := FillResult{RealizedPnL: number(realized), Fee: number(fee), SettlementCurrency: fill.SettlementCurrency}
 	return state.Position, result, nil
+}
+
+func stateFromPosition(position Position) (positionState, error) {
+	state := positionState{Position: position}
+	if position.Quantity == "" {
+		return state, nil
+	}
+	var err error
+	if state.quantity, err = decimal.NewFromString(position.Quantity); err != nil {
+		return positionState{}, fmt.Errorf("invalid persisted position quantity")
+	}
+	if state.average, err = decimal.NewFromString(position.AverageEntryPrice); err != nil {
+		return positionState{}, fmt.Errorf("invalid persisted average entry price")
+	}
+	if state.mark, err = decimal.NewFromString(position.MarkPrice); err != nil {
+		return positionState{}, fmt.Errorf("invalid persisted mark price")
+	}
+	if state.realized, err = decimal.NewFromString(position.RealizedPnL); err != nil {
+		return positionState{}, fmt.Errorf("invalid persisted realized PnL")
+	}
+	return state, nil
+}
+
+func FillFingerprint(fill Fill) string {
+	payload, _ := json.Marshal(struct {
+		FillID, CommandID, LineageID, ProductID, AccountID, InstrumentID string
+		Mode                                                             Mode
+		Side                                                             Side
+		Quantity, Price, Fee, FeeCurrency, SettlementCurrency            string
+		OccurredAt                                                       time.Time
+	}{
+		fill.FillID, fill.CommandID, fill.LineageID, fill.ProductID, fill.AccountID, fill.InstrumentID,
+		fill.Mode, fill.Side, fill.Quantity, fill.Price, fill.Fee, fill.FeeCurrency, fill.SettlementCurrency, fill.OccurredAt.UTC(),
+	})
+	hash := sha256.Sum256(payload)
+	return hex.EncodeToString(hash[:])
 }
 
 func (projection *Projection) ApplyMark(mode Mode, accountID, productID, lineageID, instrumentID, mark string, asOf time.Time) (Position, error) {
 	price, err := decimal.NewFromString(mark)
 	if err != nil || price.IsNegative() {
 		return Position{}, fmt.Errorf("mark price must be a non-negative decimal")
+	}
+	if projection.store != nil {
+		return projection.store.ApplyMark(context.Background(), mode, accountID, productID, lineageID, instrumentID, func(current Position) (Position, error) {
+			state, err := stateFromPosition(current)
+			if err != nil {
+				return Position{}, err
+			}
+			state.mark, state.UpdatedAt = price, asOf.UTC()
+			state.refresh()
+			return state.Position, nil
+		})
 	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
@@ -140,11 +227,6 @@ func (projection *Projection) ApplyMark(mode Mode, accountID, productID, lineage
 	}
 	state.mark, state.UpdatedAt = price, asOf.UTC()
 	state.refresh()
-	if projection.store != nil {
-		if err := projection.store.Upsert(context.Background(), state.Position); err != nil {
-			return Position{}, err
-		}
-	}
 	projection.positions[key] = state
 	return state.Position, nil
 }
@@ -157,6 +239,13 @@ func (projection *Projection) ListContext(ctx context.Context, mode Mode, accoun
 }
 
 func (projection *Projection) List(mode Mode, accountID, productID string) []Position {
+	if projection.store != nil {
+		items, err := projection.store.List(context.Background(), mode, accountID, productID)
+		if err != nil {
+			return nil
+		}
+		return items
+	}
 	projection.mu.Lock()
 	defer projection.mu.Unlock()
 	result := make([]Position, 0)
@@ -181,7 +270,7 @@ func (state *positionState) refresh() {
 }
 
 func validateFill(fill Fill) (decimal.Decimal, decimal.Decimal, decimal.Decimal, error) {
-	if fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.FeeCurrency == "" || fill.OccurredAt.IsZero() || (fill.Mode != ModeTest && fill.Mode != ModeLive) {
+	if fill.FillID == "" || fill.CommandID == "" || fill.LineageID == "" || fill.ProductID == "" || fill.AccountID == "" || fill.InstrumentID == "" || fill.FeeCurrency == "" || fill.SettlementCurrency == "" || fill.OccurredAt.IsZero() || (fill.Mode != ModeTest && fill.Mode != ModeLive) {
 		return decimal.Zero, decimal.Zero, decimal.Zero, fmt.Errorf("fill attribution is incomplete")
 	}
 	if fill.Side != SideBuy && fill.Side != SideSell {

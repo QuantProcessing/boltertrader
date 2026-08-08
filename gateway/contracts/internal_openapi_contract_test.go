@@ -9,6 +9,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type internalSchema struct {
+	Ref                  string                    `yaml:"$ref"`
+	Type                 any                       `yaml:"type"`
+	AdditionalProperties any                       `yaml:"additionalProperties"`
+	Required             []string                  `yaml:"required"`
+	Properties           map[string]internalSchema `yaml:"properties"`
+}
+
+type internalResponse struct {
+	Content map[string]struct {
+		Schema internalSchema `yaml:"schema"`
+	} `yaml:"content"`
+}
+
 func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *testing.T) {
 	data, err := os.ReadFile("../../api/exchange-gateway/v1/internal-openapi.yaml")
 	if err != nil {
@@ -19,22 +33,22 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		Security []map[string][]string `yaml:"security"`
 		Paths    map[string]map[string]struct {
 			OperationID string `yaml:"operationId"`
-			Parameters  []struct {
+			Responses   map[string]struct {
+				Ref string `yaml:"$ref"`
+			} `yaml:"responses"`
+			Parameters []struct {
 				Name     string `yaml:"name"`
 				In       string `yaml:"in"`
 				Required bool   `yaml:"required"`
 			} `yaml:"parameters"`
 		} `yaml:"paths"`
 		Components struct {
+			Responses       map[string]internalResponse `yaml:"responses"`
 			SecuritySchemes map[string]struct {
 				Type   string `yaml:"type"`
 				Scheme string `yaml:"scheme"`
 			} `yaml:"securitySchemes"`
-			Schemas map[string]struct {
-				AdditionalProperties any            `yaml:"additionalProperties"`
-				Required             []string       `yaml:"required"`
-				Properties           map[string]any `yaml:"properties"`
-			} `yaml:"schemas"`
+			Schemas map[string]internalSchema `yaml:"schemas"`
 		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(data, &document); err != nil {
@@ -80,6 +94,23 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("%s methods=%v want=%v", path, got, methods)
 		}
 	}
+	for path, responseName := range map[string]string{
+		"/internal/v1/runtime/status":    "RuntimeStatus",
+		"/internal/v1/runtime/readiness": "RuntimeReadiness",
+	} {
+		got := document.Paths[path]["get"].Responses["200"].Ref
+		wantRef := "#/components/responses/" + responseName
+		if got != wantRef {
+			t.Errorf("%s response ref=%q want=%q", path, got, wantRef)
+		}
+		envelope := document.Components.Responses[responseName].Content["application/json"].Schema
+		if envelope.Type != "object" || envelope.AdditionalProperties != false || !reflect.DeepEqual(envelope.Required, []string{"data"}) || len(envelope.Properties) != 1 {
+			t.Errorf("%s response envelope=%+v", responseName, envelope)
+		}
+		if got := envelope.Properties["data"].Ref; got != "#/components/schemas/"+responseName {
+			t.Errorf("%s response data schema ref=%q", responseName, got)
+		}
+	}
 	for _, name := range []string{"DesiredAccount", "DesiredMutation", "RotationFence", "RuntimeAccount", "InternalErrorEnvelope"} {
 		schema, ok := document.Components.Schemas[name]
 		if !ok {
@@ -88,6 +119,26 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		}
 		if schema.AdditionalProperties != false {
 			t.Errorf("schema %s must reject unknown fields", name)
+		}
+	}
+	for name, required := range map[string][]string{
+		"RuntimeStatus":    {"accounts", "mode"},
+		"RuntimeReadiness": {"ready"},
+	} {
+		schema, ok := document.Components.Schemas[name]
+		if !ok {
+			t.Errorf("missing internal schema %s", name)
+			continue
+		}
+		if schema.AdditionalProperties != false {
+			t.Errorf("schema %s must reject unknown fields", name)
+		}
+		sort.Strings(schema.Required)
+		if !reflect.DeepEqual(schema.Required, required) {
+			t.Errorf("%s required=%v want=%v", name, schema.Required, required)
+		}
+		if len(schema.Properties) != len(required) {
+			t.Errorf("%s properties=%v want only %v", name, schema.Properties, required)
 		}
 	}
 	desired := document.Components.Schemas["DesiredAccount"]

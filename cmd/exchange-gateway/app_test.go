@@ -43,6 +43,30 @@ func TestOperationalHTTPExposesMetricsAndObservesGatewayCommands(t *testing.T) {
 	}
 }
 
+func TestModeAttestedHandlerRejectsMissingAndMismatchedModes(t *testing.T) {
+	calls := 0
+	handler := modeAttestedHandler("live", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, mode := range []string{"", "test"} {
+		request := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
+		request.Header.Set(gatewayModeHeader, mode)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || response.Header().Get(gatewayModeHeader) != "live" || calls != 0 {
+			t.Fatalf("mode=%q status=%d attestation=%q calls=%d", mode, response.Code, response.Header().Get(gatewayModeHeader), calls)
+		}
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
+	request.Header.Set(gatewayModeHeader, "live")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("matched status=%d calls=%d", response.Code, calls)
+	}
+}
+
 func TestRunRequiresConfigFlagAndLoadsStrictConfigBeforeStart(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "gateway.yaml")
@@ -136,7 +160,9 @@ func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
 			return listener, err
 		},
 		wait: func(ctx context.Context, service *process.Service) error {
-			unauthorized, err := http.Get("http://" + internalAddress + "/internal/v1/runtime/status")
+			unauthorizedRequest, _ := http.NewRequest(http.MethodGet, "http://"+internalAddress+"/internal/v1/runtime/status", nil)
+			unauthorizedRequest.Header.Set(gatewayModeHeader, "test")
+			unauthorized, err := http.DefaultClient.Do(unauthorizedRequest)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,6 +172,7 @@ func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
 			}
 			request, _ := http.NewRequest(http.MethodGet, "http://"+internalAddress+"/internal/v1/runtime/status", nil)
 			request.Header.Set("Authorization", "Bearer gateway-adapter-token")
+			request.Header.Set(gatewayModeHeader, "test")
 			response, err := http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)

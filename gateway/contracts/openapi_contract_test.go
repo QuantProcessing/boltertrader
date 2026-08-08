@@ -108,8 +108,8 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		properties []string
 	}{
 		"PlaceOrderRequest": {
-			required:   []string{"account_id", "idempotency_key", "instrument_id", "quantity", "side", "type"},
-			properties: []string{"account_id", "idempotency_key", "instrument_id", "limit_policy", "limit_price", "quantity", "reduce_only", "side", "type"},
+			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "quantity", "runtime_generation", "side", "type"},
+			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "limit_policy", "limit_price", "quantity", "reduce_only", "runtime_generation", "side", "type"},
 		},
 		"OrderResponse": {
 			required:   []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state"},
@@ -216,6 +216,13 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		}
 		if !sameStrings(properties, expected.properties) {
 			t.Errorf("schema %s properties = %v, want %v", name, properties, expected.properties)
+		}
+	}
+	placeOrder := document.Components.Schemas["PlaceOrderRequest"]
+	for _, name := range []string{"desired_state_revision", "runtime_generation", "credential_version"} {
+		property, ok := placeOrder.Properties[name].(map[string]any)
+		if !ok || property["type"] != "integer" || property["minimum"] != 1 {
+			t.Errorf("PlaceOrderRequest property %s = %#v, want positive integer", name, placeOrder.Properties[name])
 		}
 	}
 	resync := document.Components.Schemas["ResyncRequiredEvent"]

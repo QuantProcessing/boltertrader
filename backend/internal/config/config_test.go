@@ -21,6 +21,60 @@ func TestLoadRequiresProtectedCredentialsAndKeepsOnlyTokenDigest(t *testing.T) {
 	if allZero(cfg.FundingWorkerTokenDigest[:]) {
 		t.Fatal("worker token digest is zero")
 	}
+	if cfg.GatewayURL != "http://127.0.0.1:18082" || string(cfg.GatewayToken) != strings.Repeat("gateway-token-", 3) {
+		t.Fatalf("Gateway adapter configuration not loaded")
+	}
+	if string(cfg.ManualPreviewSigningKey) != strings.Repeat("manual-preview-key-", 2) {
+		t.Fatal("Manual preview signing key not loaded")
+	}
+}
+
+func TestLoadRejectsUnsafeManualPreviewSigningKeys(t *testing.T) {
+	t.Run("inline", func(t *testing.T) {
+		setValidEnvironment(t)
+		t.Setenv("BT_MANUAL_PREVIEW_SIGNING_KEY", strings.Repeat("x", 32))
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "inline Manual preview signing keys are forbidden") {
+			t.Fatalf("Load() error = %v", err)
+		}
+	})
+
+	for name, configure := range map[string]func(*testing.T){
+		"missing": func(t *testing.T) {
+			t.Setenv(ManualPreviewSigningKeyFileEnv, "")
+		},
+		"short": func(t *testing.T) {
+			setManualPreviewKeyFile(t, "test", "too-short", 0o600)
+		},
+		"weak permissions": func(t *testing.T) {
+			setManualPreviewKeyFile(t, "test", strings.Repeat("x", 32), 0o644)
+		},
+		"cross mode": func(t *testing.T) {
+			setManualPreviewKeyFile(t, "live", strings.Repeat("x", 32), 0o600)
+		},
+		"symlink": func(t *testing.T) {
+			target := filepath.Join(t.TempDir(), "target")
+			if err := os.WriteFile(target, []byte(strings.Repeat("x", 32)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(t.TempDir(), "test")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "manual-preview-signing.key")
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(ManualPreviewSigningKeyFileEnv, path)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setValidEnvironment(t)
+			configure(t)
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() error = nil")
+			}
+		})
+	}
 }
 
 func TestLoadRejectsCredentialDefaultsAndUnsafeTokenFiles(t *testing.T) {
@@ -59,6 +113,90 @@ func TestLoadRejectsCredentialDefaultsAndUnsafeTokenFiles(t *testing.T) {
 	}
 }
 
+func TestGatewayTransportConfigurationIsModeScopedAndLoopbackOnlyForHTTP(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"plaintext non-loopback": func(value *Config) { value.GatewayURL = "http://192.0.2.10:18082" },
+		"plaintext hostname":     func(value *Config) { value.GatewayURL = "http://localhost:18082" },
+		"cross-mode token": func(value *Config) {
+			value.GatewayTokenFile = filepath.Join(t.TempDir(), "live", "gateway.token")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cfg
+			mutate(&changed)
+			if err := changed.Validate(); err == nil {
+				t.Fatal("Validate() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestLivePrivateWritesRequireExplicitLiveConfiguration(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LivePrivateWritesEnabled {
+		t.Fatal("Live private writes defaulted to enabled")
+	}
+
+	t.Setenv(LivePrivateWritesEnabledEnv, "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("test mode accepted the Live private-write gate")
+	}
+
+	t.Setenv("BT_MODE", "live")
+	t.Setenv("BT_PLATFORM_DATABASE", "bolter_platform_live")
+	t.Setenv("BT_PLATFORM_DATABASE_ROLE", "bolter_platform_live")
+	gatewayDir := filepath.Join(t.TempDir(), "live")
+	if err := os.MkdirAll(gatewayDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gatewayPath := filepath.Join(gatewayDir, "gateway.token")
+	if err := os.WriteFile(gatewayPath, []byte(strings.Repeat("gateway-token-", 3)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(GatewayTokenFileEnv, gatewayPath)
+	setManualPreviewKeyFile(t, "live", strings.Repeat("manual-preview-key-", 2), 0o600)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.LivePrivateWritesEnabled {
+		t.Fatal("explicit Live private-write gate was not enabled")
+	}
+}
+
+func TestFundingLiveAdmissionConfigurationIsExplicitAndModeScoped(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv(FundingLiveEnabledEnv, "not-a-bool")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), FundingLiveEnabledEnv) {
+		t.Fatalf("invalid bool Load() error = %v", err)
+	}
+
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.FundingLiveEnabled = true
+	cfg.FundingLiveMaxNotional = "250"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "BT_MODE=live") {
+		t.Fatalf("cross-mode Validate() error = %v", err)
+	}
+	cfg.Mode = "live"
+	cfg.FundingLiveMaxNotional = ""
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), FundingLiveMaxNotionalEnv) {
+		t.Fatalf("missing maximum Validate() error = %v", err)
+	}
+}
+
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	clearEnvironment(t)
@@ -68,6 +206,30 @@ func setValidEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(FundingWorkerTokenFileEnv, path)
+	gatewayDir := filepath.Join(t.TempDir(), "test")
+	if err := os.MkdirAll(gatewayDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gatewayPath := filepath.Join(gatewayDir, "gateway.token")
+	if err := os.WriteFile(gatewayPath, []byte(strings.Repeat("gateway-token-", 3)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(GatewayURLEnv, "http://127.0.0.1:18082")
+	t.Setenv(GatewayTokenFileEnv, gatewayPath)
+	setManualPreviewKeyFile(t, "test", strings.Repeat("manual-preview-key-", 2), 0o600)
+}
+
+func setManualPreviewKeyFile(t *testing.T, mode, value string, permission os.FileMode) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), mode)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "manual-preview-signing.key")
+	if err := os.WriteFile(path, []byte(value), permission); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ManualPreviewSigningKeyFileEnv, path)
 }
 
 func setBaseEnvironment(t *testing.T) {
@@ -79,6 +241,8 @@ func setBaseEnvironment(t *testing.T) {
 	t.Setenv("BT_MODE", "test")
 	t.Setenv("BT_BOOTSTRAP_USERNAME", "owner")
 	t.Setenv("BT_BOOTSTRAP_PASSWORD_HASH", string(hash))
+	t.Setenv("BT_PLATFORM_DATABASE", "bolter_platform_test")
+	t.Setenv("BT_PLATFORM_DATABASE_ROLE", "bolter_platform_test")
 }
 
 func clearEnvironment(t *testing.T) {
@@ -87,6 +251,10 @@ func clearEnvironment(t *testing.T) {
 		"BT_MODE", "BT_BOOTSTRAP_USERNAME", "BT_BOOTSTRAP_PASSWORD_HASH",
 		"BT_PLATFORM_WORK_TOKEN", "BT_FUNDING_WORKER_TOKEN", FundingWorkerTokenFileEnv,
 		"BT_PLATFORM_BROWSER_LISTEN_ADDR", "BT_PLATFORM_WORK_LISTEN_ADDR",
+		GatewayURLEnv, GatewayTokenFileEnv, "BT_PLATFORM_DATABASE", "BT_PLATFORM_DATABASE_ROLE",
+		"BT_MANUAL_PREVIEW_SIGNING_KEY", ManualPreviewSigningKeyFileEnv,
+		LivePrivateWritesEnabledEnv,
+		FundingLiveEnabledEnv, FundingLiveMaxNotionalEnv,
 	} {
 		t.Setenv(key, "")
 	}

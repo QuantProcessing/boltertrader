@@ -27,6 +27,7 @@ type Options struct {
 	Audit           *AuditRouteOptions
 	PublicData      *PublicDataAPI
 	Trading         *TradingOptions
+	Funding         *FundingRoutesOptions
 }
 
 type Server struct {
@@ -113,6 +114,19 @@ func (s *Server) register(options Options) error {
 			return err
 		}
 		for _, route := range []string{"POST /api/v1/reservations", "GET /api/v1/reservations", "DELETE /api/v1/reservations/{reservationId}", "POST /api/v1/commands", "GET /api/v1/commands/{commandId}", "GET /api/v1/positions", "GET /api/v1/ledger", "GET /api/v1/pnl"} {
+			owned[route] = true
+		}
+		if options.Trading.Catalog != nil && options.Trading.Manual != nil {
+			for _, route := range []string{"GET /api/v1/products/manual/venues", "POST /api/v1/products/manual/execution-previews", "POST /api/v1/products/manual/commands", "GET /api/v1/products/manual/orders", "GET /api/v1/products/manual/orders/{orderId}"} {
+				owned[route] = true
+			}
+		}
+	}
+	if options.Funding != nil {
+		if err := RegisterFundingRoutes(s.mux, *options.Funding); err != nil {
+			return err
+		}
+		for _, route := range []string{"GET /api/v1/products/funding/opportunities", "GET /api/v1/products/funding/opportunities/{opportunityId}", "POST /api/v1/products/funding/execution-previews", "POST /api/v1/products/funding/commands", "GET /api/v1/products/funding/commands/{commandId}", "GET /api/v1/products/funding/lineage/{lineageId}"} {
 			owned[route] = true
 		}
 	}

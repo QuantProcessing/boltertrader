@@ -2,13 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
+	"github.com/QuantProcessing/boltertrader/gateway/capability"
+	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
@@ -19,9 +26,101 @@ type gatewayAuthority struct {
 	mu      sync.Mutex
 	store   store.DesiredStateStore
 	manager *account.Manager
+	reads   authorityReadSource
 	mode    account.RuntimeMode
 	now     func() time.Time
 }
+
+type authorityVenue struct {
+	Venue       string `json:"venue"`
+	Environment string `json:"environment"`
+	Ready       bool   `json:"ready"`
+}
+
+type authorityInstrument struct {
+	InstrumentID string              `json:"instrumentId"`
+	Venue        string              `json:"venue"`
+	Environment  string              `json:"environment"`
+	Product      string              `json:"product"`
+	Settlement   string              `json:"settlement,omitempty"`
+	Symbol       string              `json:"symbol"`
+	BaseAsset    string              `json:"baseAsset"`
+	QuoteAsset   string              `json:"quoteAsset"`
+	Rules        authorityTradeRules `json:"rules"`
+	Ready        bool                `json:"ready"`
+}
+
+type authorityCatalogInstruments struct {
+	Revision    string                `json:"revision"`
+	ObservedAt  time.Time             `json:"observedAt"`
+	Instruments []authorityInstrument `json:"instruments"`
+}
+
+type authorityRuntimeStatus struct {
+	Mode     account.RuntimeMode      `json:"mode"`
+	Accounts []account.RuntimeAccount `json:"accounts"`
+}
+
+type authorityTradeRules struct {
+	PriceIncrement    string `json:"priceIncrement"`
+	QuantityIncrement string `json:"quantityIncrement"`
+	MinQuantity       string `json:"minQuantity"`
+	MinNotional       string `json:"minNotional,omitempty"`
+}
+
+type authorityMarketData struct {
+	Venue             string                  `json:"venue"`
+	Environment       string                  `json:"environment"`
+	Product           string                  `json:"product"`
+	InstrumentID      string                  `json:"instrumentId"`
+	BestBid           string                  `json:"bestBid"`
+	BestBidSize       string                  `json:"bestBidSize"`
+	BestAsk           string                  `json:"bestAsk"`
+	BestAskSize       string                  `json:"bestAskSize"`
+	Bids              []authorityLevel        `json:"bids"`
+	Asks              []authorityLevel        `json:"asks"`
+	MarkPrice         string                  `json:"markPrice,omitempty"`
+	FundingRate       string                  `json:"fundingRate,omitempty"`
+	FundingObservedAt time.Time               `json:"fundingObservedAt,omitempty"`
+	FundingTime       time.Time               `json:"fundingTime,omitempty"`
+	NextFundingTime   time.Time               `json:"nextFundingTime,omitempty"`
+	FundingHistory    []authorityFundingPoint `json:"fundingHistory,omitempty"`
+	OpenInterest      string                  `json:"openInterest,omitempty"`
+	ObservedAt        time.Time               `json:"observedAt"`
+}
+
+type authorityLevel struct {
+	Price    string `json:"price"`
+	Quantity string `json:"quantity"`
+}
+
+type authorityFundingPoint struct {
+	Rate        string    `json:"rate"`
+	ObservedAt  time.Time `json:"observedAt,omitempty"`
+	FundingTime time.Time `json:"fundingTime"`
+}
+
+const (
+	authorityDepthLimit          = 20
+	authorityFundingHistoryLimit = 20
+)
+
+type authorityReadSource interface {
+	Venues() []authorityVenue
+	Instruments() (authorityCatalogInstruments, error)
+	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
+}
+
+type authorityAccountSource interface {
+	Accounts() []account.Resource
+	Instruments(domain.AccountID) (catalog.Snapshot, error)
+	Resolve(context.Context, domain.AccountID, domain.InstrumentID) (exchange.Instrument, error)
+	Spot(domain.AccountID) (exchange.SpotClient, error)
+	Perp(domain.AccountID) (exchange.PerpClient, error)
+	Capability(domain.AccountID) (capability.Row, error)
+}
+
+type managerAuthorityReads struct{ manager authorityAccountSource }
 
 type opaqueRuntimeLifecycle struct {
 	resolve    func(context.Context, secret.OpaqueRef) (string, error)
@@ -85,7 +184,9 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 	if mode == "" {
 		mode = account.RuntimeModeTest
 	}
-	authority := &gatewayAuthority{store: desiredStore, manager: manager, mode: mode, now: time.Now}
+	authority := &gatewayAuthority{
+		store: desiredStore, manager: manager, reads: managerAuthorityReads{manager: manager}, mode: mode, now: time.Now,
+	}
 	if err := authority.restore(ctx); err != nil {
 		return nil, errors.New("restore gateway authority failed")
 	}
@@ -122,12 +223,45 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		response.Body = authority.manager.Runtimes()
 	case httpapi.AuthorityGetRuntimeAccount:
 		response.Body, err = authority.manager.Runtime(domain.AccountID(request.AccountID))
-	case httpapi.AuthorityRuntimeStatus, httpapi.AuthorityRuntimeReadiness:
-		response.Body = map[string]any{"mode": authority.mode, "accounts": authority.manager.Runtimes()}
+	case httpapi.AuthorityRuntimeStatus:
+		response.Body = authorityRuntimeStatus{Mode: authority.mode, Accounts: authority.manager.Runtimes()}
+	case httpapi.AuthorityRuntimeReadiness:
+		response.Body = httpapi.RuntimeReadiness{Ready: authority.manager.RuntimeReady()}
+	case httpapi.AuthorityCatalogVenues:
+		response.Body = authority.reads.Venues()
+	case httpapi.AuthorityCatalogInstruments:
+		response.Body, err = authority.reads.Instruments()
+	case httpapi.AuthorityMarketData:
+		venue, environment, product, instrumentID := request.Query.Get("venue"), request.Query.Get("environment"), request.Query.Get("product"), request.Query.Get("instrumentId")
+		if strings.TrimSpace(venue) == "" || strings.TrimSpace(environment) == "" || strings.TrimSpace(product) == "" || strings.TrimSpace(instrumentID) == "" {
+			err = errors.New("market-data composite identity is required")
+			break
+		}
+		var fact authorityMarketData
+		fact, err = authority.reads.MarketData(ctx, venue, environment, product, instrumentID)
+		if err == nil && (fact.Venue != venue || fact.Environment != environment || fact.Product != product || fact.InstrumentID != instrumentID) {
+			err = errors.New("market-data composite identity mismatch")
+		} else {
+			response.Body = fact
+		}
+	case httpapi.AuthorityMarketDataReadiness:
+		if len(request.Query) != 0 {
+			err = errors.New("market-data readiness query is not allowed")
+		} else {
+			var catalog authorityCatalogInstruments
+			catalog, err = authority.reads.Instruments()
+			ready := false
+			for _, instrument := range catalog.Instruments {
+				if instrument.Ready {
+					ready = true
+					break
+				}
+			}
+			response.Body = map[string]bool{"ready": ready}
+		}
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions,
 		httpapi.AuthorityRuntimeUncertain, httpapi.AuthorityRuntimeEvents,
-		httpapi.AuthorityCatalogVenues, httpapi.AuthorityCatalogInstruments,
-		httpapi.AuthorityMarketData, httpapi.AuthorityPrivateEvents:
+		httpapi.AuthorityPrivateEvents:
 		response.Body = []any{}
 	default:
 		err = errors.New("unsupported authority operation")
@@ -136,6 +270,205 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
+}
+
+func (reads managerAuthorityReads) Venues() []authorityVenue {
+	resources := reads.manager.Accounts()
+	venues := make([]authorityVenue, 0, len(resources))
+	indexes := make(map[string]int, len(resources))
+	for _, resource := range resources {
+		key := string(resource.Venue) + "\x00" + string(resource.Environment)
+		if index, ok := indexes[key]; ok {
+			venues[index].Ready = venues[index].Ready || resource.ReadReady
+			continue
+		}
+		indexes[key] = len(venues)
+		venues = append(venues, authorityVenue{
+			Venue: string(resource.Venue), Environment: string(resource.Environment), Ready: resource.ReadReady,
+		})
+	}
+	sort.Slice(venues, func(i, j int) bool {
+		if venues[i].Venue == venues[j].Venue {
+			return venues[i].Environment < venues[j].Environment
+		}
+		return venues[i].Venue < venues[j].Venue
+	})
+	return venues
+}
+
+func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, error) {
+	resources := reads.manager.Accounts()
+	instruments := make([]authorityInstrument, 0)
+	indexes := make(map[string]int)
+	contributors := make([]string, 0, len(resources))
+	var observedAt time.Time
+	for _, resource := range resources {
+		snapshot, err := reads.manager.Instruments(resource.AccountID)
+		if err != nil {
+			return authorityCatalogInstruments{}, fmt.Errorf("read configured account catalog: %w", err)
+		}
+		if strings.TrimSpace(snapshot.Revision) == "" || snapshot.LoadedAt.IsZero() {
+			return authorityCatalogInstruments{}, errors.New("configured account catalog authority is incomplete")
+		}
+		contributors = append(contributors, strings.Join([]string{string(resource.Venue), string(resource.Environment), string(resource.Product), resource.Settlement, snapshot.Revision}, "\x00"))
+		if observedAt.IsZero() || snapshot.LoadedAt.Before(observedAt) {
+			observedAt = snapshot.LoadedAt.UTC()
+		}
+		for _, instrument := range snapshot.Instruments {
+			key := strings.Join([]string{string(instrument.Venue), string(instrument.Environment), string(instrument.Product), string(instrument.ID)}, "\x00")
+			if index, ok := indexes[key]; ok {
+				instruments[index].Ready = instruments[index].Ready || resource.ReadReady
+				continue
+			}
+			minNotional := ""
+			if instrument.Rules.MinNotional.Valid {
+				minNotional = instrument.Rules.MinNotional.Value.String()
+			}
+			indexes[key] = len(instruments)
+			instruments = append(instruments, authorityInstrument{
+				InstrumentID: string(instrument.ID), Venue: string(instrument.Venue), Environment: string(instrument.Environment), Product: string(instrument.Product),
+				Settlement: instrument.Settlement, Symbol: instrument.Symbol, BaseAsset: instrument.BaseAsset, QuoteAsset: instrument.QuoteAsset,
+				Rules: authorityTradeRules{PriceIncrement: instrument.Rules.PriceIncrement.String(), QuantityIncrement: instrument.Rules.QuantityIncrement.String(), MinQuantity: instrument.Rules.MinQuantity.String(), MinNotional: minNotional},
+				Ready: resource.ReadReady,
+			})
+		}
+	}
+	sort.Slice(instruments, func(i, j int) bool {
+		if instruments[i].Venue == instruments[j].Venue {
+			if instruments[i].Environment == instruments[j].Environment {
+				if instruments[i].Product == instruments[j].Product {
+					return instruments[i].InstrumentID < instruments[j].InstrumentID
+				}
+				return instruments[i].Product < instruments[j].Product
+			}
+			return instruments[i].Environment < instruments[j].Environment
+		}
+		return instruments[i].Venue < instruments[j].Venue
+	})
+	sort.Strings(contributors)
+	fingerprint, err := json.Marshal(contributors)
+	if err != nil {
+		return authorityCatalogInstruments{}, errors.New("catalog revision aggregation failed")
+	}
+	revision := sha256.Sum256(fingerprint)
+	return authorityCatalogInstruments{Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: observedAt, Instruments: instruments}, nil
+}
+
+func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, environment, product, instrumentID string) (authorityMarketData, error) {
+	venue = strings.TrimSpace(venue)
+	environment = strings.TrimSpace(environment)
+	product = strings.TrimSpace(product)
+	instrumentID = strings.TrimSpace(instrumentID)
+	if venue == "" || environment == "" || instrumentID == "" || (product != string(exchange.ProductSpot) && product != string(exchange.ProductPerp)) {
+		return authorityMarketData{}, errors.New("market-data venue, environment, product, and instrumentId are required")
+	}
+	for _, resource := range reads.manager.Accounts() {
+		if string(resource.Venue) != venue || string(resource.Environment) != environment || string(resource.Product) != product || !resource.ReadReady {
+			continue
+		}
+		instrument, err := reads.manager.Resolve(ctx, resource.AccountID, domain.InstrumentID(instrumentID))
+		if err != nil {
+			continue
+		}
+		result := authorityMarketData{Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID}
+		var market exchange.MarketREST
+		switch resource.Product {
+		case exchange.ProductSpot:
+			market, err = reads.manager.Spot(resource.AccountID)
+		case exchange.ProductPerp:
+			var client exchange.PerpClient
+			client, err = reads.manager.Perp(resource.AccountID)
+			market = client
+			if err == nil {
+				row, capabilityErr := reads.manager.Capability(resource.AccountID)
+				if capabilityErr != nil {
+					return authorityMarketData{}, fmt.Errorf("read market-data capability: %w", capabilityErr)
+				}
+				if marks, ok := any(client).(exchange.PerpMarkPriceREST); ok {
+					mark, markErr := marks.MarkPrice(ctx, instrument)
+					if markErr != nil {
+						return authorityMarketData{}, fmt.Errorf("read mark price: %w", markErr)
+					}
+					result.MarkPrice = mark.Price.String()
+					result.ObservedAt = mark.Time.UTC()
+				}
+				if !row.Operations.Funding {
+					return authorityMarketData{}, errors.New("configured perp funding capability is unavailable")
+				}
+				if row.Operations.Funding {
+					funding, fundingErr := client.FundingRate(ctx, exchange.FundingRateRequest{Instrument: instrument})
+					if fundingErr != nil {
+						return authorityMarketData{}, fmt.Errorf("read funding rate: %w", fundingErr)
+					}
+					result.FundingRate = funding.Rate.String()
+					result.FundingObservedAt = funding.ObservedAt.UTC()
+					result.FundingTime = funding.FundingTime.UTC()
+					result.NextFundingTime = funding.NextFundingTime.UTC()
+					if result.FundingObservedAt.IsZero() || result.FundingTime.IsZero() || result.NextFundingTime.IsZero() {
+						return authorityMarketData{}, errors.New("current funding timestamps are unavailable")
+					}
+					if funding.ObservedAt.After(result.ObservedAt) {
+						result.ObservedAt = funding.ObservedAt.UTC()
+					}
+					history, historyErr := client.FundingRateHistory(ctx, exchange.FundingRateHistoryRequest{Instrument: instrument, Limit: authorityFundingHistoryLimit})
+					if historyErr != nil {
+						return authorityMarketData{}, fmt.Errorf("read funding history: %w", historyErr)
+					}
+					if len(history.Rates) > authorityFundingHistoryLimit {
+						return authorityMarketData{}, errors.New("funding history exceeds requested bound")
+					}
+					result.FundingHistory = make([]authorityFundingPoint, len(history.Rates))
+					for index, rate := range history.Rates {
+						if rate.FundingTime.IsZero() {
+							return authorityMarketData{}, errors.New("funding history timestamp is unavailable")
+						}
+						result.FundingHistory[index] = authorityFundingPoint{Rate: rate.Rate.String(), ObservedAt: rate.ObservedAt.UTC(), FundingTime: rate.FundingTime.UTC()}
+					}
+				}
+			}
+		default:
+			continue
+		}
+		if err != nil || market == nil {
+			continue
+		}
+		book, err := market.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: authorityDepthLimit})
+		if err != nil {
+			return authorityMarketData{}, fmt.Errorf("read order book: %w", err)
+		}
+		if book.Time.IsZero() || len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
+			return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
+		}
+		result.Bids, err = projectAuthorityLevels(book.Bids)
+		if err != nil {
+			return authorityMarketData{}, err
+		}
+		result.Asks, err = projectAuthorityLevels(book.Asks)
+		if err != nil {
+			return authorityMarketData{}, err
+		}
+		result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
+		result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
+		if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
+			result.ObservedAt = book.Time.UTC()
+		}
+		if result.ObservedAt.IsZero() {
+			return authorityMarketData{}, errors.New("market-data observation time is unavailable")
+		}
+		return result, nil
+	}
+	return authorityMarketData{}, errors.New("configured market-data capability is unavailable")
+}
+
+func projectAuthorityLevels(levels []exchange.BookLevel) ([]authorityLevel, error) {
+	result := make([]authorityLevel, len(levels))
+	for index, level := range levels {
+		if !level.Price.IsPositive() || !level.Quantity.IsPositive() {
+			return nil, errors.New("order-book level is invalid")
+		}
+		result[index] = authorityLevel{Price: level.Price.String(), Quantity: level.Quantity.String()}
+	}
+	return result, nil
 }
 
 func (authority *gatewayAuthority) create(ctx context.Context, input *httpapi.DesiredAccount) (httpapi.AuthorityResponse, error) {

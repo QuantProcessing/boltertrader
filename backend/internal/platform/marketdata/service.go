@@ -7,31 +7,62 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 var ErrRateLimited = errors.New("shared venue rate limit exhausted")
 
+const (
+	MaxDepthLevels    = 20
+	MaxFundingHistory = 20
+)
+
 type Query struct {
 	Venue        string
+	Environment  string
+	Product      string
 	InstrumentID string
 }
 
 func (query Query) validate() error {
-	if strings.TrimSpace(query.Venue) == "" || strings.TrimSpace(query.InstrumentID) == "" {
-		return fmt.Errorf("venue and instrumentId are required")
+	if strings.TrimSpace(query.Venue) == "" || strings.TrimSpace(query.Environment) == "" || strings.TrimSpace(query.InstrumentID) == "" ||
+		(query.Product != "spot" && query.Product != "perp") {
+		return fmt.Errorf("venue, environment, product, and instrumentId are required")
 	}
 	return nil
 }
 
 type Fact struct {
-	Venue        string    `json:"venue"`
-	InstrumentID string    `json:"instrumentId"`
-	BestBid      string    `json:"bestBid,omitempty"`
-	BestAsk      string    `json:"bestAsk,omitempty"`
-	MarkPrice    string    `json:"markPrice,omitempty"`
-	FundingRate  string    `json:"fundingRate,omitempty"`
-	OpenInterest string    `json:"openInterest,omitempty"`
-	ObservedAt   time.Time `json:"observedAt"`
+	Venue             string         `json:"venue"`
+	Environment       string         `json:"environment"`
+	Product           string         `json:"product"`
+	InstrumentID      string         `json:"instrumentId"`
+	BestBid           string         `json:"bestBid"`
+	BestBidSize       string         `json:"bestBidSize"`
+	BestAsk           string         `json:"bestAsk"`
+	BestAskSize       string         `json:"bestAskSize"`
+	Bids              []Level        `json:"bids"`
+	Asks              []Level        `json:"asks"`
+	MarkPrice         string         `json:"markPrice,omitempty"`
+	FundingRate       string         `json:"fundingRate,omitempty"`
+	FundingObservedAt time.Time      `json:"fundingObservedAt,omitempty"`
+	FundingTime       time.Time      `json:"fundingTime,omitempty"`
+	NextFundingTime   time.Time      `json:"nextFundingTime,omitempty"`
+	FundingHistory    []FundingPoint `json:"fundingHistory,omitempty"`
+	OpenInterest      string         `json:"openInterest,omitempty"`
+	ObservedAt        time.Time      `json:"observedAt"`
+}
+
+type Level struct {
+	Price    string `json:"price"`
+	Quantity string `json:"quantity"`
+}
+
+type FundingPoint struct {
+	Rate        string    `json:"rate"`
+	ObservedAt  time.Time `json:"observedAt,omitempty"`
+	FundingTime time.Time `json:"fundingTime"`
 }
 
 type Source interface {
@@ -161,14 +192,14 @@ func (service *Service) Get(ctx context.Context, query Query) (Fact, error) {
 		}
 		if err == nil {
 			err = validateFact(query, fact)
+			age := service.now().UTC().Sub(fact.ObservedAt)
+			if err == nil && (age > service.ttl || age < 0) {
+				err = fmt.Errorf("Gateway market-data fact is stale or future-dated")
+			}
 		}
 		service.mu.Lock()
 		if err == nil {
-			if fact.ObservedAt.IsZero() {
-				fact.ObservedAt = service.now().UTC()
-			} else {
-				fact.ObservedAt = fact.ObservedAt.UTC()
-			}
+			fact.ObservedAt = fact.ObservedAt.UTC()
 			cached.fact = fact
 			cached.loadedAt = service.now().UTC()
 		} else {
@@ -184,11 +215,39 @@ func (service *Service) Get(ctx context.Context, query Query) (Fact, error) {
 func (service *Service) BudgetStatus(venue string) BudgetStatus { return service.budget.Status(venue) }
 
 func validateFact(query Query, fact Fact) error {
-	if fact.Venue != query.Venue || fact.InstrumentID != query.InstrumentID {
+	if fact.Venue != query.Venue || fact.Environment != query.Environment || fact.Product != query.Product || fact.InstrumentID != query.InstrumentID {
 		return fmt.Errorf("Gateway market-data identity mismatch")
 	}
-	if fact.BestBid == "" && fact.BestAsk == "" && fact.MarkPrice == "" && fact.FundingRate == "" && fact.OpenInterest == "" {
-		return fmt.Errorf("Gateway market-data fact is empty")
+	if fact.ObservedAt.IsZero() {
+		return fmt.Errorf("Gateway market-data observation time is missing")
+	}
+	if len(fact.Bids) == 0 || len(fact.Asks) == 0 || len(fact.Bids) > MaxDepthLevels || len(fact.Asks) > MaxDepthLevels || len(fact.FundingHistory) > MaxFundingHistory {
+		return fmt.Errorf("Gateway market-data bounds are invalid")
+	}
+	if fact.BestBid != fact.Bids[0].Price || fact.BestBidSize != fact.Bids[0].Quantity || fact.BestAsk != fact.Asks[0].Price || fact.BestAskSize != fact.Asks[0].Quantity {
+		return fmt.Errorf("Gateway top-of-book fact is inconsistent")
+	}
+	for _, level := range append(append([]Level(nil), fact.Bids...), fact.Asks...) {
+		if !positiveDecimal(level.Price) || !positiveDecimal(level.Quantity) {
+			return fmt.Errorf("Gateway market-data level is invalid")
+		}
+	}
+	if fact.FundingRate != "" {
+		if _, err := decimal.NewFromString(fact.FundingRate); err != nil || fact.FundingObservedAt.IsZero() || fact.FundingTime.IsZero() || fact.NextFundingTime.IsZero() {
+			return fmt.Errorf("Gateway current funding fact is invalid")
+		}
+	} else if !fact.FundingObservedAt.IsZero() || !fact.FundingTime.IsZero() || !fact.NextFundingTime.IsZero() || len(fact.FundingHistory) != 0 {
+		return fmt.Errorf("Gateway current funding fact is incomplete")
+	}
+	for _, point := range fact.FundingHistory {
+		if _, err := decimal.NewFromString(point.Rate); err != nil || point.FundingTime.IsZero() {
+			return fmt.Errorf("Gateway funding history fact is invalid")
+		}
 	}
 	return nil
+}
+
+func positiveDecimal(value string) bool {
+	parsed, err := decimal.NewFromString(value)
+	return err == nil && parsed.IsPositive()
 }

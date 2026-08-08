@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -24,9 +26,23 @@ type Venue struct {
 }
 
 type Instrument struct {
-	InstrumentID string `json:"instrumentId"`
-	Venue        string `json:"venue"`
-	Ready        bool   `json:"ready"`
+	InstrumentID string     `json:"instrumentId"`
+	Venue        string     `json:"venue"`
+	Environment  string     `json:"environment"`
+	Product      string     `json:"product"`
+	Settlement   string     `json:"settlement,omitempty"`
+	Symbol       string     `json:"symbol"`
+	BaseAsset    string     `json:"baseAsset"`
+	QuoteAsset   string     `json:"quoteAsset"`
+	Rules        TradeRules `json:"rules"`
+	Ready        bool       `json:"ready"`
+}
+
+type TradeRules struct {
+	PriceIncrement    string `json:"priceIncrement"`
+	QuantityIncrement string `json:"quantityIncrement"`
+	MinQuantity       string `json:"minQuantity"`
+	MinNotional       string `json:"minNotional,omitempty"`
 }
 
 type Snapshot struct {
@@ -101,14 +117,14 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 		snapshot, err := projection.source.Fetch(ctx)
 		if err == nil {
 			err = validate(snapshot)
+			age := projection.now().UTC().Sub(snapshot.ObservedAt)
+			if err == nil && (age > projection.ttl || age < 0) {
+				err = fmt.Errorf("Gateway catalog facts are stale or future-dated")
+			}
 		}
 		projection.mu.Lock()
 		if err == nil {
-			if snapshot.ObservedAt.IsZero() {
-				snapshot.ObservedAt = projection.now().UTC()
-			} else {
-				snapshot.ObservedAt = snapshot.ObservedAt.UTC()
-			}
+			snapshot.ObservedAt = snapshot.ObservedAt.UTC()
 			projection.snapshot = clone(snapshot)
 			projection.loaded = true
 			projection.reason = "ready"
@@ -149,28 +165,59 @@ func validate(snapshot Snapshot) error {
 	if strings.TrimSpace(snapshot.Revision) == "" {
 		return fmt.Errorf("Gateway catalog revision is required")
 	}
+	if snapshot.ObservedAt.IsZero() {
+		return fmt.Errorf("Gateway catalog observation time is required")
+	}
 	venues := make(map[string]struct{}, len(snapshot.Venues))
 	for _, venue := range snapshot.Venues {
 		if strings.TrimSpace(venue.Venue) == "" || strings.TrimSpace(venue.Environment) == "" {
 			return fmt.Errorf("Gateway venue identity is incomplete")
 		}
-		if _, exists := venues[venue.Venue]; exists {
-			return fmt.Errorf("duplicate Gateway venue %q", venue.Venue)
+		key := venue.Venue + "\x00" + venue.Environment
+		if _, exists := venues[key]; exists {
+			return fmt.Errorf("duplicate Gateway venue %q environment %q", venue.Venue, venue.Environment)
 		}
-		venues[venue.Venue] = struct{}{}
+		venues[key] = struct{}{}
 	}
 	instruments := make(map[string]struct{}, len(snapshot.Instruments))
 	for _, instrument := range snapshot.Instruments {
-		if strings.TrimSpace(instrument.InstrumentID) == "" || strings.TrimSpace(instrument.Venue) == "" {
+		if strings.TrimSpace(instrument.InstrumentID) == "" || strings.TrimSpace(instrument.Venue) == "" ||
+			strings.TrimSpace(instrument.Environment) == "" || strings.TrimSpace(instrument.Product) == "" ||
+			strings.TrimSpace(instrument.Symbol) == "" || strings.TrimSpace(instrument.BaseAsset) == "" || strings.TrimSpace(instrument.QuoteAsset) == "" {
 			return fmt.Errorf("Gateway instrument identity is incomplete")
 		}
-		if _, ok := venues[instrument.Venue]; !ok {
+		if _, ok := venues[instrument.Venue+"\x00"+instrument.Environment]; !ok {
 			return fmt.Errorf("instrument references unknown Gateway venue")
 		}
-		if _, exists := instruments[instrument.InstrumentID]; exists {
+		if instrument.Product != "spot" && instrument.Product != "perp" {
+			return fmt.Errorf("Gateway instrument product is unsupported")
+		}
+		if err := validateRules(instrument.Rules); err != nil {
+			return err
+		}
+		key := strings.Join([]string{instrument.Venue, instrument.Environment, instrument.Product, instrument.InstrumentID}, "\x00")
+		if _, exists := instruments[key]; exists {
 			return fmt.Errorf("duplicate Gateway instrument %q", instrument.InstrumentID)
 		}
-		instruments[instrument.InstrumentID] = struct{}{}
+		instruments[key] = struct{}{}
+	}
+	return nil
+}
+
+func validateRules(rules TradeRules) error {
+	for name, value := range map[string]string{
+		"price increment": rules.PriceIncrement, "quantity increment": rules.QuantityIncrement, "minimum quantity": rules.MinQuantity,
+	} {
+		parsed, err := decimal.NewFromString(value)
+		if err != nil || !parsed.IsPositive() {
+			return fmt.Errorf("Gateway instrument %s is invalid", name)
+		}
+	}
+	if rules.MinNotional != "" {
+		parsed, err := decimal.NewFromString(rules.MinNotional)
+		if err != nil || !parsed.IsPositive() {
+			return fmt.Errorf("Gateway instrument minimum notional is invalid")
+		}
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/shopspring/decimal"
@@ -63,6 +64,128 @@ func TestCoordinatorConcurrentIdempotencyCallsDriverOnce(t *testing.T) {
 	}
 	if got := fixture.driver.PlaceCalls(); got != 1 {
 		t.Fatalf("payload conflict reached driver: %d calls", got)
+	}
+}
+
+func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) {
+	for _, race := range []string{"rotation", "drain"} {
+		t.Run(race, func(t *testing.T) {
+			fixture := newCoordinatorFixture(t)
+			active := true
+			current := account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+			fixture.router.route.CheckWriteFence = func(fence account.WriteFence) error {
+				if !active || fence != current {
+					return account.ErrStaleWriteFence
+				}
+				return nil
+			}
+			hook := func(context.Context, store.StoredCommand) error {
+				if race == "rotation" {
+					current = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2}
+				} else {
+					active = false
+				}
+				return nil
+			}
+			fixture.coordinator = newTestCoordinator(t, fixture.store, fixture.router, fixture.publisher, Hooks{AfterDispatching: hook})
+			if report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil || !report.WriteReady {
+				t.Fatalf("initial recovery=%+v err=%v", report, err)
+			}
+			request := fixture.placeRequest()
+			request.WriteFence = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+			if _, err := fixture.coordinator.Place(context.Background(), request); !errors.Is(err, ErrWriteNotReady) {
+				t.Fatalf("Place error=%v, want ErrWriteNotReady", err)
+			}
+			if calls := fixture.driver.PlaceCalls(); calls != 0 {
+				t.Fatalf("stale %s fence made %d venue placement calls", race, calls)
+			}
+		})
+	}
+}
+
+func TestCoordinatorRejectsIncompleteWriteFenceBeforeReservation(t *testing.T) {
+	tests := []struct {
+		name  string
+		fence account.WriteFence
+	}{
+		{name: "zero"},
+		{name: "missing desired revision", fence: account.WriteFence{AccountID: "binance-main", RuntimeGeneration: 1, CredentialVersion: 1}},
+		{name: "missing runtime generation", fence: account.WriteFence{AccountID: "binance-main", DesiredStateRevision: 1, CredentialVersion: 1}},
+		{name: "missing credential version", fence: account.WriteFence{AccountID: "binance-main", DesiredStateRevision: 1, RuntimeGeneration: 1}},
+		{name: "wrong account", fence: account.WriteFence{AccountID: "binance-other", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCoordinatorFixture(t)
+			if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+				t.Fatalf("RecoverAccount: %v", err)
+			}
+			request := fixture.placeRequest()
+			request.WriteFence = test.fence
+			if _, err := fixture.coordinator.Place(context.Background(), request); err == nil {
+				t.Fatal("Place accepted incomplete write fence")
+			}
+			if got := fixture.store.commandCount(); got != 0 {
+				t.Fatalf("incomplete fence reserved %d commands", got)
+			}
+			if got := fixture.driver.PlaceCalls(); got != 0 {
+				t.Fatalf("incomplete fence made %d venue calls", got)
+			}
+		})
+	}
+}
+
+func TestCoordinatorRequiresFinalWriteFenceCheckerBeforeReservation(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.router.route.CheckWriteFence = nil
+	if _, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil {
+		t.Fatalf("RecoverAccount: %v", err)
+	}
+	request := fixture.placeRequest()
+	request.WriteFence = account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
+	if _, err := fixture.coordinator.Place(context.Background(), request); !errors.Is(err, ErrWriteNotReady) {
+		t.Fatalf("Place error=%v, want ErrWriteNotReady", err)
+	}
+	if got := fixture.store.commandCount(); got != 0 {
+		t.Fatalf("missing checker reserved %d commands", got)
+	}
+	if got := fixture.driver.PlaceCalls(); got != 0 {
+		t.Fatalf("missing checker made %d venue calls", got)
+	}
+}
+
+func TestCoordinatorRecoveryRejectsPreparedCommandWithoutCompleteFence(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	payload, err := json.Marshal(durablePlacePayload{
+		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: "0.001",
+		LimitPrice: "100", LimitPolicy: exchange.LimitPolicyResting,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadHash, err := domain.CanonicalPayloadHash(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.ReserveCommand(context.Background(), store.ReserveCommandRequest{
+		PrincipalID: "principal-a", AccountID: fixture.accountID,
+		InstrumentID: "binance:demo:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
+		CorrelationID: "018f0000-0000-7000-8000-000000000001",
+		PayloadHash:   payloadHash, Payload: payload,
+	}); err != nil {
+		t.Fatalf("ReserveCommand: %v", err)
+	}
+
+	report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID)
+	if !errors.Is(err, ErrRecoveryIncomplete) || report.Unresolved != 1 {
+		t.Fatalf("RecoverAccount report=%+v err=%v, want one unresolved command", report, err)
+	}
+	if got := fixture.store.onlyCommand(t).State; got != domain.StatePrepared {
+		t.Fatalf("incomplete recovered fence advanced state to %s", got)
+	}
+	if got := fixture.driver.PlaceCalls(); got != 0 {
+		t.Fatalf("incomplete recovered fence made %d venue calls", got)
 	}
 }
 
@@ -654,7 +777,10 @@ func newCoordinatorFixture(t *testing.T) *coordinatorFixture {
 		recordAccepted: true,
 		lookupFallback: notFoundExactResult(instrument, "1"),
 	}
-	router := &fakeRouter{route: Route{Driver: driver, Instrument: instrument, Product: exchange.ProductSpot, WriteReady: true}}
+	router := &fakeRouter{route: Route{
+		Driver: driver, Instrument: instrument, Product: exchange.ProductSpot, WriteReady: true,
+		CheckWriteFence: func(account.WriteFence) error { return nil },
+	}}
 	store := newMemoryCommandStore()
 	publisher := &recordingPublisher{}
 	fixture := &coordinatorFixture{
@@ -672,6 +798,7 @@ func (fixture *coordinatorFixture) placeRequest() PlaceRequest {
 		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
 		LimitPolicy: exchange.LimitPolicyResting,
+		WriteFence:  account.WriteFence{AccountID: fixture.accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 	}
 }
 
@@ -1094,6 +1221,12 @@ func (memory *memoryCommandStore) onlyCommand(t *testing.T) store.StoredCommand 
 		return cloneStored(record.command)
 	}
 	return store.StoredCommand{}
+}
+
+func (memory *memoryCommandStore) commandCount() int {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	return len(memory.byCommand)
 }
 
 func (memory *memoryCommandStore) onlyTask(t *testing.T) store.ReconciliationTask {

@@ -711,6 +711,26 @@ func (manager *Manager) Runtimes() []RuntimeAccount {
 	return result
 }
 
+// RuntimeReady reports whether the authoritative runtime set is available.
+func (manager *Manager) RuntimeReady() bool {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if manager.closed {
+		return false
+	}
+	hasActive := false
+	for _, runtime := range manager.runtimes {
+		if runtime.State != RuntimeStateActive {
+			continue
+		}
+		hasActive = true
+		if !runtime.Ready {
+			return false
+		}
+	}
+	return hasActive
+}
+
 func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()

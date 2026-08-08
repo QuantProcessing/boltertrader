@@ -497,6 +497,37 @@ func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
 	}
 }
 
+func TestManagerRuntimeReadyFollowsAuthoritativeRuntimeState(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	if manager.RuntimeReady() {
+		t.Fatal("manager with no authoritative runtimes reported ready")
+	}
+	desired := desiredTestAccount(t, 1, 1, 1, "opaque_ready")
+	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.RuntimeReady() {
+		t.Fatal("active authoritative runtime did not report ready")
+	}
+	disabled := desiredTestAccount(t, 1, 1, 1, "opaque_disabled")
+	disabled.AccountID = "disabled"
+	if _, err := manager.CreateRuntime(context.Background(), disabled); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.DisableRuntime(context.Background(), disabled.AccountID, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.RuntimeReady() {
+		t.Fatal("disabled runtime made an unrelated active runtime unready")
+	}
+	if _, err := manager.DisableRuntime(context.Background(), desired.AccountID, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if manager.RuntimeReady() {
+		t.Fatal("disabled authoritative runtime reported ready")
+	}
+}
+
 func TestManagerCloseDeactivatesActiveDynamicRuntime(t *testing.T) {
 	manager := newLifecycleTestManager(t, RuntimeModeTest)
 	if _, err := manager.CreateRuntime(context.Background(), desiredTestAccount(t, 1, 1, 1, "opaque_close")); err != nil {
@@ -505,6 +536,9 @@ func TestManagerCloseDeactivatesActiveDynamicRuntime(t *testing.T) {
 	lifecycle := manager.lifecycle.(*fakeRuntimeLifecycle)
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if manager.RuntimeReady() {
+		t.Fatal("closed manager reported runtime ready")
 	}
 	if lifecycle.deactivations != 1 {
 		t.Fatalf("deactivations=%d, want 1", lifecycle.deactivations)

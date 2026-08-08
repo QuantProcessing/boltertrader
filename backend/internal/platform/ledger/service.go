@@ -12,7 +12,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-var ErrEntryConflict = errors.New("ledger entry conflict")
+var (
+	ErrEntryConflict    = errors.New("ledger entry conflict")
+	ErrCurrencyMismatch = errors.New("ledger PnL currency mismatch")
+)
 
 type Mode string
 
@@ -46,7 +49,7 @@ type Entry struct {
 type Unrealized struct {
 	LineageID, ProductID, AccountID, InstrumentID string
 	Mode                                          Mode
-	Amount                                        string
+	Amount, Currency                              string
 	AsOf                                          time.Time
 }
 
@@ -73,7 +76,7 @@ type Store interface {
 	Append(context.Context, Entry) error
 	Entries(context.Context, Query) ([]Entry, error)
 	SetUnrealized(context.Context, Unrealized) error
-	Unrealized(context.Context, Query) (decimal.Decimal, time.Time, error)
+	Unrealized(context.Context, Query) (decimal.Decimal, string, time.Time, error)
 }
 
 type Service struct {
@@ -98,7 +101,7 @@ func (service *Service) Record(ctx context.Context, entry Entry) error {
 
 func (service *Service) SetUnrealized(ctx context.Context, value Unrealized) error {
 	amount, err := decimal.NewFromString(value.Amount)
-	if err != nil || (value.Mode != ModeTest && value.Mode != ModeLive) || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.AsOf.IsZero() {
+	if err != nil || (value.Mode != ModeTest && value.Mode != ModeLive) || value.LineageID == "" || value.ProductID == "" || value.AccountID == "" || value.InstrumentID == "" || value.Currency == "" || value.AsOf.IsZero() {
 		return fmt.Errorf("invalid unrealized attribution")
 	}
 	value.Amount = amount.String()
@@ -117,7 +120,13 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 		return PnLSnapshot{}, err
 	}
 	realized, fees, funding := decimal.Zero, decimal.Zero, decimal.Zero
+	currency := ""
 	for _, entry := range entries {
+		if currency == "" {
+			currency = entry.Currency
+		} else if entry.Currency != currency {
+			return PnLSnapshot{}, ErrCurrencyMismatch
+		}
 		amount, _ := decimal.NewFromString(entry.Amount)
 		switch entry.Kind {
 		case KindRealizedPnL, KindAdjustment:
@@ -128,9 +137,16 @@ func (service *Service) PnL(ctx context.Context, query Query) (PnLSnapshot, erro
 			funding = funding.Add(amount)
 		}
 	}
-	unrealized, asOf, err := service.store.Unrealized(ctx, query)
+	unrealized, unrealizedCurrency, asOf, err := service.store.Unrealized(ctx, query)
 	if err != nil {
 		return PnLSnapshot{}, err
+	}
+	if unrealizedCurrency != "" {
+		if currency == "" {
+			currency = unrealizedCurrency
+		} else if unrealizedCurrency != currency {
+			return PnLSnapshot{}, ErrCurrencyMismatch
+		}
 	}
 	if asOf.IsZero() {
 		asOf = service.now().UTC()
@@ -208,15 +224,15 @@ func (store *MemoryStore) SetUnrealized(_ context.Context, value Unrealized) err
 	return nil
 }
 
-func (store *MemoryStore) Unrealized(_ context.Context, query Query) (decimal.Decimal, time.Time, error) {
+func (store *MemoryStore) Unrealized(_ context.Context, query Query) (decimal.Decimal, string, time.Time, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	value, ok := store.unrealized[ledgerKey(string(query.Mode), query.ProductID, query.LineageID, query.AccountID, query.InstrumentID)]
 	if !ok {
-		return decimal.Zero, time.Time{}, nil
+		return decimal.Zero, "", time.Time{}, nil
 	}
 	amount, _ := decimal.NewFromString(value.Amount)
-	return amount, value.AsOf, nil
+	return amount, value.Currency, value.AsOf, nil
 }
 
 func matches(query Query, product, lineage, account, instrument string) bool {

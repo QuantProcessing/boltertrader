@@ -22,6 +22,7 @@ type File struct {
 }
 
 type ServerConfig struct {
+	Mode                   string     `yaml:"mode" json:"mode"`
 	Listen                 string     `yaml:"listen" json:"listen"`
 	AllowNonLoopbackListen bool       `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
 	AuthTokenRef           secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
@@ -146,6 +147,10 @@ func LoadYAML(data []byte) (File, error) {
 		Postgres: raw.Postgres,
 		Accounts: make([]AccountConfig, 0, len(raw.Accounts)),
 	}
+	file.Server.Mode = strings.ToLower(strings.TrimSpace(file.Server.Mode))
+	if file.Server.Mode == "" {
+		file.Server.Mode = "test"
+	}
 	for _, rawAccount := range raw.Accounts {
 		account := AccountConfig{
 			AccountID:   strings.TrimSpace(rawAccount.AccountID),
@@ -168,6 +173,9 @@ func LoadYAML(data []byte) (File, error) {
 }
 
 func (file File) Validate() error {
+	if file.Server.Mode != "" && file.Server.Mode != "test" && file.Server.Mode != "live" {
+		return fmt.Errorf("server mode must be test or live")
+	}
 	if strings.TrimSpace(file.Server.Listen) == "" {
 		return fmt.Errorf("server listen is required")
 	}
@@ -217,6 +225,7 @@ func (file File) Validate() error {
 func (file File) Hash() (string, error) {
 	sanitized := hashFile{
 		Server: hashServer{
+			Mode:                   file.Server.Mode,
 			Listen:                 file.Server.Listen,
 			AllowNonLoopbackListen: file.Server.AllowNonLoopbackListen,
 			AuthTokenRef:           file.Server.AuthTokenRef.Fingerprint(),
@@ -261,6 +270,7 @@ func (file File) GoString() string { return file.String() }
 
 func (file File) MarshalJSON() ([]byte, error) {
 	server := map[string]any{
+		"mode":                      file.Server.Mode,
 		"listen":                    file.Server.Listen,
 		"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
 		"auth_token_ref":            "redacted",
@@ -540,6 +550,7 @@ type hashFile struct {
 	Accounts []hashAccount `json:"accounts"`
 }
 type hashServer struct {
+	Mode                   string `json:"mode"`
 	Listen                 string `json:"listen"`
 	AllowNonLoopbackListen bool   `json:"allow_non_loopback_listen"`
 	AuthTokenRef           string `json:"auth_token_ref"`

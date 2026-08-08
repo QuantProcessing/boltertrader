@@ -10,7 +10,14 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 )
 
-const reasonExactLookupUnavailable = "exact_lookup_unavailable"
+const (
+	reasonExactLookupUnavailable = "exact_lookup_unavailable"
+	reasonWriteFenceUnavailable  = "write_fence_unavailable"
+)
+
+type writeFenceChecker interface {
+	CheckWriteFence(account.WriteFence) error
+}
 
 type AccountRegistry interface {
 	Spot(domain.AccountID) (exchange.SpotClient, error)
@@ -85,14 +92,20 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 		return Route{}, fmt.Errorf("order product unsupported")
 	}
 	lookup, ok := orders.(exchange.ExactOrderLookup)
+	var checkWriteFence func(account.WriteFence) error
+	if checker, supportsFences := router.accounts.(writeFenceChecker); supportsFences {
+		checkWriteFence = checker.CheckWriteFence
+	}
 	reason := status.Reason
 	if !ok {
 		reason = reasonExactLookupUnavailable
+	} else if checkWriteFence == nil {
+		reason = reasonWriteFenceUnavailable
 	}
 	return Route{
 		Driver:     &exchangeDriver{orders: orders, lookup: lookup},
 		Instrument: instrument, Product: instrument.Identity.Product,
-		WriteReady: status.WriteReady && ok, Reason: reason,
+		WriteReady: status.WriteReady && ok && checkWriteFence != nil, Reason: reason, CheckWriteFence: checkWriteFence,
 	}, nil
 }
 

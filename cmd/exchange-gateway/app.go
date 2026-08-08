@@ -84,7 +84,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	acquireOwnership := defaultAcquireOwnership(deps.acquireOwnership)
 	runtimeMode := deps.runtimeMode
 	if runtimeMode == "" {
-		runtimeMode = account.RuntimeModeTest
+		runtimeMode = account.RuntimeMode(file.Server.Mode)
 	}
 	runtimeLifecycle := deps.runtimeLifecycle
 	if file.Server.InternalListen != "" && deps.buildInternalHandler == nil && runtimeLifecycle == nil {
@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					return nil, handlerErr
 				}
 			}
-			return publicHandler, nil
+			return modeAttestedHandler(runtimeMode, publicHandler), nil
 		},
 	}
 	service, err := process.Start(ctx, file, processDeps)
@@ -143,7 +143,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			_ = service.Shutdown(context.Background())
 			return fmt.Errorf("internal listen failed")
 		}
-		internalService = startAuthorityHTTPServer(listener, internalHandler)
+		internalService = startAuthorityHTTPServer(listener, modeAttestedHandler(runtimeMode, internalHandler))
 	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -169,6 +169,19 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		wait = waitForSignal
 	}
 	return wait(ctx, service)
+}
+
+const gatewayModeHeader = "X-Bolter-Mode"
+
+func modeAttestedHandler(mode account.RuntimeMode, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(gatewayModeHeader, string(mode))
+		if r.Header.Get(gatewayModeHeader) != string(mode) {
+			http.Error(w, "Gateway mode attestation mismatch", http.StatusConflict)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func defaultInternalHandlerFactory(

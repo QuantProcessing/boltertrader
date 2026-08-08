@@ -41,6 +41,14 @@ while :; do sleep 1; done
 	)
 
 	runLauncher(t, repo, env, "up")
+	manualKeyPath := filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key")
+	manualKeyInfo, err := os.Lstat(manualKeyPath)
+	if err != nil {
+		t.Fatalf("Manual preview signing key was not created: %v", err)
+	}
+	if !manualKeyInfo.Mode().IsRegular() || manualKeyInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("Manual preview signing key mode=%v, want regular 0600", manualKeyInfo.Mode())
+	}
 	runLauncher(t, repo, env, "status")
 	runLauncher(t, repo, env, "down")
 
@@ -51,6 +59,88 @@ while :; do sleep 1; done
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("lifecycle events:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestDevPlatformBuiltinFundingWorkerReadinessUsesWorkerFenceAndFailClosedHTTP(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	credentialDir := filepath.Join(runtimeDir, "credentials", "test")
+	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const fundingToken = "synthetic-funding-worker-readiness-token"
+	const gatewayToken = "synthetic-gateway-adapter-readiness-token"
+	if err := os.WriteFile(filepath.Join(credentialDir, "funding-worker.token"), []byte(fundingToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(credentialDir, "gateway-adapter.token"), []byte(gatewayToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(runtimeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	requests := filepath.Join(runtimeDir, "curl.requests")
+	writeExecutable(t, filepath.Join(binDir, "curl"), `#!/bin/sh
+set -eu
+config=$(cat)
+printf 'request=%s\nconfig=%s\n' "$*" "$config" >>"$BT_TEST_CURL_REQUESTS"
+case "$*" in
+  *--fail*) ;;
+  *) exit 22 ;;
+esac
+case "$*" in
+  *'/internal/v1/funding-work/workers/registrations'*) printf '{"data":{"workerGeneration":7}}\n' ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(binDir, "pg_isready"), "#!/bin/sh\nexit 0\n")
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+
+	env := append(launcherEnv(runtimeDir),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BT_TEST_CURL_REQUESTS="+requests,
+		"BT_DEV_FUNDING_WORKER_DRAIN_CMD=true",
+		"BT_DEV_START_TIMEOUT_SECONDS=1",
+	)
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		env = append(env, "BT_DEV_"+service+"_CMD="+helper, "BT_DEV_"+service+"_READY_CMD=")
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir = repo
+		cmd.Env = env
+		_, _ = cmd.CombinedOutput()
+	})
+
+	runLauncher(t, repo, env, "up")
+	requestLog, err := os.ReadFile(requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"/internal/v1/funding-work/workers/registrations",
+		"/internal/v1/funding-work/workers/funding-default-test/readiness",
+		`header = "X-Worker-Id: funding-default-test"`,
+		`header = "X-Worker-Generation: 7"`,
+		`header = "X-Worker-Instance-Id: `,
+	} {
+		if !strings.Contains(string(requestLog), required) {
+			t.Errorf("supervisor did not use worker-fenced readiness value %q:\n%s", required, requestLog)
+		}
+	}
+	for _, required := range []string{
+		"request=--fail --silent --show-error --config - http://127.0.0.1:18082/internal/v1/runtime/status\nconfig=oauth2-bearer = \"" + gatewayToken + "\"",
+		"request=--fail --silent --show-error --config - http://127.0.0.1:18082/internal/v1/runtime/readiness\nconfig=oauth2-bearer = \"" + gatewayToken + "\"",
+		"oauth2-bearer = \"" + fundingToken + "\"",
+	} {
+		if !strings.Contains(string(requestLog), required) {
+			t.Errorf("supervisor readiness used the wrong bearer token; missing %q:\n%s", required, requestLog)
+		}
 	}
 }
 
@@ -172,6 +262,9 @@ func TestDevPlatformContractAndExamples(t *testing.T) {
 		"http://127.0.0.1:18091/api/v1/system/readiness",
 		"http://127.0.0.1:18092/internal/v1/funding-work/status",
 		"oauth2-bearer",
+		`BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}"`,
+		`WORKER_ID=${BT_FUNDING_WORKER_ID:-funding-default-$MODE}`,
+		`BT_MANUAL_PREVIEW_SIGNING_KEY_FILE`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("launcher is missing frozen contract value %q", required)
@@ -192,6 +285,45 @@ func TestDevPlatformContractAndExamples(t *testing.T) {
 	}
 }
 
+func TestDevPlatformPassesCompletePlatformEnvironment(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	environment := filepath.Join(runtimeDir, "platform.env")
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+set -eu
+name=$1
+if [ "$name" = platform ]; then env | sort >"$BT_TEST_PLATFORM_ENV"; fi
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+	env := append(launcherEnv(runtimeDir), "BT_TEST_PLATFORM_ENV="+environment, "BT_DEV_FUNDING_WORKER_DRAIN_CMD=true")
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		name := strings.ToLower(strings.ReplaceAll(service, "_", "-"))
+		ready := "true"
+		if service == "PLATFORM" {
+			ready = "test -f " + environment
+		}
+		env = append(env, "BT_DEV_"+service+"_CMD="+helper+" "+name, "BT_DEV_"+service+"_READY_CMD="+ready)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+	})
+	runLauncher(t, repo, env, "up")
+	contents, err := os.ReadFile(environment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(contents)
+	for _, required := range []string{"BT_MODE=test", "FT_MODE=test", "BT_PLATFORM_DATABASE=bolter_platform_test", "BT_PLATFORM_DATABASE_ROLE=bolter_platform_test", "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=" + filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key")} {
+		if !strings.Contains(text, required+"\n") {
+			t.Errorf("Platform environment missing %q", required)
+		}
+	}
+}
+
 func TestDevPlatformTestAndLiveStateAreIsolated(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
@@ -199,6 +331,15 @@ func TestDevPlatformTestAndLiveStateAreIsolated(t *testing.T) {
 	output := runLauncher(t, repo, testEnv, "doctor")
 	if !strings.Contains(output, filepath.Join(runtimeDir, "credentials", "test", "funding-worker.token")) {
 		t.Fatalf("test token path missing from doctor output: %s", output)
+	}
+	if !strings.Contains(output, "worker-id=funding-default-test") {
+		t.Fatalf("test worker ID is not mode-scoped: %s", output)
+	}
+	if !strings.Contains(output, filepath.Join(runtimeDir, "credentials", "test", "gateway-adapter.token")) || !strings.Contains(output, "gateway-url=http://127.0.0.1:18082") {
+		t.Fatalf("Gateway adapter contract missing from doctor output: %s", output)
+	}
+	if !strings.Contains(output, filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key")) {
+		t.Fatalf("test Manual preview signing key path missing from doctor output: %s", output)
 	}
 
 	liveEnvFile := filepath.Join(runtimeDir, "live.env")
@@ -210,8 +351,14 @@ func TestDevPlatformTestAndLiveStateAreIsolated(t *testing.T) {
 	if !strings.Contains(output, filepath.Join(runtimeDir, "credentials", "live", "funding-worker.token")) {
 		t.Fatalf("live token path missing from doctor output: %s", output)
 	}
+	if !strings.Contains(output, filepath.Join(runtimeDir, "credentials", "live", "manual-preview-signing.key")) || strings.Contains(output, filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key")) {
+		t.Fatalf("live Manual preview signing key is not mode-scoped: %s", output)
+	}
 	if strings.Contains(output, filepath.Join(runtimeDir, "credentials", "test", "funding-worker.token")) {
 		t.Fatalf("doctor reused test token in live mode: %s", output)
+	}
+	if !strings.Contains(output, "worker-id=funding-default-live") {
+		t.Fatalf("live worker ID is not mode-scoped: %s", output)
 	}
 	if !strings.Contains(output, "live-private-writes=0") {
 		t.Fatalf("live private writes were not default-denied: %s", output)
@@ -224,13 +371,21 @@ func TestDevPlatformTestAndLiveStateAreIsolated(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("live mode accepted the test token path: %s", out)
 	}
+
+	crossModeManualKeyEnv := append(liveEnv, "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE="+filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key"))
+	cmd = exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "doctor")
+	cmd.Dir = repo
+	cmd.Env = crossModeManualKeyEnv
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("live mode accepted the test Manual preview signing key path: %s", out)
+	}
 }
 
 func launcherEnv(runtimeDir string) []string {
 	return append(os.Environ(),
 		"FT_LOCAL_RUNTIME_DIR="+runtimeDir,
 		"FT_MODE=test",
-		"BT_DEV_START_TIMEOUT_SECONDS=3",
+		"BT_DEV_START_TIMEOUT_SECONDS=10",
 		"BT_DEV_STOP_TIMEOUT_SECONDS=3",
 		"BT_DEV_DRAIN_TIMEOUT_SECONDS=3",
 		"BT_DEV_PORT_CHECK_CMD=true",

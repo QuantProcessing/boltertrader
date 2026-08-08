@@ -2,6 +2,7 @@ package reservations
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -118,7 +118,6 @@ type Store interface {
 type Service struct {
 	store Store
 	now   func() time.Time
-	next  atomic.Uint64
 }
 
 func NewService(store Store, now func() time.Time) *Service {
@@ -133,8 +132,12 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Rese
 		return Reservation{}, err
 	}
 	now := service.now().UTC()
+	reservationID, err := newReservationID()
+	if err != nil {
+		return Reservation{}, err
+	}
 	reservation := Reservation{
-		ReservationID:  fmt.Sprintf("reservation_%016x", service.next.Add(1)),
+		ReservationID:  reservationID,
 		IdempotencyKey: request.IdempotencyKey, PayloadHash: request.hash(),
 		PrincipalID: request.PrincipalID, Mode: request.Mode, ProductID: request.ProductID,
 		Kind: request.Kind, Scope: request.Scope, Status: StatusHeld, ExpiresAt: request.ExpiresAt,
@@ -149,6 +152,14 @@ func (service *Service) Create(ctx context.Context, request CreateRequest) (Rese
 		reservation.Notional, reservation.Currency = &value, &currency
 	}
 	return service.store.Create(ctx, reservation)
+}
+
+func newReservationID() (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", fmt.Errorf("generate reservation id: %w", err)
+	}
+	return "reservation_" + hex.EncodeToString(entropy[:]), nil
 }
 
 func (service *Service) Release(ctx context.Context, principal string, mode Mode, id string) (Reservation, error) {

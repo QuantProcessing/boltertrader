@@ -1,0 +1,604 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
+	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
+)
+
+type adapterContractAuthority struct {
+	requests []gatewayhttp.AuthorityRequest
+}
+
+func (authority *adapterContractAuthority) Execute(_ context.Context, request gatewayhttp.AuthorityRequest) (gatewayhttp.AuthorityResponse, error) {
+	authority.requests = append(authority.requests, request)
+	switch request.Operation {
+	case gatewayhttp.AuthorityRuntimeReadiness:
+		return gatewayhttp.AuthorityResponse{Body: gatewayhttp.RuntimeReadiness{Ready: true}}, nil
+	case gatewayhttp.AuthorityMarketDataReadiness:
+		if len(request.Query) != 0 {
+			return gatewayhttp.AuthorityResponse{}, errors.New("readiness probe must not carry a query")
+		}
+		return gatewayhttp.AuthorityResponse{Body: map[string]bool{"ready": true}}, nil
+	case gatewayhttp.AuthorityCatalogVenues:
+		return gatewayhttp.AuthorityResponse{Body: []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: true}}}, nil
+	case gatewayhttp.AuthorityCatalogInstruments:
+		return gatewayhttp.AuthorityResponse{Body: map[string]any{"revision": "gateway-catalog-1", "observedAt": time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC), "instruments": []catalog.Instrument{{InstrumentID: "BTC-USDT", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}}, nil
+	case gatewayhttp.AuthorityMarketData:
+		if request.Query.Get("venue") != "binance" || request.Query.Get("environment") != "demo" || request.Query.Get("product") != "perp" || request.Query.Get("instrumentId") != "BTC-USDT" {
+			return gatewayhttp.AuthorityResponse{}, errors.New("unexpected market-data query")
+		}
+		return gatewayhttp.AuthorityResponse{Body: marketdata.Fact{
+			Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.05",
+			ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
+		}}, nil
+	default:
+		return gatewayhttp.AuthorityResponse{}, errors.New("unexpected authority operation")
+	}
+}
+
+func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	authority := new(adapterContractAuthority)
+	rejected := 0
+	handler, err := gatewayhttp.NewInternalHandler(gatewayhttp.InternalOptions{
+		Authority: authority,
+		Authenticate: func(request *http.Request) error {
+			if request.Header.Get("Authorization") != "Bearer "+token {
+				rejected++
+				return errors.New("wrong Gateway adapter bearer")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	unauthorized, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unauthorized.Fetch(context.Background()); err == nil || rejected != 1 || len(authority.requests) != 0 {
+		t.Fatalf("unauthorized Fetch() err=%v rejected=%d authority requests=%d", err, rejected, len(authority.requests))
+	}
+
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err != nil {
+		t.Fatalf("CheckMarketDataRoute: %v", err)
+	}
+	if err := adapter.CheckRuntimeRoute(context.Background()); err != nil {
+		t.Fatalf("CheckRuntimeRoute: %v", err)
+	}
+	snapshot, err := adapter.Fetch(context.Background())
+	if err != nil || len(snapshot.Venues) != 1 || snapshot.Venues[0].Venue != "binance" ||
+		len(snapshot.Instruments) != 1 || snapshot.Instruments[0].InstrumentID != "BTC-USDT" {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	fact, err := (gatewayMarketDataSource{adapter: adapter}).Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	if err != nil || fact.MarkPrice != "100.05" || !fact.ObservedAt.Equal(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)) {
+		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+	wantOperations := []gatewayhttp.AuthorityOperation{
+		gatewayhttp.AuthorityMarketDataReadiness,
+		gatewayhttp.AuthorityRuntimeReadiness,
+		gatewayhttp.AuthorityCatalogVenues,
+		gatewayhttp.AuthorityCatalogInstruments,
+		gatewayhttp.AuthorityMarketData,
+	}
+	if len(authority.requests) != len(wantOperations) {
+		t.Fatalf("authority requests=%+v", authority.requests)
+	}
+	for index, operation := range wantOperations {
+		if authority.requests[index].Operation != operation {
+			t.Fatalf("authority request[%d]=%+v want operation=%s", index, authority.requests[index], operation)
+		}
+	}
+}
+
+func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.RequestURI() {
+		case "/internal/v1/market-data/readiness":
+			_, _ = w.Write([]byte(`{"data":{"ready":true}}`))
+		case "/internal/v1/catalog/venues":
+			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"demo","ready":true}]}`))
+		case "/internal/v1/catalog/instruments":
+			_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-old","observedAt":"2026-08-04T01:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+		case "/internal/v1/market-data?environment=demo&instrumentId=BTC-USDT&product=perp&venue=binance":
+			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"demo","product":"perp","instrumentId":"BTC-USDT","markPrice":"100.05","observedAt":"2026-08-05T01:02:03Z"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err != nil {
+		t.Fatalf("CheckMarketDataRoute: %v", err)
+	}
+	snapshot, err := adapter.Fetch(context.Background())
+	if err != nil || snapshot.Revision != "gateway-catalog-old" || !snapshot.ObservedAt.Equal(time.Date(2026, 8, 4, 1, 0, 0, 0, time.UTC)) || len(snapshot.Venues) != 1 || len(snapshot.Instruments) != 1 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	projection, err := catalog.NewProjection(adapter, time.Minute, func() time.Time { return time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projection.Snapshot(context.Background()); err == nil {
+		t.Fatal("old Gateway catalog became fresh after Platform fetch")
+	}
+	fact, err := (gatewayMarketDataSource{adapter: adapter}).Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	if err != nil || fact.MarkPrice != "100.05" {
+		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+}
+
+func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[{"venue":"binance","environment":"demo","ready":true,"secret":"leak"}]}`,
+		`{"data":[]} {}`,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := adapter.Fetch(context.Background()); err == nil {
+			t.Fatalf("invalid response accepted: %s", body)
+		}
+		server.Close()
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "denied", http.StatusUnauthorized) }))
+	defer server.Close()
+	adapter, _ := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	if _, err := adapter.Fetch(context.Background()); err == nil {
+		t.Fatal("non-success response accepted")
+	}
+}
+
+var _ catalog.Source = (*gatewayAdapter)(nil)
+var _ marketdata.Source = gatewayMarketDataSource{}
+
+func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	var mu sync.Mutex
+	requests := make([]gatewayPlaceRequest, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/orders" || r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("request path/auth=%s/%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		var body gatewayPlaceRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IdempotencyKey != r.Header.Get("Idempotency-Key") {
+			t.Errorf("request body=%+v err=%v", body, err)
+		}
+		mu.Lock()
+		requests = append(requests, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"submitted","resource_version":1}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manualResult, err := adapter.Execute(context.Background(), manual.GatewayRequest{
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:demo:spot:BTC-USDT",
+		IdempotencyKey: "ignored-in-favor-of-command", Side: "buy", Quantity: "2", OrderType: "market", Mode: orders.ModeTest,
+		DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3,
+	})
+	if err != nil || manualResult.State != manual.GatewayStateSubmitted || manualResult.Handoff.Outcome != orders.HandoffAccepted || manualResult.Handoff.Evidence.GatewayOrderID == "" {
+		t.Fatalf("Manual Execute() result=%+v err=%v", manualResult, err)
+	}
+	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:demo:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", Mode: orders.ModeTest, ProductID: "funding", Payload: normalizedPayload}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 || requests[0].IdempotencyKey != "command_manual_1" || requests[1].IdempotencyKey != "command_child_1" {
+		t.Fatalf("Gateway requests=%+v", requests)
+	}
+	if requests[0].DesiredStateRevision != 11 || requests[0].RuntimeGeneration != 4 || requests[0].CredentialVersion != 3 {
+		t.Fatalf("Manual Gateway request lost account fence: %+v", requests[0])
+	}
+}
+
+func TestConfiguredGatewayAdapterAcceptsProcessorCreatedFundingChild(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	requests := make(chan gatewayPlaceRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body gatewayPlaceRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode Gateway request: %v", err)
+		}
+		requests <- body
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"submitted","resource_version":1}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	payload := json.RawMessage(`{"previewId":"preview-1","opportunityId":"opportunity-1","longAccountId":"account-long","shortAccountId":"account-short","canonicalMarketId":"BTC-USDT-PERP","notionalPerLeg":"50","maxSlippageBps":"10","holdThroughSettlement":true}`)
+	plans := work.NewMemoryFundingPlanStore()
+	_, _, err = plans.ReserveFundingPlan(context.Background(), work.FundingCommandPlan{
+		PlanKey: "open:preview-1", PreviewHash: "preview-hash-1", PrincipalID: "platform:funding", Mode: orders.ModeTest,
+		IntentKind: "funding.open", IntentPayload: payload, LineageID: "lineage-1",
+		Legs: []work.FundingOrderDraft{
+			{LegID: "long", AccountID: "account-long", DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3, Venue: "venue-a", VenueEnvironment: "test", ReservationID: "reservation-long", InstrumentID: "BTC-USDT-LONG", Side: "buy", Quantity: "0.5", Notional: "50", OrderType: "market"},
+			{LegID: "short", AccountID: "account-short", DesiredStateRevision: 13, RuntimeGeneration: 7, CredentialVersion: 5, Venue: "venue-b", VenueEnvironment: "test", ReservationID: "reservation-short", InstrumentID: "BTC-USDT-SHORT", Side: "sell", Quantity: "0.5", Notional: "50", OrderType: "market"},
+		},
+		ExpiresAt: now.Add(time.Minute), CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := orders.NewService(orders.NewMemoryStore(), nil, func() time.Time { return now })
+	processor, err := work.NewFundingPayloadProcessor(commands, plans, func() time.Time { return now.Add(time.Second) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := processor.Process(context.Background(), orders.Command{
+		CommandID: "parent-1", PrincipalID: "platform:funding", ProductID: "funding", LineageID: "lineage-1",
+		Mode: orders.ModeTest, CommandKind: "funding.open", State: orders.StateAccepted, Payload: payload,
+	})
+	if err != nil || len(children) != 1 {
+		t.Fatalf("processor children=%+v err=%v", children, err)
+	}
+	if _, err := adapter.Handoff(context.Background(), children[0]); err != nil {
+		t.Fatalf("processor-created child handoff: %v; payload=%s", err, children[0].Payload)
+	}
+	request := <-requests
+	if request.AccountID != "account-long" || request.InstrumentID != "BTC-USDT-LONG" || request.IdempotencyKey != children[0].CommandID {
+		t.Fatalf("Gateway request=%+v child=%+v", request, children[0])
+	}
+}
+
+func TestConfiguredGatewayAdapterPropagatesExactAccountFence(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	requestBody := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode Gateway request: %v", err)
+		}
+		requestBody <- body
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"submitted","resource_version":1}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := json.RawMessage(`{"accountId":"account-long","instrumentId":"BTC-USDT-LONG","side":"buy","quantity":"0.5","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", Mode: orders.ModeTest, ProductID: "funding", Payload: payload}); err != nil {
+		t.Fatalf("Handoff: %v", err)
+	}
+	body := <-requestBody
+	for key, want := range map[string]float64{"desired_state_revision": 11, "runtime_generation": 4, "credential_version": 3} {
+		if body[key] != want {
+			t.Fatalf("Gateway request %s=%v, want %v; body=%+v", key, body[key], want, body)
+		}
+	}
+}
+
+func TestConfiguredGatewayAdapterRejectsFundingProductPayloadBeforeHTTP(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := json.RawMessage(`{"previewId":"preview-1","opportunityId":"opportunity-1","longAccountId":"account-long","shortAccountId":"account-short","canonicalMarketId":"BTC-USDT-PERP","notionalPerLeg":"50","maxSlippageBps":"10","holdThroughSettlement":true}`)
+	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_parent", Mode: orders.ModeTest, ProductID: "funding", Payload: payload}); err == nil {
+		t.Fatal("raw Funding product payload was accepted by Gateway adapter")
+	}
+	if calls != 0 {
+		t.Fatalf("unnormalized Funding payload made %d Gateway HTTP calls", calls)
+	}
+}
+
+func TestFundingPayloadProcessorParentIntentFailsClosedBeforeNormalization(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := json.RawMessage(`{"previewId":"preview-1","opportunityId":"opportunity-1","longAccountId":"account-long","shortAccountId":"account-short","canonicalMarketId":"BTC-USDT-PERP","notionalPerLeg":"50","maxSlippageBps":"10","holdThroughSettlement":true}`)
+	parent := orders.Command{CommandID: "command_parent", Mode: orders.ModeTest, ProductID: "funding", CommandKind: "funding.open", Payload: payload}
+	if _, err := adapter.Handoff(context.Background(), parent); err == nil {
+		t.Fatal("real Funding parent intent bypassed Platform normalization")
+	}
+	if calls != 0 {
+		t.Fatalf("real Funding parent intent made %d Gateway HTTP calls", calls)
+	}
+}
+
+func TestConfiguredGatewayAdapterRejectsLiveBeforeHTTP(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Execute(context.Background(), manual.GatewayRequest{Mode: orders.ModeLive}); err == nil {
+		t.Fatal("Live Manual execution was accepted")
+	}
+	if _, err := adapter.Handoff(context.Background(), orders.Command{Mode: orders.ModeLive}); err == nil {
+		t.Fatal("Live Funding handoff was accepted")
+	}
+	if calls != 0 {
+		t.Fatalf("Live writes made %d Gateway HTTP calls", calls)
+	}
+}
+
+func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	valid := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeTest, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+
+	t.Run("not attempted", func(t *testing.T) {
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+		defer server.Close()
+		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		result, err := adapter.Handoff(context.Background(), orders.Command{Mode: orders.ModeTest})
+		if err == nil || result.Outcome != orders.HandoffNotAttempted || calls != 0 {
+			t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "rejected", http.StatusUnprocessableEntity)
+		}))
+		defer server.Close()
+		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		result, err := adapter.Handoff(context.Background(), valid)
+		if err == nil || result.Outcome != orders.HandoffRejected {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "request timeout", status: http.StatusRequestTimeout},
+		{name: "server error", status: http.StatusServiceUnavailable},
+		{name: "truncated accepted evidence", status: http.StatusAccepted, body: `{"command_id":"gateway-command"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+			result, err := adapter.Handoff(context.Background(), valid)
+			if err == nil || result.Outcome != orders.HandoffOutcomeUnknown {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+
+	t.Run("outcome unknown", func(t *testing.T) {
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("connection reset") })}
+		adapter, _ := newGatewayAdapter("http://127.0.0.1:1", []byte(token), client)
+		result, err := adapter.Handoff(context.Background(), valid)
+		if err == nil || result.Outcome != orders.HandoffOutcomeUnknown {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	t.Run("accepted", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"submitted","resource_version":7}`))
+		}))
+		defer server.Close()
+		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		result, err := adapter.Handoff(context.Background(), valid)
+		if err != nil || result.Outcome != orders.HandoffAccepted || result.Evidence.CommandID != "gateway-command" || result.Evidence.GatewayOrderID != "gateway-order" || result.Evidence.ClientOrderID != "client-order" || result.Evidence.State != "submitted" || result.Evidence.ResourceVersion != 7 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	t.Run("accepted filled evidence", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","gateway_order_id":"gateway-order","settlement_asset":"USDT","fill":{"fill_id":"fill-1","side":"buy","price":"100","quantity":"1","fee":"0.01","fee_asset":"USDT","time":"2026-08-05T00:00:00Z"}}],"next_cursor":""}`))
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":8}`))
+		}))
+		defer server.Close()
+		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		result, err := adapter.Handoff(context.Background(), valid)
+		if err != nil || len(result.Evidence.Fills) != 1 || result.Evidence.Fills[0].FillID != "fill-1" || len(result.Evidence.OrderEvents) != 1 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	t.Run("filled evidence read failure is unknown", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				http.Error(w, "fills unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":9}`))
+		}))
+		defer server.Close()
+		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		result, err := adapter.Handoff(context.Background(), valid)
+		if err == nil || result.Outcome != orders.HandoffOutcomeUnknown ||
+			result.Evidence.GatewayOrderID != "gateway-order" || result.Evidence.State != "filled" ||
+			result.Evidence.ResourceVersion != 9 || len(result.Evidence.Fills) != 0 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeLive, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+	serverMode := "live"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(gatewayModeHeader) != serverMode {
+			http.Error(w, "mode mismatch", http.StatusConflict)
+			return
+		}
+		w.Header().Set(gatewayModeHeader, serverMode)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"submitted","resource_version":1}`))
+	}))
+	defer server.Close()
+
+	denied, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeLive, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := denied.Handoff(context.Background(), command); !errors.Is(err, orders.ErrLiveWriteDisabled) || result.Outcome != orders.HandoffNotAttempted {
+		t.Fatalf("default Live result=%+v err=%v", result, err)
+	}
+
+	enabled, _ := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeLive, true, server.Client())
+	if result, err := enabled.Handoff(context.Background(), command); err != nil || result.Outcome != orders.HandoffAccepted {
+		t.Fatalf("enabled Live result=%+v err=%v", result, err)
+	}
+	serverMode = "test"
+	if result, err := enabled.Handoff(context.Background(), command); err == nil || result.Outcome != orders.HandoffOutcomeUnknown {
+		t.Fatalf("cross-mode result=%+v err=%v", result, err)
+	}
+}
+
+func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	for _, test := range []struct {
+		name         string
+		responseMode string
+		wantError    bool
+	}{
+		{name: "missing", wantError: true},
+		{name: "mismatched", responseMode: "live", wantError: true},
+		{name: "exact", responseMode: "test"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get(gatewayModeHeader) != "test" {
+					t.Errorf("request mode attestation=%q", r.Header.Get(gatewayModeHeader))
+				}
+				if test.responseMode != "" {
+					w.Header().Set(gatewayModeHeader, test.responseMode)
+				}
+				_, _ = w.Write([]byte(`{"data":{"ready":true}}`))
+			}))
+			defer server.Close()
+
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = adapter.CheckMarketDataRoute(context.Background())
+			if (err != nil) != test.wantError {
+				t.Fatalf("CheckMarketDataRoute() error=%v wantError=%t", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(gatewayModeHeader) != "test" {
+			t.Errorf("mode=%q", r.Header.Get(gatewayModeHeader))
+		}
+		w.Header().Set(gatewayModeHeader, "test")
+		switch r.URL.Path {
+		case "/v1/orders/gateway-order":
+			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":2}`))
+		case "/v1/fills":
+			_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","fill":{"fill_id":"fill-1","side":"buy","price":"100","quantity":"1","fee":"0.1","fee_asset":"BNB","time":"2026-08-05T00:00:00Z"}}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := orders.Command{Mode: orders.ModeTest, AccountID: "account-a", ExecutionEvidence: orders.ExecutionEvidence{CommandID: "gateway-command", GatewayOrderID: "gateway-order", ClientOrderID: "client-order", State: "submitted", ResourceVersion: 1}}
+	result, err := adapter.Reconcile(context.Background(), command)
+	if err != nil || result.Outcome != orders.HandoffAccepted || result.Evidence.ResourceVersion != 2 || len(result.Evidence.Fills) != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	raw, err := json.Marshal(result.Evidence.Fills[0])
+	if err != nil || !strings.Contains(string(raw), `"settlementCurrency":"USDT"`) || !strings.Contains(string(raw), `"feeCurrency":"BNB"`) {
+		t.Fatalf("fill evidence=%s err=%v", raw, err)
+	}
+}
+
+func TestGatewayAdapterRejectsAllZeroOrderFenceBeforeHandoff(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.Handoff(context.Background(), orders.Command{
+		CommandID: "command-1", AccountID: "account-a", Mode: orders.ModeTest,
+		Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market"}`),
+	})
+	if err == nil || result.Outcome != orders.HandoffNotAttempted || requests != 0 {
+		t.Fatalf("result=%+v err=%v requests=%d", result, err, requests)
+	}
+}

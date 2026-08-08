@@ -18,10 +18,11 @@ import (
 )
 
 type fillResource struct {
-	AccountID      domain.AccountID      `json:"account_id"`
-	InstrumentID   domain.InstrumentID   `json:"instrument_id,omitempty"`
-	GatewayOrderID domain.GatewayOrderID `json:"gateway_order_id,omitempty"`
-	Fill           exchange.Fill         `json:"fill"`
+	AccountID       domain.AccountID      `json:"account_id"`
+	InstrumentID    domain.InstrumentID   `json:"instrument_id,omitempty"`
+	GatewayOrderID  domain.GatewayOrderID `json:"gateway_order_id,omitempty"`
+	SettlementAsset string                `json:"settlement_asset"`
+	Fill            exchange.Fill         `json:"fill"`
 }
 
 type balanceResource struct {
@@ -164,6 +165,11 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 			handler.fail(w, err)
 			return
 		}
+		instruments, err := handler.fundingPaymentInstrumentMap(r.Context(), resource.AccountID, instrument)
+		if err != nil {
+			handler.fail(w, err)
+			return
+		}
 		request := exchange.FillsRequest{
 			Instrument: instrument, Cursor: selection.cursor, Limit: selection.limit - len(items),
 		}
@@ -191,6 +197,18 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, fill := range page.Fills {
+			resolvedInstrument, resolvedInstrumentID, resolveErr := resolveNativeInstrument(
+				instrument, selection.instrumentID, instruments, fill.NativeSymbol, fill.NativeID,
+			)
+			if resolveErr != nil {
+				handler.fail(w, resolveErr)
+				return
+			}
+			settlementAsset := fillSettlementAsset(&resolvedInstrument)
+			if settlementAsset == "" {
+				handler.fail(w, exchange.ErrMalformedResponse)
+				return
+			}
 			rowGatewayOrderID := domain.GatewayOrderID("")
 			if gatewayOrderID != "" {
 				if fill.OrderID != exactOrder.VenueOrderID {
@@ -200,8 +218,8 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 				rowGatewayOrderID = gatewayOrderID
 			}
 			items = append(items, fillResource{
-				AccountID: resource.AccountID, InstrumentID: selection.instrumentID,
-				GatewayOrderID: rowGatewayOrderID, Fill: fill,
+				AccountID: resource.AccountID, InstrumentID: resolvedInstrumentID,
+				GatewayOrderID: rowGatewayOrderID, SettlementAsset: settlementAsset, Fill: fill,
 			})
 			if len(items) == selection.limit {
 				break
@@ -212,6 +230,16 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, collection[fillResource]{Items: items, NextCursor: nextCursor})
+}
+
+func fillSettlementAsset(instrument *exchange.Instrument) string {
+	if instrument == nil {
+		return ""
+	}
+	if instrument.Identity.SettleAsset != "" {
+		return instrument.Identity.SettleAsset
+	}
+	return instrument.Identity.QuoteAsset
 }
 
 func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
