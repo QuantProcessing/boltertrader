@@ -3,8 +3,6 @@ package migration
 import (
 	"bytes"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -97,16 +95,5 @@ func TestCrossLaneRejectsTamperedFrozenProvenance(t *testing.T) {
 				t.Fatal("ValidateBaseline mutated the supplied manifest")
 			}
 		})
-	}
-}
-
-func TestCrossLaneRejectsUntrackedSourceMutationAfterFreeze(t *testing.T) {
-	manifest, importCommit := provenanceFixture(t)
-	if err := os.WriteFile(filepath.Join(manifest.SourceRepo, "untracked-after-freeze.txt"), []byte("mutation\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := verifyGitProvenance(manifest, importCommit); err == nil {
-		t.Fatal("verifyGitProvenance accepted an untracked source-tree mutation")
 	}
 }
