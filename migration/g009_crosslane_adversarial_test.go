@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -100,7 +101,10 @@ func TestCrossLaneRejectsTamperedFrozenProvenance(t *testing.T) {
 }
 
 func TestCrossLaneRejectsGitShapedImportWithFabricatedProof(t *testing.T) {
-	manifestPath := copyManifest(t)
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifestPath, readManifest(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	before, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
