@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"time"
@@ -81,6 +82,7 @@ type Request struct {
 	Reason       string
 	ActivationAt string
 	CutoverAt    string
+	generatedEvidence *operationProof
 }
 
 type ApplyOptions struct {
@@ -286,6 +288,16 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 	}
 	if proof.SchemaVersion != 1 || proof.Operation != request.Operation || proof.Status != "pass" || proof.MigrationID != manifest.MigrationID {
 		return fmt.Errorf("operation proof identity or status does not match request")
+	}
+	if request.generatedEvidence != nil {
+		if !reflect.DeepEqual(proof, *request.generatedEvidence) || proof.GeneratedBy != evidenceGenerator || !validSHA256(proof.PreStateSHA) || len(proof.Commands) == 0 {
+			return fmt.Errorf("generated operation evidence does not match executed commands")
+		}
+		for _, command := range proof.Commands {
+			if command.Executable == "" || !validSHA256(command.ArgvSHA256) || !validSHA256(command.OutputSHA) || (command.InputSHA != "" && !validSHA256(command.InputSHA)) {
+				return fmt.Errorf("generated operation evidence contains invalid command digests")
+			}
+		}
 	}
 	var subject string
 	var required []string

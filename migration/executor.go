@@ -98,6 +98,14 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	if priorOperation {
+		if replay, replayErr := replayExecution(manifest, request.EvidenceDir, applyRequest, commands, inputSHA); replayErr != nil || replay != nil {
+			if replayErr != nil {
+				return ExecutionResult{}, replayErr
+			}
+			return *replay, nil
+		}
+	}
 	run := options.Run
 	if run == nil {
 		run = runCommand
@@ -136,6 +144,7 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		Subject: proofSubject(manifest, applyRequest, artifactSHA), Checks: checks,
 		GeneratedBy: evidenceGenerator, PreStateSHA: sha256Hex(manifestData), InputSHA: inputSHA, Commands: commandProofs,
 	}
+	applyRequest.generatedEvidence = &proof
 	evidencePath, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, request.Operation, proof)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -147,6 +156,40 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
+}
+
+func replayExecution(manifest Manifest, evidenceDir string, request Request, commands []Command, inputSHA string) (*ExecutionResult, error) {
+	if !operationPostconditionHolds(manifest, request) {
+		return nil, nil
+	}
+	for index := len(manifest.Workflow.Events) - 1; index >= 0; index-- {
+		event := manifest.Workflow.Events[index]
+		if event.Operation != request.Operation {
+			continue
+		}
+		path := filepath.Join(evidenceDir, fmt.Sprintf("%03d-%s.json", event.Sequence, event.Operation))
+		data, digest, err := readProof(path)
+		if err != nil || digest != event.ProofSHA {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		var proof operationProof
+		if json.Unmarshal(data, &proof) != nil || proof.GeneratedBy != evidenceGenerator || !validSHA256(proof.PreStateSHA) || len(proof.Commands) != len(commands) {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		for commandIndex, command := range commands {
+			planned := commandDigest(command, nil)
+			recorded := proof.Commands[commandIndex]
+			if recorded.Executable != planned.Executable || recorded.ArgvSHA256 != planned.ArgvSHA256 || recorded.InputSHA != planned.InputSHA || !validSHA256(recorded.OutputSHA) {
+				return nil, fmt.Errorf("%s replay conflict", request.Operation)
+			}
+		}
+		artifactSHA, digestErr := digestFile(request.ArtifactPath, operationNeedsArtifact(request.Operation))
+		if digestErr != nil || artifactSHA != event.ArtifactSHA || (inputSHA != "" && proof.InputSHA != inputSHA) || requestFingerprint(request, artifactSHA, event.ProofSHA) != event.Fingerprint {
+			return nil, fmt.Errorf("%s replay conflict", request.Operation)
+		}
+		return &ExecutionResult{Result: Result{Phase: manifest.Workflow.Phase, Replayed: true}, EvidencePath: path, InputSHA256: proof.InputSHA}, nil
+	}
+	return nil, fmt.Errorf("%s replay conflict", request.Operation)
 }
 
 func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Request, []string, string, error) {
