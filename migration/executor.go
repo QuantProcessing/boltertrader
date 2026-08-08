@@ -76,8 +76,14 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if err := validateWorkflow(manifest); err != nil {
 		return ExecutionResult{}, err
 	}
-	if err := validatePredecessor(manifest, request.Operation); err != nil {
-		return ExecutionResult{}, err
+	priorOperation := false
+	for _, event := range manifest.Workflow.Events {
+		priorOperation = priorOperation || event.Operation == request.Operation
+	}
+	if !priorOperation {
+		if err := validatePredecessor(manifest, request.Operation); err != nil {
+			return ExecutionResult{}, err
+		}
 	}
 	commands, applyRequest, checks, inputSHA, err := executionPlan(manifest, request)
 	if err != nil {
@@ -103,6 +109,9 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	if request.Operation == Backfill {
+		if inputSHA != artifactSHA {
+			return ExecutionResult{}, fmt.Errorf("backfill script changed during execution")
+		}
 		inputSHA = artifactSHA
 	}
 	proof := operationProof{
@@ -154,9 +163,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"deterministic", "source-read-only"}, "", nil
 	case Fence:
 		return []Command{
-			psql(source, `SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database()) \gexec`),
+			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$`),
 			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, `SELECT format('ALTER DATABASE %I SET default_transaction_read_only = on', current_database()) \gexec`),
+			psql(target, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$`),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
@@ -165,8 +174,12 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			return nil, Request{}, nil, "", fmt.Errorf("backfill script is unavailable")
 		}
 		apply.Name, apply.ArtifactPath = filepath.Base(request.BackfillPath), request.BackfillPath
+		inputSHA, digestErr := digestFile(request.BackfillPath, true)
+		if digestErr != nil {
+			return nil, Request{}, nil, "", digestErr
+		}
 		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target, "--file", request.BackfillPath}, Env: []string{"PGOPTIONS=-c default_transaction_read_only=off"}}
-		return []Command{command}, apply, []string{"authoritative-ownership-mapped", "deterministic"}, "", nil
+		return []Command{command}, apply, []string{"authoritative-ownership-mapped", "deterministic"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
 		return []Command{
@@ -179,7 +192,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
 	case Rollback:
 		return []Command{
-			psql(source, `SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \gexec`),
+			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()); END $do$`),
 			psql(source, "SHOW default_transaction_read_only"),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
