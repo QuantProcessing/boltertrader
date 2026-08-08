@@ -452,10 +452,10 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"capture-session-read-only", "repeat-capture-matches", "final-snapshot-applied"}
+		proof.Checks = []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
 	case Fence:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"source-writes-disabled", "target-writes-disabled"}
+		proof.Checks = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
 		proof.Checks = []string{"script-content-stable", "single-transaction"}
@@ -467,7 +467,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"source-writes-enabled", "target-writes-disabled"}
+		proof.Checks = []string{"source-writer-login-restored", "source-connect-grant-restored", "target-writer-login-disabled"}
 	default:
 		return request
 	}
