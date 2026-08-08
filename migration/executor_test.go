@@ -214,11 +214,6 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
-func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
-	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
-		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
-=======
 func TestExecutionPlanRejectsBackfillOutsideRepository(t *testing.T) {
 	root := t.TempDir()
 	outside := writeArtifact(t, "outside.sql", "select 1;")
@@ -246,20 +241,10 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
 		SourceDatabase: "funding_source", TargetDatabase: "bolter_target", SourceWriterRole: "funding_writer", TargetWriterRole: "bolter_writer",
->>>>>>> a678e34
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-<<<<<<< HEAD
-	if len(commands) != 4 {
-		t.Fatalf("commands = %+v", commands)
-	}
-	for _, index := range []int{0, 2} {
-		command := commands[index]
-		args := strings.Join(command.Args, " ")
-		if strings.Contains(args, "\\gexec") || strings.Contains(string(command.Stdin), "DO $do$") || !strings.Contains(string(command.Stdin), "\\gexec") || command.Args[len(command.Args)-1] != "-" {
-=======
 	if len(commands) != 5 {
 		t.Fatalf("commands = %+v", commands)
 	}
@@ -268,7 +253,6 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 		args := strings.Join(command.Args, " ")
 		stdin := string(command.Stdin)
 		if strings.Contains(args, "default_transaction_read_only") || strings.Contains(stdin, "DO $do$") || !strings.Contains(stdin, "NOLOGIN") || !strings.Contains(stdin, "REVOKE CONNECT") || !strings.Contains(stdin, "pg_terminate_backend") || command.Args[len(command.Args)-1] != "-" {
->>>>>>> a678e34
 			t.Fatalf("unsafe fence command = %+v stdin=%q", command, command.Stdin)
 		}
 		if commandDigest(command, nil).InputSHA == "" {

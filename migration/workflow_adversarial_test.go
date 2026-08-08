@@ -140,18 +140,8 @@ func TestWorkflowDoesNotMutateSourceTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-<<<<<<< HEAD
 	if _, err := Apply(manifestPath, adversarialImportRequest(t), ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "frozen") {
 		t.Fatalf("source repository tamper error = %v, want frozen-identity rejection", err)
-=======
-	request := adversarialWithProof(t, manifestPath, Request{
-		Operation:    Backup,
-		ID:           "backup-001",
-		ArtifactPath: artifactPath,
-	})
-	if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "identity is not frozen") {
-		t.Fatalf("tampered source identity error = %v", err)
->>>>>>> a678e34
 	}
 	afterInfo, err := os.Stat(sentinelPath)
 	if err != nil {
@@ -175,7 +165,6 @@ func TestWorkflowDoesNotMutateSourceTree(t *testing.T) {
 func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 	t.Helper()
 	stubGitProvenance(t)
-<<<<<<< HEAD
 	path := adversarialRawManifestCopy(t, mutate)
 	if _, err := Apply(path, adversarialImportRequest(t), ApplyOptions{}); err != nil {
 		t.Fatalf("record import fixture: %v", err)
@@ -185,8 +174,6 @@ func adversarialManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 
 func adversarialRawManifestCopy(t *testing.T, mutate func(map[string]any)) string {
 	t.Helper()
-=======
->>>>>>> a678e34
 	var manifest map[string]any
 	if err := json.Unmarshal(readManifest(t), &manifest); err != nil {
 		t.Fatal(err)
@@ -202,17 +189,11 @@ func adversarialRawManifestCopy(t *testing.T, mutate func(map[string]any)) strin
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-<<<<<<< HEAD
 	return path
 }
 
 func adversarialImportRequest(t *testing.T) Request {
 	t.Helper()
-=======
-	if mutate != nil {
-		return path
-	}
->>>>>>> a678e34
 	const importCommit = "0123456789abcdef0123456789abcdef01234567"
 	proofPath := adversarialArtifact(t, "import-proof.json", `{
 		"schemaVersion": 1,
@@ -222,11 +203,7 @@ func adversarialImportRequest(t *testing.T) Request {
 		"subject": "`+importCommit+`",
 		"checks": ["source-commit-matches", "source-tree-matches", "subtree-import-matches"]
 	}`)
-<<<<<<< HEAD
 	return Request{
-=======
-	if _, err := applyExecuted(path, Request{
->>>>>>> a678e34
 		Operation: RecordImport,
 		ID:        importCommit,
 		ProofPath: proofPath,

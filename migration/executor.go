@@ -17,20 +17,12 @@ import (
 const evidenceGenerator = "boltertrader-migration-tool"
 
 type Command struct {
-<<<<<<< HEAD
-	Name  string
-	Args  []string
-	Env   []string
-	Dir   string
-	Stdin []byte
-=======
 	Name           string
 	Args           []string
 	Env            []string
 	Dir            string
 	Stdin          []byte
 	ExpectedOutput string
->>>>>>> a678e34
 }
 
 type CommandResult struct {
@@ -271,12 +263,6 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		check.Env = readOnly
 		check.ExpectedOutput = "on"
 		return []Command{
-<<<<<<< HEAD
-			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psqlInput(target, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
-			psql(target, "SHOW default_transaction_read_only"),
-=======
 			check,
 			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}, Env: readOnly},
 			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath + ".verify", "service=" + source}, Env: readOnly},
@@ -301,7 +287,6 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			sourceAfter,
 			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
 			targetAfter,
->>>>>>> a678e34
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
 		root := manifest.TargetRepo
@@ -347,16 +332,10 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
 		targetAfter.ExpectedOutput = "false|false|0"
 		return []Command{
-<<<<<<< HEAD
-			psqlInput(source, "SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \\gexec\n"),
-			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, "SHOW default_transaction_read_only"),
-=======
 			sourceBefore,
 			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
 			targetAfter,
->>>>>>> a678e34
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
