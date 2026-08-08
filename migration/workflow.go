@@ -62,6 +62,7 @@ type Event struct {
 	At           string    `json:"at"`
 	Fingerprint  string    `json:"fingerprint"`
 	ArtifactSHA  string    `json:"artifactSha256,omitempty"`
+	InputSHA     string    `json:"inputSha256,omitempty"`
 	ProofSHA     string    `json:"proofSha256,omitempty"`
 	Name         string    `json:"name,omitempty"`
 	Verifier     string    `json:"verifier,omitempty"`
@@ -209,7 +210,7 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 	if err != nil {
 		return "", "", err
 	}
-	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == RecordActivation
+	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == RecordActivation || request.Operation == Rollback
 	var proofSHA string
 	if proofRequired {
 		proofData, digest, err := readProof(request.ProofPath)
@@ -231,6 +232,10 @@ type operationProof struct {
 	MigrationID   string    `json:"migrationId"`
 	Subject       string    `json:"subject"`
 	Checks        []string  `json:"checks"`
+	GeneratedBy   string    `json:"generatedBy,omitempty"`
+	PreStateSHA   string    `json:"preStateSha256,omitempty"`
+	InputSHA      string    `json:"inputSha256,omitempty"`
+	Commands      []commandEvidence `json:"commands,omitempty"`
 }
 
 func validateTypedProof(data []byte, manifest Manifest, request Request, artifactSHA string) error {
@@ -268,7 +273,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		subject = proofStateDigest(manifest)
 		required = []string{"source-writes-disabled", "target-writes-disabled"}
 	case Backfill:
-		subject = proofStateDigest(manifest) + "/" + request.Name
+		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
 		required = []string{"authoritative-ownership-mapped", "deterministic"}
 	case Validate:
 		subject = proofStateDigest(manifest)
@@ -276,6 +281,9 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 	case RecordActivation:
 		subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		required = []string{"one-writer-target", "target-activated"}
+	case Rollback:
+		subject = proofStateDigest(manifest)
+		required = []string{"source-writes-enabled", "target-writes-disabled"}
 	}
 	if proof.Subject != subject || !sameStringSet(proof.Checks, required) {
 		return fmt.Errorf("operation proof subject or checks do not match required postconditions")
