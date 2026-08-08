@@ -410,6 +410,9 @@ func readWorkflowManifest(t *testing.T, path string) Manifest {
 
 func withProof(t *testing.T, manifestPath string, request Request) Request {
 	t.Helper()
+	if request.Operation == Backfill && request.ArtifactPath == "" {
+		request.ArtifactPath = writeArtifact(t, request.Name, "-- canonical test backfill\nselect 1;\n")
+	}
 	manifest := readWorkflowManifest(t, manifestPath)
 	if manifest.Workflow.Phase == "" {
 		manifest.Workflow.Phase = inferPhase(manifest)
@@ -440,7 +443,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Subject = proofStateDigest(manifest)
 		proof.Checks = []string{"source-writes-disabled", "target-writes-disabled"}
 	case Backfill:
-		proof.Subject = proofStateDigest(manifest) + "/" + request.Name
+		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
 		proof.Checks = []string{"authoritative-ownership-mapped", "deterministic"}
 	case Validate:
 		proof.Subject = proofStateDigest(manifest)
@@ -448,6 +451,9 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 	case RecordActivation:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		proof.Checks = []string{"one-writer-target", "target-activated"}
+	case Rollback:
+		proof.Subject = proofStateDigest(manifest)
+		proof.Checks = []string{"source-writes-enabled", "target-writes-disabled"}
 	default:
 		return request
 	}
