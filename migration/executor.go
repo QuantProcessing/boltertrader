@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,10 +17,11 @@ import (
 const evidenceGenerator = "boltertrader-migration-tool"
 
 type Command struct {
-	Name string
-	Args []string
-	Env  []string
-	Dir  string
+	Name  string
+	Args  []string
+	Env   []string
+	Dir   string
+	Stdin []byte
 }
 
 type CommandResult struct {
@@ -55,6 +57,7 @@ type ExecutionResult struct {
 type commandEvidence struct {
 	Executable string `json:"executable"`
 	ArgvSHA256 string `json:"argvSha256"`
+	InputSHA   string `json:"inputSha256,omitempty"`
 	OutputSHA  string `json:"outputSha256"`
 }
 
@@ -148,6 +151,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	psql := func(service, query string) Command {
 		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--tuples-only", "--no-align", "--command", query}}
 	}
+	psqlInput := func(service, script string) Command {
+		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", "service=" + service, "--file", "-"}, Stdin: []byte(script)}
+	}
 	switch request.Operation {
 	case Backup:
 		apply.ArtifactPath = request.ArtifactPath
@@ -163,9 +169,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{{Name: "pg_dump", Args: []string{"--data-only", "--inserts", "--column-inserts", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}}}, apply, []string{"deterministic", "source-read-only"}, "", nil
 	case Fence:
 		return []Command{
-			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$;`),
+			psqlInput(source, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
 			psql(source, "SHOW default_transaction_read_only"),
-			psql(target, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()); END $do$;`),
+			psqlInput(target, "SELECT format('ALTER DATABASE %I SET default_transaction_read_only TO on', current_database()) \\gexec\n"),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-disabled", "target-writes-disabled"}, "", nil
 	case Backfill:
@@ -192,7 +198,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
 	case Rollback:
 		return []Command{
-			psql(source, `DO $do$ BEGIN EXECUTE format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()); END $do$;`),
+			psqlInput(source, "SELECT format('ALTER DATABASE %I RESET default_transaction_read_only', current_database()) \\gexec\n"),
 			psql(source, "SHOW default_transaction_read_only"),
 			psql(target, "SHOW default_transaction_read_only"),
 		}, apply, []string{"source-writes-enabled", "target-writes-disabled"}, "", nil
@@ -243,6 +249,7 @@ func runCommand(ctx context.Context, command Command) (CommandResult, error) {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
 	cmd.Env = append(os.Environ(), command.Env...)
+	cmd.Stdin = bytes.NewReader(command.Stdin)
 	output, err := cmd.CombinedOutput()
 	if len(output) > 1<<20 {
 		output = output[:1<<20]
@@ -252,7 +259,11 @@ func runCommand(ctx context.Context, command Command) (CommandResult, error) {
 
 func commandDigest(command Command, output []byte) commandEvidence {
 	argv := append([]string{command.Name}, command.Args...)
-	return commandEvidence{Executable: command.Name, ArgvSHA256: sha256Hex([]byte(strings.Join(argv, "\x00"))), OutputSHA: sha256Hex(output)}
+	proof := commandEvidence{Executable: command.Name, ArgvSHA256: sha256Hex([]byte(strings.Join(argv, "\x00"))), OutputSHA: sha256Hex(output)}
+	if len(command.Stdin) != 0 {
+		proof.InputSHA = sha256Hex(command.Stdin)
+	}
+	return proof
 }
 
 func writeExecutionEvidence(dir string, sequence int, operation Operation, proof operationProof) (string, error) {
