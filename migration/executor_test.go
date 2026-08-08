@@ -318,7 +318,18 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 }
 
 func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *testing.T) {
-	manifestPath := preparedThroughFence(t)
+	manifestPath := copyManifest(t)
+	backup := writeArtifact(t, "backup.dump", "verified backup")
+	for _, request := range []Request{
+		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
+		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
+		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
+		{Operation: Fence},
+	} {
+		if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
+			t.Fatalf("prepare %s: %v", request.Operation, err)
+		}
+	}
 	artifactPath := filepath.Join(t.TempDir(), "final.dump")
 	evidenceDir := t.TempDir()
 	request := ExecutionRequest{
