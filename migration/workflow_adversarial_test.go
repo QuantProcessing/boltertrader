@@ -215,6 +215,35 @@ func adversarialArtifact(t *testing.T, name, content string) string {
 	return path
 }
 
+func adversarialWithProof(t *testing.T, manifestPath string, request Request) Request {
+	t.Helper()
+	artifactSHA, err := digestFile(request.ArtifactPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := operationProof{
+		SchemaVersion: 1,
+		Operation:     request.Operation,
+		Status:        "pass",
+		MigrationID:   "boltertrader-product-platform-upgrade",
+		Subject:       artifactSHA,
+	}
+	switch request.Operation {
+	case Backup:
+		proof.Checks = []string{"consistent-snapshot", "restorable-format"}
+	case Restore:
+		proof.Checks = []string{"clean-restore", "source-stack-boot"}
+	default:
+		t.Fatalf("unsupported adversarial proof operation %q for %s", request.Operation, manifestPath)
+	}
+	data, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ProofPath = adversarialArtifact(t, string(request.Operation)+"-proof.json", string(data))
+	return request
+}
+
 func adversarialReadFile(t *testing.T, path string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(path)
