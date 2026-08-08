@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -28,7 +29,7 @@ func TestExecuteBackupRunsCanonicalCommandAndGeneratesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 1 || commands[0].Name != "pg_dump" || strings.Contains(strings.Join(commands[0].Args, " "), "sh -c") {
+	if len(commands) != 2 || commands[0].Name != "pg_dump" || commands[1].Name != "pg_restore" || strings.Contains(strings.Join(commands[0].Args, " "), "sh -c") {
 		t.Fatalf("commands = %+v", commands)
 	}
 	if result.EvidencePath == "" {
@@ -77,12 +78,93 @@ func TestExecuteFailureLeavesManifestAndEvidenceUnchanged(t *testing.T) {
 	}
 }
 
+func TestExecuteReplayReturnsPriorEvidenceWithoutRunningCommands(t *testing.T) {
+	manifestPath := executorManifest(t)
+	artifactPath := filepath.Join(t.TempDir(), "backup.dump")
+	evidenceDir := t.TempDir()
+	request := ExecutionRequest{Operation: Backup, ManifestPath: manifestPath, EvidenceDir: evidenceDir, ArtifactPath: artifactPath, ID: "backup-001", SourceService: "source"}
+	first, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		if command.Name == "pg_dump" {
+			if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+				return CommandResult{}, err
+			}
+		}
+		return CommandResult{Output: []byte("ok")}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		t.Fatal("completed replay reran a command")
+		return CommandResult{}, nil
+	}})
+	if err != nil || !second.Replayed || second.EvidencePath != first.EvidencePath {
+		t.Fatalf("replay = %+v err=%v first=%+v", second, err, first)
+	}
+}
+
+func TestExecuteLockCoversExternalCommands(t *testing.T) {
+	manifestPath := executorManifest(t)
+	artifactPath := filepath.Join(t.TempDir(), "backup.dump")
+	request := ExecutionRequest{Operation: Backup, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), ArtifactPath: artifactPath, ID: "backup-001", SourceService: "source"}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		var first atomic.Bool
+		_, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+			if command.Name == "pg_dump" && first.CompareAndSwap(false, true) {
+				close(started)
+				<-release
+				if err := os.WriteFile(artifactPath, []byte("backup"), 0o600); err != nil {
+					return CommandResult{}, err
+				}
+			}
+			return CommandResult{Output: []byte("ok")}, nil
+		}})
+		done <- err
+	}()
+	<-started
+	var duplicateCalls int
+	_, duplicateErr := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		duplicateCalls++
+		return CommandResult{}, nil
+	}})
+	close(release)
+	if firstErr := <-done; firstErr != nil {
+		t.Fatal(firstErr)
+	}
+	if duplicateErr == nil || !strings.Contains(duplicateErr.Error(), "migration lock is held") || duplicateCalls != 0 {
+		t.Fatalf("duplicate err=%v calls=%d", duplicateErr, duplicateCalls)
+	}
+}
+
+func TestApplyRejectsCallerProofForExecutableOperations(t *testing.T) {
+	for _, operation := range []Operation{Backup, Fence} {
+		t.Run(string(operation), func(t *testing.T) {
+			manifestPath := copyManifest(t)
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Apply(manifestPath, Request{Operation: operation, ProofPath: "fabricated.json"}, ApplyOptions{})
+			if err == nil || !strings.Contains(err.Error(), "requires canonical execution") {
+				t.Fatalf("error = %v", err)
+			}
+			after, readErr := os.ReadFile(manifestPath)
+			if readErr != nil || string(after) != string(before) {
+				t.Fatalf("direct Apply changed manifest: err=%v", readErr)
+			}
+		})
+	}
+}
+
 func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")
+	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	result, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		if command.Name != "psql" {
 			t.Fatalf("command = %+v", command)
@@ -102,7 +184,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 	if _, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, nil
 	}}); err == nil || !strings.Contains(err.Error(), "replay conflict") {
@@ -112,14 +194,14 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 
 func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
-	scriptPath := writeArtifact(t, "001-platform.sql", "select 1;")
+	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	before, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target",
+		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
 	}})
@@ -132,20 +214,47 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 }
 
+func TestExecutionPlanRejectsBackfillOutsideRepository(t *testing.T) {
+	root := t.TempDir()
+	outside := writeArtifact(t, "outside.sql", "select 1;")
+	_, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{Operation: Backfill, EvidenceDir: t.TempDir(), BackfillPath: outside, TargetService: "target", TargetDatabase: "target_db", repositoryRoot: root})
+	if err == nil || !strings.Contains(err.Error(), "outside the frozen repository") {
+		t.Fatalf("outside backfill error = %v", err)
+	}
+}
+
+func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	directory := filepath.Join(root, "backend", "migrations")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "001-platform.sql")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "init", "-b", "master")
+	runGit(t, root, "add", filepath.ToSlash(filepath.Join("backend", "migrations", "001-platform.sql")))
+	return root, path
+}
+
 func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
+		SourceDatabase: "funding_source", TargetDatabase: "bolter_target", SourceWriterRole: "funding_writer", TargetWriterRole: "bolter_writer",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 4 {
+	if len(commands) != 5 {
 		t.Fatalf("commands = %+v", commands)
 	}
-	for _, index := range []int{0, 2} {
+	for _, index := range []int{1, 3} {
 		command := commands[index]
 		args := strings.Join(command.Args, " ")
-		if strings.Contains(args, "\\gexec") || strings.Contains(string(command.Stdin), "DO $do$") || !strings.Contains(string(command.Stdin), "\\gexec") || command.Args[len(command.Args)-1] != "-" {
+		stdin := string(command.Stdin)
+		if strings.Contains(args, "default_transaction_read_only") || strings.Contains(stdin, "DO $do$") || !strings.Contains(stdin, "NOLOGIN") || !strings.Contains(stdin, "REVOKE CONNECT") || !strings.Contains(stdin, "pg_terminate_backend") || command.Args[len(command.Args)-1] != "-" {
 			t.Fatalf("unsafe fence command = %+v stdin=%q", command, command.Stdin)
 		}
 		if commandDigest(command, nil).InputSHA == "" {

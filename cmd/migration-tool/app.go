@@ -55,6 +55,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	backfillScript := flags.String("backfill-script", "", "repository-owned backfill SQL path")
 	sourceService := flags.String("source-service", "", "non-secret libpq source service name")
 	targetService := flags.String("target-service", "", "non-secret libpq target service name")
+	maintenanceService := flags.String("maintenance-service", "", "non-secret libpq target maintenance service name")
+	sourceDatabase := flags.String("source-database", "", "non-secret source database name")
+	targetDatabase := flags.String("target-database", "", "non-secret target database name")
+	maintenanceDatabase := flags.String("maintenance-database", "", "non-secret maintenance database name")
+	sourceWriterRole := flags.String("source-writer-role", "", "non-secret source canonical writer role")
+	targetWriterRole := flags.String("target-writer-role", "", "non-secret target canonical writer role")
 	verifier := flags.String("verifier", "", "non-secret verifier identity")
 	reason := flags.String("reason", "", "non-secret rollback reason")
 	activationAt := flags.String("activation-at", "", "externally observed activation timestamp")
@@ -66,7 +72,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("--manifest is required and positional arguments are not accepted")
 	}
 	var result migration.Result
-	executable := operation == migration.Backup || operation == migration.Restore || operation == migration.FinalDelta || operation == migration.Fence || operation == migration.Backfill || operation == migration.Validate || operation == migration.Rollback
+	executable := operation == migration.RecordImport || operation == migration.Backup || operation == migration.Restore || operation == migration.FinalDelta || operation == migration.Fence || operation == migration.Backfill || operation == migration.Validate || operation == migration.Rollback
 	if executable {
 		if strings.TrimSpace(*proof) != "" {
 			return fmt.Errorf("--proof is not accepted for executable operations; evidence is generated after command success")
@@ -74,7 +80,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		executed, executeErr := executeMigration(context.Background(), migration.ExecutionRequest{
 			Operation: operation, ManifestPath: *manifestPath, EvidenceDir: *evidenceDir,
 			ArtifactPath: *artifact, BackfillPath: *backfillScript, ID: *id,
-			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService,
+			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, MaintenanceService: *maintenanceService,
+			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase,
+			MaintenanceDatabase: *maintenanceDatabase,
+			SourceWriterRole:    *sourceWriterRole, TargetWriterRole: *targetWriterRole,
 		}, migration.ExecuteOptions{})
 		if executeErr != nil {
 			return executeErr
