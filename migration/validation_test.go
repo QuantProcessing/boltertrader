@@ -4,12 +4,36 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBaselineAcceptsFrozenPreCutoverManifest(t *testing.T) {
 	data := readManifest(t)
 	if err := ValidateBaseline(data); err != nil {
 		t.Fatalf("validate baseline: %v", err)
+	}
+}
+
+func TestManifestRejectsUnknownFields(t *testing.T) {
+	data := strings.TrimSpace(string(readManifest(t)))
+	data = strings.TrimSuffix(data, "}") + `,"unexpected":"ambiguous"}`
+	if err := ValidateBaseline([]byte(data)); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("unknown-field error = %v", err)
+	}
+}
+
+func TestManifestRejectsDuplicateFields(t *testing.T) {
+	data := strings.Replace(string(readManifest(t)), `"schemaVersion": 1,`, `"schemaVersion": 1, "schemaVersion": 1,`, 1)
+	if err := ValidateBaseline([]byte(data)); err == nil || !strings.Contains(err.Error(), "duplicate field") {
+		t.Fatalf("duplicate-field error = %v", err)
+	}
+}
+
+func TestTimeOrderRequiresStrictlyIncreasingEvidence(t *testing.T) {
+	value := time.Date(2026, 8, 9, 1, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	problems := validateTimeOrder([]timeField{{"restore", &value}, {"delta", &value}})
+	if len(problems) != 1 || !strings.Contains(problems[0], "strictly after") {
+		t.Fatalf("equal timestamp problems = %v", problems)
 	}
 }
 

@@ -1,43 +1,10 @@
 package migration
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
-
-type migrationManifest struct {
-	SchemaVersion      int      `json:"schemaVersion"`
-	MigrationID        string   `json:"migrationId"`
-	SourceCommit       string   `json:"sourceCommit"`
-	SourceTreeHash     string   `json:"sourceTreeHash"`
-	SourceQuiesceAt    string   `json:"sourceQuiesceAt"`
-	TargetCommit       string   `json:"targetCommit"`
-	TargetTreeHash     string   `json:"targetTreeHash"`
-	ImportCommit       *string  `json:"importCommit"`
-	BackfillScripts    []string `json:"backfillScripts"`
-	BackupID           *string  `json:"backupId"`
-	BackupSHA256       *string  `json:"backupSha256"`
-	RestoreVerifiedAt  *string  `json:"restoreVerifiedAt"`
-	FinalDeltaAt       *string  `json:"finalDeltaAt"`
-	FinalDeltaSHA256   *string  `json:"finalDeltaSha256"`
-	OneWriterFenceAt   *string  `json:"oneWriterFenceAt"`
-	ValidationAt       *string  `json:"validationAt"`
-	TargetActivationAt *string  `json:"targetActivationAt"`
-	CutoverAt          *string  `json:"cutoverAt"`
-	Quiescence         struct {
-		Status         string `json:"status"`
-		WorktreeClean  bool   `json:"worktreeClean"`
-		FrozenCommit   string `json:"frozenCommit"`
-		FrozenTreeHash string `json:"frozenTreeHash"`
-	} `json:"quiescence"`
-	OneWriter struct {
-		Owner                        string `json:"owner"`
-		FenceRaised                  bool   `json:"fenceRaised"`
-		TargetCanonicalWritesEnabled bool   `json:"targetCanonicalWritesEnabled"`
-	} `json:"oneWriter"`
-}
 
 func ValidateBaseline(data []byte) error {
 	manifest, err := decodeManifest(data)
@@ -66,6 +33,10 @@ func ValidateRetirement(data []byte) error {
 	if err != nil {
 		return err
 	}
+	return validateRetirementManifest(manifest)
+}
+
+func validateRetirementManifest(manifest Manifest) error {
 	problems := collectBaselineProblems(manifest)
 	problems = append(problems, missingActivationEvidence(manifest)...)
 	problems = append(problems, validateActivationOrder(manifest)...)
@@ -84,22 +55,18 @@ func ValidateRetirement(data []byte) error {
 	return nil
 }
 
-func decodeManifest(data []byte) (migrationManifest, error) {
-	var manifest migrationManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return migrationManifest{}, fmt.Errorf("decode migration manifest: %w", err)
-	}
-	return manifest, nil
+func decodeManifest(data []byte) (Manifest, error) {
+	return DecodeManifest(data)
 }
 
-func validateBaseline(manifest migrationManifest) error {
+func validateBaseline(manifest Manifest) error {
 	if problems := collectBaselineProblems(manifest); len(problems) > 0 {
 		return fmt.Errorf("baseline rejected: %s", strings.Join(problems, "; "))
 	}
 	return nil
 }
 
-func collectBaselineProblems(manifest migrationManifest) []string {
+func collectBaselineProblems(manifest Manifest) []string {
 	var problems []string
 	if manifest.SchemaVersion != 1 || manifest.MigrationID == "" {
 		problems = append(problems, "manifest identity is not frozen")
@@ -112,14 +79,15 @@ func collectBaselineProblems(manifest migrationManifest) []string {
 	}
 
 	preCutover := manifest.OneWriter.Owner == "funding-trader" && !manifest.OneWriter.FenceRaised && !manifest.OneWriter.TargetCanonicalWritesEnabled
+	safeFence := manifest.OneWriter.Owner == "BolterTrader" && manifest.OneWriter.FenceRaised && !manifest.OneWriter.TargetCanonicalWritesEnabled
 	postFence := manifest.OneWriter.Owner == "BolterTrader" && manifest.OneWriter.FenceRaised && manifest.OneWriter.TargetCanonicalWritesEnabled
-	if !preCutover && !postFence {
+	if !preCutover && !safeFence && !postFence {
 		problems = append(problems, "oneWriter state is inconsistent or permits split-brain ownership")
 	}
 	return problems
 }
 
-func missingActivationEvidence(manifest migrationManifest) []string {
+func missingActivationEvidence(manifest Manifest) []string {
 	var problems []string
 	for name, value := range map[string]*string{
 		"importCommit":      manifest.ImportCommit,
@@ -144,7 +112,7 @@ func missingActivationEvidence(manifest migrationManifest) []string {
 	return problems
 }
 
-func validateActivationOrder(manifest migrationManifest) []string {
+func validateActivationOrder(manifest Manifest) []string {
 	return validateTimeOrder([]timeField{
 		{"sourceQuiesceAt", &manifest.SourceQuiesceAt},
 		{"restoreVerifiedAt", manifest.RestoreVerifiedAt},
@@ -154,7 +122,7 @@ func validateActivationOrder(manifest migrationManifest) []string {
 	})
 }
 
-func validateRetirementOrder(manifest migrationManifest) []string {
+func validateRetirementOrder(manifest Manifest) []string {
 	return validateTimeOrder([]timeField{
 		{"validationAt", manifest.ValidationAt},
 		{"targetActivationAt", manifest.TargetActivationAt},
@@ -180,8 +148,8 @@ func validateTimeOrder(fields []timeField) []string {
 			problems = append(problems, field.name+" is not RFC3339")
 			continue
 		}
-		if !previous.IsZero() && parsed.Before(previous) {
-			problems = append(problems, field.name+" precedes "+previousName)
+		if !previous.IsZero() && !parsed.After(previous) {
+			problems = append(problems, field.name+" must be strictly after "+previousName)
 		}
 		previous = parsed
 		previousName = field.name
