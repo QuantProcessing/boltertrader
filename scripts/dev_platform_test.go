@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	gatewayconfig "github.com/QuantProcessing/boltertrader/gateway/config"
 )
 
 func TestDevPlatformLifecycleIsOrderedAndDrainFirst(t *testing.T) {
@@ -281,6 +283,160 @@ func TestDevPlatformContractAndExamples(t *testing.T) {
 			if strings.Contains(lower, forbidden) {
 				t.Errorf("%s contains inline secret-shaped assignment %q", name, forbidden)
 			}
+		}
+	}
+}
+
+func TestCanonicalDevPlatformCommandsAreCompleteAndNonSecret(t *testing.T) {
+	repo := repoRoot(t)
+	templatePath := filepath.Join(repo, "scripts", "dev-platform.env.example")
+	payload, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := string(payload)
+	for _, name := range []string{
+		"BT_DEV_POSTGRES_CMD", "BT_DEV_GATEWAY_CMD", "BT_DEV_PLATFORM_CMD",
+		"BT_DEV_FUNDING_WORKER_CMD", "BT_DEV_WEB_CMD", "BT_DEV_FUNDING_WORKER_DRAIN_CMD",
+	} {
+		if !strings.Contains(template, "export "+name+"=") {
+			t.Errorf("canonical template is missing %s", name)
+		}
+	}
+	lower := strings.ToLower(template)
+	for _, forbidden := range []string{"docker compose", "docker run", "docker build", "password=", "secret=", "token=", "private_key=", "bolter_enable_", "live_private_writes"} {
+		if strings.Contains(lower, forbidden) {
+			t.Errorf("canonical template contains forbidden value %q", forbidden)
+		}
+	}
+
+	launcher, err := os.ReadFile(filepath.Join(repo, "scripts", "dev-platform-service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entrypoint := range []string{"./cmd/exchange-gateway", "cd backend", "./cmd/platform-api", "./cmd/funding-worker", "web/server.mjs"} {
+		if !strings.Contains(string(launcher), entrypoint) {
+			t.Errorf("service launcher is missing real entrypoint %q", entrypoint)
+		}
+	}
+
+	gatewayPayload, err := os.ReadFile(filepath.Join(repo, "gateway", "dev-platform.test.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayFile, err := gatewayconfig.LoadYAML(gatewayPayload)
+	if err != nil {
+		t.Fatalf("canonical Gateway config is invalid: %v", err)
+	}
+	if gatewayFile.Server.Mode != "test" || gatewayFile.Server.InternalListen != "127.0.0.1:18082" || len(gatewayFile.Accounts) != 0 {
+		t.Fatalf("canonical Gateway config is not a write-free Test config: %+v", gatewayFile)
+	}
+}
+
+func TestProductPlatformMakeGatesAreExplicitAndPhony(t *testing.T) {
+	repo := repoRoot(t)
+	payload, err := os.ReadFile(filepath.Join(repo, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makefile := string(payload)
+	for _, required := range []string{
+		"test-browser test-real",
+		"test-browser:\n\tnpm --prefix web ci\n\tnpm --prefix web run build\n\tnpm --prefix web test\n\tnpm --prefix web run test:e2e",
+		"test-real:\n\t./scripts/test-real-platform",
+	} {
+		if !strings.Contains(makefile, required) {
+			t.Errorf("Makefile is missing gate contract %q", required)
+		}
+	}
+}
+
+func TestRealPlatformGateFailsClosedBeforeReadiness(t *testing.T) {
+	repo := repoRoot(t)
+	script := filepath.Join(repo, "scripts", "test-real-platform")
+	for name, env := range map[string][]string{
+		"missing attestation": append(os.Environ(), "FT_MODE=test"),
+		"wrong mode":          append(os.Environ(), "BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=live"),
+		"venue writes":        append(os.Environ(), "BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command(script)
+			cmd.Dir = repo
+			cmd.Env = env
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("gate unexpectedly passed: %s", output)
+			}
+		})
+	}
+}
+
+func TestCanonicalDrainUsesWorkerFenceAndAuthenticatedRequest(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	credentialDir := filepath.Join(runtimeDir, "credentials", "test")
+	ownershipDir := filepath.Join(runtimeDir, "state", "test", "ownership")
+	binDir := filepath.Join(runtimeDir, "bin")
+	for _, dir := range []string{credentialDir, ownershipDir, binDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(credentialDir, "funding-worker.token"), []byte("synthetic-drain-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ownershipDir, "funding-worker.instance"), []byte("instance-drain\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	requests := filepath.Join(runtimeDir, "requests")
+	writeExecutable(t, filepath.Join(binDir, "curl"), `#!/bin/sh
+set -eu
+config=$(cat)
+printf 'args=%s\nconfig=%s\n' "$*" "$config" >>"$BT_TEST_REQUESTS"
+case "$*" in
+  *'/workers/registrations'*) printf '{"data":{"workerGeneration":9}}\n' ;;
+esac
+`)
+	env := append(launcherEnv(runtimeDir),
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"BT_TEST_REQUESTS="+requests,
+	)
+	cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "drain-funding-worker")
+	cmd.Dir, cmd.Env = repo, env
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("drain command failed: %v\n%s", err, output)
+	}
+	payload, err := os.ReadFile(requests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	for _, required := range []string{
+		"/workers/registrations", "/workers/funding-default-test/drain",
+		"Idempotency-Key: supervisor-drain:funding-default-test:instance-drain:9",
+		"X-Worker-Generation: 9", `oauth2-bearer = "synthetic-drain-token"`,
+	} {
+		if !strings.Contains(text, required) {
+			t.Errorf("drain request is missing %q:\n%s", required, text)
+		}
+	}
+}
+
+func TestDockerFreeOperatorGuideIsLinkedAndPreservesSafetyBoundary(t *testing.T) {
+	repo := repoRoot(t)
+	index, err := os.ReadFile(filepath.Join(repo, "docs", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), "guides/docker-free-local-platform.md") {
+		t.Fatal("documentation index does not link the Docker-free operator guide")
+	}
+	guide, err := os.ReadFile(filepath.Join(repo, "docs", "guides", "docker-free-local-platform.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"dev-platform.env.example", "make test-browser", "make test-real", "does not activate migration", "no venue accounts"} {
+		if !strings.Contains(string(guide), required) {
+			t.Errorf("operator guide is missing %q", required)
 		}
 	}
 }
