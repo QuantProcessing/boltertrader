@@ -63,6 +63,11 @@ type commandEvidence struct {
 }
 
 func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptions) (ExecutionResult, error) {
+	lock, err := AcquireLock(request.ManifestPath)
+	if err != nil {
+		return ExecutionResult{}, err
+	}
+	defer lock.Release()
 	manifestData, err := os.ReadFile(request.ManifestPath)
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("read migration manifest: %w", err)
@@ -136,7 +141,7 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	applyRequest.ProofPath = evidencePath
-	result, err := applyExecuted(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now})
+	result, err := applyLocked(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now, execution: &executionCapability{}})
 	if err != nil {
 		_ = os.Remove(evidencePath)
 		return ExecutionResult{}, err
