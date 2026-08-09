@@ -100,12 +100,16 @@ func TestGeneratedRequestIDIsStableAcrossAccountAuditAndResponse(t *testing.T) {
 	}
 	audit := &correlationAudit{}
 	accountService, err := platformaccounts.New(platformaccounts.Options{
-		Store: platformaccounts.NewMemoryStore(), Secrets: routeSecretWriter{ref: "opaque-ref"}, Audit: audit,
+		Store: platformaccounts.NewMemoryStore(), Secrets: &routeSecretWriter{ref: "opaque-ref"}, Audit: audit,
 		ID: func() string { return "acct-correlation" },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := accountService.Create(context.Background(), platformaccounts.CreateRequest{Venue: "binance", VenueEnvironment: platformaccounts.EnvironmentDemo, DisplayName: "Seed", ProductIDs: []string{"manual"}, SecretMaterial: []byte(`{"apiKey":"seed"}`)}, "setup"); err != nil {
+		t.Fatal(err)
+	}
+	audit.records = nil
 	handler, err := New(Options{
 		Sessions: sessions, Mode: "test", ContractVersion: ContractVersion,
 		Accounts: &AccountRoutesOptions{
@@ -118,14 +122,14 @@ func TestGeneratedRequestIDIsStableAcrossAccountAuditAndResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"venue":"binance","venueEnvironment":"testnet","displayName":"Correlation","productIds":["manual"],"secretMaterial":{"apiKey":"canary"}}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/acct-correlation", strings.NewReader(`{"displayName":"Correlation","productIds":["manual"]}`))
 	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: login.Session.Token})
 	request.Header.Set("X-CSRF-Token", login.Session.CSRFToken)
-	request.Header.Set("Idempotency-Key", "create-correlation")
+	request.Header.Set("If-Match", AccountETag(1))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("update=%d body=%s", response.Code, response.Body.String())
 	}
 	var body struct {
 		Meta struct {

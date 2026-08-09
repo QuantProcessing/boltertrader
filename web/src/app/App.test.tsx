@@ -122,8 +122,8 @@ describe("App", () => {
     mocks.snapshot.mockResolvedValue({
       ...emptySnapshot,
       accounts: [
-        { accountId: "long", displayName: "Long", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productIds: ["funding"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] },
-        { accountId: "short", displayName: "Short", venue: "bybit", mode: "test", nativeEnvironment: "demo", status: "active", productIds: ["funding"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] },
+        { accountId: "long", displayName: "Long", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["funding"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] },
+        { accountId: "short", displayName: "Short", venue: "bybit", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["funding"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] },
       ],
       opportunities: [{
         opportunityId: "opp-1",
@@ -214,7 +214,7 @@ describe("App", () => {
   });
 
   it("updates account metadata through the revision-fenced Platform route", async () => {
-    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productIds: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" }] };
+    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" }] };
     mocks.get.mockResolvedValue({ data: session });
     mocks.patch.mockResolvedValue({ data: { account } });
     mocks.snapshot.mockResolvedValue({ ...emptySnapshot, accounts: [account], venues: [{ venue: "binance", environment: "demo", nativeEnvironment: "demo", ready: true, products: ["manual"], credentialSchema: { schemaVersion: 1, authKind: "api_key_secret", fields: [] }, routeProfiles: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", label: "Perp / USDT" }] }], runtimes: { "account-1": [runtime("account-1")] } });
@@ -234,7 +234,7 @@ describe("App", () => {
   });
 
   it("removes an account only after confirmation through the revision-fenced Platform route", async () => {
-    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "disabled", productIds: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [] };
+    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "disabled", productPolicy: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [] };
     mocks.get.mockResolvedValue({ data: session });
     mocks.delete.mockResolvedValue({ data: { account } });
     mocks.snapshot.mockResolvedValue({ ...emptySnapshot, accounts: [account], runtimes: { "account-1": [{ ...runtime("account-1"), readiness: { ready: false, reason: "runtime stopped" }, writeReadiness: { ready: false, reason: "runtime stopped" } }] } });
@@ -252,7 +252,7 @@ describe("App", () => {
   });
 
   it("propagates redacted account failures into the affected inline panel", async () => {
-    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productIds: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [] };
+    const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [] };
     mocks.get.mockResolvedValue({ data: session });
     mocks.post.mockRejectedValue(Object.assign(new Error("apiSecret=credential-canary"), { code: "ACCOUNT_VALIDATION_FAILED" }));
     mocks.snapshot.mockResolvedValue({ ...emptySnapshot, accounts: [account], runtimes: { "account-1": [runtime("account-1")] } });

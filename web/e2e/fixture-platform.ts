@@ -56,8 +56,8 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
   };
   const desiredRoute = (venue: string) => ({ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: `${venue}.perp.usdt.${environment}.v1`, requestedState: "active" });
   const accounts = [
-    { accountId: "binance-primary", venue: "binance", mode, nativeEnvironment: environment, displayName: "Binance Primary", productIds: ["funding", "manual"], routes: [desiredRoute("binance")], status: "active", desiredStateRevision: 3, runtimeGeneration: 2, credentialVersion: 1 },
-    { accountId: "bybit-hedge", venue: "bybit", mode, nativeEnvironment: environment, displayName: "Bybit Hedge", productIds: ["funding", "manual"], routes: [desiredRoute("bybit")], status: "active", desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1 },
+    { accountId: "binance-primary", venue: "binance", mode, nativeEnvironment: environment, displayName: "Binance Primary", productPolicy: ["funding", "manual"], routes: [desiredRoute("binance")], status: "active", desiredStateRevision: 3, runtimeGeneration: 2, credentialVersion: 1 },
+    { accountId: "bybit-hedge", venue: "bybit", mode, nativeEnvironment: environment, displayName: "Bybit Hedge", productPolicy: ["funding", "manual"], routes: [desiredRoute("bybit")], status: "active", desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1 },
   ];
   const positions = [
     { lineageId: "funding-lineage", productId: "funding", mode, accountId: "binance-primary", instrumentId: "BTC-USDT-PERP", settlementCurrency: "USDT", quantity: "0.001", averageEntryPrice: "60000", markPrice: "60125", realizedPnl: "1.25", unrealizedPnl: "0.125", updatedAt: now },

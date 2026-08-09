@@ -18,7 +18,7 @@ export interface Account {
   mode: Mode;
   nativeEnvironment: NativeEnvironment;
   displayName: string;
-  productIds: ProductPolicy[];
+  productPolicy: ProductPolicy[];
   status: AccountState;
   desiredStateRevision: number;
   runtimeGeneration: number;

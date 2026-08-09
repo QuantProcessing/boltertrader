@@ -44,12 +44,10 @@ type accountRoutes struct{ options AccountRoutesOptions }
 
 type createAccountRequest struct {
 	Venue            string                          `json:"venue"`
-	VenueEnvironment platformaccounts.Environment    `json:"venueEnvironment"`
 	DisplayName      string                          `json:"displayName"`
-	ProductIDs       []string                        `json:"productIds"`
+	ProductPolicy    []string                        `json:"productPolicy"`
 	Routes           []platformaccounts.AccountRoute `json:"routes"`
 	CredentialBundle json.RawMessage                 `json:"credentialBundle"`
-	SecretMaterial   json.RawMessage                 `json:"secretMaterial"`
 }
 
 type updateAccountRequest struct {
@@ -59,7 +57,6 @@ type updateAccountRequest struct {
 
 type rotateAccountRequest struct {
 	CredentialBundle json.RawMessage `json:"credentialBundle"`
-	SecretMaterial   json.RawMessage `json:"secretMaterial"`
 }
 
 func (routes *accountRoutes) list(w http.ResponseWriter, r *http.Request) {
@@ -104,9 +101,8 @@ func (routes *accountRoutes) create(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, Routes: request.Routes, CredentialBundle: request.CredentialBundle, SecretMaterial: request.SecretMaterial}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, DisplayName: request.DisplayName, ProductIDs: request.ProductPolicy, Routes: request.Routes, CredentialBundle: request.CredentialBundle}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
 	clear(request.CredentialBundle)
-	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
 		return
@@ -171,13 +167,8 @@ func (routes *accountRoutes) rotate(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	bundle := request.CredentialBundle
-	if len(bundle) == 0 {
-		bundle = request.SecretMaterial
-	}
-	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, bundle, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, request.CredentialBundle, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
 	clear(request.CredentialBundle)
-	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
 		return
@@ -335,8 +326,14 @@ func (routes *accountRoutes) failure(w http.ResponseWriter, r *http.Request, err
 	}
 }
 
+const accountMutationBodyLimit = 1 << 20
+
 func decodeStrict(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	body, err := readAccountMutationBody(r)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -348,7 +345,7 @@ func decodeStrict(r *http.Request, target any) error {
 }
 
 func decodeEmpty(r *http.Request) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := readAccountMutationBody(r)
 	if err != nil {
 		return err
 	}
@@ -361,6 +358,77 @@ func decodeEmpty(r *http.Request) error {
 	}
 	if len(value) != 0 {
 		return errors.New("request body must be empty")
+	}
+	return nil
+}
+
+func readAccountMutationBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, accountMutationBodyLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > accountMutationBodyLimit {
+		return nil, errors.New("request body exceeds limit")
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return body, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := scanUniqueJSONObjectKeys(decoder); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("request body must contain one JSON value")
+	}
+	return body, nil
+}
+
+func scanUniqueJSONObjectKeys(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("request body contains invalid object key")
+			}
+			if _, exists := seen[key]; exists {
+				return fmt.Errorf("request body contains duplicate key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := scanUniqueJSONObjectKeys(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("request body contains invalid object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanUniqueJSONObjectKeys(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("request body contains invalid array")
+		}
+	default:
+		return errors.New("request body contains invalid JSON delimiter")
 	}
 	return nil
 }

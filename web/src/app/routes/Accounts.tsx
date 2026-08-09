@@ -26,7 +26,7 @@ type RouteDiagnostic = {
   route?: RouteRuntimeView;
 };
 
-const accountProducts = (account: Account) => account.productIds;
+const accountProducts = (account: Account) => account.productPolicy;
 const accountEnvironment = (account: Account) => account.nativeEnvironment;
 const displayFinding = (value: unknown, fallback?: string) => safeFinding(value, fallback).replaceAll("_", " ");
 const supportedEnvironments = new Set(["demo", "testnet", "live"]);
@@ -113,8 +113,8 @@ export function AccountsRoute(props: AccountsProps) {
     if (!selectedVenue || modeConflict) return;
     const routes: AccountRoute[] = profiles.filter((profile) => selectedRoutes.includes(profile.routeId)).map(({ label: _label, ...profile }) => ({ ...profile, requestedState: "active" }));
     try {
-      const productIds = (["funding", "manual"] as const).filter((product) => products.includes(product));
-      await props.onCreate({ venue: selectedVenue.venue, displayName: displayName.trim(), productIds, routes, credentialBundle: credentialBundle(selectedVenue, credentials) });
+      const productPolicy = (["funding", "manual"] as const).filter((product) => products.includes(product));
+      await props.onCreate({ venue: selectedVenue.venue, displayName: displayName.trim(), productPolicy, routes, credentialBundle: credentialBundle(selectedVenue, credentials) });
       setDisplayName("");
     } catch (error) {
       setFormError(displayFinding(error instanceof Error ? error.message : error, "Account creation failed."));

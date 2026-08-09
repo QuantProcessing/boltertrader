@@ -53,7 +53,7 @@ const account: Account = {
   mode: "test",
   nativeEnvironment: "demo",
   status: "active",
-  productIds: ["manual"],
+  productPolicy: ["manual"],
   desiredStateRevision: 3,
   runtimeGeneration: 2,
   credentialVersion: 1,
@@ -118,7 +118,7 @@ function renderAccounts(overrides: Partial<React.ComponentProps<typeof AccountsR
 
 describe("AccountsRoute", () => {
   it("consumes serialized backend account, runtime, and catalog projections", () => {
-    const account = JSON.parse(`{"accountId":"serialized","venue":"binance","mode":"test","nativeEnvironment":"demo","displayName":"Serialized account","productIds":["manual"],"routes":[],"status":"active","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}`) as Account;
+    const account = JSON.parse(`{"accountId":"serialized","venue":"binance","mode":"test","nativeEnvironment":"demo","displayName":"Serialized account","productPolicy":["manual"],"routes":[],"status":"active","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}`) as Account;
     const venue = JSON.parse(`{"venue":"binance","environment":"demo","nativeEnvironment":"demo","ready":true,"products":["funding","manual"],"credentialSchema":{"schemaVersion":1,"authKind":"api_key_secret","fields":[{"key":"apiKey","label":"API key"},{"key":"apiSecret","label":"API secret"}]},"routeProfiles":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","label":"Perp / USDT"}]}`) as Venue;
     const runtime = JSON.parse(`{"accountId":"serialized","active":{"desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1,"requestedState":"active","routes":[]},"retiring":[],"desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1,"runtimeVersion":1,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":1,"lastAppliedRuntimeGeneration":1,"blockedReason":null,"capabilities":[],"observedAt":"2026-08-05T00:00:00Z"}`) as RuntimeView;
 
@@ -177,7 +177,7 @@ describe("AccountsRoute", () => {
     await waitFor(() => expect(props.onCreate).toHaveBeenCalledWith({
       venue: "binance",
       displayName: "Binance Demo",
-      productIds: ["funding", "manual"],
+      productPolicy: ["funding", "manual"],
       routes: [
         { routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: "binance.spot.usdt.demo.v1", requestedState: "active" },
         { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" },

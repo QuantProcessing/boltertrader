@@ -491,7 +491,7 @@ func (appSecretProvider) Delete(context.Context, secretstore.Scope, secretstore.
 
 func createManualAccount(t *testing.T, app *App, cookie *http.Cookie, csrf string) string {
 	t.Helper()
-	response := appRequest(t, app, cookie, csrf, http.MethodPost, "/api/v1/accounts", `{"venue":"binance","venueEnvironment":"demo","displayName":"Manual","productIds":["manual"],"secretMaterial":{"apiKey":"test-only"}}`, "manual-account")
+	response := appRequest(t, app, cookie, csrf, http.MethodPost, "/api/v1/accounts", `{"venue":"binance","displayName":"Manual","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"test-only","apiSecret":"test-secret-only"}}}`, "manual-account")
 	var body struct {
 		Data struct {
 			Account struct {

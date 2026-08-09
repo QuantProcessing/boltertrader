@@ -85,7 +85,7 @@ test("authenticated desktop operator can inspect and act across both products", 
   expect(fundingPreviewIndex).toBeLessThan(Math.min(...openReservationIndexes));
   expect(Math.max(...openReservationIndexes)).toBeLessThan(fundingOpenIndex);
   expect(accountCreates).toHaveLength(2);
-  expect(accountCreates[0]?.body).toMatchObject({ venue: "binance", productIds: ["manual"], routes: [{ routeId: "spot-usdt", requestedState: "active" }, { routeId: "perp-usdt", requestedState: "active" }], credentialBundle: { schemaVersion: 1, venue: "binance", authKind: "api_key_secret", secrets: { apiKey: "credential-canary", apiSecret: "must-disappear" } } });
+  expect(accountCreates[0]?.body).toMatchObject({ venue: "binance", productPolicy: ["manual"], routes: [{ routeId: "spot-usdt", requestedState: "active" }, { routeId: "perp-usdt", requestedState: "active" }], credentialBundle: { schemaVersion: 1, venue: "binance", authKind: "api_key_secret", secrets: { apiKey: "credential-canary", apiSecret: "must-disappear" } } });
   expect(accountCreates[1]?.body).toMatchObject({ venue: "binance", credentialBundle: { secrets: { apiKey: "second-browser-key", apiSecret: "second-browser-secret" } } });
 });
 

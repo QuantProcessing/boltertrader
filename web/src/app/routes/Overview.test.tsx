@@ -8,7 +8,7 @@ describe("OverviewRoute", () => {
     render(<OverviewRoute
       mode="test"
       readiness={{ ready: false, components: { gateway: { ready: false, reason: "PRIVATE_STREAM_DEGRADED" } } }}
-      accounts={[{ accountId: "a1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productIds: ["manual"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] }]}
+      accounts={[{ accountId: "a1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["manual"], desiredStateRevision: 1, runtimeGeneration: 1, credentialVersion: 1, routes: [] }]}
       positions={[{ lineageId: "l1", productId: "manual", accountId: "a1", instrumentId: "BTCUSDT", quantity: "1", realizedPnl: "1.2300", unrealizedPnl: "4.5600", settlementCurrency: "USDT" }]}
       commands={[{ commandId: "c1", productId: "manual", state: "uncertain" }]}
       fills={[]}

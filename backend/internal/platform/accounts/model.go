@@ -87,11 +87,10 @@ type Account struct {
 type PublicAccount struct {
 	ID                   string           `json:"accountId"`
 	Venue                string           `json:"venue"`
-	VenueEnvironment     Environment      `json:"venueEnvironment"`
 	Mode                 secretstore.Mode `json:"mode"`
 	NativeEnvironment    Environment      `json:"nativeEnvironment"`
 	DisplayName          string           `json:"displayName"`
-	ProductIDs           []string         `json:"productIds"`
+	ProductPolicy        []string         `json:"productPolicy"`
 	Routes               []AccountRoute   `json:"routes,omitempty"`
 	Status               State            `json:"status"`
 	DesiredStateRevision int64            `json:"desiredStateRevision"`
@@ -107,8 +106,8 @@ func (account Account) Public() PublicAccount {
 		productIDs = account.ProductPolicy
 	}
 	return PublicAccount{
-		ID: account.ID, Venue: account.Venue, VenueEnvironment: account.VenueEnvironment, Mode: account.Mode, NativeEnvironment: account.NativeEnvironment,
-		DisplayName: account.DisplayName, ProductIDs: append([]string(nil), productIDs...), Routes: append([]AccountRoute(nil), account.Routes...),
+		ID: account.ID, Venue: account.Venue, Mode: account.Mode, NativeEnvironment: account.NativeEnvironment,
+		DisplayName: account.DisplayName, ProductPolicy: append([]string(nil), productIDs...), Routes: append([]AccountRoute(nil), account.Routes...),
 		Status: account.State, DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
 		LastValidatedAt: account.LastValidatedAt, UpdatedAt: account.UpdatedAt,

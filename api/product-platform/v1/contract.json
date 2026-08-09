@@ -222,7 +222,7 @@
   ],
   "strictMutations": {
     "POST /api/v1/auth/login": ["username", "password"],
-    "POST /api/v1/accounts": ["venue", "displayName", "productIds", "routes", "credentialBundle"],
+    "POST /api/v1/accounts": ["venue", "displayName", "productPolicy", "routes", "credentialBundle"],
     "PATCH /api/v1/accounts/{accountId}": ["displayName", "productIds"],
     "POST /api/v1/accounts/{accountId}/validate": [],
     "POST /api/v1/accounts/{accountId}/rotate": ["credentialBundle"],

@@ -13,7 +13,7 @@ const baseProps = {
     mode: "test",
     nativeEnvironment: "demo",
     status: "active",
-    productIds: ["manual"],
+    productPolicy: ["manual"],
     desiredStateRevision: 1,
     runtimeGeneration: 1,
     credentialVersion: 1,
