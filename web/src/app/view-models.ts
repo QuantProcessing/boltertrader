@@ -24,7 +24,7 @@ export function canSubmitPreview(preview: { canSubmit?: boolean; blockers?: stri
 
 export function flattenRuntimeCapabilities(runtimes: Record<string, RuntimeView[]>): Capability[] {
   return Object.entries(runtimes).flatMap(([accountId, accountRuntimes]) =>
-    accountRuntimes.flatMap((runtime) => (runtime.capabilities ?? []).flatMap((capability) =>
+    accountRuntimes.flatMap((runtime) => runtime.capabilities.flatMap((capability) =>
       Object.entries(capability.operations).map(([operation, supported]) => ({
         accountId,
         rowId: capability.rowId,
@@ -39,18 +39,26 @@ export function flattenRuntimeCapabilities(runtimes: Record<string, RuntimeView[
   );
 }
 
-export function runtimeDisplay(runtime: Partial<RuntimeView> | undefined): { state: string; reason?: string } {
+export function runtimeDisplay(runtime: RuntimeView | undefined): { state: string; reason?: string } {
   if (!runtime) return { state: "unknown" };
-  if (runtime.pending?.state === "blocked") return { state: "blocked", reason: runtime.pending.reason ?? runtime.pending.routes.find((route) => route.reason)?.reason };
+  if (runtime.pending?.state === "candidate_failed") return { state: "blocked", reason: runtime.pending.reason ?? runtime.pending.routes.find((route) => route.reason)?.reason };
   if (runtime.blockedReason) return { state: "blocked", reason: runtime.blockedReason };
-  if (runtime.readiness && !runtime.readiness.ready) return { state: "unavailable", reason: runtime.readiness.reason };
-  if (runtime.writeReadiness && !runtime.writeReadiness.ready) return { state: "read_only", reason: runtime.writeReadiness.reason };
+  if (!runtime.readiness.ready) return { state: "unavailable", reason: runtime.readiness.reason };
+  if (!runtime.writeReadiness.ready) return { state: "read_only", reason: runtime.writeReadiness.reason };
   if (runtime.active) {
     const blockedRoute = runtime.active.routes.find((route) => !route.ready);
     return blockedRoute ? { state: "unavailable", reason: blockedRoute.reason } : { state: "ready" };
   }
   if (runtime.pending) return { state: runtime.pending.state, reason: runtime.pending.reason };
-  return runtime.readiness?.ready && runtime.writeReadiness?.ready ? { state: "ready" } : { state: "unknown" };
+  return runtime.readiness.ready && runtime.writeReadiness.ready ? { state: "ready" } : { state: "unknown" };
+}
+
+const sensitiveDiagnostic = /(?:api[_ -]?(?:key|secret)|passphrase|credential|secretRef|providerPath|gatewayToken|authorization|bearer\s+|secret(?:store|:\/\/)|\/var\/|\/run\/secrets\/)/i;
+
+export function safeFinding(value: unknown, fallback = "No reason reported"): string {
+  const finding = typeof value === "string" ? value.trim() : "";
+  if (!finding) return fallback;
+  return sensitiveDiagnostic.test(finding) ? "Sensitive diagnostic redacted." : finding.replaceAll("_", " ");
 }
 
 export function activityDisplay(event: Pick<ActivityEvent, "kind" | "payload">): { summary: string; status: string } {

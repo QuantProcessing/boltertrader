@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -44,13 +45,10 @@ type accountRoutes struct{ options AccountRoutesOptions }
 
 type createAccountRequest struct {
 	Venue            string                          `json:"venue"`
-	VenueEnvironment platformaccounts.Environment    `json:"venueEnvironment"`
 	DisplayName      string                          `json:"displayName"`
-	ProductIDs       []string                        `json:"productIds"`
 	ProductPolicy    []string                        `json:"productPolicy"`
 	Routes           []platformaccounts.AccountRoute `json:"routes"`
 	CredentialBundle json.RawMessage                 `json:"credentialBundle"`
-	SecretMaterial   json.RawMessage                 `json:"secretMaterial"`
 }
 
 type updateAccountRequest struct {
@@ -60,7 +58,6 @@ type updateAccountRequest struct {
 
 type rotateAccountRequest struct {
 	CredentialBundle json.RawMessage `json:"credentialBundle"`
-	SecretMaterial   json.RawMessage `json:"secretMaterial"`
 }
 
 func (routes *accountRoutes) list(w http.ResponseWriter, r *http.Request) {
@@ -105,9 +102,8 @@ func (routes *accountRoutes) create(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, ProductPolicy: request.ProductPolicy, Routes: request.Routes, CredentialBundle: request.CredentialBundle, SecretMaterial: request.SecretMaterial}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, DisplayName: request.DisplayName, ProductIDs: request.ProductPolicy, Routes: request.Routes, CredentialBundle: request.CredentialBundle}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
 	clear(request.CredentialBundle)
-	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
 		return
@@ -167,18 +163,18 @@ func (routes *accountRoutes) rotate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Idempotency-Key is required", nil, false, requestID(r))
+		return
+	}
 	var request rotateAccountRequest
 	if err := decodeStrict(r, &request); err != nil {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	bundle := request.CredentialBundle
-	if len(bundle) == 0 {
-		bundle = request.SecretMaterial
-	}
-	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, bundle, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, request.CredentialBundle, principal, idempotencyKey)
 	clear(request.CredentialBundle)
-	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
 		return
@@ -231,6 +227,11 @@ func (routes *accountRoutes) remove(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "Idempotency-Key is required", nil, false, requestID(r))
+		return
+	}
 	if err := decodeEmpty(r); err != nil {
 		routes.validationFailure(w, r, err)
 		return
@@ -244,7 +245,7 @@ func (routes *accountRoutes) remove(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, platformaccounts.ErrAccountBlocked)
 		return
 	}
-	account, err := routes.options.Service.Remove(r.Context(), r.PathValue("accountId"), revision, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Remove(r.Context(), r.PathValue("accountId"), revision, principal, idempotencyKey)
 	if err != nil {
 		routes.failure(w, r, err)
 		return
@@ -331,13 +332,26 @@ func (routes *accountRoutes) failure(w http.ResponseWriter, r *http.Request, err
 		writeError(w, http.StatusConflict, "INVALID_ACCOUNT_TRANSITION", "account transition is invalid", nil, false, requestID(r))
 	case errors.Is(err, platformaccounts.ErrAccountBlocked):
 		writeError(w, http.StatusConflict, "ACCOUNT_LIFECYCLE_BLOCKED", "account lifecycle is blocked", nil, false, requestID(r))
+	case errors.Is(err, platformaccounts.ErrValidation):
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", nil, false, requestID(r))
 	default:
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "request failed", nil, true, requestID(r))
 	}
 }
 
+const accountMutationBodyLimit = 1 << 20
+
+var errCredentialBundleShape = errors.New("credential bundle shape is invalid")
+
 func decodeStrict(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	body, err := readAccountMutationBody(r)
+	if err != nil {
+		return err
+	}
+	if err := validateExactJSONKeys(body, target); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
@@ -348,8 +362,111 @@ func decodeStrict(r *http.Request, target any) error {
 	return nil
 }
 
+func validateExactJSONKeys(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	targetType := reflect.TypeOf(target)
+	if targetType == nil || targetType.Kind() != reflect.Pointer {
+		return errors.New("request body target is invalid")
+	}
+	return validateJSONValueKeys(value, targetType.Elem())
+}
+
+func validateJSONValueKeys(value any, targetType reflect.Type) error {
+	for targetType.Kind() == reflect.Pointer {
+		targetType = targetType.Elem()
+	}
+	switch targetType.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := make(map[string]reflect.StructField, targetType.NumField())
+		for index := 0; index < targetType.NumField(); index++ {
+			field := targetType.Field(index)
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if field.PkgPath == "" && name != "" && name != "-" {
+				fields[name] = field
+			}
+		}
+		for key, child := range object {
+			field, exists := fields[key]
+			if !exists {
+				if strings.EqualFold(key, "credentialBundle") {
+					return errCredentialBundleShape
+				}
+				return fmt.Errorf("request body contains non-canonical field %q", key)
+			}
+			if field.Type == reflect.TypeOf(json.RawMessage{}) && key == "credentialBundle" {
+				if err := validateCredentialBundleKeys(child); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := validateJSONValueKeys(child, field.Type); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		items, ok := value.([]any)
+		if !ok {
+			return nil
+		}
+		for _, item := range items {
+			if err := validateJSONValueKeys(item, targetType.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCredentialBundleKeys(value any) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return errCredentialBundleShape
+	}
+	allowed := map[string]map[string]struct{}{
+		"metadata": credentialKeySet("accountIndex", "keyIndex", "accountAddress", "userAddress", "expectedSigner", "subaccount"),
+		"secrets":  credentialKeySet("apiKey", "apiSecret", "passphrase", "privateKey", "apiWalletPrivateKey"),
+	}
+	envelope := credentialKeySet("schemaVersion", "venue", "authKind", "metadata", "secrets")
+	for key, child := range object {
+		if _, exists := envelope[key]; !exists {
+			return errCredentialBundleShape
+		}
+		nested, nestedObject := child.(map[string]any)
+		keys, requiresObject := allowed[key]
+		if !requiresObject {
+			continue
+		}
+		if !nestedObject {
+			return errCredentialBundleShape
+		}
+		for nestedKey := range nested {
+			if _, exists := keys[nestedKey]; !exists {
+				return errCredentialBundleShape
+			}
+		}
+	}
+	return nil
+}
+
+func credentialKeySet(keys ...string) map[string]struct{} {
+	result := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		result[key] = struct{}{}
+	}
+	return result
+}
+
 func decodeEmpty(r *http.Request) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := readAccountMutationBody(r)
 	if err != nil {
 		return err
 	}
@@ -362,6 +479,81 @@ func decodeEmpty(r *http.Request) error {
 	}
 	if len(value) != 0 {
 		return errors.New("request body must be empty")
+	}
+	return nil
+}
+
+func readAccountMutationBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, accountMutationBodyLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > accountMutationBodyLimit {
+		return nil, errors.New("request body exceeds limit")
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return body, nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := scanUniqueJSONObjectKeys(decoder, false); err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("request body must contain one JSON value")
+	}
+	return body, nil
+}
+
+func scanUniqueJSONObjectKeys(decoder *json.Decoder, credentialScope bool) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("request body contains invalid object key")
+			}
+			folded := strings.ToLower(key)
+			if _, exists := seen[folded]; exists {
+				if credentialScope {
+					return errCredentialBundleShape
+				}
+				return fmt.Errorf("request body contains duplicate key %q", key)
+			}
+			seen[folded] = struct{}{}
+			if err := scanUniqueJSONObjectKeys(decoder, credentialScope || strings.EqualFold(key, "credentialBundle")); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("request body contains invalid object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanUniqueJSONObjectKeys(decoder, credentialScope); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("request body contains invalid array")
+		}
+	default:
+		return errors.New("request body contains invalid JSON delimiter")
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -80,13 +81,13 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 	}
 
 	secrets.ref = "vault://test/account/2"
-	if _, err := service.Rotate(context.Background(), created.ID, 1, []byte("orphan-candidate"), "browser-session"); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := service.rotateLegacy(context.Background(), created.ID, 1, []byte("orphan-candidate"), "browser-session"); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale rotate error = %v", err)
 	}
 	if len(secrets.deleted) != 1 || secrets.deleted[0] != secrets.ref {
 		t.Fatalf("stale rotation cleanup = %#v", secrets.deleted)
 	}
-	rotating, err := service.Rotate(context.Background(), created.ID, active.DesiredStateRevision, []byte("replacement-secret"), "browser-session")
+	rotating, err := service.rotateLegacy(context.Background(), created.ID, active.DesiredStateRevision, []byte("replacement-secret"), "browser-session")
 	if err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
@@ -114,6 +115,64 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 	}
 }
 
+func TestUpdateMetadataKeepsCanonicalProductPolicyInSync(t *testing.T) {
+	store := NewMemoryStore()
+	account := validRoutedAccount()
+	if err := store.Create(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(Options{Store: store, Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"funding", "manual"}
+	updated, err := service.UpdateMetadata(context.Background(), account.ID, account.DesiredStateRevision, "Updated", want, "principal_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.Get(context.Background(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(updated.ProductPolicy, want) || !slices.Equal(updated.ProductIDs, want) ||
+		!slices.Equal(persisted.ProductPolicy, want) || !slices.Equal(persisted.ProductIDs, want) {
+		t.Fatalf("updated=%+v persisted=%+v", updated, persisted)
+	}
+}
+
+func TestUpdateMetadataRejectsInvalidProductPolicyWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy []string
+	}{
+		{name: "empty"},
+		{name: "duplicate", policy: []string{"manual", "manual"}},
+		{name: "unknown", policy: []string{"unknown"}},
+		{name: "funding on spot only", policy: []string{"funding"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			account := validRoutedAccount()
+			account.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive}}
+			if err := store.Create(context.Background(), account); err != nil {
+				t.Fatal(err)
+			}
+			service, err := New(Options{Store: store, Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.UpdateMetadata(context.Background(), account.ID, account.DesiredStateRevision, "Changed", test.policy, "principal_1"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+			persisted, err := store.Get(context.Background(), account.ID)
+			if err != nil || persisted.DesiredStateRevision != account.DesiredStateRevision || persisted.DisplayName != account.DisplayName || !slices.Equal(persisted.ProductPolicy, account.ProductPolicy) {
+				t.Fatalf("persisted=%+v err=%v", persisted, err)
+			}
+		})
+	}
+}
+
 func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	service, _ := New(Options{
 		Store: NewMemoryStore(), Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{},
@@ -122,7 +181,7 @@ func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	created, _ := service.Create(context.Background(), CreateRequest{Venue: "okx", VenueEnvironment: EnvironmentDemo, DisplayName: "Demo", ProductIDs: []string{"manual"}, SecretMaterial: []byte("secret")}, "browser-session")
 	active, _ := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "gateway-adapter")
 
-	if _, err := service.Remove(context.Background(), active.ID, active.DesiredStateRevision, "browser-session"); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := service.removeLegacy(context.Background(), active.ID, active.DesiredStateRevision, "browser-session"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("remove active error = %v", err)
 	}
 	draining, err := service.Drain(context.Background(), active.ID, active.DesiredStateRevision, Blockers{OpenOrders: 1}, "browser-session")
@@ -141,7 +200,7 @@ func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	if err != nil || disabled.State != StateDisabled {
 		t.Fatalf("disable = %#v, %v", disabled, err)
 	}
-	removing, err := service.Remove(context.Background(), active.ID, disabled.DesiredStateRevision, "browser-session")
+	removing, err := service.removeLegacy(context.Background(), active.ID, disabled.DesiredStateRevision, "browser-session")
 	if err != nil || removing.State != StateRemoving {
 		t.Fatalf("remove = %#v, %v", removing, err)
 	}

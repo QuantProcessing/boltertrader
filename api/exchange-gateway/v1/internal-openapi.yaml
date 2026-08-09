@@ -223,13 +223,68 @@ components:
     RuntimeView:
       type: object
       additionalProperties: false
-      required: [accountId, retiring, tombstoned]
+      required: [accountId, retiring, tombstoned, readiness, writeReadiness, blockedReason, capabilities]
+      allOf:
+        - if:
+            required: [active]
+          then:
+            required: [desiredStateRevision, runtimeGeneration, credentialVersion, runtimeVersion, lastAppliedDesiredStateRevision, lastAppliedRuntimeGeneration, observedAt]
       properties:
         accountId: {type: string}
         active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
         pending: {$ref: '#/components/schemas/PendingSnapshotView'}
         retiring: {type: array, items: {$ref: '#/components/schemas/RuntimeSnapshotView'}}
         tombstoned: {type: boolean}
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        runtimeVersion: {type: integer, minimum: 1}
+        readiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
+        writeReadiness: {$ref: '#/components/schemas/RuntimeProjectionReadiness'}
+        lastAppliedDesiredStateRevision: {type: integer, minimum: 1}
+        lastAppliedRuntimeGeneration: {type: integer, minimum: 1}
+        blockedReason: {type: [string, 'null']}
+        capabilities: {type: array, items: {$ref: '#/components/schemas/RuntimeCapabilityView'}}
+        observedAt: {type: string, format: date-time}
+    RuntimeProjectionReadiness:
+      type: object
+      additionalProperties: false
+      required: [ready]
+      properties:
+        ready: {type: boolean}
+        reason: {type: string}
+    RuntimeCapabilityView:
+      type: object
+      additionalProperties: false
+      required: [rowId, venue, product, writeReady, operations]
+      properties:
+        rowId: {type: string}
+        venue: {type: string}
+        product: {type: string, enum: [spot, perp]}
+        settlement: {type: string}
+        writeReady: {type: boolean}
+        operations: {$ref: '#/components/schemas/RuntimeCapabilityOperations'}
+    RuntimeCapabilityOperations:
+      type: object
+      additionalProperties: false
+      required: [place, amend, cancel, open_orders, order_history, fills, balances, account, positions, funding, account_funding_payments, leverage, private_stream, margin_mode, position_mode, funds_transfer]
+      properties:
+        place: {type: boolean}
+        amend: {type: boolean}
+        cancel: {type: boolean}
+        open_orders: {type: boolean}
+        order_history: {type: boolean}
+        fills: {type: boolean}
+        balances: {type: boolean}
+        account: {type: boolean}
+        positions: {type: boolean}
+        funding: {type: boolean}
+        account_funding_payments: {type: boolean}
+        leverage: {type: boolean}
+        private_stream: {type: boolean}
+        margin_mode: {type: boolean}
+        position_mode: {type: boolean}
+        funds_transfer: {type: boolean}
     RouteRuntimeView:
       type: object
       additionalProperties: false
@@ -256,14 +311,15 @@ components:
     PendingSnapshotView:
       type: object
       additionalProperties: false
-      required: [desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
+      required: [operationId, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
       properties:
+        operationId: {type: string, format: uuid}
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
         requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
         routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
-        state: {type: string, enum: [prepared, building, ready, blocked]}
+        state: {type: string, enum: [prepared, candidate_ready, candidate_failed, applied]}
         reason: {type: string}
     RuntimeAccount:
       type: object

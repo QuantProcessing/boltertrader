@@ -27,19 +27,15 @@ import type {
   Mode,
   Position,
   Preview,
+  Readiness,
   RuntimeView,
   Venue,
 } from "./types";
-import { flattenRuntimeCapabilities } from "./view-models";
+import { flattenRuntimeCapabilities, safeFinding } from "./view-models";
 
 interface SessionResult {
   principal: { id: string; mode: Mode; username: string };
   session: { csrfToken: string; expiresAt: string };
-}
-
-interface Readiness {
-  ready: boolean;
-  components?: Record<string, { ready?: boolean; reason?: string; state?: string }>;
 }
 
 interface FundingLineage {
@@ -89,7 +85,7 @@ function list<T>(value: unknown, key = "items"): T[] {
 
 function errorMessage(error: unknown): string {
   if (error && typeof error === "object" && "code" in error) return String((error as { code: unknown }).code).replaceAll("_", " ");
-  return error instanceof Error ? error.message : "The request could not be completed.";
+  return error instanceof Error ? safeFinding(error.message, "The request could not be completed.") : "The request could not be completed.";
 }
 
 function isTerminalIdempotencyConflict(error: unknown): boolean {
@@ -243,23 +239,32 @@ export function App() {
     setPath(next);
   };
 
-  const perform = async (operation: () => Promise<unknown>, success: string, reload = true) => {
+  const perform = async (operation: () => Promise<unknown>, success: string, reload = true, options: { propagate?: boolean; reportGlobalError?: boolean } = {}) => {
     setBusy(true); setError(""); setNotice("");
     try { await operation(); if (reload) await load(); setNotice(success); }
-    catch (operationError) { setError(errorMessage(operationError)); }
+    catch (operationError) {
+      const message = errorMessage(operationError);
+      if (options.reportGlobalError !== false) setError(message);
+      if (options.propagate) throw new Error(message);
+    }
     finally { setBusy(false); }
   };
 
-  const createAccount = (request: Record<string, unknown>) => perform(() => apiClient.post("/accounts", request, { idempotencyScope: `account.create:${request.venue}:${request.displayName}` }), "Account submitted.");
+  const accountOperationOptions = { propagate: true, reportGlobalError: false };
+  const createAccount = async (request: Record<string, unknown>) => {
+    const scope = `account.create:${request.venue}:${request.displayName}`;
+    await perform(() => apiClient.post("/accounts", request, { idempotencyScope: scope }), "Account submitted.", true, accountOperationOptions);
+    apiClient.clearIdempotencyKey(scope);
+  };
   const accountAction = (accountID: string, action: string, payload: Record<string, unknown> = {}) => {
     const account = snapshot.accounts.find((item) => item.accountId === accountID);
     if (!account?.desiredStateRevision || account.desiredStateRevision < 1) {
-      return perform(async () => { throw new Error("Authoritative account revision is unavailable."); }, "", false);
+      return perform(async () => { throw new Error("Authoritative account revision is unavailable."); }, "", false, accountOperationOptions);
     }
     const options = { headers: { "If-Match": `\"desired-state-revision-${account.desiredStateRevision}\"` }, idempotencyScope: `account.${action}:${accountID}:${account.desiredStateRevision}` };
-    if (action === "remove") return perform(() => apiClient.delete(`/accounts/${encodeURIComponent(accountID)}`, options), "Account removal submitted.");
-    if (action === "update") return perform(() => apiClient.patch(`/accounts/${encodeURIComponent(accountID)}`, payload, options), "Account update submitted.");
-    return perform(() => apiClient.post(`/accounts/${encodeURIComponent(accountID)}/${action}`, payload, options), `Account ${action} submitted.`);
+    if (action === "remove") return perform(() => apiClient.delete(`/accounts/${encodeURIComponent(accountID)}`, options), "Account removal submitted.", true, accountOperationOptions);
+    if (action === "update") return perform(() => apiClient.patch(`/accounts/${encodeURIComponent(accountID)}`, payload, options), "Account update submitted.", true, accountOperationOptions);
+    return perform(() => apiClient.post(`/accounts/${encodeURIComponent(accountID)}/${action}`, payload, options), `Account ${action} submitted.`, true, accountOperationOptions);
   };
 
   const fundingSubmit = (request: Record<string, unknown>) => {
@@ -326,7 +331,7 @@ export function App() {
     switch (path) {
       case "/funding": return <FundingRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} opportunities={snapshot.opportunities} positions={snapshot.positions.filter((item) => item.productId === "funding")} commands={snapshot.commands.filter((item) => item.productId === "funding")} preview={fundingPreview} busy={busy} onPreview={async (request) => perform(async () => setFundingPreview(unwrap(await apiClient.post<FundingPreview>("/products/funding/execution-previews", request))), "Preview refreshed.", false)} onSubmit={fundingSubmit} onClose={fundingClose} onRefresh={load} />;
       case "/manual": return <ManualRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} instruments={snapshot.instruments} orders={snapshot.manualOrders} positions={snapshot.positions.filter((item) => item.productId === "manual")} preview={manualPreview} busy={busy} onPreview={async (request) => perform(async () => setManualPreview(unwrap(await apiClient.post<Preview>("/products/manual/execution-previews", request))), "Preview refreshed.", false)} onSubmit={manualSubmit} onCancel={manualCancel} onClose={manualClose} onRefresh={load} />;
-      case "/accounts": return <AccountsRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} runtimes={snapshot.runtimes} venues={snapshot.venues} capabilities={snapshot.capabilities} busy={busy} onCreate={createAccount} onAction={accountAction} onRefresh={load} />;
+      case "/accounts": return <AccountsRoute mode={session?.principal.mode ?? "test"} accounts={snapshot.accounts} runtimes={snapshot.runtimes} venues={snapshot.venues} capabilities={snapshot.capabilities} readiness={snapshot.readiness} busy={busy} onCreate={createAccount} onAction={accountAction} onRefresh={load} />;
       case "/activity": return <ActivityRoute activity={snapshot.activity} audit={snapshot.audit} onRefresh={load} />;
       case "/settings": return <SettingsRoute theme={theme} mode={session?.principal.mode ?? "test"} username={session?.principal.username ?? ""} contractVersion={contractVersion} onThemeChange={setTheme} />;
       default: return <OverviewRoute mode={session?.principal.mode ?? "test"} readiness={snapshot.readiness} accounts={snapshot.accounts} positions={snapshot.positions} commands={snapshot.commands} fills={snapshot.fills} ledger={snapshot.ledger} onRefresh={load} />;

@@ -3,6 +3,7 @@ package routeprofile
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -74,6 +75,28 @@ func (registry *Registry) Resolve(mode Mode, venue, routeProfileID string) (Prof
 		return Profile{}, ErrModeConflict
 	}
 	return Profile{}, ErrUnknownProfile
+}
+
+func (registry *Registry) Profiles(mode Mode) []Profile {
+	if registry == nil || (mode != ModeTest && mode != ModeLive) {
+		return nil
+	}
+	profiles := make([]Profile, 0)
+	for key, profile := range registry.profiles {
+		if key.Mode == mode {
+			profiles = append(profiles, profile)
+		}
+	}
+	sort.Slice(profiles, func(i, j int) bool {
+		if profiles[i].Venue == profiles[j].Venue {
+			if profiles[i].NativeEnvironment == profiles[j].NativeEnvironment {
+				return profiles[i].ID < profiles[j].ID
+			}
+			return profiles[i].NativeEnvironment < profiles[j].NativeEnvironment
+		}
+		return profiles[i].Venue < profiles[j].Venue
+	})
+	return profiles
 }
 
 func (registry *Registry) ResolveLegacy(mode Mode, venue, product, settlement string, environment NativeEnvironment) (Profile, error) {

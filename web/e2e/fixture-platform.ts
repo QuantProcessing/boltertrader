@@ -5,6 +5,7 @@ interface FixtureOptions {
   degraded?: boolean;
   liveDenied?: boolean;
   mode?: "test" | "live";
+  modeConflictCatalog?: boolean;
 }
 
 export interface FixtureWrite {
@@ -18,6 +19,7 @@ export interface FixturePlatform {
   writes: FixtureWrite[];
   readPaths: () => string[];
   snapshotReads: () => number;
+  recoverPrivateState: () => void;
 }
 
 const now = "2026-08-08T10:00:00Z";
@@ -42,6 +44,8 @@ async function requestBody(request: Request): Promise<unknown> {
 export async function installFixturePlatform(page: Page, options: FixtureOptions = {}): Promise<FixturePlatform> {
   let authenticated = options.authenticated ?? true;
   let reads = 0;
+  let validationAttempts = 0;
+  let privateStateRecovered = false;
   const readPaths: string[] = [];
   const mode = options.mode ?? "test";
   const environment = mode === "live" ? "live" : "demo";
@@ -126,33 +130,40 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
     if (/^\/accounts\/[^/]+\/runtimes$/.test(path)) {
       const accountId = path.split("/")[2];
       const account = accounts.find((item) => item.accountId === accountId)!;
+      const primary = accountId === "binance-primary";
+      const privateGap = primary && !privateStateRecovered;
       return respond(route, envelope({ items: [{
         accountId,
         desiredStateRevision: account.desiredStateRevision,
         runtimeGeneration: account.runtimeGeneration,
         credentialVersion: account.credentialVersion,
         runtimeVersion: 4,
-        readiness: { ready: true },
-        writeReadiness: { ready: true },
+        readiness: { ready: !privateGap, reason: privateGap ? "STALE_PUBLIC_CONNECTOR" : undefined },
+        writeReadiness: { ready: !privateGap, reason: privateGap ? "PRIVATE_STREAM_GAP" : undefined },
         lastAppliedDesiredStateRevision: account.desiredStateRevision,
         lastAppliedRuntimeGeneration: account.runtimeGeneration,
-        blockedReason: null,
+        blockedReason: privateGap ? "STALE_PUBLIC_CONNECTOR" : null,
         capabilities: [{ rowId: `${accountId}-perp`, venue: account.venue, product: "perp", settlement: "USDT", writeReady: true, operations }],
         active: { desiredStateRevision: account.desiredStateRevision, runtimeGeneration: account.runtimeGeneration, credentialVersion: account.credentialVersion, requestedState: "active", routes: [{ ...desiredRoute(account.venue), ready: true }] },
-        pending: accountId === "binance-primary" ? { desiredStateRevision: 4, runtimeGeneration: 3, credentialVersion: 2, requestedState: "rotating", state: "blocked", reason: "validation failed", routes: [{ ...desiredRoute(account.venue), ready: false, reason: "private stream gap" }] } : undefined,
+        pending: privateGap ? { desiredStateRevision: 4, runtimeGeneration: 3, credentialVersion: 2, requestedState: "rotating", state: "candidate_failed", reason: "validation failed", routes: [{ ...desiredRoute(account.venue), ready: false, reason: "private stream gap" }] } : undefined,
         retiring: accountId === "binance-primary" ? [{ desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1, requestedState: "draining", routes: [{ ...desiredRoute(account.venue), requestedState: "disabled", ready: false, reason: "draining" }] }] : [],
         observedAt: now,
       }] }));
     }
-    if (path === "/catalog/venues") return respond(route, envelope({ items: ["binance", "bybit"].map((venue) => ({
+    if (path === "/catalog/venues") {
+      const catalog = options.modeConflictCatalog
+        ? [{ venue: "coinbase", environment: "live" as const }]
+        : ["binance", "bybit"].map((venue) => ({ venue, environment }));
+      return respond(route, envelope({ items: catalog.map(({ venue, environment: venueEnvironment }) => ({
       venue,
-      environment,
-      nativeEnvironment: environment,
+      environment: venueEnvironment,
+      nativeEnvironment: venueEnvironment,
       ready: true,
       products: ["funding", "manual"],
       credentialSchema: { schemaVersion: 1, authKind: "api_key_secret", fields: [{ key: "apiKey", label: "API key" }, { key: "apiSecret", label: "API secret" }] },
-      routeProfiles: [{ routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: `${venue}.spot.usdt.${environment}.v1`, label: "Spot / USDT" }, { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: `${venue}.perp.usdt.${environment}.v1`, label: "Perp / USDT" }],
+      routeProfiles: [{ routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: `${venue}.spot.usdt.${venueEnvironment}.v1`, label: "Spot / USDT" }, { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: `${venue}.perp.usdt.${venueEnvironment}.v1`, label: "Perp / USDT" }],
     })) }));
+    }
     if (path === "/catalog/instruments") return respond(route, envelope({ items: [{ instrumentId: "BTC-BINANCE-PERP", venue: "binance", environment, product: "perp", symbol: "BTCUSDT", ready: true }, { instrumentId: "BTC-BYBIT-PERP", venue: "bybit", environment, product: "perp", symbol: "BTCUSDT", ready: true }, { instrumentId: "ETH-USDT-PERP", venue: "binance", environment, product: "perp", symbol: "ETHUSDT", ready: true }] }));
     if (path === "/products/funding/opportunities") return respond(route, envelope({ items: [{ opportunityId: "funding-opportunity", canonicalMarketId: "BTC-USDT-PERP", longAccountId: "binance-primary", shortAccountId: "bybit-hedge", longInstrumentId: "BTC-BINANCE-PERP", shortInstrumentId: "BTC-BYBIT-PERP", longVenue: "binance", shortVenue: "bybit", longFundingRate: "0.0001", shortFundingRate: "0.0003", reservationRequirements: opportunityRequirements }] }));
     if (path === "/commands") return respond(route, envelope({ items: [{ commandId: "funding-command", lineageId: "funding-lineage", productId: "funding", state: "filled", updatedAt: now }] }));
@@ -208,13 +219,22 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
     if (path === "/products/funding/lineage/funding-lineage" && method === "GET") return respond(route, envelope({ lineageId: "funding-lineage", closeReservationRequirements: closeRequirements }));
     if (path === "/reservations" && method === "POST") return respond(route, envelope({ reservationId: `reservation-${writes.length}`, status: "held" }), 201);
     if (path === "/accounts" && method === "POST") return respond(route, envelope({ account: accounts[0] }), 201);
-    if (/^\/accounts\/[^/]+$/.test(path) && (method === "PATCH" || method === "DELETE")) return respond(route, envelope({ account: accounts[0] }), method === "DELETE" ? 202 : 200);
-    if (/^\/accounts\/[^/]+\/(validate|rotate|drain|disable)$/.test(path) && method === "POST") return respond(route, envelope({ account: accounts[0] }));
+    if (/^\/accounts\/[^/]+$/.test(path) && method === "PATCH") return respond(route, envelope({ account: accounts[0] }));
+    if (path === "/accounts/binance-primary/validate" && method === "POST") {
+      validationAttempts += 1;
+      if (validationAttempts === 1) return respond(route, error("PRIVATE_STREAM_GAP", "apiSecret=credential-canary providerPath=/var/lib/secret-store"), 409);
+      return respond(route, envelope({ account: accounts[0] }));
+    }
+    if (path === "/accounts/binance-primary/drain" && method === "POST") return respond(route, error("DRAIN_BLOCKED", "providerPath=/var/lib/secret-store"), 409);
+    if (path === "/accounts/binance-primary/disable" && method === "POST") return respond(route, error("DISABLE_BLOCKED", "gatewayToken=token-canary"), 409);
+    if (/^\/accounts\/[^/]+\/(rotate|drain|disable)$/.test(path) && method === "POST") return respond(route, envelope({ account: accounts[0] }));
+    if (path === "/accounts/binance-primary" && method === "DELETE") return respond(route, error("ACCOUNT_BLOCKED", "secretRef=opaque-canary gatewayToken=token-canary"), 409);
+    if (/^\/accounts\/[^/]+$/.test(path) && method === "DELETE") return respond(route, envelope({ account: accounts[0] }), 202);
 
     return respond(route, error("NOT_FOUND", "fixture route not found"), 404);
   });
 
-  return { writes, readPaths: () => [...readPaths], snapshotReads: () => reads };
+  return { writes, readPaths: () => [...readPaths], snapshotReads: () => reads, recoverPrivateState: () => { privateStateRecovered = true; } };
 }
 
 export async function installFixtureRealtime(page: Page): Promise<void> {

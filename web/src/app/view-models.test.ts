@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
+
+import type { CredentialSchema, NativeEnvironment, ProductPolicy, RouteProfile, RuntimeSnapshotView, RuntimeView, Venue } from "./types.ts";
 
 import {
   activityDisplay,
@@ -8,10 +10,39 @@ import {
   formatDecimal,
   mergePositionUpdate,
   runtimeDisplay,
+  safeFinding,
   stateTone,
 } from "./view-models.ts";
 
+const runtime = (overrides: Partial<RuntimeView> = {}): RuntimeView => ({
+  accountId: "account-1",
+  desiredStateRevision: 1,
+  runtimeGeneration: 1,
+  credentialVersion: 1,
+  runtimeVersion: 1,
+  readiness: { ready: true },
+  writeReadiness: { ready: true },
+  lastAppliedDesiredStateRevision: 1,
+  lastAppliedRuntimeGeneration: 1,
+  blockedReason: null,
+  capabilities: [],
+  retiring: [],
+  observedAt: "2026-08-08T10:00:00Z",
+  ...overrides,
+});
+
 describe("authoritative view models", () => {
+  it("requires complete authoritative venue and runtime contracts", () => {
+    expectTypeOf<Venue["nativeEnvironment"]>().toEqualTypeOf<NativeEnvironment>();
+    expectTypeOf<Venue["environment"]>().toEqualTypeOf<NativeEnvironment>();
+    expectTypeOf<Venue["products"]>().toEqualTypeOf<ProductPolicy[]>();
+    expectTypeOf<Venue["credentialSchema"]>().toEqualTypeOf<CredentialSchema>();
+    expectTypeOf<Venue["routeProfiles"]>().toEqualTypeOf<RouteProfile[]>();
+    expectTypeOf<RuntimeView["desiredStateRevision"]>().toEqualTypeOf<number>();
+    expectTypeOf<RuntimeView["retiring"]>().toEqualTypeOf<RuntimeSnapshotView[]>();
+    expectTypeOf(runtimeDisplay).parameter(0).toEqualTypeOf<RuntimeView | undefined>();
+  });
+
   it("collapses venue demo and testnet names into the product Test mode", () => {
     expect(environmentLabel("test", "demo")).toBe("Test");
     expect(environmentLabel("test", "testnet")).toBe("Test");
@@ -52,11 +83,7 @@ describe("authoritative view models", () => {
 
   it("flattens capabilities from authoritative account runtime projections", () => {
     expect(flattenRuntimeCapabilities({
-      "account-1": [{
-        accountId: "account-1",
-        readiness: { ready: true },
-        writeReadiness: { ready: true },
-        blockedReason: null,
+      "account-1": [runtime({
         capabilities: [{
           rowId: "cap-1",
           venue: "binance",
@@ -65,7 +92,7 @@ describe("authoritative view models", () => {
           writeReady: true,
           operations: { place: true, amend: false, cancel: true },
         }],
-      }],
+      })],
     })).toEqual([
       expect.objectContaining({ accountId: "account-1", rowId: "cap-1", operation: "place", supported: true }),
       expect.objectContaining({ accountId: "account-1", rowId: "cap-1", operation: "amend", supported: false }),
@@ -74,34 +101,31 @@ describe("authoritative view models", () => {
   });
 
   it("derives runtime state and reason from nested readiness projections", () => {
-    expect(runtimeDisplay({
+    expect(runtimeDisplay(runtime({
       readiness: { ready: true },
       writeReadiness: { ready: false, reason: "credentials require rotation" },
       blockedReason: null,
-    })).toEqual({ state: "read_only", reason: "credentials require rotation" });
-    expect(runtimeDisplay({
+    }))).toEqual({ state: "read_only", reason: "credentials require rotation" });
+    expect(runtimeDisplay(runtime({
       readiness: { ready: true },
       writeReadiness: { ready: true },
       blockedReason: "account disabled",
-    })).toEqual({ state: "blocked", reason: "account disabled" });
+    }))).toEqual({ state: "blocked", reason: "account disabled" });
   });
 
   it("derives runtime state from redacted v5 active and pending snapshots", () => {
-    expect(runtimeDisplay({
-      accountId: "account-1",
+    expect(runtimeDisplay(runtime({
       pending: {
         desiredStateRevision: 2,
         runtimeGeneration: 2,
         credentialVersion: 2,
         requestedState: "rotating",
-        state: "blocked",
+        state: "candidate_failed",
         reason: "validation failed",
         routes: [],
       },
-      retiring: [],
-    })).toEqual({ state: "blocked", reason: "validation failed" });
-    expect(runtimeDisplay({
-      accountId: "account-1",
+    }))).toEqual({ state: "blocked", reason: "validation failed" });
+    expect(runtimeDisplay(runtime({
       active: {
         desiredStateRevision: 1,
         runtimeGeneration: 1,
@@ -109,32 +133,27 @@ describe("authoritative view models", () => {
         requestedState: "active",
         routes: [{ routeId: "perp-usdt", product: "perp", routeProfileId: "profile-1", requestedState: "active", ready: true }],
       },
-      retiring: [],
-    })).toEqual({ state: "ready" });
+    }))).toEqual({ state: "ready" });
   });
 
   it("derives activity display fields only from the authoritative payload", () => {
     expect(activityDisplay({
-      eventId: "event-1",
-      sequence: 1,
-      cursor: "cursor-1",
       kind: "command.finalized",
-      productId: "funding",
-      accountId: "account-1",
-      resourceId: "command-1",
       payload: { summary: "Funding command finalized", status: "filled" },
-      observedAt: "2026-08-08T10:00:00Z",
     })).toEqual({ summary: "Funding command finalized", status: "filled" });
     expect(activityDisplay({
-      eventId: "event-2",
-      sequence: 2,
-      cursor: "cursor-2",
       kind: "runtime.observed",
-      productId: null,
-      accountId: null,
-      resourceId: null,
       payload: {},
-      observedAt: "2026-08-08T10:01:00Z",
     })).toEqual({ summary: "runtime.observed", status: "recorded" });
+  });
+
+  it("redacts secret references, provider paths, tokens, and credential material", () => {
+    expect(safeFinding("PRIVATE_STREAM_GAP")).toBe("PRIVATE STREAM GAP");
+    for (const value of [
+      "secretRef=opaque-canary",
+      "providerPath=/var/lib/credentials/account-a",
+      "gatewayToken=bearer-canary",
+      "apiSecret=credential-canary",
+    ]) expect(safeFinding(value)).toBe("Sensitive diagnostic redacted.");
   });
 });

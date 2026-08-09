@@ -1,12 +1,17 @@
 package contracts
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,10 +20,139 @@ type internalSchema struct {
 	Type                 any                       `yaml:"type"`
 	Format               string                    `yaml:"format"`
 	Enum                 []string                  `yaml:"enum"`
+	Minimum              *float64                  `yaml:"minimum"`
 	AdditionalProperties any                       `yaml:"additionalProperties"`
 	Required             []string                  `yaml:"required"`
 	Properties           map[string]internalSchema `yaml:"properties"`
 	Items                *internalSchema           `yaml:"items"`
+	AllOf                []internalSchema          `yaml:"allOf"`
+	If                   *internalSchema           `yaml:"if"`
+	Then                 *internalSchema           `yaml:"then"`
+}
+
+func TestPendingSnapshotSerializationStrictlyMatchesInternalOpenAPI(t *testing.T) {
+	schemas := loadInternalSchemas(t)
+	view := gatewayhttp.RuntimeView{
+		AccountID: "account-a",
+		Pending: &gatewayhttp.PendingSnapshotView{
+			RuntimeSnapshotView: gatewayhttp.RuntimeSnapshotView{
+				OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", DesiredStateRevision: 2,
+				RuntimeGeneration: 3, CredentialVersion: 4, RequestedState: "rotating",
+				Routes: []gatewayhttp.RuntimeRouteView{{
+					RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
+					RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active", Ready: true,
+				}},
+			},
+			State: "candidate_ready",
+		},
+		Retiring:       []gatewayhttp.RuntimeSnapshotView{},
+		Tombstoned:     false,
+		Readiness:      gatewayhttp.RuntimeProjectionReadiness{Ready: false, Reason: "candidate_not_ready"},
+		WriteReadiness: gatewayhttp.RuntimeProjectionReadiness{Ready: false, Reason: "candidate_not_ready"},
+		Capabilities:   []gatewayhttp.RuntimeCapabilityView{},
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var serialized map[string]any
+	if err := json.Unmarshal(encoded, &serialized); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateInternalSchema(serialized["pending"], schemas["PendingSnapshotView"], schemas, "PendingSnapshotView"); err != nil {
+		t.Fatalf("actual pending serialization violates internal OpenAPI: %v; json=%s", err, encoded)
+	}
+}
+
+func loadInternalSchemas(t *testing.T) map[string]internalSchema {
+	t.Helper()
+	data, err := os.ReadFile("../../api/exchange-gateway/v1/internal-openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Components struct {
+			Schemas map[string]internalSchema `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document.Components.Schemas
+}
+
+func validateInternalSchema(value any, schema internalSchema, schemas map[string]internalSchema, path string) error {
+	if schema.Ref != "" {
+		const prefix = "#/components/schemas/"
+		if !strings.HasPrefix(schema.Ref, prefix) {
+			return fmt.Errorf("%s has unsupported ref %q", path, schema.Ref)
+		}
+		name := strings.TrimPrefix(schema.Ref, prefix)
+		resolved, ok := schemas[name]
+		if !ok {
+			return fmt.Errorf("%s references missing schema %q", path, name)
+		}
+		return validateInternalSchema(value, resolved, schemas, path)
+	}
+	switch schema.Type {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s must be an object", path)
+		}
+		for _, required := range schema.Required {
+			if _, exists := object[required]; !exists {
+				return fmt.Errorf("%s is missing required field %q", path, required)
+			}
+		}
+		for name, child := range object {
+			property, exists := schema.Properties[name]
+			if !exists {
+				if schema.AdditionalProperties == false {
+					return fmt.Errorf("%s has unknown field %q", path, name)
+				}
+				continue
+			}
+			if err := validateInternalSchema(child, property, schemas, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok || schema.Items == nil {
+			return fmt.Errorf("%s must be an array with an item schema", path)
+		}
+		for index, item := range items {
+			if err := validateInternalSchema(item, *schema.Items, schemas, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", path)
+		}
+		if len(schema.Enum) > 0 && !containsString(schema.Enum, text) {
+			return fmt.Errorf("%s has value %q outside enum %v", path, text, schema.Enum)
+		}
+		if schema.Format == "uuid" {
+			if _, err := uuid.Parse(text); err != nil {
+				return fmt.Errorf("%s must be a UUID", path)
+			}
+		}
+	case "integer":
+		number, ok := value.(float64)
+		if !ok || math.Trunc(number) != number || (schema.Minimum != nil && number < *schema.Minimum) {
+			return fmt.Errorf("%s must be an integer satisfying its minimum", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be a boolean", path)
+		}
+	default:
+		return fmt.Errorf("%s has unsupported schema type %v", path, schema.Type)
+	}
+	return nil
 }
 
 type internalResponse struct {
@@ -312,6 +446,37 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	}
 	if runtimeView.Properties["tombstoned"].Type != "boolean" || !containsString(runtimeView.Required, "tombstoned") {
 		t.Errorf("RuntimeView does not expose explicit tombstone truth: %+v", runtimeView)
+	}
+	for _, field := range []string{"desiredStateRevision", "runtimeGeneration", "credentialVersion", "runtimeVersion", "readiness", "writeReadiness", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "blockedReason", "capabilities", "observedAt"} {
+		if _, exists := runtimeView.Properties[field]; !exists {
+			t.Errorf("RuntimeView missing operational field %q: %+v", field, runtimeView.Properties)
+		}
+	}
+	for _, field := range []string{"readiness", "writeReadiness", "blockedReason", "capabilities"} {
+		if !containsString(runtimeView.Required, field) {
+			t.Errorf("RuntimeView unconditional field %q is not required: %v", field, runtimeView.Required)
+		}
+	}
+	activeOnly := []string{"credentialVersion", "desiredStateRevision", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "observedAt", "runtimeGeneration", "runtimeVersion"}
+	for _, field := range activeOnly {
+		if containsString(runtimeView.Required, field) {
+			t.Errorf("RuntimeView active-only field %q is unconditionally required: %v", field, runtimeView.Required)
+		}
+	}
+	if len(runtimeView.AllOf) != 1 || runtimeView.AllOf[0].If == nil || runtimeView.AllOf[0].Then == nil ||
+		!reflect.DeepEqual(runtimeView.AllOf[0].If.Required, []string{"active"}) {
+		t.Fatalf("RuntimeView active conditional=%+v", runtimeView.AllOf)
+	}
+	conditionalRequired := append([]string(nil), runtimeView.AllOf[0].Then.Required...)
+	sort.Strings(conditionalRequired)
+	if !reflect.DeepEqual(conditionalRequired, activeOnly) {
+		t.Errorf("RuntimeView active conditional required=%v want=%v", conditionalRequired, activeOnly)
+	}
+	pendingStates := append([]string(nil), document.Components.Schemas["PendingSnapshotView"].Properties["state"].Enum...)
+	sort.Strings(pendingStates)
+	wantPendingStates := []string{"applied", "candidate_failed", "candidate_ready", "prepared"}
+	if !reflect.DeepEqual(pendingStates, wantPendingStates) {
+		t.Errorf("PendingSnapshotView states=%v want=%v", pendingStates, wantPendingStates)
 	}
 	wantErrors := []string{
 		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",

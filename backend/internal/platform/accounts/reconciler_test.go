@@ -65,6 +65,22 @@ type lifecycleGateway struct {
 	finalization      RotationCleanupProof
 }
 
+type createEffectStore struct {
+	Store
+	findCalls  int
+	draftCalls int
+}
+
+func (store *createEffectStore) FindCredentialOperation(ctx context.Context, lookup OperationLookup) (CredentialOperation, error) {
+	store.findCalls++
+	return store.Store.FindCredentialOperation(ctx, lookup)
+}
+
+func (store *createEffectStore) CreateDraft(ctx context.Context, account Account, operation CredentialOperation) error {
+	store.draftCalls++
+	return store.Store.CreateDraft(ctx, account, operation)
+}
+
 type ambiguousApplyError struct{ ambiguous bool }
 
 func (err ambiguousApplyError) Error() string                { return "gateway apply failed" }
@@ -321,6 +337,40 @@ func TestCreateRecoversEveryDurableCrashWindow(t *testing.T) {
 			account, err := service.Create(context.Background(), request, "principal_1", "create-1")
 			if err != nil || account.State != StateActive {
 				t.Fatalf("account=%+v err=%v", account, err)
+			}
+		})
+	}
+}
+
+func TestDurableCreateValidatesGeneratedIdentityBeforeEffects(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountID   string
+		operationID secretstore.OperationID
+		principal   string
+	}{
+		{name: "account id", accountID: " acct_1 ", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: "principal_1"},
+		{name: "operation id", accountID: "acct_1", operationID: "not-a-uuid", principal: "principal_1"},
+		{name: "principal", accountID: "acct_1", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: " principal_1 "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+			gateway := &lifecycleGateway{}
+			service, err := New(Options{
+				Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+				ID: func() string { return test.accountID }, OperationID: func() secretstore.OperationID { return test.operationID },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if account, err := service.Create(context.Background(), durableCreateRequest(), test.principal, "create-invalid"); err == nil {
+				t.Fatalf("invalid create returned account=%+v", account)
+			}
+			accounts, err := store.List(context.Background())
+			if err != nil || len(accounts) != 0 || writer.putCalls != 0 || gateway.applyCalls != 0 {
+				t.Fatalf("accounts=%+v err=%v puts=%d applies=%d", accounts, err, writer.putCalls, gateway.applyCalls)
 			}
 		})
 	}
@@ -849,6 +899,118 @@ func assertRotationCleanupComplete(t *testing.T, store *MemoryStore, accountID s
 
 func durableCreateRequest() CreateRequest {
 	return CreateRequest{Venue: "binance", DisplayName: "Primary", ProductPolicy: []string{"manual"}, Routes: []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}}, CredentialBundle: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)}
+}
+
+func TestRotateAndRemoveRejectMissingIdempotencyKeysWithoutEffects(t *testing.T) {
+	store := NewMemoryStore()
+	account := validRoutedAccount()
+	account.State = StateActive
+	if err := store.Create(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+	gateway := &lifecycleGateway{}
+	service, err := New(Options{Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []struct {
+		name string
+		keys []string
+	}{{name: "missing"}, {name: "blank", keys: []string{" \t "}}} {
+		t.Run("rotate "+key.name, func(t *testing.T) {
+			_, err := service.Rotate(context.Background(), account.ID, account.DesiredStateRevision, durableCreateRequest().CredentialBundle, "principal_1", key.keys...)
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+		t.Run("remove "+key.name, func(t *testing.T) {
+			_, err := service.Remove(context.Background(), account.ID, account.DesiredStateRevision, "principal_1", key.keys...)
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+	persisted, err := store.Get(context.Background(), account.ID)
+	if err != nil || persisted.DesiredStateRevision != account.DesiredStateRevision || writer.putCalls != 0 || writer.deleteCalls != 0 || gateway.applyCalls != 0 || gateway.retireCalls != 0 {
+		t.Fatalf("account=%+v err=%v puts=%d deletes=%d apply=%d retire=%d", persisted, err, writer.putCalls, writer.deleteCalls, gateway.applyCalls, gateway.retireCalls)
+	}
+}
+
+func TestDurableCreateRejectsInvalidPolicyAndRoutesBeforeEffects(t *testing.T) {
+	thirtyThreeRoutes := make([]AccountRoute, 33)
+	for index := range thirtyThreeRoutes {
+		thirtyThreeRoutes[index] = AccountRoute{ID: fmt.Sprintf("perp-usdt-%02d", index), Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*CreateRequest)
+	}{
+		{name: "blank display name", mutate: func(request *CreateRequest) { request.DisplayName = " \t " }},
+		{name: "empty product policy", mutate: func(request *CreateRequest) { request.ProductPolicy = nil }},
+		{name: "duplicate product policy", mutate: func(request *CreateRequest) { request.ProductPolicy = []string{"manual", "manual"} }},
+		{name: "unknown product policy", mutate: func(request *CreateRequest) { request.ProductPolicy = []string{"unknown"} }},
+		{name: "too many routes", mutate: func(request *CreateRequest) { request.Routes = thirtyThreeRoutes }},
+		{name: "route policy mismatch", mutate: func(request *CreateRequest) {
+			request.ProductPolicy = []string{"funding"}
+			request.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive}}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &createEffectStore{Store: NewMemoryStore()}
+			writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+			gateway := &lifecycleGateway{}
+			service, err := New(Options{
+				Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+				ID: func() string { return "acct_valid" }, OperationID: func() secretstore.OperationID { return "018f47a8-2578-7d3c-9d7d-5e4f4a445c33" },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := durableCreateRequest()
+			test.mutate(&request)
+			if _, err := service.Create(context.Background(), request, "principal_1", "create-invalid"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+			if store.findCalls != 0 || store.draftCalls != 0 || writer.putCalls != 0 || gateway.applyCalls != 0 {
+				t.Fatalf("find=%d draft=%d put=%d apply=%d", store.findCalls, store.draftCalls, writer.putCalls, gateway.applyCalls)
+			}
+		})
+	}
+}
+
+func TestDurableCreateValidatesGeneratedIdentityBeforeOperationLookup(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountID   string
+		operationID secretstore.OperationID
+		principal   string
+	}{
+		{name: "account id", accountID: " invalid ", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: "principal_1"},
+		{name: "operation id", accountID: "acct_valid", operationID: "not-a-uuid", principal: "principal_1"},
+		{name: "principal", accountID: "acct_valid", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: " principal_1 "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &createEffectStore{Store: NewMemoryStore()}
+			writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+			gateway := &lifecycleGateway{}
+			service, err := New(Options{
+				Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+				ID: func() string { return test.accountID }, OperationID: func() secretstore.OperationID { return test.operationID },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Create(context.Background(), durableCreateRequest(), test.principal, "create-invalid-identity"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+			if store.findCalls != 0 || store.draftCalls != 0 || writer.putCalls != 0 || gateway.applyCalls != 0 {
+				t.Fatalf("find=%d draft=%d put=%d apply=%d", store.findCalls, store.draftCalls, writer.putCalls, gateway.applyCalls)
+			}
+		})
+	}
 }
 
 func TestCreateRecoversReferenceAfterPutResponseWasLost(t *testing.T) {

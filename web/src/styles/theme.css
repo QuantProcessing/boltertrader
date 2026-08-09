@@ -140,6 +140,7 @@ td small { margin-top: 2px; color: var(--text-faint); font-size: 0.7rem; }
 .funding-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.7fr); gap: 18px; align-items: start; }
 .manual-grid { display: grid; grid-template-columns: minmax(330px, 0.72fr) minmax(0, 1.4fr); gap: 18px; align-items: start; }
 .accounts-layout { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.62fr); gap: 18px; align-items: start; }
+.account-section { min-width: 0; }
 .workbench, .account-form { display: grid; gap: 13px; padding: 0 15px 16px; }
 .workbench .section-heading, .account-form .section-heading { margin: 0 -15px 2px; }
 label { display: grid; gap: 6px; color: var(--text-muted); font-size: 0.76rem; font-weight: 620; }
@@ -174,6 +175,9 @@ legend { margin-bottom: 7px; color: var(--text-muted); font-size: 0.76rem; font-
 .route-diagnostic td { height: 43px; font-size: 0.72rem; }
 .route-diagnostic code { display: block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
 .route-phase { color: var(--text); font-size: 0.7rem; font-weight: 700; }
+.runtime-summary { background: color-mix(in oklch, var(--bg-soft) 55%, var(--bg-raised)); }
+.runtime-summary td:last-child small { display: block; }
+.account-operation-error td { height: auto; padding-block: 8px; }
 
 .state-banner { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px; min-height: 54px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius); }
 .state-banner > div { display: grid; }

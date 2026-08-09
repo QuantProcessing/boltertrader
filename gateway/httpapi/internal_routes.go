@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
@@ -154,12 +155,37 @@ type PendingSnapshotView struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+type RuntimeProjectionReadiness struct {
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type RuntimeCapabilityView struct {
+	RowID      string                `json:"rowId"`
+	Venue      string                `json:"venue"`
+	Product    string                `json:"product"`
+	Settlement string                `json:"settlement,omitempty"`
+	WriteReady bool                  `json:"writeReady"`
+	Operations capability.Operations `json:"operations"`
+}
+
 type RuntimeView struct {
-	AccountID  string                `json:"accountId"`
-	Active     *RuntimeSnapshotView  `json:"active,omitempty"`
-	Pending    *PendingSnapshotView  `json:"pending,omitempty"`
-	Retiring   []RuntimeSnapshotView `json:"retiring"`
-	Tombstoned bool                  `json:"tombstoned"`
+	AccountID                       string                     `json:"accountId"`
+	Active                          *RuntimeSnapshotView       `json:"active,omitempty"`
+	Pending                         *PendingSnapshotView       `json:"pending,omitempty"`
+	Retiring                        []RuntimeSnapshotView      `json:"retiring"`
+	Tombstoned                      bool                       `json:"tombstoned"`
+	DesiredStateRevision            int64                      `json:"desiredStateRevision,omitempty"`
+	RuntimeGeneration               int64                      `json:"runtimeGeneration,omitempty"`
+	CredentialVersion               int64                      `json:"credentialVersion,omitempty"`
+	RuntimeVersion                  int64                      `json:"runtimeVersion,omitempty"`
+	Readiness                       RuntimeProjectionReadiness `json:"readiness"`
+	WriteReadiness                  RuntimeProjectionReadiness `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision int64                      `json:"lastAppliedDesiredStateRevision,omitempty"`
+	LastAppliedRuntimeGeneration    int64                      `json:"lastAppliedRuntimeGeneration,omitempty"`
+	BlockedReason                   *string                    `json:"blockedReason"`
+	Capabilities                    []RuntimeCapabilityView    `json:"capabilities"`
+	ObservedAt                      time.Time                  `json:"observedAt,omitempty"`
 }
 
 type AuthorityRequest struct {

@@ -4,12 +4,90 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
+
+type accountStoreSecretWriter struct{}
+
+func (accountStoreSecretWriter) Put(context.Context, secretstore.OperationID, []byte) (string, error) {
+	return "opaque-ref", nil
+}
+
+type accountStoreAuditWriter struct{}
+
+func (accountStoreAuditWriter) Append(context.Context, accounts.AuditRecord) error { return nil }
+
+func TestAccountProductPolicyPatchSurvivesDatabaseRestart(t *testing.T) {
+	database, reopen := openIntegrationDatabase(t)
+	ctx := context.Background()
+	store := NewAccountStore(database)
+	now := time.Date(2026, 8, 9, 1, 0, 0, 0, time.UTC)
+	account := accounts.Account{
+		ID: "account-policy-patch", Venue: "binance", VenueEnvironment: accounts.EnvironmentDemo,
+		Mode: secretstore.ModeTest, NativeEnvironment: accounts.EnvironmentDemo, DisplayName: "Primary",
+		ProductIDs: []string{"manual"}, ProductPolicy: []string{"manual"},
+		Routes:    []accounts.AccountRoute{{ID: "perp-usdt", Product: accounts.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: accounts.RouteActive}},
+		SecretRef: "opaque-ref", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: accounts.StateActive, UpdatedAt: now,
+	}
+	if err := store.Create(ctx, account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := accounts.New(accounts.Options{
+		Store: store, Secrets: accountStoreSecretWriter{}, Audit: accountStoreAuditWriter{}, Now: func() time.Time { return now.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"funding", "manual"}
+	updated, err := service.UpdateMetadata(ctx, account.ID, 1, "Updated", want, "principal_1")
+	if err != nil || !slices.Equal(updated.ProductPolicy, want) {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	database = reopen()
+	restored, err := NewAccountStore(database).Get(ctx, account.ID)
+	if err != nil || !slices.Equal(restored.ProductPolicy, want) || !slices.Equal(restored.ProductIDs, want) || restored.DisplayName != "Updated" || restored.DesiredStateRevision != 2 {
+		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
+}
+
+func TestAccountProductPolicyInvalidPatchDoesNotSurviveDatabaseRestart(t *testing.T) {
+	database, reopen := openIntegrationDatabase(t)
+	ctx := context.Background()
+	store := NewAccountStore(database)
+	now := time.Date(2026, 8, 10, 1, 0, 0, 0, time.UTC)
+	account := accounts.Account{
+		ID: "account-policy-invalid-patch", Venue: "binance", VenueEnvironment: accounts.EnvironmentDemo,
+		Mode: secretstore.ModeTest, NativeEnvironment: accounts.EnvironmentDemo, DisplayName: "Spot only",
+		ProductIDs: []string{"manual"}, ProductPolicy: []string{"manual"},
+		Routes:    []accounts.AccountRoute{{ID: "spot", Product: accounts.ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: accounts.RouteActive}},
+		SecretRef: "opaque-ref", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: accounts.StateActive, UpdatedAt: now,
+	}
+	if err := store.Create(ctx, account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := accounts.New(accounts.Options{Store: store, Secrets: accountStoreSecretWriter{}, Audit: accountStoreAuditWriter{}, Now: func() time.Time { return now.Add(time.Minute) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateMetadata(ctx, account.ID, 1, "Changed", []string{"funding"}, "principal_1"); !errors.Is(err, accounts.ErrValidation) {
+		t.Fatalf("err=%v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := NewAccountStore(reopen()).Get(ctx, account.ID)
+	if err != nil || restored.DesiredStateRevision != account.DesiredStateRevision || restored.DisplayName != account.DisplayName || !slices.Equal(restored.ProductPolicy, account.ProductPolicy) {
+		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
+}
 
 func TestAccountStorePersistsNilRotationAsSQLNullAndObjectRotationAsJSON(t *testing.T) {
 	database, _ := openIntegrationDatabase(t)

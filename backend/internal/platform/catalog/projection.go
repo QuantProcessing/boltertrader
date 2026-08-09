@@ -2,12 +2,15 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/credential"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
 )
 
@@ -20,9 +23,35 @@ const (
 var ErrUnavailable = errors.New("catalog projection unavailable")
 
 type Venue struct {
-	Venue       string `json:"venue"`
-	Environment string `json:"environment"`
-	Ready       bool   `json:"ready"`
+	Venue             string           `json:"venue"`
+	Environment       string           `json:"environment"`
+	NativeEnvironment string           `json:"nativeEnvironment"`
+	Ready             bool             `json:"ready"`
+	Products          []string         `json:"products"`
+	CredentialSchema  CredentialSchema `json:"credentialSchema"`
+	RouteProfiles     []RouteProfile   `json:"routeProfiles"`
+}
+
+type CredentialField struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Metadata  bool   `json:"metadata,omitempty"`
+	Required  bool   `json:"required"`
+	ValueType string `json:"valueType"`
+}
+
+type CredentialSchema struct {
+	SchemaVersion int               `json:"schemaVersion"`
+	AuthKind      string            `json:"authKind"`
+	Fields        []CredentialField `json:"fields"`
+}
+
+type RouteProfile struct {
+	RouteID         string `json:"routeId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	RouteProfileID  string `json:"routeProfileId"`
+	Label           string `json:"label"`
 }
 
 type Instrument struct {
@@ -117,6 +146,9 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 		snapshot, err := projection.source.Fetch(ctx)
 		if err == nil {
 			err = validate(snapshot)
+			if err == nil {
+				snapshot, err = enrichBrowserVenues(snapshot)
+			}
 			age := projection.now().UTC().Sub(snapshot.ObservedAt)
 			if err == nil && (age > projection.ttl || age < 0) {
 				err = fmt.Errorf("Gateway catalog facts are stale or future-dated")
@@ -141,6 +173,92 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 		}
 		return clone(snapshot), nil
 	}
+}
+
+type credentialVariant struct {
+	authKind credential.AuthKind
+	fields   []CredentialField
+	metadata map[string]any
+	secrets  map[string]any
+}
+
+var browserCredentialVariants = []credentialVariant{
+	{credential.AuthAPIKeySecret, []CredentialField{{Key: "apiKey", Label: "API key", Required: true, ValueType: "string"}, {Key: "apiSecret", Label: "API secret", Required: true, ValueType: "string"}}, map[string]any{}, map[string]any{"apiKey": "probe", "apiSecret": "probe"}},
+	{credential.AuthAPIKeySecretPassphrase, []CredentialField{{Key: "apiKey", Label: "API key", Required: true, ValueType: "string"}, {Key: "apiSecret", Label: "API secret", Required: true, ValueType: "string"}, {Key: "passphrase", Label: "Passphrase", Required: true, ValueType: "string"}}, map[string]any{}, map[string]any{"apiKey": "probe", "apiSecret": "probe", "passphrase": "probe"}},
+	{credential.AuthLighterSigner, []CredentialField{{Key: "accountIndex", Label: "Account index", Metadata: true, Required: true, ValueType: "integer"}, {Key: "keyIndex", Label: "Key index", Metadata: true, Required: true, ValueType: "integer"}, {Key: "privateKey", Label: "Private key", Required: true, ValueType: "string"}}, map[string]any{"accountIndex": 0, "keyIndex": 0}, map[string]any{"privateKey": "probe"}},
+	{credential.AuthEVMPrivateKey, []CredentialField{{Key: "accountAddress", Label: "Account address", Metadata: true, ValueType: "string"}, {Key: "privateKey", Label: "Private key", Required: true, ValueType: "string"}}, map[string]any{"accountAddress": "0x1111111111111111111111111111111111111111"}, map[string]any{"privateKey": "probe"}},
+	{credential.AuthAsterAPIWallet, []CredentialField{{Key: "userAddress", Label: "User address", Metadata: true, Required: true, ValueType: "string"}, {Key: "expectedSigner", Label: "Expected signer", Metadata: true, ValueType: "string"}, {Key: "apiWalletPrivateKey", Label: "API wallet private key", Required: true, ValueType: "string"}}, map[string]any{"userAddress": "0x1111111111111111111111111111111111111111", "expectedSigner": "0x2222222222222222222222222222222222222222"}, map[string]any{"apiWalletPrivateKey": "probe"}},
+	{credential.AuthNadoSigner, []CredentialField{{Key: "subaccount", Label: "Subaccount", Metadata: true, Required: true, ValueType: "string"}, {Key: "privateKey", Label: "Private key", Required: true, ValueType: "string"}}, map[string]any{"subaccount": "default"}, map[string]any{"privateKey": "probe"}},
+}
+
+func enrichBrowserVenues(snapshot Snapshot) (Snapshot, error) {
+	for index := range snapshot.Venues {
+		venue := &snapshot.Venues[index]
+		environment := routeprofile.NativeEnvironment(venue.Environment)
+		mode := routeprofile.ModeTest
+		if environment == routeprofile.EnvironmentLive {
+			mode = routeprofile.ModeLive
+		}
+		profiles := make([]RouteProfile, 0)
+		for _, product := range []routeprofile.Product{routeprofile.ProductSpot, routeprofile.ProductPerp} {
+			for _, settlement := range []string{"", "USDT", "USDC", "USDT0"} {
+				profile, err := routeprofile.DefaultRegistry().ResolveLegacy(mode, venue.Venue, string(product), settlement, environment)
+				if err != nil {
+					continue
+				}
+				routeID := string(profile.Product)
+				label := strings.ToUpper(string(profile.Product[:1])) + string(profile.Product[1:])
+				if profile.SettlementAsset != "" {
+					routeID += "-" + strings.ToLower(profile.SettlementAsset)
+					label += " / " + profile.SettlementAsset
+				}
+				profiles = append(profiles, RouteProfile{RouteID: routeID, Product: string(profile.Product), SettlementAsset: profile.SettlementAsset, RouteProfileID: profile.ID, Label: label})
+			}
+		}
+		if len(profiles) == 0 {
+			return Snapshot{}, fmt.Errorf("Gateway venue has no executable route profiles")
+		}
+		schema, err := browserCredentialSchema(venue.Venue)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		venue.NativeEnvironment = venue.Environment
+		venue.Products = []string{"manual"}
+		for _, profile := range profiles {
+			if profile.Product == string(routeprofile.ProductPerp) {
+				venue.Products = []string{"funding", "manual"}
+				break
+			}
+		}
+		venue.CredentialSchema = schema
+		venue.RouteProfiles = profiles
+	}
+	return snapshot, nil
+}
+
+func browserCredentialSchema(venue string) (CredentialSchema, error) {
+	var matched *credentialVariant
+	for index := range browserCredentialVariants {
+		variant := &browserCredentialVariants[index]
+		payload, err := json.Marshal(map[string]any{"schemaVersion": 1, "venue": venue, "authKind": variant.authKind, "metadata": variant.metadata, "secrets": variant.secrets})
+		if err != nil {
+			return CredentialSchema{}, err
+		}
+		decoded, err := credential.DefaultRegistry().Decode(venue, payload)
+		clear(payload)
+		if err != nil {
+			continue
+		}
+		decoded.Clear()
+		if matched != nil {
+			return CredentialSchema{}, fmt.Errorf("credential registry is ambiguous for venue")
+		}
+		matched = variant
+	}
+	if matched == nil {
+		return CredentialSchema{}, fmt.Errorf("Gateway venue has no executable credential schema")
+	}
+	return CredentialSchema{SchemaVersion: 1, AuthKind: string(matched.authKind), Fields: append([]CredentialField(nil), matched.fields...)}, nil
 }
 
 func (projection *Projection) Status() Status {
@@ -224,6 +342,11 @@ func validateRules(rules TradeRules) error {
 
 func clone(snapshot Snapshot) Snapshot {
 	snapshot.Venues = append([]Venue(nil), snapshot.Venues...)
+	for index := range snapshot.Venues {
+		snapshot.Venues[index].Products = append([]string(nil), snapshot.Venues[index].Products...)
+		snapshot.Venues[index].CredentialSchema.Fields = append([]CredentialField(nil), snapshot.Venues[index].CredentialSchema.Fields...)
+		snapshot.Venues[index].RouteProfiles = append([]RouteProfile(nil), snapshot.Venues[index].RouteProfiles...)
+	}
 	snapshot.Instruments = append([]Instrument(nil), snapshot.Instruments...)
 	return snapshot
 }
