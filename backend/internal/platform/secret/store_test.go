@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type recordingProvider struct {
 	readinessErr error
-	putRef       string
+	putRef       secretstore.OpaqueRef
 	putErr       error
-	mode         Mode
+	mode         secretstore.Mode
 	namespace    string
 	keyVersion   string
 	secret       []byte
@@ -20,28 +22,37 @@ type recordingProvider struct {
 	deleteErr    error
 }
 
-func (provider *recordingProvider) Delete(_ context.Context, scope Scope, reference string) error {
+func (provider *recordingProvider) Delete(_ context.Context, scope secretstore.Scope, reference secretstore.OpaqueRef) error {
 	provider.mode = scope.Mode
 	provider.namespace = scope.Namespace
 	provider.keyVersion = scope.KeyVersion
-	provider.deleteRef = reference
+	provider.deleteRef = reference.RawForTrustedBoundary()
 	return provider.deleteErr
 }
 
-func (provider *recordingProvider) Check(_ context.Context, scope Scope) error {
+func (provider *recordingProvider) Check(_ context.Context, scope secretstore.Scope) error {
 	provider.mode = scope.Mode
 	provider.namespace = scope.Namespace
 	provider.keyVersion = scope.KeyVersion
 	return provider.readinessErr
 }
 
-func (provider *recordingProvider) Put(_ context.Context, scope Scope, value []byte) (string, error) {
+func (provider *recordingProvider) Put(_ context.Context, scope secretstore.Scope, _ secretstore.OperationID, value []byte) (secretstore.OpaqueRef, error) {
 	provider.mode = scope.Mode
 	provider.namespace = scope.Namespace
 	provider.keyVersion = scope.KeyVersion
 	provider.secret = append([]byte(nil), value...)
 	return provider.putRef, provider.putErr
 }
+
+func (provider *recordingProvider) LookupOperation(_ context.Context, scope secretstore.Scope, _ secretstore.OperationID) (secretstore.OpaqueRef, error) {
+	provider.mode = scope.Mode
+	provider.namespace = scope.Namespace
+	provider.keyVersion = scope.KeyVersion
+	return provider.putRef, provider.putErr
+}
+
+const testOperationID secretstore.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 
 func TestNewStoreFreezesModeNamespaceAndKeyVersion(t *testing.T) {
 	provider := &recordingProvider{}
@@ -86,20 +97,20 @@ func TestNewStoreRejectsCrossModeNamespaceAndUnsupportedKeyVersion(t *testing.T)
 
 func TestStoreReturnsOnlyOpaqueReferenceAndRedactsProviderErrors(t *testing.T) {
 	const canary = "secret-canary-do-not-log"
-	provider := &recordingProvider{putRef: "provider-internal-id-42"}
+	provider := &recordingProvider{putRef: secretstore.OpaqueRef(strings.Repeat("A", 43))}
 	store, err := NewStore(Config{Mode: ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}, provider)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	ref, err := store.Put(context.Background(), []byte(canary))
+	ref, err := store.Put(context.Background(), testOperationID, []byte(canary))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if string(provider.secret) != canary {
 		t.Fatal("provider did not receive the submitted credential")
 	}
-	if strings.Contains(fmt.Sprintf("%+v", ref), canary) || strings.Contains(fmt.Sprintf("%+v", ref), provider.putRef) {
+	if strings.Contains(fmt.Sprintf("%+v", ref), canary) || strings.Contains(fmt.Sprintf("%+v", ref), provider.putRef.RawForTrustedBoundary()) {
 		t.Fatalf("reference formatting exposed sensitive material: %+v", ref)
 	}
 	if ref.Namespace() != "boltertrader/test" || ref.KeyVersion() != "v1" || ref.IsZero() {
@@ -107,9 +118,9 @@ func TestStoreReturnsOnlyOpaqueReferenceAndRedactsProviderErrors(t *testing.T) {
 	}
 
 	provider.putErr = errors.New("provider failed while storing " + canary)
-	if _, err := store.Put(context.Background(), []byte(canary)); err == nil {
+	if _, err := store.Put(context.Background(), testOperationID, []byte(canary)); err == nil {
 		t.Fatal("Put accepted provider failure")
-	} else if strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), provider.putRef) {
+	} else if strings.Contains(err.Error(), canary) || strings.Contains(err.Error(), provider.putRef.RawForTrustedBoundary()) {
 		t.Fatalf("Put leaked provider material: %v", err)
 	}
 }
@@ -147,14 +158,15 @@ func TestDeleteUsesOpaqueProviderReferenceAndRedactsFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Delete(context.Background(), "provider-ref-1"); err != nil {
+	rawRef := strings.Repeat("A", 43)
+	if err := store.Delete(context.Background(), rawRef); err != nil {
 		t.Fatal(err)
 	}
-	if provider.deleteRef != "provider-ref-1" {
+	if provider.deleteRef != rawRef {
 		t.Fatalf("delete ref = %q", provider.deleteRef)
 	}
 	provider.deleteErr = errors.New("delete provider-ref-1 with secret-canary")
-	if err := store.Delete(context.Background(), "provider-ref-1"); err == nil || strings.Contains(err.Error(), "provider-ref-1") || strings.Contains(err.Error(), "secret-canary") {
+	if err := store.Delete(context.Background(), rawRef); err == nil || strings.Contains(err.Error(), "provider-ref-1") || strings.Contains(err.Error(), "secret-canary") {
 		t.Fatalf("Delete error = %v", err)
 	}
 }

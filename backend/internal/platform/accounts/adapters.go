@@ -5,12 +5,13 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type SecretStoreAdapter struct{ Store *secret.Store }
 
-func (adapter SecretStoreAdapter) Put(ctx context.Context, material []byte) (string, error) {
-	reference, err := adapter.Store.Put(ctx, material)
+func (adapter SecretStoreAdapter) Put(ctx context.Context, operationID secretstore.OperationID, material []byte) (string, error) {
+	reference, err := adapter.Store.Put(ctx, operationID, material)
 	if err != nil {
 		return "", err
 	}

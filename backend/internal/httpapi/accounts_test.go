@@ -8,12 +8,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/QuantProcessing/boltertrader/secretstore"
+
 	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 )
 
 type routeSecretWriter struct{ ref string }
 
-func (writer routeSecretWriter) Put(context.Context, []byte) (string, error) { return writer.ref, nil }
+func (writer routeSecretWriter) Put(context.Context, secretstore.OperationID, []byte) (string, error) {
+	return writer.ref, nil
+}
 
 type routeAuditWriter struct{}
 

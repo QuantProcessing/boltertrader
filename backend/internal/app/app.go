@@ -34,6 +34,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
 	"github.com/QuantProcessing/boltertrader/backend/internal/workapi"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
 )
@@ -356,8 +357,14 @@ type unavailableSecretProvider struct{}
 func (unavailableSecretProvider) Check(context.Context, secret.Scope) error {
 	return errors.New("unavailable")
 }
-func (unavailableSecretProvider) Put(context.Context, secret.Scope, []byte) (string, error) {
+func (unavailableSecretProvider) Put(context.Context, secretstore.Scope, secretstore.OperationID, []byte) (secretstore.OpaqueRef, error) {
 	return "", errors.New("unavailable")
+}
+func (unavailableSecretProvider) LookupOperation(context.Context, secretstore.Scope, secretstore.OperationID) (secretstore.OpaqueRef, error) {
+	return "", errors.New("unavailable")
+}
+func (unavailableSecretProvider) Delete(context.Context, secretstore.Scope, secretstore.OpaqueRef) error {
+	return errors.New("unavailable")
 }
 
 type unavailableCatalogSource struct{}

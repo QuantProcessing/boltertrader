@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/desiredstate"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 var (
@@ -17,7 +19,7 @@ var (
 )
 
 type SecretWriter interface {
-	Put(context.Context, []byte) (string, error)
+	Put(context.Context, secretstore.OperationID, []byte) (string, error)
 }
 
 type SecretCleaner interface {
@@ -38,19 +40,21 @@ type AuditWriter interface {
 }
 
 type Options struct {
-	Store   Store
-	Secrets SecretWriter
-	Audit   AuditWriter
-	Now     func() time.Time
-	ID      func() string
+	Store       Store
+	Secrets     SecretWriter
+	Audit       AuditWriter
+	Now         func() time.Time
+	ID          func() string
+	OperationID func() secretstore.OperationID
 }
 
 type Service struct {
-	store   Store
-	secrets SecretWriter
-	audit   AuditWriter
-	now     func() time.Time
-	id      func() string
+	store       Store
+	secrets     SecretWriter
+	audit       AuditWriter
+	now         func() time.Time
+	id          func() string
+	operationID func() secretstore.OperationID
 }
 
 func New(options Options) (*Service, error) {
@@ -67,7 +71,10 @@ func New(options Options) (*Service, error) {
 			return "acct_" + hex.EncodeToString(value[:])
 		}
 	}
-	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID}, nil
+	if options.OperationID == nil {
+		options.OperationID = func() secretstore.OperationID { return secretstore.OperationID(uuid.NewString()) }
+	}
+	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID, operationID: options.OperationID}, nil
 }
 
 func (service *Service) Create(ctx context.Context, request CreateRequest, principalID string) (Account, error) {
@@ -76,7 +83,7 @@ func (service *Service) Create(ctx context.Context, request CreateRequest, princ
 	}
 	material := append([]byte(nil), request.SecretMaterial...)
 	defer clear(material)
-	secretRef, err := service.secrets.Put(ctx, material)
+	secretRef, err := service.secrets.Put(ctx, service.operationID(), material)
 	if err != nil || secretRef == "" {
 		return Account{}, errors.New("credential storage failed")
 	}
@@ -126,7 +133,7 @@ func (service *Service) Rotate(ctx context.Context, id string, revision int64, s
 	}
 	material := append([]byte(nil), secretMaterial...)
 	defer clear(material)
-	secretRef, err := service.secrets.Put(ctx, material)
+	secretRef, err := service.secrets.Put(ctx, service.operationID(), material)
 	if err != nil || secretRef == "" {
 		return Account{}, errors.New("credential storage failed")
 	}
