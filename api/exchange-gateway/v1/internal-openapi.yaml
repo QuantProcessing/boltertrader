@@ -311,8 +311,9 @@ components:
     PendingSnapshotView:
       type: object
       additionalProperties: false
-      required: [desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
+      required: [operationId, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
       properties:
+        operationId: {type: string, format: uuid}
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
