@@ -45,6 +45,16 @@ type RuntimeStateStore interface {
 	ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error)
 }
 
+func (manager *Manager) SetRuntimeStateStore(runtimeStore RuntimeStateStore) error {
+	if runtimeStore == nil {
+		return ErrCandidateMismatch
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	manager.runtimeStore = runtimeStore
+	return nil
+}
+
 type RouteRuntime struct {
 	Definition store.RouteDefinition
 	Handle     CandidateRoute

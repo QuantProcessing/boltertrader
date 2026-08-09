@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/config"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
@@ -239,6 +240,61 @@ func TestRunDoesNotListenWhenStartupFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("run succeeded, want startup failure")
+	}
+}
+
+func TestRunRejectsCredentialResolverFailureBeforeListen(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "gateway.yaml")
+	if err := os.WriteFile(configPath, []byte(minimalConfigYAML()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TOKEN", "auth-token")
+	t.Setenv("POSTGRES_DSN", "postgres://user:pass@127.0.0.1/db?sslmode=disable")
+	t.Setenv("API_KEY", "key")
+	t.Setenv("API_SECRET", "secret")
+	listened := false
+	err := run(context.Background(), []string{"-config", configPath}, runtimeDeps{
+		checkCredentialResolver: func(context.Context) error { return errors.New("provider detail canary") },
+		listen: func(string, string) (net.Listener, error) {
+			listened = true
+			return nil, nil
+		},
+	})
+	if err == nil || listened || strings.Contains(err.Error(), "provider detail canary") {
+		t.Fatalf("err=%v listened=%t", err, listened)
+	}
+}
+
+func TestProductionGatewayCredentialResolverUsesModeScopedFilesystemProvider(t *testing.T) {
+	root := t.TempDir()
+	keyFile := filepath.Join(root, "credentials", "test", "secret-store-master.key")
+	if err := os.MkdirAll(filepath.Dir(keyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BT_SECRET_KEY_SOURCE", "file")
+	t.Setenv("BT_SECRET_STORE_DIR", filepath.Join(root, "secret-store"))
+	t.Setenv("BT_SECRET_STORE_NAMESPACE", "boltertrader/test")
+	t.Setenv("BT_SECRET_MASTER_KEY_VERSION", "v1")
+	t.Setenv("BT_SECRET_MASTER_KEY_FILE", keyFile)
+	t.Setenv("BT_SECRET_KEYCHAIN_SERVICE", "")
+	t.Setenv("BT_SECRET_KEYCHAIN_ACCOUNT", "")
+
+	provider, resolver, err := newGatewayCredentialResolver(account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer provider.Close()
+	if err := resolver.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("BT_SECRET_STORE_NAMESPACE", "boltertrader/live")
+	if _, _, err := newGatewayCredentialResolver(account.RuntimeModeTest); err == nil {
+		t.Fatal("cross-mode credential resolver configuration succeeded")
 	}
 }
 

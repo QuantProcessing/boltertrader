@@ -3,11 +3,14 @@ package account
 import (
 	"context"
 	"fmt"
+	"net/http"
 
+	"github.com/QuantProcessing/boltertrader/credential"
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/exchange/factory"
 	"github.com/QuantProcessing/boltertrader/gateway/config"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
 
 type spotHandle struct{ client exchange.SpotClient }
@@ -34,6 +37,113 @@ func (handle perpHandle) perp() (exchange.PerpClient, bool) { return handle.clie
 func (handle perpHandle) exactLookupReady() bool {
 	_, ok := handle.client.(exchange.ExactOrderLookup)
 	return ok
+}
+
+type factoryRuntimeGroupBuilder struct {
+	httpClient *http.Client
+	catalog    exchange.InstrumentCatalog
+}
+
+type factoryCandidateRoute struct{ handle clientHandle }
+
+func (route factoryCandidateRoute) Probe(ctx context.Context) error {
+	_, err := route.handle.refresh(ctx)
+	return err
+}
+
+func (route factoryCandidateRoute) Close() error { return route.handle.close() }
+
+func NewFactoryRuntimeGroupBuilder(httpClient *http.Client, catalog exchange.InstrumentCatalog) RuntimeGroupBuilder {
+	return factoryRuntimeGroupBuilder{httpClient: httpClient, catalog: catalog}
+}
+
+func (builder factoryRuntimeGroupBuilder) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, route store.RouteDefinition, decoded *credential.Decoded) (CandidateRoute, error) {
+	environment, err := factoryEnvironment(snapshot.NativeEnvironment)
+	if err != nil || decoded == nil || decoded.Venue != snapshot.Venue || builder.httpClient == nil || builder.catalog == nil {
+		return nil, fmt.Errorf("construct runtime route failed")
+	}
+	options := []factory.Option{factory.WithEnvironment(environment), factory.WithHTTPClient(builder.httpClient), factory.WithInstrumentCatalog(builder.catalog)}
+	identity := snapshot.Venue + ":" + route.Product + ":" + route.SettlementAsset
+	var handle clientHandle
+	switch credentials := decoded.Credentials.(type) {
+	case *credential.APIKeySecret:
+		switch identity {
+		case "binance:spot:":
+			handle, err = newSpotFactoryHandle(factory.BinanceSpotConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "binance:perp:USDT":
+			handle, err = newPerpFactoryHandle(factory.BinanceUSDPerpConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "bybit:spot:":
+			handle, err = newSpotFactoryHandle(factory.BybitSpotConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "bybit:perp:USDT":
+			handle, err = newPerpFactoryHandle(factory.BybitUSDTPerpConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "bybit:perp:USDC":
+			handle, err = newPerpFactoryHandle(factory.BybitUSDCPerpConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "gate:spot:":
+			handle, err = newSpotFactoryHandle(factory.GateSpotConfig(credentials.APIKey, credentials.APISecret, options...))
+		case "gate:perp:USDT":
+			handle, err = newPerpFactoryHandle(factory.GateUSDTPerpConfig(credentials.APIKey, credentials.APISecret, options...))
+		}
+	case *credential.APIKeySecretPassphrase:
+		switch identity {
+		case "okx:spot:":
+			handle, err = newSpotFactoryHandle(factory.OKXSpotConfig(credentials.APIKey, credentials.APISecret, credentials.Passphrase, options...))
+		case "okx:perp:USDT":
+			handle, err = newPerpFactoryHandle(factory.OKXUSDTPerpConfig(credentials.APIKey, credentials.APISecret, credentials.Passphrase, options...))
+		case "bitget:spot:":
+			handle, err = newSpotFactoryHandle(factory.BitgetSpotConfig(credentials.APIKey, credentials.APISecret, credentials.Passphrase, options...))
+		case "bitget:perp:USDT":
+			handle, err = newPerpFactoryHandle(factory.BitgetUSDTPerpConfig(credentials.APIKey, credentials.APISecret, credentials.Passphrase, options...))
+		case "bitget:perp:USDC":
+			handle, err = newPerpFactoryHandle(factory.BitgetUSDCPerpConfig(credentials.APIKey, credentials.APISecret, credentials.Passphrase, options...))
+		}
+	case *credential.LighterSigner:
+		if identity == "lighter:spot:" {
+			handle, err = newSpotFactoryHandle(factory.LighterSpotConfig(credentials.PrivateKey, credentials.AccountIndex, credentials.KeyIndex, options...))
+		} else if identity == "lighter:perp:USDC" {
+			handle, err = newPerpFactoryHandle(factory.LighterPerpConfig(credentials.PrivateKey, credentials.AccountIndex, credentials.KeyIndex, options...))
+		}
+	case *credential.EVMPrivateKey:
+		if credentials.AccountAddress != "" {
+			options = append(options, factory.WithAccountAddress(credentials.AccountAddress))
+		}
+		if identity == "hyperliquid:spot:" {
+			handle, err = newSpotFactoryHandle(factory.HyperliquidSpotConfig(credentials.PrivateKey, options...))
+		} else if identity == "hyperliquid:perp:USDC" {
+			handle, err = newPerpFactoryHandle(factory.HyperliquidPerpConfig(credentials.PrivateKey, options...))
+		}
+	case *credential.AsterAPIWallet:
+		if identity == "aster:spot:" {
+			handle, err = newSpotFactoryHandle(factory.AsterSpotConfig(credentials.UserAddress, credentials.APIWalletPrivateKey, credentials.ExpectedSigner, options...))
+		} else if identity == "aster:perp:USDT" {
+			handle, err = newPerpFactoryHandle(factory.AsterUSDTPerpConfig(credentials.UserAddress, credentials.APIWalletPrivateKey, credentials.ExpectedSigner, options...))
+		}
+	case *credential.NadoSigner:
+		if identity == "nado:spot:USDT0" {
+			handle, err = newSpotFactoryHandle(factory.NadoSpotConfig(credentials.PrivateKey, credentials.Subaccount, options...))
+		} else if identity == "nado:perp:USDT0" {
+			handle, err = newPerpFactoryHandle(factory.NadoUSDT0PerpConfig(credentials.PrivateKey, credentials.Subaccount, options...))
+		}
+	}
+	if err != nil || handle == nil {
+		return nil, fmt.Errorf("construct runtime route failed")
+	}
+	return factoryCandidateRoute{handle: handle}, nil
+}
+
+func newSpotFactoryHandle(configuration factory.Config[exchange.SpotClient]) (clientHandle, error) {
+	client, err := factory.New(configuration)
+	if err != nil {
+		return nil, err
+	}
+	return spotHandle{client: client}, nil
+}
+
+func newPerpFactoryHandle(configuration factory.Config[exchange.PerpClient]) (clientHandle, error) {
+	client, err := factory.New(configuration)
+	if err != nil {
+		return nil, err
+	}
+	return perpHandle{client: client}, nil
 }
 
 func buildFactoryClient(ctx context.Context, account config.AccountConfig, options Options) (clientHandle, error) {

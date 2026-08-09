@@ -23,12 +23,13 @@ import (
 )
 
 type gatewayAuthority struct {
-	mu      sync.Mutex
-	store   store.DesiredStateStore
-	manager *account.Manager
-	reads   authorityReadSource
-	mode    account.RuntimeMode
-	now     func() time.Time
+	mu        sync.Mutex
+	store     store.DesiredStateStore
+	snapshots store.RuntimeSnapshotStore
+	manager   *account.Manager
+	reads     authorityReadSource
+	mode      account.RuntimeMode
+	now       func() time.Time
 }
 
 type authorityVenue struct {
@@ -219,10 +220,46 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 	authority := &gatewayAuthority{
 		store: desiredStore, manager: manager, reads: managerAuthorityReads{manager: manager}, mode: mode, now: time.Now,
 	}
+	if snapshots, ok := desiredStore.(store.RuntimeSnapshotStore); ok {
+		authority.snapshots = snapshots
+		if err := manager.SetRuntimeStateStore(snapshots); err != nil {
+			return nil, errors.New("configure runtime snapshot store failed")
+		}
+	}
 	if err := authority.restore(ctx); err != nil {
 		return nil, errors.New("restore gateway authority failed")
 	}
 	return authority, nil
+}
+
+func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired store.DesiredSnapshot) (store.PromotionResult, error) {
+	if ctx == nil || authority.snapshots == nil {
+		return store.PromotionResult{}, errors.New("runtime snapshot authority is unavailable")
+	}
+	pending, err := authority.snapshots.PreparePending(ctx, desired)
+	if err != nil {
+		return store.PromotionResult{}, err
+	}
+	group, err := authority.manager.BuildCandidate(ctx, pending)
+	if err != nil {
+		return store.PromotionResult{}, err
+	}
+	observedAt := authority.now().UTC()
+	for _, route := range pending.Routes {
+		if route.RequestedState != store.RouteActive {
+			continue
+		}
+		if err := authority.snapshots.RecordCandidateObservation(ctx, store.CandidateObservation{
+			OperationID: pending.OperationID, ObservationRevision: 1, RouteID: route.RouteID,
+			State: store.CandidateReady, ObservedAt: observedAt,
+		}); err != nil {
+			return store.PromotionResult{}, err
+		}
+	}
+	if err := authority.snapshots.MarkCandidateReady(ctx, pending.OperationID); err != nil {
+		return store.PromotionResult{}, err
+	}
+	return authority.manager.PromoteCandidate(ctx, group)
 }
 
 func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
@@ -749,6 +786,9 @@ func (authority *gatewayAuthority) loadExpected(ctx context.Context, accountID s
 }
 
 func (authority *gatewayAuthority) restore(ctx context.Context) error {
+	if authority.snapshots != nil {
+		return authority.manager.RestoreRuntimeState(ctx)
+	}
 	items, err := authority.store.ListRecoverableDesiredAccounts(ctx)
 	if err != nil {
 		return err

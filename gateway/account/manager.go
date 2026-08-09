@@ -788,23 +788,7 @@ func (manager *Manager) Runtimes() []RuntimeAccount {
 func (manager *Manager) RuntimeReady() bool {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	if manager.closed {
-		return false
-	}
-	if len(manager.runtimes) == 0 {
-		return true
-	}
-	hasActive := false
-	for _, runtime := range manager.runtimes {
-		if runtime.State != RuntimeStateActive {
-			continue
-		}
-		hasActive = true
-		if !runtime.Ready {
-			return false
-		}
-	}
-	return hasActive
+	return !manager.closed
 }
 
 func (manager *Manager) CheckWriteFence(fence WriteFence) error {

@@ -571,8 +571,34 @@ func TestManagerRuntimeReadyFollowsAuthoritativeRuntimeState(t *testing.T) {
 	if _, err := manager.DisableRuntime(context.Background(), desired.AccountID, 1, 2); err != nil {
 		t.Fatal(err)
 	}
-	if manager.RuntimeReady() {
-		t.Fatal("disabled authoritative runtime reported ready")
+	if !manager.RuntimeReady() {
+		t.Fatal("account eligibility made the control plane unready")
+	}
+}
+
+func TestManagerRuntimeReadyIgnoresOneUnreadyAccount(t *testing.T) {
+	manager := newLifecycleTestManager(t, RuntimeModeTest)
+	ready := desiredTestAccount(t, 1, 1, 1, "opaque_ready")
+	if _, err := manager.CreateRuntime(context.Background(), ready); err != nil {
+		t.Fatal(err)
+	}
+	unready := desiredTestAccount(t, 1, 1, 1, "opaque_unready")
+	unready.AccountID = "unready"
+	if _, err := manager.CreateRuntime(context.Background(), unready); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	runtime := manager.runtimes[unready.AccountID]
+	runtime.Ready = false
+	runtime.Reason = ReasonPrivateStreamGap
+	manager.runtimes[unready.AccountID] = runtime
+	manager.mu.Unlock()
+	if !manager.RuntimeReady() {
+		t.Fatal("one unready account made service readiness false")
+	}
+	serviceReady, active, readyCount := manager.RuntimeReadiness()
+	if !serviceReady || active != 2 || readyCount != 1 {
+		t.Fatalf("readiness service=%t active=%d ready=%d", serviceReady, active, readyCount)
 	}
 }
 
