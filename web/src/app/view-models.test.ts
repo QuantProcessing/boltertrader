@@ -86,6 +86,33 @@ describe("authoritative view models", () => {
     })).toEqual({ state: "blocked", reason: "account disabled" });
   });
 
+  it("derives runtime state from redacted v5 active and pending snapshots", () => {
+    expect(runtimeDisplay({
+      accountId: "account-1",
+      pending: {
+        desiredStateRevision: 2,
+        runtimeGeneration: 2,
+        credentialVersion: 2,
+        requestedState: "rotating",
+        state: "blocked",
+        reason: "validation failed",
+        routes: [],
+      },
+      retiring: [],
+    })).toEqual({ state: "blocked", reason: "validation failed" });
+    expect(runtimeDisplay({
+      accountId: "account-1",
+      active: {
+        desiredStateRevision: 1,
+        runtimeGeneration: 1,
+        credentialVersion: 1,
+        requestedState: "active",
+        routes: [{ routeId: "perp-usdt", product: "perp", routeProfileId: "profile-1", requestedState: "active", ready: true }],
+      },
+      retiring: [],
+    })).toEqual({ state: "ready" });
+  });
+
   it("derives activity display fields only from the authoritative payload", () => {
     expect(activityDisplay({
       eventId: "event-1",

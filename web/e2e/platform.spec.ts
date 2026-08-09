@@ -38,10 +38,20 @@ test("authenticated desktop operator can inspect and act across both products", 
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
   await page.getByLabel("Account name").fill("OKX Test");
-  await page.getByLabel("Credential JSON").fill('{"apiKey":"credential-canary","secret":"must-disappear"}');
+  await page.getByLabel("API key").fill("credential-canary");
+  await page.getByLabel("API secret").fill("must-disappear");
   await page.getByRole("button", { name: "Add account" }).click();
-  await expect(page.getByLabel("Credential JSON")).toHaveValue("");
+  await expect(page.getByLabel("API key")).toHaveValue("");
+  await expect(page.getByLabel("API secret")).toHaveValue("");
   await expect(page.getByText("credential-canary")).toHaveCount(0);
+  await page.getByLabel("Account name").fill("Binance Secondary");
+  await page.getByLabel("API key").fill("second-browser-key");
+  await page.getByLabel("API secret").fill("second-browser-secret");
+  await page.getByRole("button", { name: "Add account" }).click();
+  await expect(page.getByLabel("API secret")).toHaveValue("");
+  await expect(page.getByText("private stream gap")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("desktop-accounts.png"), fullPage: true });
 
   await page.getByRole("button", { name: "Activity" }).click();
   await expect(page.getByRole("heading", { name: "Activity & Audit" })).toBeVisible();
@@ -50,14 +60,14 @@ test("authenticated desktop operator can inspect and act across both products", 
   await expect(page.getByText("command.submit")).toBeVisible();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await expect(page.getByText("boltertrader-product-platform-upgrade/v4")).toBeVisible();
+  await expect(page.getByText("boltertrader-product-platform-upgrade/v5")).toBeVisible();
 
   expect(platform.readPaths()).not.toContain("/catalog/capabilities");
 
   const manualCommand = platform.writes.find((write) => write.path === "/products/manual/commands");
   const fundingCommands = platform.writes.filter((write) => write.path === "/products/funding/commands");
   const reservations = platform.writes.filter((write) => write.path === "/reservations");
-  const accountCreate = platform.writes.find((write) => write.path === "/accounts" && write.method === "POST");
+  const accountCreates = platform.writes.filter((write) => write.path === "/accounts" && write.method === "POST");
   expect(manualCommand?.headers["x-csrf-token"]).toBe("csrf-fixture");
   expect(manualCommand?.headers["idempotency-key"]).toBeTruthy();
   expect(fundingCommands).toHaveLength(2);
@@ -73,7 +83,9 @@ test("authenticated desktop operator can inspect and act across both products", 
   expect(openReservationIndexes).toHaveLength(2);
   expect(fundingPreviewIndex).toBeLessThan(Math.min(...openReservationIndexes));
   expect(Math.max(...openReservationIndexes)).toBeLessThan(fundingOpenIndex);
-  expect(accountCreate?.body).toMatchObject({ secretMaterial: { apiKey: "credential-canary", secret: "must-disappear" } });
+  expect(accountCreates).toHaveLength(2);
+  expect(accountCreates[0]?.body).toMatchObject({ venue: "binance", productPolicy: ["manual"], routes: [{ routeId: "perp-usdt", requestedState: "active" }], credentialBundle: { schemaVersion: 1, venue: "binance", authKind: "api_key_secret", secrets: { apiKey: "credential-canary", apiSecret: "must-disappear" } } });
+  expect(accountCreates[1]?.body).toMatchObject({ venue: "binance", credentialBundle: { secrets: { apiKey: "second-browser-key", apiSecret: "second-browser-secret" } } });
 });
 
 test("degraded Live workspace shows authority failures without submitting an order", async ({ page }) => {
@@ -154,4 +166,11 @@ test("mobile navigation preserves every route without document overflow", async 
   }).toBeLessThanOrEqual(0);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("mobile-funding.png"), fullPage: true });
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page.getByRole("button", { name: "Accounts" }).click();
+  await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
+  await expect(page.getByText("private stream gap")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.scrollX)).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath("mobile-accounts.png"), fullPage: true });
 });

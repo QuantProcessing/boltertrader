@@ -164,6 +164,16 @@ legend { margin-bottom: 7px; color: var(--text-muted); font-size: 0.76rem; font-
 .rotation-panel > div:first-child { display: grid; gap: 3px; }
 .rotation-panel > div:first-child span { color: var(--text-faint); font-size: 0.74rem; }
 .rotation-panel .row-actions { justify-content: flex-end; gap: 7px; }
+.profile-metadata { display: grid; grid-template-columns: 1fr auto; min-height: 40px; align-items: center; margin: 0; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg-soft); }
+.profile-metadata dt { color: var(--text-faint); font-size: 0.72rem; }
+.profile-metadata dd { margin: 0; color: var(--text); font-size: 0.76rem; font-weight: 650; }
+.route-options { flex-wrap: wrap; }
+.account-table { min-width: 760px; }
+.account-table .row-actions { flex-wrap: nowrap; }
+.route-diagnostic { background: var(--bg-soft); }
+.route-diagnostic td { height: 43px; font-size: 0.72rem; }
+.route-diagnostic code { display: block; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.route-phase { color: var(--text); font-size: 0.7rem; font-weight: 700; }
 
 .state-banner { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 12px; min-height: 54px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--radius); }
 .state-banner > div { display: grid; }

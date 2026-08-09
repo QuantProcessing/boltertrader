@@ -227,7 +227,7 @@ describe("App", () => {
 
     await waitFor(() => expect(mocks.patch).toHaveBeenCalledWith(
       "/accounts/account-1",
-      { displayName: "Primary account", productIds: ["manual"] },
+      { displayName: "Primary account", productPolicy: ["manual"] },
       expect.objectContaining({ headers: { "If-Match": '"desired-state-revision-7"' }, idempotencyScope: expect.any(String) }),
     ));
   });

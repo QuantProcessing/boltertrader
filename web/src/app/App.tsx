@@ -145,7 +145,7 @@ export function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [streamState, setStreamState] = useState("disconnected");
-  const [contractVersion, setContractVersion] = useState("boltertrader-product-platform-upgrade/v4");
+  const [contractVersion, setContractVersion] = useState("boltertrader-product-platform-upgrade/v5");
   const [fundingPreview, setFundingPreview] = useState<FundingPreview | null>(null);
   const [manualPreview, setManualPreview] = useState<Preview | null>(null);
   const resnapshotRef = useRef<() => Promise<void>>(async () => undefined);
@@ -225,6 +225,7 @@ export function App() {
       const response = await apiClient.post<SessionResult>("/auth/login", { username, password });
       const result = unwrap(response);
       apiClient.setSession({ csrfToken: result.session.csrfToken });
+      setContractVersion(response?.meta?.contractVersion ?? "boltertrader-product-platform-upgrade/v5");
       setSession(result);
     } catch (loginError) { setError(errorMessage(loginError)); }
     finally { setBusy(false); }

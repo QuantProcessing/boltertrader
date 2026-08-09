@@ -24,7 +24,7 @@ export function canSubmitPreview(preview: { canSubmit?: boolean; blockers?: stri
 
 export function flattenRuntimeCapabilities(runtimes: Record<string, RuntimeView[]>): Capability[] {
   return Object.entries(runtimes).flatMap(([accountId, accountRuntimes]) =>
-    accountRuntimes.flatMap((runtime) => runtime.capabilities.flatMap((capability) =>
+    accountRuntimes.flatMap((runtime) => (runtime.capabilities ?? []).flatMap((capability) =>
       Object.entries(capability.operations).map(([operation, supported]) => ({
         accountId,
         rowId: capability.rowId,
@@ -39,12 +39,18 @@ export function flattenRuntimeCapabilities(runtimes: Record<string, RuntimeView[
   );
 }
 
-export function runtimeDisplay(runtime: Pick<RuntimeView, "readiness" | "writeReadiness" | "blockedReason"> | undefined): { state: string; reason?: string } {
+export function runtimeDisplay(runtime: Partial<RuntimeView> | undefined): { state: string; reason?: string } {
   if (!runtime) return { state: "unknown" };
+  if (runtime.pending?.state === "blocked") return { state: "blocked", reason: runtime.pending.reason ?? runtime.pending.routes.find((route) => route.reason)?.reason };
   if (runtime.blockedReason) return { state: "blocked", reason: runtime.blockedReason };
-  if (!runtime.readiness.ready) return { state: "unavailable", reason: runtime.readiness.reason };
-  if (!runtime.writeReadiness.ready) return { state: "read_only", reason: runtime.writeReadiness.reason };
-  return { state: "ready" };
+  if (runtime.readiness && !runtime.readiness.ready) return { state: "unavailable", reason: runtime.readiness.reason };
+  if (runtime.writeReadiness && !runtime.writeReadiness.ready) return { state: "read_only", reason: runtime.writeReadiness.reason };
+  if (runtime.active) {
+    const blockedRoute = runtime.active.routes.find((route) => !route.ready);
+    return blockedRoute ? { state: "unavailable", reason: blockedRoute.reason } : { state: "ready" };
+  }
+  if (runtime.pending) return { state: runtime.pending.state, reason: runtime.pending.reason };
+  return runtime.readiness?.ready && runtime.writeReadiness?.ready ? { state: "ready" } : { state: "unknown" };
 }
 
 export function activityDisplay(event: Pick<ActivityEvent, "kind" | "payload">): { summary: string; status: string } {

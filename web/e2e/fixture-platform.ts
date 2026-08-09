@@ -23,7 +23,7 @@ export interface FixturePlatform {
 const now = "2026-08-08T10:00:00Z";
 
 function envelope(data: unknown) {
-  return { meta: { requestId: "fixture-request", contractVersion: "boltertrader-product-platform-upgrade/v4", apiVersion: "v1" }, data };
+  return { meta: { requestId: "fixture-request", contractVersion: "boltertrader-product-platform-upgrade/v5", apiVersion: "v1" }, data };
 }
 
 function error(code: string, message: string, retryable = false) {
@@ -50,9 +50,10 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
     principal: { id: "operator-1", mode, username: "operator@example.test" },
     session: { csrfToken: "csrf-fixture", expiresAt: "2026-08-09T00:00:00Z" },
   };
+  const desiredRoute = (venue: string) => ({ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: `${venue}.perp.usdt.${environment}.v1`, requestedState: "active" });
   const accounts = [
-    { accountId: "binance-primary", venue: "binance", venueEnvironment: environment, displayName: "Binance Primary", productIds: ["funding", "manual"], status: "active", desiredStateRevision: 3, runtimeGeneration: 2, credentialVersion: 1 },
-    { accountId: "bybit-hedge", venue: "bybit", venueEnvironment: environment, displayName: "Bybit Hedge", productIds: ["funding", "manual"], status: "active", desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1 },
+    { accountId: "binance-primary", venue: "binance", mode, nativeEnvironment: environment, displayName: "Binance Primary", productPolicy: ["funding", "manual"], routes: [desiredRoute("binance")], status: "active", desiredStateRevision: 3, runtimeGeneration: 2, credentialVersion: 1 },
+    { accountId: "bybit-hedge", venue: "bybit", mode, nativeEnvironment: environment, displayName: "Bybit Hedge", productPolicy: ["funding", "manual"], routes: [desiredRoute("bybit")], status: "active", desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1 },
   ];
   const positions = [
     { lineageId: "funding-lineage", productId: "funding", mode, accountId: "binance-primary", instrumentId: "BTC-USDT-PERP", settlementCurrency: "USDT", quantity: "0.001", averageEntryPrice: "60000", markPrice: "60125", realizedPnl: "1.25", unrealizedPnl: "0.125", updatedAt: now },
@@ -137,10 +138,21 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
         lastAppliedRuntimeGeneration: account.runtimeGeneration,
         blockedReason: null,
         capabilities: [{ rowId: `${accountId}-perp`, venue: account.venue, product: "perp", settlement: "USDT", writeReady: true, operations }],
+        active: { desiredStateRevision: account.desiredStateRevision, runtimeGeneration: account.runtimeGeneration, credentialVersion: account.credentialVersion, requestedState: "active", routes: [{ ...desiredRoute(account.venue), ready: true }] },
+        pending: accountId === "binance-primary" ? { desiredStateRevision: 4, runtimeGeneration: 3, credentialVersion: 2, requestedState: "rotating", state: "blocked", reason: "validation failed", routes: [{ ...desiredRoute(account.venue), ready: false, reason: "private stream gap" }] } : undefined,
+        retiring: accountId === "binance-primary" ? [{ desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1, requestedState: "draining", routes: [{ ...desiredRoute(account.venue), requestedState: "disabled", ready: false, reason: "draining" }] }] : [],
         observedAt: now,
       }] }));
     }
-    if (path === "/catalog/venues") return respond(route, envelope({ items: [{ venue: "binance", environment, ready: true, products: ["funding", "manual"] }, { venue: "bybit", environment, ready: true, products: ["funding", "manual"] }] }));
+    if (path === "/catalog/venues") return respond(route, envelope({ items: ["binance", "bybit"].map((venue) => ({
+      venue,
+      environment,
+      nativeEnvironment: environment,
+      ready: true,
+      products: ["funding", "manual"],
+      credentialSchema: { schemaVersion: 1, authKind: "api_key_secret", fields: [{ key: "apiKey", label: "API key" }, { key: "apiSecret", label: "API secret" }] },
+      routeProfiles: [{ routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: `${venue}.spot.usdt.${environment}.v1`, label: "Spot / USDT" }, { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: `${venue}.perp.usdt.${environment}.v1`, label: "Perp / USDT" }],
+    })) }));
     if (path === "/catalog/instruments") return respond(route, envelope({ items: [{ instrumentId: "BTC-BINANCE-PERP", venue: "binance", environment, product: "perp", symbol: "BTCUSDT", ready: true }, { instrumentId: "BTC-BYBIT-PERP", venue: "bybit", environment, product: "perp", symbol: "BTCUSDT", ready: true }, { instrumentId: "ETH-USDT-PERP", venue: "binance", environment, product: "perp", symbol: "ETHUSDT", ready: true }] }));
     if (path === "/products/funding/opportunities") return respond(route, envelope({ items: [{ opportunityId: "funding-opportunity", canonicalMarketId: "BTC-USDT-PERP", longAccountId: "binance-primary", shortAccountId: "bybit-hedge", longInstrumentId: "BTC-BINANCE-PERP", shortInstrumentId: "BTC-BYBIT-PERP", longVenue: "binance", shortVenue: "bybit", longFundingRate: "0.0001", shortFundingRate: "0.0003", reservationRequirements: opportunityRequirements }] }));
     if (path === "/commands") return respond(route, envelope({ items: [{ commandId: "funding-command", lineageId: "funding-lineage", productId: "funding", state: "filled", updatedAt: now }] }));

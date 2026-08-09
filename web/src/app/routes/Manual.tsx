@@ -21,7 +21,7 @@ interface ManualProps {
 }
 
 export function ManualRoute(props: ManualProps) {
-  const eligible = useMemo(() => props.accounts.filter((account) => account.status === "active" && account.productIds.includes("manual")), [props.accounts]);
+  const eligible = useMemo(() => props.accounts.filter((account) => account.status === "active" && (account.productPolicy ?? account.productIds ?? []).includes("manual")), [props.accounts]);
   const [accountID, setAccountID] = useState(eligible[0]?.accountId ?? "");
   const account = props.accounts.find((item) => item.accountId === accountID);
   const instruments = props.instruments.filter((item) => item.ready && (!account || item.venue === account.venue));

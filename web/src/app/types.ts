@@ -1,25 +1,58 @@
 export type Mode = "test" | "live";
 
+export type AccountState = "creating" | "active" | "rotating" | "draining" | "drained" | "disabled" | "removing" | "removed";
+
+export interface AccountRoute {
+  routeId: string;
+  product: "spot" | "perp";
+  settlementAsset?: string;
+  routeProfileId: string;
+  requestedState: "active" | "disabled";
+}
+
 export interface Account {
   accountId: string;
   venue: string;
+  mode?: Mode;
+  nativeEnvironment?: "demo" | "testnet" | "live";
   venueEnvironment?: string;
   displayName: string;
-  productIds: string[];
-  status: string;
+  productPolicy?: string[];
+  productIds?: string[];
+  status: AccountState | string;
   desiredStateRevision?: number;
   runtimeGeneration?: number;
   credentialVersion?: number;
+  routes?: AccountRoute[];
   lastValidatedAt?: string | null;
   updatedAt?: string;
+}
+
+export interface CredentialFieldDescriptor {
+  key: string;
+  label: string;
+  metadata?: boolean;
+}
+
+export interface CredentialSchema {
+  schemaVersion: number;
+  authKind: string;
+  fields: CredentialFieldDescriptor[];
+}
+
+export interface RouteProfile extends Omit<AccountRoute, "requestedState"> {
+  label: string;
 }
 
 export interface Venue {
   venue: string;
   environment: string;
+  nativeEnvironment?: "demo" | "testnet" | "live";
   ready: boolean;
   products?: string[];
   reason?: string;
+  credentialSchema?: CredentialSchema;
+  routeProfiles?: RouteProfile[];
 }
 
 export interface ProjectionReadiness {
@@ -193,15 +226,36 @@ export interface AuditRecord {
 
 export interface RuntimeView {
   accountId: string;
+  active?: RuntimeSnapshotView;
+  pending?: PendingSnapshotView;
+  retiring?: RuntimeSnapshotView[];
+  desiredStateRevision?: number;
+  runtimeGeneration?: number;
+  credentialVersion?: number;
+  runtimeVersion?: number;
+  readiness?: ProjectionReadiness;
+  writeReadiness?: ProjectionReadiness;
+  lastAppliedDesiredStateRevision?: number;
+  lastAppliedRuntimeGeneration?: number;
+  blockedReason?: string | null;
+  capabilities?: RuntimeCapability[];
+  observedAt?: string;
+}
+
+export interface RouteRuntimeView extends AccountRoute {
+  ready: boolean;
+  reason?: string;
+}
+
+export interface RuntimeSnapshotView {
   desiredStateRevision: number;
   runtimeGeneration: number;
   credentialVersion: number;
-  runtimeVersion: number;
-  readiness: ProjectionReadiness;
-  writeReadiness: ProjectionReadiness;
-  lastAppliedDesiredStateRevision: number;
-  lastAppliedRuntimeGeneration: number;
-  blockedReason: string | null;
-  capabilities: RuntimeCapability[];
-  observedAt: string;
+  requestedState: AccountState;
+  routes: RouteRuntimeView[];
+}
+
+export interface PendingSnapshotView extends RuntimeSnapshotView {
+  state: "prepared" | "building" | "ready" | "blocked";
+  reason?: string;
 }
