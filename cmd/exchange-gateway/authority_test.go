@@ -35,6 +35,50 @@ func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 	}
 }
 
+func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) {
+	for _, test := range []struct {
+		mode account.RuntimeMode
+		want func(string) bool
+	}{
+		{mode: account.RuntimeModeTest, want: func(environment string) bool { return environment == "demo" || environment == "testnet" }},
+		{mode: account.RuntimeModeLive, want: func(environment string) bool { return environment == "live" }},
+	} {
+		t.Run(string(test.mode), func(t *testing.T) {
+			authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, test.mode, newAuthorityLifecycle()), test.mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogVenues})
+			if err != nil {
+				t.Fatal(err)
+			}
+			venues, ok := response.Body.([]authorityVenue)
+			if !ok || len(venues) == 0 {
+				t.Fatalf("venues=%T %+v", response.Body, response.Body)
+			}
+			seen := make(map[string]struct{}, len(venues))
+			for _, venue := range venues {
+				if !test.want(venue.Environment) || venue.Ready {
+					t.Fatalf("mode=%s venue=%+v", test.mode, venue)
+				}
+				key := venue.Venue + "\x00" + venue.Environment
+				if _, duplicate := seen[key]; duplicate {
+					t.Fatalf("duplicate venue identity %q", key)
+				}
+				seen[key] = struct{}{}
+			}
+			instrumentsResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogInstruments})
+			if err != nil {
+				t.Fatal(err)
+			}
+			instruments, ok := instrumentsResponse.Body.(authorityCatalogInstruments)
+			if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || len(instruments.Instruments) != 0 {
+				t.Fatalf("instruments=%T %+v", instrumentsResponse.Body, instrumentsResponse.Body)
+			}
+		})
+	}
+}
+
 func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
 	accounts := &fakeAuthorityAccounts{
 		resources: []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true}},
@@ -762,6 +806,13 @@ func (authorityCredentialResolver) Resolve(context.Context, secretstore.OpaqueRe
 	return []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`), nil
 }
 
+type authorityStaticCredentialResolver struct{ bundle []byte }
+
+func (authorityStaticCredentialResolver) Check(context.Context) error { return nil }
+func (resolver authorityStaticCredentialResolver) Resolve(context.Context, secretstore.OpaqueRef) ([]byte, error) {
+	return append([]byte(nil), resolver.bundle...), nil
+}
+
 type snapshotAuthorityStore struct {
 	*memoryDesiredStore
 	pending           *store.PendingSnapshot
@@ -1196,6 +1247,121 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	}
 	if snapshotStore.promotions != 1 {
 		t.Fatalf("promotions=%d want=1", snapshotStore.promotions)
+	}
+}
+
+func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityCredentialResolver{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{
+		Authority: authority, Authenticate: func(*http.Request) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/accounts/runtime/account-a", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var envelope struct {
+		Data struct {
+			httpapi.RuntimeView
+			DesiredStateRevision            int64                        `json:"desiredStateRevision"`
+			RuntimeGeneration               int64                        `json:"runtimeGeneration"`
+			CredentialVersion               int64                        `json:"credentialVersion"`
+			RuntimeVersion                  int64                        `json:"runtimeVersion"`
+			Readiness                       authorityProjectionReadiness `json:"readiness"`
+			WriteReadiness                  authorityProjectionReadiness `json:"writeReadiness"`
+			LastAppliedDesiredStateRevision int64                        `json:"lastAppliedDesiredStateRevision"`
+			LastAppliedRuntimeGeneration    int64                        `json:"lastAppliedRuntimeGeneration"`
+			Capabilities                    []authorityRuntimeCapability `json:"capabilities"`
+			ObservedAt                      time.Time                    `json:"observedAt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	got := envelope.Data
+	if got.AccountID != "account-a" || got.Active == nil || got.Active.OperationID != operationID || len(got.Active.Routes) != 1 || !got.Active.Routes[0].Ready ||
+		got.DesiredStateRevision != 1 || got.RuntimeGeneration != 1 || got.CredentialVersion != 1 || got.RuntimeVersion != 1 ||
+		got.LastAppliedDesiredStateRevision != 1 || got.LastAppliedRuntimeGeneration != 1 || !got.Readiness.Ready || !got.WriteReadiness.Ready ||
+		len(got.Capabilities) != 1 || got.Capabilities[0].RowID != "binance:spot" || !got.Capabilities[0].WriteReady || got.ObservedAt.IsZero() {
+		t.Fatalf("runtime=%+v", got)
+	}
+	for _, forbidden := range []string{"secretRef", opaqueRef, "provider", "master-key"} {
+		if strings.Contains(response.Body.String(), forbidden) {
+			t.Fatalf("response leaked %q: %s", forbidden, response.Body.String())
+		}
+	}
+}
+
+func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityStaticCredentialResolver{bundle: []byte(`{"schemaVersion":1,"venue":"lighter","authKind":"lighter_signer","metadata":{"accountIndex":0,"keyIndex":0},"secrets":{"privateKey":"key"}}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	authority, err := newGatewayAuthority(context.Background(), newSnapshotAuthorityStore(), manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: operationID, AccountID: "account-a", Venue: "lighter", NativeEnvironment: "testnet",
+			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "lighter.spot.testnet.v1", RequestedState: "active"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, ok := response.Body.(httpapi.RuntimeView)
+	if !ok || !view.Readiness.Ready || view.WriteReadiness.Ready || len(view.Capabilities) != 1 || view.Capabilities[0].WriteReady || view.BlockedReason == nil {
+		t.Fatalf("runtime=%T %+v", response.Body, response.Body)
 	}
 }
 

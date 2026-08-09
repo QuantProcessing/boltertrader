@@ -194,7 +194,13 @@ func TestAccountMutationBodiesRejectDuplicateKeysBeforeSideEffects(t *testing.T)
 	tests := []struct {
 		name, method, path, body string
 		idempotency              string
+		wantError                string
 	}{
+		{name: "create wrong top-level case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-top-case", wantError: "non-canonical", body: strings.Replace(validBody, `"venue":"binance"`, `"Venue":"binance"`, 1)},
+		{name: "create case-fold top-level duplicate", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "folded-top", body: strings.Replace(validBody, `"venue":"binance"`, `"venue":"binance","Venue":"bybit"`, 1)},
+		{name: "create wrong nested route case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-route-case", wantError: "non-canonical", body: strings.Replace(validBody, `"routeId":"perp-usdt"`, `"RouteId":"perp-usdt"`, 1)},
+		{name: "create wrong nested credential case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-credential-case", wantError: "non-canonical", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"AuthKind":"api_key_secret"`, 1)},
+		{name: "create case-fold nested secret duplicate", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "folded-secret", body: strings.Replace(validBody, `"apiKey":"key"`, `"apiKey":"key","APIKEY":"other"`, 1)},
 		{name: "create top level", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-top", body: strings.Replace(validBody, `"venue":"binance"`, `"venue":"binance","venue":"bybit"`, 1)},
 		{name: "create nested route", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-route", body: strings.Replace(validBody, `"routeId":"perp-usdt"`, `"routeId":"perp-usdt","routeId":"spot-usdt"`, 1)},
 		{name: "create nested credential", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-credential", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"authKind":"api_key_secret","authKind":"evm_private_key"`, 1)},
@@ -211,7 +217,11 @@ func TestAccountMutationBodiesRejectDuplicateKeysBeforeSideEffects(t *testing.T)
 			}
 			response := httptest.NewRecorder()
 			mux.ServeHTTP(response, request)
-			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "duplicate") {
+			wantError := test.wantError
+			if wantError == "" {
+				wantError = "duplicate"
+			}
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), wantError) {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
 			account, getErr := service.Get(context.Background(), "acct_duplicates")

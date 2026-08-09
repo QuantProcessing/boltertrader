@@ -326,6 +326,40 @@ func TestCreateRecoversEveryDurableCrashWindow(t *testing.T) {
 	}
 }
 
+func TestDurableCreateValidatesGeneratedIdentityBeforeEffects(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountID   string
+		operationID secretstore.OperationID
+		principal   string
+	}{
+		{name: "account id", accountID: " acct_1 ", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: "principal_1"},
+		{name: "operation id", accountID: "acct_1", operationID: "not-a-uuid", principal: "principal_1"},
+		{name: "principal", accountID: "acct_1", operationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", principal: " principal_1 "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
+			gateway := &lifecycleGateway{}
+			service, err := New(Options{
+				Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway,
+				ID: func() string { return test.accountID }, OperationID: func() secretstore.OperationID { return test.operationID },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if account, err := service.Create(context.Background(), durableCreateRequest(), test.principal, "create-invalid"); err == nil {
+				t.Fatalf("invalid create returned account=%+v", account)
+			}
+			accounts, err := store.List(context.Background())
+			if err != nil || len(accounts) != 0 || writer.putCalls != 0 || gateway.applyCalls != 0 {
+				t.Fatalf("accounts=%+v err=%v puts=%d applies=%d", accounts, err, writer.putCalls, gateway.applyCalls)
+			}
+		})
+	}
+}
+
 func TestRotateAndRemoveRecoverCleanupWindows(t *testing.T) {
 	writer := &lifecycleWriter{refs: make(map[secretstore.OperationID]string)}
 	gateway := &lifecycleGateway{tombstoned: true}

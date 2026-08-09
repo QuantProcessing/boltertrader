@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -333,6 +334,9 @@ func decodeStrict(r *http.Request, target any) error {
 	if err != nil {
 		return err
 	}
+	if err := validateExactJSONKeys(body, target); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -342,6 +346,106 @@ func decodeStrict(r *http.Request, target any) error {
 		return errors.New("request body must contain one JSON value")
 	}
 	return nil
+}
+
+func validateExactJSONKeys(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return err
+	}
+	targetType := reflect.TypeOf(target)
+	if targetType == nil || targetType.Kind() != reflect.Pointer {
+		return errors.New("request body target is invalid")
+	}
+	return validateJSONValueKeys(value, targetType.Elem())
+}
+
+func validateJSONValueKeys(value any, targetType reflect.Type) error {
+	for targetType.Kind() == reflect.Pointer {
+		targetType = targetType.Elem()
+	}
+	switch targetType.Kind() {
+	case reflect.Struct:
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := make(map[string]reflect.StructField, targetType.NumField())
+		for index := 0; index < targetType.NumField(); index++ {
+			field := targetType.Field(index)
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if field.PkgPath == "" && name != "" && name != "-" {
+				fields[name] = field
+			}
+		}
+		for key, child := range object {
+			field, exists := fields[key]
+			if !exists {
+				return fmt.Errorf("request body contains non-canonical field %q", key)
+			}
+			if field.Type == reflect.TypeOf(json.RawMessage{}) && key == "credentialBundle" {
+				if err := validateCredentialBundleKeys(child); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := validateJSONValueKeys(child, field.Type); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		items, ok := value.([]any)
+		if !ok {
+			return nil
+		}
+		for _, item := range items {
+			if err := validateJSONValueKeys(item, targetType.Elem()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCredentialBundleKeys(value any) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return errors.New("credentialBundle must be an object")
+	}
+	allowed := map[string]map[string]struct{}{
+		"metadata": credentialKeySet("accountIndex", "keyIndex", "accountAddress", "userAddress", "expectedSigner", "subaccount"),
+		"secrets":  credentialKeySet("apiKey", "apiSecret", "passphrase", "privateKey", "apiWalletPrivateKey"),
+	}
+	envelope := credentialKeySet("schemaVersion", "venue", "authKind", "metadata", "secrets")
+	for key, child := range object {
+		if _, exists := envelope[key]; !exists {
+			return fmt.Errorf("request body contains non-canonical field %q", key)
+		}
+		nested, nestedObject := child.(map[string]any)
+		keys, requiresObject := allowed[key]
+		if !requiresObject {
+			continue
+		}
+		if !nestedObject {
+			return fmt.Errorf("credentialBundle field %q must be an object", key)
+		}
+		for nestedKey := range nested {
+			if _, exists := keys[nestedKey]; !exists {
+				return fmt.Errorf("request body contains non-canonical field %q", nestedKey)
+			}
+		}
+	}
+	return nil
+}
+
+func credentialKeySet(keys ...string) map[string]struct{} {
+	result := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		result[key] = struct{}{}
+	}
+	return result
 }
 
 func decodeEmpty(r *http.Request) error {
@@ -405,10 +509,11 @@ func scanUniqueJSONObjectKeys(decoder *json.Decoder) error {
 			if !ok {
 				return errors.New("request body contains invalid object key")
 			}
-			if _, exists := seen[key]; exists {
+			folded := strings.ToLower(key)
+			if _, exists := seen[folded]; exists {
 				return fmt.Errorf("request body contains duplicate key %q", key)
 			}
-			seen[key] = struct{}{}
+			seen[folded] = struct{}{}
 			if err := scanUniqueJSONObjectKeys(decoder); err != nil {
 				return err
 			}

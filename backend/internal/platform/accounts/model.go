@@ -115,7 +115,7 @@ func (account Account) Public() PublicAccount {
 }
 
 func (account Account) Validate() error {
-	if account.ID == "" || account.Venue == "" || account.Mode == "" {
+	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) || account.Venue == "" || account.Mode == "" {
 		return errors.New("account identity is invalid")
 	}
 	seen := make(map[string]struct{}, len(account.Routes))

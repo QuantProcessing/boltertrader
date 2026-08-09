@@ -49,7 +49,10 @@ type CredentialOperation struct {
 }
 
 func (operation CredentialOperation) Validate() error {
-	if operation.ID == "" || operation.PrincipalID == "" || operation.AccountID == "" || operation.IdempotencyKeyDigest == "" || operation.RequestDigest == "" {
+	if _, err := secretstore.ParseOperationID(string(operation.ID)); err != nil ||
+		operation.PrincipalID == "" || operation.PrincipalID != strings.TrimSpace(operation.PrincipalID) ||
+		operation.AccountID == "" || operation.AccountID != strings.TrimSpace(operation.AccountID) ||
+		operation.IdempotencyKeyDigest == "" || operation.RequestDigest == "" {
 		return errors.New("credential operation identity is invalid")
 	}
 	if operation.Mode != secretstore.ModeTest && operation.Mode != secretstore.ModeLive {

@@ -156,7 +156,12 @@ type authorityAccountSource interface {
 	Status(domain.AccountID) (account.Status, error)
 }
 
-type managerAuthorityReads struct{ manager authorityAccountSource }
+type managerAuthorityReads struct {
+	manager  authorityAccountSource
+	mode     account.RuntimeMode
+	profiles *routeprofile.Registry
+	now      func() time.Time
+}
 
 type opaqueRuntimeLifecycle struct {
 	resolve    func(context.Context, secret.OpaqueRef) (string, error)
@@ -221,7 +226,9 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 		mode = account.RuntimeModeTest
 	}
 	authority := &gatewayAuthority{
-		store: desiredStore, manager: manager, reads: managerAuthorityReads{manager: manager}, mode: mode, now: time.Now,
+		store: desiredStore, manager: manager,
+		reads: managerAuthorityReads{manager: manager, mode: mode, profiles: routeprofile.DefaultRegistry(), now: time.Now},
+		mode:  mode, now: time.Now,
 	}
 	if snapshots, ok := desiredStore.(store.RuntimeSnapshotStore); ok {
 		authority.snapshots = snapshots
@@ -340,6 +347,8 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	case httpapi.AuthorityGetRuntimeAccount:
 		if len(request.Query) != 0 {
 			err = errors.New("runtime account query is not allowed")
+		} else if authority.snapshots != nil {
+			response, err = authority.getRuntimeView(ctx, request.AccountID)
 		} else {
 			response.Body, err = authority.reads.Runtime(request.AccountID)
 		}
@@ -554,7 +563,10 @@ func (authority *gatewayAuthority) getRuntimeView(ctx context.Context, accountID
 }
 
 func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi.RuntimeView {
-	view := httpapi.RuntimeView{AccountID: string(state.AccountID), Retiring: []httpapi.RuntimeSnapshotView{}, Tombstoned: state.Tombstoned}
+	view := httpapi.RuntimeView{
+		AccountID: string(state.AccountID), Retiring: []httpapi.RuntimeSnapshotView{}, Tombstoned: state.Tombstoned,
+		Capabilities: []httpapi.RuntimeCapabilityView{},
+	}
 	if view.AccountID == "" {
 		if state.Active != nil {
 			view.AccountID = string(state.Active.AccountID)
@@ -565,6 +577,7 @@ func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi
 	if state.Active != nil {
 		active := authority.snapshotView(state.Active.DesiredSnapshot, nil)
 		view.Active = &active
+		authority.enrichRuntimeView(&view, *state.Active)
 	}
 	if state.Pending != nil {
 		pending := httpapi.PendingSnapshotView{
@@ -577,6 +590,87 @@ func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi
 		view.Retiring = append(view.Retiring, authority.snapshotView(retiring.DesiredSnapshot, nil))
 	}
 	return view
+}
+
+func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, active store.ActiveSnapshot) {
+	fence := active.Fence
+	view.DesiredStateRevision = int64(fence.DesiredStateRevision)
+	view.RuntimeGeneration = int64(fence.RuntimeGeneration)
+	view.CredentialVersion = int64(fence.CredentialVersion)
+	view.RuntimeVersion = int64(fence.RuntimeGeneration)
+	view.LastAppliedDesiredStateRevision = int64(fence.DesiredStateRevision)
+	view.LastAppliedRuntimeGeneration = int64(fence.RuntimeGeneration)
+	view.ObservedAt = active.PromotedAt.UTC()
+
+	routing := authority.manager.ActiveSnapshot(active.AccountID)
+	readReady := routing != nil && routing.Fence == active.Fence
+	readReason := ""
+	if !readReady {
+		readReason = "runtime_not_promoted"
+	}
+	writeReady := readReady
+	writeReason := ""
+	rows := capability.StaticMatrix().Rows
+	for _, route := range active.Routes {
+		if route.RequestedState != store.RouteActive {
+			continue
+		}
+		routeReady := false
+		if routing != nil && routing.Fence == active.Fence {
+			if runtimeRoute, ok := routing.Routes[route.RouteID]; ok {
+				routeReady = runtimeRoute.WriteReady
+			}
+		}
+		readReady = readReady && routeReady
+		writeReady = writeReady && routeReady
+		if !routeReady && readReason == "" {
+			readReason = "route_not_ready"
+		}
+		matched := false
+		for _, row := range rows {
+			if row.Venue != active.Venue || row.Product != route.Product || row.Settlement != route.SettlementAsset {
+				continue
+			}
+			view.Capabilities = append(view.Capabilities, httpapi.RuntimeCapabilityView{
+				RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement,
+				WriteReady: routeReady && row.WriteReadyDefault, Operations: row.Operations,
+			})
+			matched = true
+			if !row.WriteReadyDefault {
+				writeReady = false
+				if writeReason == "" {
+					writeReason = "capability_write_disabled"
+				}
+			}
+			break
+		}
+		if !matched {
+			readReady = false
+			writeReady = false
+			if readReason == "" {
+				readReason = "capability_unavailable"
+			}
+		}
+	}
+	if len(view.Capabilities) == 0 {
+		readReady = false
+		writeReady = false
+		if readReason == "" {
+			readReason = "capability_unavailable"
+		}
+	}
+	if !writeReady && writeReason == "" {
+		writeReason = readReason
+	}
+	view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: readReady, Reason: readReason}
+	view.WriteReadiness = httpapi.RuntimeProjectionReadiness{Ready: writeReady, Reason: writeReason}
+	blockedReason := writeReason
+	if blockedReason == "" {
+		blockedReason = readReason
+	}
+	if blockedReason != "" {
+		view.BlockedReason = &blockedReason
+	}
 }
 
 func (authority *gatewayAuthority) snapshotView(snapshot store.DesiredSnapshot, observations []store.CandidateObservation) httpapi.RuntimeSnapshotView {
@@ -613,18 +707,30 @@ func (authority *gatewayAuthority) snapshotView(snapshot store.DesiredSnapshot, 
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
 	resources := reads.manager.Accounts()
-	venues := make([]authorityVenue, 0, len(resources))
-	indexes := make(map[string]int, len(resources))
+	registry := reads.profiles
+	if registry == nil {
+		registry = routeprofile.DefaultRegistry()
+	}
+	mode := routeprofile.Mode(reads.mode)
+	if mode == "" {
+		mode = routeprofile.ModeTest
+	}
+	profiles := registry.Profiles(mode)
+	venues := make([]authorityVenue, 0, len(profiles))
+	indexes := make(map[string]int, len(profiles))
+	for _, profile := range profiles {
+		key := profile.Venue + "\x00" + string(profile.NativeEnvironment)
+		if _, exists := indexes[key]; exists {
+			continue
+		}
+		indexes[key] = len(venues)
+		venues = append(venues, authorityVenue{Venue: profile.Venue, Environment: string(profile.NativeEnvironment)})
+	}
 	for _, resource := range resources {
 		key := string(resource.Venue) + "\x00" + string(resource.Environment)
 		if index, ok := indexes[key]; ok {
 			venues[index].Ready = venues[index].Ready || resource.ReadReady
-			continue
 		}
-		indexes[key] = len(venues)
-		venues = append(venues, authorityVenue{
-			Venue: string(resource.Venue), Environment: string(resource.Environment), Ready: resource.ReadReady,
-		})
 	}
 	sort.Slice(venues, func(i, j int) bool {
 		if venues[i].Venue == venues[j].Venue {
@@ -722,6 +828,13 @@ func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, e
 				Ready: resource.ReadReady,
 			})
 		}
+	}
+	if observedAt.IsZero() {
+		now := reads.now
+		if now == nil {
+			now = time.Now
+		}
+		observedAt = now().UTC()
 	}
 	sort.Slice(instruments, func(i, j int) bool {
 		if instruments[i].Venue == instruments[j].Venue {

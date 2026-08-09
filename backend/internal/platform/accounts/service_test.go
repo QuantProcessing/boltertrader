@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,31 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 		if strings.Contains(string(body), canary) || strings.Contains(string(body), "replacement-secret") || strings.Contains(string(body), "vault://") {
 			t.Fatalf("audit leaked secret data: %s", body)
 		}
+	}
+}
+
+func TestUpdateMetadataKeepsCanonicalProductPolicyInSync(t *testing.T) {
+	store := NewMemoryStore()
+	account := validRoutedAccount()
+	if err := store.Create(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(Options{Store: store, Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"funding", "manual"}
+	updated, err := service.UpdateMetadata(context.Background(), account.ID, account.DesiredStateRevision, "Updated", want, "principal_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.Get(context.Background(), account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(updated.ProductPolicy, want) || !slices.Equal(updated.ProductIDs, want) ||
+		!slices.Equal(persisted.ProductPolicy, want) || !slices.Equal(persisted.ProductIDs, want) {
+		t.Fatalf("updated=%+v persisted=%+v", updated, persisted)
 	}
 }
 

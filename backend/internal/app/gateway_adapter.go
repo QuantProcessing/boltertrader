@@ -886,7 +886,7 @@ func projectRuntimeSnapshot(snapshot *gatewayRuntimeSnapshotView) (*httpapi.Runt
 
 func validPendingRuntimeState(state string) bool {
 	switch state {
-	case "prepared", "building", "ready", "blocked":
+	case "prepared", "candidate_ready", "candidate_failed", "applied":
 		return true
 	default:
 		return false

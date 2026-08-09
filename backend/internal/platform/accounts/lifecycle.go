@@ -109,6 +109,12 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 		account.ID = service.id()
 		account.UpdatedAt = now
 		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Mode: service.mode, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
+		if err := account.Validate(); err != nil {
+			return Account{}, err
+		}
+		if err := operation.Validate(); err != nil {
+			return Account{}, err
+		}
 		if err := service.store.CreateDraft(ctx, account, operation); err != nil {
 			return Account{}, err
 		}

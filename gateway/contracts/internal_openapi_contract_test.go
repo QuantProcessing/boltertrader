@@ -313,6 +313,17 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if runtimeView.Properties["tombstoned"].Type != "boolean" || !containsString(runtimeView.Required, "tombstoned") {
 		t.Errorf("RuntimeView does not expose explicit tombstone truth: %+v", runtimeView)
 	}
+	for _, field := range []string{"desiredStateRevision", "runtimeGeneration", "credentialVersion", "runtimeVersion", "readiness", "writeReadiness", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "blockedReason", "capabilities", "observedAt"} {
+		if _, exists := runtimeView.Properties[field]; !exists {
+			t.Errorf("RuntimeView missing operational field %q: %+v", field, runtimeView.Properties)
+		}
+	}
+	pendingStates := append([]string(nil), document.Components.Schemas["PendingSnapshotView"].Properties["state"].Enum...)
+	sort.Strings(pendingStates)
+	wantPendingStates := []string{"applied", "candidate_failed", "candidate_ready", "prepared"}
+	if !reflect.DeepEqual(pendingStates, wantPendingStates) {
+		t.Errorf("PendingSnapshotView states=%v want=%v", pendingStates, wantPendingStates)
+	}
 	wantErrors := []string{
 		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",
 		"GATEWAY_ADAPTER_AUTH_REQUIRED", "HANDOFF_DRAIN_BLOCKED", "IF_MATCH_REQUIRED", "IF_NONE_MATCH_REQUIRED",

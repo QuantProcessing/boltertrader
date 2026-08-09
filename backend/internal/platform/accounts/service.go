@@ -131,6 +131,7 @@ func (service *Service) UpdateMetadata(ctx context.Context, id string, revision 
 	return service.mutate(ctx, id, revision, principalID, "account.update", func(account *Account) error {
 		account.DisplayName = displayName
 		account.ProductIDs = append([]string(nil), productIDs...)
+		account.ProductPolicy = append([]string(nil), productIDs...)
 		return nil
 	})
 }
