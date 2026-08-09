@@ -46,6 +46,7 @@ type provisionResult struct {
 	State       string `json:"state"`
 }
 
+var preflightProvision = preflightProductionAccount
 var provisionAccount = provisionProductionAccount
 var readCredentialInput = readCredentialBundle
 
@@ -82,12 +83,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	runtime, err := preflightProvision(*mode)
+	if err != nil {
+		return err
+	}
+	defer runtime.clear()
 	bundle, err := readCredentialInput(stdin)
 	if err != nil {
 		return err
 	}
 	defer clear(bundle)
-	result, err := provisionAccount(context.Background(), provisionRequest{
+	result, err := provisionAccount(context.Background(), runtime, provisionRequest{
 		Mode: *mode, IdempotencyKey: *idempotencyKey, Metadata: metadata, CredentialBundle: bundle,
 	})
 	if err != nil {

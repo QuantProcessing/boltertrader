@@ -496,8 +496,16 @@ func stageGatewayPlan(ctx context.Context, transaction gatewayPlanTx, plan accou
 			return err
 		}
 	}
-	if _, err := transaction.Exec(ctx, `INSERT INTO gateway_desired_operations(operation_id,snapshot_id,request_digest,state) VALUES($1,$2,$3,'prepared') ON CONFLICT (operation_id) DO NOTHING`, plan.OperationID, plan.SnapshotID, digest); err != nil {
+	result, err = transaction.Exec(ctx, `INSERT INTO gateway_desired_operations(operation_id,snapshot_id,request_digest,state) VALUES($1,$2,$3,'prepared') ON CONFLICT (operation_id) DO NOTHING`, plan.OperationID, plan.SnapshotID, digest)
+	if err != nil {
 		return err
+	}
+	if result.RowsAffected() == 0 {
+		var existingSnapshot uuid.UUID
+		var existingDigest, existingState string
+		if err := transaction.QueryRow(ctx, `SELECT snapshot_id,request_digest,state FROM gateway_desired_operations WHERE operation_id=$1 FOR UPDATE`, plan.OperationID).Scan(&existingSnapshot, &existingDigest, &existingState); err != nil || existingSnapshot != plan.SnapshotID || existingDigest != digest || existingState != "prepared" {
+			return errGatewayOperationConflict
+		}
 	}
 	result, err = transaction.Exec(ctx, `INSERT INTO gateway_account_runtime_heads(account_id,pending_snapshot_id) VALUES($1,$2) ON CONFLICT (account_id) DO UPDATE SET pending_snapshot_id=EXCLUDED.pending_snapshot_id,updated_at=now() WHERE gateway_account_runtime_heads.pending_snapshot_id IS NULL OR gateway_account_runtime_heads.pending_snapshot_id=EXCLUDED.pending_snapshot_id`, plan.AccountID, plan.SnapshotID)
 	if err != nil {

@@ -24,17 +24,35 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-func provisionProductionAccount(ctx context.Context, request provisionRequest) (provisionResult, error) {
+type provisionRuntime struct {
+	config config.Config
+}
+
+func (runtime *provisionRuntime) clear() {
+	clear(runtime.config.GatewayToken)
+	clear(runtime.config.ManualPreviewSigningKey)
+}
+
+func preflightProductionAccount(requestMode string) (provisionRuntime, error) {
 	cfg, err := config.Load()
-	if err != nil || cfg.Mode != "test" || request.Mode != "test" || cfg.LivePrivateWritesEnabled {
-		return provisionResult{}, fmt.Errorf("PLATFORM_CONFIGURATION_REJECTED")
+	if err != nil {
+		return provisionRuntime{}, fmt.Errorf("PLATFORM_CONFIGURATION_REJECTED")
 	}
-	defer clear(cfg.GatewayToken)
-	defer clear(cfg.ManualPreviewSigningKey)
+	runtime := provisionRuntime{config: cfg}
+	if cfg.Mode != "test" || requestMode != "test" || cfg.LivePrivateWritesEnabled {
+		runtime.clear()
+		return provisionRuntime{}, fmt.Errorf("PLATFORM_CONFIGURATION_REJECTED")
+	}
 	parsedGateway, err := url.Parse(cfg.GatewayURL)
 	if err != nil || parsedGateway.Scheme != "http" || net.ParseIP(parsedGateway.Hostname()) == nil || !net.ParseIP(parsedGateway.Hostname()).IsLoopback() {
-		return provisionResult{}, fmt.Errorf("NON_LOOPBACK_GATEWAY_REJECTED")
+		runtime.clear()
+		return provisionRuntime{}, fmt.Errorf("NON_LOOPBACK_GATEWAY_REJECTED")
 	}
+	return runtime, nil
+}
+
+func provisionProductionAccount(ctx context.Context, runtime provisionRuntime, request provisionRequest) (provisionResult, error) {
+	cfg := runtime.config
 	databaseURL := &url.URL{Scheme: "postgres", User: url.User(cfg.DatabaseRole), Host: "127.0.0.1:15432", Path: cfg.DatabaseName, RawQuery: "sslmode=disable"}
 	database, err := sql.Open("pgx", databaseURL.String())
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -277,6 +278,77 @@ func TestGatewayPendingHeadConflictIsStableBlocker(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "GATEWAY_PENDING_HEAD_CONFLICT") {
 		t.Fatalf("error=%v", err)
 	}
+}
+
+func TestExistingDesiredOperationMustMatchPreparedIdentity(t *testing.T) {
+	operationID := uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c21")
+	snapshotID := uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c22")
+	digest := strings.Repeat("b", 64)
+	plan := accountPlan{AccountID: "acct_1", OperationID: operationID, SnapshotID: snapshotID, RequestDigest: digest}
+	for _, test := range []struct {
+		name       string
+		snapshotID uuid.UUID
+		digest     string
+		state      string
+	}{
+		{name: "snapshot mismatch", snapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c23"), digest: digest, state: "prepared"},
+		{name: "digest mismatch", snapshotID: snapshotID, digest: strings.Repeat("c", 64), state: "prepared"},
+		{name: "candidate failed", snapshotID: snapshotID, digest: digest, state: "candidate_failed"},
+		{name: "candidate ready", snapshotID: snapshotID, digest: digest, state: "candidate_ready"},
+		{name: "applied", snapshotID: snapshotID, digest: digest, state: "applied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tx := &existingDesiredOperationTx{runtimeSnapshotID: snapshotID, runtimeDigest: digest, desiredSnapshotID: test.snapshotID, desiredDigest: test.digest, desiredState: test.state}
+			if err := stageGatewayPlan(context.Background(), tx, plan); !errors.Is(err, errGatewayOperationConflict) {
+				t.Fatalf("error=%v", err)
+			}
+			if !tx.desiredOperationLocked {
+				t.Fatal("existing desired operation was not locked before validation")
+			}
+		})
+	}
+}
+
+type existingDesiredOperationTx struct {
+	runtimeSnapshotID      uuid.UUID
+	runtimeDigest          string
+	desiredSnapshotID      uuid.UUID
+	desiredDigest          string
+	desiredState           string
+	desiredOperationLocked bool
+}
+
+func (*existingDesiredOperationTx) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(query, "gateway_runtime_snapshots") || strings.Contains(query, "gateway_desired_operations") {
+		return pgconn.NewCommandTag("INSERT 0 0"), nil
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (transaction *existingDesiredOperationTx) QueryRow(_ context.Context, query string, _ ...any) pgx.Row {
+	if strings.Contains(query, "gateway_desired_operations") {
+		transaction.desiredOperationLocked = strings.Contains(query, "FOR UPDATE")
+		return desiredOperationRow{snapshotID: transaction.desiredSnapshotID, digest: transaction.desiredDigest, state: transaction.desiredState}
+	}
+	return desiredOperationRow{snapshotID: transaction.runtimeSnapshotID, digest: transaction.runtimeDigest}
+}
+
+type desiredOperationRow struct {
+	snapshotID uuid.UUID
+	digest     string
+	state      string
+}
+
+func (row desiredOperationRow) Scan(destinations ...any) error {
+	if len(destinations) == 2 {
+		*destinations[0].(*string) = row.digest
+		*destinations[1].(*uuid.UUID) = row.snapshotID
+		return nil
+	}
+	*destinations[0].(*uuid.UUID) = row.snapshotID
+	*destinations[1].(*string) = row.digest
+	*destinations[2].(*string) = row.state
+	return nil
 }
 
 func TestPendingHeadConflictRollsBackPlatformWithStableCode(t *testing.T) {

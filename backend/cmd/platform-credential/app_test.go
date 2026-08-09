@@ -10,12 +10,17 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/QuantProcessing/boltertrader/backend/internal/config"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestRunReadsCredentialBundleFromStdinAndRedactsOutput(t *testing.T) {
 	metadata := writeMetadata(t)
+	priorPreflight := preflightProvision
 	prior := provisionAccount
-	provisionAccount = func(_ context.Context, request provisionRequest) (provisionResult, error) {
+	preflightProvision = func(string) (provisionRuntime, error) { return provisionRuntime{}, nil }
+	provisionAccount = func(_ context.Context, _ provisionRuntime, request provisionRequest) (provisionResult, error) {
 		if request.Mode != "test" || request.IdempotencyKey != "provision-1" {
 			t.Fatalf("request=%+v", request)
 		}
@@ -24,7 +29,10 @@ func TestRunReadsCredentialBundleFromStdinAndRedactsOutput(t *testing.T) {
 		}
 		return provisionResult{AccountID: "acct_1", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", State: "active"}, nil
 	}
-	t.Cleanup(func() { provisionAccount = prior })
+	t.Cleanup(func() {
+		preflightProvision = priorPreflight
+		provisionAccount = prior
+	})
 	var stdout bytes.Buffer
 	err := run([]string{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1"}, strings.NewReader(`{"schemaVersion":1,"secrets":{"apiSecret":"browser-secret"}}`), &stdout, &bytes.Buffer{})
 	if err != nil {
@@ -63,6 +71,61 @@ func TestRunRejectsCredentialFlagsAndLiveMode(t *testing.T) {
 			t.Fatalf("args accepted: %v", args)
 		}
 	}
+}
+
+func TestRunRejectsRealNonLoopbackConfigurationBeforeCredentialRead(t *testing.T) {
+	metadata := writeMetadata(t)
+	setPlatformCredentialTestEnvironment(t, "https://example.com")
+	priorReader := readCredentialInput
+	read := false
+	readCredentialInput = func(io.Reader) ([]byte, error) {
+		read = true
+		return nil, fmt.Errorf("credential input must not be read")
+	}
+	t.Cleanup(func() { readCredentialInput = priorReader })
+
+	err := run([]string{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1"}, strings.NewReader("must-not-be-read"), &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "NON_LOOPBACK_GATEWAY_REJECTED") {
+		t.Fatalf("error=%v", err)
+	}
+	if read {
+		t.Fatal("credential stdin was read before production configuration preflight")
+	}
+}
+
+func setPlatformCredentialTestEnvironment(t *testing.T, gatewayURL string) {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("synthetic-test-password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BT_MODE", "test")
+	t.Setenv("BT_BOOTSTRAP_USERNAME", "test-owner")
+	t.Setenv("BT_BOOTSTRAP_PASSWORD_HASH", string(hash))
+	t.Setenv("BT_PLATFORM_DATABASE", "bolter_platform_test")
+	t.Setenv("BT_PLATFORM_DATABASE_ROLE", "bolter_platform_test")
+	t.Setenv(config.GatewayURLEnv, gatewayURL)
+
+	writeProtected := func(directory, name, value string) string {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	t.Setenv(config.FundingWorkerTokenFileEnv, writeProtected(t.TempDir(), "worker.token", strings.Repeat("worker-token-", 3)))
+	modeDirectory := filepath.Join(t.TempDir(), "test")
+	t.Setenv(config.ManualPreviewSigningKeyFileEnv, writeProtected(modeDirectory, "manual-preview.key", strings.Repeat("manual-key-", 4)))
+	t.Setenv(config.GatewayTokenFileEnv, writeProtected(modeDirectory, "gateway.token", strings.Repeat("gateway-token-", 3)))
+	secretDirectory := t.TempDir()
+	t.Setenv(config.SecretKeySourceEnv, "file")
+	t.Setenv(config.SecretStoreDirEnv, filepath.Join(secretDirectory, "store"))
+	t.Setenv(config.SecretStoreNamespaceEnv, "boltertrader/test")
+	t.Setenv(config.SecretMasterKeyVersionEnv, "v1")
+	t.Setenv(config.SecretMasterKeyFileEnv, writeProtected(secretDirectory, "master.key", strings.Repeat("01", 32)))
 }
 
 func TestTTYInputRestoresEchoAfterInvalidBundle(t *testing.T) {
@@ -108,15 +171,17 @@ func TestTTYInputRestoresEchoAfterUnexpectedReadPanic(t *testing.T) {
 func TestRunRestoresTTYEchoBeforeProvisioningError(t *testing.T) {
 	metadata := writeMetadata(t)
 	priorReader := readCredentialInput
+	priorPreflight := preflightProvision
 	priorProvision := provisionAccount
 	var transitions []bool
+	preflightProvision = func(string) (provisionRuntime, error) { return provisionRuntime{}, nil }
 	readCredentialInput = func(io.Reader) ([]byte, error) {
 		return readTTYCredentialBundleWithSignals(strings.NewReader("{}\n"), func(enabled bool) error {
 			transitions = append(transitions, enabled)
 			return nil
 		}, make(chan os.Signal))
 	}
-	provisionAccount = func(context.Context, provisionRequest) (provisionResult, error) {
+	provisionAccount = func(context.Context, provisionRuntime, provisionRequest) (provisionResult, error) {
 		if len(transitions) != 2 || transitions[0] || !transitions[1] {
 			t.Fatalf("echo was not restored before service call: %v", transitions)
 		}
@@ -124,6 +189,7 @@ func TestRunRestoresTTYEchoBeforeProvisioningError(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		readCredentialInput = priorReader
+		preflightProvision = priorPreflight
 		provisionAccount = priorProvision
 	})
 	err := run([]string{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1"}, strings.NewReader("ignored"), &bytes.Buffer{}, &bytes.Buffer{})

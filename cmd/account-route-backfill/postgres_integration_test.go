@@ -118,6 +118,91 @@ func TestPostgresCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testin
 	assertPlatformState(t, ctx, platform, conflictPlan.AccountID, "live", "live", 0)
 }
 
+func TestPostgresCoordinatorRejectsExistingDesiredOperationConflicts(t *testing.T) {
+	ctx := context.Background()
+	platform, gateway := openBackfillIntegrationDatabases(t, ctx)
+	if err := gatewaypostgres.Migrate(ctx, gateway); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := platform.Exec(ctx, `
+		CREATE TABLE platform_accounts (
+			account_id text PRIMARY KEY,
+			secret_ref text NOT NULL,
+			mode text NOT NULL,
+			native_environment text NOT NULL
+		);
+		CREATE TABLE platform_account_routes (
+			account_id text NOT NULL REFERENCES platform_accounts(account_id),
+			route_id text NOT NULL,
+			product text NOT NULL,
+			settlement_asset text NOT NULL,
+			route_profile_id text NOT NULL,
+			requested_state text NOT NULL,
+			PRIMARY KEY (account_id, route_id)
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	for index, test := range []struct {
+		name           string
+		desiredDigest  string
+		desiredState   string
+		mismatchTarget bool
+	}{
+		{name: "snapshot mismatch", desiredDigest: strings.Repeat("a", 64), desiredState: "prepared", mismatchTarget: true},
+		{name: "digest mismatch", desiredDigest: strings.Repeat("c", 64), desiredState: "prepared"},
+		{name: "candidate failed", desiredDigest: strings.Repeat("a", 64), desiredState: "candidate_failed"},
+		{name: "candidate ready", desiredDigest: strings.Repeat("a", 64), desiredState: "candidate_ready"},
+		{name: "applied", desiredDigest: strings.Repeat("a", 64), desiredState: "applied"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := integrationAccountPlan(fmt.Sprintf("acct_desired_conflict_%d", index), "a")
+			if _, err := platform.Exec(ctx, `INSERT INTO platform_accounts(account_id,secret_ref,mode,native_environment) VALUES($1,$2,'live','live')`, plan.AccountID, plan.OpaqueReference); err != nil {
+				t.Fatal(err)
+			}
+			if err := seedExistingDesiredOperation(t, ctx, gateway, plan, test.desiredDigest, test.desiredState, test.mismatchTarget); err != nil {
+				t.Fatal(err)
+			}
+			coordinator := &postgresCoordinator{platform: platform, gateway: gateway}
+			if err := writeAccountPlans(ctx, coordinator, []accountPlan{plan}); !errors.Is(err, errGatewayOperationConflict) {
+				t.Fatalf("error=%v", err)
+			}
+			assertPlatformState(t, ctx, platform, plan.AccountID, "live", "live", 0)
+		})
+	}
+}
+
+func seedExistingDesiredOperation(t *testing.T, ctx context.Context, gateway *pgxpool.Pool, plan accountPlan, desiredDigest, desiredState string, mismatchTarget bool) error {
+	t.Helper()
+	insertSnapshot := func(snapshotID, operationID uuid.UUID, accountID, digest string) error {
+		_, err := gateway.Exec(ctx, `
+			INSERT INTO gateway_runtime_snapshots(
+				snapshot_id,account_id,operation_id,request_digest,venue,native_environment,
+				secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state
+			) VALUES($1,$2,$3,$4,'binance','demo','opaque://existing',1,1,1,'active')
+		`, snapshotID, accountID, operationID, digest)
+		return err
+	}
+	if err := insertSnapshot(plan.SnapshotID, plan.OperationID, plan.AccountID, plan.RequestDigest); err != nil {
+		return err
+	}
+	desiredSnapshotID := plan.SnapshotID
+	if mismatchTarget {
+		desiredSnapshotID = uuid.NewSHA1(uuid.NameSpaceOID, []byte("desired-conflict-snapshot/"+plan.AccountID))
+		otherOperationID := uuid.NewSHA1(uuid.NameSpaceOID, []byte("desired-conflict-operation/"+plan.AccountID))
+		if err := insertSnapshot(desiredSnapshotID, otherOperationID, plan.AccountID+"_other", desiredDigest); err != nil {
+			return err
+		}
+	}
+	var appliedAt any
+	if desiredState == "applied" {
+		appliedAt = "2026-08-10T00:00:00Z"
+	}
+	_, err := gateway.Exec(ctx, `INSERT INTO gateway_desired_operations(operation_id,snapshot_id,request_digest,state,applied_at) VALUES($1,$2,$3,$4,$5)`, plan.OperationID, desiredSnapshotID, desiredDigest, desiredState, appliedAt)
+	return err
+}
+
 func integrationAccountPlan(accountID, digestByte string) accountPlan {
 	return accountPlan{
 		AccountID:         accountID,
