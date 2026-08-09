@@ -20,6 +20,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestAppStartsAndStops(t *testing.T) {
@@ -449,8 +450,14 @@ func testDependencies() Dependencies {
 type appSecretProvider struct{}
 
 func (appSecretProvider) Check(context.Context, secret.Scope) error { return nil }
-func (appSecretProvider) Put(context.Context, secret.Scope, []byte) (string, error) {
-	return "opaque-test-secret", nil
+func (appSecretProvider) Put(context.Context, secretstore.Scope, secretstore.OperationID, []byte) (secretstore.OpaqueRef, error) {
+	return secretstore.OpaqueRef(strings.Repeat("A", 43)), nil
+}
+func (appSecretProvider) LookupOperation(context.Context, secretstore.Scope, secretstore.OperationID) (secretstore.OpaqueRef, error) {
+	return secretstore.OpaqueRef(strings.Repeat("A", 43)), nil
+}
+func (appSecretProvider) Delete(context.Context, secretstore.Scope, secretstore.OpaqueRef) error {
+	return nil
 }
 
 func createManualAccount(t *testing.T, app *App, cookie *http.Cookie, csrf string) string {

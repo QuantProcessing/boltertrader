@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type secretWriter struct {
@@ -20,7 +22,7 @@ func (writer *secretWriter) Delete(_ context.Context, reference string) error {
 	return nil
 }
 
-func (writer *secretWriter) Put(_ context.Context, material []byte) (string, error) {
+func (writer *secretWriter) Put(_ context.Context, _ secretstore.OperationID, material []byte) (string, error) {
 	writer.material = append([]byte(nil), material...)
 	return writer.ref, nil
 }

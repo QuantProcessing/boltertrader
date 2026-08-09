@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
-type Mode string
+type Mode = secretstore.Mode
 
 const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
-const (
+	ModeTest      = secretstore.ModeTest
+	ModeLive      = secretstore.ModeLive
 	TestNamespace = "boltertrader/test"
 	LiveNamespace = "boltertrader/live"
 )
@@ -34,13 +32,10 @@ var (
 	ErrKeyVersionUnsupported = errors.New("secret store key version unsupported")
 )
 
-type Error struct {
-	code Code
-}
+type Error struct{ code Code }
 
 func (err *Error) Error() string { return string(err.code) }
-
-func (err *Error) Code() Code { return err.code }
+func (err *Error) Code() Code    { return err.code }
 
 func IsCode(err error, code Code) bool {
 	var storeErr *Error
@@ -53,104 +48,76 @@ type Config struct {
 	KeyVersion string
 }
 
-type Scope struct {
-	Mode       Mode
-	Namespace  string
-	KeyVersion string
-}
-
-type Provider interface {
-	Check(context.Context, Scope) error
-	Put(context.Context, Scope, []byte) (string, error)
-}
+type Scope = secretstore.Scope
+type Provider = secretstore.CredentialWriter
 
 type Store struct {
-	provider Provider
-	scope    Scope
+	provider secretstore.CredentialWriter
+	scope    secretstore.Scope
 }
 
-type deletingProvider interface {
-	Delete(context.Context, Scope, string) error
-}
-
-func NewStore(config Config, provider Provider) (*Store, error) {
+func NewStore(config Config, provider secretstore.CredentialWriter) (*Store, error) {
 	if provider == nil {
 		return nil, coded(CodeUnavailable)
 	}
-	wantNamespace := ""
-	switch config.Mode {
-	case ModeTest:
-		wantNamespace = TestNamespace
-	case ModeLive:
-		wantNamespace = LiveNamespace
-	default:
+	scope := secretstore.Scope{Mode: config.Mode, Namespace: config.Namespace, KeyVersion: config.KeyVersion}
+	if err := scope.Validate(); err != nil {
+		if config.KeyVersion != "v1" {
+			return nil, coded(CodeKeyVersionUnsupported)
+		}
 		return nil, coded(CodeKeyMismatch)
 	}
-	if config.Namespace != wantNamespace {
-		return nil, coded(CodeKeyMismatch)
-	}
-	if config.KeyVersion != "v1" {
-		return nil, coded(CodeKeyVersionUnsupported)
-	}
-	return &Store{
-		provider: provider,
-		scope: Scope{
-			Mode:       config.Mode,
-			Namespace:  config.Namespace,
-			KeyVersion: config.KeyVersion,
-		},
-	}, nil
+	return &Store{provider: provider, scope: scope}, nil
 }
 
 func (store *Store) Readiness(ctx context.Context) error {
-	if err := store.provider.Check(ctx, store.scope); err != nil {
-		return mapProviderError(err)
-	}
-	return nil
+	return mapProviderError(store.provider.Check(ctx, store.scope))
 }
 
-func (store *Store) Put(ctx context.Context, value []byte) (Reference, error) {
-	if len(value) == 0 {
+func (store *Store) Put(ctx context.Context, operationID secretstore.OperationID, value []byte) (Reference, error) {
+	if operationID == "" || len(value) == 0 {
 		return Reference{}, coded(CodeUnavailable)
 	}
 	providerValue := append([]byte(nil), value...)
 	defer clear(providerValue)
-	raw, err := store.provider.Put(ctx, store.scope, providerValue)
-	if err != nil || strings.TrimSpace(raw) == "" {
+	raw, err := store.provider.Put(ctx, store.scope, operationID, providerValue)
+	if err != nil || raw == "" {
 		return Reference{}, mapProviderError(err)
 	}
-	return Reference{
-		raw:        raw,
-		namespace:  store.scope.Namespace,
-		keyVersion: store.scope.KeyVersion,
-	}, nil
+	return newReference(raw, store.scope), nil
+}
+
+func (store *Store) LookupOperation(ctx context.Context, operationID secretstore.OperationID) (Reference, error) {
+	raw, err := store.provider.LookupOperation(ctx, store.scope, operationID)
+	if err != nil || raw == "" {
+		return Reference{}, mapProviderError(err)
+	}
+	return newReference(raw, store.scope), nil
 }
 
 func (store *Store) Delete(ctx context.Context, rawReference string) error {
-	provider, ok := store.provider.(deletingProvider)
-	if !ok || strings.TrimSpace(rawReference) == "" {
+	ref, err := secretstore.ParseOpaqueRef(rawReference)
+	if err != nil {
 		return coded(CodeUnavailable)
 	}
-	if err := provider.Delete(ctx, store.scope, rawReference); err != nil {
-		return mapProviderError(err)
-	}
-	return nil
+	return mapProviderError(store.provider.Delete(ctx, store.scope, ref))
 }
 
 type Reference struct {
-	raw        string
+	raw        secretstore.OpaqueRef
 	namespace  string
 	keyVersion string
 }
 
-func (ref Reference) IsZero() bool { return ref.raw == "" }
+func newReference(raw secretstore.OpaqueRef, scope secretstore.Scope) Reference {
+	return Reference{raw: raw, namespace: scope.Namespace, keyVersion: scope.KeyVersion}
+}
 
-func (ref Reference) Namespace() string { return ref.namespace }
-
-func (ref Reference) KeyVersion() string { return ref.keyVersion }
-
-func (ref Reference) RawForProvider() string { return ref.raw }
-
+func (ref Reference) IsZero() bool           { return ref.raw == "" }
+func (ref Reference) Namespace() string      { return ref.namespace }
+func (ref Reference) KeyVersion() string     { return ref.keyVersion }
+func (ref Reference) RawForProvider() string { return ref.raw.RawForTrustedBoundary() }
+func (ref Reference) GoString() string       { return ref.String() }
 func (ref Reference) String() string {
 	if ref.IsZero() {
 		return "secret.Reference{invalid, redacted}"
@@ -158,13 +125,14 @@ func (ref Reference) String() string {
 	return fmt.Sprintf("secret.Reference{namespace:%s, keyVersion:%s, value:redacted}", ref.namespace, ref.keyVersion)
 }
 
-func (ref Reference) GoString() string { return ref.String() }
-
 func mapProviderError(err error) error {
+	if err == nil {
+		return nil
+	}
 	switch {
 	case errors.Is(err, ErrKeyMissing):
 		return coded(CodeKeyMissing)
-	case errors.Is(err, ErrKeyMismatch):
+	case errors.Is(err, ErrKeyMismatch), errors.Is(err, secretstore.ErrInvalidScope):
 		return coded(CodeKeyMismatch)
 	case errors.Is(err, ErrKeyVersionUnsupported):
 		return coded(CodeKeyVersionUnsupported)
