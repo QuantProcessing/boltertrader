@@ -72,6 +72,26 @@ func (c *Client) WithBaseURL(url string) *Client {
 	return c
 }
 
+func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
+	c.HTTPClient = httpClient
+	return c
+}
+
+func (c *Client) WithGatewayTransport(transport http.RoundTripper) *Client {
+	if transport == nil {
+		return c
+	}
+	if c.HTTPClient == nil {
+		c.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		cloned := *c.HTTPClient
+		c.HTTPClient = &cloned
+	}
+	c.HTTPClient.Transport = transport
+	c.RateLimiter = nil
+	return c
+}
+
 func (c *Client) WithRateLimiter(limiter *KeyedRateLimiter) *Client {
 	c.RateLimiter = limiter
 	return c
