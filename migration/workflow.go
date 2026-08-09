@@ -73,17 +73,18 @@ type Event struct {
 }
 
 type Request struct {
-	Operation         Operation
-	ID                string
-	Name              string
-	ArtifactPath      string
-	ProofPath         string
-	Verifier          string
-	Reason            string
-	ActivationAt      string
-	CutoverAt         string
-	generatedEvidence *operationProof
-	capturedInputSHA  string
+	Operation           Operation
+	ID                  string
+	Name                string
+	ArtifactPath        string
+	ProofPath           string
+	Verifier            string
+	Reason              string
+	ActivationAt        string
+	CutoverAt           string
+	generatedEvidence   *operationProof
+	capturedInputSHA    string
+	acceptedArtifactSHA string
 }
 
 type ApplyOptions struct {
@@ -249,9 +250,15 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 			return "", "", err
 		}
 	}
-	artifactSHA, err := digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore || request.Operation == Backfill)
-	if err != nil {
-		return "", "", err
+	artifactSHA := request.acceptedArtifactSHA
+	if artifactSHA == "" {
+		var err error
+		artifactSHA, err = digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore || request.Operation == Backfill)
+		if err != nil {
+			return "", "", err
+		}
+	} else if !validSHA256(artifactSHA) {
+		return "", "", fmt.Errorf("accepted artifact checksum is invalid")
 	}
 	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == RecordActivation || request.Operation == Rollback
 	var proofSHA string
@@ -427,6 +434,9 @@ func operationPostconditionHolds(manifest Manifest, request Request) bool {
 
 func validatePredecessor(manifest Manifest, operation Operation) error {
 	phase := manifest.Workflow.Phase
+	if manifest.TargetInvalidatedAt != nil && operation != FinalDelta {
+		return fmt.Errorf("target is invalidated; a new explicit final delta is required")
+	}
 	switch operation {
 	case Backup:
 		if phase != PhaseProvenanceReady {
@@ -516,6 +526,7 @@ func transition(manifest *Manifest, request Request, artifactSHA, at string) err
 			return fmt.Errorf("final delta requires verified restore; current phase is %s", manifest.Workflow.Phase)
 		}
 		manifest.FinalDeltaAt, manifest.FinalDeltaSHA256 = stringPtr(at), stringPtr(artifactSHA)
+		manifest.TargetInvalidatedAt, manifest.TargetInvalidationReason = nil, nil
 		manifest.Workflow.Phase = PhaseDeltaCaptured
 	case Fence:
 		if manifest.Workflow.Phase != PhaseDeltaCaptured {
@@ -632,12 +643,19 @@ func validateWorkflowState(manifest Manifest) error {
 	hasBackup := manifest.BackupID != nil || manifest.BackupSHA256 != nil
 	hasRestore := manifest.RestoreVerifiedAt != nil
 	hasDelta := manifest.FinalDeltaAt != nil || manifest.FinalDeltaSHA256 != nil
+	hasTargetInvalidation := manifest.TargetInvalidatedAt != nil || manifest.TargetInvalidationReason != nil
 	hasFence := manifest.OneWriterFenceAt != nil
 	hasBackfill := len(manifest.BackfillScripts) != 0 || manifest.Workflow.IrreversibleAt != nil || manifest.Workflow.IrreversibleStep != nil
 	hasValidation := manifest.ValidationAt != nil
 	hasActivation := manifest.TargetActivationAt != nil || manifest.CutoverAt != nil
 	if manifest.SourceRetirementAt != nil {
 		return problem("source retirement is outside preparation scope")
+	}
+	if (manifest.TargetInvalidatedAt == nil) != (manifest.TargetInvalidationReason == nil) {
+		return problem("target invalidation evidence is incomplete")
+	}
+	if hasTargetInvalidation && phase != PhaseRestored {
+		return problem("target invalidation is only valid in restored phase")
 	}
 	if phase == PhaseBaseline {
 		if manifest.Workflow.Epoch != 0 {

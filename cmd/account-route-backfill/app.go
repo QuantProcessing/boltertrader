@@ -103,6 +103,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("account-route-backfill", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	mappingPath := flags.String("mapping", "", "checksum-verified route mapping artifact")
+	mappingSHA := flags.String("mapping-sha256", "", "expected SHA-256 of the route mapping snapshot")
 	mode := flags.String("mode", "test", "process mode")
 	sourceService := flags.String("source-service", "", "non-secret legacy PostgreSQL service name")
 	sourceDatabase := flags.String("source-database", "", "non-secret legacy PostgreSQL database name")
@@ -116,8 +117,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*mappingPath) == "" {
-		return fmt.Errorf("--mapping is required and positional arguments are not accepted")
+	if flags.NArg() != 0 || strings.TrimSpace(*mappingPath) == "" || !validExpectedSHA(*mappingSHA) {
+		return fmt.Errorf("--mapping and --mapping-sha256 are required and positional arguments are not accepted")
 	}
 	if *mode != "test" {
 		return fmt.Errorf("LIVE_PROVISIONING_DISABLED")
@@ -164,9 +165,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(*mappingPath)
+	data, err := readMappingSnapshot(*mappingPath, *mappingSHA)
 	if err != nil {
-		return fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
+		return err
 	}
 	artifact, err := decodeMapping(data)
 	if err != nil {
@@ -182,6 +183,37 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	sort.Strings(result.AccountIDs)
 	return json.NewEncoder(stdout).Encode(result)
+}
+
+func readMappingSnapshot(path, expectedSHA string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 1<<20 {
+		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil || len(data) == 0 || len(data) > 1<<20 {
+		clear(data)
+		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
+	}
+	digest := sha256.Sum256(data)
+	if hex.EncodeToString(digest[:]) != expectedSHA {
+		clear(data)
+		return nil, fmt.Errorf("MAPPING_CHECKSUM_MISMATCH")
+	}
+	return data, nil
+}
+
+func validExpectedSHA(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func executeProductionBackfill(ctx context.Context, request backfillRequest) (backfillResult, error) {
@@ -415,6 +447,7 @@ func writeAccountPlans(ctx context.Context, coordinator backfillCoordinator, pla
 type postgresCoordinator struct {
 	platform, gateway     *pgxpool.Pool
 	platformTx, gatewayTx pgx.Tx
+	commitPlatform        func(context.Context, pgx.Tx) error
 }
 
 func (coordinator *postgresCoordinator) Begin(ctx context.Context) error {
@@ -490,6 +523,9 @@ func (coordinator *postgresCoordinator) Commit(ctx context.Context) error {
 	if err := coordinator.gatewayTx.Commit(ctx); err != nil {
 		return err
 	}
+	if coordinator.commitPlatform != nil {
+		return coordinator.commitPlatform(ctx, coordinator.platformTx)
+	}
 	return coordinator.platformTx.Commit(ctx)
 }
 func (coordinator *postgresCoordinator) RollbackPlatform(ctx context.Context) {
@@ -531,7 +567,11 @@ func decodeMapping(data []byte) (mappingArtifact, error) {
 			mode = routeprofile.ModeLive
 		}
 		profile, err := registry.Resolve(mode, item.Venue, item.RouteProfileID)
-		if err != nil || string(profile.NativeEnvironment) != item.NativeEnvironment || profile.SettlementAsset != item.SettlementAsset {
+		expectedProduct := routeprofile.ProductSpot
+		if strings.HasPrefix(item.LegacyProduct, "perp") {
+			expectedProduct = routeprofile.ProductPerp
+		}
+		if err != nil || profile.Product != expectedProduct || string(profile.NativeEnvironment) != item.NativeEnvironment || profile.SettlementAsset != item.SettlementAsset {
 			return mappingArtifact{}, fmt.Errorf("ROUTE_PROFILE_CONFLICT")
 		}
 		if !safeToken(item.LegacyProduct) || !safeToken(item.RouteID) || item.SettlementAsset != strings.ToUpper(item.SettlementAsset) {

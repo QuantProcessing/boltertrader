@@ -91,6 +91,20 @@ func TestTTYInputRestoresEchoAfterInjectedTerminationSignal(t *testing.T) {
 	}
 }
 
+func TestTTYInputRestoresEchoAfterUnexpectedReadPanic(t *testing.T) {
+	var echo []bool
+	_, err := readTTYCredentialBundleWithSignals(&panicReader{}, func(enabled bool) error {
+		echo = append(echo, enabled)
+		return nil
+	}, make(chan os.Signal))
+	if err == nil || err.Error() != "CREDENTIAL_STDIN_UNAVAILABLE" {
+		t.Fatalf("error=%v", err)
+	}
+	if len(echo) != 2 || echo[0] || !echo[1] {
+		t.Fatalf("echo transitions=%v", echo)
+	}
+}
+
 func TestRunRestoresTTYEchoBeforeProvisioningError(t *testing.T) {
 	metadata := writeMetadata(t)
 	priorReader := readCredentialInput

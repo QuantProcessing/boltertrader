@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +63,25 @@ func TestDecodeMappingRejectsDuplicateFourPartLegacyProfile(t *testing.T) {
 	]}`))
 	if err == nil || !strings.Contains(err.Error(), "AMBIGUOUS_LEGACY_PROFILE") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRunRejectsProfileProductMismatchBeforeExecution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "account-route-v1.json")
+	data := []byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"spot"}]}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	prior := executeBackfill
+	executeBackfill = func(context.Context, backfillRequest) (backfillResult, error) {
+		called = true
+		return backfillResult{}, nil
+	}
+	t.Cleanup(func() { executeBackfill = prior })
+	err := run(backfillArgs(path, "test"), &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "ROUTE_PROFILE_CONFLICT") || called {
+		t.Fatalf("error=%v called=%t", err, called)
 	}
 }
 
@@ -143,10 +164,36 @@ func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 }
 
 func backfillArgs(path, mode string) []string {
-	return []string{"--mapping", path, "--mode", mode,
+	data, err := os.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	digest := sha256.Sum256(data)
+	return []string{"--mapping", path, "--mapping-sha256", hex.EncodeToString(digest[:]), "--mode", mode,
 		"--source-service", "source", "--source-database", "source_test", "--source-role", "source_test_migrator",
 		"--platform-service", "platform", "--platform-database", "platform_test", "--platform-role", "platform_test_migrator",
 		"--gateway-service", "gateway", "--gateway-database", "gateway_test", "--gateway-role", "gateway_test_migrator"}
+}
+
+func TestRunRejectsMappingChecksumMismatchBeforeExecution(t *testing.T) {
+	path := writeMapping(t)
+	called := false
+	prior := executeBackfill
+	executeBackfill = func(context.Context, backfillRequest) (backfillResult, error) {
+		called = true
+		return backfillResult{}, nil
+	}
+	t.Cleanup(func() { executeBackfill = prior })
+	args := backfillArgs(path, "test")
+	for index := range args {
+		if args[index] == "--mapping-sha256" {
+			args[index+1] = strings.Repeat("0", 64)
+		}
+	}
+	err := run(args, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "MAPPING_CHECKSUM_MISMATCH") || called {
+		t.Fatalf("error=%v called=%t", err, called)
+	}
 }
 
 func TestBuildAccountPlansRejectsMissingAmbiguousAndCrossModeRows(t *testing.T) {

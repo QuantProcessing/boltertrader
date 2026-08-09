@@ -7,13 +7,23 @@ or sends venue orders.
 
 ## Prerequisites
 
-Run from the frozen target repository. Build the tool and create private local
-artifact directories:
+Run from the frozen target repository. Build all three exact repository-local
+executables and create private local artifact directories:
 
 ```sh
 go build -o .local/bin/migration-tool ./cmd/migration-tool
+go build -o .local/bin/account-route-backfill ./cmd/account-route-backfill
+(cd backend && go build -o ../.local/bin/platform-migrate ./cmd/platform-migrate)
+chmod 0700 .local/bin/migration-tool \
+  .local/bin/account-route-backfill \
+  .local/bin/platform-migrate
 install -d -m 0700 .local/migration/artifacts .local/migration/evidence
 ```
+
+The migration executor invokes `.local/bin/platform-migrate` and
+`.local/bin/account-route-backfill` by their absolute paths under the frozen
+repository. Both must be regular executable files; symlinks and `PATH`
+substitutes are rejected.
 
 Configure non-secret libpq service names in the commands below. PostgreSQL
 resolves their connection material through the operator-managed libpq setup;
@@ -120,6 +130,16 @@ target schema is nonempty, and records the accepted high-water checksum:
   --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE" \
   --maintenance-role "$BT_MIGRATION_MAINTENANCE_ROLE"
 ```
+
+The tool creates the accepted archive as a private `0600` file and rechecks its
+digest before target recreation, after restore, and after target verification.
+If it changes before target mutation, the tool deletes the archive and stops at
+`restored`. If it changes during or after restore, the tool also durably marks
+the target invalid with `FINAL_DELTA_ARCHIVE_CHANGED`; no automatic destructive
+retry occurs and later phases are blocked. Inspect `status`, correct the
+archive path or external writer, then run a new explicit `final-delta` command.
+That command recreates the target once from a new accepted archive and clears
+the invalidation only after all checks succeed.
 
 Raise the database-level one-writer fence after the final snapshot. The tool
 executes a role-scoped `REVOKE CONNECT`, sets both canonical writer roles to

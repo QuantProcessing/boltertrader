@@ -164,6 +164,11 @@ func readTTYCredentialBundleWithSignals(reader io.Reader, setEcho func(bool) err
 	defer restore()
 	results := make(chan ttyReadResult, 1)
 	go func() {
+		defer func() {
+			if recover() != nil {
+				results <- ttyReadResult{err: fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")}
+			}
+		}()
 		data, err := bufio.NewReader(io.LimitReader(reader, maxCredentialBundle+1)).ReadBytes('\n')
 		results <- ttyReadResult{data: data, err: err}
 	}()
@@ -177,6 +182,9 @@ func readTTYCredentialBundleWithSignals(reader io.Reader, setEcho func(bool) err
 		return nil, fmt.Errorf("CREDENTIAL_STDIN_INTERRUPTED")
 	case result := <-results:
 		data, err = result.data, result.err
+	}
+	if err != nil && err.Error() == "CREDENTIAL_STDIN_UNAVAILABLE" {
+		return nil, err
 	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || len(data) > maxCredentialBundle || !json.Valid(data) {
