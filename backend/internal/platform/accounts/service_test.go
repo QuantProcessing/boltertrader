@@ -140,6 +140,39 @@ func TestUpdateMetadataKeepsCanonicalProductPolicyInSync(t *testing.T) {
 	}
 }
 
+func TestUpdateMetadataRejectsInvalidProductPolicyWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy []string
+	}{
+		{name: "empty"},
+		{name: "duplicate", policy: []string{"manual", "manual"}},
+		{name: "unknown", policy: []string{"unknown"}},
+		{name: "funding on spot only", policy: []string{"funding"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := NewMemoryStore()
+			account := validRoutedAccount()
+			account.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive}}
+			if err := store.Create(context.Background(), account); err != nil {
+				t.Fatal(err)
+			}
+			service, err := New(Options{Store: store, Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.UpdateMetadata(context.Background(), account.ID, account.DesiredStateRevision, "Changed", test.policy, "principal_1"); !errors.Is(err, ErrValidation) {
+				t.Fatalf("err=%v", err)
+			}
+			persisted, err := store.Get(context.Background(), account.ID)
+			if err != nil || persisted.DesiredStateRevision != account.DesiredStateRevision || persisted.DisplayName != account.DisplayName || !slices.Equal(persisted.ProductPolicy, account.ProductPolicy) {
+				t.Fatalf("persisted=%+v err=%v", persisted, err)
+			}
+		})
+	}
+}
+
 func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	service, _ := New(Options{
 		Store: NewMemoryStore(), Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{},

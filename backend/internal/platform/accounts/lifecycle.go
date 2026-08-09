@@ -191,8 +191,8 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 }
 
 func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, []byte, string, error) {
-	if strings.TrimSpace(request.DisplayName) == "" || request.DisplayName != strings.TrimSpace(request.DisplayName) || len(request.DisplayName) > 128 {
-		return Account{}, nil, "", validationError(errors.New("display name is invalid"))
+	if err := validateDisplayName(request.DisplayName); err != nil {
+		return Account{}, nil, "", validationError(err)
 	}
 	policy := append([]string(nil), request.ProductPolicy...)
 	if len(policy) == 0 {

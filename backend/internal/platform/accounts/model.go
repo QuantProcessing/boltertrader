@@ -206,8 +206,8 @@ func validateCreate(request CreateRequest) error {
 }
 
 func validateMetadata(displayName string, productIDs []string) error {
-	if strings.TrimSpace(displayName) == "" || displayName != strings.TrimSpace(displayName) || len(displayName) > 128 {
-		return errors.New("display name is invalid")
+	if err := validateDisplayName(displayName); err != nil {
+		return err
 	}
 	if len(productIDs) == 0 {
 		return errors.New("product ids are required")
@@ -221,6 +221,13 @@ func validateMetadata(displayName string, productIDs []string) error {
 			return errors.New("product id is duplicated")
 		}
 		seen[productID] = struct{}{}
+	}
+	return nil
+}
+
+func validateDisplayName(displayName string) error {
+	if strings.TrimSpace(displayName) == "" || displayName != strings.TrimSpace(displayName) || len(displayName) > 128 {
+		return errors.New("display name is invalid")
 	}
 	return nil
 }

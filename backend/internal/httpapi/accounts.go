@@ -397,6 +397,9 @@ func validateJSONValueKeys(value any, targetType reflect.Type) error {
 		for key, child := range object {
 			field, exists := fields[key]
 			if !exists {
+				if strings.EqualFold(key, "credentialBundle") {
+					return errCredentialBundleShape
+				}
 				return fmt.Errorf("request body contains non-canonical field %q", key)
 			}
 			if field.Type == reflect.TypeOf(json.RawMessage{}) && key == "credentialBundle" {
@@ -531,7 +534,7 @@ func scanUniqueJSONObjectKeys(decoder *json.Decoder, credentialScope bool) error
 				return fmt.Errorf("request body contains duplicate key %q", key)
 			}
 			seen[folded] = struct{}{}
-			if err := scanUniqueJSONObjectKeys(decoder, credentialScope || key == "credentialBundle"); err != nil {
+			if err := scanUniqueJSONObjectKeys(decoder, credentialScope || strings.EqualFold(key, "credentialBundle")); err != nil {
 				return err
 			}
 		}

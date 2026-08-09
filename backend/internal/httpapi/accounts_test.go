@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -191,6 +192,40 @@ func TestAccountResponsesExposeCanonicalBrowserIdentityAndPATCHRejectsLegacyFiel
 	}
 }
 
+func TestAccountPatchRejectsRouteIncompatibleProductPolicyWithoutMutation(t *testing.T) {
+	store := platformaccounts.NewMemoryStore()
+	account := platformaccounts.Account{
+		ID: "acct_patch_policy", Venue: "binance", Mode: "test", NativeEnvironment: platformaccounts.EnvironmentDemo,
+		DisplayName: "Spot only", ProductIDs: []string{"manual"}, ProductPolicy: []string{"manual"},
+		Routes:               []platformaccounts.AccountRoute{{ID: "spot", Product: platformaccounts.ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: platformaccounts.RouteActive}},
+		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: platformaccounts.StateActive,
+	}
+	if err := store.Create(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := platformaccounts.New(platformaccounts.Options{Store: store, Secrets: &routeSecretWriter{ref: "opaque-ref"}, Audit: routeAuditWriter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+		return platformaccounts.Blockers{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/"+account.ID, strings.NewReader(`{"displayName":"Changed","productIds":["funding"]}`))
+	request.Header.Set("If-Match", AccountETag(account.DesiredStateRevision))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"VALIDATION_ERROR"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	persisted, err := store.Get(context.Background(), account.ID)
+	if err != nil || persisted.DesiredStateRevision != account.DesiredStateRevision || persisted.DisplayName != account.DisplayName || !slices.Equal(persisted.ProductPolicy, account.ProductPolicy) {
+		t.Fatalf("persisted=%+v err=%v", persisted, err)
+	}
+}
+
 func TestAccountMutationBodiesRejectDuplicateKeysBeforeSideEffects(t *testing.T) {
 	secrets := &routeSecretWriter{ref: "opaque-ref"}
 	service, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: secrets, Audit: routeAuditWriter{}, ID: func() string { return "acct_duplicates" }})
@@ -273,6 +308,8 @@ func TestCredentialBundleShapeErrorsNeverEchoSubmittedKeyNames(t *testing.T) {
 		{name: "wrong case", canary: "AuthKindShapeCanary", body: strings.Replace(base, `"authKind":"api_key_secret"`, `"AuthKindShapeCanary":"api_key_secret"`, 1)},
 		{name: "case folded duplicate", canary: "DuplicateShapeCanary", body: strings.Replace(base, `"metadata":{}`, `"metadata":{"DuplicateShapeCanary":1,"DUPLICATESHAPECANARY":2}`, 1)},
 		{name: "unknown nested secret", canary: "SecretShapeCanary", body: strings.Replace(base, `"apiKey":"key"`, `"apiKey":"key","SecretShapeCanary":"attacker-material"`, 1)},
+		{name: "mixed case bundle nested duplicate", canary: "AliasNestedCanary", body: strings.Replace(strings.Replace(base, `"credentialBundle"`, `"CrEdEnTiAlBuNdLe"`, 1), `"metadata":{}`, `"metadata":{"AliasNestedCanary":1,"ALIASNESTEDCANARY":2}`, 1)},
+		{name: "mixed case bundle nested unknown", canary: "AliasUnknownCanary", body: strings.Replace(strings.Replace(base, `"credentialBundle"`, `"CrEdEnTiAlBuNdLe"`, 1), `"metadata":{}`, `"metadata":{"AliasUnknownCanary":1}`, 1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
