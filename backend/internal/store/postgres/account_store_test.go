@@ -23,3 +23,14 @@ func TestEncodeAccountJSONUsesSQLNullForNilRotation(t *testing.T) {
 		t.Fatalf("object rotation encoded as %q", rotation)
 	}
 }
+
+func TestOrderedRoutesIsDeterministicAndDoesNotMutateInput(t *testing.T) {
+	routes := []accounts.AccountRoute{{ID: "z-route"}, {ID: "a-route"}}
+	ordered := orderedRoutes(routes)
+	if ordered[0].ID != "a-route" || ordered[1].ID != "z-route" {
+		t.Fatalf("ordered=%+v", ordered)
+	}
+	if routes[0].ID != "z-route" {
+		t.Fatalf("input mutated=%+v", routes)
+	}
+}

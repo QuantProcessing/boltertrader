@@ -36,3 +36,22 @@ func TestIdentityAccountAuditMigrationIsFencedAndSecretSafe(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountRouteCredentialMigrationHasAtomicRecoverySchema(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "migrations", "0014_account_routes_credentials.sql")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(payload))
+	for _, required := range []string{"platform_account_routes", "platform_credential_operations", "idempotency_key_digest", "request_digest", "cleanup_pending", "platform_credential_operations_recovery", "previous_secret_ref", "alter column secret_ref drop not null"} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"credential_bundle", "secret_material", "api_secret", "private_key", "passphrase"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("migration contains secret-bearing column %q", forbidden)
+		}
+	}
+}

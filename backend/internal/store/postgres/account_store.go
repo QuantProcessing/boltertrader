@@ -258,14 +258,19 @@ func replaceRoutes(ctx context.Context, executor databaseExecutor, accountID str
 	if _, err := executor.ExecContext(ctx, `DELETE FROM platform_account_routes WHERE account_id=$1`, accountID); err != nil {
 		return err
 	}
-	routes = append([]accounts.AccountRoute(nil), routes...)
-	sort.Slice(routes, func(i, j int) bool { return routes[i].ID < routes[j].ID })
+	routes = orderedRoutes(routes)
 	for _, route := range routes {
 		if _, err := executor.ExecContext(ctx, `INSERT INTO platform_account_routes(account_id,route_id,product,settlement_asset,route_profile_id,requested_state) VALUES($1,$2,$3,$4,$5,$6)`, accountID, route.ID, route.Product, route.SettlementAsset, route.RouteProfileID, route.RequestedState); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func orderedRoutes(routes []accounts.AccountRoute) []accounts.AccountRoute {
+	result := append([]accounts.AccountRoute(nil), routes...)
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result
 }
 
 func loadRoutes(ctx context.Context, query databaseQuerier, accountID string) ([]accounts.AccountRoute, error) {
