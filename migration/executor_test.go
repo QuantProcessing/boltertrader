@@ -347,7 +347,6 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
 		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
 		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
-		{Operation: Fence},
 	} {
 		if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
 			t.Fatalf("prepare %s: %v", request.Operation, err)

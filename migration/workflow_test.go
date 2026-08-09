@@ -19,8 +19,8 @@ func TestWorkflowPreparesActivationWithoutActivatingTarget(t *testing.T) {
 		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
 		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
 		{Operation: Restore, ArtifactPath: backup, Verifier: "migration-test"},
-		{Operation: Fence},
 		{Operation: FinalDelta, ArtifactPath: delta},
+		{Operation: Fence},
 		{Operation: Backfill, Name: "001-platform.sql"},
 		{Operation: Validate},
 		{Operation: PrepareActivation},
@@ -70,6 +70,32 @@ func TestWorkflowRejectsOutOfOrderStepWithoutChangingManifest(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("rejected transition changed manifest")
+	}
+}
+
+func TestWorkflowRequiresFinalDeltaBeforeFence(t *testing.T) {
+	manifestPath := copyManifest(t)
+	backup := writeArtifact(t, "backup.dump", "verified backup")
+	for _, request := range []Request{
+		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
+		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
+		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
+	} {
+		if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
+			t.Fatalf("apply %s: %v", request.Operation, err)
+		}
+	}
+	if _, err := applyExecuted(manifestPath, Request{Operation: Fence}, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "final delta") {
+		t.Fatalf("fence-before-delta error=%v", err)
+	}
+	delta := writeArtifact(t, "final-delta.dump", "final delta")
+	result, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{})
+	if err != nil || result.Phase != PhaseDeltaCaptured {
+		t.Fatalf("final delta result=%+v err=%v", result, err)
+	}
+	result, err = applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{})
+	if err != nil || result.Phase != PhaseFenced {
+		t.Fatalf("fence result=%+v err=%v", result, err)
 	}
 }
 
@@ -135,14 +161,14 @@ func TestWorkflowReappliesIdenticalDeltaAndFenceAfterRollback(t *testing.T) {
 	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "retry preparation"}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{})
-	if err != nil || result.Replayed || result.Phase != PhaseFenced {
-		t.Fatalf("fence retry result=%+v err=%v", result, err)
-	}
 	delta := writeArtifact(t, "delta.sql", "final delta")
-	result, err = applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{})
+	result, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{})
 	if err != nil || result.Replayed || result.Phase != PhaseDeltaCaptured {
 		t.Fatalf("delta retry result=%+v err=%v", result, err)
+	}
+	result, err = applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{})
+	if err != nil || result.Replayed || result.Phase != PhaseFenced {
+		t.Fatalf("fence retry result=%+v err=%v", result, err)
 	}
 }
 
@@ -160,13 +186,16 @@ func TestWorkflowRejectsStaleFenceProofAfterRollbackEpoch(t *testing.T) {
 		}
 	}
 	staleFence := withProof(t, manifestPath, Request{Operation: Fence})
-	if _, err := applyExecuted(manifestPath, staleFence, ApplyOptions{}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Rollback, Reason: "new epoch"}), ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: delta}), ApplyOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Fence}), ApplyOptions{}); err != nil {
@@ -261,16 +290,23 @@ func TestWorkflowRejectsUnsafeBackfillName(t *testing.T) {
 
 func TestWorkflowPreparesRetirementOnlyAfterExternallyRecordedActivation(t *testing.T) {
 	manifestPath := preparedForActivation(t)
-	activation := time.Date(2026, 8, 9, 3, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	cutover := time.Date(2026, 8, 9, 3, 1, 0, 0, time.UTC).Format(time.RFC3339)
+	events := readWorkflowManifest(t, manifestPath).Workflow.Events
+	preparedAt, err := time.Parse(time.RFC3339, events[len(events)-1].At)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activationAt := preparedAt.Add(time.Minute)
+	cutoverAt := activationAt.Add(time.Minute)
+	activation := activationAt.Format(time.RFC3339)
+	cutover := cutoverAt.Format(time.RFC3339)
 	activationRequest := withProof(t, manifestPath, Request{Operation: RecordActivation, ActivationAt: activation, CutoverAt: cutover})
 	if _, err := applyExecuted(manifestPath, activationRequest, ApplyOptions{Now: func() time.Time {
-		return time.Date(2026, 8, 9, 3, 1, 30, 0, time.UTC)
+		return cutoverAt.Add(time.Minute)
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := applyExecuted(manifestPath, Request{Operation: PrepareRetirement}, ApplyOptions{
-		Now: func() time.Time { return time.Date(2026, 8, 9, 3, 2, 0, 0, time.UTC) },
+		Now: func() time.Time { return cutoverAt.Add(2 * time.Minute) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -324,18 +360,18 @@ func TestWorkflowRejectsNonIncreasingTimestampsWithoutCommit(t *testing.T) {
 			t.Fatalf("apply %s: %v", request.Operation, err)
 		}
 	}
-	fence := withProof(t, manifestPath, Request{Operation: Fence})
-	if _, err := applyExecuted(manifestPath, fence, ApplyOptions{Now: func() time.Time { return fixed.Add(3 * time.Minute) }}); err != nil {
+	delta := withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: writeArtifact(t, "delta", "delta")})
+	if _, err := applyExecuted(manifestPath, delta, ApplyOptions{Now: func() time.Time { return fixed.Add(3 * time.Minute) }}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := withProof(t, manifestPath, Request{Operation: FinalDelta, ArtifactPath: writeArtifact(t, "delta", "delta")})
+	request := withProof(t, manifestPath, Request{Operation: Fence})
 	_, err = applyExecuted(manifestPath, request, ApplyOptions{Now: func() time.Time { return fixed.Add(3 * time.Minute) }})
 	if err == nil || !strings.Contains(err.Error(), "strictly after") {
-		t.Fatalf("equal-time delta error = %v", err)
+		t.Fatalf("equal-time fence error = %v", err)
 	}
 	after, readErr := os.ReadFile(manifestPath)
 	if readErr != nil {
@@ -355,8 +391,8 @@ func preparedThroughFence(t *testing.T) string {
 		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
 		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
 		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
-		{Operation: Fence},
 		{Operation: FinalDelta, ArtifactPath: delta},
+		{Operation: Fence},
 	} {
 		request = withProof(t, manifestPath, request)
 		if _, err := applyExecuted(manifestPath, request, ApplyOptions{}); err != nil {
