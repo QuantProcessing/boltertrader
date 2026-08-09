@@ -47,12 +47,12 @@ export interface RouteProfile extends Omit<AccountRoute, "requestedState"> {
 export interface Venue {
   venue: string;
   environment: string;
-  nativeEnvironment?: NativeEnvironment;
+  nativeEnvironment: NativeEnvironment;
   ready: boolean;
-  products?: string[];
+  products: ProductPolicy[];
   reason?: string;
-  credentialSchema?: CredentialSchema;
-  routeProfiles?: RouteProfile[];
+  credentialSchema: CredentialSchema;
+  routeProfiles: RouteProfile[];
 }
 
 export interface Readiness {
@@ -233,18 +233,18 @@ export interface RuntimeView {
   accountId: string;
   active?: RuntimeSnapshotView;
   pending?: PendingSnapshotView;
-  retiring?: RuntimeSnapshotView[];
-  desiredStateRevision?: number;
-  runtimeGeneration?: number;
-  credentialVersion?: number;
-  runtimeVersion?: number;
-  readiness?: ProjectionReadiness;
-  writeReadiness?: ProjectionReadiness;
-  lastAppliedDesiredStateRevision?: number;
-  lastAppliedRuntimeGeneration?: number;
-  blockedReason?: string | null;
-  capabilities?: RuntimeCapability[];
-  observedAt?: string;
+  retiring: RuntimeSnapshotView[];
+  desiredStateRevision: number;
+  runtimeGeneration: number;
+  credentialVersion: number;
+  runtimeVersion: number;
+  readiness: ProjectionReadiness;
+  writeReadiness: ProjectionReadiness;
+  lastAppliedDesiredStateRevision: number;
+  lastAppliedRuntimeGeneration: number;
+  blockedReason: string | null;
+  capabilities: RuntimeCapability[];
+  observedAt: string;
 }
 
 export interface RouteRuntimeView extends AccountRoute {

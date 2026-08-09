@@ -58,6 +58,7 @@ const runtime = (accountId: string) => ({
   lastAppliedRuntimeGeneration: 2,
   blockedReason: null,
   capabilities: [],
+  retiring: [],
   observedAt: "2026-08-08T10:00:00Z",
 });
 
@@ -216,7 +217,7 @@ describe("App", () => {
     const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "active", productPolicy: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" }] };
     mocks.get.mockResolvedValue({ data: session });
     mocks.patch.mockResolvedValue({ data: { account } });
-    mocks.snapshot.mockResolvedValue({ ...emptySnapshot, accounts: [account], venues: [{ venue: "binance", environment: "demo", nativeEnvironment: "demo", ready: true, routeProfiles: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", label: "Perp / USDT" }] }], runtimes: { "account-1": [runtime("account-1")] } });
+    mocks.snapshot.mockResolvedValue({ ...emptySnapshot, accounts: [account], venues: [{ venue: "binance", environment: "demo", nativeEnvironment: "demo", ready: true, products: ["manual"], credentialSchema: { schemaVersion: 1, authKind: "api_key_secret", fields: [] }, routeProfiles: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", label: "Perp / USDT" }] }], runtimes: { "account-1": [runtime("account-1")] } });
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Accounts" }));
@@ -261,6 +262,7 @@ describe("App", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Retry validation for Test account" }));
 
     expect(await screen.findByRole("alert", { name: "Test account operation error" })).toHaveTextContent("ACCOUNT VALIDATION FAILED");
+    expect(screen.queryByText("Authoritative state unavailable")).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent("credential-canary");
   });
 });

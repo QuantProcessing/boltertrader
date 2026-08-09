@@ -62,6 +62,17 @@ const account: Account = {
 
 const runtime: RuntimeView = {
   accountId: "a1",
+  desiredStateRevision: 3,
+  runtimeGeneration: 2,
+  credentialVersion: 1,
+  runtimeVersion: 4,
+  readiness: { ready: true },
+  writeReadiness: { ready: true },
+  lastAppliedDesiredStateRevision: 3,
+  lastAppliedRuntimeGeneration: 2,
+  blockedReason: null,
+  capabilities: [],
+  observedAt: "2026-08-08T10:00:00Z",
   active: {
     desiredStateRevision: 3,
     runtimeGeneration: 2,
@@ -106,6 +117,28 @@ function renderAccounts(overrides: Partial<React.ComponentProps<typeof AccountsR
 }
 
 describe("AccountsRoute", () => {
+  it("renders page-level account sections without surface framing", () => {
+    renderAccounts();
+
+    for (const heading of ["Trading accounts", "Add account", "Capability discovery"]) {
+      expect(screen.getByRole("heading", { name: heading }).closest(".surface")).toBeNull();
+    }
+  });
+
+  it("shows an authoritative mode conflict and denies account creation", () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    renderAccounts({
+      mode: "test",
+      venues: [{ ...venues[0], environment: "live", nativeEnvironment: "live" }],
+      onCreate,
+    });
+
+    expect(screen.getByRole("option", { name: "binance" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Mode conflict: live venue is unavailable in Test mode.");
+    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it("builds a typed v5 account request and clears every credential field", async () => {
     const props = renderAccounts();
 
@@ -171,14 +204,14 @@ describe("AccountsRoute", () => {
   });
 
   it("clears typed credential fields even when account creation fails", async () => {
-    const props = renderAccounts({ onCreate: vi.fn().mockRejectedValue(new Error("ACCOUNT_VALIDATION_FAILED")) });
+    const props = renderAccounts({ onCreate: vi.fn().mockRejectedValue(new Error("apiSecret=credential-canary")) });
     await userEvent.type(screen.getByLabelText("Account name"), "Binance Demo");
     await userEvent.type(screen.getByLabelText("API key"), "failed-key");
     await userEvent.type(screen.getByLabelText("API secret"), "failed-secret");
     await userEvent.click(screen.getByRole("button", { name: "Add account" }));
 
     await waitFor(() => expect(props.onCreate).toHaveBeenCalledOnce());
-    expect(screen.getByRole("alert")).toHaveTextContent("ACCOUNT_VALIDATION_FAILED");
+    expect(screen.getByRole("alert")).toHaveTextContent("Sensitive diagnostic redacted");
     expect(screen.getByLabelText("API key")).toHaveValue("");
     expect(screen.getByLabelText("API secret")).toHaveValue("");
     expect(document.body).not.toHaveTextContent("failed-secret");

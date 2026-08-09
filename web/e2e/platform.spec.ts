@@ -40,6 +40,7 @@ test("authenticated desktop operator can inspect and act across both products", 
   await page.getByLabel("Account name").fill("OKX Test");
   await page.getByLabel("API key").fill("credential-canary");
   await page.getByLabel("API secret").fill("must-disappear");
+  await page.getByLabel("Spot / USDT route").check();
   await page.getByRole("button", { name: "Add account" }).click();
   await expect(page.getByLabel("API key")).toHaveValue("");
   await expect(page.getByLabel("API secret")).toHaveValue("");
@@ -84,7 +85,7 @@ test("authenticated desktop operator can inspect and act across both products", 
   expect(fundingPreviewIndex).toBeLessThan(Math.min(...openReservationIndexes));
   expect(Math.max(...openReservationIndexes)).toBeLessThan(fundingOpenIndex);
   expect(accountCreates).toHaveLength(2);
-  expect(accountCreates[0]?.body).toMatchObject({ venue: "binance", productPolicy: ["manual"], routes: [{ routeId: "perp-usdt", requestedState: "active" }], credentialBundle: { schemaVersion: 1, venue: "binance", authKind: "api_key_secret", secrets: { apiKey: "credential-canary", apiSecret: "must-disappear" } } });
+  expect(accountCreates[0]?.body).toMatchObject({ venue: "binance", productPolicy: ["manual"], routes: [{ routeId: "spot-usdt", requestedState: "active" }, { routeId: "perp-usdt", requestedState: "active" }], credentialBundle: { schemaVersion: 1, venue: "binance", authKind: "api_key_secret", secrets: { apiKey: "credential-canary", apiSecret: "must-disappear" } } });
   expect(accountCreates[1]?.body).toMatchObject({ venue: "binance", credentialBundle: { secrets: { apiKey: "second-browser-key", apiSecret: "second-browser-secret" } } });
 });
 
@@ -158,7 +159,11 @@ test("account operations remain scoped, retryable, recoverable, and redacted", a
   await expect(page.getByRole("alert", { name: "Binance Primary operation error" })).toHaveCount(0);
 
   await page.getByRole("button", { name: "Drain Binance Primary" }).click();
+  await expect(page.getByRole("alert", { name: "Binance Primary operation error" })).toContainText("DRAIN BLOCKED");
+  await expect(page.getByRole("alert", { name: "Bybit Hedge operation error" })).toHaveCount(0);
   await page.getByRole("button", { name: "Disable Binance Primary" }).click();
+  await expect(page.getByRole("alert", { name: "Binance Primary operation error" })).toContainText("DISABLE BLOCKED");
+  await expect(page.getByRole("alert", { name: "Bybit Hedge operation error" })).toHaveCount(0);
   await page.getByRole("button", { name: "Remove Binance Primary" }).click();
   await page.getByRole("button", { name: "Confirm removal" }).click();
   await expect(page.getByRole("group", { name: "Remove Binance Primary" })).toBeVisible();
@@ -170,6 +175,17 @@ test("account operations remain scoped, retryable, recoverable, and redacted", a
   await page.getByRole("button", { name: "Refresh accounts" }).click();
   await expect(page.getByText("private stream gap")).toHaveCount(0);
   await expect(page.getByText("STALE PUBLIC CONNECTOR")).toHaveCount(0);
+});
+
+test("account creation visibly denies a catalog venue that conflicts with the session mode", async ({ page }) => {
+  const platform = await installFixturePlatform(page, { authenticated: true, modeConflictCatalog: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Accounts" }).click();
+
+  await expect(page.getByRole("option", { name: "coinbase" })).toHaveAttribute("disabled", "");
+  await expect(page.getByRole("alert")).toContainText("Mode conflict: live venue is unavailable in Test mode.");
+  await expect(page.getByRole("button", { name: "Add account" })).toBeDisabled();
+  expect(platform.writes.filter((write) => write.path === "/accounts" && write.method === "POST")).toHaveLength(0);
 });
 
 test("mobile navigation preserves every route without document overflow", async ({ page }, testInfo) => {

@@ -1,7 +1,7 @@
 import { Ban, CircleCheck, CircleStop, KeyRound, Pencil, Plus, RefreshCw, RotateCw, Trash2 } from "lucide-react";
 import { Fragment, type FormEvent, useMemo, useState } from "react";
 
-import type { Account, AccountRoute, Capability, CredentialSchema, Mode, ProductPolicy, Readiness, RouteRuntimeView, RuntimeSnapshotView, RuntimeView, Venue } from "../types";
+import type { Account, AccountRoute, Capability, Mode, ProductPolicy, Readiness, RouteRuntimeView, RuntimeSnapshotView, RuntimeView, Venue } from "../types";
 import { StatusBadge } from "../../components/StatusBadge";
 import { runtimeDisplay, safeFinding } from "../view-models";
 
@@ -26,18 +26,14 @@ type RouteDiagnostic = {
   route?: RouteRuntimeView;
 };
 
-const fallbackSchema: CredentialSchema = {
-  schemaVersion: 1,
-  authKind: "api_key_secret",
-  fields: [{ key: "apiKey", label: "API key" }, { key: "apiSecret", label: "API secret" }],
-};
-
 const accountProducts = (account: Account) => account.productPolicy;
 const accountEnvironment = (account: Account) => account.nativeEnvironment;
 const displayFinding = (value: unknown, fallback?: string) => safeFinding(value, fallback).replaceAll("_", " ");
+const modeCompatible = (venue: Venue, mode: Mode) => mode === "live" ? venue.environment === "live" : venue.environment !== "live";
+const modeConflictFinding = (venue: Venue, mode: Mode) => `Mode conflict: ${venue.environment} venue is unavailable in ${mode === "live" ? "Live" : "Test"} mode.`;
 
 function credentialBundle(venue: Venue, values: Record<string, string>) {
-  const schema = venue.credentialSchema ?? fallbackSchema;
+  const schema = venue.credentialSchema;
   const metadata: Record<string, string> = {};
   const secrets: Record<string, string> = {};
   for (const field of schema.fields) (field.metadata ? metadata : secrets)[field.key] = values[field.key] ?? "";
@@ -55,7 +51,7 @@ function diagnostics(runtimes: RuntimeView[]): RouteDiagnostic[] {
   for (const runtime of runtimes) {
     add("Active", runtime.active);
     add("Pending", runtime.pending, runtime.pending?.state);
-    for (const snapshot of runtime.retiring ?? []) add("Retiring", snapshot);
+    for (const snapshot of runtime.retiring) add("Retiring", snapshot);
   }
   return rows;
 }
@@ -72,10 +68,13 @@ function IconAction({ label, title, onClick, disabled, danger, children }: {
 }
 
 export function AccountsRoute(props: AccountsProps) {
-  const available = useMemo(() => props.venues.filter((venue) => venue.ready && (props.mode === "live" ? venue.environment === "live" : venue.environment !== "live")), [props.mode, props.venues]);
-  const [venueKey, setVenueKey] = useState(available[0] ? `${available[0].venue}:${available[0].environment}` : "");
-  const selectedVenue = available.find((venue) => `${venue.venue}:${venue.environment}` === venueKey) ?? available[0];
-  const schema = selectedVenue?.credentialSchema ?? fallbackSchema;
+  const available = useMemo(() => props.venues.filter((venue) => venue.ready), [props.venues]);
+  const compatible = useMemo(() => available.filter((venue) => modeCompatible(venue, props.mode)), [available, props.mode]);
+  const initialVenue = compatible[0] ?? available[0];
+  const [venueKey, setVenueKey] = useState(initialVenue ? `${initialVenue.venue}:${initialVenue.environment}` : "");
+  const selectedVenue = available.find((venue) => `${venue.venue}:${venue.environment}` === venueKey) ?? initialVenue;
+  const modeConflict = selectedVenue ? !modeCompatible(selectedVenue, props.mode) : false;
+  const schema = selectedVenue?.credentialSchema;
   const profiles = selectedVenue?.routeProfiles ?? [];
   const [displayName, setDisplayName] = useState("");
   const [credentials, setCredentials] = useState<Record<string, string>>({});
@@ -104,14 +103,14 @@ export function AccountsRoute(props: AccountsProps) {
   const create = async (event: FormEvent) => {
     event.preventDefault();
     setFormError("");
-    if (!selectedVenue) return;
+    if (!selectedVenue || modeConflict) return;
     const routes: AccountRoute[] = profiles.filter((profile) => selectedRoutes.includes(profile.routeId)).map(({ label: _label, ...profile }) => ({ ...profile, requestedState: "active" }));
     try {
       const productPolicy = (["funding", "manual"] as const).filter((product) => products.includes(product));
       await props.onCreate({ venue: selectedVenue.venue, displayName: displayName.trim(), productPolicy, routes, credentialBundle: credentialBundle(selectedVenue, credentials) });
       setDisplayName("");
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "Account creation failed.");
+      setFormError(displayFinding(error instanceof Error ? error.message : error, "Account creation failed."));
     } finally {
       clearCredentials();
     }
@@ -120,7 +119,7 @@ export function AccountsRoute(props: AccountsProps) {
   const toggle = <T extends string>(value: T, update: React.Dispatch<React.SetStateAction<T[]>>) => update((current) => current.includes(value) ? current.filter((item) => item !== value) : [...current, value]);
   const rotatingAccount = props.accounts.find((account) => account.accountId === rotatingID);
   const rotatingVenue = available.find((venue) => venue.venue === rotatingAccount?.venue) ?? props.venues.find((venue) => venue.venue === rotatingAccount?.venue);
-  const rotationSchema = rotatingVenue?.credentialSchema ?? fallbackSchema;
+  const rotationSchema = rotatingVenue?.credentialSchema;
   const editingAccount = props.accounts.find((account) => account.accountId === editingID);
   const removingAccount = props.accounts.find((account) => account.accountId === removingID);
   const editingVenue = props.venues.find((venue) => venue.venue === editingAccount?.venue && venue.nativeEnvironment === editingAccount?.nativeEnvironment)
@@ -189,7 +188,7 @@ export function AccountsRoute(props: AccountsProps) {
   return <div className="route-stack">
     <header className="page-heading"><div><p className="eyebrow">Platform / Security</p><h1>Accounts &amp; Security</h1></div><button className="button button--secondary" aria-label="Refresh accounts" title="Refresh accounts" onClick={props.onRefresh}><RefreshCw />Refresh</button></header>
     <section className="accounts-layout">
-      <div className="surface surface--table">
+      <div className="account-section surface--table">
         <div className="section-heading"><div><h2>Trading accounts</h2><span>{props.accounts.length} configured</span></div></div>
         <div className="table-scroll"><table className="account-table"><thead><tr><th>Account</th><th>Venue</th><th>Policy</th><th>State</th><th>Actions</th></tr></thead><tbody>{props.accounts.map((account) => <Fragment key={account.accountId}>
           <tr><td><strong>{account.displayName}</strong><small>{account.accountId}</small></td><td>{account.venue}<small>{accountEnvironment(account)}</small></td><td>{accountProducts(account).join(", ")}</td><td><StatusBadge state={account.status} /></td><td><div className="row-actions">
@@ -202,8 +201,8 @@ export function AccountsRoute(props: AccountsProps) {
           </div></td></tr>
           {(props.runtimes[account.accountId] ?? []).map((runtime, index) => {
             const display = runtimeDisplay(runtime);
-            const findings = [...new Set([display.reason, runtime.readiness?.reason, runtime.writeReadiness?.reason].filter((value): value is string => Boolean(value)))];
-            return <tr className="runtime-summary" key={`runtime:${index}`} aria-label={`Runtime group ${index + 1} for ${account.displayName}`}><td colSpan={3}><strong>Runtime group {index + 1}</strong><small>desired {runtime.desiredStateRevision ?? 0} / runtime {runtime.runtimeGeneration ?? 0} / credential {runtime.credentialVersion ?? 0}</small></td><td><StatusBadge state={display.state} /></td><td>{findings.length > 0 ? findings.map((finding) => <small key={finding}>{displayFinding(finding)}</small>) : display.state === "ready" ? "Ready" : "No reason reported"}</td></tr>;
+            const findings = [...new Set([display.reason, runtime.readiness.reason, runtime.writeReadiness.reason].filter((value): value is string => Boolean(value)))];
+            return <tr className="runtime-summary" key={`runtime:${index}`} aria-label={`Runtime group ${index + 1} for ${account.displayName}`}><td colSpan={3}><strong>Runtime group {index + 1}</strong><small>desired {runtime.desiredStateRevision} / runtime {runtime.runtimeGeneration} / credential {runtime.credentialVersion}</small></td><td><StatusBadge state={display.state} /></td><td>{findings.length > 0 ? findings.map((finding) => <small key={finding}>{displayFinding(finding)}</small>) : display.state === "ready" ? "Ready" : "No reason reported"}</td></tr>;
           })}
           {diagnostics(props.runtimes[account.accountId] ?? []).map((item, index) => item.route
             ? <tr className="route-diagnostic" key={`${item.phase}:${item.route.routeId}:${item.fence}:${index}`} aria-label={`${item.phase} ${item.route.routeId}`}><td><span className="route-phase">{item.phase}</span><small>{item.route.routeId}</small></td><td>{item.route.product}<small>{item.route.settlementAsset ?? "native"}</small></td><td><code>{item.route.routeProfileId}</code><small>{item.fence}</small></td><td><StatusBadge state={item.lifecycle} /><small>requested {item.requestedState} / route {item.route.requestedState}</small><small>{item.route.ready ? "ready" : "not ready"}</small></td><td>{displayFinding(item.route.reason, item.route.ready ? "Ready" : "No reason reported")}</td></tr>
@@ -212,21 +211,22 @@ export function AccountsRoute(props: AccountsProps) {
         </Fragment>)}</tbody></table></div>
         {props.accounts.length === 0 && <div className="empty-state"><CircleCheck /><strong>No accounts configured</strong><span>{props.readiness.ready ? "Platform is ready for account provisioning." : "Account provisioning is unavailable."}</span></div>}
         {editingAccount && <form className="rotation-panel" onSubmit={saveEdit}><div><strong>Edit {editingAccount.displayName}</strong></div><label>{`Account name for ${editingAccount.displayName}`}<input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} required /></label><fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product for ${editingAccount.displayName}`} type="checkbox" checked={editProducts.includes(product)} onChange={() => toggle(product, setEditProducts)} /><span>{product}</span></label>)}</fieldset><fieldset className="route-options"><legend>Route activation</legend>{editingProfiles.map((profile) => <label className="check-control" key={profile.routeId}><input aria-label={`${profile.label} route for ${editingAccount.displayName}`} type="checkbox" checked={editRoutes.includes(profile.routeId)} onChange={() => toggle(profile.routeId, setEditRoutes)} /><span>{profile.label}</span></label>)}</fieldset>{editError && <div className="finding finding--danger" role="alert">{editError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => setEditingID("")}>Cancel</button><button className="button button--primary" disabled={props.busy || editRoutes.length === 0}>Save account</button></div></form>}
-        {rotatingAccount && rotatingVenue && <form className="rotation-panel" onSubmit={rotate}><div><strong>Rotate {rotatingAccount.displayName}</strong><span>Replacement fields are write-only.</span></div>{rotationSchema.fields.map((field) => <label key={field.key}>{`Replacement ${field.label} for ${rotatingAccount.displayName}`}<input type="password" autoComplete="new-password" value={rotationCredentials[field.key] ?? ""} onChange={(event) => setRotationCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}{rotationError && <div className="finding finding--danger" role="alert">{rotationError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => { setRotatingID(""); setRotationCredentials({}); }}>Cancel</button><button className="button button--primary" disabled={props.busy}>Submit rotation</button></div></form>}
+        {rotatingAccount && rotatingVenue && rotationSchema && <form className="rotation-panel" onSubmit={rotate}><div><strong>Rotate {rotatingAccount.displayName}</strong><span>Replacement fields are write-only.</span></div>{rotationSchema.fields.map((field) => <label key={field.key}>{`Replacement ${field.label} for ${rotatingAccount.displayName}`}<input type="password" autoComplete="new-password" value={rotationCredentials[field.key] ?? ""} onChange={(event) => setRotationCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}{rotationError && <div className="finding finding--danger" role="alert">{rotationError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => { setRotatingID(""); setRotationCredentials({}); }}>Cancel</button><button className="button button--primary" disabled={props.busy}>Submit rotation</button></div></form>}
         {removingAccount && <div className="rotation-panel" role="group" aria-label={`Remove ${removingAccount.displayName}`}><div><strong>Remove {removingAccount.displayName}?</strong><span>Open positions, reservations, or commands may block removal.</span></div>{removalError && <div className="finding finding--danger" role="alert">{removalError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => setRemovingID("")}>Cancel</button><button type="button" className="button button--danger" disabled={props.busy} onClick={async () => { setRemovalError(""); try { await props.onAction(removingAccount.accountId, "remove"); setRemovingID(""); setOperationError(removingAccount.accountId); } catch (error) { const message = displayFinding(error instanceof Error ? error.message : error); setRemovalError(message); setOperationError(removingAccount.accountId, message); } }}>Confirm removal</button></div></div>}
       </div>
-      <form className="surface account-form" onSubmit={create}>
+      <form className="account-form" onSubmit={create}>
         <div className="section-heading"><div><h2>Add account</h2><span>Credential fields are write-only</span></div><KeyRound /></div>
-        <label>Venue<select value={venueKey} onChange={(event) => changeVenue(event.target.value)} required>{available.map((venue) => <option key={`${venue.venue}:${venue.environment}`} value={`${venue.venue}:${venue.environment}`}>{venue.venue}</option>)}</select></label>
-        {selectedVenue && <dl className="profile-metadata"><dt>Native environment</dt><dd>{selectedVenue.nativeEnvironment ?? selectedVenue.environment}</dd></dl>}
+        <label>Venue<select value={venueKey} onChange={(event) => changeVenue(event.target.value)} required>{available.map((venue) => <option key={`${venue.venue}:${venue.environment}`} value={`${venue.venue}:${venue.environment}`} disabled={!modeCompatible(venue, props.mode)}>{venue.venue}</option>)}</select></label>
+        {selectedVenue && <dl className="profile-metadata"><dt>Native environment</dt><dd>{selectedVenue.nativeEnvironment}</dd></dl>}
         <label>Account name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></label>
         <fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product`} type="checkbox" checked={products.includes(product)} onChange={() => toggle(product, setProducts)} /><span>{product}</span></label>)}</fieldset>
         <fieldset className="route-options"><legend>Routes</legend>{profiles.map((profile) => <label className="check-control" key={profile.routeId}><input aria-label={`${profile.label} route`} type="checkbox" checked={selectedRoutes.includes(profile.routeId)} onChange={() => toggle(profile.routeId, setSelectedRoutes)} /><span>{profile.label}</span></label>)}</fieldset>
-        {schema.fields.map((field) => <label key={field.key}>{field.label}<input type="password" autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}
+        {schema?.fields.map((field) => <label key={field.key}>{field.label}<input type="password" autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}
+        {modeConflict && selectedVenue && <div className="finding finding--danger" role="alert">{modeConflictFinding(selectedVenue, props.mode)}</div>}
         {formError && <div className="finding finding--danger" role="alert">{formError}</div>}
-        <button className="button button--primary button--wide" disabled={props.busy || !selectedVenue || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>
+        <button className="button button--primary button--wide" disabled={props.busy || !selectedVenue || modeConflict || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>
       </form>
     </section>
-    <section className="surface surface--table"><div className="section-heading"><div><h2>Capability discovery</h2><span>{props.capabilities.length} reported</span></div></div><div className="table-scroll"><table><thead><tr><th>Account</th><th>Venue</th><th>Product</th><th>Operation</th><th>Support</th></tr></thead><tbody>{props.capabilities.map((item) => <tr key={`${item.accountId}:${item.rowId}:${item.operation}`}><td><code>{item.accountId}</code></td><td>{item.venue}</td><td>{item.product}{item.settlement && <small>{item.settlement}</small>}</td><td>{item.operation}</td><td><StatusBadge state={item.supported ? (item.writeReady ? "ready" : "read_only") : "denied"} label={item.supported ? (item.writeReady ? "supported" : "read only") : "unsupported"} /></td></tr>)}</tbody></table></div>{props.capabilities.length === 0 && <div className="empty-row">Capability projection is not available yet.</div>}</section>
+    <section className="account-section surface--table"><div className="section-heading"><div><h2>Capability discovery</h2><span>{props.capabilities.length} reported</span></div></div><div className="table-scroll"><table><thead><tr><th>Account</th><th>Venue</th><th>Product</th><th>Operation</th><th>Support</th></tr></thead><tbody>{props.capabilities.map((item) => <tr key={`${item.accountId}:${item.rowId}:${item.operation}`}><td><code>{item.accountId}</code></td><td>{item.venue}</td><td>{item.product}{item.settlement && <small>{item.settlement}</small>}</td><td>{item.operation}</td><td><StatusBadge state={item.supported ? (item.writeReady ? "ready" : "read_only") : "denied"} label={item.supported ? (item.writeReady ? "supported" : "read only") : "unsupported"} /></td></tr>)}</tbody></table></div>{props.capabilities.length === 0 && <div className="empty-row">Capability projection is not available yet.</div>}</section>
   </div>;
 }

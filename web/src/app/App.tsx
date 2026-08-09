@@ -239,27 +239,28 @@ export function App() {
     setPath(next);
   };
 
-  const perform = async (operation: () => Promise<unknown>, success: string, reload = true, propagate = false) => {
+  const perform = async (operation: () => Promise<unknown>, success: string, reload = true, options: { propagate?: boolean; reportGlobalError?: boolean } = {}) => {
     setBusy(true); setError(""); setNotice("");
     try { await operation(); if (reload) await load(); setNotice(success); }
     catch (operationError) {
       const message = errorMessage(operationError);
-      setError(message);
-      if (propagate) throw new Error(message);
+      if (options.reportGlobalError !== false) setError(message);
+      if (options.propagate) throw new Error(message);
     }
     finally { setBusy(false); }
   };
 
-  const createAccount = (request: Record<string, unknown>) => perform(() => apiClient.post("/accounts", request, { idempotencyScope: `account.create:${request.venue}:${request.displayName}` }), "Account submitted.", true, true);
+  const accountOperationOptions = { propagate: true, reportGlobalError: false };
+  const createAccount = (request: Record<string, unknown>) => perform(() => apiClient.post("/accounts", request, { idempotencyScope: `account.create:${request.venue}:${request.displayName}` }), "Account submitted.", true, accountOperationOptions);
   const accountAction = (accountID: string, action: string, payload: Record<string, unknown> = {}) => {
     const account = snapshot.accounts.find((item) => item.accountId === accountID);
     if (!account?.desiredStateRevision || account.desiredStateRevision < 1) {
-      return perform(async () => { throw new Error("Authoritative account revision is unavailable."); }, "", false, true);
+      return perform(async () => { throw new Error("Authoritative account revision is unavailable."); }, "", false, accountOperationOptions);
     }
     const options = { headers: { "If-Match": `\"desired-state-revision-${account.desiredStateRevision}\"` }, idempotencyScope: `account.${action}:${accountID}:${account.desiredStateRevision}` };
-    if (action === "remove") return perform(() => apiClient.delete(`/accounts/${encodeURIComponent(accountID)}`, options), "Account removal submitted.", true, true);
-    if (action === "update") return perform(() => apiClient.patch(`/accounts/${encodeURIComponent(accountID)}`, payload, options), "Account update submitted.", true, true);
-    return perform(() => apiClient.post(`/accounts/${encodeURIComponent(accountID)}/${action}`, payload, options), `Account ${action} submitted.`, true, true);
+    if (action === "remove") return perform(() => apiClient.delete(`/accounts/${encodeURIComponent(accountID)}`, options), "Account removal submitted.", true, accountOperationOptions);
+    if (action === "update") return perform(() => apiClient.patch(`/accounts/${encodeURIComponent(accountID)}`, payload, options), "Account update submitted.", true, accountOperationOptions);
+    return perform(() => apiClient.post(`/accounts/${encodeURIComponent(accountID)}/${action}`, payload, options), `Account ${action} submitted.`, true, accountOperationOptions);
   };
 
   const fundingSubmit = (request: Record<string, unknown>) => {
