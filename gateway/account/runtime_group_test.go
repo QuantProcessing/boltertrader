@@ -92,6 +92,10 @@ func TestCandidatePromotesSpotAndPerpAsOneGeneration(t *testing.T) {
 	if active == nil || len(active.Routes) != 2 || active.Fence != pending.Fence {
 		t.Fatalf("active=%+v", active)
 	}
+	routeID, admission, err := manager.ActiveRoute(pending.AccountID, "perp", "USDT")
+	if err != nil || routeID != "perp-usdt" || admission != group.Admission {
+		t.Fatalf("active route=%q admission=%p err=%v", routeID, admission, err)
+	}
 }
 
 func TestOneFailedRouteDestroysWholeCandidateAndPreservesActive(t *testing.T) {

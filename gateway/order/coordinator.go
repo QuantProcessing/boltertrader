@@ -596,7 +596,7 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 	return coordinator.reconcile(ctx, route, command)
 }
 
-func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, routeID domain.RouteID, fence account.WriteFence) (Result, error) {
+func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, routeID domain.RouteID, fence account.WriteFence) (result Result, returnErr error) {
 	if route.CheckWriteFence == nil || validateWriteFence(fence, prepared.AccountID) != nil {
 		return resultFromStored(prepared), ErrWriteNotReady
 	}
@@ -629,6 +629,26 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 	if err := route.CheckWriteFence(fence); err != nil {
 		return resultFromStored(dispatching), ErrWriteNotReady
 	}
+	handoffID, err := coordinator.identity.EventID()
+	if err != nil {
+		return resultFromStored(dispatching), ErrOutcomeUncertain
+	}
+	if _, err := coordinator.store.BeginOrderHandoff(ctx, store.BeginOrderHandoffRequest{
+		HandoffID: handoffID, CommandID: dispatching.CommandID, AccountID: dispatching.AccountID,
+		RouteID: routeID, Fence: domain.AccountFence{
+			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		},
+	}); err != nil {
+		return resultFromStored(dispatching), ErrOutcomeUncertain
+	}
+	handoffState := store.OrderHandoffUncertain
+	defer func() {
+		resolveCtx := context.WithoutCancel(ctx)
+		if _, err := coordinator.store.ResolveOrderHandoff(resolveCtx, store.ResolveOrderHandoffRequest{HandoffID: handoffID, State: handoffState}); err != nil && returnErr == nil {
+			returnErr = ErrOutcomeUncertain
+		}
+	}()
 
 	ack, placeErr := route.Driver.PlaceOrder(ctx, request)
 	if err := runHook(ctx, coordinator.hooks.AfterVenue, dispatching); err != nil {
@@ -665,9 +685,14 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 			return resultFromStored(current), err
 		}
 	}
-	result := resultFromStored(current)
+	result = resultFromStored(current)
 	if uncertain || current.State == domain.StateUncertain {
 		return result, ErrOutcomeUncertain
+	}
+	if current.State == domain.StateRejected {
+		handoffState = store.OrderHandoffRejected
+	} else {
+		handoffState = store.OrderHandoffAccepted
 	}
 	return result, nil
 }

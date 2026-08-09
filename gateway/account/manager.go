@@ -809,15 +809,28 @@ func (manager *Manager) RuntimeReady() bool {
 
 func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	manager.mu.RLock()
-	defer manager.mu.RUnlock()
 	if manager.closed {
+		manager.mu.RUnlock()
 		return ErrManagerClosed
 	}
 	runtime, ok := manager.runtimes[fence.AccountID]
-	if !ok || runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
-		return ErrStaleWriteFence
+	runtimeMode, allowLiveWrites := manager.runtimeMode, manager.allowLiveWrites
+	manager.mu.RUnlock()
+	if ok {
+		if runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
+			return ErrStaleWriteFence
+		}
+		runtimeMode = runtime.Desired.Mode
+	} else {
+		active := manager.ActiveSnapshot(fence.AccountID)
+		if active == nil || active.Fence != (domain.AccountFence{
+			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		}) {
+			return ErrStaleWriteFence
+		}
 	}
-	if runtime.Desired.Mode == RuntimeModeLive && !manager.allowLiveWrites {
+	if runtimeMode == RuntimeModeLive && !allowLiveWrites {
 		return ErrLiveWriteDisabled
 	}
 	return nil

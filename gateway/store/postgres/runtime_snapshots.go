@@ -246,6 +246,17 @@ func (postgresStore *Store) PromotePending(ctx context.Context, request storepkg
 		if active.Fence != request.ExpectedActiveFence {
 			return storepkg.PromotionResult{}, storepkg.ErrPromotionFenceConflict
 		}
+		var unresolved int
+		if err := tx.QueryRow(ctx, `
+			SELECT count(*) FROM gateway_order_handoffs
+			WHERE account_id=$1 AND desired_state_revision=$2 AND runtime_generation=$3
+			  AND credential_version=$4 AND state='started'
+		`, request.AccountID, active.Fence.DesiredStateRevision, active.Fence.RuntimeGeneration, active.Fence.CredentialVersion).Scan(&unresolved); err != nil {
+			return storepkg.PromotionResult{}, redactErr("check promotion handoff drain", err)
+		}
+		if unresolved != 0 {
+			return storepkg.PromotionResult{}, storepkg.ErrHandoffDrainBlocked
+		}
 		retiring = &storepkg.ActiveSnapshot{DesiredSnapshot: active}
 		if _, err := tx.Exec(ctx, `INSERT INTO gateway_retiring_generations(account_id,snapshot_id,state) VALUES ($1,$2,'reconciling') ON CONFLICT DO NOTHING`, request.AccountID, active.SnapshotID); err != nil {
 			return storepkg.PromotionResult{}, redactErr("record retiring generation", err)

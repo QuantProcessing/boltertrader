@@ -57,6 +57,15 @@ func (*fakeCommandStore) ClaimDueReconciliationTasks(context.Context, ClaimDueRe
 	return []ReconciliationTask{{Reason: ReconciliationAmbiguousHandoff}}, nil
 }
 
+func (*fakeCommandStore) BeginOrderHandoff(_ context.Context, request BeginOrderHandoffRequest) (OrderHandoff, error) {
+	return OrderHandoff{BeginOrderHandoffRequest: request, State: OrderHandoffStarted, StartedAt: time.Now()}, nil
+}
+
+func (*fakeCommandStore) ResolveOrderHandoff(_ context.Context, request ResolveOrderHandoffRequest) (OrderHandoff, error) {
+	resolved := time.Now()
+	return OrderHandoff{BeginOrderHandoffRequest: BeginOrderHandoffRequest{HandoffID: request.HandoffID}, State: request.State, ResolvedAt: &resolved}, nil
+}
+
 func TestReserveCommandRequestFreezesConflictScope(t *testing.T) {
 	payload := json.RawMessage(`{"quantity":"1"}`)
 	payloadHash, err := domain.CanonicalPayloadHash(payload)
