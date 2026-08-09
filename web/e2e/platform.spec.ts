@@ -49,7 +49,7 @@ test("authenticated desktop operator can inspect and act across both products", 
   await page.getByLabel("API secret").fill("second-browser-secret");
   await page.getByRole("button", { name: "Add account" }).click();
   await expect(page.getByLabel("API secret")).toHaveValue("");
-  await expect(page.getByText("private stream gap")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "private stream gap", exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("desktop-accounts.png"), fullPage: true });
 
@@ -141,6 +141,37 @@ test("realtime resnapshot signal reloads authoritative workspace before resuming
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
 });
 
+test("account operations remain scoped, retryable, recoverable, and redacted", async ({ page }) => {
+  const platform = await installFixturePlatform(page, { authenticated: true });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Accounts" }).click();
+  await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
+  await expect(page.getByText("STALE PUBLIC CONNECTOR")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "private stream gap", exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Retry validation for Binance Primary" }).click();
+  await expect(page.getByRole("alert", { name: "Binance Primary operation error" })).toContainText("PRIVATE STREAM GAP");
+  await expect(page.getByRole("alert", { name: "Bybit Hedge operation error" })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("credential-canary");
+  await expect(page.locator("body")).not.toContainText("/var/lib/secret-store");
+  await page.getByRole("button", { name: "Retry validation for Binance Primary" }).click();
+  await expect(page.getByRole("alert", { name: "Binance Primary operation error" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Drain Binance Primary" }).click();
+  await page.getByRole("button", { name: "Disable Binance Primary" }).click();
+  await page.getByRole("button", { name: "Remove Binance Primary" }).click();
+  await page.getByRole("button", { name: "Confirm removal" }).click();
+  await expect(page.getByRole("group", { name: "Remove Binance Primary" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Remove Binance Primary" }).getByRole("alert")).toContainText("ACCOUNT BLOCKED");
+  await expect(page.locator("body")).not.toContainText("opaque-canary");
+  await expect(page.locator("body")).not.toContainText("token-canary");
+
+  platform.recoverPrivateState();
+  await page.getByRole("button", { name: "Refresh accounts" }).click();
+  await expect(page.getByText("private stream gap")).toHaveCount(0);
+  await expect(page.getByText("STALE PUBLIC CONNECTOR")).toHaveCount(0);
+});
+
 test("mobile navigation preserves every route without document overflow", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await installFixturePlatform(page, { authenticated: true });
@@ -169,7 +200,7 @@ test("mobile navigation preserves every route without document overflow", async 
   await page.getByRole("button", { name: "Open navigation" }).click();
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
-  await expect(page.getByText("private stream gap")).toBeVisible();
+  await expect(page.getByRole("cell", { name: "private stream gap", exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect.poll(() => page.evaluate(() => window.scrollX)).toBe(0);
   await page.screenshot({ path: testInfo.outputPath("mobile-accounts.png"), fullPage: true });

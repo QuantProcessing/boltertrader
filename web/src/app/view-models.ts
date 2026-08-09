@@ -53,6 +53,14 @@ export function runtimeDisplay(runtime: Partial<RuntimeView> | undefined): { sta
   return runtime.readiness?.ready && runtime.writeReadiness?.ready ? { state: "ready" } : { state: "unknown" };
 }
 
+const sensitiveDiagnostic = /(?:api[_ -]?(?:key|secret)|passphrase|credential|secretRef|providerPath|gatewayToken|authorization|bearer\s+|secret(?:store|:\/\/)|\/var\/|\/run\/secrets\/)/i;
+
+export function safeFinding(value: unknown, fallback = "No reason reported"): string {
+  const finding = typeof value === "string" ? value.trim() : "";
+  if (!finding) return fallback;
+  return sensitiveDiagnostic.test(finding) ? "Sensitive diagnostic redacted." : finding.replaceAll("_", " ");
+}
+
 export function activityDisplay(event: Pick<ActivityEvent, "kind" | "payload">): { summary: string; status: string } {
   const summary = typeof event.payload.summary === "string" && event.payload.summary.trim() ? event.payload.summary : event.kind;
   const status = typeof event.payload.status === "string" && event.payload.status.trim() ? event.payload.status : "recorded";

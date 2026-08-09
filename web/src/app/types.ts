@@ -1,4 +1,6 @@
 export type Mode = "test" | "live";
+export type NativeEnvironment = "demo" | "testnet" | "live";
+export type ProductPolicy = "funding" | "manual";
 
 export type AccountState = "creating" | "active" | "rotating" | "draining" | "drained" | "disabled" | "removing" | "removed";
 
@@ -13,17 +15,15 @@ export interface AccountRoute {
 export interface Account {
   accountId: string;
   venue: string;
-  mode?: Mode;
-  nativeEnvironment?: "demo" | "testnet" | "live";
-  venueEnvironment?: string;
+  mode: Mode;
+  nativeEnvironment: NativeEnvironment;
   displayName: string;
-  productPolicy?: string[];
-  productIds?: string[];
-  status: AccountState | string;
-  desiredStateRevision?: number;
-  runtimeGeneration?: number;
-  credentialVersion?: number;
-  routes?: AccountRoute[];
+  productPolicy: ProductPolicy[];
+  status: AccountState;
+  desiredStateRevision: number;
+  runtimeGeneration: number;
+  credentialVersion: number;
+  routes: AccountRoute[];
   lastValidatedAt?: string | null;
   updatedAt?: string;
 }
@@ -47,12 +47,17 @@ export interface RouteProfile extends Omit<AccountRoute, "requestedState"> {
 export interface Venue {
   venue: string;
   environment: string;
-  nativeEnvironment?: "demo" | "testnet" | "live";
+  nativeEnvironment?: NativeEnvironment;
   ready: boolean;
   products?: string[];
   reason?: string;
   credentialSchema?: CredentialSchema;
   routeProfiles?: RouteProfile[];
+}
+
+export interface Readiness {
+  ready: boolean;
+  components?: Record<string, { ready?: boolean; reason?: string; state?: string }>;
 }
 
 export interface ProjectionReadiness {

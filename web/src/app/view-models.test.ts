@@ -8,6 +8,7 @@ import {
   formatDecimal,
   mergePositionUpdate,
   runtimeDisplay,
+  safeFinding,
   stateTone,
 } from "./view-models.ts";
 
@@ -136,5 +137,15 @@ describe("authoritative view models", () => {
       payload: {},
       observedAt: "2026-08-08T10:01:00Z",
     })).toEqual({ summary: "runtime.observed", status: "recorded" });
+  });
+
+  it("redacts secret references, provider paths, tokens, and credential material", () => {
+    expect(safeFinding("PRIVATE_STREAM_GAP")).toBe("PRIVATE STREAM GAP");
+    for (const value of [
+      "secretRef=opaque-canary",
+      "providerPath=/var/lib/credentials/account-a",
+      "gatewayToken=bearer-canary",
+      "apiSecret=credential-canary",
+    ]) expect(safeFinding(value)).toBe("Sensitive diagnostic redacted.");
   });
 });

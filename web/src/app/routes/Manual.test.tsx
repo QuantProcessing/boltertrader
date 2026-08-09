@@ -6,7 +6,19 @@ import { ManualRoute } from "./Manual";
 
 const baseProps = {
   mode: "test",
-  accounts: [{ accountId: "account-1", displayName: "Binance Demo", venue: "binance", status: "active", productIds: ["manual"] }],
+  accounts: [{
+    accountId: "account-1",
+    displayName: "Binance Demo",
+    venue: "binance",
+    mode: "test",
+    nativeEnvironment: "demo",
+    status: "active",
+    productPolicy: ["manual"],
+    desiredStateRevision: 1,
+    runtimeGeneration: 1,
+    credentialVersion: 1,
+    routes: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" }],
+  }],
   instruments: [{ instrumentId: "BTC-USDT-PERP", symbol: "BTCUSDT", venue: "binance", ready: true }],
   orders: [],
   positions: [],

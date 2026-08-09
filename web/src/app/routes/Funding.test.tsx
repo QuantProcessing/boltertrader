@@ -4,14 +4,28 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FundingRoute } from "./Funding";
 
+const account = (accountId: string, displayName: string, venue: string) => ({
+  accountId,
+  displayName,
+  venue,
+  mode: "test" as const,
+  nativeEnvironment: "demo" as const,
+  status: "active" as const,
+  productPolicy: ["funding" as const],
+  desiredStateRevision: 1,
+  runtimeGeneration: 1,
+  credentialVersion: 1,
+  routes: [],
+});
+
 describe("FundingRoute", () => {
   it("fails closed when the authoritative preview has blockers", () => {
     render(
       <FundingRoute
         mode="test"
         accounts={[
-          { accountId: "long-account", displayName: "Long venue", venue: "binance", status: "active", productIds: ["funding"] },
-          { accountId: "short-account", displayName: "Short venue", venue: "bybit", status: "active", productIds: ["funding"] },
+          account("long-account", "Long venue", "binance"),
+          account("short-account", "Short venue", "bybit"),
         ]}
         opportunities={[
           {
@@ -49,9 +63,9 @@ describe("FundingRoute", () => {
       <FundingRoute
         mode="test"
         accounts={[
-          { accountId: "unrelated", displayName: "Unrelated", venue: "okx", status: "active", productIds: ["funding"] },
-          { accountId: "long-authority", displayName: "Long authority", venue: "binance", status: "active", productIds: ["funding"] },
-          { accountId: "short-authority", displayName: "Short authority", venue: "bybit", status: "active", productIds: ["funding"] },
+          account("unrelated", "Unrelated", "okx"),
+          account("long-authority", "Long authority", "binance"),
+          account("short-authority", "Short authority", "bybit"),
         ]}
         opportunities={[{
           opportunityId: "opp-authority",
