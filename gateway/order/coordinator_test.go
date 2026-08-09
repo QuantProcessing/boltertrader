@@ -103,6 +103,58 @@ func TestCoordinatorRevalidatesWriteFenceImmediatelyBeforeVenueIO(t *testing.T) 
 	}
 }
 
+func TestPromotionWaitsWhileOldGenerationHandoffIsBetweenFenceAndVenue(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	if report, err := fixture.coordinator.RecoverAccount(context.Background(), fixture.accountID); err != nil || !report.WriteReady {
+		t.Fatalf("initial recovery=%+v err=%v", report, err)
+	}
+	admission := newTestHandoffAdmission()
+	blocked := &blockingDriver{Driver: fixture.driver, entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.router.route.Admission = admission
+	fixture.router.route.Driver = blocked
+
+	placed := make(chan error, 1)
+	go func() {
+		_, err := fixture.coordinator.Place(context.Background(), fixture.placeRequest())
+		placed <- err
+	}()
+	<-blocked.entered
+	fixture.store.mu.Lock()
+	if len(fixture.store.handoffs) != 1 {
+		fixture.store.mu.Unlock()
+		t.Fatalf("durable started handoffs=%d want=1", len(fixture.store.handoffs))
+	}
+	for _, handoff := range fixture.store.handoffs {
+		if handoff.State != store.OrderHandoffStarted || handoff.ResolvedAt != nil {
+			fixture.store.mu.Unlock()
+			t.Fatalf("handoff before venue release=%+v", handoff)
+		}
+	}
+	fixture.store.mu.Unlock()
+
+	promoted := make(chan error, 1)
+	go func() { promoted <- admission.CloseAndWait(context.Background()) }()
+	select {
+	case err := <-promoted:
+		t.Fatalf("promotion crossed in-flight handoff: %v", err)
+	default:
+	}
+	close(blocked.release)
+	if err := <-placed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-promoted; err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.mu.Lock()
+	defer fixture.store.mu.Unlock()
+	for _, handoff := range fixture.store.handoffs {
+		if handoff.State != store.OrderHandoffAccepted || handoff.ResolvedAt == nil {
+			t.Fatalf("resolved handoff=%+v", handoff)
+		}
+	}
+}
+
 func TestCoordinatorRejectsIncompleteWriteFenceBeforeReservation(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -846,6 +898,57 @@ type blockingDriver struct {
 	once    sync.Once
 }
 
+type testHandoffAdmission struct {
+	mu       sync.Mutex
+	closed   bool
+	inflight int
+	drained  chan struct{}
+}
+
+type testHandoffLease struct {
+	once    sync.Once
+	release func()
+}
+
+func (lease *testHandoffLease) Release() { lease.once.Do(lease.release) }
+
+func newTestHandoffAdmission() *testHandoffAdmission {
+	return &testHandoffAdmission{drained: make(chan struct{})}
+}
+
+func (admission *testHandoffAdmission) Acquire(domain.WriteFence) (account.HandoffLease, error) {
+	admission.mu.Lock()
+	defer admission.mu.Unlock()
+	if admission.closed {
+		return nil, account.ErrRuntimeBlocked
+	}
+	admission.inflight++
+	return &testHandoffLease{release: func() {
+		admission.mu.Lock()
+		defer admission.mu.Unlock()
+		admission.inflight--
+		if admission.closed && admission.inflight == 0 {
+			close(admission.drained)
+		}
+	}}, nil
+}
+
+func (admission *testHandoffAdmission) CloseAndWait(ctx context.Context) error {
+	admission.mu.Lock()
+	admission.closed = true
+	if admission.inflight == 0 {
+		close(admission.drained)
+	}
+	drained := admission.drained
+	admission.mu.Unlock()
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type ambiguousCancelDriver struct {
 	Driver
 }
@@ -994,6 +1097,7 @@ type memoryCommandStore struct {
 	byKey      map[string]*memoryRecord
 	byCommand  map[domain.CommandID]*memoryRecord
 	tasks      map[domain.GatewayOrderID]store.ReconciliationTask
+	handoffs   map[domain.EventID]store.OrderHandoff
 	reserveErr error
 }
 
@@ -1007,8 +1111,39 @@ type memoryRecord struct {
 func newMemoryCommandStore() *memoryCommandStore {
 	return &memoryCommandStore{
 		byKey: make(map[string]*memoryRecord), byCommand: make(map[domain.CommandID]*memoryRecord),
-		tasks: make(map[domain.GatewayOrderID]store.ReconciliationTask),
+		tasks:    make(map[domain.GatewayOrderID]store.ReconciliationTask),
+		handoffs: make(map[domain.EventID]store.OrderHandoff),
 	}
+}
+
+func (memory *memoryCommandStore) BeginOrderHandoff(_ context.Context, request store.BeginOrderHandoffRequest) (store.OrderHandoff, error) {
+	if err := request.Validate(); err != nil {
+		return store.OrderHandoff{}, err
+	}
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	if existing, ok := memory.handoffs[request.HandoffID]; ok {
+		return existing, nil
+	}
+	handoff := store.OrderHandoff{BeginOrderHandoffRequest: request, State: store.OrderHandoffStarted, StartedAt: time.Now()}
+	memory.handoffs[request.HandoffID] = handoff
+	return handoff, nil
+}
+
+func (memory *memoryCommandStore) ResolveOrderHandoff(_ context.Context, request store.ResolveOrderHandoffRequest) (store.OrderHandoff, error) {
+	if err := request.Validate(); err != nil {
+		return store.OrderHandoff{}, err
+	}
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	handoff, ok := memory.handoffs[request.HandoffID]
+	if !ok {
+		return store.OrderHandoff{}, store.ErrNotFound
+	}
+	now := time.Now()
+	handoff.State, handoff.ResolvedAt = request.State, &now
+	memory.handoffs[request.HandoffID] = handoff
+	return handoff, nil
 }
 
 func (memory *memoryCommandStore) ReserveCommand(_ context.Context, request store.ReserveCommandRequest) (store.ReservedCommand, error) {

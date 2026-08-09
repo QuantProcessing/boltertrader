@@ -36,14 +36,15 @@ type Registry struct {
 }
 
 type entry struct {
-	key         routeprofile.Key
-	id          string
-	connector   Connector
-	refCount    int
-	catalog     *catalog.Service
-	accountID   domain.AccountID
-	refreshing  bool
-	refreshDone chan struct{}
+	key            routeprofile.Key
+	id             string
+	connector      Connector
+	refCount       int
+	catalog        *catalog.Service
+	accountID      domain.AccountID
+	refreshing     bool
+	refreshDone    chan struct{}
+	refreshWaiters int
 }
 
 type lease struct {
@@ -110,7 +111,13 @@ func (registry *Registry) Refresh(ctx context.Context, key routeprofile.Key) (ca
 	}
 	if current.refreshing {
 		done := current.refreshDone
+		current.refreshWaiters++
 		registry.mu.Unlock()
+		defer func() {
+			registry.mu.Lock()
+			current.refreshWaiters--
+			registry.mu.Unlock()
+		}()
 		select {
 		case <-ctx.Done():
 			return catalog.Snapshot{}, ctx.Err()
@@ -160,6 +167,20 @@ func (lease *lease) Release() {
 			_ = current.connector.Close()
 		}
 	})
+}
+
+func (registry *Registry) Close() error {
+	registry.mu.Lock()
+	entries := registry.entries
+	registry.entries = make(map[routeprofile.Key]*entry)
+	registry.mu.Unlock()
+	var closeErr error
+	for _, current := range entries {
+		if err := current.connector.Close(); err != nil {
+			closeErr = errors.Join(closeErr, ErrConnectorUnavailable)
+		}
+	}
+	return closeErr
 }
 
 func connectorID(key routeprofile.Key) string {

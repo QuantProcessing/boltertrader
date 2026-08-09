@@ -24,6 +24,7 @@ var (
 	ErrPromotionFenceConflict       = errors.New("gateway promotion fence conflict")
 	ErrCandidateNotReady            = errors.New("gateway candidate not ready")
 	ErrRetiredSecretReference       = errors.New("gateway retired secret reference")
+	ErrHandoffDrainBlocked          = errors.New("gateway handoff drain blocked")
 )
 
 type RouteState string

@@ -138,3 +138,17 @@ func TestRuntimeSnapshotMigrationFreezesImmutableHeadsAndRecovery(t *testing.T) 
 		}
 	}
 }
+
+func TestOrderHandoffMigrationFreezesGenerationScopedDrainState(t *testing.T) {
+	sql := strings.ToLower(OrderHandoffsMigrationSQL())
+	for _, required := range []string{
+		"gateway_order_handoffs", "command_id uuid not null unique", "route_id text not null",
+		"desired_state_revision bigint not null", "runtime_generation bigint not null",
+		"credential_version bigint not null", "state in ('started','accepted','rejected','uncertain')",
+		"where state = 'started'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("order handoff migration missing %q", required)
+		}
+	}
+}

@@ -19,6 +19,10 @@ type writeFenceChecker interface {
 	CheckWriteFence(account.WriteFence) error
 }
 
+type activeRouteSource interface {
+	ActiveRoute(domain.AccountID, string, string) (domain.RouteID, *account.GenerationAdmission, error)
+}
+
 type AccountRegistry interface {
 	Spot(domain.AccountID) (exchange.SpotClient, error)
 	Perp(domain.AccountID) (exchange.PerpClient, error)
@@ -96,6 +100,14 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 	if checker, supportsFences := router.accounts.(writeFenceChecker); supportsFences {
 		checkWriteFence = checker.CheckWriteFence
 	}
+	var routeID domain.RouteID
+	var admission HandoffAdmission
+	if source, supportsRuntimeRoutes := router.accounts.(activeRouteSource); supportsRuntimeRoutes {
+		routeID, admission, err = source.ActiveRoute(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+		if err != nil {
+			return Route{}, fmt.Errorf("order runtime route unavailable")
+		}
+	}
 	reason := status.Reason
 	if !ok {
 		reason = reasonExactLookupUnavailable
@@ -103,7 +115,7 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 		reason = reasonWriteFenceUnavailable
 	}
 	return Route{
-		Driver:     &exchangeDriver{orders: orders, lookup: lookup},
+		RouteID: routeID, Driver: &exchangeDriver{orders: orders, lookup: lookup}, Admission: admission,
 		Instrument: instrument, Product: instrument.Identity.Product,
 		WriteReady: status.WriteReady && ok && checkWriteFence != nil, Reason: reason, CheckWriteFence: checkWriteFence,
 	}, nil

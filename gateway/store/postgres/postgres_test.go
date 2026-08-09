@@ -244,8 +244,8 @@ func TestMigrateRealPostgresConcurrentStartersSerialize(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 3 {
-		t.Fatalf("schema_migrations rows = %d, want 3", rows)
+	if rows != 4 {
+		t.Fatalf("schema_migrations rows = %d, want 4", rows)
 	}
 }
 
@@ -321,6 +321,45 @@ func TestCommandStoreRealPostgresReservesIdempotentlyAndAtomically(t *testing.T)
 		if strings.Contains(strings.ToLower(string(metadata)), forbidden) {
 			t.Fatalf("audit metadata contains forbidden %q: %s", forbidden, metadata)
 		}
+	}
+}
+
+func TestCommandStoreRealPostgresPersistsAndResolvesGenerationHandoff(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	postgresStore := NewStore(pool)
+	registerTestAccount(t, ctx, postgresStore)
+	reserved, err := postgresStore.ReserveCommand(ctx, reserveRequest(t, json.RawMessage(`{"quantity":"0.001"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := store.BeginOrderHandoffRequest{
+		HandoffID: "018f0000-0000-7000-8000-000000000090", CommandID: reserved.CommandID,
+		AccountID: testAccountID(t), RouteID: "spot",
+		Fence: domain.AccountFence{AccountID: testAccountID(t), DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+	}
+	dispatching, err := postgresStore.MarkDispatching(ctx, store.MarkDispatchingRequest{
+		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000091",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, err := postgresStore.BeginOrderHandoff(ctx, request)
+	if err != nil || handoff.State != store.OrderHandoffStarted || handoff.ResolvedAt != nil {
+		t.Fatalf("started handoff=%+v err=%v", handoff, err)
+	}
+	if _, err := postgresStore.RecordVenueResult(ctx, store.RecordVenueResultRequest{
+		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000092",
+		NextState: domain.StateAccepted, ResourceVersion: dispatching.ResourceVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := postgresStore.loadOrderHandoff(ctx, request.HandoffID)
+	if err != nil || resolved.State != store.OrderHandoffAccepted || resolved.ResolvedAt == nil {
+		t.Fatalf("resolved handoff=%+v err=%v", resolved, err)
 	}
 }
 

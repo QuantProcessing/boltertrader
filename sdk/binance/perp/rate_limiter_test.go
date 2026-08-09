@@ -138,6 +138,13 @@ func TestClientWithGatewayTransportDisablesPerpSDKLocalLimiter(t *testing.T) {
 	}
 }
 
+func TestClientWithNilGatewayTransportKeepsPerpSDKLocalLimiter(t *testing.T) {
+	client := NewClient().WithGatewayTransport(nil)
+	if client.RateLimiter == nil {
+		t.Fatal("nil gateway transport disabled the SDK-local limiter")
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

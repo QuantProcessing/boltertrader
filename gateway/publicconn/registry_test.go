@@ -215,3 +215,134 @@ func testInstrument(venue exchange.Venue, product exchange.Product, symbol, nati
 		},
 	}
 }
+
+type scriptedConnector struct {
+	mu          sync.Mutex
+	refreshes   int
+	closes      int
+	instruments []exchange.Instrument
+	err         error
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func (connector *scriptedConnector) Refresh(ctx context.Context) ([]exchange.Instrument, error) {
+	connector.mu.Lock()
+	connector.refreshes++
+	connector.mu.Unlock()
+	if connector.entered != nil {
+		connector.once.Do(func() { close(connector.entered) })
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-connector.release:
+		}
+	}
+	return connector.instruments, connector.err
+}
+
+func (connector *scriptedConnector) Close() error {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.closes++
+	return nil
+}
+
+type scriptedFactory map[routeprofile.Key]*scriptedConnector
+
+func (factory scriptedFactory) Build(_ context.Context, key routeprofile.Key) (Connector, error) {
+	connector := factory[key]
+	if connector == nil {
+		return nil, ErrConnectorUnavailable
+	}
+	return connector, nil
+}
+
+func TestConcurrentRefreshesCoalescePerProfile(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	connector := &scriptedConnector{instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductPerp, "USDT")}, entered: make(chan struct{}), release: make(chan struct{})}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	results := make(chan error, 2)
+	go func() { _, err := registry.Refresh(context.Background(), key); results <- err }()
+	<-connector.entered
+	go func() { _, err := registry.Refresh(context.Background(), key); results <- err }()
+	for {
+		registry.mu.Lock()
+		waiters := registry.entries[key].refreshWaiters
+		registry.mu.Unlock()
+		if waiters == 1 {
+			break
+		}
+	}
+	close(connector.release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.refreshes != 1 {
+		t.Fatalf("connector refreshes=%d want=1", connector.refreshes)
+	}
+}
+
+func TestStaleConnectorAffectsOnlyItsProfile(t *testing.T) {
+	spotKey := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	perpKey := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	factory := scriptedFactory{
+		spotKey: {err: errors.New("public canary failure")},
+		perpKey: {instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductPerp, "USDT")}},
+	}
+	registry, _ := NewRegistry(factory, routeprofile.DefaultRegistry())
+	spotLease, err := registry.Acquire(context.Background(), spotKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spotLease.Release()
+	perpLease, err := registry.Acquire(context.Background(), perpKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer perpLease.Release()
+	if _, err := registry.Refresh(context.Background(), spotKey); !errors.Is(err, ErrConnectorUnavailable) {
+		t.Fatalf("spot refresh err=%v", err)
+	}
+	if snapshot, err := registry.Refresh(context.Background(), perpKey); err != nil || len(snapshot.Instruments) != 1 {
+		t.Fatalf("perp snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestRegistryCloseClosesLeasedConnectorOnce(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.closes != 1 {
+		t.Fatalf("connector closes=%d want=1", connector.closes)
+	}
+}
+
+func publicTestInstrument(product exchange.Product, settlement string) exchange.Instrument {
+	return exchange.Instrument{Identity: exchange.InstrumentIdentity{
+		Venue: exchange.VenueBinance, Product: product, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+		SettleAsset: settlement, NativeSymbol: "BTCUSDT", NativeID: "BTCUSDT",
+	}, Rules: exchange.InstrumentRules{
+		PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001"),
+	}}
+}

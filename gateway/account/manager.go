@@ -788,36 +788,52 @@ func (manager *Manager) Runtimes() []RuntimeAccount {
 func (manager *Manager) RuntimeReady() bool {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
+	return !manager.closed
+}
+
+func (manager *Manager) RuntimeReadiness() (bool, int, int) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
 	if manager.closed {
-		return false
+		return false, 0, 0
 	}
-	if len(manager.runtimes) == 0 {
-		return true
-	}
-	hasActive := false
+	active, ready := 0, 0
 	for _, runtime := range manager.runtimes {
 		if runtime.State != RuntimeStateActive {
 			continue
 		}
-		hasActive = true
-		if !runtime.Ready {
-			return false
+		active++
+		if runtime.Ready {
+			ready++
 		}
 	}
-	return hasActive
+	return true, active, ready
 }
 
 func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	manager.mu.RLock()
-	defer manager.mu.RUnlock()
 	if manager.closed {
+		manager.mu.RUnlock()
 		return ErrManagerClosed
 	}
 	runtime, ok := manager.runtimes[fence.AccountID]
-	if !ok || runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
-		return ErrStaleWriteFence
+	runtimeMode, allowLiveWrites := manager.runtimeMode, manager.allowLiveWrites
+	manager.mu.RUnlock()
+	if ok {
+		if runtime.State != RuntimeStateActive || runtime.Desired.Fence() != fence {
+			return ErrStaleWriteFence
+		}
+		runtimeMode = runtime.Desired.Mode
+	} else {
+		active := manager.ActiveSnapshot(fence.AccountID)
+		if active == nil || active.Fence != (domain.AccountFence{
+			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		}) {
+			return ErrStaleWriteFence
+		}
 	}
-	if runtime.Desired.Mode == RuntimeModeLive && !manager.allowLiveWrites {
+	if runtimeMode == RuntimeModeLive && !allowLiveWrites {
 		return ErrLiveWriteDisabled
 	}
 	return nil

@@ -8,7 +8,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,28 +30,31 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type runtimeDeps struct {
-	connectPostgres       func(context.Context, string) (process.PostgresPool, error)
-	migrate               func(context.Context, process.PostgresPool) error
-	registerAccount       func(context.Context, process.PostgresPool, process.AccountRegistration) error
-	acquireOwnership      func(context.Context, process.PostgresPool, process.AccountRegistration) (process.Ownership, error)
-	buildAccountManager   func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error)
-	buildOrderCoordinator func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
-	buildHandler          func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
-	buildInternalHandler  func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
-	listen                func(network, address string) (net.Listener, error)
-	listenInternal        func(network, address string) (net.Listener, error)
-	wait                  func(context.Context, *process.Service) error
-	metrics               *observability.Metrics
-	runtimeMode           account.RuntimeMode
-	runtimeLifecycle      account.RuntimeLifecycle
-	resolveRuntimeSecret  func(context.Context, secret.OpaqueRef) (string, error)
-	activateRuntime       func(context.Context, account.DesiredRuntime, string) error
-	deactivateRuntime     func(context.Context, domain.AccountID) error
-	runtimeBlockers       func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
+	checkCredentialResolver func(context.Context) error
+	connectPostgres         func(context.Context, string) (process.PostgresPool, error)
+	migrate                 func(context.Context, process.PostgresPool) error
+	registerAccount         func(context.Context, process.PostgresPool, process.AccountRegistration) error
+	acquireOwnership        func(context.Context, process.PostgresPool, process.AccountRegistration) (process.Ownership, error)
+	buildAccountManager     func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error)
+	buildOrderCoordinator   func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
+	buildHandler            func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
+	buildInternalHandler    func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
+	listen                  func(network, address string) (net.Listener, error)
+	listenInternal          func(network, address string) (net.Listener, error)
+	wait                    func(context.Context, *process.Service) error
+	metrics                 *observability.Metrics
+	runtimeMode             account.RuntimeMode
+	runtimeLifecycle        account.RuntimeLifecycle
+	resolveRuntimeSecret    func(context.Context, secret.OpaqueRef) (string, error)
+	activateRuntime         func(context.Context, account.DesiredRuntime, string) error
+	deactivateRuntime       func(context.Context, domain.AccountID) error
+	runtimeBlockers         func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
+	credentialResolver      account.ScopedCredentialResolver
 }
 
 func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error) {
@@ -86,6 +92,19 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	if runtimeMode == "" {
 		runtimeMode = account.RuntimeMode(file.Server.Mode)
 	}
+	credentialResolver := deps.credentialResolver
+	var credentialProvider *secretstore.FilesystemProvider
+	if credentialResolver == nil && deps.buildAccountManager == nil {
+		credentialProvider, credentialResolver, err = newGatewayCredentialResolver(runtimeMode)
+		if err != nil {
+			return err
+		}
+		defer credentialProvider.Close()
+	}
+	checkCredentialResolver := deps.checkCredentialResolver
+	if checkCredentialResolver == nil && credentialResolver != nil {
+		checkCredentialResolver = credentialResolver.Check
+	}
 	runtimeLifecycle := deps.runtimeLifecycle
 	if file.Server.InternalListen != "" && deps.buildInternalHandler == nil && runtimeLifecycle == nil {
 		runtimeLifecycle, err = newOpaqueRuntimeLifecycle(
@@ -106,14 +125,15 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, runtimeMode)
 	}
 	processDeps := process.Dependencies{
-		ResolveSecret:         provider.Resolve,
-		ConnectPostgres:       observedConnectPostgres(metrics, connectPostgres),
-		Migrate:               observedMigrate(metrics, migrate),
-		RegisterAccount:       observedRegisterAccount(metrics, registerAccount),
-		AcquireOwnership:      observedAcquireOwnership(metrics, acquireOwnership),
-		BuildAccountManager:   defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, runtimeMode),
-		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
-		Listen:                defaultListen(deps.listen),
+		CheckCredentialResolver: checkCredentialResolver,
+		ResolveSecret:           provider.Resolve,
+		ConnectPostgres:         observedConnectPostgres(metrics, connectPostgres),
+		Migrate:                 observedMigrate(metrics, migrate),
+		RegisterAccount:         observedRegisterAccount(metrics, registerAccount),
+		AcquireOwnership:        observedAcquireOwnership(metrics, acquireOwnership),
+		BuildAccountManager:     defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
+		BuildOrderCoordinator:   defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
+		Listen:                  defaultListen(deps.listen),
 		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
 			publicHandler, handlerErr := publicHandlerFactory(monitor, pool, accounts, orders)
 			if handlerErr != nil {
@@ -465,6 +485,7 @@ func (coordinator processOrderCoordinator) Close(ctx context.Context) error {
 func defaultBuildAccountManager(
 	override func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error),
 	lifecycle account.RuntimeLifecycle,
+	credentialResolver account.ScopedCredentialResolver,
 	mode account.RuntimeMode,
 ) func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
 	if override != nil {
@@ -475,19 +496,68 @@ func defaultBuildAccountManager(
 		if err != nil {
 			return nil, fmt.Errorf("catalog setup")
 		}
+		exchangeCatalog := exchange.NewDefaultMemoryCatalog()
+		httpClient := &http.Client{Timeout: 30 * time.Second}
 		manager, err := account.NewManager(ctx, accounts, account.Options{
-			Secrets:         secret.StaticProvider(resolved),
-			ExchangeCatalog: exchange.NewDefaultMemoryCatalog(),
-			GatewayCatalog:  gatewayCatalog,
-			HTTPClient:      &http.Client{Timeout: 30 * time.Second},
-			RuntimeMode:     mode,
-			Lifecycle:       lifecycle,
+			Secrets:             secret.StaticProvider(resolved),
+			ExchangeCatalog:     exchangeCatalog,
+			GatewayCatalog:      gatewayCatalog,
+			HTTPClient:          httpClient,
+			RuntimeMode:         mode,
+			Lifecycle:           lifecycle,
+			CredentialResolver:  credentialResolver,
+			RuntimeGroupBuilder: account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("account manager setup")
 		}
 		return manager, nil
 	}
+}
+
+type gatewayKeychainRunner struct{}
+
+func (gatewayKeychainRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+func newGatewayCredentialResolver(mode account.RuntimeMode) (*secretstore.FilesystemProvider, account.ScopedCredentialResolver, error) {
+	keySourceName := strings.TrimSpace(os.Getenv("BT_SECRET_KEY_SOURCE"))
+	stateDir := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_DIR"))
+	namespace := strings.TrimSpace(os.Getenv("BT_SECRET_STORE_NAMESPACE"))
+	keyVersion := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_VERSION"))
+	secretMode := secretstore.Mode(mode)
+	if !filepath.IsAbs(stateDir) || namespace != "boltertrader/"+string(mode) || keyVersion != "v1" || (secretMode != secretstore.ModeTest && secretMode != secretstore.ModeLive) {
+		return nil, nil, fmt.Errorf("credential resolver configuration is invalid")
+	}
+	var keySource secretstore.KeySource
+	switch keySourceName {
+	case "file":
+		keyFile := strings.TrimSpace(os.Getenv("BT_SECRET_MASTER_KEY_FILE"))
+		if !filepath.IsAbs(keyFile) || os.Getenv("BT_SECRET_KEYCHAIN_SERVICE") != "" || os.Getenv("BT_SECRET_KEYCHAIN_ACCOUNT") != "" {
+			return nil, nil, fmt.Errorf("credential resolver key source is invalid")
+		}
+		keySource = secretstore.FileKeySource{Path: keyFile}
+	case "keychain":
+		service := strings.TrimSpace(os.Getenv("BT_SECRET_KEYCHAIN_SERVICE"))
+		keyAccount := strings.TrimSpace(os.Getenv("BT_SECRET_KEYCHAIN_ACCOUNT"))
+		if service == "" || keyAccount == "" || os.Getenv("BT_SECRET_MASTER_KEY_FILE") != "" {
+			return nil, nil, fmt.Errorf("credential resolver key source is invalid")
+		}
+		keySource = secretstore.KeychainSource{Service: service, Account: keyAccount, Runner: gatewayKeychainRunner{}}
+	default:
+		return nil, nil, fmt.Errorf("credential resolver key source is invalid")
+	}
+	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, Mode: secretMode, KeySource: keySource})
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize credential resolver failed")
+	}
+	resolver, err := secret.NewScopedCredentialResolver(provider.Resolver(), secretstore.Scope{Mode: secretMode, Namespace: namespace, KeyVersion: keyVersion})
+	if err != nil {
+		provider.Close()
+		return nil, nil, fmt.Errorf("initialize credential resolver failed")
+	}
+	return provider, resolver, nil
 }
 
 func defaultConnectPostgres(override func(context.Context, string) (process.PostgresPool, error)) func(context.Context, string) (process.PostgresPool, error) {

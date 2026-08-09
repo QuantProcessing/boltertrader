@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/credential"
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
@@ -19,6 +20,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 )
 
@@ -779,6 +782,126 @@ func newAuthorityManager(t *testing.T, mode account.RuntimeMode, lifecycle accou
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	return manager
+}
+
+type authorityCandidateRoute struct{}
+
+func (authorityCandidateRoute) Probe(context.Context) error { return nil }
+func (authorityCandidateRoute) Close() error                { return nil }
+
+type authorityCandidateBuilder struct{}
+
+func (authorityCandidateBuilder) BuildRoute(context.Context, store.DesiredSnapshot, store.RouteDefinition, *credential.Decoded) (account.CandidateRoute, error) {
+	return authorityCandidateRoute{}, nil
+}
+
+type authorityCredentialResolver struct{}
+
+func (authorityCredentialResolver) Check(context.Context) error { return nil }
+func (authorityCredentialResolver) Resolve(context.Context, secretstore.OpaqueRef) ([]byte, error) {
+	return []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`), nil
+}
+
+type snapshotAuthorityStore struct {
+	*memoryDesiredStore
+	pending      *store.PendingSnapshot
+	active       *store.ActiveSnapshot
+	observations []store.CandidateObservation
+	promotions   int
+}
+
+func newSnapshotAuthorityStore() *snapshotAuthorityStore {
+	return &snapshotAuthorityStore{memoryDesiredStore: newMemoryDesiredStore()}
+}
+
+func (memory *snapshotAuthorityStore) PreparePending(_ context.Context, desired store.DesiredSnapshot) (store.PendingSnapshot, error) {
+	pending := store.PendingSnapshot{DesiredSnapshot: desired, OperationState: store.OperationPrepared}
+	memory.pending = &pending
+	return pending, nil
+}
+
+func (memory *snapshotAuthorityStore) RecordCandidateObservation(_ context.Context, observation store.CandidateObservation) error {
+	memory.observations = append(memory.observations, observation)
+	return nil
+}
+
+func (memory *snapshotAuthorityStore) MarkCandidateReady(context.Context, secretstore.OperationID) error {
+	if memory.pending == nil || len(memory.observations) == 0 {
+		return store.ErrCandidateNotReady
+	}
+	memory.pending.OperationState = store.OperationCandidateReady
+	return nil
+}
+
+func (memory *snapshotAuthorityStore) PromotePending(_ context.Context, request store.PromotionRequest) (store.PromotionResult, error) {
+	if memory.pending == nil || memory.pending.OperationID != request.OperationID {
+		return store.PromotionResult{}, store.ErrOperationConflict
+	}
+	active := store.ActiveSnapshot{DesiredSnapshot: memory.pending.DesiredSnapshot, PromotedAt: time.Now()}
+	memory.active, memory.pending = &active, nil
+	memory.promotions++
+	return store.PromotionResult{Active: active}, nil
+}
+
+func (memory *snapshotAuthorityStore) LoadRuntimeState(context.Context, domain.AccountID) (store.RuntimeState, error) {
+	return store.RuntimeState{Active: memory.active, Pending: memory.pending}, nil
+}
+
+func (memory *snapshotAuthorityStore) ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error) {
+	if memory.active == nil && memory.pending == nil {
+		return nil, nil
+	}
+	return []store.RuntimeState{{AccountID: "account-a", Active: memory.active, Pending: memory.pending}}, nil
+}
+
+func (memory *snapshotAuthorityStore) TombstoneSecretReference(_ context.Context, request store.TombstoneRequest) (store.Tombstone, error) {
+	return store.Tombstone{TombstoneRequest: request, CreatedAt: time.Now()}, nil
+}
+
+func (memory *snapshotAuthorityStore) IsSecretReferenceRetired(context.Context, secretstore.Scope, secretstore.OpaqueRef) (bool, error) {
+	return false, nil
+}
+
+func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityCredentialResolver{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operationID, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	secretRef, _ := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	desired := store.DesiredSnapshot{
+		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c35"), OperationID: operationID,
+		AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+		Fence:          domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		RequestedState: store.DesiredActive,
+		Routes:         []store.RouteDefinition{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive}},
+		CreatedAt:      time.Now(),
+	}
+	desired.RequestDigest, err = desired.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.ApplySnapshot(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	active := manager.ActiveSnapshot("account-a")
+	if snapshotStore.promotions != 1 || snapshotStore.pending != nil || active == nil || active.Fence != desired.Fence {
+		t.Fatalf("promotions=%d pending=%+v active=%+v", snapshotStore.promotions, snapshotStore.pending, active)
+	}
 }
 
 type memoryDesiredStore struct {

@@ -113,8 +113,14 @@ func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 }
 
 func (c *Client) WithGatewayTransport(transport http.RoundTripper) *Client {
+	if transport == nil {
+		return c
+	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	} else {
+		cloned := *c.HTTPClient
+		c.HTTPClient = &cloned
 	}
 	c.HTTPClient.Transport = transport
 	c.RateLimiter = nil

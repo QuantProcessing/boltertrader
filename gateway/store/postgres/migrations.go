@@ -28,3 +28,11 @@ func RuntimeSnapshotsMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func OrderHandoffsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/004_order_handoffs.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

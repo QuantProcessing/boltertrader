@@ -143,6 +143,63 @@ func (postgresStore *Store) MarkDispatching(ctx context.Context, request store.M
 	return postgresStore.transition(ctx, request.CommandID, "", domain.StateDispatching, request.EventID, 0, false, nil)
 }
 
+func (postgresStore *Store) BeginOrderHandoff(ctx context.Context, request store.BeginOrderHandoffRequest) (store.OrderHandoff, error) {
+	if err := request.Validate(); err != nil {
+		return store.OrderHandoff{}, err
+	}
+	if _, err := postgresStore.pool.Exec(ctx, `
+		INSERT INTO gateway_order_handoffs(
+			handoff_id, command_id, account_id, route_id, desired_state_revision,
+			runtime_generation, credential_version, state
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,'started')
+		ON CONFLICT (handoff_id) DO NOTHING
+	`, request.HandoffID, request.CommandID, request.AccountID, request.RouteID,
+		request.Fence.DesiredStateRevision, request.Fence.RuntimeGeneration, request.Fence.CredentialVersion); err != nil {
+		return store.OrderHandoff{}, redactErr("begin order handoff", err)
+	}
+	return postgresStore.loadOrderHandoff(ctx, request.HandoffID)
+}
+
+func (postgresStore *Store) ResolveOrderHandoff(ctx context.Context, request store.ResolveOrderHandoffRequest) (store.OrderHandoff, error) {
+	if err := request.Validate(); err != nil {
+		return store.OrderHandoff{}, err
+	}
+	command, err := postgresStore.pool.Exec(ctx, `
+		UPDATE gateway_order_handoffs
+		SET state=$2, resolved_at=COALESCE(resolved_at, now())
+		WHERE handoff_id=$1 AND (state='started' OR state=$2)
+	`, request.HandoffID, request.State)
+	if err != nil {
+		return store.OrderHandoff{}, redactErr("resolve order handoff", err)
+	}
+	if command.RowsAffected() == 0 {
+		return store.OrderHandoff{}, store.ErrNotFound
+	}
+	return postgresStore.loadOrderHandoff(ctx, request.HandoffID)
+}
+
+func (postgresStore *Store) loadOrderHandoff(ctx context.Context, handoffID domain.EventID) (store.OrderHandoff, error) {
+	var handoff store.OrderHandoff
+	var resolvedAt *time.Time
+	err := postgresStore.pool.QueryRow(ctx, `
+		SELECT handoff_id::text, command_id::text, account_id, route_id,
+		       desired_state_revision, runtime_generation, credential_version,
+		       state, started_at, resolved_at
+		FROM gateway_order_handoffs WHERE handoff_id=$1
+	`, handoffID).Scan(&handoff.HandoffID, &handoff.CommandID, &handoff.AccountID, &handoff.RouteID,
+		&handoff.Fence.DesiredStateRevision, &handoff.Fence.RuntimeGeneration, &handoff.Fence.CredentialVersion,
+		&handoff.State, &handoff.StartedAt, &resolvedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.OrderHandoff{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.OrderHandoff{}, redactErr("load order handoff", err)
+	}
+	handoff.Fence.AccountID = handoff.AccountID
+	handoff.ResolvedAt = resolvedAt
+	return handoff, nil
+}
+
 func (postgresStore *Store) RecordVenueResult(ctx context.Context, request store.RecordVenueResultRequest) (store.StoredCommand, error) {
 	if err := request.CommandID.Validate(); err != nil {
 		return store.StoredCommand{}, err
@@ -334,6 +391,23 @@ func (postgresStore *Store) transition(ctx context.Context, commandID domain.Com
 		VALUES ($1, $2, $3, $4)
 	`, eventID, current.GatewayOrderID, nextVersion, nextState); err != nil {
 		return store.StoredCommand{}, redactErr("insert transition event", err)
+	}
+	handoffState := store.OrderHandoffState("")
+	switch nextState {
+	case domain.StateAccepted:
+		handoffState = store.OrderHandoffAccepted
+	case domain.StateRejected:
+		handoffState = store.OrderHandoffRejected
+	case domain.StateUncertain:
+		handoffState = store.OrderHandoffUncertain
+	}
+	if handoffState != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE gateway_order_handoffs SET state=$2, resolved_at=now()
+			WHERE command_id=$1 AND state='started'
+		`, commandID, handoffState); err != nil {
+			return store.StoredCommand{}, redactErr("resolve durable order handoff", err)
+		}
 	}
 	if nextState == domain.StateUncertain {
 		if _, err := tx.Exec(ctx, `

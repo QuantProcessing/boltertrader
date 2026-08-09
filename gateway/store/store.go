@@ -75,6 +75,68 @@ type CommandStore interface {
 	LoadRecoverableCommands(context.Context, LoadRecoverableCommandsRequest) ([]StoredCommand, error)
 	RescheduleReconciliation(context.Context, RescheduleReconciliationRequest) (ReconciliationTask, error)
 	ClaimDueReconciliationTasks(context.Context, ClaimDueReconciliationTasksRequest) ([]ReconciliationTask, error)
+	BeginOrderHandoff(context.Context, BeginOrderHandoffRequest) (OrderHandoff, error)
+	ResolveOrderHandoff(context.Context, ResolveOrderHandoffRequest) (OrderHandoff, error)
+}
+
+type OrderHandoffState string
+
+const (
+	OrderHandoffStarted   OrderHandoffState = "started"
+	OrderHandoffAccepted  OrderHandoffState = "accepted"
+	OrderHandoffRejected  OrderHandoffState = "rejected"
+	OrderHandoffUncertain OrderHandoffState = "uncertain"
+)
+
+type BeginOrderHandoffRequest struct {
+	HandoffID domain.EventID
+	CommandID domain.CommandID
+	AccountID domain.AccountID
+	RouteID   domain.RouteID
+	Fence     domain.AccountFence
+}
+
+func (request BeginOrderHandoffRequest) Validate() error {
+	if err := request.HandoffID.Validate(); err != nil {
+		return err
+	}
+	if err := request.CommandID.Validate(); err != nil {
+		return err
+	}
+	if err := request.AccountID.Validate(); err != nil {
+		return err
+	}
+	if err := request.RouteID.Validate(); err != nil {
+		return err
+	}
+	if request.Fence.AccountID != request.AccountID {
+		return domainErr("handoff fence account mismatch")
+	}
+	return request.Fence.Validate()
+}
+
+type OrderHandoff struct {
+	BeginOrderHandoffRequest
+	State      OrderHandoffState
+	StartedAt  time.Time
+	ResolvedAt *time.Time
+}
+
+type ResolveOrderHandoffRequest struct {
+	HandoffID domain.EventID
+	State     OrderHandoffState
+}
+
+func (request ResolveOrderHandoffRequest) Validate() error {
+	if err := request.HandoffID.Validate(); err != nil {
+		return err
+	}
+	switch request.State {
+	case OrderHandoffAccepted, OrderHandoffRejected, OrderHandoffUncertain:
+		return nil
+	default:
+		return domainErr("handoff resolution state is invalid")
+	}
 }
 
 type IdempotencyConflict string

@@ -45,6 +45,16 @@ type RuntimeStateStore interface {
 	ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error)
 }
 
+func (manager *Manager) SetRuntimeStateStore(runtimeStore RuntimeStateStore) error {
+	if runtimeStore == nil {
+		return ErrCandidateMismatch
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	manager.runtimeStore = runtimeStore
+	return nil
+}
+
 type RouteRuntime struct {
 	Definition store.RouteDefinition
 	Handle     CandidateRoute
@@ -354,6 +364,30 @@ func (manager *Manager) ActiveSnapshot(accountID domain.AccountID) *RoutingSnaps
 		routes[routeID] = route
 	}
 	return &RoutingSnapshot{Fence: snapshot.Fence, Routes: routes}
+}
+
+func (manager *Manager) ActiveRoute(accountID domain.AccountID, product, settlement string) (domain.RouteID, *GenerationAdmission, error) {
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime := manager.groups[accountID]
+	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
+		return "", nil, ErrRuntimeBlocked
+	}
+	var matched domain.RouteID
+	for routeID, route := range runtime.activeGroup.Routes {
+		definition := route.Definition
+		if definition.RequestedState != store.RouteActive || definition.Product != product || definition.SettlementAsset != settlement {
+			continue
+		}
+		if matched != "" {
+			return "", nil, ErrRuntimeBlocked
+		}
+		matched = routeID
+	}
+	if matched == "" {
+		return "", nil, ErrRuntimeBlocked
+	}
+	return matched, runtime.activeGroup.Admission, nil
 }
 
 func (group *RuntimeGroup) destroy() {
