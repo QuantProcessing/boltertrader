@@ -47,15 +47,16 @@ type AccountRegistration struct {
 }
 
 type Dependencies struct {
-	ResolveSecret         func(context.Context, secret.Ref) (string, error)
-	ConnectPostgres       func(context.Context, string) (PostgresPool, error)
-	Migrate               func(context.Context, PostgresPool) error
-	RegisterAccount       func(context.Context, PostgresPool, AccountRegistration) error
-	AcquireOwnership      func(context.Context, PostgresPool, domain.AccountID) (Ownership, error)
-	BuildAccountManager   func(context.Context, []config.AccountConfig, map[string]string) (AccountManager, error)
-	BuildOrderCoordinator func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
-	Listen                func(network, address string) (net.Listener, error)
-	HandlerFactory        func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
+	CheckCredentialResolver func(context.Context) error
+	ResolveSecret           func(context.Context, secret.Ref) (string, error)
+	ConnectPostgres         func(context.Context, string) (PostgresPool, error)
+	Migrate                 func(context.Context, PostgresPool) error
+	RegisterAccount         func(context.Context, PostgresPool, AccountRegistration) error
+	AcquireOwnership        func(context.Context, PostgresPool, domain.AccountID) (Ownership, error)
+	BuildAccountManager     func(context.Context, []config.AccountConfig, map[string]string) (AccountManager, error)
+	BuildOrderCoordinator   func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
+	Listen                  func(network, address string) (net.Listener, error)
+	HandlerFactory          func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
 }
 
 type Service struct {
@@ -86,6 +87,11 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 	}
 	if err := validateDeps(deps); err != nil {
 		return nil, err
+	}
+	if deps.CheckCredentialResolver != nil {
+		if err := deps.CheckCredentialResolver(ctx); err != nil {
+			return nil, safeErr("check credential resolver", err)
+		}
 	}
 	resolvedSecrets, err := resolveAllSecrets(ctx, file, deps.ResolveSecret)
 	if err != nil {

@@ -791,6 +791,25 @@ func (manager *Manager) RuntimeReady() bool {
 	return !manager.closed
 }
 
+func (manager *Manager) RuntimeReadiness() (bool, int, int) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if manager.closed {
+		return false, 0, 0
+	}
+	active, ready := 0, 0
+	for _, runtime := range manager.runtimes {
+		if runtime.State != RuntimeStateActive {
+			continue
+		}
+		active++
+		if runtime.Ready {
+			ready++
+		}
+	}
+	return true, active, ready
+}
+
 func (manager *Manager) CheckWriteFence(fence WriteFence) error {
 	manager.mu.RLock()
 	if manager.closed {
