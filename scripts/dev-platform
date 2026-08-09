@@ -147,7 +147,8 @@ refresh_starting_identity() {
 	service=$1
 	pid_file="$PID_DIR/$service.pid"
 	start_file="$OWNERSHIP_DIR/$service.start"
-	[ -f "$pid_file" ] && [ -f "$start_file" ] || return 1
+	starting_file="$OWNERSHIP_DIR/$service.starting"
+	[ -f "$pid_file" ] && [ -f "$start_file" ] && [ -f "$starting_file" ] || return 1
 	pid=$(sed -n '1p' "$pid_file")
 	case "$pid" in *[!0-9]*|'') return 1 ;; esac
 	kill -0 "$pid" 2>/dev/null || return 1
@@ -169,6 +170,18 @@ is_owned() {
 	kill -0 "$pid" 2>/dev/null || return 1
 	[ "$(process_start_time "$pid")" = "$(sed -n '1p' "$start_file")" ] || return 1
 	[ "$(process_command "$pid")" = "$(sed -n '1p' "$command_file")" ] || return 1
+}
+
+is_owned_starting() {
+	service=$1
+	pid_file="$PID_DIR/$service.pid"
+	start_file="$OWNERSHIP_DIR/$service.start"
+	starting_file="$OWNERSHIP_DIR/$service.starting"
+	[ -f "$pid_file" ] && [ -f "$start_file" ] && [ -f "$starting_file" ] || return 1
+	pid=$(sed -n '1p' "$pid_file")
+	case "$pid" in *[!0-9]*|'') return 1 ;; esac
+	kill -0 "$pid" 2>/dev/null || return 1
+	[ "$(process_start_time "$pid")" = "$(sed -n '1p' "$start_file")" ]
 }
 
 port_is_free() {
@@ -351,6 +364,7 @@ start_service() {
 	[ "$i" -lt 50 ] || fail "$service process identity did not stabilize"
 	printf '%s\n' "$observed_start" >"$OWNERSHIP_DIR/$service.start"
 	write_command_identity "$service" "$observed_command"
+	printf 'starting\n' >"$OWNERSHIP_DIR/$service.starting"
 	if [ "$service" = "funding-worker" ]; then printf '%s\n' "$instance_id" >"$OWNERSHIP_DIR/funding-worker.instance"; fi
 	printf '%s started\n' "$service"
 }
@@ -363,6 +377,7 @@ wait_service() {
 		if { [ -n "$ready" ] && sh -c "$ready" >/dev/null 2>&1; } || { [ -z "$ready" ] && builtin_ready "$service"; }; then
 			refresh_starting_identity "$service" || fail "$service identity changed at readiness"
 			is_owned "$service" || fail "$service identity did not seal at readiness"
+			rm -f "$OWNERSHIP_DIR/$service.starting"
 			printf '%s ready\n' "$service"; return
 		fi
 		[ "$(date +%s)" -lt "$deadline" ] || fail "$service readiness timed out"
@@ -394,14 +409,14 @@ drain_worker() {
 stop_service() {
 	service=$1; pid_file="$PID_DIR/$service.pid"
 	[ -f "$pid_file" ] || return 0
-	if ! is_owned "$service"; then printf 'dev-platform: refusing to stop untrusted %s pid record\n' "$service" >&2; return 0; fi
+	if ! is_owned "$service" && ! is_owned_starting "$service"; then printf 'dev-platform: refusing to stop untrusted %s pid record\n' "$service" >&2; return 0; fi
 	pid=$(sed -n '1p' "$pid_file"); kill -TERM "$pid"; deadline=$(( $(date +%s) + STOP_TIMEOUT ))
 	while kill -0 "$pid" 2>/dev/null; do
-		if [ "$(date +%s)" -ge "$deadline" ]; then is_owned "$service" || fail "$service ownership changed during shutdown"; kill -KILL "$pid"; break; fi
+		if [ "$(date +%s)" -ge "$deadline" ]; then { is_owned "$service" || is_owned_starting "$service"; } || fail "$service ownership changed during shutdown"; kill -KILL "$pid"; break; fi
 		sleep 0.1
 	done
 	wait "$pid" 2>/dev/null || true
-	rm -f "$pid_file" "$OWNERSHIP_DIR/$service.start" "$OWNERSHIP_DIR/$service.command"
+	rm -f "$pid_file" "$OWNERSHIP_DIR/$service.start" "$OWNERSHIP_DIR/$service.command" "$OWNERSHIP_DIR/$service.starting"
 	[ "$service" != "funding-worker" ] || rm -f "$OWNERSHIP_DIR/funding-worker.instance"
 	printf '%s stopped\n' "$service"
 }
@@ -434,7 +449,21 @@ status() {
 	return "$failed"
 }
 
-wait_all() { for service in $SERVICES_START; do wait_service "$service"; done; }
+wait_owned_service() {
+	service=$1; ready=$(configured_value "$service" READY_CMD)
+	deadline=$(( $(date +%s) + START_TIMEOUT ))
+	while :; do
+		is_owned "$service" || fail "$service is not an owned ready process"
+		if { [ -n "$ready" ] && sh -c "$ready" >/dev/null 2>&1; } || { [ -z "$ready" ] && builtin_ready "$service"; }; then
+			is_owned "$service" || fail "$service identity changed at readiness"
+			printf '%s ready\n' "$service"; return
+		fi
+		[ "$(date +%s)" -lt "$deadline" ] || fail "$service readiness timed out"
+		sleep 1
+	done
+}
+
+wait_all() { for service in $SERVICES_START; do wait_owned_service "$service"; done; }
 
 logs() {
 	prepare_directories
