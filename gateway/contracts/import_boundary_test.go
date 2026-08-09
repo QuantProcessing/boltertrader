@@ -19,6 +19,7 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 	allowedRepo := map[string]bool{
 		"github.com/QuantProcessing/boltertrader/exchange":         true,
 		"github.com/QuantProcessing/boltertrader/exchange/factory": true,
+		"github.com/QuantProcessing/boltertrader/routeprofile":     true,
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {

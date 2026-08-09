@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,20 +51,16 @@ func ValidateRuntimeIdentity(accountID, venue, environment string) error {
 	}
 	venue = strings.ToLower(strings.TrimSpace(venue))
 	environment = strings.ToLower(strings.TrimSpace(environment))
-	venueKnown := false
-	for _, row := range capability.StaticMatrix().Rows {
-		if row.Venue != venue {
-			continue
-		}
-		venueKnown = true
-		if validateProfile(AccountConfig{
-			Venue: venue, Product: row.Product, Settlement: row.Settlement, Environment: environment,
-		}) == nil {
-			return nil
-		}
-	}
-	if !venueKnown {
+	registry := routeprofile.DefaultRegistry()
+	if !registry.KnowsVenue(venue) {
 		return fmt.Errorf("unknown venue %q", venue)
+	}
+	mode := routeprofile.ModeTest
+	if environment == string(routeprofile.EnvironmentLive) {
+		mode = routeprofile.ModeLive
+	}
+	if registry.SupportsEnvironment(mode, venue, routeprofile.NativeEnvironment(environment)) {
+		return nil
 	}
 	return fmt.Errorf("unknown environment %q for venue %q", environment, venue)
 }
@@ -204,6 +200,7 @@ func (file File) Validate() error {
 		return fmt.Errorf("postgres dsn_ref secret reference is required")
 	}
 	seen := map[string]struct{}{}
+	configuredMode := routeprofile.Mode(file.Server.Mode)
 	for _, account := range file.Accounts {
 		if account.AccountID == "" {
 			return fmt.Errorf("account_id is required")
@@ -212,7 +209,14 @@ func (file File) Validate() error {
 			return fmt.Errorf("duplicate account_id %q", account.AccountID)
 		}
 		seen[account.AccountID] = struct{}{}
-		if err := validateProfile(account); err != nil {
+		mode := configuredMode
+		if mode == "" {
+			mode = routeprofile.ModeTest
+			if account.Environment == string(routeprofile.EnvironmentLive) {
+				mode = routeprofile.ModeLive
+			}
+		}
+		if err := validateProfile(mode, account); err != nil {
 			return err
 		}
 		if err := validateCredentials(account.Credentials); err != nil {
@@ -414,59 +418,16 @@ func normalizeYAMLError(scope string, err error) error {
 	return fmt.Errorf("%s: %w", scope, err)
 }
 
-func validateProfile(account AccountConfig) error {
-	allowed := map[string]map[string]map[string]map[string]bool{
-		"binance": {
-			"spot": {"": {"live": true, "demo": true}},
-			"perp": {"USDT": {"live": true, "demo": true}},
-		},
-		"okx": {
-			"spot": {"": {"live": true, "demo": true}},
-			"perp": {"USDT": {"live": true, "demo": true}},
-		},
-		"lighter": {
-			"spot": {"": {"live": true, "testnet": true}},
-			"perp": {"USDC": {"live": true, "testnet": true}},
-		},
-		"hyperliquid": {
-			"spot": {"": {"live": true, "testnet": true}},
-			"perp": {"USDC": {"live": true, "testnet": true}},
-		},
-		"bybit": {
-			"spot": {"": {"live": true, "demo": true, "testnet": true}},
-			"perp": {"USDT": {"live": true, "demo": true, "testnet": true}, "USDC": {"live": true, "demo": true, "testnet": true}},
-		},
-		"bitget": {
-			"spot": {"": {"live": true, "demo": true}},
-			"perp": {"USDT": {"live": true, "demo": true}, "USDC": {"live": true, "demo": true}},
-		},
-		"gate": {
-			"spot": {"": {"live": true, "testnet": true}},
-			"perp": {"USDT": {"live": true, "testnet": true}},
-		},
-		"aster": {
-			"spot": {"": {"live": true, "testnet": true}},
-			"perp": {"USDT": {"live": true, "testnet": true}},
-		},
-		"nado": {
-			"spot": {"USDT0": {"live": true, "testnet": true}},
-			"perp": {"USDT0": {"live": true, "testnet": true}},
-		},
-	}
-	products, ok := allowed[account.Venue]
-	if !ok {
-		return fmt.Errorf("unknown venue %q", account.Venue)
-	}
-	settlements, ok := products[account.Product]
-	if !ok {
-		return fmt.Errorf("unknown product %q for venue %q", account.Product, account.Venue)
-	}
-	environments, ok := settlements[account.Settlement]
-	if !ok {
-		return fmt.Errorf("incompatible profile for %s %s settlement %q", account.Venue, account.Product, account.Settlement)
-	}
-	if !environments[account.Environment] {
-		return fmt.Errorf("unknown environment %q for profile", account.Environment)
+func validateProfile(mode routeprofile.Mode, account AccountConfig) error {
+	_, err := routeprofile.DefaultRegistry().ResolveLegacy(
+		mode,
+		account.Venue,
+		account.Product,
+		account.Settlement,
+		routeprofile.NativeEnvironment(account.Environment),
+	)
+	if err != nil {
+		return fmt.Errorf("incompatible route profile for %s %s settlement %q environment %q: %w", account.Venue, account.Product, account.Settlement, account.Environment, err)
 	}
 	return nil
 }

@@ -135,6 +135,33 @@ accounts: []
 	}
 }
 
+func TestValidateLegacyEmptyModeDerivesModeFromAccountEnvironment(t *testing.T) {
+	base, err := config.LoadYAML([]byte(validOneAccountYAML()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Server.Mode = ""
+	if err := base.Validate(); err != nil {
+		t.Fatalf("empty mode with demo account: %v", err)
+	}
+
+	live := base
+	live.Accounts = append([]config.AccountConfig(nil), base.Accounts...)
+	live.Accounts[0].Environment = "live"
+	if err := live.Validate(); err != nil {
+		t.Fatalf("empty mode with live account: %v", err)
+	}
+
+	live.Server.Mode = "test"
+	if err := live.Validate(); err == nil {
+		t.Fatal("explicit Test mode accepted live profile")
+	}
+	live.Server.Mode = "live"
+	if err := live.Validate(); err != nil {
+		t.Fatalf("explicit Live mode with live account: %v", err)
+	}
+}
+
 func TestInternalAuthorityListenerRequiresPairedLoopbackAuthConfiguration(t *testing.T) {
 	configured := strings.Replace(validOneAccountYAML(),
 		"  auth_token_ref: env://TOKEN",
