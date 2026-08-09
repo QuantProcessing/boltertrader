@@ -283,10 +283,11 @@ components:
   schemas:
     PlaceOrderRequest:
       type: object
-      required: [account_id, instrument_id, idempotency_key, side, type, quantity, desired_state_revision, runtime_generation, credential_version]
+      required: [account_id, route_id, instrument_id, idempotency_key, side, type, quantity, desired_state_revision, runtime_generation, credential_version]
       additionalProperties: false
       properties:
         account_id: {type: string}
+        route_id: {type: string}
         instrument_id: {type: string}
         idempotency_key: {type: string}
         side: {type: string, enum: [buy, sell]}

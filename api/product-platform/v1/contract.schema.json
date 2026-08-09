@@ -8,8 +8,8 @@
   "properties": {
     "$schema": {"type": "string", "const": "./contract.schema.json"},
     "schemaVersion": {"type": "integer", "const": 1},
-    "contractVersion": {"type": "string", "const": "boltertrader-product-platform-upgrade/v4"},
-    "revision": {"type": "integer", "const": 4},
+    "contractVersion": {"type": "string", "const": "boltertrader-product-platform-upgrade/v5"},
+    "revision": {"type": "integer", "const": 5},
     "status": {"type": "string", "const": "frozen"},
     "sources": {"type": "array", "minItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "conventions": {"$ref": "#/$defs/conventions"},

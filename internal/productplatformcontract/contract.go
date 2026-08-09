@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const Version = "boltertrader-product-platform-upgrade/v4"
+const Version = "boltertrader-product-platform-upgrade/v5"
 
 var ErrInvalidContract = errors.New("invalid product platform contract")
 
@@ -125,8 +125,8 @@ func Decode(data []byte) (Contract, error) {
 
 func (contract Contract) Validate() error {
 	if contract.Schema != "./contract.schema.json" || contract.SchemaVersion != 1 ||
-		contract.ContractVersion != Version || contract.Revision != 4 || contract.Status != "frozen" {
-		return invalid("identity does not match frozen revision 4")
+		contract.ContractVersion != Version || contract.Revision != 5 || contract.Status != "frozen" {
+		return invalid("identity does not match frozen revision 5")
 	}
 	if err := validateConventions(contract.Conventions); err != nil {
 		return err

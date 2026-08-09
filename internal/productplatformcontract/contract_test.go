@@ -20,6 +20,38 @@ func TestFrozenContractValidates(t *testing.T) {
 	}
 }
 
+func TestRouteAwareV5MutationAuthorityIsFrozen(t *testing.T) {
+	contract := loadContract(t)
+	if contract.ContractVersion != "boltertrader-product-platform-upgrade/v5" || contract.Revision != 5 {
+		t.Fatalf("contract identity=%s/r%d want v5/r5", contract.ContractVersion, contract.Revision)
+	}
+	want := map[string][]string{
+		"POST /api/v1/accounts": {"venue", "displayName", "productPolicy", "routes", "credentialBundle"},
+		"POST /api/v1/accounts/{accountId}/rotate": {"credentialBundle"},
+		"PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}": {
+			"operationId", "accountId", "venue", "nativeEnvironment", "secretRef",
+			"desiredStateRevision", "runtimeGeneration", "credentialVersion", "requestedState", "routes",
+		},
+		"PUT /internal/v1/accounts/desired/{accountId}/retirements/{operationId}": {
+			"operationId", "accountId", "desiredStateRevision", "runtimeGeneration", "credentialVersion",
+		},
+	}
+	for route, fields := range want {
+		if !reflect.DeepEqual(contract.StrictMutations[route], fields) {
+			t.Errorf("strict mutation %s=%v want=%v", route, contract.StrictMutations[route], fields)
+		}
+	}
+	for _, legacy := range []string{
+		"POST /internal/v1/accounts/desired",
+		"PUT /internal/v1/accounts/desired/{accountId}",
+		"POST /internal/v1/accounts/desired/{accountId}/rotate",
+	} {
+		if _, ok := contract.StrictMutations[legacy]; ok {
+			t.Errorf("legacy internal mutation remains mounted: %s", legacy)
+		}
+	}
+}
+
 func TestContractMatchesFrozenMarkdownExpectations(t *testing.T) {
 	contract := loadContract(t)
 	data, err := os.ReadFile(filepath.Join("testdata", "frozen-markdown-expectations.json"))
@@ -93,8 +125,8 @@ func TestStrictMutationFixtures(t *testing.T) {
 		{name: "login accepted", route: "POST /api/v1/auth/login", fixture: "valid-login.json"},
 		{name: "login extra field rejected", route: "POST /api/v1/auth/login", fixture: "invalid-login-extra.json", wantErr: true},
 		{name: "login duplicate field rejected", route: "POST /api/v1/auth/login", fixture: "invalid-login-duplicate.json", wantErr: true},
-		{name: "internal desired state accepts secret reference", route: "POST /internal/v1/accounts/desired", fixture: "valid-gateway-desired.json"},
-		{name: "internal desired state rejects secret material", route: "POST /internal/v1/accounts/desired", fixture: "invalid-gateway-secret-material.json", wantErr: true},
+		{name: "internal desired state accepts secret reference", route: "PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}", fixture: "valid-gateway-desired.json"},
+		{name: "internal desired state rejects secret material", route: "PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}", fixture: "invalid-gateway-secret-material.json", wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

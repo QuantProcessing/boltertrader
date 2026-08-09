@@ -266,6 +266,23 @@ func TestOpenAPIErrorEnvelopeDocumentsCorrelationAndRetryability(t *testing.T) {
 	}
 }
 
+func TestOpenAPIEnumeratesRouteRuntimeStableErrors(t *testing.T) {
+	document := readRawOpenAPI(t)
+	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
+	envelope := schemas["ErrorEnvelope"].(map[string]any)
+	errorObject := envelope["properties"].(map[string]any)["error"].(map[string]any)
+	code := errorObject["properties"].(map[string]any)["code"].(map[string]any)
+	got := stringSlice(code["enum"])
+	sort.Strings(got)
+	want := []string{
+		"CANDIDATE_NOT_READY", "HANDOFF_DRAIN_BLOCKED", "LIVE_WRITE_DISABLED", "OPERATION_ID_CONFLICT",
+		"PRIVATE_STREAM_GAP", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE", "ROUTE_PROFILE_CONFLICT",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stable error codes=%v want=%v", got, want)
+	}
+}
+
 func stringSlice(value any) []string {
 	values, _ := value.([]any)
 	result := make([]string, 0, len(values))

@@ -108,8 +108,8 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		properties []string
 	}{
 		"PlaceOrderRequest": {
-			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "quantity", "runtime_generation", "side", "type"},
-			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "limit_policy", "limit_price", "quantity", "reduce_only", "runtime_generation", "side", "type"},
+			required:   []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "quantity", "route_id", "runtime_generation", "side", "type"},
+			properties: []string{"account_id", "credential_version", "desired_state_revision", "idempotency_key", "instrument_id", "limit_policy", "limit_price", "quantity", "reduce_only", "route_id", "runtime_generation", "side", "type"},
 		},
 		"OrderResponse": {
 			required:   []string{"client_order_id", "command_id", "gateway_order_id", "resource_version", "state"},

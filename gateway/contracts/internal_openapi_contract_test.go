@@ -12,6 +12,7 @@ import (
 type internalSchema struct {
 	Ref                  string                    `yaml:"$ref"`
 	Type                 any                       `yaml:"type"`
+	Enum                 []string                  `yaml:"enum"`
 	AdditionalProperties any                       `yaml:"additionalProperties"`
 	Required             []string                  `yaml:"required"`
 	Properties           map[string]internalSchema `yaml:"properties"`
@@ -65,12 +66,10 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		"/internal/v1/runtime/status": {"get"}, "/internal/v1/runtime/readiness": {"get"},
 		"/internal/v1/runtime/open-orders": {"get"}, "/internal/v1/runtime/positions": {"get"},
 		"/internal/v1/runtime/uncertain-commands":            {"get"},
-		"/internal/v1/accounts/desired":                      {"get", "post"},
-		"/internal/v1/accounts/desired/{accountId}":          {"delete", "get", "put"},
-		"/internal/v1/accounts/desired/{accountId}/validate": {"post"},
-		"/internal/v1/accounts/desired/{accountId}/rotate":   {"post"},
-		"/internal/v1/accounts/desired/{accountId}/disable":  {"post"},
-		"/internal/v1/accounts/desired/{accountId}/drain":    {"post"},
+			"/internal/v1/accounts/desired":                                      {"get"},
+			"/internal/v1/accounts/desired/{accountId}":                          {"get"},
+			"/internal/v1/accounts/desired/{accountId}/operations/{operationId}": {"put"},
+			"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}": {"put"},
 		"/internal/v1/accounts/runtime":                      {"get"},
 		"/internal/v1/accounts/runtime/{accountId}":          {"get"},
 		"/internal/v1/accounts/runtime/{accountId}/events":   {"get"},
@@ -111,7 +110,7 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("%s response data schema ref=%q", responseName, got)
 		}
 	}
-	for _, name := range []string{"DesiredAccount", "DesiredMutation", "RotationFence", "RuntimeAccount", "InternalErrorEnvelope"} {
+	for _, name := range []string{"DesiredApplyRequest", "RetireRequest", "DesiredRuntimeView", "RuntimeView", "WriteFence", "InternalErrorEnvelope"} {
 		schema, ok := document.Components.Schemas[name]
 		if !ok {
 			t.Errorf("missing internal schema %s", name)
@@ -141,10 +140,27 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("%s properties=%v want only %v", name, schema.Properties, required)
 		}
 	}
-	desired := document.Components.Schemas["DesiredAccount"]
-	wantDesired := []string{"accountId", "credentialVersion", "desiredStateRevision", "requestedState", "runtimeGeneration", "secretRef", "venue", "venueEnvironment"}
+	desired := document.Components.Schemas["DesiredApplyRequest"]
+	wantDesired := []string{"accountId", "credentialVersion", "desiredStateRevision", "nativeEnvironment", "operationId", "requestedState", "routes", "runtimeGeneration", "secretRef", "venue"}
 	sort.Strings(desired.Required)
 	if !reflect.DeepEqual(desired.Required, wantDesired) {
-		t.Fatalf("DesiredAccount required=%v want=%v", desired.Required, wantDesired)
+		t.Fatalf("DesiredApplyRequest required=%v want=%v", desired.Required, wantDesired)
+	}
+	for _, name := range []string{"DesiredRuntimeView", "RuntimeView"} {
+		schema := document.Components.Schemas[name]
+		for _, forbidden := range []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken"} {
+			if _, ok := schema.Properties[forbidden]; ok {
+				t.Errorf("response schema %s exposes %s", name, forbidden)
+			}
+		}
+	}
+	wantErrors := []string{
+		"CANDIDATE_NOT_READY", "HANDOFF_DRAIN_BLOCKED", "LIVE_WRITE_DISABLED", "OPERATION_ID_CONFLICT",
+		"PRIVATE_STREAM_GAP", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE", "ROUTE_PROFILE_CONFLICT",
+	}
+	gotErrors := document.Components.Schemas["InternalErrorEnvelope"].Properties["error"].Properties["code"].Enum
+	sort.Strings(gotErrors)
+	if !reflect.DeepEqual(gotErrors, wantErrors) {
+		t.Errorf("internal stable error codes=%v want=%v", gotErrors, wantErrors)
 	}
 }

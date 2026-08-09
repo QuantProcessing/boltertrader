@@ -19,49 +19,23 @@ paths:
     get:
       operationId: listDesiredAccounts
       responses: {'200': {$ref: '#/components/responses/DesiredAccounts'}, default: {$ref: '#/components/responses/Error'}}
-    post:
-      operationId: createDesiredAccount
-      parameters: [{$ref: '#/components/parameters/IfNoneMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredAccount'}
-      responses: {'201': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/desired/{accountId}:
     get:
       operationId: getDesiredAccount
       parameters: [{$ref: '#/components/parameters/AccountID'}]
-      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '404': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+      responses: {'200': {$ref: '#/components/responses/DesiredRuntime'}, '404': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/operations/{operationId}:
     put:
-      operationId: updateDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
-      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-    delete:
-      operationId: deleteDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      responses: {'204': {description: desired account removed}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/validate:
-    post:
-      operationId: validateDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/GenerationFence'}
-      responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/rotate:
-    post:
-      operationId: rotateDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
-      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/disable:
-    post:
-      operationId: disableDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
-      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
-  /internal/v1/accounts/desired/{accountId}/drain:
-    post:
-      operationId: drainDesiredAccount
-      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/IfMatch'}]
-      requestBody: {$ref: '#/components/requestBodies/DesiredMutation'}
-      responses: {'200': {$ref: '#/components/responses/DesiredAccount'}, '409': {$ref: '#/components/responses/Error'}, '428': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+      operationId: applyDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
+      requestBody: {$ref: '#/components/requestBodies/DesiredApply'}
+      responses: {'200': {$ref: '#/components/responses/DesiredRuntime'}, '202': {$ref: '#/components/responses/DesiredRuntime'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
+  /internal/v1/accounts/desired/{accountId}/retirements/{operationId}:
+    put:
+      operationId: retireDesiredAccount
+      parameters: [{$ref: '#/components/parameters/AccountID'}, {$ref: '#/components/parameters/OperationID'}]
+      requestBody: {$ref: '#/components/requestBodies/RetireAccount'}
+      responses: {'200': {$ref: '#/components/responses/RuntimeView'}, '202': {$ref: '#/components/responses/RuntimeView'}, '409': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /internal/v1/accounts/runtime:
     get: {operationId: listRuntimeAccounts, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/accounts/runtime/{accountId}:
@@ -87,12 +61,10 @@ components:
     gatewayAdapterAuth: {type: http, scheme: bearer}
   parameters:
     AccountID: {name: accountId, in: path, required: true, schema: {type: string, minLength: 1}}
-    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string, pattern: '^"desired-state-revision-[1-9][0-9]*"$'}}
-    IfNoneMatch: {name: If-None-Match, in: header, required: true, schema: {type: string, const: '*'}}
+    OperationID: {name: operationId, in: path, required: true, schema: {type: string, format: uuid}}
   requestBodies:
-    DesiredAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredAccount'}}}}
-    DesiredMutation: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredMutation'}}}}
-    GenerationFence: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/GenerationFence'}}}}
+    DesiredApply: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredApplyRequest'}}}}
+    RetireAccount: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RetireRequest'}}}}
   responses:
     RuntimeStatus:
       description: detailed runtime status
@@ -112,11 +84,9 @@ components:
             additionalProperties: false
             required: [data]
             properties: {data: {$ref: '#/components/schemas/RuntimeReadiness'}}
-    DesiredAccount:
-      description: acknowledged desired account
-      headers: {ETag: {schema: {type: string}}}
-      content: {application/json: {schema: {$ref: '#/components/schemas/DesiredAccount'}}}
-    DesiredAccounts: {description: desired accounts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredAccount'}}}}}
+    DesiredRuntime: {description: redacted desired runtime, content: {application/json: {schema: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}
+    DesiredAccounts: {description: desired accounts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DesiredRuntimeView'}}}}}
+    RuntimeView: {description: redacted runtime truth, content: {application/json: {schema: {$ref: '#/components/schemas/RuntimeView'}}}}
     RuntimeFacts: {description: redacted product-agnostic authority facts, content: {application/json: {schema: {type: object}}}}
     Error: {description: stable redacted error, content: {application/json: {schema: {$ref: '#/components/schemas/InternalErrorEnvelope'}}}}
   schemas:
@@ -133,50 +103,70 @@ components:
       required: [ready]
       properties:
         ready: {type: boolean}
-    DesiredAccount:
+    DesiredRoute:
       type: object
       additionalProperties: false
-      required: [accountId, venue, venueEnvironment, secretRef, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState]
+      required: [routeId, product, routeProfileId, requestedState]
       properties:
+        routeId: {type: string, minLength: 1}
+        product: {type: string, enum: [spot, perp]}
+        settlementAsset: {type: string}
+        routeProfileId: {type: string, minLength: 1}
+        requestedState: {type: string, enum: [active, disabled]}
+    DesiredApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [operationId, accountId, venue, nativeEnvironment, secretRef, desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes]
+      properties:
+        operationId: {type: string, format: uuid}
         accountId: {type: string, minLength: 1}
         venue: {type: string, minLength: 1}
-        venueEnvironment: {type: string, enum: [demo, testnet, live]}
-        secretRef: {type: string, minLength: 1, description: opaque reference; never credential material}
+        nativeEnvironment: {type: string, enum: [demo, testnet, live]}
+        secretRef: {type: string, pattern: '^[A-Za-z0-9_-]{43}$', description: opaque reference; never credential material}
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
-        rotationFence: {$ref: '#/components/schemas/RotationFence'}
-    DesiredMutation:
+        requestedState: {type: string, enum: [active, disabled]}
+        routes: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/DesiredRoute'}}
+    WriteFence:
       type: object
       additionalProperties: false
-      required: [desiredStateRevision, runtimeGeneration, credentialVersion]
+      required: [accountId, routeId, desiredStateRevision, runtimeGeneration, credentialVersion]
       properties:
-        secretRef: {type: string, minLength: 1, description: opaque reference; never credential material}
+        accountId: {type: string, minLength: 1}
+        routeId: {type: string, minLength: 1}
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
-        rotationFence: {$ref: '#/components/schemas/RotationFence'}
-    GenerationFence:
+    RetireRequest:
       type: object
       additionalProperties: false
-      required: [desiredStateRevision, runtimeGeneration, credentialVersion]
+      required: [operationId, accountId, desiredStateRevision, runtimeGeneration, credentialVersion]
       properties:
+        operationId: {type: string, format: uuid}
+        accountId: {type: string, minLength: 1}
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
-    RotationFence:
+    DesiredRuntimeView:
       type: object
       additionalProperties: false
-      required: [rotationFenceId, state, fromCredentialVersion, toCredentialVersion, fromRuntimeGeneration, toRuntimeGeneration]
+      required: [accountId, requestedState, routes]
       properties:
-        rotationFenceId: {type: string, minLength: 1}
-        state: {type: string, enum: [armed, replacement_ready, released, expired, blocked]}
-        fromCredentialVersion: {type: integer, minimum: 1}
-        toCredentialVersion: {type: integer, minimum: 1}
-        fromRuntimeGeneration: {type: integer, minimum: 1}
-        toRuntimeGeneration: {type: integer, minimum: 1}
+        accountId: {type: string}
+        requestedState: {type: string}
+        routes: {type: array, items: {$ref: '#/components/schemas/DesiredRoute'}}
+        active: {type: [object, 'null']}
+        pending: {type: [object, 'null']}
+    RuntimeView:
+      type: object
+      additionalProperties: false
+      required: [accountId, retiring]
+      properties:
+        accountId: {type: string}
+        active: {type: [object, 'null']}
+        pending: {type: [object, 'null']}
+        retiring: {type: array, items: {type: object}}
     RuntimeAccount:
       type: object
       additionalProperties: false
