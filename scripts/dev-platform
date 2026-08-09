@@ -134,6 +134,29 @@ ensure_tokens() {
 process_start_time() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 process_command() { ps -p "$1" -o command= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 
+write_command_identity() {
+	service=$1
+	command=$2
+	command_file="$OWNERSHIP_DIR/$service.command"
+	temporary="$command_file.tmp.$$"
+	printf '%s\n' "$command" >"$temporary"
+	mv "$temporary" "$command_file"
+}
+
+refresh_starting_identity() {
+	service=$1
+	pid_file="$PID_DIR/$service.pid"
+	start_file="$OWNERSHIP_DIR/$service.start"
+	[ -f "$pid_file" ] && [ -f "$start_file" ] || return 1
+	pid=$(sed -n '1p' "$pid_file")
+	case "$pid" in *[!0-9]*|'') return 1 ;; esac
+	kill -0 "$pid" 2>/dev/null || return 1
+	[ "$(process_start_time "$pid")" = "$(sed -n '1p' "$start_file")" ] || return 1
+	observed_command=$(process_command "$pid")
+	[ -n "$observed_command" ] || return 1
+	write_command_identity "$service" "$observed_command"
+}
+
 is_owned() {
 	service=$1
 	pid_file="$PID_DIR/$service.pid"
@@ -326,7 +349,7 @@ start_service() {
 	done
 	[ "$i" -lt 50 ] || fail "$service process identity did not stabilize"
 	printf '%s\n' "$observed_start" >"$OWNERSHIP_DIR/$service.start"
-	printf '%s\n' "$observed_command" >"$OWNERSHIP_DIR/$service.command"
+	write_command_identity "$service" "$observed_command"
 	if [ "$service" = "funding-worker" ]; then printf '%s\n' "$instance_id" >"$OWNERSHIP_DIR/funding-worker.instance"; fi
 	printf '%s started\n' "$service"
 }
@@ -335,8 +358,10 @@ wait_service() {
 	service=$1; ready=$(configured_value "$service" READY_CMD)
 	deadline=$(( $(date +%s) + START_TIMEOUT ))
 	while :; do
-		is_owned "$service" || fail "$service is not an owned running process"
+		refresh_starting_identity "$service" || fail "$service is not an owned starting process"
 		if { [ -n "$ready" ] && sh -c "$ready" >/dev/null 2>&1; } || { [ -z "$ready" ] && builtin_ready "$service"; }; then
+			refresh_starting_identity "$service" || fail "$service identity changed at readiness"
+			is_owned "$service" || fail "$service identity did not seal at readiness"
 			printf '%s ready\n' "$service"; return
 		fi
 		[ "$(date +%s)" -lt "$deadline" ] || fail "$service readiness timed out"
