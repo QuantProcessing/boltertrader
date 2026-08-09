@@ -969,6 +969,9 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
+	}
 	const applyOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 	const retireOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
 	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -1210,6 +1213,9 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
+	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	request := httpapi.AuthorityRequest{
@@ -1282,6 +1288,9 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
+	}
 	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{
 		Authority: authority, Authenticate: func(*http.Request) error { return nil },
 	})
@@ -1323,6 +1332,51 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 			t.Fatalf("response leaked %q: %s", forbidden, response.Body.String())
 		}
 	}
+
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: false, Reason: account.ReasonPrivateStreamGap}}, nil
+	}
+	gap, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gapView := gap.Body.(httpapi.RuntimeView)
+	if !gapView.Readiness.Ready || gapView.WriteReadiness.Ready || gapView.WriteReadiness.Reason != account.ReasonPrivateStreamGap || gapView.BlockedReason == nil || *gapView.BlockedReason != account.ReasonPrivateStreamGap {
+		t.Fatalf("gap view=%+v", gapView)
+	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
+	}
+	recovered, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredView := recovered.Body.(httpapi.RuntimeView)
+	if !recoveredView.Readiness.Ready || !recoveredView.WriteReadiness.Ready || recoveredView.BlockedReason != nil {
+		t.Fatalf("recovered view=%+v", recoveredView)
+	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{Reason: catalog.ReasonCatalogStale}}, nil
+	}
+	stale, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleView := stale.Body.(httpapi.RuntimeView)
+	if staleView.Readiness.Ready || staleView.WriteReadiness.Ready || staleView.Readiness.Reason != catalog.ReasonCatalogStale || staleView.BlockedReason == nil || *staleView.BlockedReason != catalog.ReasonCatalogStale {
+		t.Fatalf("stale view=%+v", staleView)
+	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ReasonExactLookupUnavailable}}, nil
+	}
+	exactLookupUnavailable, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactLookupView := exactLookupUnavailable.Body.(httpapi.RuntimeView)
+	if !exactLookupView.Readiness.Ready || exactLookupView.WriteReadiness.Ready || exactLookupView.WriteReadiness.Reason != account.ReasonExactLookupUnavailable || exactLookupView.BlockedReason == nil || *exactLookupView.BlockedReason != account.ReasonExactLookupUnavailable {
+		t.Fatalf("exact lookup view=%+v", exactLookupView)
+	}
 }
 
 func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.T) {
@@ -1342,6 +1396,9 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	authority, err := newGatewayAuthority(context.Background(), newSnapshotAuthorityStore(), manager, account.RuntimeModeTest)
 	if err != nil {
 		t.Fatal(err)
+	}
+	authority.status = func(domain.AccountID) (account.Status, error) {
+		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{

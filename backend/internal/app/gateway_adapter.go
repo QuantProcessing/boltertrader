@@ -50,17 +50,18 @@ type gatewayRuntimeProjection struct {
 	Active                          *gatewayRuntimeSnapshotView  `json:"active,omitempty"`
 	Pending                         *gatewayPendingSnapshotView  `json:"pending,omitempty"`
 	Retiring                        []gatewayRuntimeSnapshotView `json:"retiring"`
-	DesiredStateRevision            int64                        `json:"desiredStateRevision"`
-	RuntimeGeneration               int64                        `json:"runtimeGeneration"`
-	CredentialVersion               int64                        `json:"credentialVersion"`
-	RuntimeVersion                  int64                        `json:"runtimeVersion"`
-	Readiness                       httpapi.ProjectionReadiness  `json:"readiness"`
-	WriteReadiness                  httpapi.ProjectionReadiness  `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision int64                        `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    int64                        `json:"lastAppliedRuntimeGeneration"`
+	Tombstoned                      *bool                        `json:"tombstoned"`
+	DesiredStateRevision            *int64                       `json:"desiredStateRevision"`
+	RuntimeGeneration               *int64                       `json:"runtimeGeneration"`
+	CredentialVersion               *int64                       `json:"credentialVersion"`
+	RuntimeVersion                  *int64                       `json:"runtimeVersion"`
+	Readiness                       *httpapi.ProjectionReadiness `json:"readiness"`
+	WriteReadiness                  *httpapi.ProjectionReadiness `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision *int64                       `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    *int64                       `json:"lastAppliedRuntimeGeneration"`
 	BlockedReason                   *string                      `json:"blockedReason"`
 	Capabilities                    []gatewayRuntimeCapability   `json:"capabilities"`
-	ObservedAt                      time.Time                    `json:"observedAt"`
+	ObservedAt                      *time.Time                   `json:"observedAt"`
 }
 
 type gatewayRuntimeCapability struct {
@@ -825,7 +826,17 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 		return nil, fmt.Errorf("read Gateway runtime account: %w", err)
 	}
 	projection := runtime.Data
-	if projection.AccountID != accountID || projection.DesiredStateRevision < 1 || projection.RuntimeGeneration < 1 || projection.CredentialVersion < 1 || projection.RuntimeVersion < 1 || projection.LastAppliedDesiredStateRevision < 1 || projection.LastAppliedRuntimeGeneration < 1 || projection.LastAppliedDesiredStateRevision > projection.DesiredStateRevision || projection.LastAppliedRuntimeGeneration > projection.RuntimeGeneration || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
+	if projection.AccountID != accountID || projection.Tombstoned == nil || projection.Readiness == nil || projection.WriteReadiness == nil || projection.Retiring == nil || projection.Capabilities == nil {
+		return nil, fmt.Errorf("Gateway runtime account response is invalid")
+	}
+	if *projection.Tombstoned && (projection.Active != nil || projection.Pending != nil) {
+		return nil, fmt.Errorf("Gateway runtime account response is invalid")
+	}
+	if projection.Active != nil {
+		if *projection.Tombstoned || projection.DesiredStateRevision == nil || *projection.DesiredStateRevision < 1 || projection.RuntimeGeneration == nil || *projection.RuntimeGeneration < 1 || projection.CredentialVersion == nil || *projection.CredentialVersion < 1 || projection.RuntimeVersion == nil || *projection.RuntimeVersion < 1 || projection.LastAppliedDesiredStateRevision == nil || *projection.LastAppliedDesiredStateRevision < 1 || projection.LastAppliedRuntimeGeneration == nil || *projection.LastAppliedRuntimeGeneration < 1 || *projection.LastAppliedDesiredStateRevision > *projection.DesiredStateRevision || *projection.LastAppliedRuntimeGeneration > *projection.RuntimeGeneration || projection.ObservedAt == nil || projection.ObservedAt.IsZero() || len(projection.Capabilities) == 0 {
+			return nil, fmt.Errorf("Gateway runtime account response is invalid")
+		}
+	} else if !*projection.Tombstoned && projection.Pending == nil {
 		return nil, fmt.Errorf("Gateway runtime account response is invalid")
 	}
 	projectedCapabilities := make([]httpapi.AccountCapabilityProjection, 0, len(projection.Capabilities))
@@ -860,11 +871,25 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 		retiring = append(retiring, *projected)
 	}
 	return []httpapi.AccountRuntimeProjection{{
-		AccountID: accountID, Active: active, Pending: pending, Retiring: retiring, DesiredStateRevision: projection.DesiredStateRevision, RuntimeGeneration: projection.RuntimeGeneration,
-		CredentialVersion: projection.CredentialVersion, RuntimeVersion: projection.RuntimeVersion, Readiness: projection.Readiness, WriteReadiness: projection.WriteReadiness,
-		LastAppliedDesiredStateRevision: projection.LastAppliedDesiredStateRevision, LastAppliedRuntimeGeneration: projection.LastAppliedRuntimeGeneration,
-		BlockedReason: projection.BlockedReason, Capabilities: projectedCapabilities, ObservedAt: projection.ObservedAt.UTC(),
+		AccountID: accountID, Active: active, Pending: pending, Retiring: retiring, DesiredStateRevision: int64Value(projection.DesiredStateRevision), RuntimeGeneration: int64Value(projection.RuntimeGeneration),
+		CredentialVersion: int64Value(projection.CredentialVersion), RuntimeVersion: int64Value(projection.RuntimeVersion), Readiness: *projection.Readiness, WriteReadiness: *projection.WriteReadiness,
+		LastAppliedDesiredStateRevision: int64Value(projection.LastAppliedDesiredStateRevision), LastAppliedRuntimeGeneration: int64Value(projection.LastAppliedRuntimeGeneration),
+		BlockedReason: projection.BlockedReason, Capabilities: projectedCapabilities, ObservedAt: timeValue(projection.ObservedAt),
 	}}, nil
+}
+
+func int64Value(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func timeValue(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.UTC()
 }
 
 func projectRuntimeSnapshot(snapshot *gatewayRuntimeSnapshotView) (*httpapi.RuntimeSnapshotProjection, error) {

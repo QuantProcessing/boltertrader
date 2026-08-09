@@ -145,7 +145,7 @@ export async function installFixturePlatform(page: Page, options: FixtureOptions
         blockedReason: privateGap ? "STALE_PUBLIC_CONNECTOR" : null,
         capabilities: [{ rowId: `${accountId}-perp`, venue: account.venue, product: "perp", settlement: "USDT", writeReady: true, operations }],
         active: { desiredStateRevision: account.desiredStateRevision, runtimeGeneration: account.runtimeGeneration, credentialVersion: account.credentialVersion, requestedState: "active", routes: [{ ...desiredRoute(account.venue), ready: true }] },
-        pending: privateGap ? { desiredStateRevision: 4, runtimeGeneration: 3, credentialVersion: 2, requestedState: "rotating", state: "blocked", reason: "validation failed", routes: [{ ...desiredRoute(account.venue), ready: false, reason: "private stream gap" }] } : undefined,
+        pending: privateGap ? { desiredStateRevision: 4, runtimeGeneration: 3, credentialVersion: 2, requestedState: "rotating", state: "candidate_failed", reason: "validation failed", routes: [{ ...desiredRoute(account.venue), ready: false, reason: "private stream gap" }] } : undefined,
         retiring: accountId === "binance-primary" ? [{ desiredStateRevision: 2, runtimeGeneration: 1, credentialVersion: 1, requestedState: "draining", routes: [{ ...desiredRoute(account.venue), requestedState: "disabled", ready: false, reason: "draining" }] }] : [],
         observedAt: now,
       }] }));

@@ -85,7 +85,7 @@ const runtime: RuntimeView = {
     runtimeGeneration: 3,
     credentialVersion: 2,
     requestedState: "rotating",
-    state: "blocked",
+    state: "candidate_failed",
     reason: "validation failed",
     routes: [{ routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: "binance.spot.usdt.demo.v1", requestedState: "active", ready: false, reason: "private stream gap" }],
   },
@@ -301,7 +301,7 @@ describe("AccountsRoute", () => {
 
     for (const state of ["Active", "Pending", "Retiring"]) expect(screen.getByText(state)).toBeInTheDocument();
     const pending = screen.getByRole("row", { name: /Pending spot-usdt/i });
-    expect(within(pending).getByText("blocked")).toBeInTheDocument();
+    expect(within(pending).getByText("candidate failed")).toBeInTheDocument();
     expect(within(pending).getByText("private stream gap")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry validation for Test account" }));
     expect(props.onAction).toHaveBeenCalledWith("a1", "validate");
@@ -348,7 +348,7 @@ describe("AccountsRoute", () => {
       runtimes: { a1: [{
         ...runtime,
         active: undefined,
-        pending: { desiredStateRevision: 6, runtimeGeneration: 5, credentialVersion: 4, requestedState: "disabled", state: "ready", routes: [] },
+        pending: { desiredStateRevision: 6, runtimeGeneration: 5, credentialVersion: 4, requestedState: "disabled", state: "candidate_ready", routes: [] },
         retiring: [],
       }] },
     });
@@ -365,6 +365,18 @@ describe("AccountsRoute", () => {
 
     rerender(<AccountsRoute mode="test" accounts={[]} runtimes={{}} venues={venues} capabilities={[]} readiness={{ ready: true, components: { gateway: { ready: true } } }} busy={false} onCreate={vi.fn()} onAction={vi.fn()} onRefresh={vi.fn()} />);
     expect(screen.getByText("Platform is ready for account provisioning.")).toBeInTheDocument();
+  });
+
+  it("keeps trusted zero-account profiles selectable when control-plane readiness is green", async () => {
+	const onCreate = vi.fn().mockResolvedValue(undefined);
+	renderAccounts({ venues: [{ ...venues[0], ready: false }], readiness: { ready: true, components: { gateway: { ready: true } } }, onCreate });
+
+	expect(screen.getByRole("combobox", { name: "Venue" })).toHaveValue("binance:demo");
+	await userEvent.type(screen.getByLabelText("Account name"), "Provisioned account");
+	await userEvent.type(screen.getByLabelText("API key"), "key");
+	await userEvent.type(screen.getByLabelText("API secret"), "secret");
+	await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
   });
 
   it("keeps operation failures beside the affected account and preserves blocked removal", async () => {

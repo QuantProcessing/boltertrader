@@ -41,7 +41,7 @@ export function flattenRuntimeCapabilities(runtimes: Record<string, RuntimeView[
 
 export function runtimeDisplay(runtime: RuntimeView | undefined): { state: string; reason?: string } {
   if (!runtime) return { state: "unknown" };
-  if (runtime.pending?.state === "blocked") return { state: "blocked", reason: runtime.pending.reason ?? runtime.pending.routes.find((route) => route.reason)?.reason };
+  if (runtime.pending?.state === "candidate_failed") return { state: "blocked", reason: runtime.pending.reason ?? runtime.pending.routes.find((route) => route.reason)?.reason };
   if (runtime.blockedReason) return { state: "blocked", reason: runtime.blockedReason };
   if (!runtime.readiness.ready) return { state: "unavailable", reason: runtime.readiness.reason };
   if (!runtime.writeReadiness.ready) return { state: "read_only", reason: runtime.writeReadiness.reason };

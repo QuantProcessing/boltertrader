@@ -75,7 +75,7 @@ function IconAction({ label, title, onClick, disabled, danger, children }: {
 }
 
 export function AccountsRoute(props: AccountsProps) {
-  const available = useMemo(() => props.venues.filter((venue) => venue.ready), [props.venues]);
+  const available = useMemo(() => props.venues.filter((venue) => venue.routeProfiles.length > 0), [props.venues]);
   const compatible = useMemo(() => available.filter((venue) => modeCompatible(venue, props.mode)), [available, props.mode]);
   const initialVenue = compatible[0] ?? available[0];
   const [venueKey, setVenueKey] = useState(initialVenue ? `${initialVenue.venue}:${initialVenue.environment}` : "");
@@ -226,7 +226,7 @@ export function AccountsRoute(props: AccountsProps) {
         {schema?.fields.map((field) => <label key={field.key}>{field.label}<input type={field.valueType === "integer" ? "number" : field.metadata ? "text" : "password"} autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required={field.required !== false} /></label>)}
         {modeConflict && <div className="finding finding--danger" role="alert">{modeFinding}</div>}
         {formError && <div className="finding finding--danger" role="alert">{formError}</div>}
-        <button className="button button--primary button--wide" disabled={props.busy || !selectedVenue || modeConflict || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>
+        <button className="button button--primary button--wide" disabled={props.busy || !props.readiness.ready || !selectedVenue || modeConflict || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>
       </form>
     </section>
     <section className="account-section surface--table"><div className="section-heading"><div><h2>Capability discovery</h2><span>{props.capabilities.length} reported</span></div></div><div className="table-scroll"><table><thead><tr><th>Account</th><th>Venue</th><th>Product</th><th>Operation</th><th>Support</th></tr></thead><tbody>{props.capabilities.map((item) => <tr key={`${item.accountId}:${item.rowId}:${item.operation}`}><td><code>{item.accountId}</code></td><td>{item.venue}</td><td>{item.product}{item.settlement && <small>{item.settlement}</small>}</td><td>{item.operation}</td><td><StatusBadge state={item.supported ? (item.writeReady ? "ready" : "read_only") : "denied"} label={item.supported ? (item.writeReady ? "supported" : "read only") : "unsupported"} /></td></tr>)}</tbody></table></div>{props.capabilities.length === 0 && <div className="empty-row">Capability projection is not available yet.</div>}</section>

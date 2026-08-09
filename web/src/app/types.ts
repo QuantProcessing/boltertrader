@@ -263,6 +263,6 @@ export interface RuntimeSnapshotView {
 }
 
 export interface PendingSnapshotView extends RuntimeSnapshotView {
-  state: "prepared" | "building" | "ready" | "blocked";
+  state: "prepared" | "candidate_ready" | "candidate_failed" | "applied";
   reason?: string;
 }

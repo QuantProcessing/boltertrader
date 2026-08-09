@@ -120,7 +120,7 @@ describe("authoritative view models", () => {
         runtimeGeneration: 2,
         credentialVersion: 2,
         requestedState: "rotating",
-        state: "blocked",
+        state: "candidate_failed",
         reason: "validation failed",
         routes: [],
       },

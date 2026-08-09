@@ -233,6 +233,30 @@ describe("App", () => {
     ));
   });
 
+  it("clears successful account-create idempotency scope but retains uncertain retries", async () => {
+	const venue = { venue: "binance", environment: "demo", nativeEnvironment: "demo", ready: true, products: ["manual"], credentialSchema: { schemaVersion: 1, authKind: "api_key_secret", fields: [{ key: "apiKey", label: "API key", required: true }, { key: "apiSecret", label: "API secret", required: true }] }, routeProfiles: [{ routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", label: "Perp / USDT" }] };
+	mocks.get.mockResolvedValue({ data: session });
+	mocks.snapshot.mockResolvedValue({ ...emptySnapshot, venues: [venue] });
+	mocks.post.mockResolvedValue({ data: {} });
+	render(<App />);
+
+	await userEvent.click(await screen.findByRole("button", { name: "Accounts" }));
+	await userEvent.type(screen.getByLabelText("Account name"), "Primary");
+	await userEvent.type(screen.getByLabelText("API key"), "key");
+	await userEvent.type(screen.getByLabelText("API secret"), "secret");
+	await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await waitFor(() => expect(mocks.clearIdempotencyKey).toHaveBeenCalledWith("account.create:binance:Primary"));
+
+	mocks.clearIdempotencyKey.mockClear();
+	mocks.post.mockRejectedValueOnce(new Error("network response uncertain"));
+	await userEvent.type(screen.getByLabelText("Account name"), "Primary");
+	await userEvent.type(screen.getByLabelText("API key"), "key");
+	await userEvent.type(screen.getByLabelText("API secret"), "secret");
+	await userEvent.click(screen.getByRole("button", { name: "Add account" }));
+	await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+	expect(mocks.clearIdempotencyKey).not.toHaveBeenCalled();
+  });
+
   it("removes an account only after confirmation through the revision-fenced Platform route", async () => {
     const account = { accountId: "account-1", displayName: "Test account", venue: "binance", mode: "test", nativeEnvironment: "demo", status: "disabled", productPolicy: ["manual"], desiredStateRevision: 7, runtimeGeneration: 2, credentialVersion: 1, routes: [] };
     mocks.get.mockResolvedValue({ data: session });

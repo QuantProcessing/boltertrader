@@ -468,7 +468,7 @@ func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(gatewayModeHeader, "test")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
+		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
 	}))
 	defer server.Close()
 	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
@@ -504,6 +504,35 @@ func TestGatewayAdapterUsesDurablePendingOperationStates(t *testing.T) {
 		if validPendingRuntimeState(state) {
 			t.Errorf("candidate observation state %q accepted as operation state", state)
 		}
+	}
+}
+
+func TestGatewayAdapterAcceptsPendingOnlyAndTombstonedRuntimeShapes(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	tests := []struct {
+		name, response string
+		wantPending    bool
+	}{
+		{name: "pending only", wantPending: true, response: `{"data":{"accountId":"account-a","tombstoned":false,"readiness":{"ready":false,"reason":"candidate_not_ready"},"writeReadiness":{"ready":false,"reason":"candidate_not_ready"},"blockedReason":"candidate_not_ready","capabilities":[],"retiring":[],"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1,"requestedState":"creating","state":"prepared","routes":[]}}}`},
+		{name: "tombstoned", response: `{"data":{"accountId":"account-a","tombstoned":true,"readiness":{"ready":false,"reason":"account_retired"},"writeReadiness":{"ready":false,"reason":"account_retired"},"blockedReason":"account_retired","capabilities":[],"retiring":[]}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(gatewayModeHeader, "test")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.response))
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			items, err := adapter.ListAccountRuntimes(context.Background(), "browser-a", "test", "account-a")
+			if err != nil || len(items) != 1 || (items[0].Pending != nil) != test.wantPending || items[0].Active != nil {
+				t.Fatalf("items=%+v err=%v", items, err)
+			}
+		})
 	}
 }
 
@@ -545,9 +574,11 @@ func (authority *adapterContractAuthority) Execute(_ context.Context, request ga
 			return gatewayhttp.AuthorityResponse{}, errors.New("unexpected runtime account")
 		}
 		return gatewayhttp.AuthorityResponse{Body: map[string]any{
-			"accountId": "account-a", "desiredStateRevision": 7, "runtimeGeneration": 3, "credentialVersion": 2, "runtimeVersion": 9,
+			"accountId": "account-a", "tombstoned": false, "desiredStateRevision": 7, "runtimeGeneration": 3, "credentialVersion": 2, "runtimeVersion": 9,
 			"readiness": map[string]any{"ready": true}, "writeReadiness": map[string]any{"ready": true},
 			"lastAppliedDesiredStateRevision": 7, "lastAppliedRuntimeGeneration": 3, "blockedReason": nil,
+			"active":       map[string]any{"operationId": "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "desiredStateRevision": 7, "runtimeGeneration": 3, "credentialVersion": 2, "requestedState": "active", "routes": []any{}},
+			"retiring":     []any{},
 			"capabilities": []map[string]any{{"rowId": "binance:perp:USDT", "venue": "binance", "product": "perp", "settlement": "USDT", "writeReady": true, "operations": map[string]any{"place": true, "cancel": true, "fills": true, "positions": true}}},
 			"observedAt":   time.Date(2026, 8, 5, 1, 3, 4, 0, time.UTC),
 		}}, nil
@@ -731,7 +762,7 @@ func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewa
 		requests = append(requests, r.URL.RequestURI())
 		switch r.URL.RequestURI() {
 		case "/internal/v1/accounts/runtime/account-a":
-			_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"place":true,"amend":false,"cancel":true,"open_orders":true,"order_history":true,"fills":true,"balances":true,"account":true,"positions":true,"funding":true,"account_funding_payments":true,"leverage":false,"private_stream":true,"margin_mode":false,"position_mode":false,"funds_transfer":false}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
+			_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[]},"retiring":[],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"place":true,"amend":false,"cancel":true,"open_orders":true,"order_history":true,"fills":true,"balances":true,"account":true,"positions":true,"funding":true,"account_funding_payments":true,"leverage":false,"private_stream":true,"margin_mode":false,"position_mode":false,"funds_transfer":false}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
 		default:
 			http.NotFound(w, r)
 		}

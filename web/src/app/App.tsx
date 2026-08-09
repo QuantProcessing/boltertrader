@@ -251,7 +251,11 @@ export function App() {
   };
 
   const accountOperationOptions = { propagate: true, reportGlobalError: false };
-  const createAccount = (request: Record<string, unknown>) => perform(() => apiClient.post("/accounts", request, { idempotencyScope: `account.create:${request.venue}:${request.displayName}` }), "Account submitted.", true, accountOperationOptions);
+  const createAccount = async (request: Record<string, unknown>) => {
+    const scope = `account.create:${request.venue}:${request.displayName}`;
+    await perform(() => apiClient.post("/accounts", request, { idempotencyScope: scope }), "Account submitted.", true, accountOperationOptions);
+    apiClient.clearIdempotencyKey(scope);
+  };
   const accountAction = (accountID: string, action: string, payload: Record<string, unknown> = {}) => {
     const account = snapshot.accounts.find((item) => item.accountId === accountID);
     if (!account?.desiredStateRevision || account.desiredStateRevision < 1) {

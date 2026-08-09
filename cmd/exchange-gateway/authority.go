@@ -30,6 +30,7 @@ type gatewayAuthority struct {
 	store     store.DesiredStateStore
 	snapshots store.RuntimeSnapshotStore
 	manager   *account.Manager
+	status    func(domain.AccountID) (account.Status, error)
 	reads     authorityReadSource
 	mode      account.RuntimeMode
 	now       func() time.Time
@@ -226,7 +227,7 @@ func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateSto
 		mode = account.RuntimeModeTest
 	}
 	authority := &gatewayAuthority{
-		store: desiredStore, manager: manager,
+		store: desiredStore, manager: manager, status: manager.Status,
 		reads: managerAuthorityReads{manager: manager, mode: mode, profiles: routeprofile.DefaultRegistry(), now: time.Now},
 		mode:  mode, now: time.Now,
 	}
@@ -661,6 +662,22 @@ func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, 
 	}
 	if !writeReady && writeReason == "" {
 		writeReason = readReason
+	}
+	status, err := authority.status(active.AccountID)
+	if err != nil {
+		readReady = false
+		writeReady = false
+		readReason = "runtime_status_unavailable"
+		writeReason = readReason
+	} else {
+		readReady = readReady && status.ReadReady
+		writeReady = writeReady && status.WriteReady
+		if !status.ReadReady && status.Reason != "" {
+			readReason = status.Reason
+		}
+		if !status.WriteReady && status.Reason != "" {
+			writeReason = status.Reason
+		}
 	}
 	view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: readReady, Reason: readReason}
 	view.WriteReadiness = httpapi.RuntimeProjectionReadiness{Ready: writeReady, Reason: writeReason}
