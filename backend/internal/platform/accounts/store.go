@@ -19,6 +19,7 @@ var (
 type Store interface {
 	Create(context.Context, Account) error
 	CreateDraft(context.Context, Account, CredentialOperation) error
+	BeginCredentialOperation(context.Context, int64, Account, CredentialOperation) error
 	Get(context.Context, string) (Account, error)
 	List(context.Context) ([]Account, error)
 	CompareAndSwap(context.Context, string, int64, Account) error
@@ -27,6 +28,29 @@ type Store interface {
 	BindCredentialReference(context.Context, secretstore.OperationID, string) (Account, CredentialOperation, error)
 	CompareAndSwapAccountAndOperation(context.Context, TransitionRequest) (Account, CredentialOperation, error)
 	ListRecoverableCredentialOperations(context.Context, int) ([]CredentialOperation, error)
+}
+
+func (store *MemoryStore) BeginCredentialOperation(_ context.Context, expectedRevision int64, account Account, operation CredentialOperation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	current, exists := store.accounts[account.ID]
+	if !exists {
+		return ErrNotFound
+	}
+	if current.DesiredStateRevision != expectedRevision {
+		return ErrRevisionConflict
+	}
+	if _, exists := store.operations[operation.ID]; exists {
+		return ErrAlreadyExists
+	}
+	for _, existing := range store.operations {
+		if operationLookupMatches(existing, OperationLookup{Mode: operation.Mode, PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
+			return ErrAlreadyExists
+		}
+	}
+	store.accounts[account.ID] = clone(account)
+	store.operations[operation.ID] = operation
+	return nil
 }
 
 type MemoryStore struct {

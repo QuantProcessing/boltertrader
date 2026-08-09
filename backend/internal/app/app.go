@@ -68,6 +68,7 @@ type Dependencies struct {
 	FundingGateway        work.CommandGateway
 	AccountingSource      accounting.AuthoritativeSource
 	ReconciliationGateway orders.ReconciliationGateway
+	AccountGateway        accounts.GatewayDesiredClient
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -161,7 +162,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	accountService, err := accounts.New(accounts.Options{Store: accountStore, Secrets: accounts.SecretStoreAdapter{Store: secretStore}, Audit: accounts.AuditServiceAdapter{Service: auditService}})
+	accountService, err := accounts.New(accounts.Options{Store: accountStore, Secrets: accounts.SecretStoreAdapter{Store: secretStore}, Audit: accounts.AuditServiceAdapter{Service: auditService}, Gateway: dependencies.AccountGateway, Mode: secretstore.Mode(cfg.Mode)})
 	if err != nil {
 		return nil, err
 	}

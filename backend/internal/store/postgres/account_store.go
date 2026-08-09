@@ -48,6 +48,28 @@ func (store *AccountStore) CreateDraft(ctx context.Context, account accounts.Acc
 	return tx.Commit()
 }
 
+func (store *AccountStore) BeginCredentialOperation(ctx context.Context, expectedRevision int64, account accounts.Account, operation accounts.CredentialOperation) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	changed, err := updateAccount(ctx, tx, account.ID, expectedRevision, normalizeAccount(account))
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return accounts.ErrRevisionConflict
+	}
+	if err := replaceRoutes(ctx, tx, account.ID, account.Routes); err != nil {
+		return err
+	}
+	if err := insertOperation(ctx, tx, operation); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (store *AccountStore) Get(ctx context.Context, id string) (accounts.Account, error) {
 	account, err := scanAccount(store.db.QueryRowContext(ctx, accountSelect+` WHERE account_id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {

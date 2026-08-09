@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/desiredstate"
@@ -147,7 +148,14 @@ func (service *Service) Activate(ctx context.Context, id string, revision int64,
 	return service.transition(ctx, id, revision, StateActive, principalID, "account.activate", nil)
 }
 
-func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string, _ ...string) (Account, error) {
+func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string, idempotencyKey ...string) (Account, error) {
+	if len(idempotencyKey) > 0 && strings.TrimSpace(idempotencyKey[0]) != "" {
+		return service.rotateDurable(ctx, id, revision, secretMaterial, principalID, idempotencyKey[0])
+	}
+	return service.rotateLegacy(ctx, id, revision, secretMaterial, principalID)
+}
+
+func (service *Service) rotateLegacy(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string) (Account, error) {
 	if len(secretMaterial) == 0 {
 		return Account{}, errors.New("secret material is required")
 	}
@@ -195,7 +203,14 @@ func (service *Service) Disable(ctx context.Context, id string, revision int64, 
 	return service.transition(ctx, id, revision, StateDisabled, principalID, "account.disable", nil)
 }
 
-func (service *Service) Remove(ctx context.Context, id string, revision int64, principalID string, _ ...string) (Account, error) {
+func (service *Service) Remove(ctx context.Context, id string, revision int64, principalID string, idempotencyKey ...string) (Account, error) {
+	if len(idempotencyKey) > 0 && strings.TrimSpace(idempotencyKey[0]) != "" {
+		return service.removeDurable(ctx, id, revision, principalID, idempotencyKey[0])
+	}
+	return service.removeLegacy(ctx, id, revision, principalID)
+}
+
+func (service *Service) removeLegacy(ctx context.Context, id string, revision int64, principalID string) (Account, error) {
 	return service.transition(ctx, id, revision, StateRemoving, principalID, "account.remove", nil)
 }
 

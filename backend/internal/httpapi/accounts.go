@@ -325,6 +325,8 @@ func (routes *accountRoutes) failure(w http.ResponseWriter, r *http.Request, err
 		writeError(w, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "account not found", nil, false, requestID(r))
 	case errors.Is(err, platformaccounts.ErrRevisionConflict):
 		writeError(w, http.StatusConflict, "DESIRED_STATE_REVISION_CONFLICT", "account revision conflict", nil, false, requestID(r))
+	case errors.Is(err, platformaccounts.ErrIdempotencyConflict):
+		writeError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "idempotency key conflicts with a different request", nil, false, requestID(r))
 	case errors.Is(err, platformaccounts.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "INVALID_ACCOUNT_TRANSITION", "account transition is invalid", nil, false, requestID(r))
 	case errors.Is(err, platformaccounts.ErrAccountBlocked):

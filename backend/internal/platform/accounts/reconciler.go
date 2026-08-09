@@ -87,6 +87,30 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 		}
 	}
 	if operation.State == OperationCleanupPending {
+		if operation.Kind == OperationRotate {
+			truth, err := reconciler.gateway.GetRuntimeTruth(ctx, account.ID)
+			if err != nil || !truth.Active || !truth.Tombstoned || truth.RuntimeGeneration != account.RuntimeGeneration || truth.CredentialVersion != account.CredentialVersion {
+				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_ROTATION_CLEANUP_PENDING")
+			}
+			cleaner, ok := reconciler.secrets.(SecretCleaner)
+			if !ok {
+				return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_UNAVAILABLE")
+			}
+			if account.PreviousSecretRef != "" {
+				if err := cleaner.Delete(ctx, account.PreviousSecretRef); err != nil {
+					return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_FAILED")
+				}
+			}
+			if err := callHook(reconciler.hooks.AfterProviderDelete); err != nil {
+				return err
+			}
+			account.PreviousSecretRef, account.UpdatedAt = "", reconciler.now().UTC()
+			operation.State, operation.StableErrorCode, operation.UpdatedAt = OperationActive, "", account.UpdatedAt
+			if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationCleanupPending, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation}); err != nil {
+				return errors.New("credential rotation cleanup commit failed")
+			}
+			return nil
+		}
 		retirement, err := reconciler.gateway.RetireAccount(ctx, RetireRequest{OperationID: operation.ID, AccountID: account.ID})
 		if err != nil || !retirement.Tombstoned || retirement.Blockers.Any() {
 			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_RETIREMENT_PENDING")

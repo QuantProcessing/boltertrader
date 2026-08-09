@@ -79,3 +79,30 @@ func TestAccountRoutesRequireAuthHooks(t *testing.T) {
 		t.Fatalf("status=%d", response.Code)
 	}
 }
+
+func TestTypedAccountCreateReplaysIdempotentlyAndRejectsChangedBody(t *testing.T) {
+	service, _ := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: routeSecretWriter{ref: "opaque-ref"}, Audit: routeAuditWriter{}, ID: func() string { return "acct_typed" }})
+	mux := http.NewServeMux()
+	_ = RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+		return platformaccounts.Blockers{}, nil
+	}})
+	body := `{"venue":"binance","displayName":"Primary","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key-canary","apiSecret":"secret-canary"}}}`
+	request := func(payload string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(payload))
+		req.Header.Set("Idempotency-Key", " typed-create ")
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, req)
+		return response
+	}
+	for index := 0; index < 2; index++ {
+		response := request(body)
+		if response.Code != http.StatusCreated || strings.Contains(response.Body.String(), "canary") || strings.Contains(response.Body.String(), "opaque-ref") {
+			t.Fatalf("replay %d status=%d body=%s", index, response.Code, response.Body.String())
+		}
+	}
+	changed := strings.Replace(body, "Primary", "Changed", 1)
+	response := request(changed)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "IDEMPOTENCY_CONFLICT") {
+		t.Fatalf("changed status=%d body=%s", response.Code, response.Body.String())
+	}
+}
