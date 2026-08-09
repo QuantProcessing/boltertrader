@@ -16,4 +16,4 @@ done
 ./scripts/dev-platform wait
 curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/readiness >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:13001/ >/dev/null
-printf 'test-real: local Test stack is ready; no venue writes were performed\n'
+printf 'test-real: G010 local Test stack is ready, including zero inventory; no venue writes were performed\n'

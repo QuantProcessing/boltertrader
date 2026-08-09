@@ -1,8 +1,9 @@
 # Docker-Free Local Platform
 
 The supported local stack runs directly on the host in Test mode. It does not
-use Docker and its canonical Gateway configuration contains no venue accounts,
-so it cannot perform venue writes.
+use Docker. Account inventory is Platform-owned, and the canonical Gateway
+starts with no venue accounts: zero-account inventory is a healthy, write-free
+state.
 
 ## Prerequisites
 
@@ -35,8 +36,12 @@ make dev-platform-status
 
 The supervisor creates mode-scoped opaque files beneath
 `$FT_LOCAL_RUNTIME_DIR/credentials/test` with permissions `0600`. It does not
-print their contents. The Test Gateway has no configured venue accounts, and
-Live private writes remain disabled.
+print their contents. The Platform receives only the Secret Store source
+identifier (`file`), absolute state directory, Test namespace, key version, and
+mode-scoped key-file identifier. Key material is never placed in a command
+argument, log line, tracked environment template value, or doctor output.
+The Test Gateway has no configured venue accounts, and Live private writes
+remain disabled.
 
 Use `make dev-platform-logs` for diagnostics and `make dev-platform-down` for
 an ordered shutdown. Shutdown drains the funding worker through its fenced,
@@ -49,7 +54,8 @@ removes Test runtime state only after owned processes have stopped.
 and runs the fixture-backed Playwright browser suite. It performs no external
 writes.
 
-`make test-real` checks an already-running local Test stack. It fails unless the
+`make test-real` is the **G010 no-trade gate** for an already-running local Test
+stack. It fails unless the
 operator explicitly attests the gate, the mode is Test, Live writes are off,
 all venue-write enable variables are absent, and every supervised service is
 ready:
@@ -60,4 +66,10 @@ BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real
 
 This gate performs readiness reads only. It does not activate migration
 cutover, retire the source system, configure venue credentials, or submit venue
-writes.
+writes. A zero-account inventory is a valid ready result.
+
+**G011 is a separate Test-write boundary.** G010 evidence never authorizes
+G011. Provisioning an account, enabling a private route, validating private
+connectivity, or submitting any venue command requires the explicit G011
+handoff and its own scoped Test credentials and write attestation. Live mode
+and Live private writes remain outside both local gates.

@@ -33,6 +33,12 @@ EXPECTED_MANUAL_PREVIEW_KEY_FILE="$CREDENTIAL_DIR/manual-preview-signing.key"
 MANUAL_PREVIEW_KEY_FILE=${BT_MANUAL_PREVIEW_SIGNING_KEY_FILE:-$EXPECTED_MANUAL_PREVIEW_KEY_FILE}
 EXPECTED_SECRET_MASTER_KEY_FILE="$CREDENTIAL_DIR/secret-store-master.key"
 SECRET_MASTER_KEY_FILE=${BT_SECRET_MASTER_KEY_FILE:-$EXPECTED_SECRET_MASTER_KEY_FILE}
+EXPECTED_SECRET_STORE_DIR="$RUNTIME_DIR/secret-store"
+SECRET_STORE_DIR=${BT_SECRET_STORE_DIR:-$EXPECTED_SECRET_STORE_DIR}
+SECRET_KEY_SOURCE=${BT_SECRET_KEY_SOURCE:-file}
+SECRET_MASTER_KEY_VERSION=${BT_SECRET_MASTER_KEY_VERSION:-v1}
+EXPECTED_SECRET_STORE_NAMESPACE=boltertrader/$MODE
+SECRET_STORE_NAMESPACE=${BT_SECRET_STORE_NAMESPACE:-$EXPECTED_SECRET_STORE_NAMESPACE}
 BT_GATEWAY_URL=${BT_GATEWAY_URL:-http://127.0.0.1:18082}
 BT_GATEWAY_TOKEN_FILE=$GATEWAY_TOKEN_FILE
 BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=$MANUAL_PREVIEW_KEY_FILE
@@ -40,8 +46,12 @@ GATEWAY_AUTH_TOKEN_FILE=$GATEWAY_TOKEN_FILE
 export BT_GATEWAY_URL BT_GATEWAY_TOKEN_FILE GATEWAY_AUTH_TOKEN_FILE
 export BT_MANUAL_PREVIEW_SIGNING_KEY_FILE
 BT_SECRET_MASTER_KEY_FILE=$SECRET_MASTER_KEY_FILE
-BT_SECRET_STORE_NAMESPACE=boltertrader/$MODE
-export BT_SECRET_MASTER_KEY_FILE BT_SECRET_STORE_NAMESPACE
+BT_SECRET_KEY_SOURCE=$SECRET_KEY_SOURCE
+BT_SECRET_STORE_DIR=$SECRET_STORE_DIR
+BT_SECRET_STORE_NAMESPACE=$SECRET_STORE_NAMESPACE
+BT_SECRET_MASTER_KEY_VERSION=$SECRET_MASTER_KEY_VERSION
+export BT_SECRET_KEY_SOURCE BT_SECRET_STORE_DIR BT_SECRET_STORE_NAMESPACE
+export BT_SECRET_MASTER_KEY_VERSION BT_SECRET_MASTER_KEY_FILE
 export BT_MODE
 START_TIMEOUT=${BT_DEV_START_TIMEOUT_SECONDS:-30}
 STOP_TIMEOUT=${BT_DEV_STOP_TIMEOUT_SECONDS:-15}
@@ -86,7 +96,7 @@ configured_value() {
 
 prepare_directories() {
 	umask 077
-	for dir in "$RUNTIME_DIR" "$STATE_DIR" "$PID_DIR" "$LOG_DIR" "$OWNERSHIP_DIR" "$CREDENTIAL_DIR"; do
+	for dir in "$RUNTIME_DIR" "$STATE_DIR" "$PID_DIR" "$LOG_DIR" "$OWNERSHIP_DIR" "$CREDENTIAL_DIR" "$SECRET_STORE_DIR"; do
 		mkdir -p "$dir"
 		chmod 700 "$dir"
 	done
@@ -107,6 +117,10 @@ validate_mode() {
 	[ "$GATEWAY_TOKEN_FILE" = "$EXPECTED_GATEWAY_TOKEN_FILE" ] || fail "BT_GATEWAY_TOKEN_FILE must be the mode-scoped path $EXPECTED_GATEWAY_TOKEN_FILE"
 	[ "$MANUAL_PREVIEW_KEY_FILE" = "$EXPECTED_MANUAL_PREVIEW_KEY_FILE" ] || fail "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE must be the mode-scoped path $EXPECTED_MANUAL_PREVIEW_KEY_FILE"
 	[ "$SECRET_MASTER_KEY_FILE" = "$EXPECTED_SECRET_MASTER_KEY_FILE" ] || fail "BT_SECRET_MASTER_KEY_FILE must be the mode-scoped path $EXPECTED_SECRET_MASTER_KEY_FILE"
+	[ "$SECRET_KEY_SOURCE" = file ] || fail "BT_SECRET_KEY_SOURCE must be file for the canonical local stack"
+	[ "$SECRET_STORE_DIR" = "$EXPECTED_SECRET_STORE_DIR" ] || fail "BT_SECRET_STORE_DIR must be the canonical state path $EXPECTED_SECRET_STORE_DIR"
+	[ "$SECRET_STORE_NAMESPACE" = "$EXPECTED_SECRET_STORE_NAMESPACE" ] || fail "BT_SECRET_STORE_NAMESPACE must be $EXPECTED_SECRET_STORE_NAMESPACE"
+	[ "$SECRET_MASTER_KEY_VERSION" = v1 ] || fail "BT_SECRET_MASTER_KEY_VERSION must be v1"
 	[ "$BT_GATEWAY_URL" = "http://127.0.0.1:18082" ] || fail "BT_GATEWAY_URL must be http://127.0.0.1:18082"
 }
 
@@ -241,7 +255,7 @@ funding_worker_generation() {
 	[ -f "$OWNERSHIP_DIR/funding-worker.instance" ] || return 1
 	instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
 	[ -n "$instance_id" ] || return 1
-	body=$(printf '{"workerId":"%s","instanceId":"%s","productId":"funding","mode":"%s","contractVersion":"boltertrader-product-platform-upgrade/v4"}' "$WORKER_ID" "$instance_id" "$MODE")
+	body=$(printf '{"workerId":"%s","instanceId":"%s","productId":"funding","mode":"%s","contractVersion":"boltertrader-product-platform-upgrade/v5"}' "$WORKER_ID" "$instance_id" "$MODE")
 	response=$({
 		printf 'oauth2-bearer = "'
 		tr -d '\r\n' <"$TOKEN_FILE"
@@ -336,7 +350,7 @@ start_service() {
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \
 			BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}" \
 			BT_FUNDING_WORKER_TOKEN_FILE="$TOKEN_FILE" BT_FUNDING_WORKER_ID="$WORKER_ID" \
-			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v4" \
+			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v5" \
 			sh -c "exec $command" >>"$log_file" 2>&1 &
 	elif [ "$service" = "web" ]; then
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \
@@ -347,6 +361,9 @@ start_service() {
 		nohup env BT_MODE="$BT_MODE" FT_MODE="$MODE" \
 			BT_PLATFORM_DATABASE="$BT_PLATFORM_DATABASE" BT_PLATFORM_DATABASE_ROLE="$BT_PLATFORM_DATABASE_ROLE" \
 			BT_MANUAL_PREVIEW_SIGNING_KEY_FILE="$MANUAL_PREVIEW_KEY_FILE" \
+			BT_SECRET_KEY_SOURCE="$SECRET_KEY_SOURCE" BT_SECRET_STORE_DIR="$SECRET_STORE_DIR" \
+			BT_SECRET_STORE_NAMESPACE="$SECRET_STORE_NAMESPACE" BT_SECRET_MASTER_KEY_VERSION="$SECRET_MASTER_KEY_VERSION" \
+			BT_SECRET_MASTER_KEY_FILE="$SECRET_MASTER_KEY_FILE" BT_SECRET_KEYCHAIN_SERVICE= BT_SECRET_KEYCHAIN_ACCOUNT= \
 			sh -c "exec $command" >>"$log_file" 2>&1 &
 	else
 		nohup sh -c "exec $command" >>"$log_file" 2>&1 &
@@ -491,13 +508,13 @@ doctor() {
 		[ -x ./backend/scripts/secret-bootstrap.sh ] || fail "Lane 2 Secret Store bootstrap is missing or not executable"
 		validate_runtime_config
 	fi
-	printf 'mode=%s\nruntime=%s\nworker-id=%s\nworker-token-file=%s\ngateway-token-file=%s\nmanual-preview-signing-key-file=%s\nsecret-master-key-file=%s\ngateway-url=%s\nlive-private-writes=%s\nfixed-ports=%s\nstart-order=%s\nstop-order=%s\n' "$MODE" "$RUNTIME_DIR" "$WORKER_ID" "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE" "$BT_GATEWAY_URL" "$BT_LIVE_PRIVATE_WRITES_ENABLED" "$FIXED_PORTS" "$SERVICES_START" "$SERVICES_STOP"
+	printf 'mode=%s\nruntime=%s\nworker-id=%s\nworker-token-file=%s\ngateway-token-file=%s\nmanual-preview-signing-key-file=%s\nsecret-key-source=%s\nsecret-store-dir=%s\nsecret-store-namespace=%s\nsecret-master-key-version=%s\nsecret-master-key-file=%s\ngateway-url=%s\nlive-private-writes=%s\nfixed-ports=%s\nstart-order=%s\nstop-order=%s\n' "$MODE" "$RUNTIME_DIR" "$WORKER_ID" "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_KEY_SOURCE" "$SECRET_STORE_DIR" "$SECRET_STORE_NAMESPACE" "$SECRET_MASTER_KEY_VERSION" "$SECRET_MASTER_KEY_FILE" "$BT_GATEWAY_URL" "$BT_LIVE_PRIVATE_WRITES_ENABLED" "$FIXED_PORTS" "$SERVICES_START" "$SERVICES_STOP"
 }
 
 reset() {
 	down
 	for service in $SERVICES_START; do [ ! -f "$PID_DIR/$service.pid" ] || fail "refusing reset while $service has an untrusted pid record"; done
-	rm -rf "$STATE_DIR"; rm -f "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE"
+	rm -rf "$STATE_DIR" "$SECRET_STORE_DIR/$MODE"; rm -f "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE"
 }
 
 case "${1:-}" in

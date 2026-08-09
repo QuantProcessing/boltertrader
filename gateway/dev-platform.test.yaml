@@ -6,4 +6,5 @@ server:
   internal_auth_token_ref: env://BT_DEV_GATEWAY_TOKEN
 postgres:
   dsn_ref: env://BT_DEV_GATEWAY_POSTGRES_DSN
+# Account inventory is Platform-owned. Zero inventory is a ready, write-free state.
 accounts: []

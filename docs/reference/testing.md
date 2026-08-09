@@ -27,6 +27,22 @@ offline gates appropriate to the change. `go test ./...` is not the default safe
 gate; live-backed tests may inspect the local environment when short mode is not
 enabled.
 
+## Docker-free Platform gates
+
+The host-local sequence in the
+[Docker-free Platform guide](../guides/docker-free-local-platform.md) starts
+PostgreSQL, Gateway, Platform, funding worker, and web without Docker. Its
+canonical Gateway has a healthy zero-account inventory. Secret Store launcher
+configuration contains identifiers and protected file paths only; commands and
+diagnostics never emit key or credential material.
+
+`BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real` is the **G010 no-trade gate**.
+It performs local readiness reads and does not provision accounts, enable
+private routes, or call a venue. **G011 is a separate Test-write boundary** and
+requires an explicit handoff, scoped Test credentials, and write attestation.
+Passing G010 is not authorization or evidence for G011, and neither gate
+authorizes Live private writes.
+
 ## Nine-venue external command inventory
 
 Every command in this table targets a named Demo/Testnet environment. The

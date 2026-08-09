@@ -635,6 +635,8 @@ func TestDevPlatformContractAndExamples(t *testing.T) {
 		`BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}"`,
 		`WORKER_ID=${BT_FUNDING_WORKER_ID:-funding-default-$MODE}`,
 		`BT_MANUAL_PREVIEW_SIGNING_KEY_FILE`,
+		`BT_SECRET_KEY_SOURCE`, `BT_SECRET_STORE_DIR`, `BT_SECRET_STORE_NAMESPACE`,
+		`BT_SECRET_MASTER_KEY_VERSION`, `boltertrader-product-platform-upgrade/v5`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("launcher is missing frozen contract value %q", required)
@@ -666,6 +668,8 @@ func TestCanonicalDevPlatformCommandsAreCompleteAndNonSecret(t *testing.T) {
 	for _, name := range []string{
 		"BT_DEV_POSTGRES_CMD", "BT_DEV_GATEWAY_CMD", "BT_DEV_PLATFORM_CMD",
 		"BT_DEV_FUNDING_WORKER_CMD", "BT_DEV_WEB_CMD", "BT_DEV_FUNDING_WORKER_DRAIN_CMD",
+		"BT_SECRET_KEY_SOURCE", "BT_SECRET_STORE_DIR", "BT_SECRET_STORE_NAMESPACE",
+		"BT_SECRET_MASTER_KEY_VERSION", "BT_SECRET_MASTER_KEY_FILE",
 	} {
 		if !strings.Contains(template, "export "+name+"=") {
 			t.Errorf("canonical template is missing %s", name)
@@ -698,6 +702,9 @@ func TestCanonicalDevPlatformCommandsAreCompleteAndNonSecret(t *testing.T) {
 	}
 	if gatewayFile.Server.Mode != "test" || gatewayFile.Server.InternalListen != "127.0.0.1:18082" || len(gatewayFile.Accounts) != 0 {
 		t.Fatalf("canonical Gateway config is not a write-free Test config: %+v", gatewayFile)
+	}
+	if !strings.Contains(string(gatewayPayload), "Account inventory is Platform-owned") {
+		t.Fatal("canonical Gateway config does not document zero-inventory readiness")
 	}
 }
 
@@ -802,7 +809,7 @@ func TestDockerFreeOperatorGuideIsLinkedAndPreservesSafetyBoundary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"dev-platform.env.example", "make test-browser", "make test-real", "does not activate migration", "no venue accounts"} {
+	for _, required := range []string{"dev-platform.env.example", "make test-browser", "make test-real", "does not activate migration", "no venue accounts", "G010", "G011", "zero-account inventory", "Secret Store"} {
 		if !strings.Contains(string(guide), required) {
 			t.Errorf("operator guide is missing %q", required)
 		}
@@ -812,6 +819,17 @@ func TestDockerFreeOperatorGuideIsLinkedAndPreservesSafetyBoundary(t *testing.T)
 func TestDevPlatformPassesCompletePlatformEnvironment(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
+	credentialDir := filepath.Join(runtimeDir, "credentials", "test")
+	if err := os.MkdirAll(credentialDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const secretKeyCanary = "abababababababababababababababababababababababababababababababab"
+	if err := os.WriteFile(filepath.Join(credentialDir, "secret-store-master.key"), []byte(secretKeyCanary+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output := runLauncher(t, repo, launcherEnv(runtimeDir), "doctor"); strings.Contains(output, secretKeyCanary) {
+		t.Fatal("doctor output contains Secret Store key material")
+	}
 	environment := filepath.Join(runtimeDir, "platform.env")
 	helper := filepath.Join(runtimeDir, "service.sh")
 	writeExecutable(t, helper, `#!/bin/sh
@@ -841,10 +859,38 @@ while :; do sleep 1; done
 		t.Fatal(err)
 	}
 	text := string(contents)
-	for _, required := range []string{"BT_MODE=test", "FT_MODE=test", "BT_PLATFORM_DATABASE=bolter_platform_test", "BT_PLATFORM_DATABASE_ROLE=bolter_platform_test", "BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=" + filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key")} {
+	for _, required := range []string{
+		"BT_MODE=test", "FT_MODE=test", "BT_PLATFORM_DATABASE=bolter_platform_test", "BT_PLATFORM_DATABASE_ROLE=bolter_platform_test",
+		"BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=" + filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key"),
+		"BT_SECRET_KEY_SOURCE=file", "BT_SECRET_STORE_DIR=" + filepath.Join(runtimeDir, "secret-store"),
+		"BT_SECRET_STORE_NAMESPACE=boltertrader/test", "BT_SECRET_MASTER_KEY_VERSION=v1",
+		"BT_SECRET_MASTER_KEY_FILE=" + filepath.Join(runtimeDir, "credentials", "test", "secret-store-master.key"),
+	} {
 		if !strings.Contains(text, required+"\n") {
 			t.Errorf("Platform environment missing %q", required)
 		}
+	}
+	if strings.Contains(text, secretKeyCanary) {
+		t.Fatal("Platform process environment contains Secret Store key material")
+	}
+}
+
+func TestDevPlatformResetRemovesOnlyCurrentModeSecretStoreState(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	testState := filepath.Join(runtimeDir, "secret-store", "test", "objects")
+	liveState := filepath.Join(runtimeDir, "secret-store", "live", "objects")
+	for _, dir := range []string{testState, liveState} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runLauncher(t, repo, launcherEnv(runtimeDir), "reset")
+	if _, err := os.Stat(filepath.Join(runtimeDir, "secret-store", "test")); !os.IsNotExist(err) {
+		t.Fatalf("Test Secret Store state survived reset: %v", err)
+	}
+	if _, err := os.Stat(liveState); err != nil {
+		t.Fatalf("Test reset removed Live Secret Store state: %v", err)
 	}
 }
 
