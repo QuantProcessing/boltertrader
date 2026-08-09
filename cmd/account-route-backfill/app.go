@@ -30,12 +30,12 @@ type mapping struct {
 }
 
 type backfillRequest struct {
-	Mode                    string
-	PlatformService         string
-	PlatformDatabase        string
-	GatewayService          string
-	GatewayDatabase         string
-	Artifact                mappingArtifact
+	Mode             string
+	PlatformService  string
+	PlatformDatabase string
+	GatewayService   string
+	GatewayDatabase  string
+	Artifact         mappingArtifact
 }
 
 type backfillResult struct {

@@ -52,12 +52,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	artifact := flags.String("artifact", "", "backup or delta artifact path")
 	proof := flags.String("proof", "", "verification proof artifact path")
 	evidenceDir := flags.String("evidence-dir", "", "generated evidence directory")
-	backfillScript := flags.String("backfill-script", "", "repository-owned backfill SQL path")
+	backfillMapping := flags.String("backfill-mapping", "", "repository-owned route mapping artifact")
 	sourceService := flags.String("source-service", "", "non-secret libpq source service name")
 	targetService := flags.String("target-service", "", "non-secret libpq target service name")
+	gatewayService := flags.String("gateway-service", "", "non-secret libpq Gateway service name")
 	maintenanceService := flags.String("maintenance-service", "", "non-secret libpq target maintenance service name")
 	sourceDatabase := flags.String("source-database", "", "non-secret source database name")
 	targetDatabase := flags.String("target-database", "", "non-secret target database name")
+	gatewayDatabase := flags.String("gateway-database", "", "non-secret Gateway database name")
 	maintenanceDatabase := flags.String("maintenance-database", "", "non-secret maintenance database name")
 	sourceWriterRole := flags.String("source-writer-role", "", "non-secret source canonical writer role")
 	targetWriterRole := flags.String("target-writer-role", "", "non-secret target canonical writer role")
@@ -79,9 +81,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		executed, executeErr := executeMigration(context.Background(), migration.ExecutionRequest{
 			Operation: operation, ManifestPath: *manifestPath, EvidenceDir: *evidenceDir,
-			ArtifactPath: *artifact, BackfillPath: *backfillScript, ID: *id,
-			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, MaintenanceService: *maintenanceService,
-			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase,
+			ArtifactPath: *artifact, BackfillPath: *backfillMapping, ID: *id,
+			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, GatewayService: *gatewayService, MaintenanceService: *maintenanceService,
+			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase, GatewayDatabase: *gatewayDatabase,
 			MaintenanceDatabase: *maintenanceDatabase,
 			SourceWriterRole:    *sourceWriterRole, TargetWriterRole: *targetWriterRole,
 		}, migration.ExecuteOptions{})

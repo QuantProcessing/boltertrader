@@ -494,7 +494,7 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		proof.Checks = []string{"script-content-stable", "single-transaction"}
+		proof.Checks = []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		proof.Subject = proofStateDigest(manifest)
 		proof.Checks = []string{"browser", "offline", "real-test", "restart-recovery"}

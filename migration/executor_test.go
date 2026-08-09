@@ -164,13 +164,13 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	result, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		if command.Name != "account-route-backfill" {
 			t.Fatalf("command = %+v", command)
 		}
 		joined := strings.Join(command.Args, " ")
-		for _, want := range []string{"--mapping", scriptPath, "--target-service", "bolter-target", "--target-database", "bolter_target"} {
+		for _, want := range []string{"--mapping", scriptPath, "--platform-service", "bolter-platform", "--platform-database", "bolter_platform", "--gateway-service", "bolter-gateway", "--gateway-database", "bolter_gateway"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("backfill command missing %q: %+v", want, command)
 			}
@@ -193,7 +193,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 	if _, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, nil
 	}}); err == nil || !strings.Contains(err.Error(), "replay conflict") {
@@ -210,7 +210,7 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 	_, err = Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
 	}})
@@ -226,7 +226,7 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 func TestExecutionPlanRejectsBackfillOutsideRepository(t *testing.T) {
 	root := t.TempDir()
 	outside := writeArtifact(t, "outside.sql", "select 1;")
-	_, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{Operation: Backfill, EvidenceDir: t.TempDir(), BackfillPath: outside, TargetService: "target", TargetDatabase: "target_db", repositoryRoot: root})
+	_, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{Operation: Backfill, EvidenceDir: t.TempDir(), BackfillPath: outside, TargetService: "platform", TargetDatabase: "platform_db", GatewayService: "gateway", GatewayDatabase: "gateway_db", repositoryRoot: root})
 	if err == nil || !strings.Contains(err.Error(), "outside the frozen repository") {
 		t.Fatalf("outside backfill error = %v", err)
 	}

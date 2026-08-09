@@ -319,7 +319,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		required = []string{"script-content-stable", "single-transaction"}
+		required = []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		subject = proofStateDigest(manifest)
 		required = []string{"browser", "offline", "real-test", "restart-recovery"}

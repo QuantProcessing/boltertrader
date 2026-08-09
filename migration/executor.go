@@ -42,9 +42,11 @@ type ExecutionRequest struct {
 	Reason              string
 	SourceService       string
 	TargetService       string
+	GatewayService      string
 	MaintenanceService  string
 	SourceDatabase      string
 	TargetDatabase      string
+	GatewayDatabase     string
 	MaintenanceDatabase string
 	SourceWriterRole    string
 	TargetWriterRole    string
@@ -355,12 +357,25 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
+		gateway, gatewayErr := postgresService(request.GatewayService)
+		if gatewayErr != nil {
+			return nil, Request{}, nil, "", gatewayErr
+		}
+		gatewayDatabase, gatewayDatabaseErr := postgresIdentifier("Gateway database", request.GatewayDatabase)
+		if gatewayDatabaseErr != nil {
+			return nil, Request{}, nil, "", gatewayDatabaseErr
+		}
+		if target == gateway && targetDatabase == gatewayDatabase {
+			return nil, Request{}, nil, "", fmt.Errorf("Platform and Gateway databases must be separate")
+		}
 		command := Command{Name: "account-route-backfill", Args: []string{
 			"--mapping", backfillPath,
-			"--target-service", target,
-			"--target-database", targetDatabase,
+			"--platform-service", target,
+			"--platform-database", targetDatabase,
+			"--gateway-service", gateway,
+			"--gateway-database", gatewayDatabase,
 		}}
-		return []Command{command}, apply, []string{"script-content-stable", "single-transaction"}, inputSHA, nil
+		return []Command{command}, apply, []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
 		return []Command{
