@@ -13,7 +13,9 @@ func TestFilesystemFacetsExposeOnlyTheirContractMethods(t *testing.T) {
 	methods := func(value any) []string {
 		typeOf := reflect.TypeOf(value)
 		result := make([]string, typeOf.NumMethod())
-		for index := range result { result[index] = typeOf.Method(index).Name }
+		for index := range result {
+			result[index] = typeOf.Method(index).Name
+		}
 		return result
 	}
 	if got := strings.Join(methods(provider.Writer()), ","); got != "Check,Delete,LookupOperation,Put" {

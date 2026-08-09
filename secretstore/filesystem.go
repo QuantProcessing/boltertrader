@@ -117,7 +117,7 @@ func (writer filesystemWriter) Put(ctx context.Context, scope Scope, operation O
 }
 
 func (writer filesystemWriter) LookupOperation(ctx context.Context, scope Scope, operation OperationID) (OpaqueRef, error) {
-	if err := writer.provider.check(ctx, scope); err != nil || operation == "" {
+	if err := writer.provider.check(ctx, scope); err != nil || !validOperationID(operation) {
 		if err != nil {
 			return "", err
 		}
@@ -158,7 +158,7 @@ func (provider *FilesystemProvider) check(ctx context.Context, scope Scope) erro
 	if err := scope.Validate(); err != nil || scope.Mode != provider.mode {
 		return ErrInvalidScope
 	}
-	return nil
+	return provider.verifyMetadata()
 }
 
 func (provider *FilesystemProvider) checkReference(ctx context.Context, scope Scope, ref OpaqueRef) error {
@@ -176,7 +176,7 @@ func (provider *FilesystemProvider) put(ctx context.Context, scope Scope, operat
 	if err := provider.check(ctx, scope); err != nil {
 		return "", err
 	}
-	if operation == "" {
+	if !validOperationID(operation) {
 		return "", ErrInvalidOperationID
 	}
 	if len(material) == 0 {
@@ -285,11 +285,17 @@ func (provider *FilesystemProvider) bootstrap() error {
 	}
 	if data, err := os.ReadFile(filepath.Join(provider.stateDir, string(other), "metadata.json")); err == nil {
 		var metadata providerMetadata
-		if json.Unmarshal(data, &metadata) == nil && hmac.Equal([]byte(metadata.Check), []byte(check)) {
+		if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || metadata.Check == "" {
+			clear(data)
+			return ErrIntegrity
+		}
+		if hmac.Equal([]byte(metadata.Check), []byte(check)) {
 			clear(data)
 			return ErrModeKeyReuse
 		}
 		clear(data)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ErrUnavailable
 	}
 	path := filepath.Join(modeDir, "metadata.json")
 	if data, err := os.ReadFile(path); err == nil {
@@ -303,6 +309,25 @@ func (provider *FilesystemProvider) bootstrap() error {
 		return ErrUnavailable
 	}
 	return writeJSONAtomic(path, providerMetadata{Version: 1, Check: check}, 0o600)
+}
+
+func (provider *FilesystemProvider) verifyMetadata() error {
+	data, err := os.ReadFile(filepath.Join(provider.stateDir, string(provider.mode), "metadata.json"))
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer clear(data)
+	var metadata providerMetadata
+	want := keyedValue(provider.key, "boltertrader-secret-store-key-check-v1")
+	if json.Unmarshal(data, &metadata) != nil || metadata.Version != 1 || !hmac.Equal([]byte(metadata.Check), []byte(want)) {
+		return ErrIntegrity
+	}
+	return nil
+}
+
+func validOperationID(operation OperationID) bool {
+	parsed, err := ParseOperationID(string(operation))
+	return err == nil && parsed == operation
 }
 
 func deriveReference(key []byte, scope Scope, operation OperationID) OpaqueRef {

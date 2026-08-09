@@ -4,9 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,10 +84,10 @@ func TestFilesystemProviderRejectsTamperingAndCrossScope(t *testing.T) {
 
 func TestFilesystemProviderRejectsEachAuthenticatedEnvelopeMutation(t *testing.T) {
 	mutations := map[string]func(map[string]any){
-		"nonce": func(value map[string]any) { value["nonce"] = strings.Repeat("A", 16) },
+		"nonce":      func(value map[string]any) { value["nonce"] = strings.Repeat("A", 16) },
 		"ciphertext": func(value map[string]any) { value["ciphertext"] = strings.Repeat("A", 32) },
 		"aad digest": func(value map[string]any) { value["materialDigest"] = strings.Repeat("A", 43) },
-		"version": func(value map[string]any) { value["version"] = float64(2) },
+		"version":    func(value map[string]any) { value["version"] = float64(2) },
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
@@ -95,16 +95,24 @@ func TestFilesystemProviderRejectsEachAuthenticatedEnvelopeMutation(t *testing.T
 			scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
 			op, _ := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
 			ref, err := provider.Writer().Put(context.Background(), scope, op, []byte("credential-canary"))
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			objectName := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.RawForTrustedBoundary())))
 			path := filepath.Join(provider.StateDir(), "test", "objects", objectName+".json")
 			data, err := os.ReadFile(path)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			var value map[string]any
-			if json.Unmarshal(data, &value) != nil { t.Fatal("decode envelope") }
+			if json.Unmarshal(data, &value) != nil {
+				t.Fatal("decode envelope")
+			}
 			mutate(value)
 			data, _ = json.Marshal(value)
-			if os.WriteFile(path, data, 0o600) != nil { t.Fatal("write envelope") }
+			if os.WriteFile(path, data, 0o600) != nil {
+				t.Fatal("write envelope")
+			}
 			if _, err := provider.Resolver().Resolve(context.Background(), scope, ref); !errors.Is(err, secretstore.ErrIntegrity) {
 				t.Fatalf("err=%v", err)
 			}
@@ -126,12 +134,18 @@ func TestFilesystemProviderRevalidatesCanonicalOperationID(t *testing.T) {
 
 func TestFilesystemProviderFailsClosedOnMalformedSiblingMetadata(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, "live"), 0o700); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(stateDir, "live", "metadata.json"), []byte(`{"version":2}`), 0o600); err != nil { t.Fatal(err) }
+	if err := os.MkdirAll(filepath.Join(stateDir, "live"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "live", "metadata.json"), []byte(`{"version":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	key := make([]byte, 32)
 	_, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: stateDir, Mode: secretstore.ModeTest, KeySource: secretstore.StaticKeySource{Key: key}})
 	clear(key)
-	if !errors.Is(err, secretstore.ErrIntegrity) { t.Fatalf("err=%v", err) }
+	if !errors.Is(err, secretstore.ErrIntegrity) {
+		t.Fatalf("err=%v", err)
+	}
 }
 
 func newTestProvider(t *testing.T, mode secretstore.Mode) *secretstore.FilesystemProvider {
@@ -178,15 +192,19 @@ func TestFileKeySourceRequiresSecureCanonicalKeyFile(t *testing.T) {
 		t.Fatalf("relative err=%v", err)
 	}
 	for name, prepare := range map[string]func(string) error{
-		"directory": func(path string) error { return os.Mkdir(path, 0o700) },
+		"directory":   func(path string) error { return os.Mkdir(path, 0o700) },
 		"invalid hex": func(path string) error { return os.WriteFile(path, []byte(strings.Repeat("z", 64)), 0o600) },
-		"empty": func(path string) error { return os.WriteFile(path, nil, 0o600) },
-		"symlink": func(path string) error { return os.Symlink(filepath.Join(dir, "master.key"), path) },
+		"empty":       func(path string) error { return os.WriteFile(path, nil, 0o600) },
+		"symlink":     func(path string) error { return os.Symlink(filepath.Join(dir, "master.key"), path) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
-			if err := prepare(candidate); err != nil { t.Fatal(err) }
-			if _, err := (secretstore.FileKeySource{Path: candidate}).Load(context.Background()); err == nil { t.Fatal("invalid key source accepted") }
+			if err := prepare(candidate); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (secretstore.FileKeySource{Path: candidate}).Load(context.Background()); err == nil {
+				t.Fatal("invalid key source accepted")
+			}
 		})
 	}
 }
