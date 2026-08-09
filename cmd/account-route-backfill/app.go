@@ -10,11 +10,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/internal/verifiedartifact"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -98,6 +98,7 @@ type identityQuerier interface {
 var executeBackfill = executeProductionBackfill
 
 var errGatewayPendingHeadConflict = errors.New("GATEWAY_PENDING_HEAD_CONFLICT")
+var errGatewayOperationConflict = errors.New("GATEWAY_OPERATION_CONFLICT")
 
 func run(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("account-route-backfill", flag.ContinueOnError)
@@ -186,22 +187,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 }
 
 func readMappingSnapshot(path, expectedSHA string) ([]byte, error) {
-	file, err := os.Open(path)
+	data, digest, err := verifiedartifact.ReadSnapshot(path, 1<<20)
 	if err != nil {
 		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 1<<20 {
-		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
-	if err != nil || len(data) == 0 || len(data) > 1<<20 {
-		clear(data)
-		return nil, fmt.Errorf("MAPPING_ARTIFACT_UNAVAILABLE")
-	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != expectedSHA {
+	if digest != expectedSHA {
 		clear(data)
 		return nil, fmt.Errorf("MAPPING_CHECKSUM_MISMATCH")
 	}
@@ -431,8 +421,8 @@ func writeAccountPlans(ctx context.Context, coordinator backfillCoordinator, pla
 			return fmt.Errorf("BACKFILL_WRITE_BLOCKED")
 		}
 		if err := coordinator.StageGateway(ctx, plan); err != nil {
-			if errors.Is(err, errGatewayPendingHeadConflict) {
-				return errGatewayPendingHeadConflict
+			if errors.Is(err, errGatewayPendingHeadConflict) || errors.Is(err, errGatewayOperationConflict) {
+				return err
 			}
 			return fmt.Errorf("BACKFILL_WRITE_BLOCKED")
 		}
@@ -498,7 +488,7 @@ func stageGatewayPlan(ctx context.Context, transaction gatewayPlanTx, plan accou
 		var existingDigest string
 		var existingSnapshot uuid.UUID
 		if err := transaction.QueryRow(ctx, `SELECT request_digest,snapshot_id FROM gateway_runtime_snapshots WHERE operation_id=$1`, plan.OperationID).Scan(&existingDigest, &existingSnapshot); err != nil || existingDigest != digest || existingSnapshot != plan.SnapshotID {
-			return fmt.Errorf("gateway operation conflict")
+			return errGatewayOperationConflict
 		}
 	}
 	for _, route := range plan.Routes {

@@ -196,6 +196,45 @@ func TestRunRejectsMappingChecksumMismatchBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestReadMappingSnapshotRejectsSymlinkAndPermissiveMode(t *testing.T) {
+	data := []byte(`{"schemaVersion":1}`)
+	digest := sha256.Sum256(data)
+	expectedSHA := hex.EncodeToString(digest[:])
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T) string
+	}{
+		{name: "permissive mode", setup: func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "mapping.json")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+		{name: "symlink", setup: func(t *testing.T) string {
+			directory := t.TempDir()
+			target := filepath.Join(directory, "target.json")
+			if err := os.WriteFile(target, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(directory, "mapping.json")
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := readMappingSnapshot(test.setup(t), expectedSHA); err == nil || !strings.Contains(err.Error(), "MAPPING_ARTIFACT_UNAVAILABLE") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestBuildAccountPlansRejectsMissingAmbiguousAndCrossModeRows(t *testing.T) {
 	artifact, err := decodeMapping([]byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"perp-usdt"}]}`))
 	if err != nil {

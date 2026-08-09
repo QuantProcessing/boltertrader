@@ -15,11 +15,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var backfillIntegrationSchemaSequence atomic.Uint64
+var backfillIntegrationDatabaseSequence atomic.Uint64
 
 func TestPostgresCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testing.T) {
 	ctx := context.Background()
 	platform, gateway := openBackfillIntegrationDatabases(t, ctx)
+	var platformDatabase, gatewayDatabase string
+	if err := platform.QueryRow(ctx, `SELECT current_database()`).Scan(&platformDatabase); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.QueryRow(ctx, `SELECT current_database()`).Scan(&gatewayDatabase); err != nil {
+		t.Fatal(err)
+	}
+	if platformDatabase == gatewayDatabase || !strings.HasPrefix(platformDatabase, "backfill_platform_test_") || !strings.HasPrefix(gatewayDatabase, "backfill_gateway_test_") {
+		t.Fatalf("database isolation platform=%q gateway=%q", platformDatabase, gatewayDatabase)
+	}
 	if err := gatewaypostgres.Migrate(ctx, gateway); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +79,14 @@ func TestPostgresCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testin
 
 	if err := writeAccountPlans(ctx, coordinator, []accountPlan{plan}); err != nil {
 		t.Fatalf("identical retry error=%v", err)
+	}
+	assertGatewayHead(t, ctx, gateway, plan.AccountID, plan.SnapshotID)
+	assertSnapshotCount(t, ctx, gateway, plan.AccountID, 1)
+	assertPlatformState(t, ctx, platform, plan.AccountID, plan.Mode, plan.NativeEnvironment, 1)
+	changedPlan := plan
+	changedPlan.RequestDigest = strings.Repeat("d", 64)
+	if err := writeAccountPlans(ctx, coordinator, []accountPlan{changedPlan}); err == nil || !strings.Contains(err.Error(), "GATEWAY_OPERATION_CONFLICT") {
+		t.Fatalf("changed-input retry error=%v", err)
 	}
 	assertGatewayHead(t, ctx, gateway, plan.AccountID, plan.SnapshotID)
 	assertSnapshotCount(t, ctx, gateway, plan.AccountID, 1)
@@ -131,32 +149,57 @@ func openBackfillIntegrationDatabases(t *testing.T, ctx context.Context) (*pgxpo
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(admin.Close)
-	suffix := fmt.Sprintf("%d_%d", os.Getpid(), backfillIntegrationSchemaSequence.Add(1))
-	platformSchema := "backfill_platform_test_" + suffix
-	gatewaySchema := "backfill_gateway_test_" + suffix
-	for _, schema := range []string{platformSchema, gatewaySchema} {
-		if _, err := admin.Exec(ctx, `CREATE SCHEMA `+pgx.Identifier{schema}.Sanitize()); err != nil {
+	var canCreateDatabase bool
+	if err := admin.QueryRow(ctx, `SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user`).Scan(&canCreateDatabase); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	if !canCreateDatabase {
+		admin.Close()
+		t.Fatal("BT_TEST_POSTGRES_DSN role lacks CREATEDB; distinct-database saga test cannot run")
+	}
+	suffix := fmt.Sprintf("%d_%d", os.Getpid(), backfillIntegrationDatabaseSequence.Add(1))
+	platformDatabase := "backfill_platform_test_" + suffix
+	gatewayDatabase := "backfill_gateway_test_" + suffix
+	var platform, gateway *pgxpool.Pool
+	created := make([]string, 0, 2)
+	t.Cleanup(func() {
+		if platform != nil {
+			platform.Close()
+		}
+		if gateway != nil {
+			gateway.Close()
+		}
+		for index := len(created) - 1; index >= 0; index-- {
+			database := created[index]
+			if _, err := admin.Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()`, database); err != nil {
+				t.Errorf("terminate connections to test database %s: %v", database, err)
+				continue
+			}
+			if _, err := admin.Exec(context.Background(), `DROP DATABASE IF EXISTS `+pgx.Identifier{database}.Sanitize()); err != nil {
+				t.Errorf("drop test database %s: %v", database, err)
+			}
+		}
+		admin.Close()
+	})
+	for _, database := range []string{platformDatabase, gatewayDatabase} {
+		if _, err := admin.Exec(ctx, `CREATE DATABASE `+pgx.Identifier{database}.Sanitize()+` TEMPLATE template0`); err != nil {
 			t.Fatal(err)
 		}
+		created = append(created, database)
 	}
-	t.Cleanup(func() {
-		for _, schema := range []string{platformSchema, gatewaySchema} {
-			_, _ = admin.Exec(context.Background(), `DROP SCHEMA `+pgx.Identifier{schema}.Sanitize()+` CASCADE`)
-		}
-	})
-	platform := openBackfillSchemaPool(t, ctx, dsn, platformSchema)
-	gateway := openBackfillSchemaPool(t, ctx, dsn, gatewaySchema)
+	platform = openBackfillDatabasePool(t, ctx, dsn, platformDatabase)
+	gateway = openBackfillDatabasePool(t, ctx, dsn, gatewayDatabase)
 	return platform, gateway
 }
 
-func openBackfillSchemaPool(t *testing.T, ctx context.Context, dsn, schema string) *pgxpool.Pool {
+func openBackfillDatabasePool(t *testing.T, ctx context.Context, dsn, database string) *pgxpool.Pool {
 	t.Helper()
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.ConnConfig.Database = database
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +208,6 @@ func openBackfillSchemaPool(t *testing.T, ctx context.Context, dsn, schema strin
 		pool.Close()
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
 	return pool
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -588,7 +590,7 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 11 {
+	if len(commands) != 12 {
 		t.Fatalf("commands = %+v", commands)
 	}
 	var dumps int
@@ -597,13 +599,13 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 			dumps++
 		}
 	}
-	if dumps != 1 || commands[7].Name != "pg_restore" || !containsArg(commands[7].Args, "--list") || commands[4].Name != "psql" || !commands[4].CaptureOutputAsInput || commands[6].Name != "psql" || !commands[6].MatchCapturedInput {
+	if dumps != 1 || containsArg(commands[5].Args, "--file") || commands[7].Name != "pg_restore" || !containsArg(commands[7].Args, "--list") || containsArg(commands[7].Args, "final.dump") || commands[4].Name != "psql" || !commands[4].CaptureOutputAsInput || commands[6].Name != "psql" || !commands[6].MatchCapturedInput {
 		t.Fatalf("final snapshot is not captured once and archive-verified: %+v", commands)
 	}
-	if !strings.Contains(strings.Join(commands[8].Args, " "), "service=target_admin dbname=postgres") || !strings.Contains(string(commands[8].Stdin), "DROP DATABASE") {
+	if !strings.Contains(strings.Join(commands[8].Args, " "), "service=target_admin dbname=postgres") || !strings.Contains(string(commands[8].Stdin), "DROP DATABASE") || strings.Contains(string(commands[8].Stdin), "CREATE DATABASE") {
 		t.Fatalf("final snapshot does not recreate through maintenance connection: %+v", commands[8])
 	}
-	if commands[9].Name != "pg_restore" || commands[10].ExpectedOutput != "true" || !containsString(checks, "source-high-water-stable-across-dump") || !containsString(checks, "source-high-water-captured") || !containsString(checks, "restored-schema-nonempty") {
+	if !strings.Contains(string(commands[9].Stdin), "CREATE DATABASE") || strings.Contains(string(commands[9].Stdin), "DROP DATABASE") || commands[10].Name != "pg_restore" || containsArg(commands[10].Args, "final.dump") || commands[11].ExpectedOutput != "true" || !containsString(checks, "source-high-water-stable-across-dump") || !containsString(checks, "source-high-water-captured") || !containsString(checks, "restored-schema-nonempty") {
 		t.Fatalf("final snapshot is not applied and verified: commands=%+v checks=%v", commands, checks)
 	}
 }
@@ -689,6 +691,72 @@ func TestFinalDeltaDiscardsDumpWhenHighWaterChangesDuringCapture(t *testing.T) {
 	}
 	if phase := readWorkflowManifest(t, manifestPath).Workflow.Phase; phase != PhaseRestored {
 		t.Fatalf("phase=%s", phase)
+	}
+}
+
+func TestFinalDeltaRestoreConsumesVerifiedDescriptorWhenPathIsReplaced(t *testing.T) {
+	manifestPath := copyManifest(t)
+	backup := writeArtifact(t, "backup.dump", "verified backup")
+	for _, request := range []Request{
+		{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
+		{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
+		{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
+	} {
+		if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifactPath := filepath.Join(t.TempDir(), "final.dump")
+	targetMutated := false
+	_, err := Execute(context.Background(), ExecutionRequest{
+		Operation: FinalDelta, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), ArtifactPath: artifactPath,
+		SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator",
+		TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator",
+		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
+	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		if command.Name == "pg_dump" {
+			if command.StdoutFile == nil {
+				t.Fatal("pg_dump was not bound to the created archive descriptor")
+			}
+			_, err := command.StdoutFile.Write([]byte("verified archive bytes"))
+			return CommandResult{}, err
+		}
+		if command.Name == "pg_restore" && containsArg(command.Args, "--list") {
+			if command.StdinFile == nil || containsArg(command.Args, artifactPath) {
+				t.Fatalf("pg_restore was not bound to a verified descriptor: %+v", command)
+			}
+			replacement := filepath.Join(filepath.Dir(artifactPath), "replacement.dump")
+			if err := os.WriteFile(replacement, []byte("replacement bytes"), 0o600); err != nil {
+				return CommandResult{}, err
+			}
+			if err := os.Rename(replacement, artifactPath); err != nil {
+				return CommandResult{}, err
+			}
+			data, err := io.ReadAll(command.StdinFile)
+			if err != nil {
+				return CommandResult{}, err
+			}
+			if string(data) != "verified archive bytes" {
+				t.Fatalf("pg_restore consumed %q", data)
+			}
+			return CommandResult{Output: []byte("ok")}, nil
+		}
+		if command.Name == "psql" && strings.Contains(string(command.Stdin), "DROP DATABASE") {
+			targetMutated = true
+		}
+		if command.ExpectedOutput != "" {
+			return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
+		}
+		if command.CaptureOutputAsInput || command.MatchCapturedInput {
+			return CommandResult{Output: []byte("stable high water")}, nil
+		}
+		return CommandResult{Output: []byte("ok")}, nil
+	}})
+	if err == nil || !strings.Contains(err.Error(), "FINAL_DELTA_ARCHIVE_CHANGED") {
+		t.Fatalf("error=%v", err)
+	}
+	if targetMutated {
+		t.Fatal("target mutated after verified archive path replacement")
 	}
 }
 
@@ -829,6 +897,107 @@ func TestFinalDeltaRejectsAcceptedArchiveMutationAndInvalidatesMutatedTarget(t *
 	}
 }
 
+func TestFinalDeltaCommandFailuresDurablyInvalidateTargetAfterMutationIntent(t *testing.T) {
+	for _, stage := range []string{"drop", "create", "restore", "post-restore probe", "post-restore mismatch"} {
+		t.Run(stage, func(t *testing.T) {
+			manifestPath := copyManifest(t)
+			backup := writeArtifact(t, "backup.dump", "verified backup")
+			for _, request := range []Request{
+				{Operation: RecordImport, ID: "0123456789abcdef0123456789abcdef01234567"},
+				{Operation: Backup, ID: "backup-001", ArtifactPath: backup},
+				{Operation: Restore, ArtifactPath: backup, Verifier: "test"},
+			} {
+				if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, request), ApplyOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			artifactPath := filepath.Join(t.TempDir(), "final.dump")
+			_, err := Execute(context.Background(), ExecutionRequest{
+				Operation: FinalDelta, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), ArtifactPath: artifactPath,
+				SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator",
+				TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator",
+				MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
+			}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+				joinedArgs := strings.Join(command.Args, " ")
+				stdin := string(command.Stdin)
+				if command.Name == "pg_dump" {
+					return CommandResult{}, os.WriteFile(artifactPath, []byte("accepted archive"), 0o600)
+				}
+				if strings.Contains(stdin, "DROP DATABASE") {
+					manifest := readWorkflowManifest(t, manifestPath)
+					if manifest.TargetInvalidatedAt == nil || pointerValue(manifest.TargetInvalidationReason) != "FINAL_DELTA_TARGET_MUTATION_IN_PROGRESS" {
+						t.Fatalf("target mutation began without durable intent: %+v", manifest)
+					}
+				}
+				fail := stage == "drop" && strings.Contains(stdin, "DROP DATABASE") ||
+					stage == "create" && strings.Contains(stdin, "CREATE DATABASE") && !strings.Contains(stdin, "DROP DATABASE") ||
+					stage == "restore" && command.Name == "pg_restore" && !containsArg(command.Args, "--list") ||
+					stage == "post-restore probe" && command.Name == "psql" && strings.Contains(joinedArgs, "information_schema.tables")
+				if fail {
+					return CommandResult{}, fmt.Errorf("injected %s failure", stage)
+				}
+				if stage == "post-restore mismatch" && command.Name == "psql" && strings.Contains(joinedArgs, "information_schema.tables") {
+					return CommandResult{Output: []byte("false")}, nil
+				}
+				if command.ExpectedOutput != "" {
+					return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
+				}
+				if command.CaptureOutputAsInput || command.MatchCapturedInput {
+					return CommandResult{Output: []byte("stable high water")}, nil
+				}
+				return CommandResult{Output: []byte("ok")}, nil
+			}})
+			if err == nil {
+				t.Fatal("final delta unexpectedly succeeded")
+			}
+			manifest := readWorkflowManifest(t, manifestPath)
+			if manifest.Workflow.Phase != PhaseRestored || manifest.TargetInvalidatedAt == nil || pointerValue(manifest.TargetInvalidationReason) != "FINAL_DELTA_TARGET_MUTATION_FAILED" {
+				t.Fatalf("failure was not durably invalidated: error=%v manifest=%+v", err, manifest)
+			}
+		})
+	}
+}
+
+func TestAlreadyLedgeredFenceAndBackfillCannotReplayInvalidTarget(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	mapping := writeArtifact(t, "mapping.json", "mapping")
+	if _, err := applyExecuted(manifestPath, withProof(t, manifestPath, Request{Operation: Backfill, Name: "mapping.json", ArtifactPath: mapping}), ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	manifest := readWorkflowManifest(t, manifestPath)
+	at, reason := "2026-08-10T00:00:00Z", "FINAL_DELTA_TARGET_MUTATION_FAILED"
+	manifest.TargetInvalidatedAt, manifest.TargetInvalidationReason = &at, &reason
+	if err := writeManifestAtomic(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []Operation{Fence, Backfill} {
+		t.Run(string(operation), func(t *testing.T) {
+			_, err := Execute(context.Background(), ExecutionRequest{
+				Operation: operation, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), BackfillPath: mapping,
+			}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+				t.Fatal("invalid target executed or replayed a command")
+				return CommandResult{}, nil
+			}})
+			if err == nil || !strings.Contains(err.Error(), "target is invalidated") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestAlreadyLedgeredOperationWithoutPostconditionStillRequiresCurrentPredecessor(t *testing.T) {
+	manifestPath := preparedForActivation(t)
+	_, err := Execute(context.Background(), ExecutionRequest{
+		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), BackfillPath: "002-new-mapping.json",
+	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		t.Fatal("out-of-order backfill ran a command")
+		return CommandResult{}, nil
+	}})
+	if err == nil || !strings.Contains(err.Error(), "backfill requires durable fence") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *testing.T) {
 	root := t.TempDir()
 	commands, _, checks, _, err := executionPlan(Manifest{TargetRepo: root}, ExecutionRequest{Operation: Validate, EvidenceDir: t.TempDir(), Verifier: "operator"})
@@ -912,11 +1081,19 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
 	}
 	var calls int
+	var mutationIntentManifest []byte
 	first, err := Execute(context.Background(), request, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		calls++
 		if command.Name == "pg_dump" {
 			if err := os.WriteFile(artifactPath, []byte("custom final snapshot"), 0o600); err != nil {
 				return CommandResult{}, err
+			}
+		}
+		if strings.Contains(string(command.Stdin), "DROP DATABASE") {
+			var readErr error
+			mutationIntentManifest, readErr = os.ReadFile(manifestPath)
+			if readErr != nil {
+				return CommandResult{}, readErr
 			}
 		}
 		if command.ExpectedOutput != "" {
@@ -927,7 +1104,7 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 11 || first.EvidencePath == "" || readWorkflowManifest(t, manifestPath).Workflow.Phase != PhaseDeltaCaptured {
+	if calls != 12 || first.EvidencePath == "" || readWorkflowManifest(t, manifestPath).Workflow.Phase != PhaseDeltaCaptured {
 		t.Fatalf("final snapshot result=%+v calls=%d", first, calls)
 	}
 	expectedArchiveSHA := sha256Hex([]byte("custom final snapshot"))
@@ -947,8 +1124,11 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 	if err := json.Unmarshal(proofData, &proof); err != nil {
 		t.Fatal(err)
 	}
-	if len(proof.Commands) != 11 || proof.InputSHA == "" || proof.Subject != expectedArchiveSHA {
+	if len(proof.Commands) != 12 || proof.InputSHA == "" || proof.Subject != expectedArchiveSHA {
 		t.Fatalf("final snapshot proof=%+v", proof)
+	}
+	if proof.PreStateSHA != sha256Hex(mutationIntentManifest) {
+		t.Fatalf("proof pre-state=%q, mutation intent manifest=%q", proof.PreStateSHA, sha256Hex(mutationIntentManifest))
 	}
 	if proof.Commands[4].OutputSHA != proof.InputSHA || proof.Commands[6].OutputSHA != proof.InputSHA {
 		t.Fatalf("high-water evidence does not bind both samples: proof=%+v", proof)

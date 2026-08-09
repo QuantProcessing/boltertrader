@@ -158,8 +158,14 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 	if manifest.Workflow.Phase == "" {
 		manifest.Workflow.Phase = inferPhase(manifest)
 	}
+	if err := requireUsableTarget(manifest, request.Operation); err != nil {
+		return Result{}, err
+	}
 	if err := validateWorkflow(manifest); err != nil {
 		return Result{}, err
+	}
+	if request.generatedEvidence != nil && request.generatedEvidence.PreStateSHA != sha256Hex(data) {
+		return Result{}, fmt.Errorf("generated operation evidence pre-state does not match migration manifest")
 	}
 	priorOperation := false
 	for _, event := range manifest.Workflow.Events {
@@ -434,8 +440,8 @@ func operationPostconditionHolds(manifest Manifest, request Request) bool {
 
 func validatePredecessor(manifest Manifest, operation Operation) error {
 	phase := manifest.Workflow.Phase
-	if manifest.TargetInvalidatedAt != nil && operation != FinalDelta {
-		return fmt.Errorf("target is invalidated; a new explicit final delta is required")
+	if err := requireUsableTarget(manifest, operation); err != nil {
+		return err
 	}
 	switch operation {
 	case Backup:
@@ -481,6 +487,13 @@ func validatePredecessor(manifest Manifest, operation Operation) error {
 		if phase != PhaseDeltaCaptured && phase != PhaseFenced {
 			return fmt.Errorf("rollback requires delta or fence preparation; current phase is %s", phase)
 		}
+	}
+	return nil
+}
+
+func requireUsableTarget(manifest Manifest, operation Operation) error {
+	if manifest.TargetInvalidatedAt != nil && operation != FinalDelta {
+		return fmt.Errorf("target is invalidated; a new explicit final delta is required")
 	}
 	return nil
 }

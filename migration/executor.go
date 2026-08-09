@@ -8,15 +8,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/internal/verifiedartifact"
 )
 
 const evidenceGenerator = "boltertrader-migration-tool"
+
+const maxFinalDeltaArchiveSize int64 = 1<<63 - 2
 
 type Command struct {
 	Name                 string
@@ -24,6 +27,8 @@ type Command struct {
 	Env                  []string
 	Dir                  string
 	Stdin                []byte
+	StdinFile            *os.File
+	StdoutFile           *os.File
 	ExpectedOutput       string
 	ExpectedOutputSHA    string
 	CaptureOutputAsInput bool
@@ -80,7 +85,7 @@ type commandEvidence struct {
 	OutputSHA  string `json:"outputSha256"`
 }
 
-func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptions) (ExecutionResult, error) {
+func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptions) (executionResult ExecutionResult, executionErr error) {
 	lock, err := AcquireLock(request.ManifestPath)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -100,11 +105,11 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if manifest.Workflow.Phase == "" {
 		manifest.Workflow.Phase = inferPhase(manifest)
 	}
-	if err := validateWorkflow(manifest); err != nil {
+	if err := requireUsableTarget(manifest, request.Operation); err != nil {
 		return ExecutionResult{}, err
 	}
-	if manifest.TargetInvalidatedAt != nil && request.Operation != FinalDelta {
-		return ExecutionResult{}, fmt.Errorf("target is invalidated; a new explicit final delta is required")
+	if err := validateWorkflow(manifest); err != nil {
+		return ExecutionResult{}, err
 	}
 	if request.Operation == RecordImport {
 		return executeRecordImportLocked(request, options, manifestData, manifest)
@@ -113,7 +118,8 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	for _, event := range manifest.Workflow.Events {
 		priorOperation = priorOperation || event.Operation == request.Operation
 	}
-	if !priorOperation {
+	postconditionRequest := Request{Operation: request.Operation, Name: filepath.Base(request.BackfillPath)}
+	if !priorOperation || !operationPostconditionHolds(manifest, postconditionRequest) {
 		if err := validatePredecessor(manifest, request.Operation); err != nil {
 			return ExecutionResult{}, err
 		}
@@ -143,9 +149,20 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 			return *replay, nil
 		}
 	}
+	var acceptedArchive *verifiedartifact.Artifact
 	if request.Operation == FinalDelta {
-		if err := prepareAcceptedArchive(request.ArtifactPath); err != nil {
+		acceptedArchive, err = prepareAcceptedArchive(request.ArtifactPath)
+		if err != nil {
 			return ExecutionResult{}, err
+		}
+		defer acceptedArchive.Close()
+		for index := range commands {
+			switch commands[index].Name {
+			case "pg_dump":
+				commands[index].StdoutFile = acceptedArchive.File()
+			case "pg_restore":
+				commands[index].StdinFile = acceptedArchive.File()
+			}
 		}
 	}
 	run := options.Run
@@ -154,11 +171,32 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	}
 	commandProofs := make([]commandEvidence, 0, len(commands))
 	acceptedArchiveSHA := ""
-	targetMutated := false
+	archiveSealed := false
+	targetMutationInProgress := false
+	targetFailureReason := "FINAL_DELTA_TARGET_MUTATION_FAILED"
+	defer func() {
+		if executionErr == nil || !targetMutationInProgress {
+			return
+		}
+		if persistErr := persistTargetInvalidation(request.ManifestPath, &manifest, targetFailureReason, options); persistErr != nil {
+			executionErr = fmt.Errorf("%w; persist target invalidation: %v", executionErr, persistErr)
+		}
+	}()
 	for index, command := range commands {
-		if request.Operation == FinalDelta && acceptedArchiveSHA != "" && index >= 8 {
-			if currentSHA, archiveErr := acceptedArchiveSHA256(request.ArtifactPath); archiveErr != nil || currentSHA != acceptedArchiveSHA {
-				return ExecutionResult{}, rejectChangedFinalDeltaArchive(request.ManifestPath, request.ArtifactPath, targetMutated, manifest, options)
+		if archiveSealed {
+			if archiveErr := acceptedArchive.Revalidate(); archiveErr != nil {
+				targetFailureReason = "FINAL_DELTA_ARCHIVE_CHANGED"
+				return ExecutionResult{}, rejectChangedFinalDeltaArchive(request.ArtifactPath)
+			}
+		}
+		if request.Operation == FinalDelta && isFinalDeltaTargetMutationStart(command) {
+			if err := persistTargetInvalidation(request.ManifestPath, &manifest, "FINAL_DELTA_TARGET_MUTATION_IN_PROGRESS", options); err != nil {
+				return ExecutionResult{}, fmt.Errorf("final-delta target mutation intent: %w", err)
+			}
+			targetMutationInProgress = true
+			manifestData, err = os.ReadFile(request.ManifestPath)
+			if err != nil {
+				return ExecutionResult{}, fmt.Errorf("read final-delta mutation intent: %w", err)
 			}
 		}
 		result, runErr := run(ctx, command)
@@ -187,19 +225,22 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		if command.CaptureOutputAsInput {
 			inputSHA = sha256Hex(bytes.TrimSpace(result.Output))
 		}
-		if request.Operation == FinalDelta && index == 6 {
-			acceptedArchiveSHA, err = acceptedArchiveSHA256(request.ArtifactPath)
-			if err != nil {
+		if request.Operation == FinalDelta && command.MatchCapturedInput {
+			if syncErr := acceptedArchive.File().Sync(); syncErr != nil {
 				_ = os.Remove(request.ArtifactPath)
 				return ExecutionResult{}, fmt.Errorf("FINAL_DELTA_ARCHIVE_CHANGED: capture a new final delta")
 			}
+			if sealErr := acceptedArchive.Seal(); sealErr != nil {
+				_ = os.Remove(request.ArtifactPath)
+				return ExecutionResult{}, fmt.Errorf("FINAL_DELTA_ARCHIVE_CHANGED: capture a new final delta")
+			}
+			acceptedArchiveSHA = acceptedArchive.SHA256()
+			archiveSealed = true
 		}
-		if request.Operation == FinalDelta && index == 8 {
-			targetMutated = true
-		}
-		if request.Operation == FinalDelta && acceptedArchiveSHA != "" && index >= 8 {
-			if currentSHA, archiveErr := acceptedArchiveSHA256(request.ArtifactPath); archiveErr != nil || currentSHA != acceptedArchiveSHA {
-				return ExecutionResult{}, rejectChangedFinalDeltaArchive(request.ManifestPath, request.ArtifactPath, targetMutated, manifest, options)
+		if archiveSealed {
+			if archiveErr := acceptedArchive.Revalidate(); archiveErr != nil {
+				targetFailureReason = "FINAL_DELTA_ARCHIVE_CHANGED"
+				return ExecutionResult{}, rejectChangedFinalDeltaArchive(request.ArtifactPath)
 			}
 		}
 	}
@@ -236,6 +277,7 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		_ = os.Remove(evidencePath)
 		return ExecutionResult{}, err
 	}
+	targetMutationInProgress = false
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
 }
 
@@ -497,11 +539,12 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			maintenanceProbe,
 			check,
 			highWaterBefore,
-			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
 			highWaterAfter,
-			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
-			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
-			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
+			{Name: "pg_restore", Args: []string{"--list"}},
+			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE);`+"\n", "database="+targetDatabase),
+			psqlInput(maintenance, maintenanceDatabase, `CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase}},
 			verify,
 		}, apply, []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
 	case Fence:
@@ -695,18 +738,11 @@ func acceptMappingSnapshot(sourcePath, evidenceDir, expectedSHA string) (string,
 	if !validSHA256(expectedSHA) {
 		return "", fmt.Errorf("mapping checksum is invalid")
 	}
-	file, err := os.Open(sourcePath)
+	data, sourceSHA, err := verifiedartifact.ReadSnapshot(sourcePath, 1<<20)
 	if err != nil {
 		return "", fmt.Errorf("backfill mapping snapshot is unavailable")
 	}
-	info, statErr := file.Stat()
-	if statErr != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 1<<20 {
-		_ = file.Close()
-		return "", fmt.Errorf("backfill mapping snapshot is unavailable")
-	}
-	data, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || len(data) == 0 || len(data) > 1<<20 || sha256Hex(data) != expectedSHA {
+	if sourceSHA != expectedSHA {
 		clear(data)
 		return "", fmt.Errorf("backfill mapping changed before acceptance")
 	}
@@ -716,12 +752,9 @@ func acceptMappingSnapshot(sourcePath, evidenceDir, expectedSHA string) (string,
 	}
 	path := filepath.Join(evidenceDir, ".accepted-mapping-"+expectedSHA+".json")
 	if info, statErr := os.Lstat(path); statErr == nil {
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-			clear(data)
-			return "", fmt.Errorf("accepted mapping snapshot conflict")
-		}
-		existing, readErr := os.ReadFile(path)
-		if readErr != nil || sha256Hex(existing) != expectedSHA {
+		_ = info
+		existing, existingSHA, readErr := verifiedartifact.ReadSnapshot(path, 1<<20)
+		if readErr != nil || existingSHA != expectedSHA {
 			clear(data)
 			clear(existing)
 			return "", fmt.Errorf("accepted mapping snapshot conflict")
@@ -740,7 +773,7 @@ func acceptMappingSnapshot(sourcePath, evidenceDir, expectedSHA string) (string,
 	}
 	_, writeErr := accepted.Write(data)
 	syncErr := accepted.Sync()
-	closeErr = accepted.Close()
+	closeErr := accepted.Close()
 	clear(data)
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		_ = os.Remove(path)
@@ -749,47 +782,37 @@ func acceptMappingSnapshot(sourcePath, evidenceDir, expectedSHA string) (string,
 	return path, nil
 }
 
-func prepareAcceptedArchive(path string) error {
+func prepareAcceptedArchive(path string) (*verifiedartifact.Artifact, error) {
 	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("final delta artifact path is required")
+		return nil, fmt.Errorf("final delta artifact path is required")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("prepare final delta artifact: %w", err)
+		return nil, fmt.Errorf("prepare final delta artifact: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	artifact, err := verifiedartifact.CreateStream(path, maxFinalDeltaArchiveSize)
 	if err != nil {
-		return fmt.Errorf("final delta accepted archive path must not already exist")
+		return nil, fmt.Errorf("final delta accepted archive path must not already exist")
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("prepare final delta artifact: %w", err)
-	}
-	return nil
+	return artifact, nil
 }
 
-func acceptedArchiveSHA256(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() <= 0 {
-		return "", fmt.Errorf("accepted final delta archive is unavailable")
-	}
-	return digestFile(path, true)
+func isFinalDeltaTargetMutationStart(command Command) bool {
+	return command.Name == "psql" && strings.Contains(string(command.Stdin), "DROP DATABASE")
 }
 
-func rejectChangedFinalDeltaArchive(manifestPath, artifactPath string, targetMutated bool, manifest Manifest, options ExecuteOptions) error {
+func persistTargetInvalidation(manifestPath string, manifest *Manifest, reason string, options ExecuteOptions) error {
+	now := time.Now().UTC()
+	if options.Now != nil {
+		now = options.Now().UTC()
+	}
+	at := now.Format(time.RFC3339Nano)
+	manifest.TargetInvalidatedAt = &at
+	manifest.TargetInvalidationReason = &reason
+	return writeManifestAtomic(manifestPath, *manifest)
+}
+
+func rejectChangedFinalDeltaArchive(artifactPath string) error {
 	_ = os.Remove(artifactPath)
-	if targetMutated {
-		now := time.Now().UTC()
-		if options.Now != nil {
-			now = options.Now().UTC()
-		}
-		at := now.Format(time.RFC3339Nano)
-		reason := "FINAL_DELTA_ARCHIVE_CHANGED"
-		manifest.TargetInvalidatedAt = &at
-		manifest.TargetInvalidationReason = &reason
-		if err := writeManifestAtomic(manifestPath, manifest); err != nil {
-			return fmt.Errorf("FINAL_DELTA_ARCHIVE_CHANGED: persist target invalidation: %w", err)
-		}
-	}
 	return fmt.Errorf("FINAL_DELTA_ARCHIVE_CHANGED: accepted archive discarded; new explicit final delta required")
 }
 
@@ -971,8 +994,22 @@ func runCommand(ctx context.Context, command Command) (CommandResult, error) {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
 	cmd.Env = append(os.Environ(), command.Env...)
-	cmd.Stdin = bytes.NewReader(command.Stdin)
-	output, err := cmd.CombinedOutput()
+	if command.StdinFile != nil {
+		cmd.Stdin = command.StdinFile
+	} else {
+		cmd.Stdin = bytes.NewReader(command.Stdin)
+	}
+	var output []byte
+	var err error
+	if command.StdoutFile != nil {
+		var stderr bytes.Buffer
+		cmd.Stdout = command.StdoutFile
+		cmd.Stderr = &stderr
+		err = cmd.Run()
+		output = stderr.Bytes()
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	if len(output) > 1<<20 {
 		output = output[:1<<20]
 	}
