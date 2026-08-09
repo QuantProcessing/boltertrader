@@ -2,8 +2,9 @@
 
 ## Status
 
-The architecture direction in this document is approved. The written contract
-is awaiting review before implementation planning begins.
+The architecture direction and written contract in this document are approved.
+Implementation planning proceeds from this document as the authoritative V1
+boundary.
 
 ## Problem
 
