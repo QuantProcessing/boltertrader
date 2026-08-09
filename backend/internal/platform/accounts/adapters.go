@@ -18,14 +18,6 @@ func (adapter SecretStoreAdapter) Put(ctx context.Context, operationID secretsto
 	return reference.RawForProvider(), nil
 }
 
-func (adapter SecretStoreAdapter) LookupOperation(ctx context.Context, operationID secretstore.OperationID) (string, error) {
-	reference, err := adapter.Store.LookupOperation(ctx, operationID)
-	if err != nil {
-		return "", err
-	}
-	return reference.RawForProvider(), nil
-}
-
 func (adapter SecretStoreAdapter) Delete(ctx context.Context, reference string) error {
 	return adapter.Store.Delete(ctx, reference)
 }
