@@ -158,7 +158,7 @@ func TestClaimWorkTreatsAfterCursorAsOpaqueAndDoesNotStarveLaterWork(t *testing.
 	database, _ := openIntegrationDatabaseWithMigrations(t, true)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 6, 5, 0, 0, 0, time.UTC)
-	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','venue-a','testnet','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1), ('account-b','venue-b','testnet','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','venue-a','testnet','test','testnet','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1), ('account-b','venue-b','testnet','test','testnet','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
 		t.Fatal(err)
 	}
 	store := NewWorkStore(database)
@@ -243,7 +243,7 @@ func TestWorkIntentCommandsPreserveTwoPrincipalsWithSameLineage(t *testing.T) {
 	now := time.Date(2026, 8, 6, 4, 45, 0, 0, time.UTC)
 	fences := json.RawMessage(`[{"accountId":"account-a","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1},{"accountId":"account-b","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}]`)
 	payload := json.RawMessage(`{"accountId":"account-a"}`)
-	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','venue-a','testnet','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1), ('account-b','venue-b','testnet','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','venue-a','testnet','test','testnet','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1), ('account-b','venue-b','testnet','test','testnet','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
 		t.Fatal(err)
 	}
 	store := NewWorkStore(database)
@@ -326,7 +326,7 @@ func TestFundingBrowserClosePersistsBothUnwindFacts(t *testing.T) {
 		id, venue                        string
 		revision, generation, credential int
 	}{{"long", "venue-a", 4, 2, 3}, {"short", "venue-b", 5, 3, 4}} {
-		if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ($1,$2,'testnet',$1,'["funding"]','secret://test/'||$1,$3,$4,$5,'active',$6)`, account.id, account.venue, account.revision, account.generation, account.credential, now); err != nil {
+		if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ($1,$2,'testnet','test','testnet',$1,'["funding"]','secret://test/'||$1,$3,$4,$5,'active',$6)`, account.id, account.venue, account.revision, account.generation, account.credential, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1224,10 +1224,10 @@ func seedClaimedWork(t *testing.T, database *sql.DB) (*WorkStore, work.Lease, wo
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	fences := json.RawMessage(`[{"accountId":"account-a","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1},{"accountId":"account-b","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}]`)
-	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','binance','demo','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1)`, now); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-a','binance','demo','test','demo','Account A','["funding"]','secret://test/account-a',1,1,1,'active',$1)`, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-b','binance','demo','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
+	if _, err := database.ExecContext(ctx, `INSERT INTO platform_accounts(account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,secret_ref,desired_state_revision,runtime_generation,credential_version,state,updated_at) VALUES ('account-b','binance','demo','test','demo','Account B','["funding"]','secret://test/account-b',1,1,1,'active',$1)`, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.ExecContext(ctx, `INSERT INTO platform_work_items(work_item_id,work_kind,lineage_id,work_revision,product_id,mode,status,facts_cursor,account_fences,payload,not_before,created_at,updated_at) VALUES ('work-a','open','lineage-a',1,'funding','test','open','cursor-a',$1,$2,$3,$3,$3)`, fences, json.RawMessage(`{"notionalPerLeg":"50","accountId":"account-a"}`), now); err != nil {
