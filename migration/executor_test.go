@@ -166,8 +166,17 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
 		BackfillPath: scriptPath, TargetService: "bolter-target", TargetDatabase: "bolter_target", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
-		if command.Name != "psql" {
+		if command.Name != "account-route-backfill" {
 			t.Fatalf("command = %+v", command)
+		}
+		joined := strings.Join(command.Args, " ")
+		for _, want := range []string{"--mapping", scriptPath, "--target-service", "bolter-target", "--target-database", "bolter_target"} {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("backfill command missing %q: %+v", want, command)
+			}
+		}
+		if len(command.Stdin) != 0 {
+			t.Fatal("mapping artifact was sent through command stdin")
 		}
 		return CommandResult{Output: []byte("backfill complete")}, nil
 	}})
@@ -226,16 +235,16 @@ func TestExecutionPlanRejectsBackfillOutsideRepository(t *testing.T) {
 func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
 	t.Helper()
 	root := t.TempDir()
-	directory := filepath.Join(root, "backend", "migrations")
+	directory := filepath.Join(root, "migration", "backfills")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(directory, "001-platform.sql")
+	path := filepath.Join(directory, "account-route-v1.json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, root, "init", "-b", "master")
-	runGit(t, root, "add", filepath.ToSlash(filepath.Join("backend", "migrations", "001-platform.sql")))
+	runGit(t, root, "add", filepath.ToSlash(filepath.Join("migration", "backfills", "account-route-v1.json")))
 	return root, path
 }
 

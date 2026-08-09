@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "mappings": [
+    {"venue":"aster","nativeEnvironment":"testnet","legacyProduct":"spot","settlementAsset":"","routeProfileId":"aster.spot.testnet.v1","routeId":"spot"},
+    {"venue":"aster","nativeEnvironment":"testnet","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"aster.perp.usdt.testnet.v1","routeId":"perp-usdt"},
+    {"venue":"binance","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"","routeProfileId":"binance.spot.demo.v1","routeId":"spot"},
+    {"venue":"binance","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"perp-usdt"},
+    {"venue":"bitget","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"","routeProfileId":"bitget.spot.demo.v1","routeId":"spot"},
+    {"venue":"bitget","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"bitget.perp.usdt.demo.v1","routeId":"perp-usdt"},
+    {"venue":"bitget","nativeEnvironment":"demo","legacyProduct":"perp-usdc","settlementAsset":"USDC","routeProfileId":"bitget.perp.usdc.demo.v1","routeId":"perp-usdc"},
+    {"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"","routeProfileId":"bybit.spot.demo.v1","routeId":"spot"},
+    {"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"perp-usdt"},
+    {"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp-usdc","settlementAsset":"USDC","routeProfileId":"bybit.perp.usdc.demo.v1","routeId":"perp-usdc"},
+    {"venue":"bybit","nativeEnvironment":"testnet","legacyProduct":"spot","settlementAsset":"","routeProfileId":"bybit.spot.testnet.v1","routeId":"spot"},
+    {"venue":"bybit","nativeEnvironment":"testnet","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.testnet.v1","routeId":"perp-usdt"},
+    {"venue":"bybit","nativeEnvironment":"testnet","legacyProduct":"perp-usdc","settlementAsset":"USDC","routeProfileId":"bybit.perp.usdc.testnet.v1","routeId":"perp-usdc"},
+    {"venue":"gate","nativeEnvironment":"testnet","legacyProduct":"spot","settlementAsset":"","routeProfileId":"gate.spot.testnet.v1","routeId":"spot"},
+    {"venue":"gate","nativeEnvironment":"testnet","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"gate.perp.usdt.testnet.v1","routeId":"perp-usdt"},
+    {"venue":"hyperliquid","nativeEnvironment":"testnet","legacyProduct":"spot","settlementAsset":"","routeProfileId":"hyperliquid.spot.testnet.v1","routeId":"spot"},
+    {"venue":"hyperliquid","nativeEnvironment":"testnet","legacyProduct":"perp-usdc","settlementAsset":"USDC","routeProfileId":"hyperliquid.perp.usdc.testnet.v1","routeId":"perp-usdc"},
+    {"venue":"lighter","nativeEnvironment":"testnet","legacyProduct":"spot","settlementAsset":"","routeProfileId":"lighter.spot.testnet.v1","routeId":"spot"},
+    {"venue":"lighter","nativeEnvironment":"testnet","legacyProduct":"perp-usdc","settlementAsset":"USDC","routeProfileId":"lighter.perp.usdc.testnet.v1","routeId":"perp-usdc"},
+    {"venue":"nado","nativeEnvironment":"testnet","legacyProduct":"spot-usdt0","settlementAsset":"USDT0","routeProfileId":"nado.spot.usdt0.testnet.v1","routeId":"spot-usdt0"},
+    {"venue":"nado","nativeEnvironment":"testnet","legacyProduct":"perp-usdt0","settlementAsset":"USDT0","routeProfileId":"nado.perp.usdt0.testnet.v1","routeId":"perp-usdt0"},
+    {"venue":"okx","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"","routeProfileId":"okx.spot.demo.v1","routeId":"spot"},
+    {"venue":"okx","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"okx.perp.usdt.demo.v1","routeId":"perp-usdt"}
+  ]
+}

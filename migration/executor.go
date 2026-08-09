@@ -355,7 +355,11 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
-		command := Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--single-transaction", "--dbname", "service=" + target + " dbname=" + targetDatabase, "--file", backfillPath}}
+		command := Command{Name: "account-route-backfill", Args: []string{
+			"--mapping", backfillPath,
+			"--target-service", target,
+			"--target-database", targetDatabase,
+		}}
 		return []Command{command}, apply, []string{"script-content-stable", "single-transaction"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
@@ -479,8 +483,8 @@ func canonicalBackfillPath(root, value string) (string, error) {
 		return "", fmt.Errorf("backfill script is outside the frozen repository")
 	}
 	parts := strings.Split(filepath.ToSlash(relative), "/")
-	if len(parts) != 3 || parts[0] != "backend" || parts[1] != "migrations" || filepath.Ext(parts[2]) != ".sql" {
-		return "", fmt.Errorf("backfill script must be a repository-owned backend migration")
+	if len(parts) != 3 || parts[0] != "migration" || parts[1] != "backfills" || filepath.Ext(parts[2]) != ".json" {
+		return "", fmt.Errorf("backfill artifact must be a repository-owned mapping")
 	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
