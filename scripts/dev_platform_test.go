@@ -129,6 +129,46 @@ while :; do sleep 1; done
 	runLauncher(t, repo, env, "down")
 }
 
+func TestDevPlatformBootstrapTargetsManagedPostgres(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	observed := filepath.Join(runtimeDir, "bootstrap-postgres-target")
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+set -eu
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+
+	env := append(launcherEnv(runtimeDir),
+		"PGHOST=ambient.invalid",
+		"PGPORT=6543",
+		`BT_DEV_DB_BOOTSTRAP_CMD=printf '%s:%s\n' "$PGHOST" "$PGPORT" >`+observed,
+		"BT_DEV_FUNDING_WORKER_DRAIN_CMD=true",
+	)
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		env = append(env,
+			"BT_DEV_"+service+"_CMD="+helper,
+			"BT_DEV_"+service+"_READY_CMD=true",
+		)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+	})
+
+	runLauncher(t, repo, env, "up")
+	target, err := os.ReadFile(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(target), "127.0.0.1:15432\n"; got != want {
+		t.Fatalf("database bootstrap target = %q, want %q", got, want)
+	}
+	runLauncher(t, repo, env, "down")
+}
+
 func TestDevPlatformBuiltinFundingWorkerReadinessUsesWorkerFenceAndFailClosedHTTP(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
