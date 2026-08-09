@@ -209,7 +209,7 @@ run_bootstrap() {
 		[ "$db_bootstrap" = "./backend/scripts/db-bootstrap.sh" ] || fail "custom DB bootstrap requires BT_DEV_TEST_HOOKS=1"
 		[ "$secret_bootstrap" = "./backend/scripts/secret-bootstrap.sh" ] || fail "custom Secret Store bootstrap requires BT_DEV_TEST_HOOKS=1"
 	fi
-	sh -c "$db_bootstrap" || fail "database bootstrap failed"
+	PGHOST=127.0.0.1 PGPORT=15432 sh -c "$db_bootstrap" || fail "database bootstrap failed"
 	sh -c "$secret_bootstrap" || fail "Secret Store bootstrap failed"
 }
 
