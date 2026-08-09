@@ -64,6 +64,71 @@ while :; do sleep 1; done
 	}
 }
 
+func TestDevPlatformAllowsOwnedCommandExecBeforeReadiness(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	ready := filepath.Join(runtimeDir, "postgres.ready")
+	final := filepath.Join(runtimeDir, "final.sh")
+	wrapper := filepath.Join(runtimeDir, "wrapper.sh")
+	stable := filepath.Join(runtimeDir, "stable.sh")
+	writeExecutable(t, final, `#!/bin/sh
+set -eu
+touch "$1"
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+	writeExecutable(t, wrapper, `#!/bin/sh
+set -eu
+sleep 0.2
+exec "$1" "$2"
+`)
+	writeExecutable(t, stable, `#!/bin/sh
+set -eu
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+
+	env := append(launcherEnv(runtimeDir),
+		"BT_DEV_POSTGRES_CMD="+wrapper+" "+final+" "+ready,
+		"BT_DEV_POSTGRES_READY_CMD=test -f "+ready,
+		"BT_DEV_FUNDING_WORKER_DRAIN_CMD=true",
+	)
+	for _, service := range []string{"GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		env = append(env,
+			"BT_DEV_"+service+"_CMD="+stable,
+			"BT_DEV_"+service+"_READY_CMD=true",
+		)
+	}
+	postgresPIDFile := filepath.Join(runtimeDir, "state", "test", "pids", "postgres.pid")
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+		payload, err := os.ReadFile(postgresPIDFile)
+		if err != nil {
+			return
+		}
+		var pid int
+		if _, err := fmt.Sscanf(string(payload), "%d", &pid); err == nil && pid > 0 {
+			if process, err := os.FindProcess(pid); err == nil {
+				_ = process.Kill()
+			}
+		}
+	})
+
+	runLauncher(t, repo, env, "up")
+	commandPath := filepath.Join(runtimeDir, "state", "test", "ownership", "postgres.command")
+	command, err := os.ReadFile(commandPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(command), final) || strings.Contains(string(command), wrapper) {
+		t.Fatalf("sealed postgres command %q does not identify final process %q", strings.TrimSpace(string(command)), final)
+	}
+	runLauncher(t, repo, env, "status")
+	runLauncher(t, repo, env, "down")
+}
+
 func TestDevPlatformBuiltinFundingWorkerReadinessUsesWorkerFenceAndFailClosedHTTP(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
