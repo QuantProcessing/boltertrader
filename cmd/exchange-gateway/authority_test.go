@@ -415,7 +415,7 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 		t.Fatal(err)
 	}
 	readiness, ok := readinessResponse.Body.(httpapi.RuntimeReadiness)
-	if !ok || readiness.Ready {
+	if !ok || !readiness.Ready {
 		t.Fatalf("empty readiness=%T %+v", readinessResponse.Body, readinessResponse.Body)
 	}
 

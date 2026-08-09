@@ -40,14 +40,17 @@ const (
 )
 
 type Options struct {
-	Secrets         secret.Provider
-	ExchangeCatalog exchange.InstrumentCatalog
-	GatewayCatalog  *catalog.Service
-	HTTPClient      *http.Client
-	RefreshInterval time.Duration
-	RuntimeMode     RuntimeMode
-	AllowLiveWrites bool
-	Lifecycle       RuntimeLifecycle
+	Secrets             secret.Provider
+	ExchangeCatalog     exchange.InstrumentCatalog
+	GatewayCatalog      *catalog.Service
+	HTTPClient          *http.Client
+	RefreshInterval     time.Duration
+	RuntimeMode         RuntimeMode
+	AllowLiveWrites     bool
+	Lifecycle           RuntimeLifecycle
+	RuntimeGroupBuilder RuntimeGroupBuilder
+	CredentialResolver  ScopedCredentialResolver
+	ProfileRegistry     *ProfileRegistry
 }
 
 type RuntimeMode string
@@ -144,22 +147,27 @@ type RefreshResult struct {
 }
 
 type Manager struct {
-	mu              sync.RWMutex
-	runtimeMu       sync.Mutex
-	entries         map[domain.AccountID]*entry
-	order           []domain.AccountID
-	catalog         *catalog.Service
-	closed          bool
-	closeMu         sync.Mutex
-	cleanup         map[domain.AccountID]bool
-	refreshInterval time.Duration
-	refreshCancel   context.CancelFunc
-	refreshDone     chan struct{}
-	started         bool
-	runtimes        map[domain.AccountID]RuntimeAccount
-	runtimeMode     RuntimeMode
-	allowLiveWrites bool
-	lifecycle       RuntimeLifecycle
+	mu                 sync.RWMutex
+	runtimeMu          sync.Mutex
+	entries            map[domain.AccountID]*entry
+	order              []domain.AccountID
+	catalog            *catalog.Service
+	closed             bool
+	closeMu            sync.Mutex
+	cleanup            map[domain.AccountID]bool
+	refreshInterval    time.Duration
+	refreshCancel      context.CancelFunc
+	refreshDone        chan struct{}
+	started            bool
+	runtimes           map[domain.AccountID]RuntimeAccount
+	runtimeMode        RuntimeMode
+	allowLiveWrites    bool
+	lifecycle          RuntimeLifecycle
+	groupMu            sync.Mutex
+	groups             map[domain.AccountID]*accountRuntime
+	groupBuilder       RuntimeGroupBuilder
+	credentialResolver ScopedCredentialResolver
+	profileRegistry    *ProfileRegistry
 }
 
 type entry struct {
@@ -198,18 +206,25 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 		return nil, fmt.Errorf("account manager dependencies are incomplete")
 	}
 	manager := &Manager{
-		entries:         make(map[domain.AccountID]*entry, len(accounts)),
-		order:           make([]domain.AccountID, 0, len(accounts)),
-		catalog:         options.GatewayCatalog,
-		cleanup:         make(map[domain.AccountID]bool, len(accounts)),
-		refreshInterval: options.RefreshInterval,
-		runtimes:        make(map[domain.AccountID]RuntimeAccount),
-		runtimeMode:     options.RuntimeMode,
-		allowLiveWrites: options.AllowLiveWrites,
-		lifecycle:       options.Lifecycle,
+		entries:            make(map[domain.AccountID]*entry, len(accounts)),
+		order:              make([]domain.AccountID, 0, len(accounts)),
+		catalog:            options.GatewayCatalog,
+		cleanup:            make(map[domain.AccountID]bool, len(accounts)),
+		refreshInterval:    options.RefreshInterval,
+		runtimes:           make(map[domain.AccountID]RuntimeAccount),
+		runtimeMode:        options.RuntimeMode,
+		allowLiveWrites:    options.AllowLiveWrites,
+		lifecycle:          options.Lifecycle,
+		groups:             make(map[domain.AccountID]*accountRuntime),
+		groupBuilder:       options.RuntimeGroupBuilder,
+		credentialResolver: options.CredentialResolver,
+		profileRegistry:    options.ProfileRegistry,
 	}
 	if manager.runtimeMode == "" {
 		manager.runtimeMode = RuntimeModeTest
+	}
+	if manager.profileRegistry == nil {
+		manager.profileRegistry = NewProfileRegistry(nil)
 	}
 	if manager.refreshInterval <= 0 {
 		manager.refreshInterval = 2 * time.Minute
@@ -728,12 +743,16 @@ func (manager *Manager) Runtimes() []RuntimeAccount {
 	return result
 }
 
-// RuntimeReady reports whether the authoritative runtime set is available.
+// RuntimeReady reports control-plane availability. Account route eligibility
+// is reported separately by each runtime.
 func (manager *Manager) RuntimeReady() bool {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
 	if manager.closed {
 		return false
+	}
+	if len(manager.runtimes) == 0 {
+		return true
 	}
 	hasActive := false
 	for _, runtime := range manager.runtimes {

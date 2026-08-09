@@ -541,8 +541,8 @@ func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
 
 func TestManagerRuntimeReadyFollowsAuthoritativeRuntimeState(t *testing.T) {
 	manager := newLifecycleTestManager(t, RuntimeModeTest)
-	if manager.RuntimeReady() {
-		t.Fatal("manager with no authoritative runtimes reported ready")
+	if !manager.RuntimeReady() {
+		t.Fatal("healthy manager with zero inventory must be control-plane ready")
 	}
 	desired := desiredTestAccount(t, 1, 1, 1, "opaque_ready")
 	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
