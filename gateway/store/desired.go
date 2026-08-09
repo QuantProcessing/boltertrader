@@ -111,6 +111,7 @@ func (snapshot DesiredSnapshot) Validate() error {
 		return fmt.Errorf("snapshot routes are required")
 	}
 	seen := make(map[domain.RouteID]struct{}, len(snapshot.Routes))
+	activeRoutes := 0
 	for _, route := range snapshot.Routes {
 		if err := route.Validate(); err != nil {
 			return err
@@ -119,6 +120,12 @@ func (snapshot DesiredSnapshot) Validate() error {
 			return fmt.Errorf("snapshot route id is duplicated")
 		}
 		seen[route.RouteID] = struct{}{}
+		if route.RequestedState == RouteActive {
+			activeRoutes++
+		}
+	}
+	if activeRoutes == 0 && snapshot.RequestedState != DesiredDisabled && snapshot.RequestedState != DesiredRemoved {
+		return fmt.Errorf("snapshot active route is required")
 	}
 	return nil
 }

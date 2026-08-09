@@ -48,13 +48,24 @@ func (postgresStore *Store) PreparePending(ctx context.Context, snapshot storepk
 		return storepkg.PendingSnapshot{}, err
 	}
 
-	var pendingID *uuid.UUID
-	err = tx.QueryRow(ctx, `SELECT pending_snapshot_id FROM gateway_account_runtime_heads WHERE account_id = $1 FOR UPDATE`, snapshot.AccountID).Scan(&pendingID)
+	var activeID, pendingID *uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT active_snapshot_id, pending_snapshot_id FROM gateway_account_runtime_heads WHERE account_id = $1 FOR UPDATE`, snapshot.AccountID).Scan(&activeID, &pendingID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return storepkg.PendingSnapshot{}, redactErr("lock runtime head", err)
 	}
 	if pendingID != nil {
 		return storepkg.PendingSnapshot{}, storepkg.ErrOperationConflict
+	}
+	if activeID != nil {
+		active, err := loadSnapshotByID(ctx, tx, *activeID)
+		if err != nil {
+			return storepkg.PendingSnapshot{}, err
+		}
+		if snapshot.Fence.DesiredStateRevision <= active.Fence.DesiredStateRevision ||
+			snapshot.Fence.RuntimeGeneration <= active.Fence.RuntimeGeneration ||
+			snapshot.Fence.CredentialVersion < active.Fence.CredentialVersion {
+			return storepkg.PendingSnapshot{}, storepkg.ErrStaleRuntimeGeneration
+		}
 	}
 	createdAt := snapshot.CreatedAt
 	if createdAt.IsZero() {
@@ -112,7 +123,25 @@ func (postgresStore *Store) RecordCandidateObservation(ctx context.Context, obse
 	if len(observation.ReasonCode) > 128 {
 		return storepkg.ErrCandidateNotReady
 	}
-	_, err := postgresStore.pool.Exec(ctx, `
+	tx, err := postgresStore.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return redactErr("begin candidate observation", err)
+	}
+	defer tx.Rollback(ctx)
+	var known bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM gateway_desired_operations operation
+			JOIN gateway_runtime_snapshot_routes route ON route.snapshot_id = operation.snapshot_id
+			WHERE operation.operation_id=$1 AND route.route_id=$2 AND route.requested_state='active'
+		)
+	`, observation.OperationID.String(), observation.RouteID).Scan(&known); err != nil {
+		return redactErr("validate candidate observation route", err)
+	}
+	if !known {
+		return storepkg.ErrCandidateNotReady
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO gateway_candidate_observations(operation_id, observation_revision, route_id, state, reason_code, observed_at)
 		VALUES ($1,$2,$3,$4,NULLIF($5,''),COALESCE(NULLIF($6, '0001-01-01 00:00:00+00'::timestamptz), now()))
 		ON CONFLICT (operation_id, observation_revision, route_id) DO UPDATE SET
@@ -121,16 +150,28 @@ func (postgresStore *Store) RecordCandidateObservation(ctx context.Context, obse
 	if err != nil {
 		return redactErr("record candidate observation", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return redactErr("commit candidate observation", err)
+	}
 	return nil
 }
 
 func (postgresStore *Store) MarkCandidateReady(ctx context.Context, operationID secretstore.OperationID) error {
 	tag, err := postgresStore.pool.Exec(ctx, `
-		UPDATE gateway_desired_operations SET state = 'candidate_ready', updated_at = now()
-		WHERE operation_id = $1 AND state IN ('prepared','candidate_ready')
+		UPDATE gateway_desired_operations operation SET state = 'candidate_ready', updated_at = now()
+		WHERE operation.operation_id = $1 AND operation.state IN ('prepared','candidate_ready')
+		  AND EXISTS (
+			SELECT 1 FROM gateway_runtime_snapshot_routes route
+			WHERE route.snapshot_id=operation.snapshot_id AND route.requested_state='active'
+		  )
 		  AND NOT EXISTS (
-			SELECT 1 FROM gateway_candidate_observations
-			WHERE operation_id = $1 AND state <> 'ready'
+			SELECT 1 FROM gateway_runtime_snapshot_routes route
+			WHERE route.snapshot_id=operation.snapshot_id AND route.requested_state='active'
+			  AND COALESCE((
+				SELECT observation.state FROM gateway_candidate_observations observation
+				WHERE observation.operation_id=operation.operation_id AND observation.route_id=route.route_id
+				ORDER BY observation.observation_revision DESC LIMIT 1
+			  ), '') <> 'ready'
 		  )
 	`, operationID.String())
 	if err != nil {
@@ -159,7 +200,24 @@ func (postgresStore *Store) PromotePending(ctx context.Context, request storepkg
 		return storepkg.PromotionResult{}, redactErr("lock promotion head", err)
 	}
 	if pendingID == nil {
-		return storepkg.PromotionResult{}, storepkg.ErrNotFound
+		if activeID == nil {
+			return storepkg.PromotionResult{}, storepkg.ErrNotFound
+		}
+		active, err := loadSnapshotByID(ctx, tx, *activeID)
+		if err != nil {
+			return storepkg.PromotionResult{}, err
+		}
+		if active.OperationID != request.OperationID {
+			return storepkg.PromotionResult{}, storepkg.ErrNotFound
+		}
+		promotedAt, err := loadAppliedAt(ctx, tx, request.OperationID)
+		if err != nil {
+			return storepkg.PromotionResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return storepkg.PromotionResult{}, redactErr("commit promotion replay", err)
+		}
+		return storepkg.PromotionResult{Active: storepkg.ActiveSnapshot{DesiredSnapshot: active, PromotedAt: promotedAt}}, nil
 	}
 	pending, err := loadSnapshotByID(ctx, tx, *pendingID)
 	if err != nil {
@@ -294,7 +352,11 @@ func loadRuntimeState(ctx context.Context, querier snapshotQuerier, accountID do
 		if err != nil {
 			return storepkg.RuntimeState{}, err
 		}
-		result.Active = &storepkg.ActiveSnapshot{DesiredSnapshot: snapshot}
+		promotedAt, err := loadAppliedAt(ctx, querier, snapshot.OperationID)
+		if err != nil {
+			return storepkg.RuntimeState{}, err
+		}
+		result.Active = &storepkg.ActiveSnapshot{DesiredSnapshot: snapshot, PromotedAt: promotedAt}
 	}
 	if pendingID != nil {
 		snapshot, err := loadSnapshotByID(ctx, querier, *pendingID)
@@ -381,6 +443,17 @@ func loadPending(ctx context.Context, querier snapshotQuerier, snapshot storepkg
 		pending.Observations = append(pending.Observations, observation)
 	}
 	return pending, rows.Err()
+}
+
+func loadAppliedAt(ctx context.Context, querier snapshotQuerier, operationID secretstore.OperationID) (time.Time, error) {
+	var appliedAt *time.Time
+	if err := querier.QueryRow(ctx, `SELECT applied_at FROM gateway_desired_operations WHERE operation_id=$1 AND state='applied'`, operationID.String()).Scan(&appliedAt); err != nil {
+		return time.Time{}, redactErr("load runtime promotion time", err)
+	}
+	if appliedAt == nil || appliedAt.IsZero() {
+		return time.Time{}, storepkg.ErrOperationConflict
+	}
+	return appliedAt.UTC(), nil
 }
 
 func sortedRoutes(routes []storepkg.RouteDefinition) []storepkg.RouteDefinition {
