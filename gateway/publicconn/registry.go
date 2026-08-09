@@ -169,6 +169,20 @@ func (lease *lease) Release() {
 	})
 }
 
+func (registry *Registry) Close() error {
+	registry.mu.Lock()
+	entries := registry.entries
+	registry.entries = make(map[routeprofile.Key]*entry)
+	registry.mu.Unlock()
+	var closeErr error
+	for _, current := range entries {
+		if err := current.connector.Close(); err != nil {
+			closeErr = errors.Join(closeErr, ErrConnectorUnavailable)
+		}
+	}
+	return closeErr
+}
+
 func connectorID(key routeprofile.Key) string {
 	sum := sha256.Sum256([]byte(string(key.Mode) + "\x00" + key.Venue + "\x00" + key.RouteProfileID))
 	return fmt.Sprintf("public-%s", hex.EncodeToString(sum[:8]))

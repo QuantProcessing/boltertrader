@@ -219,6 +219,7 @@ func testInstrument(venue exchange.Venue, product exchange.Product, symbol, nati
 type scriptedConnector struct {
 	mu          sync.Mutex
 	refreshes   int
+	closes      int
 	instruments []exchange.Instrument
 	err         error
 	entered     chan struct{}
@@ -241,7 +242,12 @@ func (connector *scriptedConnector) Refresh(ctx context.Context) ([]exchange.Ins
 	return connector.instruments, connector.err
 }
 
-func (*scriptedConnector) Close() error { return nil }
+func (connector *scriptedConnector) Close() error {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.closes++
+	return nil
+}
 
 type scriptedFactory map[routeprofile.Key]*scriptedConnector
 
@@ -310,6 +316,25 @@ func TestStaleConnectorAffectsOnlyItsProfile(t *testing.T) {
 	}
 	if snapshot, err := registry.Refresh(context.Background(), perpKey); err != nil || len(snapshot.Instruments) != 1 {
 		t.Fatalf("perp snapshot=%+v err=%v", snapshot, err)
+	}
+}
+
+func TestRegistryCloseClosesLeasedConnectorOnce(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.closes != 1 {
+		t.Fatalf("connector closes=%d want=1", connector.closes)
 	}
 }
 
