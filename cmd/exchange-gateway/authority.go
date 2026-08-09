@@ -20,6 +20,9 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 type gatewayAuthority struct {
@@ -236,12 +239,46 @@ func (authority *gatewayAuthority) ApplySnapshot(ctx context.Context, desired st
 	if ctx == nil || authority.snapshots == nil {
 		return store.PromotionResult{}, errors.New("runtime snapshot authority is unavailable")
 	}
+	retired, err := authority.snapshots.IsSecretReferenceRetired(ctx, authoritySecretScope(authority.mode), desired.SecretRef)
+	if err != nil {
+		return store.PromotionResult{}, err
+	}
+	if retired {
+		return store.PromotionResult{}, store.ErrRetiredSecretReference
+	}
+	current, err := authority.snapshots.LoadRuntimeState(ctx, desired.AccountID)
+	if err == nil && current.Active != nil && current.Active.OperationID == desired.OperationID {
+		currentDigest, digestErr := current.Active.CanonicalDigest()
+		desiredDigest, desiredErr := desired.CanonicalDigest()
+		if digestErr != nil || desiredErr != nil || currentDigest != desiredDigest {
+			return store.PromotionResult{}, store.ErrOperationConflict
+		}
+		return store.PromotionResult{Active: *current.Active}, nil
+	}
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return store.PromotionResult{}, err
+	}
 	pending, err := authority.snapshots.PreparePending(ctx, desired)
 	if err != nil {
 		return store.PromotionResult{}, err
 	}
 	group, err := authority.manager.BuildCandidate(ctx, pending)
 	if err != nil {
+		observedAt := authority.now().UTC()
+		for _, route := range pending.Routes {
+			if route.RequestedState != store.RouteActive {
+				continue
+			}
+			if observationErr := authority.snapshots.RecordCandidateObservation(ctx, store.CandidateObservation{
+				OperationID: pending.OperationID, ObservationRevision: 1, RouteID: route.RouteID,
+				State: store.CandidateFailed, ReasonCode: "CANDIDATE_BUILD_FAILED", ObservedAt: observedAt,
+			}); observationErr != nil {
+				return store.PromotionResult{}, observationErr
+			}
+		}
+		if failedErr := authority.snapshots.MarkCandidateFailed(ctx, pending.OperationID); failedErr != nil {
+			return store.PromotionResult{}, failedErr
+		}
 		return store.PromotionResult{}, err
 	}
 	observedAt := authority.now().UTC()
@@ -272,12 +309,22 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 	var response httpapi.AuthorityResponse
 	var err error
 	switch request.Operation {
+	case httpapi.AuthorityApplyDesired:
+		response, err = authority.applyDesired(ctx, request)
+	case httpapi.AuthorityRetireDesired:
+		response, err = authority.retireDesired(ctx, request)
+	case httpapi.AuthorityFinalizeRotation:
+		response, err = authority.finalizeRotation(ctx, request)
 	case httpapi.AuthorityCreateDesired:
 		response, err = authority.create(ctx, request.Desired)
 	case httpapi.AuthorityListDesired:
 		response, err = authority.listDesired(ctx)
 	case httpapi.AuthorityGetDesired:
-		response, err = authority.getDesired(ctx, request.AccountID)
+		if authority.snapshots != nil {
+			response, err = authority.getRuntimeView(ctx, request.AccountID)
+		} else {
+			response, err = authority.getDesired(ctx, request.AccountID)
+		}
 	case httpapi.AuthorityValidateDesired:
 		response, err = authority.validate(ctx, request)
 	case httpapi.AuthorityRotateDesired:
@@ -317,21 +364,6 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		} else {
 			response.Body = fact
 		}
-	case httpapi.AuthorityMarketDataReadiness:
-		if len(request.Query) != 0 {
-			err = errors.New("market-data readiness query is not allowed")
-		} else {
-			var catalog authorityCatalogInstruments
-			catalog, err = authority.reads.Instruments()
-			ready := false
-			for _, instrument := range catalog.Instruments {
-				if instrument.Ready {
-					ready = true
-					break
-				}
-			}
-			response.Body = map[string]bool{"ready": ready}
-		}
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions,
 		httpapi.AuthorityRuntimeUncertain, httpapi.AuthorityRuntimeEvents,
 		httpapi.AuthorityPrivateEvents:
@@ -343,6 +375,240 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
+}
+
+func (authority *gatewayAuthority) retireDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
+	if request.Retirement == nil || request.Mode != string(authority.mode) || request.AccountID != request.Retirement.AccountID || request.OperationID != request.Retirement.OperationID || request.Retirement.DesiredStateRevision < 2 {
+		return httpapi.AuthorityResponse{}, errors.New("runtime retirement request is invalid")
+	}
+	operationID, err := secretstore.ParseOperationID(request.OperationID)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	accountID := domain.AccountID(request.AccountID)
+	retirement := store.RetirementRequest{
+		OperationID: operationID, AccountID: accountID,
+		ExpectedActiveFence: domain.AccountFence{
+			AccountID: accountID, DesiredStateRevision: uint64(request.Retirement.DesiredStateRevision - 1),
+			RuntimeGeneration: uint64(request.Retirement.RuntimeGeneration), CredentialVersion: uint64(request.Retirement.CredentialVersion),
+		},
+		TombstoneRevision: uint64(request.Retirement.DesiredStateRevision),
+		Scope:             authoritySecretScope(authority.mode),
+	}
+	result, err := authority.manager.RetireRuntime(ctx, retirement)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	state, err := authority.snapshots.LoadRuntimeState(ctx, accountID)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	if !state.Tombstoned || state.TombstoneRevision != result.TombstoneRevision || state.Active != nil || state.Pending != nil || len(state.Retiring) != 0 {
+		return httpapi.AuthorityResponse{}, store.ErrOperationConflict
+	}
+	return httpapi.AuthorityResponse{Body: authority.runtimeView(state), Status: http.StatusOK}, nil
+}
+
+func (authority *gatewayAuthority) finalizeRotation(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
+	if request.RotationFinalization == nil || request.Mode != string(authority.mode) ||
+		request.AccountID != request.RotationFinalization.AccountID || request.OperationID != request.RotationFinalization.OperationID {
+		return httpapi.AuthorityResponse{}, errors.New("rotation finalization request is invalid")
+	}
+	operationID, err := secretstore.ParseOperationID(request.OperationID)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	accountID := domain.AccountID(request.AccountID)
+	activeFence, err := accountFenceFromHTTP(request.RotationFinalization.ExpectedActiveFence, accountID)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	retiringFence, err := accountFenceFromHTTP(request.RotationFinalization.ExpectedRetiringFence, accountID)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	finalization := store.RotationFinalizationRequest{
+		OperationID: operationID, AccountID: accountID,
+		ExpectedActiveFence: activeFence, ExpectedRetiringFence: retiringFence,
+		Scope: authoritySecretScope(authority.mode),
+	}
+	if err := finalization.Validate(); err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	result, err := authority.manager.FinalizeRotation(ctx, finalization)
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	if !rotationFinalizationResultMatches(finalization, result) {
+		return httpapi.AuthorityResponse{}, store.ErrOperationConflict
+	}
+	return httpapi.AuthorityResponse{Status: http.StatusOK, Body: httpapi.RotationFinalizationProof{
+		OperationID: string(result.OperationID), AccountID: string(result.AccountID),
+		ActiveFence:          accountFenceToHTTP(result.ActiveFence),
+		RetiringFence:        accountFenceToHTTP(result.RetiringFence),
+		TombstoneRevision:    int64(result.TombstoneRevision),
+		RetiringState:        result.RetiringState,
+		SecretReferenceState: result.SecretReferenceState,
+		CompletedAt:          result.CompletedAt.UTC(),
+	}}, nil
+}
+
+func accountFenceFromHTTP(fence httpapi.AccountFence, accountID domain.AccountID) (domain.AccountFence, error) {
+	if fence.AccountID != string(accountID) || fence.DesiredStateRevision <= 0 || fence.RuntimeGeneration <= 0 || fence.CredentialVersion <= 0 {
+		return domain.AccountFence{}, store.ErrPromotionFenceConflict
+	}
+	result := domain.AccountFence{
+		AccountID: accountID, DesiredStateRevision: uint64(fence.DesiredStateRevision),
+		RuntimeGeneration: uint64(fence.RuntimeGeneration), CredentialVersion: uint64(fence.CredentialVersion),
+	}
+	if err := result.Validate(); err != nil {
+		return domain.AccountFence{}, store.ErrPromotionFenceConflict
+	}
+	return result, nil
+}
+
+func accountFenceToHTTP(fence domain.AccountFence) httpapi.AccountFence {
+	return httpapi.AccountFence{
+		AccountID: string(fence.AccountID), DesiredStateRevision: int64(fence.DesiredStateRevision),
+		RuntimeGeneration: int64(fence.RuntimeGeneration), CredentialVersion: int64(fence.CredentialVersion),
+	}
+}
+
+func rotationFinalizationResultMatches(request store.RotationFinalizationRequest, result store.RotationFinalizationResult) bool {
+	return result.OperationID == request.OperationID && result.AccountID == request.AccountID &&
+		result.ActiveFence == request.ExpectedActiveFence && result.RetiringFence == request.ExpectedRetiringFence &&
+		result.TombstoneRevision == request.ExpectedActiveFence.DesiredStateRevision &&
+		result.RetiringState == "retired" && result.SecretReferenceState == "tombstoned" && !result.CompletedAt.IsZero()
+}
+
+func authoritySecretScope(mode account.RuntimeMode) secretstore.Scope {
+	secretMode := secretstore.Mode(mode)
+	return secretstore.Scope{Mode: secretMode, Namespace: "boltertrader/" + string(secretMode), KeyVersion: "v1"}
+}
+
+func (authority *gatewayAuthority) applyDesired(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
+	if request.DesiredApply == nil || request.Mode != string(authority.mode) || request.AccountID != request.DesiredApply.AccountID || request.OperationID != request.DesiredApply.OperationID {
+		return httpapi.AuthorityResponse{}, errors.New("desired runtime request is invalid")
+	}
+	desired, err := desiredSnapshot(*request.DesiredApply, routeprofile.Mode(authority.mode))
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	if _, err := authority.ApplySnapshot(ctx, desired); err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	return authority.getRuntimeView(ctx, request.AccountID)
+}
+
+func desiredSnapshot(request httpapi.DesiredApplyRequest, mode routeprofile.Mode) (store.DesiredSnapshot, error) {
+	operationID, err := secretstore.ParseOperationID(request.OperationID)
+	if err != nil {
+		return store.DesiredSnapshot{}, errors.New("desired operation id is invalid")
+	}
+	secretRef, err := secretstore.ParseOpaqueRef(request.SecretRef)
+	if err != nil {
+		return store.DesiredSnapshot{}, errors.New("desired secret reference is invalid")
+	}
+	if request.DesiredStateRevision < 1 || request.RuntimeGeneration < 1 || request.CredentialVersion < 1 {
+		return store.DesiredSnapshot{}, errors.New("desired runtime fence is invalid")
+	}
+	routes := make([]store.RouteDefinition, 0, len(request.Routes))
+	for _, requestedRoute := range request.Routes {
+		profile, err := routeprofile.DefaultRegistry().Resolve(mode, request.Venue, requestedRoute.RouteProfileID)
+		if err != nil || string(profile.NativeEnvironment) != request.NativeEnvironment || string(profile.Product) != requestedRoute.Product || profile.SettlementAsset != requestedRoute.SettlementAsset {
+			return store.DesiredSnapshot{}, errors.New("desired route profile is invalid")
+		}
+		routes = append(routes, store.RouteDefinition{
+			RouteID: domain.RouteID(requestedRoute.RouteID), Product: requestedRoute.Product,
+			SettlementAsset: requestedRoute.SettlementAsset, RouteProfileID: requestedRoute.RouteProfileID,
+			RequestedState: store.RouteState(requestedRoute.RequestedState),
+		})
+	}
+	accountID := domain.AccountID(request.AccountID)
+	snapshot := store.DesiredSnapshot{
+		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
+		Venue: request.Venue, NativeEnvironment: request.NativeEnvironment, SecretRef: secretRef,
+		Fence: domain.AccountFence{
+			AccountID: accountID, DesiredStateRevision: uint64(request.DesiredStateRevision),
+			RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
+		},
+		RequestedState: store.DesiredAccountState(request.RequestedState), Routes: routes,
+	}
+	digest, err := snapshot.CanonicalDigest()
+	if err != nil {
+		return store.DesiredSnapshot{}, err
+	}
+	snapshot.RequestDigest = digest
+	return snapshot, nil
+}
+
+func (authority *gatewayAuthority) getRuntimeView(ctx context.Context, accountID string) (httpapi.AuthorityResponse, error) {
+	if authority.snapshots == nil {
+		return httpapi.AuthorityResponse{}, errors.New("runtime snapshot authority is unavailable")
+	}
+	state, err := authority.snapshots.LoadRuntimeState(ctx, domain.AccountID(accountID))
+	if err != nil {
+		return httpapi.AuthorityResponse{}, err
+	}
+	return httpapi.AuthorityResponse{Body: authority.runtimeView(state), Status: http.StatusOK}, nil
+}
+
+func (authority *gatewayAuthority) runtimeView(state store.RuntimeState) httpapi.RuntimeView {
+	view := httpapi.RuntimeView{AccountID: string(state.AccountID), Retiring: []httpapi.RuntimeSnapshotView{}, Tombstoned: state.Tombstoned}
+	if view.AccountID == "" {
+		if state.Active != nil {
+			view.AccountID = string(state.Active.AccountID)
+		} else if state.Pending != nil {
+			view.AccountID = string(state.Pending.AccountID)
+		}
+	}
+	if state.Active != nil {
+		active := authority.snapshotView(state.Active.DesiredSnapshot, nil)
+		view.Active = &active
+	}
+	if state.Pending != nil {
+		pending := httpapi.PendingSnapshotView{
+			RuntimeSnapshotView: authority.snapshotView(state.Pending.DesiredSnapshot, state.Pending.Observations),
+			State:               string(state.Pending.OperationState),
+		}
+		view.Pending = &pending
+	}
+	for _, retiring := range state.Retiring {
+		view.Retiring = append(view.Retiring, authority.snapshotView(retiring.DesiredSnapshot, nil))
+	}
+	return view
+}
+
+func (authority *gatewayAuthority) snapshotView(snapshot store.DesiredSnapshot, observations []store.CandidateObservation) httpapi.RuntimeSnapshotView {
+	latest := make(map[domain.RouteID]store.CandidateObservation, len(observations))
+	for _, observation := range observations {
+		if current, ok := latest[observation.RouteID]; !ok || observation.ObservationRevision >= current.ObservationRevision {
+			latest[observation.RouteID] = observation
+		}
+	}
+	active := authority.manager.ActiveSnapshot(snapshot.AccountID)
+	view := httpapi.RuntimeSnapshotView{
+		OperationID:          string(snapshot.OperationID),
+		DesiredStateRevision: int64(snapshot.Fence.DesiredStateRevision), RuntimeGeneration: int64(snapshot.Fence.RuntimeGeneration),
+		CredentialVersion: int64(snapshot.Fence.CredentialVersion), RequestedState: string(snapshot.RequestedState),
+		Routes: make([]httpapi.RuntimeRouteView, 0, len(snapshot.Routes)),
+	}
+	for _, route := range snapshot.Routes {
+		routeView := httpapi.RuntimeRouteView{
+			RouteID: string(route.RouteID), Product: route.Product, SettlementAsset: route.SettlementAsset,
+			RouteProfileID: route.RouteProfileID, RequestedState: string(route.RequestedState),
+		}
+		if observation, ok := latest[route.RouteID]; ok {
+			routeView.Ready = observation.State == store.CandidateReady
+			routeView.Reason = observation.ReasonCode
+		} else if active != nil && active.Fence == snapshot.Fence {
+			if runtimeRoute, ok := active.Routes[route.RouteID]; ok {
+				routeView.Ready = runtimeRoute.WriteReady
+			}
+		}
+		view.Routes = append(view.Routes, routeView)
+	}
+	return view
 }
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
@@ -915,6 +1181,16 @@ func authorityError(err error) error {
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "INVALID_ACCOUNT_TRANSITION"}
 	case errors.Is(err, store.ErrStaleRuntimeGeneration), errors.Is(err, account.ErrStaleWriteFence):
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "STALE_RUNTIME_FENCE", Retryable: true}
+	case errors.Is(err, store.ErrOperationConflict):
+		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "OPERATION_ID_CONFLICT"}
+	case errors.Is(err, store.ErrPromotionFenceConflict):
+		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "PROMOTION_FENCE_CONFLICT", Retryable: true}
+	case errors.Is(err, store.ErrCandidateNotReady):
+		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "CANDIDATE_NOT_READY", Retryable: true}
+	case errors.Is(err, store.ErrHandoffDrainBlocked):
+		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "HANDOFF_DRAIN_BLOCKED", Retryable: true}
+	case errors.Is(err, store.ErrRetiredSecretReference):
+		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "RETIRED_SECRET_REFERENCE"}
 	case errors.Is(err, account.ErrRuntimeBlocked):
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "ACCOUNT_RUNTIME_BLOCKED"}
 	case errors.Is(err, account.ErrRuntimeModeMismatch):

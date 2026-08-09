@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -13,8 +14,9 @@ import (
 )
 
 var (
-	ErrCandidateFailed   = errors.New("runtime candidate failed")
-	ErrCandidateMismatch = errors.New("runtime candidate fence mismatch")
+	ErrCandidateFailed      = errors.New("runtime candidate failed")
+	ErrCandidateMismatch    = errors.New("runtime candidate fence mismatch")
+	ErrRuntimeCleanupFailed = errors.New("runtime cleanup failed")
 )
 
 type GroupState string
@@ -42,7 +44,11 @@ type ScopedCredentialResolver interface {
 
 type RuntimeStateStore interface {
 	PromotePending(context.Context, store.PromotionRequest) (store.PromotionResult, error)
+	LookupRotationFinalization(context.Context, store.RotationFinalizationRequest) (store.RotationFinalizationResult, error)
+	FinalizeRotation(context.Context, store.RotationFinalizationRequest) (store.RotationFinalizationResult, error)
+	RetireAccount(context.Context, store.RetirementRequest) (store.RetirementResult, error)
 	ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error)
+	IsSecretReferenceRetired(context.Context, secretstore.Scope, secretstore.OpaqueRef) (bool, error)
 }
 
 func (manager *Manager) SetRuntimeStateStore(runtimeStore RuntimeStateStore) error {
@@ -58,6 +64,7 @@ func (manager *Manager) SetRuntimeStateStore(runtimeStore RuntimeStateStore) err
 type RouteRuntime struct {
 	Definition store.RouteDefinition
 	Handle     CandidateRoute
+	closed     bool
 }
 
 type RouteView struct {
@@ -74,6 +81,14 @@ type RuntimeGroup struct {
 	Routes    map[domain.RouteID]*RouteRuntime
 	Admission *GenerationAdmission
 	State     GroupState
+	cleanupMu sync.Mutex
+	cleanup   *runtimeCleanupAttempt
+}
+
+type runtimeCleanupAttempt struct {
+	done    chan struct{}
+	err     error
+	waiters int
 }
 
 type RoutingSnapshot struct {
@@ -86,6 +101,14 @@ type accountRuntime struct {
 	activeGroup *RuntimeGroup
 	candidate   *RuntimeGroup
 	retiring    map[uint64]*RuntimeGroup
+	retirement  *runtimeRetirement
+}
+
+type runtimeRetirement struct {
+	operationID secretstore.OperationID
+	digest      string
+	result      store.RetirementResult
+	groups      []*RuntimeGroup
 }
 
 type GenerationAdmission struct {
@@ -200,6 +223,18 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	if manager.credentialResolver == nil {
 		return nil, ErrCandidateFailed
 	}
+	if manager.runtimeStore != nil {
+		mode := secretstore.Mode(manager.runtimeMode)
+		retired, err := manager.runtimeStore.IsSecretReferenceRetired(ctx, secretstore.Scope{
+			Mode: mode, Namespace: "boltertrader/" + string(mode), KeyVersion: "v1",
+		}, pending.SecretRef)
+		if err != nil {
+			return nil, ErrCandidateFailed
+		}
+		if retired {
+			return nil, store.ErrRetiredSecretReference
+		}
+	}
 	material, err := manager.credentialResolver.Resolve(ctx, pending.SecretRef)
 	if err != nil || len(material) == 0 {
 		clear(material)
@@ -288,6 +323,259 @@ func (manager *Manager) PromoteCandidate(ctx context.Context, group *RuntimeGrou
 	return result, nil
 }
 
+func (manager *Manager) FinalizeRotation(ctx context.Context, request store.RotationFinalizationRequest) (store.RotationFinalizationResult, error) {
+	if ctx == nil || manager.runtimeStore == nil {
+		return store.RotationFinalizationResult{}, ErrCandidateMismatch
+	}
+	if err := request.Validate(); err != nil {
+		return store.RotationFinalizationResult{}, err
+	}
+
+	result, err := manager.runtimeStore.LookupRotationFinalization(ctx, request)
+	if err == nil {
+		if !rotationFinalizationMatches(request, result) {
+			return store.RotationFinalizationResult{}, ErrCandidateMismatch
+		}
+		if err := manager.cleanupRetiringGeneration(ctx, request, false); err != nil {
+			return store.RotationFinalizationResult{}, err
+		}
+		return result, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return store.RotationFinalizationResult{}, err
+	}
+
+	if err := manager.closeRetiringGeneration(ctx, request, true); err != nil {
+		return store.RotationFinalizationResult{}, err
+	}
+	result, err = manager.runtimeStore.FinalizeRotation(ctx, request)
+	if err != nil {
+		return store.RotationFinalizationResult{}, err
+	}
+	if !rotationFinalizationMatches(request, result) {
+		return store.RotationFinalizationResult{}, ErrCandidateMismatch
+	}
+	if err := manager.removeRetiringGeneration(ctx, request); err != nil {
+		return store.RotationFinalizationResult{}, err
+	}
+	return result, nil
+}
+
+func (manager *Manager) cleanupRetiringGeneration(ctx context.Context, request store.RotationFinalizationRequest, requireActive bool) error {
+	if err := manager.closeRetiringGeneration(ctx, request, requireActive); err != nil {
+		return err
+	}
+	return manager.removeRetiringGeneration(ctx, request)
+}
+
+func (manager *Manager) closeRetiringGeneration(ctx context.Context, request store.RotationFinalizationRequest, requireActive bool) error {
+	manager.groupMu.Lock()
+	runtime := manager.groups[request.AccountID]
+	if runtime == nil {
+		manager.groupMu.Unlock()
+		return nil
+	}
+	if requireActive {
+		active := runtime.active.Load()
+		if active == nil || runtime.activeGroup == nil || active.Fence != request.ExpectedActiveFence || runtime.activeGroup.Snapshot.Fence != request.ExpectedActiveFence {
+			manager.groupMu.Unlock()
+			return ErrStaleWriteFence
+		}
+	}
+	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	if group != nil && group.Snapshot.Fence != request.ExpectedRetiringFence {
+		manager.groupMu.Unlock()
+		return ErrStaleWriteFence
+	}
+	manager.groupMu.Unlock()
+	if group == nil {
+		return nil
+	}
+	return group.Admission.CloseAndWait(ctx)
+}
+
+func (manager *Manager) removeRetiringGeneration(ctx context.Context, request store.RotationFinalizationRequest) error {
+	manager.groupMu.Lock()
+	runtime := manager.groups[request.AccountID]
+	if runtime == nil {
+		manager.groupMu.Unlock()
+		return nil
+	}
+	group := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	if group == nil {
+		manager.groupMu.Unlock()
+		return nil
+	}
+	if group.Snapshot.Fence != request.ExpectedRetiringFence {
+		manager.groupMu.Unlock()
+		return ErrStaleWriteFence
+	}
+	manager.groupMu.Unlock()
+	if err := group.destroyConfirmed(ctx); err != nil {
+		return err
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime = manager.groups[request.AccountID]
+	if runtime == nil {
+		return nil
+	}
+	current := runtime.retiring[request.ExpectedRetiringFence.RuntimeGeneration]
+	if current == nil {
+		return nil
+	}
+	if current != group || current.Snapshot.Fence != request.ExpectedRetiringFence {
+		return ErrStaleWriteFence
+	}
+	delete(runtime.retiring, request.ExpectedRetiringFence.RuntimeGeneration)
+	return nil
+}
+
+func rotationFinalizationMatches(request store.RotationFinalizationRequest, result store.RotationFinalizationResult) bool {
+	return result.OperationID == request.OperationID && result.AccountID == request.AccountID &&
+		result.ActiveFence == request.ExpectedActiveFence && result.RetiringFence == request.ExpectedRetiringFence &&
+		result.TombstoneRevision == request.ExpectedActiveFence.DesiredStateRevision &&
+		result.RetiringState == "retired" && result.SecretReferenceState == "tombstoned" && !result.CompletedAt.IsZero()
+}
+
+func (manager *Manager) RetireRuntime(ctx context.Context, request store.RetirementRequest) (store.RetirementResult, error) {
+	if ctx == nil || manager.runtimeStore == nil {
+		return store.RetirementResult{}, ErrCandidateMismatch
+	}
+	if err := request.Validate(); err != nil {
+		return store.RetirementResult{}, err
+	}
+
+	manager.groupMu.Lock()
+	runtime := manager.groups[request.AccountID]
+	if runtime == nil {
+		manager.groupMu.Unlock()
+		return manager.runtimeStore.RetireAccount(ctx, request)
+	}
+	if runtime.retirement != nil {
+		retirement := runtime.retirement
+		digest, digestErr := request.CanonicalDigest()
+		if digestErr != nil || retirement.operationID != request.OperationID || retirement.digest != digest {
+			manager.groupMu.Unlock()
+			return store.RetirementResult{}, store.ErrOperationConflict
+		}
+		manager.groupMu.Unlock()
+		if err := manager.finishRuntimeRetirement(ctx, request.AccountID, runtime, retirement); err != nil {
+			return store.RetirementResult{}, err
+		}
+		return retirement.result, nil
+	}
+	active := runtime.active.Load()
+	if active == nil || runtime.activeGroup == nil || active.Fence != request.ExpectedActiveFence {
+		manager.groupMu.Unlock()
+		return store.RetirementResult{}, ErrStaleWriteFence
+	}
+	groups := make([]*RuntimeGroup, 0, 2+len(runtime.retiring))
+	seen := make(map[*RuntimeGroup]struct{}, 2+len(runtime.retiring))
+	appendGroup := func(group *RuntimeGroup) {
+		if group == nil {
+			return
+		}
+		if _, exists := seen[group]; exists {
+			return
+		}
+		seen[group] = struct{}{}
+		groups = append(groups, group)
+	}
+	appendGroup(runtime.activeGroup)
+	appendGroup(runtime.candidate)
+	for _, retiring := range runtime.retiring {
+		appendGroup(retiring)
+	}
+	manager.groupMu.Unlock()
+
+	for _, group := range groups {
+		if err := group.Admission.CloseAndWait(ctx); err != nil {
+			return store.RetirementResult{}, err
+		}
+	}
+	if manager.lifecycle == nil {
+		return store.RetirementResult{}, fmt.Errorf("runtime lifecycle unavailable")
+	}
+	blockers, err := manager.lifecycle.Blockers(ctx, request.AccountID)
+	if err != nil {
+		return store.RetirementResult{}, fmt.Errorf("runtime blocker check failed")
+	}
+	if blockers.Any() {
+		return store.RetirementResult{}, ErrRuntimeBlocked
+	}
+	result, err := manager.runtimeStore.RetireAccount(ctx, request)
+	if err != nil {
+		return store.RetirementResult{}, err
+	}
+	if !result.Tombstoned || result.OperationID != request.OperationID || result.AccountID != request.AccountID || result.TombstoneRevision != request.TombstoneRevision || result.CompletedAt.IsZero() {
+		return store.RetirementResult{}, ErrCandidateMismatch
+	}
+	digest, err := request.CanonicalDigest()
+	if err != nil {
+		return store.RetirementResult{}, err
+	}
+
+	manager.groupMu.Lock()
+	current := manager.groups[request.AccountID]
+	if current == nil {
+		manager.groupMu.Unlock()
+		return result, nil
+	}
+	if current != runtime {
+		manager.groupMu.Unlock()
+		return store.RetirementResult{}, ErrCandidateMismatch
+	}
+	retirement := runtime.retirement
+	if retirement != nil {
+		if retirement.operationID != request.OperationID || retirement.digest != digest {
+			manager.groupMu.Unlock()
+			return store.RetirementResult{}, store.ErrOperationConflict
+		}
+	} else {
+		retirement = &runtimeRetirement{
+			operationID: request.OperationID,
+			digest:      digest,
+			result:      result,
+			groups:      groups,
+		}
+		runtime.retirement = retirement
+		runtime.active.Store(nil)
+	}
+	manager.groupMu.Unlock()
+	manager.mu.Lock()
+	delete(manager.runtimes, request.AccountID)
+	manager.mu.Unlock()
+	if err := manager.finishRuntimeRetirement(ctx, request.AccountID, runtime, retirement); err != nil {
+		return store.RetirementResult{}, err
+	}
+	return retirement.result, nil
+}
+
+func (manager *Manager) finishRuntimeRetirement(ctx context.Context, accountID domain.AccountID, runtime *accountRuntime, retirement *runtimeRetirement) error {
+	for _, group := range retirement.groups {
+		if err := group.destroyConfirmed(ctx); err != nil {
+			return err
+		}
+	}
+
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	current := manager.groups[accountID]
+	if current == nil {
+		return nil
+	}
+	if current != runtime || current.retirement != retirement {
+		return ErrCandidateMismatch
+	}
+	current.activeGroup = nil
+	current.candidate = nil
+	current.retiring = make(map[uint64]*RuntimeGroup)
+	current.retirement = nil
+	delete(manager.groups, accountID)
+	return nil
+}
+
 func (manager *Manager) publishApplied(group *RuntimeGroup, active store.ActiveSnapshot) error {
 	manager.groupMu.Lock()
 	defer manager.groupMu.Unlock()
@@ -325,8 +613,9 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Retiring generations stay DB-authoritative after restart; finalization does not rehydrate secret-bearing route handles.
 	for _, state := range states {
-		if state.Active == nil {
+		if state.Tombstoned || state.Active == nil {
 			continue
 		}
 		candidate, err := manager.BuildCandidate(ctx, store.PendingSnapshot{DesiredSnapshot: state.Active.DesiredSnapshot, OperationState: store.OperationApplied})
@@ -338,7 +627,7 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 		}
 	}
 	for _, state := range states {
-		if state.Pending == nil {
+		if state.Tombstoned || state.Pending == nil {
 			continue
 		}
 		if _, err := manager.BuildCandidate(ctx, *state.Pending); err != nil {
@@ -397,4 +686,55 @@ func (group *RuntimeGroup) destroy() {
 		}
 	}
 	group.State = GroupDestroyed
+}
+
+func (group *RuntimeGroup) destroyConfirmed(ctx context.Context) error {
+	group.cleanupMu.Lock()
+	if group.State == GroupDestroyed {
+		group.cleanupMu.Unlock()
+		return nil
+	}
+	if group.cleanup != nil {
+		attempt := group.cleanup
+		attempt.waiters++
+		group.cleanupMu.Unlock()
+		var err error
+		select {
+		case <-attempt.done:
+			err = attempt.err
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		group.cleanupMu.Lock()
+		attempt.waiters--
+		group.cleanupMu.Unlock()
+		return err
+	}
+	attempt := &runtimeCleanupAttempt{done: make(chan struct{})}
+	group.cleanup = attempt
+	group.cleanupMu.Unlock()
+
+	failed := false
+	for _, route := range group.Routes {
+		if route.Handle == nil || route.closed {
+			continue
+		}
+		if err := route.Handle.Close(); err != nil {
+			failed = true
+			continue
+		}
+		route.closed = true
+	}
+	if failed {
+		attempt.err = ErrRuntimeCleanupFailed
+	}
+
+	group.cleanupMu.Lock()
+	if attempt.err == nil {
+		group.State = GroupDestroyed
+	}
+	group.cleanup = nil
+	close(attempt.done)
+	group.cleanupMu.Unlock()
+	return attempt.err
 }

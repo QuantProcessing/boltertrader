@@ -226,6 +226,9 @@ func (service *Service) transition(ctx context.Context, id string, revision int6
 	if account.DesiredStateRevision != revision {
 		return Account{}, ErrRevisionConflict
 	}
+	if account.PreviousSecretRef != "" {
+		return Account{}, ErrAccountBlocked
+	}
 	if !desiredstate.AllowedTransition(account.State, next) {
 		return Account{}, ErrInvalidTransition
 	}
@@ -251,6 +254,9 @@ func (service *Service) mutate(ctx context.Context, id string, revision int64, p
 	}
 	if account.DesiredStateRevision != revision {
 		return Account{}, ErrRevisionConflict
+	}
+	if account.PreviousSecretRef != "" {
+		return Account{}, ErrAccountBlocked
 	}
 	if err := change(&account); err != nil {
 		return Account{}, err

@@ -36,3 +36,19 @@ func OrderHandoffsMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func AccountRetirementsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/005_account_retirements.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}
+
+func RotationFinalizationsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/006_rotation_finalizations.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

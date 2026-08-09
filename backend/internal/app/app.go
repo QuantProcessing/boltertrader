@@ -41,19 +41,21 @@ import (
 )
 
 type App struct {
-	cfg           config.Config
-	contract      backendcontract.Contract
-	accounts      *accounts.Service
-	browser       *http.Server
-	work          *http.Server
-	browserLn     net.Listener
-	workLn        net.Listener
-	startOnce     sync.Once
-	shutdownOnce  sync.Once
-	reconciler    *orders.Reconciler
-	reconcileStop context.CancelFunc
-	reconcileDone chan struct{}
-	secretReady   bool
+	cfg                  config.Config
+	contract             backendcontract.Contract
+	accounts             *accounts.Service
+	browser              *http.Server
+	work                 *http.Server
+	browserLn            net.Listener
+	workLn               net.Listener
+	startOnce            sync.Once
+	shutdownOnce         sync.Once
+	reconciler           *orders.Reconciler
+	accountReconciler    *accountReconciler
+	reconcileStop        context.CancelFunc
+	reconcileDone        chan struct{}
+	accountReconcileDone chan struct{}
+	secretReady          bool
 }
 
 type Dependencies struct {
@@ -76,7 +78,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, AccountingSource: adapter, ReconciliationGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, AccountingSource: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -162,12 +164,24 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	accountService, err := accounts.New(accounts.Options{Store: accountStore, Secrets: accounts.SecretStoreAdapter{Store: secretStore}, Audit: accounts.AuditServiceAdapter{Service: auditService}, Gateway: dependencies.AccountGateway, Mode: secretstore.Mode(cfg.Mode)})
+	accountSecrets := accounts.SecretStoreAdapter{Store: secretStore}
+	accountService, err := accounts.New(accounts.Options{Store: accountStore, Secrets: accountSecrets, Audit: accounts.AuditServiceAdapter{Service: auditService}, Gateway: dependencies.AccountGateway, Mode: secretstore.Mode(cfg.Mode)})
 	if err != nil {
 		return nil, err
 	}
 
 	now := func() time.Time { return time.Now().UTC() }
+	var accountLifecycleReconciler *accountReconciler
+	if dependencies.AccountGateway != nil && dependencies.RuntimeProbe != nil {
+		credentialReconciler, reconcileErr := accounts.NewReconciler(accountStore, accountSecrets, dependencies.AccountGateway, now)
+		if reconcileErr != nil {
+			return nil, reconcileErr
+		}
+		accountLifecycleReconciler, reconcileErr = newAccountReconciler(credentialReconciler, dependencies.RuntimeProbe, 5*time.Second, 64)
+		if reconcileErr != nil {
+			return nil, reconcileErr
+		}
+	}
 	catalogSource := dependencies.CatalogSource
 	if catalogSource == nil {
 		catalogSource = unavailableCatalogSource{}
@@ -221,7 +235,18 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		}
 		return readinessComponent(true, "")
 	})
-	readiness.Update("accounts", readinessComponent(databaseReady && secretReady, "durable_account_dependencies_missing"))
+	readiness.SetEvaluator("accounts", func() platformsystem.Component {
+		if !databaseReady || !secretReady {
+			return readinessComponent(false, "durable_account_dependencies_missing")
+		}
+		if accountLifecycleReconciler == nil {
+			return readinessComponent(false, "account_reconciler_missing")
+		}
+		if err := accountLifecycleReconciler.Readiness(); err != nil {
+			return readinessComponent(false, err.Error())
+		}
+		return readinessComponent(true, "")
+	})
 	readiness.Update("fundingWorker", readinessComponent(false, "worker_not_registered"))
 	authenticate := httpapi.SessionAuthenticator(sessionService)
 	principal := func(r *http.Request) (string, string, error) {
@@ -346,13 +371,14 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return readinessComponent(workService.AnyWorkerReady(), "worker_not_ready")
 	})
 	return &App{
-		cfg:         cfg,
-		contract:    contract,
-		accounts:    accountService,
-		browser:     &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		work:        &http.Server{Addr: cfg.WorkListenAddr, Handler: workHandler},
-		reconciler:  reconciliationRunner,
-		secretReady: secretReady,
+		cfg:               cfg,
+		contract:          contract,
+		accounts:          accountService,
+		browser:           &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
+		work:              &http.Server{Addr: cfg.WorkListenAddr, Handler: workHandler},
+		reconciler:        reconciliationRunner,
+		accountReconciler: accountLifecycleReconciler,
+		secretReady:       secretReady,
 	}, nil
 }
 
@@ -428,13 +454,23 @@ func (a *App) Start(ctx context.Context) error {
 		}
 		go func() { _ = a.browser.Serve(a.browserLn) }()
 		go func() { _ = a.work.Serve(a.workLn) }()
-		if a.reconciler != nil {
+		if a.reconciler != nil || a.accountReconciler != nil {
 			reconcileCtx, cancel := context.WithCancel(ctx)
-			a.reconcileStop, a.reconcileDone = cancel, make(chan struct{})
-			go func() {
-				defer close(a.reconcileDone)
-				a.reconciler.Run(reconcileCtx)
-			}()
+			a.reconcileStop = cancel
+			if a.reconciler != nil {
+				a.reconcileDone = make(chan struct{})
+				go func() {
+					defer close(a.reconcileDone)
+					a.reconciler.Run(reconcileCtx)
+				}()
+			}
+			if a.accountReconciler != nil {
+				a.accountReconcileDone = make(chan struct{})
+				go func() {
+					defer close(a.accountReconcileDone)
+					a.accountReconciler.Run(reconcileCtx)
+				}()
+			}
 		}
 	})
 	if err != nil {
@@ -455,6 +491,15 @@ func (a *App) Shutdown(ctx context.Context) error {
 			case <-a.reconcileDone:
 			case <-ctx.Done():
 				first = ctx.Err()
+			}
+		}
+		if a.accountReconcileDone != nil {
+			select {
+			case <-a.accountReconcileDone:
+			case <-ctx.Done():
+				if first == nil {
+					first = ctx.Err()
+				}
 			}
 		}
 		if a.work != nil {
@@ -502,7 +547,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer credentialProvider.Close()
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
 	if err != nil {
 		return err
 	}

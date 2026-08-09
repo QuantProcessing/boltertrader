@@ -33,12 +33,20 @@ func (reconciler *Reconciler) RunOnce(ctx context.Context, limit int) error {
 	if err != nil {
 		return errors.New("credential recovery scan failed")
 	}
+	var reconcileErrors []error
 	for _, operation := range operations {
 		if err := reconciler.reconcile(ctx, operation); err != nil {
-			return err
+			reconcileErrors = append(reconcileErrors, err)
 		}
 	}
-	return nil
+	switch len(reconcileErrors) {
+	case 0:
+		return nil
+	case 1:
+		return reconcileErrors[0]
+	default:
+		return errors.Join(reconcileErrors...)
+	}
 }
 
 func (reconciler *Reconciler) reconcile(ctx context.Context, operation CredentialOperation) error {
@@ -74,44 +82,39 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 	if operation.State == OperationApplying {
 		truth, err := reconciler.gateway.ApplyDesired(ctx, DesiredApply{OperationID: operation.ID, Account: account})
 		if err != nil {
-			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_APPLY_FAILED")
+			var resultError ApplyResultError
+			if !errors.As(err, &resultError) || !resultError.ResultMayHaveCommitted() {
+				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_APPLY_FAILED")
+			}
+			truth, err = reconciler.gateway.GetRuntimeTruth(ctx, account.ID)
+			if err != nil {
+				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_APPLY_FAILED")
+			}
 		}
-		if !truth.Active || truth.AccountID != account.ID || truth.DesiredStateRevision != account.DesiredStateRevision || truth.RuntimeGeneration != account.RuntimeGeneration || truth.CredentialVersion != account.CredentialVersion {
+		if !exactGatewayActiveTruth(operation.ID, account, truth) {
 			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_FENCE_MISMATCH")
 		}
 		account.State = StateActive
 		account.UpdatedAt = reconciler.now().UTC()
-		operation.State, operation.StableErrorCode, operation.UpdatedAt = OperationActive, "", account.UpdatedAt
+		operation.State = OperationActive
+		if operation.Kind == OperationRotate {
+			operation.State = OperationCleanupPending
+		}
+		operation.StableErrorCode, operation.UpdatedAt = "", account.UpdatedAt
 		if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationApplying, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation}); err != nil {
 			return errors.New("credential recovery promotion failed")
 		}
 	}
 	if operation.State == OperationCleanupPending {
 		if operation.Kind == OperationRotate {
-			truth, err := reconciler.gateway.GetRuntimeTruth(ctx, account.ID)
-			if err != nil || !truth.Active || !truth.Tombstoned || truth.RuntimeGeneration != account.RuntimeGeneration || truth.CredentialVersion != account.CredentialVersion {
-				return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_ROTATION_CLEANUP_PENDING")
-			}
-			cleaner, ok := reconciler.secrets.(SecretCleaner)
-			if !ok {
-				return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_UNAVAILABLE")
-			}
-			if account.PreviousSecretRef != "" {
-				if err := cleaner.Delete(ctx, account.PreviousSecretRef); err != nil {
-					return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_FAILED")
-				}
-			}
-			if err := callHook(reconciler.hooks.AfterProviderDelete); err != nil {
-				return err
-			}
-			account.PreviousSecretRef, account.UpdatedAt = "", reconciler.now().UTC()
-			operation.State, operation.StableErrorCode, operation.UpdatedAt = OperationActive, "", account.UpdatedAt
-			if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationCleanupPending, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation}); err != nil {
-				return errors.New("credential rotation cleanup commit failed")
-			}
-			return nil
+			return reconciler.reconcileRotationCleanup(ctx, account, operation)
 		}
-		retirement, err := reconciler.gateway.RetireAccount(ctx, RetireRequest{OperationID: operation.ID, AccountID: account.ID})
+		retirement, err := reconciler.gateway.RetireAccount(ctx, RetireRequest{
+			OperationID: operation.ID, AccountID: account.ID,
+			DesiredStateRevision: account.DesiredStateRevision,
+			RuntimeGeneration:    account.RuntimeGeneration,
+			CredentialVersion:    account.CredentialVersion,
+		})
 		if err != nil || !retirement.Tombstoned || retirement.Blockers.Any() {
 			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_RETIREMENT_PENDING")
 		}
@@ -123,10 +126,14 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 			return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_UNAVAILABLE")
 		}
 		if account.PreviousSecretRef != "" {
-			_ = cleaner.Delete(ctx, account.PreviousSecretRef)
+			if err := cleaner.Delete(ctx, account.PreviousSecretRef); err != nil {
+				return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_FAILED")
+			}
 		}
 		if account.SecretRef != "" {
-			_ = cleaner.Delete(ctx, account.SecretRef)
+			if err := cleaner.Delete(ctx, account.SecretRef); err != nil {
+				return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_FAILED")
+			}
 		}
 		if err := callHook(reconciler.hooks.AfterProviderDelete); err != nil {
 			return err
@@ -137,6 +144,45 @@ func (reconciler *Reconciler) reconcile(ctx context.Context, operation Credentia
 		if _, _, err := reconciler.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationCleanupPending, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation}); err != nil {
 			return errors.New("credential cleanup commit failed")
 		}
+	}
+	return nil
+}
+
+func (reconciler *Reconciler) reconcileRotationCleanup(ctx context.Context, account Account, operation CredentialOperation) error {
+	request, err := rotationCleanupRequestFor(account, operation)
+	if err != nil {
+		return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_ROTATION_FENCE_MISMATCH")
+	}
+	if !HasRotationCleanupProof(account, operation) {
+		proof, finalizeErr := reconciler.gateway.FinalizeRotation(ctx, request)
+		if finalizeErr != nil || proof.ValidateFor(request) != nil {
+			return reconciler.recordStableFailure(ctx, account, operation, "GATEWAY_ROTATION_CLEANUP_PENDING")
+		}
+		persisted, err := reconciler.store.RecordRotationCleanupProof(ctx, proof)
+		if err != nil {
+			return reconciler.recordStableFailure(ctx, account, operation, "ROTATION_CLEANUP_PROOF_PERSIST_FAILED")
+		}
+		operation = persisted
+	}
+	if !HasRotationCleanupProof(account, operation) {
+		return reconciler.recordStableFailure(ctx, account, operation, "ROTATION_CLEANUP_PROOF_INVALID")
+	}
+	cleaner, ok := reconciler.secrets.(SecretCleaner)
+	if !ok {
+		return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_UNAVAILABLE")
+	}
+	if err := cleaner.Delete(ctx, account.PreviousSecretRef); err != nil {
+		return reconciler.recordStableFailure(ctx, account, operation, "SECRET_DELETE_FAILED")
+	}
+	if err := callHook(reconciler.hooks.AfterProviderDelete); err != nil {
+		return err
+	}
+	_, _, err = reconciler.store.CompleteRotationCleanup(ctx, RotationCleanupCompletion{
+		OperationID: operation.ID, AccountID: account.ID,
+		PreviousSecretRef: account.PreviousSecretRef, CompletedAt: reconciler.now().UTC(),
+	})
+	if err != nil {
+		return errors.New("credential rotation cleanup commit failed")
 	}
 	return nil
 }

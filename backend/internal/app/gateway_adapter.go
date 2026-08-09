@@ -6,20 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 type gatewayAdapter struct {
@@ -31,7 +36,10 @@ type gatewayAdapter struct {
 	requireAttestation bool
 }
 
-const gatewayModeHeader = "X-Bolter-Mode"
+const (
+	gatewayModeHeader             = "X-Bolter-Mode"
+	gatewayAuthorityResponseLimit = 64 << 10
+)
 
 type gatewayReadEnvelope[T any] struct {
 	Data T `json:"data"`
@@ -59,6 +67,117 @@ type gatewayRuntimeCapability struct {
 	Settlement string                      `json:"settlement,omitempty"`
 	WriteReady bool                        `json:"writeReady"`
 	Operations gatewayCapabilityOperations `json:"operations"`
+}
+
+type gatewayDesiredRoute struct {
+	RouteID         string `json:"routeId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	RouteProfileID  string `json:"routeProfileId"`
+	RequestedState  string `json:"requestedState"`
+}
+
+type gatewayDesiredApplyRequest struct {
+	OperationID          string                `json:"operationId"`
+	AccountID            string                `json:"accountId"`
+	Venue                string                `json:"venue"`
+	NativeEnvironment    string                `json:"nativeEnvironment"`
+	SecretRef            string                `json:"secretRef"`
+	DesiredStateRevision int64                 `json:"desiredStateRevision"`
+	RuntimeGeneration    int64                 `json:"runtimeGeneration"`
+	CredentialVersion    int64                 `json:"credentialVersion"`
+	RequestedState       string                `json:"requestedState"`
+	Routes               []gatewayDesiredRoute `json:"routes"`
+}
+
+type gatewayRetireRequest struct {
+	OperationID          string `json:"operationId"`
+	AccountID            string `json:"accountId"`
+	DesiredStateRevision int64  `json:"desiredStateRevision"`
+	RuntimeGeneration    int64  `json:"runtimeGeneration"`
+	CredentialVersion    int64  `json:"credentialVersion"`
+}
+
+type gatewayAccountFence struct {
+	AccountID            string `json:"accountId"`
+	DesiredStateRevision int64  `json:"desiredStateRevision"`
+	RuntimeGeneration    int64  `json:"runtimeGeneration"`
+	CredentialVersion    int64  `json:"credentialVersion"`
+}
+
+type gatewayRotationCleanupRequest struct {
+	OperationID           string              `json:"operationId"`
+	AccountID             string              `json:"accountId"`
+	ExpectedActiveFence   gatewayAccountFence `json:"expectedActiveFence"`
+	ExpectedRetiringFence gatewayAccountFence `json:"expectedRetiringFence"`
+}
+
+type gatewayRotationCleanupProof struct {
+	OperationID          string              `json:"operationId"`
+	AccountID            string              `json:"accountId"`
+	ActiveFence          gatewayAccountFence `json:"activeFence"`
+	RetiringFence        gatewayAccountFence `json:"retiringFence"`
+	TombstoneRevision    int64               `json:"tombstoneRevision"`
+	RetiringState        string              `json:"retiringState"`
+	SecretReferenceState string              `json:"secretReferenceState"`
+	CompletedAt          time.Time           `json:"completedAt"`
+}
+
+type gatewayRouteRuntimeView struct {
+	RouteID         string `json:"routeId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	RouteProfileID  string `json:"routeProfileId"`
+	RequestedState  string `json:"requestedState"`
+	Ready           bool   `json:"ready"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+type gatewayRuntimeSnapshotView struct {
+	OperationID          string                    `json:"operationId"`
+	DesiredStateRevision int64                     `json:"desiredStateRevision"`
+	RuntimeGeneration    int64                     `json:"runtimeGeneration"`
+	CredentialVersion    int64                     `json:"credentialVersion"`
+	RequestedState       string                    `json:"requestedState"`
+	Routes               []gatewayRouteRuntimeView `json:"routes"`
+}
+
+type gatewayPendingSnapshotView struct {
+	gatewayRuntimeSnapshotView
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type gatewayDesiredRuntimeView struct {
+	AccountID      string                       `json:"accountId"`
+	RequestedState string                       `json:"requestedState,omitempty"`
+	Routes         []gatewayDesiredRoute        `json:"routes,omitempty"`
+	Active         *gatewayRuntimeSnapshotView  `json:"active,omitempty"`
+	Pending        *gatewayPendingSnapshotView  `json:"pending,omitempty"`
+	Retiring       []gatewayRuntimeSnapshotView `json:"retiring,omitempty"`
+	Tombstoned     *bool                        `json:"tombstoned"`
+}
+
+type gatewayAuthorityError struct {
+	Code             string
+	Retryable        bool
+	MayHaveCommitted bool
+	AccountID        string
+	RouteID          string
+	OperationID      string
+}
+
+func (err gatewayAuthorityError) ResultMayHaveCommitted() bool { return err.MayHaveCommitted }
+
+func (err gatewayAuthorityError) Error() string {
+	parts := []string{"Gateway authority rejected request", "code=" + err.Code, "account=" + err.AccountID}
+	if err.RouteID != "" {
+		parts = append(parts, "route="+err.RouteID)
+	}
+	if err.OperationID != "" {
+		parts = append(parts, "operation="+err.OperationID)
+	}
+	return strings.Join(parts, " ")
 }
 
 type gatewayCapabilityOperations struct {
@@ -231,6 +350,335 @@ func newGatewayAdapterForMode(rawURL string, token []byte, mode orders.Mode, liv
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &gatewayAdapter{baseURL: strings.TrimRight(parsed.String(), "/"), token: bytes.Clone(token), client: client, mode: mode, liveWrites: liveWrites, requireAttestation: true}, nil
+}
+
+func (adapter *gatewayAdapter) ApplyDesired(ctx context.Context, apply accounts.DesiredApply) (accounts.GatewayRuntimeTruth, error) {
+	operationID, err := secretstore.ParseOperationID(string(apply.OperationID))
+	if err != nil || apply.Account.Mode != secretstore.Mode(adapter.mode) || apply.Account.Validate() != nil || !validGatewayRequestedState(string(apply.Account.State)) || len(apply.Account.Routes) > 32 {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway desired request is invalid")
+	}
+	ref, err := secretstore.ParseOpaqueRef(apply.Account.SecretRef)
+	if err != nil {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway desired request is invalid")
+	}
+	routes := make([]gatewayDesiredRoute, 0, len(apply.Account.Routes))
+	for _, route := range apply.Account.Routes {
+		routes = append(routes, gatewayDesiredRoute{
+			RouteID: route.ID, Product: string(route.Product), SettlementAsset: route.SettlementAsset,
+			RouteProfileID: route.RouteProfileID, RequestedState: string(route.RequestedState),
+		})
+	}
+	request := gatewayDesiredApplyRequest{
+		OperationID: string(operationID), AccountID: apply.Account.ID,
+		Venue: apply.Account.Venue, NativeEnvironment: string(apply.Account.NativeEnvironment),
+		SecretRef: ref.RawForTrustedBoundary(), DesiredStateRevision: apply.Account.DesiredStateRevision,
+		RuntimeGeneration: apply.Account.RuntimeGeneration, CredentialVersion: apply.Account.CredentialVersion,
+		RequestedState: string(apply.Account.State), Routes: routes,
+	}
+	var response gatewayReadEnvelope[gatewayDesiredRuntimeView]
+	routeID := ""
+	if len(routes) == 1 {
+		routeID = routes[0].RouteID
+	}
+	path := "/internal/v1/accounts/desired/" + url.PathEscape(apply.Account.ID) + "/operations/" + url.PathEscape(request.OperationID)
+	if _, err := adapter.desiredRequest(ctx, http.MethodPut, path, request.OperationID, apply.Account.ID, routeID, request, &response, http.StatusOK, http.StatusAccepted); err != nil {
+		return accounts.GatewayRuntimeTruth{}, err
+	}
+	return gatewayTruth(response.Data, apply.Account.ID)
+}
+
+func (adapter *gatewayAdapter) GetRuntimeTruth(ctx context.Context, accountID string) (accounts.GatewayRuntimeTruth, error) {
+	if strings.TrimSpace(accountID) == "" || accountID != strings.TrimSpace(accountID) {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway runtime truth request is invalid")
+	}
+	var response gatewayReadEnvelope[gatewayDesiredRuntimeView]
+	path := "/internal/v1/accounts/desired/" + url.PathEscape(accountID)
+	if _, err := adapter.desiredRequest(ctx, http.MethodGet, path, uuid.NewString(), accountID, "", nil, &response, http.StatusOK); err != nil {
+		return accounts.GatewayRuntimeTruth{}, err
+	}
+	return gatewayTruth(response.Data, accountID)
+}
+
+func (adapter *gatewayAdapter) RetireAccount(ctx context.Context, retire accounts.RetireRequest) (accounts.GatewayRetirement, error) {
+	operationID, err := secretstore.ParseOperationID(string(retire.OperationID))
+	if err != nil || strings.TrimSpace(retire.AccountID) == "" || retire.AccountID != strings.TrimSpace(retire.AccountID) || retire.DesiredStateRevision < 1 || retire.RuntimeGeneration < 1 || retire.CredentialVersion < 1 {
+		return accounts.GatewayRetirement{}, fmt.Errorf("Gateway retirement request is invalid")
+	}
+	request := gatewayRetireRequest{
+		OperationID: string(operationID), AccountID: retire.AccountID,
+		DesiredStateRevision: retire.DesiredStateRevision, RuntimeGeneration: retire.RuntimeGeneration,
+		CredentialVersion: retire.CredentialVersion,
+	}
+	var response gatewayReadEnvelope[gatewayDesiredRuntimeView]
+	path := "/internal/v1/accounts/desired/" + url.PathEscape(retire.AccountID) + "/retirements/" + url.PathEscape(request.OperationID)
+	if _, err := adapter.desiredRequest(ctx, http.MethodPut, path, request.OperationID, retire.AccountID, "", request, &response, http.StatusOK, http.StatusAccepted); err != nil {
+		return accounts.GatewayRetirement{}, err
+	}
+	truth, err := gatewayTruth(response.Data, retire.AccountID)
+	if err != nil {
+		return accounts.GatewayRetirement{}, err
+	}
+	return accounts.GatewayRetirement{Tombstoned: truth.Tombstoned && !truth.Active}, nil
+}
+
+func (adapter *gatewayAdapter) FinalizeRotation(ctx context.Context, cleanup accounts.RotationCleanupRequest) (accounts.RotationCleanupProof, error) {
+	if cleanup.Validate() != nil {
+		return accounts.RotationCleanupProof{}, fmt.Errorf("Gateway rotation cleanup request is invalid")
+	}
+	request := gatewayRotationCleanupRequest{
+		OperationID: string(cleanup.OperationID), AccountID: cleanup.AccountID,
+		ExpectedActiveFence:   gatewayFence(cleanup.ExpectedActiveFence),
+		ExpectedRetiringFence: gatewayFence(cleanup.ExpectedRetiringFence),
+	}
+	var response gatewayReadEnvelope[gatewayRotationCleanupProof]
+	path := "/internal/v1/accounts/desired/" + url.PathEscape(cleanup.AccountID) + "/rotation-finalizations/" + url.PathEscape(request.OperationID)
+	if _, err := adapter.desiredRequest(ctx, http.MethodPut, path, request.OperationID, cleanup.AccountID, "", request, &response, http.StatusOK); err != nil {
+		return accounts.RotationCleanupProof{}, err
+	}
+	proof := accounts.RotationCleanupProof{
+		OperationID: secretstore.OperationID(response.Data.OperationID), AccountID: response.Data.AccountID,
+		ActiveFence:          platformFence(response.Data.ActiveFence),
+		RetiringFence:        platformFence(response.Data.RetiringFence),
+		TombstoneRevision:    response.Data.TombstoneRevision,
+		RetiringState:        response.Data.RetiringState,
+		SecretReferenceState: response.Data.SecretReferenceState,
+		CompletedAt:          response.Data.CompletedAt.UTC(),
+	}
+	if proof.ValidateFor(cleanup) != nil {
+		return accounts.RotationCleanupProof{}, gatewayAuthorityError{
+			Code: "GATEWAY_AUTHORITY_RESPONSE_INVALID", Retryable: true, MayHaveCommitted: true,
+			AccountID: cleanup.AccountID, OperationID: string(cleanup.OperationID),
+		}
+	}
+	return proof, nil
+}
+
+func gatewayFence(fence accounts.AccountFence) gatewayAccountFence {
+	return gatewayAccountFence{
+		AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+		RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+	}
+}
+
+func platformFence(fence gatewayAccountFence) accounts.AccountFence {
+	return accounts.AccountFence{
+		AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+		RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+	}
+}
+
+func (adapter *gatewayAdapter) desiredRequest(ctx context.Context, method, path, requestID, accountID, routeID string, payload, target any, statuses ...int) (int, error) {
+	var body io.Reader
+	if payload != nil {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return 0, fmt.Errorf("encode Gateway authority request")
+		}
+		defer clear(encoded)
+		body = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, adapter.baseURL+path, body)
+	if err != nil {
+		return 0, fmt.Errorf("construct Gateway authority request")
+	}
+	request.Header.Set("Authorization", "Bearer "+string(adapter.token))
+	request.Header.Set("X-Request-ID", requestID)
+	if payload != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	adapter.attest(request)
+	response, err := adapter.client.Do(request)
+	if err != nil {
+		return 0, gatewayAuthorityError{Code: "GATEWAY_AUTHORITY_UNAVAILABLE", Retryable: true, MayHaveCommitted: true, AccountID: accountID, RouteID: routeID, OperationID: requestID}
+	}
+	defer response.Body.Close()
+	if err := adapter.verifyAttestation(response); err != nil {
+		acceptedWrite := method != http.MethodGet && containsStatus(statuses, response.StatusCode)
+		return 0, gatewayAuthorityError{Code: "GATEWAY_MODE_MISMATCH", MayHaveCommitted: acceptedWrite || response.StatusCode >= 500, AccountID: accountID, RouteID: routeID, OperationID: requestID}
+	}
+	accepted := containsStatus(statuses, response.StatusCode)
+	if !accepted {
+		if !isJSONContentType(response.Header.Get("Content-Type")) {
+			return response.StatusCode, gatewayRejectedError(accountID, routeID, requestID, response.StatusCode >= 500)
+		}
+		return response.StatusCode, decodeGatewayAuthorityError(response.Body, accountID, routeID, requestID, response.StatusCode >= 500)
+	}
+	if !isJSONContentType(response.Header.Get("Content-Type")) {
+		return response.StatusCode, gatewayAuthorityError{Code: "GATEWAY_AUTHORITY_RESPONSE_INVALID", Retryable: true, MayHaveCommitted: true, AccountID: accountID, RouteID: routeID, OperationID: requestID}
+	}
+	if err := decodeGatewayAuthorityJSON(response.Body, target); err != nil {
+		return response.StatusCode, gatewayAuthorityError{Code: "GATEWAY_AUTHORITY_RESPONSE_INVALID", Retryable: true, MayHaveCommitted: true, AccountID: accountID, RouteID: routeID, OperationID: requestID}
+	}
+	return response.StatusCode, nil
+}
+
+func isJSONContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && strings.EqualFold(mediaType, "application/json")
+}
+
+func containsStatus(statuses []int, target int) bool {
+	for _, status := range statuses {
+		if status == target {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeGatewayAuthorityError(body io.Reader, accountID, routeID, operationID string, retryable bool) error {
+	var envelope struct {
+		Error struct {
+			Code      string          `json:"code"`
+			Message   string          `json:"message"`
+			RequestID string          `json:"requestId"`
+			Retryable bool            `json:"retryable"`
+			Details   json.RawMessage `json:"details,omitempty"`
+		} `json:"error"`
+	}
+	if err := decodeGatewayAuthorityJSON(body, &envelope); err != nil || !validGatewayErrorCode(envelope.Error.Code) {
+		return gatewayRejectedError(accountID, routeID, operationID, retryable)
+	}
+	return gatewayAuthorityError{Code: envelope.Error.Code, Retryable: envelope.Error.Retryable, MayHaveCommitted: retryable, AccountID: accountID, RouteID: routeID, OperationID: operationID}
+}
+
+func decodeGatewayAuthorityJSON(body io.Reader, target any) error {
+	raw, err := io.ReadAll(io.LimitReader(body, gatewayAuthorityResponseLimit+1))
+	if err != nil || len(raw) == 0 || len(raw) > gatewayAuthorityResponseLimit || !utf8.Valid(raw) {
+		return fmt.Errorf("invalid Gateway authority response")
+	}
+	if err := rejectDuplicateGatewayAuthorityKeys(raw); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("invalid Gateway authority response")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("Gateway authority response must contain one JSON value")
+	}
+	return nil
+}
+
+func rejectDuplicateGatewayAuthorityKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := scanGatewayAuthorityJSONValue(decoder); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("Gateway authority response must contain one JSON value")
+	}
+	return nil
+}
+
+func scanGatewayAuthorityJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid Gateway authority response")
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("invalid Gateway authority response")
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid Gateway authority response")
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("Gateway authority response contains duplicate key")
+			}
+			keys[key] = struct{}{}
+			if err := scanGatewayAuthorityJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+			return fmt.Errorf("invalid Gateway authority response")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanGatewayAuthorityJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim(']') {
+			return fmt.Errorf("invalid Gateway authority response")
+		}
+	default:
+		return fmt.Errorf("invalid Gateway authority response")
+	}
+	return nil
+}
+
+func gatewayRejectedError(accountID, routeID, operationID string, retryable bool) error {
+	return gatewayAuthorityError{Code: "GATEWAY_AUTHORITY_REJECTED", Retryable: retryable, MayHaveCommitted: retryable, AccountID: accountID, RouteID: routeID, OperationID: operationID}
+}
+
+func validGatewayErrorCode(code string) bool {
+	if code == "" || len(code) > 128 {
+		return false
+	}
+	for _, char := range code {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func validGatewayRequestedState(state string) bool {
+	switch state {
+	case "creating", "active", "rotating", "draining", "drained", "disabled", "removing", "removed":
+		return true
+	default:
+		return false
+	}
+}
+
+func gatewayTruth(view gatewayDesiredRuntimeView, accountID string) (accounts.GatewayRuntimeTruth, error) {
+	if view.AccountID != accountID || view.Tombstoned == nil {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway runtime truth identity is invalid")
+	}
+	if *view.Tombstoned && (view.Active != nil || view.Pending != nil || len(view.Retiring) != 0) {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway runtime truth is contradictory")
+	}
+	truth := accounts.GatewayRuntimeTruth{AccountID: accountID, Tombstoned: *view.Tombstoned}
+	if view.Active == nil {
+		return truth, nil
+	}
+	operationID, err := secretstore.ParseOperationID(view.Active.OperationID)
+	if err != nil || view.Active.DesiredStateRevision < 1 || view.Active.RuntimeGeneration < 1 || view.Active.CredentialVersion < 1 || !validGatewayRequestedState(view.Active.RequestedState) {
+		return accounts.GatewayRuntimeTruth{}, fmt.Errorf("Gateway runtime truth fence is invalid")
+	}
+	ready := len(view.Active.Routes) > 0
+	routes := make([]accounts.GatewayRuntimeRoute, 0, len(view.Active.Routes))
+	for _, route := range view.Active.Routes {
+		if route.RouteID == "" || route.RouteProfileID == "" || (route.RequestedState == "active" && !route.Ready) {
+			ready = false
+		}
+		routes = append(routes, accounts.GatewayRuntimeRoute{
+			RouteID: route.RouteID, Product: accounts.Product(route.Product), SettlementAsset: route.SettlementAsset,
+			RouteProfileID: route.RouteProfileID, RequestedState: accounts.RouteState(route.RequestedState), Ready: route.Ready,
+		})
+	}
+	truth.OperationID = operationID
+	truth.DesiredStateRevision = view.Active.DesiredStateRevision
+	truth.RuntimeGeneration = view.Active.RuntimeGeneration
+	truth.CredentialVersion = view.Active.CredentialVersion
+	truth.RequestedState = accounts.State(view.Active.RequestedState)
+	truth.Routes = routes
+	truth.Active = ready
+	return truth, nil
 }
 
 func (adapter *gatewayAdapter) Execute(ctx context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
@@ -458,12 +906,21 @@ func (adapter *gatewayAdapter) FundingPayments(ctx context.Context, query accoun
 
 func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
 	var result gatewayReadEnvelope[struct {
-		Ready bool `json:"ready"`
+		Revision    string               `json:"revision"`
+		ObservedAt  time.Time            `json:"observedAt"`
+		Instruments []catalog.Instrument `json:"instruments"`
 	}]
-	if err := adapter.read(ctx, "/internal/v1/market-data/readiness", nil, &result); err != nil {
-		return fmt.Errorf("probe Gateway market-data route: %w", err)
+	if err := adapter.read(ctx, "/internal/v1/catalog/instruments", nil, &result); err != nil {
+		return fmt.Errorf("probe Gateway catalog authority: %w", err)
 	}
-	if !result.Data.Ready {
+	readyInstrument := false
+	for _, instrument := range result.Data.Instruments {
+		if instrument.Ready {
+			readyInstrument = true
+			break
+		}
+	}
+	if result.Data.Revision == "" || result.Data.ObservedAt.IsZero() || !readyInstrument {
 		return fmt.Errorf("Gateway market-data route is unavailable")
 	}
 	return nil

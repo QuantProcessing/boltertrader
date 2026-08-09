@@ -27,6 +27,8 @@ type Store interface {
 	FindCredentialOperation(context.Context, OperationLookup) (CredentialOperation, error)
 	BindCredentialReference(context.Context, secretstore.OperationID, string) (Account, CredentialOperation, error)
 	CompareAndSwapAccountAndOperation(context.Context, TransitionRequest) (Account, CredentialOperation, error)
+	RecordRotationCleanupProof(context.Context, RotationCleanupProof) (CredentialOperation, error)
+	CompleteRotationCleanup(context.Context, RotationCleanupCompletion) (Account, CredentialOperation, error)
 	ListRecoverableCredentialOperations(context.Context, int) ([]CredentialOperation, error)
 }
 
@@ -44,6 +46,9 @@ func (store *MemoryStore) BeginCredentialOperation(_ context.Context, expectedRe
 		return ErrAlreadyExists
 	}
 	for _, existing := range store.operations {
+		if existing.AccountID == operation.AccountID && credentialOperationRecoverable(existing.State) {
+			return ErrRevisionConflict
+		}
 		if operationLookupMatches(existing, OperationLookup{Mode: operation.Mode, PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
 			return ErrAlreadyExists
 		}
@@ -196,6 +201,61 @@ func (store *MemoryStore) CompareAndSwapAccountAndOperation(_ context.Context, r
 	return clone(request.Account), request.Operation, nil
 }
 
+func (store *MemoryStore) RecordRotationCleanupProof(_ context.Context, proof RotationCleanupProof) (CredentialOperation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	operation, exists := store.operations[proof.OperationID]
+	if !exists {
+		return CredentialOperation{}, ErrNotFound
+	}
+	account, exists := store.accounts[operation.AccountID]
+	if !exists {
+		return CredentialOperation{}, ErrNotFound
+	}
+	if err := ValidateRotationCleanupProof(account, operation, proof); err != nil {
+		return CredentialOperation{}, ErrRevisionConflict
+	}
+	if HasRotationCleanupProof(account, operation) {
+		return operation, nil
+	}
+	operation.RotationCleanupTombstoneRevision = proof.TombstoneRevision
+	operation.RotationCleanupCompletedAt = proof.CompletedAt.UTC()
+	operation.StableErrorCode = ""
+	operation.UpdatedAt = proof.CompletedAt.UTC()
+	store.operations[operation.ID] = operation
+	return operation, nil
+}
+
+func (store *MemoryStore) CompleteRotationCleanup(_ context.Context, completion RotationCleanupCompletion) (Account, CredentialOperation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	operation, exists := store.operations[completion.OperationID]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	account, exists := store.accounts[operation.AccountID]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	if err := ValidateRotationCleanupCompletion(account, operation, completion); err != nil {
+		return Account{}, CredentialOperation{}, ErrRevisionConflict
+	}
+	if operation.State == OperationActive && account.PreviousSecretRef == "" {
+		return clone(account), operation, nil
+	}
+	completedAt := completion.CompletedAt.UTC()
+	account.PreviousSecretRef = ""
+	account.Rotation = nil
+	account.State = StateActive
+	account.UpdatedAt = completedAt
+	operation.State = OperationActive
+	operation.StableErrorCode = ""
+	operation.UpdatedAt = completedAt
+	store.accounts[account.ID] = clone(account)
+	store.operations[operation.ID] = operation
+	return clone(account), operation, nil
+}
+
 func (store *MemoryStore) ListRecoverableCredentialOperations(_ context.Context, limit int) ([]CredentialOperation, error) {
 	if limit < 1 {
 		return nil, nil
@@ -203,8 +263,7 @@ func (store *MemoryStore) ListRecoverableCredentialOperations(_ context.Context,
 	store.mu.RLock()
 	result := make([]CredentialOperation, 0)
 	for _, operation := range store.operations {
-		switch operation.State {
-		case OperationAwaitingMaterial, OperationStored, OperationApplying, OperationCleanupPending:
+		if credentialOperationRecoverable(operation.State) {
 			result = append(result, operation)
 		}
 	}
@@ -223,6 +282,15 @@ func (store *MemoryStore) ListRecoverableCredentialOperations(_ context.Context,
 
 func operationLookupMatches(operation CredentialOperation, lookup OperationLookup) bool {
 	return operation.Mode == lookup.Mode && operation.PrincipalID == lookup.PrincipalID && operation.Kind == lookup.Kind && operation.IdempotencyKeyDigest == lookup.IdempotencyKeyDigest
+}
+
+func credentialOperationRecoverable(state OperationState) bool {
+	switch state {
+	case OperationAwaitingMaterial, OperationStored, OperationApplying, OperationCleanupPending:
+		return true
+	default:
+		return false
+	}
 }
 
 func clone(account Account) Account {

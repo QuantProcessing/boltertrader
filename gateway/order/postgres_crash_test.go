@@ -21,6 +21,8 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	gatewaypostgres "github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 )
@@ -85,12 +87,14 @@ func TestCoordinatorRealPostgresProcessCrashWindows(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.phase, func(t *testing.T) {
 			accountID := domain.AccountID(fmt.Sprintf("crash-%d-%s", index, strings.ReplaceAll(test.phase, "_", "-")))
-			if err := gatewaypostgres.NewStore(pool).RegisterAccount(ctx, gatewaypostgres.AccountRegistration{
+			postgresStore := gatewaypostgres.NewStore(pool)
+			if err := postgresStore.RegisterAccount(ctx, gatewaypostgres.AccountRegistration{
 				AccountID: accountID, Venue: "binance", Product: "spot", Environment: "demo",
 				ConfigHash: strings.Repeat("a", 64), Status: "enabled",
 			}); err != nil {
 				t.Fatalf("register account: %v", err)
 			}
+			prepareCrashActiveRuntime(t, ctx, postgresStore, accountID)
 
 			if test.externalKill {
 				received := venue.Block(accountID)
@@ -136,6 +140,41 @@ func TestCoordinatorRealPostgresProcessCrashWindows(t *testing.T) {
 				t.Fatalf("venue writes=%d, want %d", got, test.venueCalls)
 			}
 		})
+	}
+}
+
+func prepareCrashActiveRuntime(t *testing.T, ctx context.Context, postgresStore *gatewaypostgres.Store, accountID domain.AccountID) {
+	t.Helper()
+	operationID, err := secretstore.ParseOperationID(uuid.NewString())
+	if err != nil {
+		t.Fatalf("parse operation id: %v", err)
+	}
+	secretRef, err := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil {
+		t.Fatalf("parse secret ref: %v", err)
+	}
+	snapshot := store.DesiredSnapshot{
+		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
+		Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+		Fence:          domain.AccountFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		RequestedState: store.DesiredActive,
+		Routes: []store.RouteDefinition{{
+			RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive,
+		}},
+	}
+	if _, err := postgresStore.PreparePending(ctx, snapshot); err != nil {
+		t.Fatalf("prepare active runtime: %v", err)
+	}
+	if err := postgresStore.RecordCandidateObservation(ctx, store.CandidateObservation{
+		OperationID: operationID, ObservationRevision: 1, RouteID: "spot", State: store.CandidateReady,
+	}); err != nil {
+		t.Fatalf("observe active runtime: %v", err)
+	}
+	if err := postgresStore.MarkCandidateReady(ctx, operationID); err != nil {
+		t.Fatalf("mark active runtime ready: %v", err)
+	}
+	if _, err := postgresStore.PromotePending(ctx, store.PromotionRequest{AccountID: accountID, OperationID: operationID}); err != nil {
+		t.Fatalf("promote active runtime: %v", err)
 	}
 }
 

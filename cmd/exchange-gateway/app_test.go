@@ -53,9 +53,13 @@ func TestModeAttestedHandlerRejectsMissingAndMismatchedModes(t *testing.T) {
 	for _, mode := range []string{"", "test"} {
 		request := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
 		request.Header.Set(gatewayModeHeader, mode)
+		request.Header.Set("X-Request-ID", "mode-request")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusConflict || response.Header().Get(gatewayModeHeader) != "live" || calls != 0 {
+		if response.Code != http.StatusConflict || response.Header().Get(gatewayModeHeader) != "live" ||
+			response.Header().Get("Content-Type") != "application/json" ||
+			!strings.Contains(response.Body.String(), `"code":"MODE_ATTESTATION_REQUIRED"`) ||
+			!strings.Contains(response.Body.String(), `"requestId":"mode-request"`) || calls != 0 {
 			t.Fatalf("mode=%q status=%d attestation=%q calls=%d", mode, response.Code, response.Header().Get(gatewayModeHeader), calls)
 		}
 	}

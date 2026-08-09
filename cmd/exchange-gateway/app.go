@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -197,7 +198,12 @@ func modeAttestedHandler(mode account.RuntimeMode, next http.Handler) http.Handl
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(gatewayModeHeader, string(mode))
 		if r.Header.Get(gatewayModeHeader) != string(mode) {
-			http.Error(w, "Gateway mode attestation mismatch", http.StatusConflict)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"code": "MODE_ATTESTATION_REQUIRED", "message": "request denied",
+				"requestId": r.Header.Get("X-Request-ID"), "retryable": false,
+			}})
 			return
 		}
 		next.ServeHTTP(w, r)

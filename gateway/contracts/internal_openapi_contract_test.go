@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -12,6 +13,7 @@ import (
 type internalSchema struct {
 	Ref                  string                    `yaml:"$ref"`
 	Type                 any                       `yaml:"type"`
+	Format               string                    `yaml:"format"`
 	Enum                 []string                  `yaml:"enum"`
 	AdditionalProperties any                       `yaml:"additionalProperties"`
 	Required             []string                  `yaml:"required"`
@@ -23,6 +25,24 @@ type internalResponse struct {
 	Content map[string]struct {
 		Schema internalSchema `yaml:"schema"`
 	} `yaml:"content"`
+	Headers map[string]struct {
+		Ref string `yaml:"$ref"`
+	} `yaml:"headers"`
+}
+
+type internalRequestBody struct {
+	Required bool `yaml:"required"`
+	Content  map[string]struct {
+		Schema internalSchema `yaml:"schema"`
+	} `yaml:"content"`
+}
+
+type internalParameter struct {
+	Ref      string         `yaml:"$ref"`
+	Name     string         `yaml:"name"`
+	In       string         `yaml:"in"`
+	Required bool           `yaml:"required"`
+	Schema   internalSchema `yaml:"schema"`
 }
 
 func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *testing.T) {
@@ -35,17 +55,21 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		Security []map[string][]string `yaml:"security"`
 		Paths    map[string]map[string]struct {
 			OperationID string `yaml:"operationId"`
-			Responses   map[string]struct {
+			RequestBody struct {
+				Ref string `yaml:"$ref"`
+			} `yaml:"requestBody"`
+			Responses map[string]struct {
 				Ref string `yaml:"$ref"`
 			} `yaml:"responses"`
-			Parameters []struct {
-				Name     string `yaml:"name"`
-				In       string `yaml:"in"`
-				Required bool   `yaml:"required"`
-			} `yaml:"parameters"`
+			Parameters []internalParameter `yaml:"parameters"`
 		} `yaml:"paths"`
 		Components struct {
-			Responses       map[string]internalResponse `yaml:"responses"`
+			Responses     map[string]internalResponse    `yaml:"responses"`
+			Parameters    map[string]internalParameter   `yaml:"parameters"`
+			RequestBodies map[string]internalRequestBody `yaml:"requestBodies"`
+			Headers       map[string]struct {
+				Schema internalSchema `yaml:"schema"`
+			} `yaml:"headers"`
 			SecuritySchemes map[string]struct {
 				Type   string `yaml:"type"`
 				Scheme string `yaml:"scheme"`
@@ -66,15 +90,16 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	want := map[string][]string{
 		"/internal/v1/runtime/status": {"get"}, "/internal/v1/runtime/readiness": {"get"},
 		"/internal/v1/runtime/open-orders": {"get"}, "/internal/v1/runtime/positions": {"get"},
-		"/internal/v1/runtime/uncertain-commands":                             {"get"},
-		"/internal/v1/accounts/desired":                                       {"get"},
-		"/internal/v1/accounts/desired/{accountId}":                           {"get"},
-		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}":  {"put"},
-		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}": {"put"},
-		"/internal/v1/accounts/runtime":                                       {"get"},
-		"/internal/v1/accounts/runtime/{accountId}":                           {"get"},
-		"/internal/v1/accounts/runtime/{accountId}/events":                    {"get"},
-		"/internal/v1/catalog/venues":                                         {"get"}, "/internal/v1/catalog/instruments": {"get"},
+		"/internal/v1/runtime/uncertain-commands":                                        {"get"},
+		"/internal/v1/accounts/desired":                                                  {"get"},
+		"/internal/v1/accounts/desired/{accountId}":                                      {"get"},
+		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}":             {"put"},
+		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}":            {"put"},
+		"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}": {"put"},
+		"/internal/v1/accounts/runtime":                                                  {"get"},
+		"/internal/v1/accounts/runtime/{accountId}":                                      {"get"},
+		"/internal/v1/accounts/runtime/{accountId}/events":                               {"get"},
+		"/internal/v1/catalog/venues":                                                    {"get"}, "/internal/v1/catalog/instruments": {"get"},
 		"/internal/v1/market-data": {"get"}, "/internal/v1/private-events": {"get"},
 	}
 	if len(document.Paths) != len(want) {
@@ -111,7 +136,35 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 			t.Errorf("%s response data schema ref=%q", responseName, got)
 		}
 	}
-	for _, name := range []string{"DesiredApplyRequest", "RetireRequest", "DesiredRuntimeView", "RuntimeView", "WriteFence", "InternalErrorEnvelope"} {
+	for _, success := range []struct {
+		path   string
+		method string
+		status string
+	}{
+		{"/internal/v1/accounts/desired/{accountId}", "get", "200"},
+		{"/internal/v1/accounts/desired/{accountId}/operations/{operationId}", "put", "200"},
+		{"/internal/v1/accounts/desired/{accountId}/operations/{operationId}", "put", "202"},
+		{"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}", "put", "200"},
+		{"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}", "put", "202"},
+		{"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}", "put", "200"},
+	} {
+		got := document.Paths[success.path][success.method].Responses[success.status].Ref
+		wantResponse := "RuntimeView"
+		if strings.Contains(success.path, "rotation-finalizations") {
+			wantResponse = "RotationFinalizationProof"
+		}
+		if got != "#/components/responses/"+wantResponse {
+			t.Errorf("%s %s response %s ref=%q want %s component response", success.method, success.path, success.status, got, wantResponse)
+		}
+	}
+	runtimeEnvelope := document.Components.Responses["RuntimeView"].Content["application/json"].Schema
+	if runtimeEnvelope.Type != "object" || runtimeEnvelope.AdditionalProperties != false || !reflect.DeepEqual(runtimeEnvelope.Required, []string{"data"}) || len(runtimeEnvelope.Properties) != 1 {
+		t.Errorf("RuntimeView response envelope=%+v", runtimeEnvelope)
+	}
+	if got := runtimeEnvelope.Properties["data"].Ref; got != "#/components/schemas/RuntimeView" {
+		t.Errorf("RuntimeView response data schema ref=%q", got)
+	}
+	for _, name := range []string{"DesiredApplyRequest", "RetireRequest", "RotationFinalizationRequest", "RotationFinalizationProof", "AccountFence", "DesiredRuntimeView", "RuntimeView", "WriteFence", "InternalErrorEnvelope"} {
 		schema, ok := document.Components.Schemas[name]
 		if !ok {
 			t.Errorf("missing internal schema %s", name)
@@ -119,6 +172,86 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		}
 		if schema.AdditionalProperties != false {
 			t.Errorf("schema %s must reject unknown fields", name)
+		}
+	}
+	proofEnvelope := document.Components.Responses["RotationFinalizationProof"].Content["application/json"].Schema
+	if proofEnvelope.Type != "object" || proofEnvelope.AdditionalProperties != false || !reflect.DeepEqual(proofEnvelope.Required, []string{"data"}) || proofEnvelope.Properties["data"].Ref != "#/components/schemas/RotationFinalizationProof" {
+		t.Errorf("rotation finalization proof envelope=%+v", proofEnvelope)
+	}
+	for _, path := range []string{
+		"/internal/v1/accounts/desired/{accountId}/operations/{operationId}",
+		"/internal/v1/accounts/desired/{accountId}/retirements/{operationId}",
+		"/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}",
+	} {
+		operation := document.Paths[path]["put"]
+		refs := make([]string, 0, len(operation.Parameters))
+		for _, parameter := range operation.Parameters {
+			refs = append(refs, parameter.Ref)
+		}
+		sort.Strings(refs)
+		wantRefs := []string{"#/components/parameters/AccountID", "#/components/parameters/ModeAttestation", "#/components/parameters/OperationID"}
+		if !reflect.DeepEqual(refs, wantRefs) {
+			t.Errorf("%s parameter refs=%v want=%v", path, refs, wantRefs)
+		}
+	}
+	mode := document.Components.Parameters["ModeAttestation"]
+	if mode.Name != "X-Bolter-Mode" || mode.In != "header" || !mode.Required || mode.Schema.Type != "string" || !reflect.DeepEqual(mode.Schema.Enum, []string{"test", "live"}) {
+		t.Errorf("mode attestation parameter=%+v", mode)
+	}
+	finalizationOperation := document.Paths["/internal/v1/accounts/desired/{accountId}/rotation-finalizations/{operationId}"]["put"]
+	if finalizationOperation.RequestBody.Ref != "#/components/requestBodies/RotationFinalization" {
+		t.Errorf("rotation finalization request body ref=%q", finalizationOperation.RequestBody.Ref)
+	}
+	finalizationBody := document.Components.RequestBodies["RotationFinalization"]
+	if !finalizationBody.Required || len(finalizationBody.Content) != 1 || finalizationBody.Content["application/json"].Schema.Ref != "#/components/schemas/RotationFinalizationRequest" {
+		t.Errorf("rotation finalization request body=%+v", finalizationBody)
+	}
+	modeResponse := document.Components.Headers["ModeAttestation"].Schema
+	if modeResponse.Type != "string" || !reflect.DeepEqual(modeResponse.Enum, []string{"test", "live"}) {
+		t.Errorf("mode response header=%+v", modeResponse)
+	}
+	for _, responseName := range []string{"RotationFinalizationProof", "Error"} {
+		if got := document.Components.Responses[responseName].Headers["X-Bolter-Mode"].Ref; got != "#/components/headers/ModeAttestation" {
+			t.Errorf("%s mode response header ref=%q", responseName, got)
+		}
+	}
+	for _, status := range []string{"400", "401", "404", "409", "500"} {
+		if got := finalizationOperation.Responses[status].Ref; got != "#/components/responses/Error" {
+			t.Errorf("rotation finalization response %s ref=%q", status, got)
+		}
+	}
+	for name, required := range map[string][]string{
+		"AccountFence":                {"accountId", "credentialVersion", "desiredStateRevision", "runtimeGeneration"},
+		"RotationFinalizationRequest": {"accountId", "expectedActiveFence", "expectedRetiringFence", "operationId"},
+		"RotationFinalizationProof":   {"accountId", "activeFence", "completedAt", "operationId", "retiringFence", "retiringState", "secretReferenceState", "tombstoneRevision"},
+	} {
+		schema := document.Components.Schemas[name]
+		sort.Strings(schema.Required)
+		if !reflect.DeepEqual(schema.Required, required) || len(schema.Properties) != len(required) {
+			t.Errorf("%s shape required=%v properties=%v", name, schema.Required, schema.Properties)
+		}
+	}
+	proof := document.Components.Schemas["RotationFinalizationProof"]
+	if !reflect.DeepEqual(proof.Properties["retiringState"].Enum, []string{"retired"}) ||
+		!reflect.DeepEqual(proof.Properties["secretReferenceState"].Enum, []string{"tombstoned"}) ||
+		proof.Properties["completedAt"].Format != "date-time" {
+		t.Errorf("rotation proof terminal fields=%+v", proof.Properties)
+	}
+	requestSchema := document.Components.Schemas["RotationFinalizationRequest"]
+	if operationID := requestSchema.Properties["operationId"]; operationID.Type != "string" || operationID.Format != "uuid" ||
+		requestSchema.Properties["expectedActiveFence"].Ref != "#/components/schemas/AccountFence" ||
+		requestSchema.Properties["expectedRetiringFence"].Ref != "#/components/schemas/AccountFence" {
+		t.Errorf("rotation request refs/formats=%+v", requestSchema.Properties)
+	}
+	if operationID := proof.Properties["operationId"]; operationID.Type != "string" || operationID.Format != "uuid" ||
+		proof.Properties["activeFence"].Ref != "#/components/schemas/AccountFence" ||
+		proof.Properties["retiringFence"].Ref != "#/components/schemas/AccountFence" {
+		t.Errorf("rotation proof refs/formats=%+v", proof.Properties)
+	}
+	for _, name := range []string{"RotationFinalizationRequest", "RotationFinalizationProof"} {
+		forbidden := findForbiddenSchemaFields(name, document.Components.Schemas, []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken", "namespace", "keyVersion"})
+		if len(forbidden) != 0 {
+			t.Errorf("rotation schema %s exposes forbidden fields: %v", name, forbidden)
 		}
 	}
 	for name, required := range map[string][]string{
@@ -154,11 +287,9 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		t.Errorf("DesiredApplyRequest requestedState=%v want=%v", gotStates, wantStates)
 	}
 	for _, name := range []string{"DesiredRuntimeView", "RuntimeView"} {
-		schema := document.Components.Schemas[name]
-		for _, forbidden := range []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken"} {
-			if _, ok := schema.Properties[forbidden]; ok {
-				t.Errorf("response schema %s exposes %s", name, forbidden)
-			}
+		forbidden := findForbiddenSchemaFields(name, document.Components.Schemas, []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken"})
+		if len(forbidden) != 0 {
+			t.Errorf("response schema %s exposes forbidden fields: %v", name, forbidden)
 		}
 	}
 	for _, name := range []string{"RouteRuntimeView", "RuntimeSnapshotView", "PendingSnapshotView"} {
@@ -166,6 +297,10 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		if schema.AdditionalProperties != false || len(schema.Properties) == 0 {
 			t.Errorf("redacted schema %s is not strict: %+v", name, schema)
 		}
+	}
+	runtimeSnapshot := document.Components.Schemas["RuntimeSnapshotView"]
+	if operationID := runtimeSnapshot.Properties["operationId"]; operationID.Type != "string" || operationID.Format != "uuid" || !containsString(runtimeSnapshot.Required, "operationId") {
+		t.Errorf("RuntimeSnapshotView operationId must be a required UUID: %+v", runtimeSnapshot)
 	}
 	desiredView := document.Components.Schemas["DesiredRuntimeView"]
 	if desiredView.Properties["active"].Ref != "#/components/schemas/RuntimeSnapshotView" || desiredView.Properties["pending"].Ref != "#/components/schemas/PendingSnapshotView" {
@@ -175,13 +310,139 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if runtimeView.Properties["active"].Ref != "#/components/schemas/RuntimeSnapshotView" || runtimeView.Properties["pending"].Ref != "#/components/schemas/PendingSnapshotView" || runtimeView.Properties["retiring"].Items == nil || runtimeView.Properties["retiring"].Items.Ref != "#/components/schemas/RuntimeSnapshotView" {
 		t.Errorf("RuntimeView snapshot refs=%+v", runtimeView.Properties)
 	}
+	if runtimeView.Properties["tombstoned"].Type != "boolean" || !containsString(runtimeView.Required, "tombstoned") {
+		t.Errorf("RuntimeView does not expose explicit tombstone truth: %+v", runtimeView)
+	}
 	wantErrors := []string{
-		"CANDIDATE_NOT_READY", "HANDOFF_DRAIN_BLOCKED", "LIVE_WRITE_DISABLED", "OPERATION_ID_CONFLICT",
-		"PRIVATE_STREAM_GAP", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE", "ROUTE_PROFILE_CONFLICT",
+		"ACCOUNT_RUNTIME_BLOCKED", "CANDIDATE_NOT_READY", "DESIRED_ACCOUNT_NOT_FOUND", "DESIRED_STATE_REVISION_CONFLICT",
+		"GATEWAY_ADAPTER_AUTH_REQUIRED", "HANDOFF_DRAIN_BLOCKED", "IF_MATCH_REQUIRED", "IF_NONE_MATCH_REQUIRED",
+		"INTERNAL_ERROR", "INVALID_ACCOUNT_TRANSITION", "LIVE_PRIVATE_WRITE_DISABLED", "MODE_ATTESTATION_REQUIRED",
+		"OPERATION_ID_CONFLICT", "PROMOTION_FENCE_CONFLICT", "RETIRED_SECRET_REFERENCE", "RUNTIME_MODE_MISMATCH",
+		"STALE_RUNTIME_FENCE", "VALIDATION_ERROR",
 	}
 	gotErrors := document.Components.Schemas["InternalErrorEnvelope"].Properties["error"].Properties["code"].Enum
 	sort.Strings(gotErrors)
 	if !reflect.DeepEqual(gotErrors, wantErrors) {
 		t.Errorf("internal stable error codes=%v want=%v", gotErrors, wantErrors)
 	}
+}
+
+func TestFindForbiddenSchemaFieldsTraversesNestedRuntimeSchemas(t *testing.T) {
+	schemas := map[string]internalSchema{
+		"RuntimeView": {
+			Properties: map[string]internalSchema{
+				"active": {Ref: "#/components/schemas/RuntimeSnapshotView"},
+			},
+		},
+		"RuntimeSnapshotView": {
+			Properties: map[string]internalSchema{
+				"routes": {Items: &internalSchema{Ref: "#/components/schemas/RouteRuntimeView"}},
+			},
+		},
+		"RouteRuntimeView": {
+			Properties: map[string]internalSchema{
+				"providerPath": {Type: "string"},
+			},
+		},
+	}
+
+	got := findForbiddenSchemaFields("RuntimeView", schemas, []string{"providerPath"})
+	want := []string{"RuntimeView.active.routes[].providerPath"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nested forbidden fields=%v want=%v", got, want)
+	}
+}
+
+func TestFindForbiddenSchemaFieldsReportsSharedReferencesAndStopsCycles(t *testing.T) {
+	schemas := map[string]internalSchema{
+		"RuntimeView": {
+			Properties: map[string]internalSchema{
+				"providerPath": {Type: "string"},
+				"active":       {Ref: "#/components/schemas/RuntimeSnapshotView"},
+				"retiring":     {Items: &internalSchema{Ref: "#/components/schemas/RuntimeSnapshotView"}},
+			},
+		},
+		"RuntimeSnapshotView": {
+			Properties: map[string]internalSchema{
+				"secretRef": {Type: "string"},
+				"routes":    {Items: &internalSchema{Ref: "#/components/schemas/RouteRuntimeView"}},
+				"account":   {Ref: "#/components/schemas/RuntimeView"},
+			},
+		},
+		"RouteRuntimeView": {
+			Properties: map[string]internalSchema{
+				"gatewayToken": {Type: "string"},
+				"parent":       {Ref: "#/components/schemas/RouteRuntimeView"},
+			},
+		},
+	}
+
+	got := findForbiddenSchemaFields("RuntimeView", schemas, []string{"secretRef", "providerPath", "gatewayToken"})
+	want := []string{
+		"RuntimeView.active.routes[].gatewayToken",
+		"RuntimeView.active.secretRef",
+		"RuntimeView.providerPath",
+		"RuntimeView.retiring[].routes[].gatewayToken",
+		"RuntimeView.retiring[].secretRef",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("shared/cyclic forbidden fields=%v want=%v", got, want)
+	}
+}
+
+func findForbiddenSchemaFields(root string, schemas map[string]internalSchema, forbiddenNames []string) []string {
+	forbidden := make(map[string]struct{}, len(forbiddenNames))
+	for _, name := range forbiddenNames {
+		forbidden[name] = struct{}{}
+	}
+
+	activeRefs := make(map[string]bool)
+	findings := make([]string, 0)
+	var visit func(internalSchema, string)
+	visit = func(schema internalSchema, path string) {
+		if schema.Ref != "" {
+			const schemaRefPrefix = "#/components/schemas/"
+			if !strings.HasPrefix(schema.Ref, schemaRefPrefix) {
+				return
+			}
+			name := strings.TrimPrefix(schema.Ref, schemaRefPrefix)
+			if activeRefs[name] {
+				return
+			}
+			activeRefs[name] = true
+			visit(schemas[name], path)
+			delete(activeRefs, name)
+			return
+		}
+
+		propertyNames := make([]string, 0, len(schema.Properties))
+		for name := range schema.Properties {
+			propertyNames = append(propertyNames, name)
+		}
+		sort.Strings(propertyNames)
+		for _, name := range propertyNames {
+			propertyPath := path + "." + name
+			if _, found := forbidden[name]; found {
+				findings = append(findings, propertyPath)
+			}
+			visit(schema.Properties[name], propertyPath)
+		}
+		if schema.Items != nil {
+			visit(*schema.Items, path+"[]")
+		}
+	}
+
+	activeRefs[root] = true
+	visit(schemas[root], root)
+	sort.Strings(findings)
+	return findings
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

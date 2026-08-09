@@ -14,6 +14,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -244,8 +245,8 @@ func TestMigrateRealPostgresConcurrentStartersSerialize(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 4 {
-		t.Fatalf("schema_migrations rows = %d, want 4", rows)
+	if rows != 6 {
+		t.Fatalf("schema_migrations rows = %d, want 6", rows)
 	}
 }
 
@@ -332,6 +333,20 @@ func TestCommandStoreRealPostgresPersistsAndResolvesGenerationHandoff(t *testing
 	}
 	postgresStore := NewStore(pool)
 	registerTestAccount(t, ctx, postgresStore)
+	activeRef, err := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := runtimeSnapshotFixtureWithRef(t,
+		"018f0000-0000-7000-8000-000000000093",
+		"018f0000-0000-7000-8000-000000000094",
+		testAccountID(t), 1, activeRef)
+	prepareRuntimeSnapshotReady(t, ctx, postgresStore, active)
+	if _, err := postgresStore.PromotePending(ctx, store.PromotionRequest{
+		AccountID: active.AccountID, OperationID: active.OperationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	reserved, err := postgresStore.ReserveCommand(ctx, reserveRequest(t, json.RawMessage(`{"quantity":"0.001"}`)))
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +354,7 @@ func TestCommandStoreRealPostgresPersistsAndResolvesGenerationHandoff(t *testing
 	request := store.BeginOrderHandoffRequest{
 		HandoffID: "018f0000-0000-7000-8000-000000000090", CommandID: reserved.CommandID,
 		AccountID: testAccountID(t), RouteID: "spot",
-		Fence: domain.AccountFence{AccountID: testAccountID(t), DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		Fence: active.Fence,
 	}
 	dispatching, err := postgresStore.MarkDispatching(ctx, store.MarkDispatchingRequest{
 		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000091",
@@ -350,6 +365,10 @@ func TestCommandStoreRealPostgresPersistsAndResolvesGenerationHandoff(t *testing
 	handoff, err := postgresStore.BeginOrderHandoff(ctx, request)
 	if err != nil || handoff.State != store.OrderHandoffStarted || handoff.ResolvedAt != nil {
 		t.Fatalf("started handoff=%+v err=%v", handoff, err)
+	}
+	replayed, err := postgresStore.BeginOrderHandoff(ctx, request)
+	if err != nil || replayed != handoff {
+		t.Fatalf("replayed handoff=%+v err=%v want=%+v", replayed, err, handoff)
 	}
 	if _, err := postgresStore.RecordVenueResult(ctx, store.RecordVenueResultRequest{
 		CommandID: reserved.CommandID, EventID: "018f0000-0000-7000-8000-000000000092",

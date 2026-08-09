@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
+	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
@@ -20,7 +23,457 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
+
+func TestGatewayAdapterAppliesDesiredThroughAuthenticatedModeScopedOperation(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/internal/v1/accounts/desired/acct_1/operations/"+operationID {
+			t.Errorf("request=%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get(gatewayModeHeader) != "test" || r.Header.Get("X-Request-ID") == "" {
+			t.Errorf("headers=%v", r.Header)
+		}
+		var body map[string]any
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["operationId"] != operationID || body["accountId"] != "acct_1" || body["secretRef"] != opaqueRef || body["nativeEnvironment"] != "demo" {
+			t.Errorf("body=%v", body)
+		}
+		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"accountId":"acct_1","active":{"operationId":"` + operationID + `","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"retiring":[],"tombstoned":false}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	truth, err := adapter.ApplyDesired(context.Background(), accounts.DesiredApply{
+		OperationID: secretstore.OperationID(operationID),
+		Account: accounts.Account{
+			ID: "acct_1", Venue: "binance", Mode: secretstore.ModeTest, NativeEnvironment: accounts.EnvironmentDemo,
+			SecretRef: opaqueRef, DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4, State: accounts.StateActive,
+			Routes: []accounts.AccountRoute{{ID: "perp-usdt", Product: accounts.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: accounts.RouteActive}},
+		},
+	})
+	if err != nil || !truth.Active || truth.Tombstoned || truth.OperationID != operationID || truth.AccountID != "acct_1" || truth.DesiredStateRevision != 2 || truth.RuntimeGeneration != 3 || truth.CredentialVersion != 4 || len(truth.Routes) != 1 || !truth.Routes[0].Ready {
+		t.Fatalf("truth=%+v err=%v", truth, err)
+	}
+	if strings.Contains(fmt.Sprint(truth), opaqueRef) {
+		t.Fatal("runtime truth leaked opaque reference")
+	}
+}
+
+func TestGatewayAdapterClassifiesOnlyAmbiguousApplyResults(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	for name, status := range map[string]int{"conflict": http.StatusConflict, "server error": http.StatusServiceUnavailable} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(gatewayModeHeader, "test")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":{"code":"OPERATION_ID_CONFLICT","message":"denied","retryable":false}}`))
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+			var classified interface{ ResultMayHaveCommitted() bool }
+			if !errors.As(err, &classified) || classified.ResultMayHaveCommitted() != (status >= 500) {
+				t.Fatalf("status=%d err=%T %v", status, err, err)
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterClassifiesAcceptedResponseDecodeFailureAsAmbiguous(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"data":`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+	var classified interface{ ResultMayHaveCommitted() bool }
+	if !errors.As(err, &classified) || !classified.ResultMayHaveCommitted() {
+		t.Fatalf("err=%T %v", err, err)
+	}
+}
+
+func TestGatewayAdapterDesiredAuthorityRequiresSingleJSONResponse(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	validTruth := `{"data":{"accountId":"acct_1","active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"retiring":[],"tombstoned":false}}`
+	validError := `{"error":{"code":"OPERATION_ID_CONFLICT","message":"denied","retryable":false}}`
+	tests := []struct {
+		name             string
+		status           int
+		contentType      string
+		body             string
+		wantCode         string
+		mayHaveCommitted bool
+	}{
+		{name: "accepted non json", status: http.StatusOK, contentType: "text/plain", body: validTruth, wantCode: "GATEWAY_AUTHORITY_RESPONSE_INVALID", mayHaveCommitted: true},
+		{name: "accepted oversized trailing json", status: http.StatusOK, contentType: "application/json", body: validTruth + strings.Repeat(" ", (64<<10)-len(validTruth)) + `{}`, wantCode: "GATEWAY_AUTHORITY_RESPONSE_INVALID", mayHaveCommitted: true},
+		{name: "accepted duplicate key", status: http.StatusOK, contentType: "application/json", body: strings.Replace(validTruth, `"accountId":"acct_1"`, `"accountId":"acct_1","accountId":"acct_1"`, 1), wantCode: "GATEWAY_AUTHORITY_RESPONSE_INVALID", mayHaveCommitted: true},
+		{name: "rejected non json", status: http.StatusConflict, contentType: "text/plain", body: validError, wantCode: "GATEWAY_AUTHORITY_REJECTED"},
+		{name: "rejected trailing json", status: http.StatusConflict, contentType: "application/json", body: validError + ` {}`, wantCode: "GATEWAY_AUTHORITY_REJECTED"},
+		{name: "rejected oversized trailing json", status: http.StatusConflict, contentType: "application/json", body: validError + strings.Repeat(" ", (64<<10)-len(validError)) + `{}`, wantCode: "GATEWAY_AUTHORITY_REJECTED"},
+		{name: "rejected duplicate key", status: http.StatusConflict, contentType: "application/json", body: strings.Replace(validError, `"code":"OPERATION_ID_CONFLICT"`, `"code":"OPERATION_ID_CONFLICT","code":"OPERATION_ID_CONFLICT"`, 1), wantCode: "GATEWAY_AUTHORITY_REJECTED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(gatewayModeHeader, "test")
+				w.Header().Set("Content-Type", test.contentType)
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+			var authorityErr gatewayAuthorityError
+			if !errors.As(err, &authorityErr) || authorityErr.Code != test.wantCode || authorityErr.ResultMayHaveCommitted() != test.mayHaveCommitted {
+				t.Fatalf("err=%T %v", err, err)
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterClassifiesUnattestedServerFailureAsAmbiguous(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	for _, modeHeader := range []string{"", "live"} {
+		t.Run("mode header "+modeHeader, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if modeHeader != "" {
+					w.Header().Set(gatewayModeHeader, modeHeader)
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":{"code":"GATEWAY_UNAVAILABLE","message":"denied","retryable":true}}`))
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+			var classified interface{ ResultMayHaveCommitted() bool }
+			if !errors.As(err, &classified) || !classified.ResultMayHaveCommitted() {
+				t.Fatalf("modeHeader=%q err=%T %v", modeHeader, err, err)
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterClassifiesUnattestedAcceptedWritesAsAmbiguous(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	tests := []struct {
+		name   string
+		status int
+		call   func(*gatewayAdapter) error
+	}{
+		{name: "apply ok", status: http.StatusOK, call: func(adapter *gatewayAdapter) error {
+			_, err := adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+			return err
+		}},
+		{name: "apply accepted", status: http.StatusAccepted, call: func(adapter *gatewayAdapter) error {
+			_, err := adapter.ApplyDesired(context.Background(), validGatewayDesiredApply())
+			return err
+		}},
+		{name: "retire ok", status: http.StatusOK, call: func(adapter *gatewayAdapter) error {
+			_, err := adapter.RetireAccount(context.Background(), accounts.RetireRequest{
+				OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", AccountID: "acct_1",
+				DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4,
+			})
+			return err
+		}},
+		{name: "retire accepted", status: http.StatusAccepted, call: func(adapter *gatewayAdapter) error {
+			_, err := adapter.RetireAccount(context.Background(), accounts.RetireRequest{
+				OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", AccountID: "acct_1",
+				DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4,
+			})
+			return err
+		}},
+		{name: "finalize ok", status: http.StatusOK, call: func(adapter *gatewayAdapter) error {
+			_, err := adapter.FinalizeRotation(context.Background(), validAdapterRotationCleanupRequest())
+			return err
+		}},
+	}
+	for _, test := range tests {
+		for _, responseMode := range []string{"", "live"} {
+			t.Run(test.name+" mode "+responseMode, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if responseMode != "" {
+						w.Header().Set(gatewayModeHeader, responseMode)
+					}
+					w.WriteHeader(test.status)
+					_, _ = w.Write([]byte(`{"data":{}}`))
+				}))
+				defer server.Close()
+				adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = test.call(adapter)
+				var authorityErr gatewayAuthorityError
+				if !errors.As(err, &authorityErr) || authorityErr.Code != "GATEWAY_MODE_MISMATCH" || !authorityErr.ResultMayHaveCommitted() {
+					t.Fatalf("status=%d responseMode=%q err=%T %v", test.status, responseMode, err, err)
+				}
+			})
+		}
+	}
+}
+
+func TestGatewayAdapterDoesNotClassifyUnattestedAcceptedReadAsCommitted(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	for _, responseMode := range []string{"", "live"} {
+		t.Run("mode "+responseMode, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if responseMode != "" {
+					w.Header().Set(gatewayModeHeader, responseMode)
+				}
+				_, _ = w.Write([]byte(`{"data":{"accountId":"acct_1","retiring":[],"tombstoned":false}}`))
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.GetRuntimeTruth(context.Background(), "acct_1")
+			var authorityErr gatewayAuthorityError
+			if !errors.As(err, &authorityErr) || authorityErr.Code != "GATEWAY_MODE_MISMATCH" || authorityErr.ResultMayHaveCommitted() {
+				t.Fatalf("responseMode=%q err=%T %v", responseMode, err, err)
+			}
+		})
+	}
+}
+
+func validGatewayDesiredApply() accounts.DesiredApply {
+	return accounts.DesiredApply{
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
+		Account: accounts.Account{ID: "acct_1", Venue: "binance", Mode: secretstore.ModeTest, NativeEnvironment: accounts.EnvironmentDemo,
+			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4, State: accounts.StateActive,
+			Routes: []accounts.AccountRoute{{ID: "perp-usdt", Product: accounts.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: accounts.RouteActive}}},
+	}
+}
+
+func TestGatewayTruthRejectsTombstoneWithRuntimeSnapshots(t *testing.T) {
+	tombstoned := true
+	snapshot := gatewayRuntimeSnapshotView{
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", DesiredStateRevision: 2,
+		RuntimeGeneration: 3, CredentialVersion: 4, RequestedState: "active",
+	}
+	tests := []struct {
+		name   string
+		mutate func(*gatewayDesiredRuntimeView)
+	}{
+		{name: "active", mutate: func(view *gatewayDesiredRuntimeView) { view.Active = &snapshot }},
+		{name: "pending", mutate: func(view *gatewayDesiredRuntimeView) {
+			view.Pending = &gatewayPendingSnapshotView{gatewayRuntimeSnapshotView: snapshot, State: "prepared"}
+		}},
+		{name: "retiring", mutate: func(view *gatewayDesiredRuntimeView) {
+			view.Retiring = []gatewayRuntimeSnapshotView{snapshot}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			view := gatewayDesiredRuntimeView{AccountID: "acct_1", Tombstoned: &tombstoned}
+			test.mutate(&view)
+			if _, err := gatewayTruth(view, "acct_1"); err == nil {
+				t.Fatal("contradictory tombstoned runtime truth was accepted")
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterRetiresAccountWithExactFence(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/internal/v1/accounts/desired/acct_1/retirements/"+operationID {
+			t.Errorf("request=%s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			OperationID          string `json:"operationId"`
+			AccountID            string `json:"accountId"`
+			DesiredStateRevision int64  `json:"desiredStateRevision"`
+			RuntimeGeneration    int64  `json:"runtimeGeneration"`
+			CredentialVersion    int64  `json:"credentialVersion"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body.OperationID != operationID || body.AccountID != "acct_1" || body.DesiredStateRevision != 7 || body.RuntimeGeneration != 5 || body.CredentialVersion != 3 {
+			t.Errorf("body=%+v", body)
+		}
+		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"accountId":"acct_1","retiring":[],"tombstoned":true}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retirement, err := adapter.RetireAccount(context.Background(), accounts.RetireRequest{
+		OperationID: operationID, AccountID: "acct_1", DesiredStateRevision: 7, RuntimeGeneration: 5, CredentialVersion: 3,
+	})
+	if err != nil || !retirement.Tombstoned || retirement.Blockers.Any() {
+		t.Fatalf("retirement=%+v err=%v", retirement, err)
+	}
+}
+
+func TestGatewayAdapterFinalizesRotationWithStrictModeScopedPUT(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	completedAt := time.Date(2026, 8, 9, 8, 9, 10, 0, time.UTC)
+	request := validAdapterRotationCleanupRequest()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/internal/v1/accounts/desired/acct_1/rotation-finalizations/"+operationID || r.URL.RawQuery != "" {
+			t.Errorf("request=%s %s", r.Method, r.URL.RequestURI())
+		}
+		if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get(gatewayModeHeader) != "test" || r.Header.Get("X-Request-ID") != operationID {
+			t.Errorf("headers=%v", r.Header)
+		}
+		payload, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"secretRef", "namespace", "provider", "keyVersion"} {
+			if strings.Contains(string(payload), forbidden) {
+				t.Errorf("rotation request leaked forbidden field %q: %s", forbidden, payload)
+			}
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 4 || body["operationId"] == nil || body["accountId"] == nil || body["expectedActiveFence"] == nil || body["expectedRetiringFence"] == nil {
+			t.Errorf("body=%s", payload)
+		}
+		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"data":{"operationId":%q,"accountId":"acct_1","activeFence":{"accountId":"acct_1","desiredStateRevision":2,"runtimeGeneration":2,"credentialVersion":2},"retiringFence":{"accountId":"acct_1","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1},"tombstoneRevision":2,"retiringState":"retired","secretReferenceState":"tombstoned","completedAt":%q}}`, operationID, completedAt.Format(time.RFC3339Nano))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := adapter.FinalizeRotation(context.Background(), request)
+	if err != nil || proof.OperationID != request.OperationID || proof.AccountID != request.AccountID ||
+		proof.ActiveFence != request.ExpectedActiveFence || proof.RetiringFence != request.ExpectedRetiringFence ||
+		proof.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision || proof.RetiringState != "retired" ||
+		proof.SecretReferenceState != "tombstoned" || !proof.CompletedAt.Equal(completedAt) {
+		t.Fatalf("proof=%+v err=%v", proof, err)
+	}
+}
+
+func TestGatewayAdapterRejectsNonTerminalOrMismatchedRotationProof(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	request := validAdapterRotationCleanupRequest()
+	base := gatewayhttp.RotationFinalizationProof{
+		OperationID: string(request.OperationID), AccountID: request.AccountID,
+		ActiveFence: gatewayhttp.AccountFence{
+			AccountID: request.AccountID, DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2,
+		},
+		RetiringFence: gatewayhttp.AccountFence{
+			AccountID: request.AccountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
+		},
+		TombstoneRevision: 2, RetiringState: "retired", SecretReferenceState: "tombstoned",
+		CompletedAt: time.Date(2026, 8, 9, 8, 9, 10, 0, time.UTC),
+	}
+	tests := map[string]func(*gatewayhttp.RotationFinalizationProof, map[string]any){
+		"operation identity": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) {
+			proof.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
+		},
+		"active fence": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) {
+			proof.ActiveFence.RuntimeGeneration++
+		},
+		"retiring fence": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) {
+			proof.RetiringFence.CredentialVersion++
+		},
+		"tombstone revision":      func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) { proof.TombstoneRevision++ },
+		"retiring terminal state": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) { proof.RetiringState = "draining" },
+		"reference terminal state": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) {
+			proof.SecretReferenceState = "active"
+		},
+		"completion time": func(proof *gatewayhttp.RotationFinalizationProof, _ map[string]any) { proof.CompletedAt = time.Time{} },
+		"unknown secret field": func(_ *gatewayhttp.RotationFinalizationProof, envelope map[string]any) {
+			data := envelope["data"].(map[string]any)
+			data["secretRef"] = "forbidden"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			proof := base
+			encoded, err := json.Marshal(proof)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data map[string]any
+			if err := json.Unmarshal(encoded, &data); err != nil {
+				t.Fatal(err)
+			}
+			envelope := map[string]any{"data": data}
+			mutate(&proof, envelope)
+			if name != "unknown secret field" {
+				envelope["data"] = proof
+			}
+			response, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set(gatewayModeHeader, "test")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(response)
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if proof, err := adapter.FinalizeRotation(context.Background(), request); err == nil {
+				t.Fatalf("invalid proof accepted: %+v", proof)
+			}
+		})
+	}
+}
+
+func validAdapterRotationCleanupRequest() accounts.RotationCleanupRequest {
+	return accounts.RotationCleanupRequest{
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "acct_1",
+		ExpectedActiveFence: accounts.AccountFence{
+			AccountID: "acct_1", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2,
+		},
+		ExpectedRetiringFence: accounts.AccountFence{
+			AccountID: "acct_1", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
+		},
+	}
+}
 
 type adapterContractAuthority struct {
 	requests []gatewayhttp.AuthorityRequest
@@ -31,11 +484,6 @@ func (authority *adapterContractAuthority) Execute(_ context.Context, request ga
 	switch request.Operation {
 	case gatewayhttp.AuthorityRuntimeReadiness:
 		return gatewayhttp.AuthorityResponse{Body: gatewayhttp.RuntimeReadiness{Ready: true}}, nil
-	case gatewayhttp.AuthorityMarketDataReadiness:
-		if len(request.Query) != 0 {
-			return gatewayhttp.AuthorityResponse{}, errors.New("readiness probe must not carry a query")
-		}
-		return gatewayhttp.AuthorityResponse{Body: map[string]bool{"ready": true}}, nil
 	case gatewayhttp.AuthorityCatalogVenues:
 		return gatewayhttp.AuthorityResponse{Body: []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: true}}}, nil
 	case gatewayhttp.AuthorityCatalogInstruments:
@@ -116,7 +564,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 		t.Fatalf("runtimes=%+v err=%v", runtimes, err)
 	}
 	wantOperations := []gatewayhttp.AuthorityOperation{
-		gatewayhttp.AuthorityMarketDataReadiness,
+		gatewayhttp.AuthorityCatalogInstruments,
 		gatewayhttp.AuthorityRuntimeReadiness,
 		gatewayhttp.AuthorityCatalogVenues,
 		gatewayhttp.AuthorityCatalogInstruments,
@@ -140,8 +588,6 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
 		}
 		switch r.URL.RequestURI() {
-		case "/internal/v1/market-data/readiness":
-			_, _ = w.Write([]byte(`{"data":{"ready":true}}`))
 		case "/internal/v1/catalog/venues":
 			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"demo","ready":true}]}`))
 		case "/internal/v1/catalog/instruments":
@@ -174,6 +620,20 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	fact, err := (gatewayMarketDataSource{adapter: adapter}).Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" {
 		t.Fatalf("fact=%+v err=%v", fact, err)
+	}
+}
+
+func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"revision":"","observedAt":"0001-01-01T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
+		t.Fatal("ready instrument without catalog identity was accepted")
 	}
 }
 
@@ -694,7 +1154,7 @@ func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
 				if test.responseMode != "" {
 					w.Header().Set(gatewayModeHeader, test.responseMode)
 				}
-				_, _ = w.Write([]byte(`{"data":{"ready":true}}`))
+				_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-1","observedAt":"2026-08-09T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
 			}))
 			defer server.Close()
 

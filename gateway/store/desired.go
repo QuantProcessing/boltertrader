@@ -203,9 +203,12 @@ type ActiveSnapshot struct {
 }
 
 type RuntimeState struct {
-	AccountID domain.AccountID
-	Active    *ActiveSnapshot
-	Pending   *PendingSnapshot
+	AccountID         domain.AccountID
+	Active            *ActiveSnapshot
+	Pending           *PendingSnapshot
+	Retiring          []ActiveSnapshot
+	Tombstoned        bool
+	TombstoneRevision uint64
 }
 
 type PromotionRequest struct {
@@ -217,6 +220,130 @@ type PromotionRequest struct {
 type PromotionResult struct {
 	Active   ActiveSnapshot
 	Retiring *ActiveSnapshot
+}
+
+type RotationFinalizationRequest struct {
+	OperationID           secretstore.OperationID
+	AccountID             domain.AccountID
+	ExpectedActiveFence   domain.AccountFence
+	ExpectedRetiringFence domain.AccountFence
+	Scope                 secretstore.Scope
+}
+
+func (request RotationFinalizationRequest) Validate() error {
+	if _, err := secretstore.ParseOperationID(request.OperationID.String()); err != nil {
+		return err
+	}
+	if err := request.AccountID.Validate(); err != nil {
+		return err
+	}
+	if err := request.ExpectedActiveFence.Validate(); err != nil {
+		return ErrPromotionFenceConflict
+	}
+	if err := request.ExpectedRetiringFence.Validate(); err != nil {
+		return ErrPromotionFenceConflict
+	}
+	if request.ExpectedActiveFence.AccountID != request.AccountID || request.ExpectedRetiringFence.AccountID != request.AccountID {
+		return ErrPromotionFenceConflict
+	}
+	if request.ExpectedActiveFence.DesiredStateRevision != request.ExpectedRetiringFence.DesiredStateRevision+1 ||
+		request.ExpectedActiveFence.RuntimeGeneration != request.ExpectedRetiringFence.RuntimeGeneration+1 ||
+		request.ExpectedActiveFence.CredentialVersion != request.ExpectedRetiringFence.CredentialVersion+1 {
+		return ErrPromotionFenceConflict
+	}
+	return request.Scope.Validate()
+}
+
+func (request RotationFinalizationRequest) CanonicalDigest() (string, error) {
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
+	payload := struct {
+		AccountID             domain.AccountID    `json:"accountId"`
+		ExpectedActiveFence   domain.AccountFence `json:"expectedActiveFence"`
+		ExpectedRetiringFence domain.AccountFence `json:"expectedRetiringFence"`
+		TombstoneRevision     uint64              `json:"tombstoneRevision"`
+		Mode                  secretstore.Mode    `json:"mode"`
+		Namespace             string              `json:"namespace"`
+		KeyVersion            string              `json:"keyVersion"`
+	}{
+		request.AccountID,
+		request.ExpectedActiveFence,
+		request.ExpectedRetiringFence,
+		request.ExpectedActiveFence.DesiredStateRevision,
+		request.Scope.Mode,
+		request.Scope.Namespace,
+		request.Scope.KeyVersion,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode rotation finalization digest: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+type RotationFinalizationResult struct {
+	OperationID          secretstore.OperationID
+	AccountID            domain.AccountID
+	ActiveFence          domain.AccountFence
+	RetiringFence        domain.AccountFence
+	TombstoneRevision    uint64
+	RetiringState        string
+	SecretReferenceState string
+	CompletedAt          time.Time
+}
+
+type RetirementRequest struct {
+	OperationID         secretstore.OperationID
+	AccountID           domain.AccountID
+	ExpectedActiveFence domain.AccountFence
+	TombstoneRevision   uint64
+	Scope               secretstore.Scope
+}
+
+func (request RetirementRequest) Validate() error {
+	if _, err := secretstore.ParseOperationID(request.OperationID.String()); err != nil {
+		return err
+	}
+	if err := request.AccountID.Validate(); err != nil {
+		return err
+	}
+	if err := request.ExpectedActiveFence.Validate(); err != nil || request.ExpectedActiveFence.AccountID != request.AccountID {
+		return ErrPromotionFenceConflict
+	}
+	if request.TombstoneRevision != request.ExpectedActiveFence.DesiredStateRevision+1 {
+		return ErrPromotionFenceConflict
+	}
+	return request.Scope.Validate()
+}
+
+func (request RetirementRequest) CanonicalDigest() (string, error) {
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
+	payload := struct {
+		AccountID           domain.AccountID    `json:"accountId"`
+		ExpectedActiveFence domain.AccountFence `json:"expectedActiveFence"`
+		TombstoneRevision   uint64              `json:"tombstoneRevision"`
+		Mode                secretstore.Mode    `json:"mode"`
+		Namespace           string              `json:"namespace"`
+		KeyVersion          string              `json:"keyVersion"`
+	}{request.AccountID, request.ExpectedActiveFence, request.TombstoneRevision, request.Scope.Mode, request.Scope.Namespace, request.Scope.KeyVersion}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode retirement digest: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+type RetirementResult struct {
+	OperationID       secretstore.OperationID
+	AccountID         domain.AccountID
+	TombstoneRevision uint64
+	Tombstoned        bool
+	CompletedAt       time.Time
 }
 
 type TombstoneRequest struct {
@@ -237,7 +364,11 @@ type RuntimeSnapshotStore interface {
 	PreparePending(context.Context, DesiredSnapshot) (PendingSnapshot, error)
 	RecordCandidateObservation(context.Context, CandidateObservation) error
 	MarkCandidateReady(context.Context, secretstore.OperationID) error
+	MarkCandidateFailed(context.Context, secretstore.OperationID) error
 	PromotePending(context.Context, PromotionRequest) (PromotionResult, error)
+	LookupRotationFinalization(context.Context, RotationFinalizationRequest) (RotationFinalizationResult, error)
+	FinalizeRotation(context.Context, RotationFinalizationRequest) (RotationFinalizationResult, error)
+	RetireAccount(context.Context, RetirementRequest) (RetirementResult, error)
 	LoadRuntimeState(context.Context, domain.AccountID) (RuntimeState, error)
 	ListRuntimeStateForRecovery(context.Context) ([]RuntimeState, error)
 	TombstoneSecretReference(context.Context, TombstoneRequest) (Tombstone, error)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -59,6 +60,13 @@ func (store *AccountStore) BeginCredentialOperation(ctx context.Context, expecte
 		return err
 	}
 	if !changed {
+		return accounts.ErrRevisionConflict
+	}
+	var recoverable bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM platform_credential_operations WHERE account_id=$1 AND state IN ('awaiting_material','stored','applying','cleanup_pending'))`, account.ID).Scan(&recoverable); err != nil {
+		return err
+	}
+	if recoverable {
 		return accounts.ErrRevisionConflict
 	}
 	if err := replaceRoutes(ctx, tx, account.ID, account.Routes); err != nil {
@@ -210,7 +218,7 @@ func (store *AccountStore) CompareAndSwapAccountAndOperation(ctx context.Context
 	if err := replaceRoutes(ctx, tx, accountID, request.Account.Routes); err != nil {
 		return accounts.Account{}, accounts.CredentialOperation{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE platform_credential_operations SET state=$3,secret_ref=NULLIF($4,''),stable_error_code=NULLIF($5,''),updated_at=$6 WHERE operation_id=$1 AND state=$2`, request.OperationID, request.ExpectedOperationState, request.Operation.State, request.Operation.SecretRef, request.Operation.StableErrorCode, request.Operation.UpdatedAt)
+	result, err := tx.ExecContext(ctx, `UPDATE platform_credential_operations SET state=$3,secret_ref=NULLIF($4,''),stable_error_code=NULLIF($5,''),rotation_cleanup_tombstone_revision=NULLIF($6,0),rotation_cleanup_completed_at=$7,updated_at=$8 WHERE operation_id=$1 AND state=$2`, request.OperationID, request.ExpectedOperationState, request.Operation.State, request.Operation.SecretRef, request.Operation.StableErrorCode, request.Operation.RotationCleanupTombstoneRevision, nullableTime(request.Operation.RotationCleanupCompletedAt), request.Operation.UpdatedAt)
 	if err != nil {
 		return accounts.Account{}, accounts.CredentialOperation{}, err
 	}
@@ -222,6 +230,115 @@ func (store *AccountStore) CompareAndSwapAccountAndOperation(ctx context.Context
 		return accounts.Account{}, accounts.CredentialOperation{}, err
 	}
 	return request.Account, request.Operation, nil
+}
+
+func (store *AccountStore) RecordRotationCleanupProof(ctx context.Context, proof accounts.RotationCleanupProof) (accounts.CredentialOperation, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return accounts.CredentialOperation{}, err
+	}
+	defer tx.Rollback()
+	operation, err := scanOperation(tx.QueryRowContext(ctx, operationSelect+` WHERE operation_id=$1 FOR UPDATE`, proof.OperationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return accounts.CredentialOperation{}, accounts.ErrNotFound
+	}
+	if err != nil {
+		return accounts.CredentialOperation{}, err
+	}
+	account, err := scanAccount(tx.QueryRowContext(ctx, accountSelect+` WHERE account_id=$1 FOR UPDATE`, operation.AccountID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return accounts.CredentialOperation{}, accounts.ErrNotFound
+	}
+	if err != nil {
+		return accounts.CredentialOperation{}, err
+	}
+	if err := accounts.ValidateRotationCleanupProof(account, operation, proof); err != nil {
+		return accounts.CredentialOperation{}, accounts.ErrRevisionConflict
+	}
+	if accounts.HasRotationCleanupProof(account, operation) {
+		return operation, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE platform_credential_operations
+		SET rotation_cleanup_tombstone_revision=$2,rotation_cleanup_completed_at=$3,
+		    stable_error_code=NULL,updated_at=$3
+		WHERE operation_id=$1 AND state='cleanup_pending'
+		  AND rotation_cleanup_tombstone_revision IS NULL AND rotation_cleanup_completed_at IS NULL
+	`, proof.OperationID, proof.TombstoneRevision, proof.CompletedAt.UTC())
+	if err != nil {
+		return accounts.CredentialOperation{}, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return accounts.CredentialOperation{}, accounts.ErrRevisionConflict
+	}
+	operation.RotationCleanupTombstoneRevision = proof.TombstoneRevision
+	operation.RotationCleanupCompletedAt = proof.CompletedAt.UTC()
+	operation.StableErrorCode = ""
+	operation.UpdatedAt = proof.CompletedAt.UTC()
+	if err := tx.Commit(); err != nil {
+		return accounts.CredentialOperation{}, err
+	}
+	return operation, nil
+}
+
+func (store *AccountStore) CompleteRotationCleanup(ctx context.Context, completion accounts.RotationCleanupCompletion) (accounts.Account, accounts.CredentialOperation, error) {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	defer tx.Rollback()
+	operation, err := scanOperation(tx.QueryRowContext(ctx, operationSelect+` WHERE operation_id=$1 FOR UPDATE`, completion.OperationID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return accounts.Account{}, accounts.CredentialOperation{}, accounts.ErrNotFound
+	}
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	account, err := scanAccount(tx.QueryRowContext(ctx, accountSelect+` WHERE account_id=$1 FOR UPDATE`, operation.AccountID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return accounts.Account{}, accounts.CredentialOperation{}, accounts.ErrNotFound
+	}
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	if err := accounts.ValidateRotationCleanupCompletion(account, operation, completion); err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, accounts.ErrRevisionConflict
+	}
+	account.Routes, err = loadRoutes(ctx, tx, account.ID)
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	if operation.State == accounts.OperationActive && account.PreviousSecretRef == "" {
+		return account, operation, nil
+	}
+	completedAt := completion.CompletedAt.UTC()
+	account.PreviousSecretRef = ""
+	account.Rotation = nil
+	account.State = accounts.StateActive
+	account.UpdatedAt = completedAt
+	changed, err := updateAccount(ctx, tx, account.ID, account.DesiredStateRevision, normalizeAccount(account))
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	if !changed {
+		return accounts.Account{}, accounts.CredentialOperation{}, accounts.ErrRevisionConflict
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE platform_credential_operations SET state='active',stable_error_code=NULL,updated_at=$2 WHERE operation_id=$1 AND state='cleanup_pending'`, operation.ID, completedAt)
+	if err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return accounts.Account{}, accounts.CredentialOperation{}, accounts.ErrRevisionConflict
+	}
+	operation.State = accounts.OperationActive
+	operation.StableErrorCode = ""
+	operation.UpdatedAt = completedAt
+	if err := tx.Commit(); err != nil {
+		return accounts.Account{}, accounts.CredentialOperation{}, err
+	}
+	return account, operation, nil
 }
 
 func (store *AccountStore) ListRecoverableCredentialOperations(ctx context.Context, limit int) ([]accounts.CredentialOperation, error) {
@@ -313,12 +430,12 @@ func loadRoutes(ctx context.Context, query databaseQuerier, accountID string) ([
 }
 
 func insertOperation(ctx context.Context, executor databaseExecutor, operation accounts.CredentialOperation) error {
-	_, err := executor.ExecContext(ctx, `INSERT INTO platform_credential_operations(operation_id,principal_id,account_id,mode,kind,state,idempotency_key_digest,request_digest,target_desired_state_revision,target_runtime_generation,target_credential_version,secret_ref,stable_error_code,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,''),NULLIF($13,''),$14,$15)`, operation.ID, operation.PrincipalID, operation.AccountID, operation.Mode, operation.Kind, operation.State, operation.IdempotencyKeyDigest, operation.RequestDigest, operation.TargetDesiredStateRevision, operation.TargetRuntimeGeneration, operation.TargetCredentialVersion, operation.SecretRef, operation.StableErrorCode, operation.CreatedAt, operation.UpdatedAt)
+	_, err := executor.ExecContext(ctx, `INSERT INTO platform_credential_operations(operation_id,principal_id,account_id,mode,kind,state,idempotency_key_digest,request_digest,target_desired_state_revision,target_runtime_generation,target_credential_version,rotation_cleanup_tombstone_revision,rotation_cleanup_completed_at,secret_ref,stable_error_code,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,0),$13,NULLIF($14,''),NULLIF($15,''),$16,$17)`, operation.ID, operation.PrincipalID, operation.AccountID, operation.Mode, operation.Kind, operation.State, operation.IdempotencyKeyDigest, operation.RequestDigest, operation.TargetDesiredStateRevision, operation.TargetRuntimeGeneration, operation.TargetCredentialVersion, operation.RotationCleanupTombstoneRevision, nullableTime(operation.RotationCleanupCompletedAt), operation.SecretRef, operation.StableErrorCode, operation.CreatedAt, operation.UpdatedAt)
 	return err
 }
 
 const accountSelect = `SELECT account_id,venue,venue_environment,mode,native_environment,display_name,product_ids,COALESCE(secret_ref,''),COALESCE(previous_secret_ref,''),desired_state_revision,runtime_generation,credential_version,state,rotation_fence,last_validated_at,updated_at FROM platform_accounts`
-const operationSelect = `SELECT operation_id,principal_id,account_id,mode,kind,state,idempotency_key_digest,request_digest,target_desired_state_revision,target_runtime_generation,target_credential_version,COALESCE(secret_ref,''),COALESCE(stable_error_code,''),created_at,updated_at FROM platform_credential_operations`
+const operationSelect = `SELECT operation_id,principal_id,account_id,mode,kind,state,idempotency_key_digest,request_digest,target_desired_state_revision,target_runtime_generation,target_credential_version,COALESCE(rotation_cleanup_tombstone_revision,0),rotation_cleanup_completed_at,COALESCE(secret_ref,''),COALESCE(stable_error_code,''),created_at,updated_at FROM platform_credential_operations`
 
 type scanner interface{ Scan(...any) error }
 
@@ -349,8 +466,19 @@ func scanAccount(row scanner) (accounts.Account, error) {
 
 func scanOperation(row scanner) (accounts.CredentialOperation, error) {
 	var operation accounts.CredentialOperation
-	err := row.Scan(&operation.ID, &operation.PrincipalID, &operation.AccountID, &operation.Mode, &operation.Kind, &operation.State, &operation.IdempotencyKeyDigest, &operation.RequestDigest, &operation.TargetDesiredStateRevision, &operation.TargetRuntimeGeneration, &operation.TargetCredentialVersion, &operation.SecretRef, &operation.StableErrorCode, &operation.CreatedAt, &operation.UpdatedAt)
+	var cleanupCompletedAt sql.NullTime
+	err := row.Scan(&operation.ID, &operation.PrincipalID, &operation.AccountID, &operation.Mode, &operation.Kind, &operation.State, &operation.IdempotencyKeyDigest, &operation.RequestDigest, &operation.TargetDesiredStateRevision, &operation.TargetRuntimeGeneration, &operation.TargetCredentialVersion, &operation.RotationCleanupTombstoneRevision, &cleanupCompletedAt, &operation.SecretRef, &operation.StableErrorCode, &operation.CreatedAt, &operation.UpdatedAt)
+	if cleanupCompletedAt.Valid {
+		operation.RotationCleanupCompletedAt = cleanupCompletedAt.Time.UTC()
+	}
 	return operation, err
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
 }
 
 func encodeAccountJSON(account accounts.Account) ([]byte, []byte, error) {

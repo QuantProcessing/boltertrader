@@ -152,3 +152,45 @@ func TestOrderHandoffMigrationFreezesGenerationScopedDrainState(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountRetirementMigrationFreezesReplayableTerminalState(t *testing.T) {
+	sql := strings.ToLower(AccountRetirementsMigrationSQL())
+	for _, required := range []string{
+		"gateway_account_retirements", "operation_id uuid primary key", "account_id text not null unique",
+		"request_digest text not null", "expected_desired_state_revision bigint not null",
+		"expected_runtime_generation bigint not null", "expected_credential_version bigint not null",
+		"tombstone_revision bigint not null", "state in ('tombstoned')", "completed_at timestamptz not null",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("account retirement migration missing %q", required)
+		}
+	}
+}
+
+func TestRotationFinalizationMigrationFreezesExactReplayProof(t *testing.T) {
+	sql := strings.ToLower(RotationFinalizationsMigrationSQL())
+	for _, required := range []string{
+		"gateway_rotation_finalizations", "operation_id uuid primary key", "request_digest text not null",
+		"request_digest ~ '^[0-9a-f]{64}$'",
+		"active_snapshot_id uuid not null", "retiring_snapshot_id uuid not null unique",
+		"expected_active_desired_state_revision bigint not null", "expected_retiring_desired_state_revision bigint not null",
+		"retired_secret_ref text not null", "tombstone_revision bigint not null",
+		"mode text not null", "namespace text not null", "key_version text not null",
+		"retiring_state in ('retired')", "secret_reference_state in ('tombstoned')",
+		"completed_at timestamptz not null",
+		"expected_active_desired_state_revision = expected_retiring_desired_state_revision + 1",
+		"expected_active_runtime_generation = expected_retiring_runtime_generation + 1",
+		"expected_active_credential_version = expected_retiring_credential_version + 1",
+		"unique (operation_id, snapshot_id)",
+		"unique (snapshot_id, account_id, desired_state_revision, runtime_generation, credential_version)",
+		"foreign key (operation_id, active_snapshot_id)",
+		"foreign key (active_snapshot_id, account_id, expected_active_desired_state_revision, expected_active_runtime_generation, expected_active_credential_version)",
+		"foreign key (account_id, retiring_snapshot_id)",
+		"foreign key (retiring_snapshot_id, account_id, expected_retiring_desired_state_revision, expected_retiring_runtime_generation, expected_retiring_credential_version, retired_secret_ref)",
+		"foreign key (mode, namespace, retired_secret_ref, account_id)",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("rotation finalization migration missing %q", required)
+		}
+	}
+}

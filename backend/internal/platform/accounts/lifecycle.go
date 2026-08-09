@@ -23,17 +23,36 @@ type DesiredApply struct {
 }
 
 type GatewayRuntimeTruth struct {
+	OperationID          secretstore.OperationID
 	AccountID            string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
+	RequestedState       State
+	Routes               []GatewayRuntimeRoute
 	Active               bool
 	Tombstoned           bool
 }
 
+type GatewayRuntimeRoute struct {
+	RouteID         string
+	Product         Product
+	SettlementAsset string
+	RouteProfileID  string
+	RequestedState  RouteState
+	Ready           bool
+}
+
+type ApplyResultError interface {
+	ResultMayHaveCommitted() bool
+}
+
 type RetireRequest struct {
-	OperationID secretstore.OperationID
-	AccountID   string
+	OperationID          secretstore.OperationID
+	AccountID            string
+	DesiredStateRevision int64
+	RuntimeGeneration    int64
+	CredentialVersion    int64
 }
 
 type GatewayRetirement struct {
@@ -44,6 +63,7 @@ type GatewayRetirement struct {
 type GatewayDesiredClient interface {
 	ApplyDesired(context.Context, DesiredApply) (GatewayRuntimeTruth, error)
 	GetRuntimeTruth(context.Context, string) (GatewayRuntimeTruth, error)
+	FinalizeRotation(context.Context, RotationCleanupRequest) (RotationCleanupProof, error)
 	RetireAccount(context.Context, RetireRequest) (GatewayRetirement, error)
 }
 
@@ -143,7 +163,7 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 	if err := callHook(service.Hooks.AfterGatewayApply); err != nil {
 		return Account{}, err
 	}
-	if !truth.Active || truth.AccountID != account.ID || truth.DesiredStateRevision != account.DesiredStateRevision || truth.RuntimeGeneration != account.RuntimeGeneration || truth.CredentialVersion != account.CredentialVersion {
+	if !exactGatewayActiveTruth(operation.ID, account, truth) {
 		return Account{}, errors.New("gateway active fence mismatch")
 	}
 	if err := callHook(service.Hooks.AfterPromotionObservation); err != nil {
@@ -232,9 +252,6 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 	if err != nil {
 		return Account{}, err
 	}
-	if account.DesiredStateRevision != revision {
-		return Account{}, ErrRevisionConflict
-	}
 	decoded, err := credential.DefaultRegistry().Decode(account.Venue, material)
 	if err != nil {
 		return Account{}, errors.New("credential bundle is invalid")
@@ -244,19 +261,25 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 	lookup := OperationLookup{Mode: service.mode, PrincipalID: principalID, Kind: OperationRotate, IdempotencyKeyDigest: digestString(strings.TrimSpace(idempotencyKey))}
 	operation, findErr := service.store.FindCredentialOperation(ctx, lookup)
 	if findErr == nil {
-		if operation.RequestDigest != requestDigest {
+		if operation.RequestDigest != requestDigest || operation.AccountID != id {
 			return Account{}, ErrIdempotencyConflict
 		}
 		account, err = service.store.Get(ctx, operation.AccountID)
 		if err != nil {
 			return Account{}, err
 		}
-		if operation.State == OperationActive {
+		if operation.State == OperationActive || operation.State == OperationCleanupPending {
 			return account, nil
 		}
 	} else if !errors.Is(findErr, ErrNotFound) {
 		return Account{}, findErr
 	} else {
+		if account.DesiredStateRevision != revision {
+			return Account{}, ErrRevisionConflict
+		}
+		if account.PreviousSecretRef != "" {
+			return Account{}, ErrAccountBlocked
+		}
 		now := service.now().UTC()
 		account.PreviousSecretRef = account.SecretRef
 		account.State = StateRotating
@@ -313,7 +336,7 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 	if err := callHook(service.Hooks.AfterGatewayApply); err != nil {
 		return Account{}, err
 	}
-	if !truth.Active || truth.AccountID != account.ID || truth.DesiredStateRevision != account.DesiredStateRevision || truth.RuntimeGeneration != account.RuntimeGeneration || truth.CredentialVersion != account.CredentialVersion {
+	if !exactGatewayActiveTruth(operation.ID, account, truth) {
 		return Account{}, errors.New("gateway active fence mismatch")
 	}
 	if err := callHook(service.Hooks.AfterPromotionObservation); err != nil {
@@ -321,16 +344,39 @@ func (service *Service) rotateDurable(ctx context.Context, id string, revision i
 	}
 	account.State, account.UpdatedAt = StateActive, service.now().UTC()
 	operation.State = OperationCleanupPending
-	if truth.Tombstoned {
-		if cleaner, ok := service.secrets.(SecretCleaner); ok && account.PreviousSecretRef != "" {
-			_ = cleaner.Delete(ctx, account.PreviousSecretRef)
-		}
-		account.PreviousSecretRef = ""
-		operation.State = OperationActive
-	}
 	operation.UpdatedAt = account.UpdatedAt
 	account, _, err = service.store.CompareAndSwapAccountAndOperation(ctx, TransitionRequest{OperationID: operation.ID, ExpectedOperationState: OperationApplying, ExpectedDesiredStateRevision: account.DesiredStateRevision, Account: account, Operation: operation})
 	return account, err
+}
+
+func exactGatewayActiveTruth(operationID secretstore.OperationID, account Account, truth GatewayRuntimeTruth) bool {
+	if !truth.Active || truth.OperationID != operationID || truth.AccountID != account.ID ||
+		truth.DesiredStateRevision != account.DesiredStateRevision || truth.RuntimeGeneration != account.RuntimeGeneration ||
+		truth.CredentialVersion != account.CredentialVersion || truth.RequestedState != account.State ||
+		len(truth.Routes) != len(account.Routes) {
+		return false
+	}
+	desired := make(map[string]AccountRoute, len(account.Routes))
+	for _, route := range account.Routes {
+		if _, duplicate := desired[route.ID]; duplicate {
+			return false
+		}
+		desired[route.ID] = route
+	}
+	seen := make(map[string]struct{}, len(truth.Routes))
+	for _, route := range truth.Routes {
+		if _, duplicate := seen[route.RouteID]; duplicate {
+			return false
+		}
+		seen[route.RouteID] = struct{}{}
+		want, ok := desired[route.RouteID]
+		if !ok || route.Product != want.Product || route.SettlementAsset != want.SettlementAsset ||
+			route.RouteProfileID != want.RouteProfileID || route.RequestedState != want.RequestedState ||
+			(route.RequestedState == RouteActive && !route.Ready) {
+			return false
+		}
+	}
+	return true
 }
 
 func (service *Service) removeDurable(ctx context.Context, id string, revision int64, principalID, idempotencyKey string) (Account, error) {
@@ -354,6 +400,9 @@ func (service *Service) removeDurable(ctx context.Context, id string, revision i
 		if account.DesiredStateRevision != revision {
 			return Account{}, ErrRevisionConflict
 		}
+		if account.PreviousSecretRef != "" {
+			return Account{}, ErrAccountBlocked
+		}
 		now := service.now().UTC()
 		account.State, account.DesiredStateRevision, account.UpdatedAt = StateRemoving, account.DesiredStateRevision+1, now
 		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: id, Mode: service.mode, Kind: OperationRetire, State: OperationCleanupPending, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: account.DesiredStateRevision, TargetRuntimeGeneration: account.RuntimeGeneration, TargetCredentialVersion: account.CredentialVersion, CreatedAt: now, UpdatedAt: now}
@@ -367,7 +416,12 @@ func (service *Service) removeDurable(ctx context.Context, id string, revision i
 	if service.gateway == nil {
 		return account, nil
 	}
-	retirement, err := service.gateway.RetireAccount(ctx, RetireRequest{OperationID: operation.ID, AccountID: id})
+	retirement, err := service.gateway.RetireAccount(ctx, RetireRequest{
+		OperationID: operation.ID, AccountID: id,
+		DesiredStateRevision: account.DesiredStateRevision,
+		RuntimeGeneration:    account.RuntimeGeneration,
+		CredentialVersion:    account.CredentialVersion,
+	})
 	if err != nil || retirement.Blockers.Any() || !retirement.Tombstoned {
 		return Account{}, ErrAccountBlocked
 	}

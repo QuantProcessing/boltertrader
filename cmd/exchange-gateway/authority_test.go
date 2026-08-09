@@ -306,14 +306,6 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 				t.Fatalf("market data=%+v err=%v", fact, err)
 			}
 		}},
-		{path: "/internal/v1/market-data/readiness", assert: func(t *testing.T, data json.RawMessage) {
-			var readiness struct {
-				Ready bool `json:"ready"`
-			}
-			if err := json.Unmarshal(data, &readiness); err != nil || !readiness.Ready {
-				t.Fatalf("market-data readiness=%+v err=%v", readiness, err)
-			}
-		}},
 		{path: "/internal/v1/accounts/runtime/account-a", assert: func(t *testing.T, data json.RawMessage) {
 			var runtime authorityRuntimeProjection
 			if err := json.Unmarshal(data, &runtime); err != nil || runtime.AccountID != "account-a" || runtime.RuntimeVersion != 9 || runtime.LastAppliedDesiredStateRevision != 7 || len(runtime.Capabilities) != 1 || !runtime.Capabilities[0].WriteReady || runtime.ObservedAt.IsZero() || strings.Contains(string(data), "secretRef") {
@@ -349,49 +341,6 @@ func TestGatewayAuthorityRejectsUnavailableMarketDataProjection(t *testing.T) {
 		Operation: httpapi.AuthorityMarketData,
 		Query:     map[string][]string{"venue": {"binance"}, "environment": {"demo"}, "product": {"perp"}, "instrumentId": {"BTC-USDT"}},
 	})
-	var authorityErr httpapi.AuthorityError
-	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusInternalServerError || !authorityErr.Retryable {
-		t.Fatalf("error=%T %v", err, err)
-	}
-}
-
-func TestGatewayAuthorityMarketDataReadinessRequiresReadyInstrument(t *testing.T) {
-	ctx := context.Background()
-	for _, test := range []struct {
-		name        string
-		instruments []authorityInstrument
-		wantReady   bool
-	}{
-		{name: "no configured instruments"},
-		{name: "only unavailable instruments", instruments: []authorityInstrument{{InstrumentID: "BTC-USDT", Venue: "binance"}}},
-		{name: "ready instrument", instruments: []authorityInstrument{{InstrumentID: "BTC-USDT", Venue: "binance", Ready: true}}, wantReady: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			authority.reads = staticAuthorityReads{instruments: test.instruments}
-			response, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityMarketDataReadiness})
-			if err != nil {
-				t.Fatal(err)
-			}
-			readiness, ok := response.Body.(map[string]bool)
-			if !ok || readiness["ready"] != test.wantReady {
-				t.Fatalf("readiness=%T %+v, want ready=%t", response.Body, response.Body, test.wantReady)
-			}
-		})
-	}
-}
-
-func TestGatewayAuthorityMarketDataReadinessFailsClosedOnCatalogFailure(t *testing.T) {
-	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	authority.reads = staticAuthorityReads{err: errors.New("configured catalog unavailable")}
-	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityMarketDataReadiness})
 	var authorityErr httpapi.AuthorityError
 	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusInternalServerError || !authorityErr.Retryable {
 		t.Fatalf("error=%T %v", err, err)
@@ -795,6 +744,17 @@ func (authorityCandidateBuilder) BuildRoute(context.Context, store.DesiredSnapsh
 	return authorityCandidateRoute{}, nil
 }
 
+type authorityFailingCandidateBuilder struct {
+	failGeneration uint64
+}
+
+func (builder authorityFailingCandidateBuilder) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, _ store.RouteDefinition, _ *credential.Decoded) (account.CandidateRoute, error) {
+	if snapshot.Fence.RuntimeGeneration == builder.failGeneration {
+		return nil, errors.New("secret-material-canary")
+	}
+	return authorityCandidateRoute{}, nil
+}
+
 type authorityCredentialResolver struct{}
 
 func (authorityCredentialResolver) Check(context.Context) error { return nil }
@@ -804,10 +764,18 @@ func (authorityCredentialResolver) Resolve(context.Context, secretstore.OpaqueRe
 
 type snapshotAuthorityStore struct {
 	*memoryDesiredStore
-	pending      *store.PendingSnapshot
-	active       *store.ActiveSnapshot
-	observations []store.CandidateObservation
-	promotions   int
+	pending           *store.PendingSnapshot
+	active            *store.ActiveSnapshot
+	observations      []store.CandidateObservation
+	promotions        int
+	retirement        *store.RetirementResult
+	retirementDigest  string
+	retirementCommits int
+	retireErr         error
+	rotationRequest   *store.RotationFinalizationRequest
+	rotationResult    *store.RotationFinalizationResult
+	rotationCommits   int
+	rotationErr       error
 }
 
 func newSnapshotAuthorityStore() *snapshotAuthorityStore {
@@ -833,6 +801,15 @@ func (memory *snapshotAuthorityStore) MarkCandidateReady(context.Context, secret
 	return nil
 }
 
+func (memory *snapshotAuthorityStore) MarkCandidateFailed(context.Context, secretstore.OperationID) error {
+	if memory.pending == nil || len(memory.observations) == 0 {
+		return store.ErrCandidateNotReady
+	}
+	memory.pending.OperationState = store.OperationCandidateFailed
+	memory.pending.Observations = append([]store.CandidateObservation(nil), memory.observations...)
+	return nil
+}
+
 func (memory *snapshotAuthorityStore) PromotePending(_ context.Context, request store.PromotionRequest) (store.PromotionResult, error) {
 	if memory.pending == nil || memory.pending.OperationID != request.OperationID {
 		return store.PromotionResult{}, store.ErrOperationConflict
@@ -843,15 +820,274 @@ func (memory *snapshotAuthorityStore) PromotePending(_ context.Context, request 
 	return store.PromotionResult{Active: active}, nil
 }
 
+func (memory *snapshotAuthorityStore) LookupRotationFinalization(_ context.Context, request store.RotationFinalizationRequest) (store.RotationFinalizationResult, error) {
+	if memory.rotationResult == nil || memory.rotationRequest == nil {
+		return store.RotationFinalizationResult{}, store.ErrNotFound
+	}
+	storedDigest, storedErr := memory.rotationRequest.CanonicalDigest()
+	requestDigest, requestErr := request.CanonicalDigest()
+	if storedErr != nil || requestErr != nil || memory.rotationRequest.OperationID != request.OperationID || storedDigest != requestDigest {
+		return store.RotationFinalizationResult{}, store.ErrOperationConflict
+	}
+	return *memory.rotationResult, nil
+}
+
+func (memory *snapshotAuthorityStore) FinalizeRotation(_ context.Context, request store.RotationFinalizationRequest) (store.RotationFinalizationResult, error) {
+	if memory.rotationErr != nil {
+		return store.RotationFinalizationResult{}, memory.rotationErr
+	}
+	if replay, err := memory.LookupRotationFinalization(context.Background(), request); err == nil || !errors.Is(err, store.ErrNotFound) {
+		return replay, err
+	}
+	result := store.RotationFinalizationResult{
+		OperationID: request.OperationID, AccountID: request.AccountID,
+		ActiveFence: request.ExpectedActiveFence, RetiringFence: request.ExpectedRetiringFence,
+		TombstoneRevision: request.ExpectedActiveFence.DesiredStateRevision,
+		RetiringState:     "retired", SecretReferenceState: "tombstoned", CompletedAt: time.Now().UTC(),
+	}
+	requestCopy, resultCopy := request, result
+	memory.rotationRequest, memory.rotationResult = &requestCopy, &resultCopy
+	memory.rotationCommits++
+	return result, nil
+}
+
+func (memory *snapshotAuthorityStore) RetireAccount(_ context.Context, request store.RetirementRequest) (store.RetirementResult, error) {
+	if memory.retireErr != nil {
+		return store.RetirementResult{}, memory.retireErr
+	}
+	digest, err := request.CanonicalDigest()
+	if err != nil {
+		return store.RetirementResult{}, err
+	}
+	if memory.retirement != nil {
+		if memory.retirement.OperationID != request.OperationID || memory.retirementDigest != digest {
+			return store.RetirementResult{}, store.ErrOperationConflict
+		}
+		return *memory.retirement, nil
+	}
+	if memory.active == nil || memory.active.Fence != request.ExpectedActiveFence {
+		return store.RetirementResult{}, store.ErrPromotionFenceConflict
+	}
+	result := store.RetirementResult{
+		OperationID: request.OperationID, AccountID: request.AccountID, TombstoneRevision: request.TombstoneRevision,
+		Tombstoned: true, CompletedAt: time.Now().UTC(),
+	}
+	memory.active, memory.pending = nil, nil
+	memory.retirement, memory.retirementDigest = &result, digest
+	memory.retirementCommits++
+	return result, nil
+}
+
 func (memory *snapshotAuthorityStore) LoadRuntimeState(context.Context, domain.AccountID) (store.RuntimeState, error) {
-	return store.RuntimeState{Active: memory.active, Pending: memory.pending}, nil
+	state := store.RuntimeState{AccountID: "account-a", Active: memory.active, Pending: memory.pending}
+	if memory.retirement != nil {
+		state.Tombstoned = true
+		state.TombstoneRevision = memory.retirement.TombstoneRevision
+	}
+	return state, nil
 }
 
 func (memory *snapshotAuthorityStore) ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error) {
+	if memory.retirement != nil {
+		return []store.RuntimeState{{
+			AccountID: "account-a", Tombstoned: true, TombstoneRevision: memory.retirement.TombstoneRevision,
+		}}, nil
+	}
 	if memory.active == nil && memory.pending == nil {
 		return nil, nil
 	}
 	return []store.RuntimeState{{AccountID: "account-a", Active: memory.active, Pending: memory.pending}}, nil
+}
+
+func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityCredentialResolver{}, Lifecycle: newAuthorityLifecycle(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const applyOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	const retireOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"
+	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	apply := httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		},
+	}
+	if _, err := authority.Execute(context.Background(), apply); err != nil {
+		t.Fatal(err)
+	}
+	retire := httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityRetireDesired, Mode: "test", AccountID: "account-a", OperationID: retireOperationID,
+		Retirement: &httpapi.RetireRequest{
+			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1,
+		},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := authority.Execute(context.Background(), retire)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		view, ok := response.Body.(httpapi.RuntimeView)
+		if !ok || !view.Tombstoned || view.Active != nil || view.Pending != nil || len(view.Retiring) != 0 {
+			t.Fatalf("attempt %d view=%T %+v", attempt+1, response.Body, response.Body)
+		}
+		encoded, err := json.Marshal(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{opaqueRef, "secretRef", "provider", "master-key"} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("retirement response leaked %q: %s", forbidden, encoded)
+			}
+		}
+	}
+	if snapshotStore.retirementCommits != 1 {
+		t.Fatalf("retirement commits=%d want=1", snapshotStore.retirementCommits)
+	}
+	if !errors.Is(manager.CheckWriteFence(account.WriteFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}), account.ErrStaleWriteFence) {
+		t.Fatal("retired account still passed write fence")
+	}
+	restartedManager := newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle())
+	restarted, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedResponse, err := restarted.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetDesired, AccountID: "account-a"})
+	restartedView, ok := restartedResponse.Body.(httpapi.RuntimeView)
+	if err != nil || !ok || !restartedView.Tombstoned || restartedView.Active != nil || restartedManager.ActiveSnapshot("account-a") != nil {
+		t.Fatalf("restart view=%T %+v active=%+v err=%v", restartedResponse.Body, restartedResponse.Body, restartedManager.ActiveSnapshot("account-a"), err)
+	}
+	reused := apply
+	reused.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"
+	reused.DesiredApply = &httpapi.DesiredApplyRequest{
+		OperationID: reused.OperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+		DesiredStateRevision: 3, RuntimeGeneration: 2, CredentialVersion: 1, RequestedState: "active",
+		Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+	}
+	_, err = authority.Execute(context.Background(), reused)
+	var retiredErr httpapi.AuthorityError
+	if !errors.As(err, &retiredErr) || retiredErr.Code != "RETIRED_SECRET_REFERENCE" {
+		t.Fatalf("retired reference reuse err=%T %v", err, err)
+	}
+
+	conflict := retire
+	conflict.Retirement = &httpapi.RetireRequest{
+		OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 3, RuntimeGeneration: 1, CredentialVersion: 1,
+	}
+	_, err = authority.Execute(context.Background(), conflict)
+	var authorityErr httpapi.AuthorityError
+	if !errors.As(err, &authorityErr) || authorityErr.Code != "OPERATION_ID_CONFLICT" {
+		t.Fatalf("conflicting replay err=%T %v", err, err)
+	}
+}
+
+func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityCredentialResolver{}, Lifecycle: newAuthorityLifecycle(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := func(operationID string, revision, generation, credentialVersion int64, secretRef string) {
+		t.Helper()
+		_, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
+			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+			DesiredApply: &httpapi.DesiredApplyRequest{
+				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+				DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: credentialVersion, RequestedState: "active",
+				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("apply generation %d: %v", generation, err)
+		}
+	}
+	const retiringOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c70"
+	const activeOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c71"
+	apply(retiringOperationID, 1, 1, 1, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	apply(activeOperationID, 2, 2, 2, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+
+	request := httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityFinalizeRotation, Mode: "test", AccountID: "account-a", OperationID: activeOperationID,
+		RotationFinalization: &httpapi.RotationFinalizationRequest{
+			OperationID: activeOperationID, AccountID: "account-a",
+			ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+			ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
+		},
+	}
+	var first httpapi.RotationFinalizationProof
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := authority.Execute(context.Background(), request)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		proof, ok := response.Body.(httpapi.RotationFinalizationProof)
+		if !ok || response.Status != http.StatusOK || proof.OperationID != activeOperationID || proof.AccountID != "account-a" ||
+			proof.ActiveFence != request.RotationFinalization.ExpectedActiveFence || proof.RetiringFence != request.RotationFinalization.ExpectedRetiringFence ||
+			proof.TombstoneRevision != 2 || proof.RetiringState != "retired" || proof.SecretReferenceState != "tombstoned" {
+			t.Fatalf("attempt %d proof=%T %+v status=%d", attempt+1, response.Body, response.Body, response.Status)
+		}
+		if proof.CompletedAt.IsZero() || proof.CompletedAt.Location() != time.UTC {
+			t.Fatalf("completedAt=%v", proof.CompletedAt)
+		}
+		encoded, err := json.Marshal(proof)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{`"secretRef":`, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE", `"namespace":`, `"provider":`, `"keyVersion":`} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("proof leaked %q: %s", forbidden, encoded)
+			}
+		}
+		if attempt == 0 {
+			first = proof
+		} else if proof != first {
+			t.Fatalf("replay proof=%+v first=%+v", proof, first)
+		}
+	}
+	if snapshotStore.rotationCommits != 1 || snapshotStore.rotationRequest == nil || snapshotStore.rotationRequest.Scope != authoritySecretScope(account.RuntimeModeTest) {
+		t.Fatalf("commits=%d request=%+v", snapshotStore.rotationCommits, snapshotStore.rotationRequest)
+	}
+
+	changed := request
+	changed.RotationFinalization = &httpapi.RotationFinalizationRequest{
+		OperationID: activeOperationID, AccountID: "account-a",
+		ExpectedActiveFence:   httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 3, RuntimeGeneration: 3, CredentialVersion: 3},
+		ExpectedRetiringFence: httpapi.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 2},
+	}
+	_, err = authority.Execute(context.Background(), changed)
+	var conflict httpapi.AuthorityError
+	if !errors.As(err, &conflict) || conflict.Code != "OPERATION_ID_CONFLICT" {
+		t.Fatalf("changed request err=%T %v", err, err)
+	}
 }
 
 func (memory *snapshotAuthorityStore) TombstoneSecretReference(_ context.Context, request store.TombstoneRequest) (store.Tombstone, error) {
@@ -859,7 +1095,7 @@ func (memory *snapshotAuthorityStore) TombstoneSecretReference(_ context.Context
 }
 
 func (memory *snapshotAuthorityStore) IsSecretReferenceRetired(context.Context, secretstore.Scope, secretstore.OpaqueRef) (bool, error) {
-	return false, nil
+	return memory.retirement != nil, nil
 }
 
 func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
@@ -901,6 +1137,120 @@ func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
 	active := manager.ActiveSnapshot("account-a")
 	if snapshotStore.promotions != 1 || snapshotStore.pending != nil || active == nil || active.Fence != desired.Fence {
 		t.Fatalf("promotions=%d pending=%+v active=%+v", snapshotStore.promotions, snapshotStore.pending, active)
+	}
+}
+
+func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+		CredentialResolver: authorityCredentialResolver{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
+	const opaqueRef = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	request := httpapi.AuthorityRequest{
+		Operation:   httpapi.AuthorityApplyDesired,
+		Mode:        "test",
+		AccountID:   "account-a",
+		OperationID: operationID,
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := authority.Execute(context.Background(), request)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		if response.Status != http.StatusOK {
+			t.Fatalf("attempt %d status=%d", attempt+1, response.Status)
+		}
+		view, ok := response.Body.(httpapi.RuntimeView)
+		if !ok || view.AccountID != "account-a" || view.Active == nil || view.Active.OperationID != operationID || view.Active.RuntimeGeneration != 1 || len(view.Active.Routes) != 1 || !view.Active.Routes[0].Ready {
+			t.Fatalf("attempt %d view=%T %+v", attempt+1, response.Body, response.Body)
+		}
+		encoded, err := json.Marshal(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"secretRef", opaqueRef, "provider", "master-key"} {
+			if strings.Contains(string(encoded), forbidden) {
+				t.Fatalf("response leaked %q: %s", forbidden, encoded)
+			}
+		}
+	}
+	if snapshotStore.promotions != 1 {
+		t.Fatalf("promotions=%d want=1", snapshotStore.promotions)
+	}
+}
+
+func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPending(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+		HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest,
+		RuntimeGroupBuilder: authorityFailingCandidateBuilder{failGeneration: 2}, CredentialResolver: authorityCredentialResolver{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	snapshotStore := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), snapshotStore, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(operationID string, revision, generation int64) httpapi.AuthorityRequest {
+		return httpapi.AuthorityRequest{
+			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
+			DesiredApply: &httpapi.DesiredApplyRequest{
+				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+				SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: revision,
+				RuntimeGeneration: generation, CredentialVersion: 1, RequestedState: "active",
+				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			},
+		}
+	}
+	if _, err := authority.Execute(context.Background(), request("018f47a8-2578-7d3c-9d7d-5e4f4a445c33", 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.Execute(context.Background(), request("018f47a8-2578-7d3c-9d7d-5e4f4a445c34", 2, 2)); err == nil || strings.Contains(err.Error(), "secret-material-canary") {
+		t.Fatalf("candidate failure=%v", err)
+	}
+	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetDesired, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, ok := response.Body.(httpapi.RuntimeView)
+	if !ok || view.Active == nil || view.Active.RuntimeGeneration != 1 || view.Pending == nil || view.Pending.RuntimeGeneration != 2 || view.Pending.State != string(store.OperationCandidateFailed) || len(view.Pending.Routes) != 1 || view.Pending.Routes[0].Ready || view.Pending.Routes[0].Reason != "CANDIDATE_BUILD_FAILED" {
+		t.Fatalf("view=%T %+v", response.Body, response.Body)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"secretRef", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "secret-material-canary"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("pending view leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 

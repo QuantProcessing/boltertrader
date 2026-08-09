@@ -55,3 +55,30 @@ func TestAccountRouteCredentialMigrationHasAtomicRecoverySchema(t *testing.T) {
 		}
 	}
 }
+
+func TestRotationCleanupProofMigrationStoresOnlyDurableTerminalEvidence(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "migrations", "0015_rotation_cleanup_proof.sql")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := strings.ToLower(string(payload))
+	for _, required := range []string{
+		"alter table platform_credential_operations",
+		"rotation_cleanup_tombstone_revision",
+		"rotation_cleanup_completed_at",
+		"platform_credential_operations_one_recoverable_per_account",
+		"where state in ('awaiting_material','stored','applying','cleanup_pending')",
+		"bigint",
+		"timestamptz",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"secret_ref", "credential_bundle", "secret_material", "api_secret", "private_key", "passphrase", "namespace", "provider", "key_version"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("migration contains forbidden credential detail %q", forbidden)
+		}
+	}
+}

@@ -65,6 +65,16 @@ func TestAppStartsAndStops(t *testing.T) {
 	}
 }
 
+func TestNewWiresGatewayDesiredClientAndAccountReconciler(t *testing.T) {
+	app, err := New(testConfig(t, "test"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.accountReconciler == nil {
+		t.Fatal("production Gateway desired client did not create an account reconciler")
+	}
+}
+
 func TestStartRejectsMissingCredentialWriterBeforeListen(t *testing.T) {
 	cfg := testConfig(t, "test")
 	app, err := NewWithDependencies(cfg, Dependencies{MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}})

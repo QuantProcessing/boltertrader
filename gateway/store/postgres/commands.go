@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -147,7 +148,73 @@ func (postgresStore *Store) BeginOrderHandoff(ctx context.Context, request store
 	if err := request.Validate(); err != nil {
 		return store.OrderHandoff{}, err
 	}
-	if _, err := postgresStore.pool.Exec(ctx, `
+	tx, err := postgresStore.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return store.OrderHandoff{}, redactErr("begin order handoff", err)
+	}
+	defer tx.Rollback(ctx)
+
+	existing, err := loadOrderHandoffWithQuerier(ctx, tx, request.HandoffID)
+	if err == nil {
+		if existing.BeginOrderHandoffRequest != request {
+			return store.OrderHandoff{}, store.ErrOperationConflict
+		}
+		if err := postgresStore.commit(ctx, tx); err != nil {
+			return store.OrderHandoff{}, err
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return store.OrderHandoff{}, err
+	}
+
+	var activeID *uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT active_snapshot_id
+		FROM gateway_account_runtime_heads
+		WHERE account_id=$1
+		FOR KEY SHARE
+	`, request.AccountID).Scan(&activeID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.OrderHandoff{}, store.ErrPromotionFenceConflict
+		}
+		return store.OrderHandoff{}, redactErr("lock order handoff runtime head", err)
+	}
+	if activeID == nil {
+		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
+	}
+	active, err := loadSnapshotByID(ctx, tx, *activeID)
+	if err != nil {
+		return store.OrderHandoff{}, err
+	}
+	if active.Fence != request.Fence {
+		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
+	}
+	var routeActive bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM gateway_runtime_snapshot_routes
+			WHERE snapshot_id=$1 AND route_id=$2 AND requested_state='active'
+		)
+	`, *activeID, request.RouteID).Scan(&routeActive); err != nil {
+		return store.OrderHandoff{}, redactErr("check order handoff active route", err)
+	}
+	if !routeActive {
+		return store.OrderHandoff{}, store.ErrPromotionFenceConflict
+	}
+	var referenceRetired bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM gateway_retired_secret_refs WHERE secret_ref=$1
+		)
+	`, active.SecretRef.RawForTrustedBoundary()).Scan(&referenceRetired); err != nil {
+		return store.OrderHandoff{}, redactErr("check order handoff active reference", err)
+	}
+	if referenceRetired {
+		return store.OrderHandoff{}, store.ErrRetiredSecretReference
+	}
+
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO gateway_order_handoffs(
 			handoff_id, command_id, account_id, route_id, desired_state_revision,
 			runtime_generation, credential_version, state
@@ -157,7 +224,17 @@ func (postgresStore *Store) BeginOrderHandoff(ctx context.Context, request store
 		request.Fence.DesiredStateRevision, request.Fence.RuntimeGeneration, request.Fence.CredentialVersion); err != nil {
 		return store.OrderHandoff{}, redactErr("begin order handoff", err)
 	}
-	return postgresStore.loadOrderHandoff(ctx, request.HandoffID)
+	handoff, err := loadOrderHandoffWithQuerier(ctx, tx, request.HandoffID)
+	if err != nil {
+		return store.OrderHandoff{}, err
+	}
+	if handoff.BeginOrderHandoffRequest != request {
+		return store.OrderHandoff{}, store.ErrOperationConflict
+	}
+	if err := postgresStore.commit(ctx, tx); err != nil {
+		return store.OrderHandoff{}, err
+	}
+	return handoff, nil
 }
 
 func (postgresStore *Store) ResolveOrderHandoff(ctx context.Context, request store.ResolveOrderHandoffRequest) (store.OrderHandoff, error) {
@@ -179,9 +256,13 @@ func (postgresStore *Store) ResolveOrderHandoff(ctx context.Context, request sto
 }
 
 func (postgresStore *Store) loadOrderHandoff(ctx context.Context, handoffID domain.EventID) (store.OrderHandoff, error) {
+	return loadOrderHandoffWithQuerier(ctx, postgresStore.pool, handoffID)
+}
+
+func loadOrderHandoffWithQuerier(ctx context.Context, querier snapshotQuerier, handoffID domain.EventID) (store.OrderHandoff, error) {
 	var handoff store.OrderHandoff
 	var resolvedAt *time.Time
-	err := postgresStore.pool.QueryRow(ctx, `
+	err := querier.QueryRow(ctx, `
 		SELECT handoff_id::text, command_id::text, account_id, route_id,
 		       desired_state_revision, runtime_generation, credential_version,
 		       state, started_at, resolved_at
