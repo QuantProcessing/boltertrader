@@ -81,13 +81,13 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 	}
 
 	secrets.ref = "vault://test/account/2"
-	if _, err := service.Rotate(context.Background(), created.ID, 1, []byte("orphan-candidate"), "browser-session"); !errors.Is(err, ErrRevisionConflict) {
+	if _, err := service.rotateLegacy(context.Background(), created.ID, 1, []byte("orphan-candidate"), "browser-session"); !errors.Is(err, ErrRevisionConflict) {
 		t.Fatalf("stale rotate error = %v", err)
 	}
 	if len(secrets.deleted) != 1 || secrets.deleted[0] != secrets.ref {
 		t.Fatalf("stale rotation cleanup = %#v", secrets.deleted)
 	}
-	rotating, err := service.Rotate(context.Background(), created.ID, active.DesiredStateRevision, []byte("replacement-secret"), "browser-session")
+	rotating, err := service.rotateLegacy(context.Background(), created.ID, active.DesiredStateRevision, []byte("replacement-secret"), "browser-session")
 	if err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	created, _ := service.Create(context.Background(), CreateRequest{Venue: "okx", VenueEnvironment: EnvironmentDemo, DisplayName: "Demo", ProductIDs: []string{"manual"}, SecretMaterial: []byte("secret")}, "browser-session")
 	active, _ := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "gateway-adapter")
 
-	if _, err := service.Remove(context.Background(), active.ID, active.DesiredStateRevision, "browser-session"); !errors.Is(err, ErrInvalidTransition) {
+	if _, err := service.removeLegacy(context.Background(), active.ID, active.DesiredStateRevision, "browser-session"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("remove active error = %v", err)
 	}
 	draining, err := service.Drain(context.Background(), active.ID, active.DesiredStateRevision, Blockers{OpenOrders: 1}, "browser-session")
@@ -167,7 +167,7 @@ func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 	if err != nil || disabled.State != StateDisabled {
 		t.Fatalf("disable = %#v, %v", disabled, err)
 	}
-	removing, err := service.Remove(context.Background(), active.ID, disabled.DesiredStateRevision, "browser-session")
+	removing, err := service.removeLegacy(context.Background(), active.ID, disabled.DesiredStateRevision, "browser-session")
 	if err != nil || removing.State != StateRemoving {
 		t.Fatalf("remove = %#v, %v", removing, err)
 	}

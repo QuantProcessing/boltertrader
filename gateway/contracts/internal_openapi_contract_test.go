@@ -19,6 +19,9 @@ type internalSchema struct {
 	Required             []string                  `yaml:"required"`
 	Properties           map[string]internalSchema `yaml:"properties"`
 	Items                *internalSchema           `yaml:"items"`
+	AllOf                []internalSchema          `yaml:"allOf"`
+	If                   *internalSchema           `yaml:"if"`
+	Then                 *internalSchema           `yaml:"then"`
 }
 
 type internalResponse struct {
@@ -317,6 +320,26 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		if _, exists := runtimeView.Properties[field]; !exists {
 			t.Errorf("RuntimeView missing operational field %q: %+v", field, runtimeView.Properties)
 		}
+	}
+	for _, field := range []string{"readiness", "writeReadiness", "blockedReason", "capabilities"} {
+		if !containsString(runtimeView.Required, field) {
+			t.Errorf("RuntimeView unconditional field %q is not required: %v", field, runtimeView.Required)
+		}
+	}
+	activeOnly := []string{"credentialVersion", "desiredStateRevision", "lastAppliedDesiredStateRevision", "lastAppliedRuntimeGeneration", "observedAt", "runtimeGeneration", "runtimeVersion"}
+	for _, field := range activeOnly {
+		if containsString(runtimeView.Required, field) {
+			t.Errorf("RuntimeView active-only field %q is unconditionally required: %v", field, runtimeView.Required)
+		}
+	}
+	if len(runtimeView.AllOf) != 1 || runtimeView.AllOf[0].If == nil || runtimeView.AllOf[0].Then == nil ||
+		!reflect.DeepEqual(runtimeView.AllOf[0].If.Required, []string{"active"}) {
+		t.Fatalf("RuntimeView active conditional=%+v", runtimeView.AllOf)
+	}
+	conditionalRequired := append([]string(nil), runtimeView.AllOf[0].Then.Required...)
+	sort.Strings(conditionalRequired)
+	if !reflect.DeepEqual(conditionalRequired, activeOnly) {
+		t.Errorf("RuntimeView active conditional required=%v want=%v", conditionalRequired, activeOnly)
 	}
 	pendingStates := append([]string(nil), document.Components.Schemas["PendingSnapshotView"].Properties["state"].Enum...)
 	sort.Strings(pendingStates)

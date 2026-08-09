@@ -223,7 +223,12 @@ components:
     RuntimeView:
       type: object
       additionalProperties: false
-      required: [accountId, retiring, tombstoned]
+      required: [accountId, retiring, tombstoned, readiness, writeReadiness, blockedReason, capabilities]
+      allOf:
+        - if:
+            required: [active]
+          then:
+            required: [desiredStateRevision, runtimeGeneration, credentialVersion, runtimeVersion, lastAppliedDesiredStateRevision, lastAppliedRuntimeGeneration, observedAt]
       properties:
         accountId: {type: string}
         active: {$ref: '#/components/schemas/RuntimeSnapshotView'}

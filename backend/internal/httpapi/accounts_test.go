@@ -125,6 +125,27 @@ func TestTypedAccountCreateReplaysIdempotentlyAndRejectsChangedBody(t *testing.T
 	}
 }
 
+func TestTypedAccountCreateValidationFailureIsStableBadRequest(t *testing.T) {
+	secrets := &routeSecretWriter{ref: "opaque-ref"}
+	service, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: secrets, Audit: routeAuditWriter{}, ID: func() string { return "acct_invalid" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+		return platformaccounts.Blockers{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"venue":"binance","displayName":" ","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}}`))
+	request.Header.Set("Idempotency-Key", "invalid-display")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"VALIDATION_ERROR"`) || strings.Contains(response.Body.String(), "INTERNAL_ERROR") || secrets.puts != 0 {
+		t.Fatalf("status=%d puts=%d body=%s", response.Code, secrets.puts, response.Body.String())
+	}
+}
+
 func TestAccountResponsesExposeCanonicalBrowserIdentityAndPATCHRejectsLegacyFields(t *testing.T) {
 	service, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: &routeSecretWriter{ref: "opaque-ref"}, Audit: routeAuditWriter{}, ID: func() string { return "acct_contract" }})
 	if err != nil {
@@ -199,14 +220,14 @@ func TestAccountMutationBodiesRejectDuplicateKeysBeforeSideEffects(t *testing.T)
 		{name: "create wrong top-level case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-top-case", wantError: "non-canonical", body: strings.Replace(validBody, `"venue":"binance"`, `"Venue":"binance"`, 1)},
 		{name: "create case-fold top-level duplicate", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "folded-top", body: strings.Replace(validBody, `"venue":"binance"`, `"venue":"binance","Venue":"bybit"`, 1)},
 		{name: "create wrong nested route case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-route-case", wantError: "non-canonical", body: strings.Replace(validBody, `"routeId":"perp-usdt"`, `"RouteId":"perp-usdt"`, 1)},
-		{name: "create wrong nested credential case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-credential-case", wantError: "non-canonical", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"AuthKind":"api_key_secret"`, 1)},
-		{name: "create case-fold nested secret duplicate", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "folded-secret", body: strings.Replace(validBody, `"apiKey":"key"`, `"apiKey":"key","APIKEY":"other"`, 1)},
+		{name: "create wrong nested credential case", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "wrong-credential-case", wantError: "credential bundle shape", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"AuthKind":"api_key_secret"`, 1)},
+		{name: "create case-fold nested secret duplicate", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "folded-secret", wantError: "credential bundle shape", body: strings.Replace(validBody, `"apiKey":"key"`, `"apiKey":"key","APIKEY":"other"`, 1)},
 		{name: "create top level", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-top", body: strings.Replace(validBody, `"venue":"binance"`, `"venue":"binance","venue":"bybit"`, 1)},
 		{name: "create nested route", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-route", body: strings.Replace(validBody, `"routeId":"perp-usdt"`, `"routeId":"perp-usdt","routeId":"spot-usdt"`, 1)},
-		{name: "create nested credential", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-credential", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"authKind":"api_key_secret","authKind":"evm_private_key"`, 1)},
+		{name: "create nested credential", method: http.MethodPost, path: "/api/v1/accounts", idempotency: "duplicate-credential", wantError: "credential bundle shape", body: strings.Replace(validBody, `"authKind":"api_key_secret"`, `"authKind":"api_key_secret","authKind":"evm_private_key"`, 1)},
 		{name: "patch top level", method: http.MethodPatch, path: "/api/v1/accounts/acct_duplicates", body: `{"displayName":"First","displayName":"Second","productIds":["manual"]}`},
-		{name: "rotate nested secret", method: http.MethodPost, path: "/api/v1/accounts/acct_duplicates/rotate", body: `{"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"one","apiKey":"two","apiSecret":"secret"}}}`},
-		{name: "delete body", method: http.MethodDelete, path: "/api/v1/accounts/acct_duplicates", body: `{"reason":"one","reason":"two"}`},
+		{name: "rotate nested secret", method: http.MethodPost, path: "/api/v1/accounts/acct_duplicates/rotate", idempotency: "rotate-duplicate", wantError: "credential bundle shape", body: `{"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"one","apiKey":"two","apiSecret":"secret"}}}`},
+		{name: "delete body", method: http.MethodDelete, path: "/api/v1/accounts/acct_duplicates", idempotency: "delete-duplicate", body: `{"reason":"one","reason":"two"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -227,6 +248,106 @@ func TestAccountMutationBodiesRejectDuplicateKeysBeforeSideEffects(t *testing.T)
 			account, getErr := service.Get(context.Background(), "acct_duplicates")
 			if getErr != nil || account.DesiredStateRevision != 1 || account.CredentialVersion != 1 || secrets.puts != 1 {
 				t.Fatalf("side effect account=%+v err=%v puts=%d", account, getErr, secrets.puts)
+			}
+		})
+	}
+}
+
+func TestCredentialBundleShapeErrorsNeverEchoSubmittedKeyNames(t *testing.T) {
+	secrets := &routeSecretWriter{ref: "opaque-ref"}
+	service, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: secrets, Audit: routeAuditWriter{}, ID: func() string { return "acct_shape" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+		return platformaccounts.Blockers{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	base := `{"venue":"binance","displayName":"Primary","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}}`
+	tests := []struct {
+		name, canary, body string
+	}{
+		{name: "unknown envelope", canary: "EnvelopeShapeCanary", body: strings.Replace(base, `"authKind":"api_key_secret"`, `"authKind":"api_key_secret","EnvelopeShapeCanary":true`, 1)},
+		{name: "wrong case", canary: "AuthKindShapeCanary", body: strings.Replace(base, `"authKind":"api_key_secret"`, `"AuthKindShapeCanary":"api_key_secret"`, 1)},
+		{name: "case folded duplicate", canary: "DuplicateShapeCanary", body: strings.Replace(base, `"metadata":{}`, `"metadata":{"DuplicateShapeCanary":1,"DUPLICATESHAPECANARY":2}`, 1)},
+		{name: "unknown nested secret", canary: "SecretShapeCanary", body: strings.Replace(base, `"apiKey":"key"`, `"apiKey":"key","SecretShapeCanary":"attacker-material"`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(test.body))
+			request.Header.Set("Idempotency-Key", "shape-"+test.name)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			body := response.Body.String()
+			if response.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"VALIDATION_ERROR"`) || !strings.Contains(body, "credential bundle shape is invalid") {
+				t.Fatalf("status=%d body=%s", response.Code, body)
+			}
+			for _, forbidden := range []string{test.canary, strings.ToUpper(test.canary), "attacker-material"} {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("response echoed submitted credential shape %q: %s", forbidden, body)
+				}
+			}
+			if secrets.puts != 0 {
+				t.Fatalf("puts=%d", secrets.puts)
+			}
+		})
+	}
+}
+
+func TestRotateAndDeleteRequireIdempotencyKeyBeforeBodyDecodeOrEffects(t *testing.T) {
+	secrets := &routeSecretWriter{ref: "opaque-ref"}
+	store := platformaccounts.NewMemoryStore()
+	account := platformaccounts.Account{
+		ID: "acct_idempotency", Venue: "binance", Mode: "test", NativeEnvironment: platformaccounts.EnvironmentDemo,
+		DisplayName: "Primary", ProductIDs: []string{"manual"}, ProductPolicy: []string{"manual"},
+		Routes:               []platformaccounts.AccountRoute{{ID: "perp-usdt", Product: platformaccounts.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: platformaccounts.RouteActive}},
+		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: platformaccounts.StateActive,
+	}
+	if err := store.Create(context.Background(), account); err != nil {
+		t.Fatal(err)
+	}
+	service, err := platformaccounts.New(platformaccounts.Options{Store: store, Secrets: secrets, Audit: routeAuditWriter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockerCalls := 0
+	mux := http.NewServeMux()
+	if err := RegisterAccountRoutes(mux, AccountRoutesOptions{
+		Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil },
+		AuthorizeMutation: func(*http.Request) error { return nil },
+		Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+			blockerCalls++
+			return platformaccounts.Blockers{}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name, method, path, key string
+	}{
+		{name: "rotate missing", method: http.MethodPost, path: "/api/v1/accounts/acct_idempotency/rotate"},
+		{name: "rotate blank", method: http.MethodPost, path: "/api/v1/accounts/acct_idempotency/rotate", key: " \t "},
+		{name: "delete missing", method: http.MethodDelete, path: "/api/v1/accounts/acct_idempotency"},
+		{name: "delete blank", method: http.MethodDelete, path: "/api/v1/accounts/acct_idempotency", key: " \t "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader("not-json"))
+			request.Header.Set("If-Match", AccountETag(1))
+			if test.key != "" {
+				request.Header.Set("Idempotency-Key", test.key)
+			}
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Idempotency-Key is required") {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			persisted, getErr := store.Get(context.Background(), account.ID)
+			if getErr != nil || persisted.DesiredStateRevision != 1 || secrets.puts != 0 || blockerCalls != 0 {
+				t.Fatalf("account=%+v err=%v puts=%d blockerCalls=%d", persisted, getErr, secrets.puts, blockerCalls)
 			}
 		})
 	}

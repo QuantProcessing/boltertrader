@@ -80,20 +80,31 @@ type LifecycleHooks struct {
 func (service *Service) createDurable(ctx context.Context, request CreateRequest, principalID, idempotencyKey string) (Account, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" {
-		return Account{}, errors.New("idempotency key is required")
+		return Account{}, validationError(errors.New("idempotency key is required"))
 	}
 	account, material, requestDigest, err := service.normalizeDurableCreate(request)
 	if err != nil {
 		return Account{}, err
 	}
 	defer clear(material)
+	now := service.now().UTC()
+	account.ID = service.id()
+	account.UpdatedAt = now
+	operation := CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Mode: service.mode, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: digestString(idempotencyKey), RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
+	if err := account.Validate(); err != nil {
+		return Account{}, validationError(err)
+	}
+	if err := operation.Validate(); err != nil {
+		return Account{}, validationError(err)
+	}
 	lookup := OperationLookup{Mode: service.mode, PrincipalID: principalID, Kind: OperationCreate, IdempotencyKeyDigest: digestString(idempotencyKey)}
-	operation, err := service.store.FindCredentialOperation(ctx, lookup)
+	found, err := service.store.FindCredentialOperation(ctx, lookup)
 	newOperation := errors.Is(err, ErrNotFound)
 	if err != nil && !newOperation {
 		return Account{}, err
 	}
 	if !newOperation {
+		operation = found
 		if operation.RequestDigest != requestDigest {
 			return Account{}, ErrIdempotencyConflict
 		}
@@ -105,16 +116,6 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 			return account, nil
 		}
 	} else {
-		now := service.now().UTC()
-		account.ID = service.id()
-		account.UpdatedAt = now
-		operation = CredentialOperation{ID: service.operationID(), PrincipalID: principalID, AccountID: account.ID, Mode: service.mode, Kind: OperationCreate, State: OperationAwaitingMaterial, IdempotencyKeyDigest: lookup.IdempotencyKeyDigest, RequestDigest: requestDigest, TargetDesiredStateRevision: 1, TargetRuntimeGeneration: 1, TargetCredentialVersion: 1, CreatedAt: now, UpdatedAt: now}
-		if err := account.Validate(); err != nil {
-			return Account{}, err
-		}
-		if err := operation.Validate(); err != nil {
-			return Account{}, err
-		}
 		if err := service.store.CreateDraft(ctx, account, operation); err != nil {
 			return Account{}, err
 		}
@@ -190,40 +191,49 @@ func (service *Service) createDurable(ctx context.Context, request CreateRequest
 }
 
 func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, []byte, string, error) {
+	if strings.TrimSpace(request.DisplayName) == "" || request.DisplayName != strings.TrimSpace(request.DisplayName) || len(request.DisplayName) > 128 {
+		return Account{}, nil, "", validationError(errors.New("display name is invalid"))
+	}
+	policy := append([]string(nil), request.ProductPolicy...)
+	if len(policy) == 0 {
+		policy = append([]string(nil), request.ProductIDs...)
+	}
+	if err := validateDurableProductPolicy(policy); err != nil {
+		return Account{}, nil, "", validationError(err)
+	}
+	if len(request.Routes) == 0 || len(request.Routes) > 32 {
+		return Account{}, nil, "", validationError(errors.New("account routes are invalid"))
+	}
 	material := append([]byte(nil), request.CredentialBundle...)
 	if len(material) == 0 {
 		material = append([]byte(nil), request.SecretMaterial...)
 	}
 	if len(material) == 0 {
-		return Account{}, nil, "", errors.New("credential bundle is required")
+		return Account{}, nil, "", validationError(errors.New("credential bundle is required"))
 	}
 	decoded, err := credential.DefaultRegistry().Decode(request.Venue, material)
 	if err != nil {
 		clear(material)
-		return Account{}, nil, "", errors.New("credential bundle is invalid")
+		return Account{}, nil, "", validationError(errors.New("credential bundle is invalid"))
 	}
 	decoded.Clear()
 	routes := append([]AccountRoute(nil), request.Routes...)
 	sort.Slice(routes, func(i, j int) bool { return routes[i].ID < routes[j].ID })
-	if len(routes) == 0 {
-		clear(material)
-		return Account{}, nil, "", errors.New("account routes are required")
-	}
 	profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.Mode(service.mode), request.Venue, routes[0].RouteProfileID)
 	if err != nil {
 		clear(material)
-		return Account{}, nil, "", errors.New("route profile is invalid")
-	}
-	policy := append([]string(nil), request.ProductPolicy...)
-	if len(policy) == 0 {
-		policy = append([]string(nil), request.ProductIDs...)
+		return Account{}, nil, "", validationError(errors.New("route profile is invalid"))
 	}
 	account := Account{Venue: request.Venue, VenueEnvironment: Environment(profile.NativeEnvironment), Mode: service.mode, NativeEnvironment: Environment(profile.NativeEnvironment), DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
 	validationAccount := account
 	validationAccount.ID = "pending"
 	if err := validationAccount.Validate(); err != nil {
 		clear(material)
-		return Account{}, nil, "", err
+		return Account{}, nil, "", validationError(err)
+	}
+	if err := validateRouteProductCompatibility(policy, routes); err != nil {
+		clear(material)
+		return Account{}, nil, "", validationError(err)
 	}
 	digestInput := struct {
 		Venue            string
@@ -235,11 +245,54 @@ func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, 
 	encoded, err := json.Marshal(digestInput)
 	if err != nil {
 		clear(material)
-		return Account{}, nil, "", err
+		return Account{}, nil, "", validationError(err)
 	}
 	requestDigest := digestBytes(encoded)
 	clear(encoded)
 	return account, material, requestDigest, nil
+}
+
+func validationError(err error) error {
+	return fmt.Errorf("%w: %v", ErrValidation, err)
+}
+
+func validateDurableProductPolicy(policy []string) error {
+	if len(policy) == 0 {
+		return errors.New("product policy is required")
+	}
+	seen := make(map[string]struct{}, len(policy))
+	for _, product := range policy {
+		if product != "funding" && product != "manual" {
+			return errors.New("product policy is invalid")
+		}
+		if _, duplicate := seen[product]; duplicate {
+			return errors.New("product policy is duplicated")
+		}
+		seen[product] = struct{}{}
+	}
+	return nil
+}
+
+func validateRouteProductCompatibility(policy []string, routes []AccountRoute) error {
+	products := make(map[string]struct{}, len(policy))
+	for _, product := range policy {
+		products[product] = struct{}{}
+	}
+	fundingRoute := false
+	for _, route := range routes {
+		_, manual := products["manual"]
+		_, funding := products["funding"]
+		if funding && route.Product == ProductPerp {
+			fundingRoute = fundingRoute || route.RequestedState == RouteActive
+		}
+		if !manual && !(funding && route.Product == ProductPerp) {
+			return errors.New("route is incompatible with product policy")
+		}
+	}
+	if _, funding := products["funding"]; funding && !fundingRoute {
+		return errors.New("funding product requires an active perpetual route")
+	}
+	return nil
 }
 
 func digestString(value string) string { return digestBytes([]byte(value)) }

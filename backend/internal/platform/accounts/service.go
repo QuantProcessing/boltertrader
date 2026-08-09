@@ -17,6 +17,7 @@ import (
 var (
 	ErrInvalidTransition = errors.New("invalid account transition")
 	ErrAccountBlocked    = errors.New("account lifecycle transition blocked")
+	ErrValidation        = errors.New("account validation failed")
 )
 
 type SecretWriter interface {
@@ -92,8 +93,12 @@ func New(options Options) (*Service, error) {
 }
 
 func (service *Service) Create(ctx context.Context, request CreateRequest, principalID string, idempotencyKey ...string) (Account, error) {
-	if len(idempotencyKey) > 0 && idempotencyKey[0] != "" && (len(request.Routes) > 0 || len(request.CredentialBundle) > 0) {
-		return service.createDurable(ctx, request, principalID, idempotencyKey[0])
+	if len(request.Routes) > 0 || len(request.CredentialBundle) > 0 {
+		key := ""
+		if len(idempotencyKey) > 0 {
+			key = idempotencyKey[0]
+		}
+		return service.createDurable(ctx, request, principalID, key)
 	}
 	return service.createLegacy(ctx, request, principalID)
 }
@@ -150,10 +155,10 @@ func (service *Service) Activate(ctx context.Context, id string, revision int64,
 }
 
 func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string, idempotencyKey ...string) (Account, error) {
-	if len(idempotencyKey) > 0 && strings.TrimSpace(idempotencyKey[0]) != "" {
-		return service.rotateDurable(ctx, id, revision, secretMaterial, principalID, idempotencyKey[0])
+	if len(idempotencyKey) == 0 || strings.TrimSpace(idempotencyKey[0]) == "" {
+		return Account{}, fmt.Errorf("%w: idempotency key is required", ErrValidation)
 	}
-	return service.rotateLegacy(ctx, id, revision, secretMaterial, principalID)
+	return service.rotateDurable(ctx, id, revision, secretMaterial, principalID, idempotencyKey[0])
 }
 
 func (service *Service) rotateLegacy(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string) (Account, error) {
@@ -205,10 +210,10 @@ func (service *Service) Disable(ctx context.Context, id string, revision int64, 
 }
 
 func (service *Service) Remove(ctx context.Context, id string, revision int64, principalID string, idempotencyKey ...string) (Account, error) {
-	if len(idempotencyKey) > 0 && strings.TrimSpace(idempotencyKey[0]) != "" {
-		return service.removeDurable(ctx, id, revision, principalID, idempotencyKey[0])
+	if len(idempotencyKey) == 0 || strings.TrimSpace(idempotencyKey[0]) == "" {
+		return Account{}, fmt.Errorf("%w: idempotency key is required", ErrValidation)
 	}
-	return service.removeLegacy(ctx, id, revision, principalID)
+	return service.removeDurable(ctx, id, revision, principalID, idempotencyKey[0])
 }
 
 func (service *Service) removeLegacy(ctx context.Context, id string, revision int64, principalID string) (Account, error) {
