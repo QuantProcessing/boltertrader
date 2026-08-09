@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"os"
+	"io"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 )
 
 var (
@@ -36,14 +34,19 @@ func (source FileKeySource) Load(ctx context.Context) ([]byte, error) {
 	if err := ctx.Err(); err != nil || !filepath.IsAbs(source.Path) {
 		return nil, ErrInvalidKeySource
 	}
-	info, err := os.Lstat(source.Path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+	file, err := openKeyFile(source.Path)
+	if err != nil {
+		return nil, ErrInvalidKeySource
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
 		return nil, ErrInvalidKeySource
 	}
 	if info.Mode().Perm() != 0o600 || !ownedByCurrentUser(info) {
 		return nil, ErrKeyPermissions
 	}
-	data, err := os.ReadFile(source.Path)
+	data, err := io.ReadAll(io.LimitReader(file, 67))
 	if err != nil {
 		return nil, ErrInvalidKeySource
 	}
@@ -58,12 +61,4 @@ func (source FileKeySource) Load(ctx context.Context) ([]byte, error) {
 		return nil, ErrInvalidKeySource
 	}
 	return key, nil
-}
-
-func ownedByCurrentUser(info os.FileInfo) bool {
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == os.Getuid()
 }
