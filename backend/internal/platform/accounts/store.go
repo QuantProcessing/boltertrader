@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
+
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 var (
@@ -15,17 +18,26 @@ var (
 
 type Store interface {
 	Create(context.Context, Account) error
+	CreateDraft(context.Context, Account, CredentialOperation) error
 	Get(context.Context, string) (Account, error)
 	List(context.Context) ([]Account, error)
 	CompareAndSwap(context.Context, string, int64, Account) error
+	GetCredentialOperation(context.Context, secretstore.OperationID) (CredentialOperation, error)
+	FindCredentialOperation(context.Context, OperationLookup) (CredentialOperation, error)
+	BindCredentialReference(context.Context, secretstore.OperationID, string) (Account, CredentialOperation, error)
+	CompareAndSwapAccountAndOperation(context.Context, TransitionRequest) (Account, CredentialOperation, error)
+	ListRecoverableCredentialOperations(context.Context, int) ([]CredentialOperation, error)
 }
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	accounts map[string]Account
+	mu         sync.RWMutex
+	accounts   map[string]Account
+	operations map[secretstore.OperationID]CredentialOperation
 }
 
-func NewMemoryStore() *MemoryStore { return &MemoryStore{accounts: make(map[string]Account)} }
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{accounts: make(map[string]Account), operations: make(map[secretstore.OperationID]CredentialOperation)}
+}
 
 func (store *MemoryStore) Create(_ context.Context, account Account) error {
 	store.mu.Lock()
@@ -34,6 +46,28 @@ func (store *MemoryStore) Create(_ context.Context, account Account) error {
 		return ErrAlreadyExists
 	}
 	store.accounts[account.ID] = clone(account)
+	return nil
+}
+
+func (store *MemoryStore) CreateDraft(_ context.Context, account Account, operation CredentialOperation) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.accounts[account.ID]; exists {
+		return ErrAlreadyExists
+	}
+	if _, exists := store.operations[operation.ID]; exists {
+		return ErrAlreadyExists
+	}
+	if operation.AccountID != account.ID || operation.State != OperationAwaitingMaterial {
+		return ErrInvalidTransition
+	}
+	for _, existing := range store.operations {
+		if operationLookupMatches(existing, OperationLookup{Mode: operation.Mode, PrincipalID: operation.PrincipalID, Kind: operation.Kind, IdempotencyKeyDigest: operation.IdempotencyKeyDigest}) {
+			return ErrAlreadyExists
+		}
+	}
+	store.accounts[account.ID] = clone(account)
+	store.operations[operation.ID] = operation
 	return nil
 }
 
@@ -72,8 +106,105 @@ func (store *MemoryStore) CompareAndSwap(_ context.Context, id string, expectedR
 	return nil
 }
 
+func (store *MemoryStore) GetCredentialOperation(_ context.Context, id secretstore.OperationID) (CredentialOperation, error) {
+	store.mu.RLock()
+	operation, exists := store.operations[id]
+	store.mu.RUnlock()
+	if !exists {
+		return CredentialOperation{}, ErrNotFound
+	}
+	return operation, nil
+}
+
+func (store *MemoryStore) FindCredentialOperation(_ context.Context, lookup OperationLookup) (CredentialOperation, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	for _, operation := range store.operations {
+		if operationLookupMatches(operation, lookup) {
+			return operation, nil
+		}
+	}
+	return CredentialOperation{}, ErrNotFound
+}
+
+func (store *MemoryStore) BindCredentialReference(_ context.Context, id secretstore.OperationID, reference string) (Account, CredentialOperation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	operation, exists := store.operations[id]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	account, exists := store.accounts[operation.AccountID]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	if operation.State == OperationStored && operation.SecretRef == reference && account.SecretRef == reference {
+		return clone(account), operation, nil
+	}
+	if operation.State != OperationAwaitingMaterial || reference == "" {
+		return Account{}, CredentialOperation{}, ErrInvalidTransition
+	}
+	account.SecretRef = reference
+	operation.SecretRef = reference
+	operation.State = OperationStored
+	operation.UpdatedAt = time.Now().UTC()
+	store.accounts[account.ID] = clone(account)
+	store.operations[id] = operation
+	return clone(account), operation, nil
+}
+
+func (store *MemoryStore) CompareAndSwapAccountAndOperation(_ context.Context, request TransitionRequest) (Account, CredentialOperation, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	operation, exists := store.operations[request.OperationID]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	account, exists := store.accounts[operation.AccountID]
+	if !exists {
+		return Account{}, CredentialOperation{}, ErrNotFound
+	}
+	if operation.State != request.ExpectedOperationState || account.DesiredStateRevision != request.ExpectedDesiredStateRevision || request.Account.ID != account.ID || request.Operation.ID != operation.ID {
+		return Account{}, CredentialOperation{}, ErrRevisionConflict
+	}
+	store.accounts[account.ID] = clone(request.Account)
+	store.operations[operation.ID] = request.Operation
+	return clone(request.Account), request.Operation, nil
+}
+
+func (store *MemoryStore) ListRecoverableCredentialOperations(_ context.Context, limit int) ([]CredentialOperation, error) {
+	if limit < 1 {
+		return nil, nil
+	}
+	store.mu.RLock()
+	result := make([]CredentialOperation, 0)
+	for _, operation := range store.operations {
+		switch operation.State {
+		case OperationAwaitingMaterial, OperationStored, OperationApplying, OperationCleanupPending:
+			result = append(result, operation)
+		}
+	}
+	store.mu.RUnlock()
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+func operationLookupMatches(operation CredentialOperation, lookup OperationLookup) bool {
+	return operation.Mode == lookup.Mode && operation.PrincipalID == lookup.PrincipalID && operation.Kind == lookup.Kind && operation.IdempotencyKeyDigest == lookup.IdempotencyKeyDigest
+}
+
 func clone(account Account) Account {
 	account.ProductIDs = append([]string(nil), account.ProductIDs...)
+	account.ProductPolicy = append([]string(nil), account.ProductPolicy...)
+	account.Routes = append([]AccountRoute(nil), account.Routes...)
 	if account.Rotation != nil {
 		rotation := *account.Rotation
 		account.Rotation = &rotation

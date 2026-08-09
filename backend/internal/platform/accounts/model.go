@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/desiredstate"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type State = desiredstate.State
@@ -29,6 +31,28 @@ const (
 	EnvironmentLive    Environment = "live"
 )
 
+type Product = routeprofile.Product
+
+const (
+	ProductSpot = routeprofile.ProductSpot
+	ProductPerp = routeprofile.ProductPerp
+)
+
+type RouteState string
+
+const (
+	RouteActive   RouteState = "active"
+	RouteDisabled RouteState = "disabled"
+)
+
+type AccountRoute struct {
+	ID              string     `json:"routeId"`
+	Product         Product    `json:"product"`
+	SettlementAsset string     `json:"settlementAsset,omitempty"`
+	RouteProfileID  string     `json:"routeProfileId"`
+	RequestedState  RouteState `json:"requestedState"`
+}
+
 type RotationFence struct {
 	ID                    string    `json:"rotationFenceId"`
 	State                 string    `json:"state"`
@@ -43,9 +67,14 @@ type Account struct {
 	ID                   string
 	Venue                string
 	VenueEnvironment     Environment
+	Mode                 secretstore.Mode
+	NativeEnvironment    Environment
 	DisplayName          string
 	ProductIDs           []string
+	ProductPolicy        []string
+	Routes               []AccountRoute
 	SecretRef            string
+	PreviousSecretRef    string
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
@@ -56,27 +85,64 @@ type Account struct {
 }
 
 type PublicAccount struct {
-	ID                   string      `json:"accountId"`
-	Venue                string      `json:"venue"`
-	VenueEnvironment     Environment `json:"venueEnvironment"`
-	DisplayName          string      `json:"displayName"`
-	ProductIDs           []string    `json:"productIds"`
-	Status               State       `json:"status"`
-	DesiredStateRevision int64       `json:"desiredStateRevision"`
-	RuntimeGeneration    int64       `json:"runtimeGeneration"`
-	CredentialVersion    int64       `json:"credentialVersion"`
-	LastValidatedAt      *time.Time  `json:"lastValidatedAt"`
-	UpdatedAt            time.Time   `json:"updatedAt"`
+	ID                   string         `json:"accountId"`
+	Venue                string         `json:"venue"`
+	VenueEnvironment     Environment    `json:"venueEnvironment"`
+	DisplayName          string         `json:"displayName"`
+	ProductIDs           []string       `json:"productIds"`
+	ProductPolicy        []string       `json:"productPolicy,omitempty"`
+	Routes               []AccountRoute `json:"routes,omitempty"`
+	Status               State          `json:"status"`
+	DesiredStateRevision int64          `json:"desiredStateRevision"`
+	RuntimeGeneration    int64          `json:"runtimeGeneration"`
+	CredentialVersion    int64          `json:"credentialVersion"`
+	LastValidatedAt      *time.Time     `json:"lastValidatedAt"`
+	UpdatedAt            time.Time      `json:"updatedAt"`
 }
 
 func (account Account) Public() PublicAccount {
 	return PublicAccount{
 		ID: account.ID, Venue: account.Venue, VenueEnvironment: account.VenueEnvironment,
-		DisplayName: account.DisplayName, ProductIDs: append([]string(nil), account.ProductIDs...),
+		DisplayName: account.DisplayName, ProductIDs: append([]string(nil), account.ProductIDs...), ProductPolicy: append([]string(nil), account.ProductPolicy...), Routes: append([]AccountRoute(nil), account.Routes...),
 		Status: account.State, DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
 		LastValidatedAt: account.LastValidatedAt, UpdatedAt: account.UpdatedAt,
 	}
+}
+
+func (account Account) Validate() error {
+	if account.ID == "" || account.Venue == "" || account.Mode == "" {
+		return errors.New("account identity is invalid")
+	}
+	seen := make(map[string]struct{}, len(account.Routes))
+	active := 0
+	for _, route := range account.Routes {
+		if route.ID == "" || route.ID != strings.TrimSpace(route.ID) || route.RouteProfileID == "" {
+			return errors.New("account route is invalid")
+		}
+		if _, exists := seen[route.ID]; exists {
+			return errors.New("account route id is duplicated")
+		}
+		seen[route.ID] = struct{}{}
+		if route.SettlementAsset != strings.ToUpper(route.SettlementAsset) {
+			return errors.New("route settlement asset is invalid")
+		}
+		profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.Mode(account.Mode), account.Venue, route.RouteProfileID)
+		if err != nil || profile.Product != route.Product || profile.SettlementAsset != route.SettlementAsset || string(profile.NativeEnvironment) != string(account.NativeEnvironment) {
+			return errors.New("route profile is invalid")
+		}
+		switch route.RequestedState {
+		case RouteActive:
+			active++
+		case RouteDisabled:
+		default:
+			return errors.New("route requested state is invalid")
+		}
+	}
+	if (account.State == StateCreating || account.State == StateActive || account.State == StateRotating) && active == 0 {
+		return errors.New("at least one active route is required")
+	}
+	return nil
 }
 
 type DesiredState struct {
