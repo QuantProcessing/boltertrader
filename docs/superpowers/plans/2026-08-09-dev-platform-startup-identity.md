@@ -169,5 +169,4 @@ Preserve a backup ref, normalize G009 history using `git commit-tree` and a
 compare-and-swap `git update-ref` without reset, rerun verification against the
 normalized tree, obtain a fresh active Codex goal snapshot, and checkpoint
 `G009-complete-docker-free-launch-and-migr` with evidence referencing
-`.omx/ultragoal`.
-
+the repository-owned Ultragoal artifacts.

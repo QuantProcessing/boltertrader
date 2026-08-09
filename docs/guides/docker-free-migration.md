@@ -23,8 +23,10 @@ in the evidence directory.
 ```sh
 export BT_MIGRATION_SOURCE_SERVICE=funding_source_migration
 export BT_MIGRATION_TARGET_SERVICE=bolter_target_migration
+export BT_MIGRATION_MAINTENANCE_SERVICE=bolter_target_maintenance
 export BT_MIGRATION_SOURCE_DATABASE=funding_source
 export BT_MIGRATION_TARGET_DATABASE=bolter_target
+export BT_MIGRATION_MAINTENANCE_DATABASE=postgres
 export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_writer
 export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_writer
 ```

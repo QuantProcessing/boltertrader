@@ -48,4 +48,3 @@ stopped.
 This change touches only `scripts/dev-platform` and
 `scripts/dev_platform_test.go`. It does not change ports, service commands,
 credentials, Test/Live policy, migration state, or venue write authority.
-
