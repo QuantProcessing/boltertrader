@@ -30,10 +30,12 @@ type mapping struct {
 }
 
 type backfillRequest struct {
-	Mode           string
-	TargetService  string
-	TargetDatabase string
-	Artifact       mappingArtifact
+	Mode                    string
+	PlatformService         string
+	PlatformDatabase        string
+	GatewayService          string
+	GatewayDatabase         string
+	Artifact                mappingArtifact
 }
 
 type backfillResult struct {
@@ -51,8 +53,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	mappingPath := flags.String("mapping", "", "checksum-verified route mapping artifact")
 	mode := flags.String("mode", "test", "process mode")
-	targetService := flags.String("target-service", "", "non-secret PostgreSQL service name")
-	targetDatabase := flags.String("target-database", "", "non-secret PostgreSQL database name")
+	platformService := flags.String("platform-service", "", "non-secret Platform PostgreSQL service name")
+	platformDatabase := flags.String("platform-database", "", "non-secret Platform PostgreSQL database name")
+	gatewayService := flags.String("gateway-service", "", "non-secret Gateway PostgreSQL service name")
+	gatewayDatabase := flags.String("gateway-database", "", "non-secret Gateway PostgreSQL database name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -62,11 +66,20 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if *mode != "test" {
 		return fmt.Errorf("LIVE_PROVISIONING_DISABLED")
 	}
-	if err := validateIdentifier("target service", *targetService, 64, true); err != nil {
+	if err := validateIdentifier("Platform service", *platformService, 64, true); err != nil {
 		return err
 	}
-	if err := validateIdentifier("target database", *targetDatabase, 63, false); err != nil {
+	if err := validateIdentifier("Platform database", *platformDatabase, 63, false); err != nil {
 		return err
+	}
+	if err := validateIdentifier("Gateway service", *gatewayService, 64, true); err != nil {
+		return err
+	}
+	if err := validateIdentifier("Gateway database", *gatewayDatabase, 63, false); err != nil {
+		return err
+	}
+	if *platformService == *gatewayService && *platformDatabase == *gatewayDatabase {
+		return fmt.Errorf("PLATFORM_GATEWAY_DATABASES_MUST_BE_SEPARATE")
 	}
 	data, err := os.ReadFile(*mappingPath)
 	if err != nil {
@@ -77,7 +90,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	result, err := executeBackfill(context.Background(), backfillRequest{
-		Mode: *mode, TargetService: *targetService, TargetDatabase: *targetDatabase, Artifact: artifact,
+		Mode: *mode, PlatformService: *platformService, PlatformDatabase: *platformDatabase,
+		GatewayService: *gatewayService, GatewayDatabase: *gatewayDatabase, Artifact: artifact,
 	})
 	if err != nil {
 		return err
@@ -120,7 +134,7 @@ func decodeMapping(data []byte) (mappingArtifact, error) {
 		if !safeToken(item.LegacyProduct) || !safeToken(item.RouteID) || item.SettlementAsset != strings.ToUpper(item.SettlementAsset) {
 			return mappingArtifact{}, fmt.Errorf("INVALID_MAPPING_ARTIFACT")
 		}
-		legacyKey := strings.Join([]string{item.Venue, item.NativeEnvironment, item.LegacyProduct}, "\x00")
+		legacyKey := strings.Join([]string{item.Venue, item.NativeEnvironment, item.LegacyProduct, item.SettlementAsset}, "\x00")
 		if _, duplicate := seenLegacy[legacyKey]; duplicate {
 			return mappingArtifact{}, fmt.Errorf("AMBIGUOUS_LEGACY_PROFILE")
 		}
@@ -132,7 +146,7 @@ func decodeMapping(data []byte) (mappingArtifact, error) {
 		seenRoute[routeKey] = struct{}{}
 	}
 	slices.SortFunc(artifact.Mappings, func(left, right mapping) int {
-		return strings.Compare(left.Venue+"\x00"+left.NativeEnvironment+"\x00"+left.LegacyProduct, right.Venue+"\x00"+right.NativeEnvironment+"\x00"+right.LegacyProduct)
+		return strings.Compare(left.Venue+"\x00"+left.NativeEnvironment+"\x00"+left.LegacyProduct+"\x00"+left.SettlementAsset, right.Venue+"\x00"+right.NativeEnvironment+"\x00"+right.LegacyProduct+"\x00"+right.SettlementAsset)
 	})
 	return artifact, nil
 }

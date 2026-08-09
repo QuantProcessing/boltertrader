@@ -36,14 +36,24 @@ func TestRepositoryMappingValidates(t *testing.T) {
 	}
 }
 
-func TestDecodeMappingRejectsAmbiguousLegacyProfile(t *testing.T) {
-	_, err := decodeMapping([]byte(`{
+func TestDecodeMappingAllowsDistinctSettlementRoutes(t *testing.T) {
+	artifact, err := decodeMapping([]byte(`{
 		"schemaVersion":1,
 		"mappings":[
 			{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"perp-usdt"},
 			{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDC","routeProfileId":"bybit.perp.usdc.demo.v1","routeId":"perp-usdc"}
 		]
 	}`))
+	if err != nil || len(artifact.Mappings) != 2 {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestDecodeMappingRejectsDuplicateFourPartLegacyProfile(t *testing.T) {
+	_, err := decodeMapping([]byte(`{"schemaVersion":1,"mappings":[
+		{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"perp-usdt"},
+		{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"other-usdt"}
+	]}`))
 	if err == nil || !strings.Contains(err.Error(), "AMBIGUOUS_LEGACY_PROFILE") {
 		t.Fatalf("error=%v", err)
 	}
@@ -58,7 +68,7 @@ func TestRunRejectsLiveBeforeExecution(t *testing.T) {
 		return backfillResult{}, nil
 	}
 	t.Cleanup(func() { executeBackfill = prior })
-	err := run([]string{"--mapping", path, "--mode", "live", "--target-service", "target", "--target-database", "target_db"}, &bytes.Buffer{}, &bytes.Buffer{})
+	err := run(backfillArgs(path, "live"), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "LIVE_PROVISIONING_DISABLED") || called {
 		t.Fatalf("error=%v called=%t", err, called)
 	}
@@ -68,14 +78,14 @@ func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 	path := writeMapping(t)
 	prior := executeBackfill
 	executeBackfill = func(_ context.Context, request backfillRequest) (backfillResult, error) {
-		if request.TargetService != "target" || request.TargetDatabase != "target_db" || request.Mode != "test" {
+		if request.PlatformService != "platform" || request.PlatformDatabase != "platform_db" || request.GatewayService != "gateway" || request.GatewayDatabase != "gateway_db" || request.Mode != "test" {
 			t.Fatalf("request=%+v", request)
 		}
 		return backfillResult{Accounts: 1, Routes: 2, AccountIDs: []string{"acct_1"}}, nil
 	}
 	t.Cleanup(func() { executeBackfill = prior })
 	var stdout bytes.Buffer
-	if err := run([]string{"--mapping", path, "--mode", "test", "--target-service", "target", "--target-database", "target_db"}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := run(backfillArgs(path, "test"), &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	output := stdout.String()
@@ -89,6 +99,10 @@ func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 			t.Errorf("output exposes %q: %s", forbidden, output)
 		}
 	}
+}
+
+func backfillArgs(path, mode string) []string {
+	return []string{"--mapping", path, "--mode", mode, "--platform-service", "platform", "--platform-database", "platform_db", "--gateway-service", "gateway", "--gateway-database", "gateway_db"}
 }
 
 func writeMapping(t *testing.T) string {
