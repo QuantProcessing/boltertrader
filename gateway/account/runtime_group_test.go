@@ -26,9 +26,13 @@ type candidateBuilderStub struct {
 	failRoute domain.RouteID
 	handles   map[domain.RouteID]*candidateHandleStub
 	decoded   *credential.Decoded
+	buildHook func(store.DesiredSnapshot)
 }
 
-func (builder *candidateBuilderStub) BuildRoute(_ context.Context, _ store.DesiredSnapshot, route store.RouteDefinition, decoded *credential.Decoded) (CandidateRoute, error) {
+func (builder *candidateBuilderStub) BuildRoute(_ context.Context, snapshot store.DesiredSnapshot, route store.RouteDefinition, decoded *credential.Decoded) (CandidateRoute, error) {
+	if builder.buildHook != nil {
+		builder.buildHook(snapshot)
+	}
 	builder.decoded = decoded
 	handle := &candidateHandleStub{}
 	if route.RouteID == builder.failRoute {
@@ -209,6 +213,40 @@ func TestPromotionFailureReopensActiveGenerationAdmission(t *testing.T) {
 		t.Fatalf("active admission remained closed after failed promotion: %v", err)
 	}
 	lease.Release()
+}
+
+func TestRestorePublishesDurableActiveBeforeRebuildingPending(t *testing.T) {
+	active := runtimeGroupPending(t)
+	pending := runtimeGroupPending(t)
+	pending.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c36")
+	pending.OperationID, _ = secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c34")
+	pending.Fence.DesiredStateRevision++
+	pending.Fence.RuntimeGeneration++
+
+	builder := &candidateBuilderStub{handles: map[domain.RouteID]*candidateHandleStub{}}
+	manager := newRuntimeGroupTestManager(builder)
+	manager.runtimeStore.(*runtimeStateStoreStub).states = []store.RuntimeState{{
+		AccountID: active.AccountID,
+		Active:    &store.ActiveSnapshot{DesiredSnapshot: active.DesiredSnapshot, PromotedAt: time.Now()},
+		Pending:   &pending,
+	}}
+	builder.buildHook = func(snapshot store.DesiredSnapshot) {
+		if snapshot.SnapshotID != pending.SnapshotID {
+			return
+		}
+		published := manager.ActiveSnapshot(active.AccountID)
+		if published == nil || published.Fence != active.Fence {
+			t.Fatalf("active snapshot was not published before pending rebuild: %+v", published)
+		}
+	}
+
+	if err := manager.RestoreRuntimeState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	published := manager.ActiveSnapshot(active.AccountID)
+	if published == nil || published.Fence != active.Fence {
+		t.Fatalf("restored active=%+v", published)
+	}
 }
 
 func newRuntimeGroupTestManager(builder RuntimeGroupBuilder) *Manager {
