@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -15,6 +16,27 @@ type vectorProviderFunc func(*http.Request, RequestScope) []Key
 
 func (fn vectorProviderFunc) Keys(request *http.Request, scope RequestScope) []Key {
 	return fn(request, scope)
+}
+
+func TestRequestVectorsShareVenueBudgetAndIsolateAuthenticatedPrincipals(t *testing.T) {
+	profile := Key{Kind: VenueProfile, Value: "binance/test"}
+	endpoint := func(request *http.Request) (Key, bool) {
+		return Key{Kind: RouteEndpoint, Value: request.URL.Path}, true
+	}
+	one, err := NewRequestVectorProvider(profile, []byte("account-one"), endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, _ := NewRequestVectorProvider(profile, []byte("account-two"), endpoint)
+	request, _ := http.NewRequest(http.MethodGet, "https://example.invalid/api/v3/order", nil)
+	oneKeys, twoKeys := one.Keys(request, PrivateScope), two.Keys(request, PrivateScope)
+	if oneKeys[0] != twoKeys[0] || oneKeys[1] == twoKeys[1] || oneKeys[2] != twoKeys[2] {
+		t.Fatalf("one=%+v two=%+v", oneKeys, twoKeys)
+	}
+	fallback, _ := NewRequestVectorProvider(profile, nil, endpoint)
+	if got := fallback.Keys(request, PrivateScope); !reflect.DeepEqual(got, []Key{profile, {Kind: RouteEndpoint, Value: "/api/v3/order"}}) {
+		t.Fatalf("fallback keys=%+v", got)
+	}
 }
 
 func TestTransportAcquiresAdapterVectorBeforeNetwork(t *testing.T) {
