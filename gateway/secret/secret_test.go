@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestRefRejectsLiteralValuesAndRedactsEveryFormattingPath(t *testing.T) {
@@ -54,6 +55,42 @@ func TestRefRejectsLiteralValuesAndRedactsEveryFormattingPath(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "redacted") {
 		t.Fatalf("json ref did not render as redacted: %s", payload)
+	}
+}
+
+type recordingCredentialResolver struct {
+	scope secretstore.Scope
+	ref   secretstore.OpaqueRef
+}
+
+func (resolver *recordingCredentialResolver) Check(_ context.Context, scope secretstore.Scope) error {
+	resolver.scope = scope
+	return nil
+}
+
+func (resolver *recordingCredentialResolver) Resolve(_ context.Context, scope secretstore.Scope, ref secretstore.OpaqueRef) ([]byte, error) {
+	resolver.scope, resolver.ref = scope, ref
+	return []byte("credential-canary"), nil
+}
+
+func TestScopedCredentialResolverUsesOnlyModeScopedOpaqueReferences(t *testing.T) {
+	underlying := &recordingCredentialResolver{}
+	scope := secretstore.Scope{Mode: secretstore.ModeTest, Namespace: "boltertrader/test", KeyVersion: "v1"}
+	resolver, err := secret.NewScopedCredentialResolver(underlying, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := secretstore.ParseOpaqueRef(strings.Repeat("A", 43))
+	material, err := resolver.Resolve(context.Background(), ref)
+	if err != nil || string(material) != "credential-canary" {
+		t.Fatalf("material=%q err=%v", material, err)
+	}
+	clear(material)
+	if underlying.scope != scope || underlying.ref != ref {
+		t.Fatalf("scope=%+v ref=%v", underlying.scope, underlying.ref)
 	}
 }
 

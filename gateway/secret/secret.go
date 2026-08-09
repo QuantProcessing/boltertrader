@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 type Ref struct {
@@ -127,6 +129,35 @@ func (ref *Ref) UnmarshalYAML(unmarshal func(any) error) error {
 
 type Provider interface {
 	Resolve(context.Context, Ref) (string, error)
+}
+
+// ScopedCredentialResolver is the exchange-credential boundary. It does not
+// implement Provider, so operational env references cannot be used as account
+// credential storage.
+type ScopedCredentialResolver struct {
+	resolver secretstore.CredentialResolver
+	scope    secretstore.Scope
+}
+
+func NewScopedCredentialResolver(resolver secretstore.CredentialResolver, scope secretstore.Scope) (ScopedCredentialResolver, error) {
+	if resolver == nil || scope.Validate() != nil {
+		return ScopedCredentialResolver{}, fmt.Errorf("credential resolver configuration is invalid")
+	}
+	return ScopedCredentialResolver{resolver: resolver, scope: scope}, nil
+}
+
+func (resolver ScopedCredentialResolver) Check(ctx context.Context) error {
+	if resolver.resolver == nil {
+		return fmt.Errorf("credential resolver is unavailable")
+	}
+	return resolver.resolver.Check(ctx, resolver.scope)
+}
+
+func (resolver ScopedCredentialResolver) Resolve(ctx context.Context, ref secretstore.OpaqueRef) ([]byte, error) {
+	if resolver.resolver == nil {
+		return nil, fmt.Errorf("credential resolver is unavailable")
+	}
+	return resolver.resolver.Resolve(ctx, resolver.scope, ref)
 }
 
 type EnvProvider struct {
