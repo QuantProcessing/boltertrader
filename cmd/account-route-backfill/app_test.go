@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestDecodeMappingValidatesTrustedProfiles(t *testing.T) {
@@ -77,11 +79,47 @@ func TestRunRejectsLiveBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestConnectedIdentityRejectsDeceptiveTestServiceRoutedToLive(t *testing.T) {
+	querier := staticIdentityQuerier{database: "funding_live", role: "funding_live_migrator"}
+	_, err := verifyConnectedIdentity(context.Background(), querier, "source", "funding_test", "funding_test_migrator", "test")
+	if err == nil || !strings.Contains(err.Error(), "CONNECTED_DATABASE_IDENTITY_MISMATCH") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestConnectedIdentityRejectsCrossModeExpectedRole(t *testing.T) {
+	querier := staticIdentityQuerier{database: "funding_test", role: "funding_live_migrator"}
+	_, err := verifyConnectedIdentity(context.Background(), querier, "source", "funding_test", "funding_live_migrator", "test")
+	if err == nil || !strings.Contains(err.Error(), "CROSS_MODE_DATABASE_IDENTITY") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+type staticIdentityQuerier struct {
+	database string
+	role     string
+}
+
+func (querier staticIdentityQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+	return staticIdentityRow{database: querier.database, role: querier.role}
+}
+
+type staticIdentityRow struct {
+	database string
+	role     string
+}
+
+func (row staticIdentityRow) Scan(destinations ...any) error {
+	*destinations[0].(*string) = row.database
+	*destinations[1].(*string) = row.role
+	return nil
+}
+
 func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 	path := writeMapping(t)
 	prior := executeBackfill
 	executeBackfill = func(_ context.Context, request backfillRequest) (backfillResult, error) {
-		if request.SourceService != "source" || request.SourceDatabase != "source_db" || request.PlatformService != "platform" || request.PlatformDatabase != "platform_db" || request.GatewayService != "gateway" || request.GatewayDatabase != "gateway_db" || request.Mode != "test" {
+		if request.SourceService != "source" || request.SourceDatabase != "source_test" || request.SourceRole != "source_test_migrator" || request.PlatformService != "platform" || request.PlatformDatabase != "platform_test" || request.PlatformRole != "platform_test_migrator" || request.GatewayService != "gateway" || request.GatewayDatabase != "gateway_test" || request.GatewayRole != "gateway_test_migrator" || request.Mode != "test" {
 			t.Fatalf("request=%+v", request)
 		}
 		return backfillResult{Accounts: 1, Routes: 2, AccountIDs: []string{"acct_1"}}, nil
@@ -105,7 +143,10 @@ func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 }
 
 func backfillArgs(path, mode string) []string {
-	return []string{"--mapping", path, "--mode", mode, "--source-service", "source", "--source-database", "source_db", "--platform-service", "platform", "--platform-database", "platform_db", "--gateway-service", "gateway", "--gateway-database", "gateway_db"}
+	return []string{"--mapping", path, "--mode", mode,
+		"--source-service", "source", "--source-database", "source_test", "--source-role", "source_test_migrator",
+		"--platform-service", "platform", "--platform-database", "platform_test", "--platform-role", "platform_test_migrator",
+		"--gateway-service", "gateway", "--gateway-database", "gateway_test", "--gateway-role", "gateway_test_migrator"}
 }
 
 func TestBuildAccountPlansRejectsMissingAmbiguousAndCrossModeRows(t *testing.T) {
@@ -141,6 +182,41 @@ func TestBackfillCoordinatorRollsBackBothDatabasesOnStageFailure(t *testing.T) {
 	}
 }
 
+func TestGatewayPendingHeadConflictIsStableBlocker(t *testing.T) {
+	tx := &pendingHeadConflictTx{}
+	err := stageGatewayPlan(context.Background(), tx, accountPlan{
+		AccountID: "acct_1", OperationID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c11"),
+		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c12"), RequestDigest: strings.Repeat("b", 64),
+	})
+	if err == nil || !strings.Contains(err.Error(), "GATEWAY_PENDING_HEAD_CONFLICT") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestPendingHeadConflictRollsBackPlatformWithStableCode(t *testing.T) {
+	coordinator := &recordingCoordinator{gatewayErr: errGatewayPendingHeadConflict}
+	err := writeAccountPlans(context.Background(), coordinator, []accountPlan{{AccountID: "acct_1"}})
+	if err == nil || !strings.Contains(err.Error(), "GATEWAY_PENDING_HEAD_CONFLICT") {
+		t.Fatalf("error=%v", err)
+	}
+	if coordinator.committed || coordinator.platformRollbacks != 1 || coordinator.gatewayRollbacks != 1 {
+		t.Fatalf("coordinator=%+v", coordinator)
+	}
+}
+
+type pendingHeadConflictTx struct{}
+
+func (*pendingHeadConflictTx) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(query, "gateway_account_runtime_heads") {
+		return pgconn.NewCommandTag("INSERT 0 0"), nil
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (*pendingHeadConflictTx) QueryRow(context.Context, string, ...any) pgx.Row {
+	panic("unexpected QueryRow")
+}
+
 func TestBackfillCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testing.T) {
 	plan := accountPlan{
 		AccountID:     "acct_1",
@@ -165,7 +241,7 @@ func TestBackfillCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testin
 
 func TestBackfillPendingSnapshotIsDiagnosticOnlyUntilPromotion(t *testing.T) {
 	backfillSource := readSourceFile(t, "app.go")
-	stageGateway := functionBlock(t, backfillSource, "func (coordinator *postgresCoordinator) StageGateway")
+	stageGateway := functionBlock(t, backfillSource, "func stageGatewayPlan")
 	for _, want := range []string{"'prepared'", "pending_snapshot_id"} {
 		if !strings.Contains(stageGateway, want) {
 			t.Fatalf("Gateway staging contract missing %q", want)
@@ -190,6 +266,7 @@ func TestBackfillPendingSnapshotIsDiagnosticOnlyUntilPromotion(t *testing.T) {
 
 type recordingCoordinator struct {
 	failGateway       bool
+	gatewayErr        error
 	committed         bool
 	platformRollbacks int
 	gatewayRollbacks  int
@@ -200,6 +277,9 @@ func (coordinator *recordingCoordinator) StagePlatform(context.Context, accountP
 	return nil
 }
 func (coordinator *recordingCoordinator) StageGateway(context.Context, accountPlan) error {
+	if coordinator.gatewayErr != nil {
+		return coordinator.gatewayErr
+	}
 	if coordinator.failGateway {
 		return fmt.Errorf("synthetic")
 	}

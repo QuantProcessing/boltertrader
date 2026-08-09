@@ -25,13 +25,23 @@ export BT_MIGRATION_SOURCE_SERVICE=funding_source_migration
 export BT_MIGRATION_TARGET_SERVICE=bolter_target_migration
 export BT_MIGRATION_GATEWAY_SERVICE=bolter_gateway_migration
 export BT_MIGRATION_MAINTENANCE_SERVICE=bolter_target_maintenance
-export BT_MIGRATION_SOURCE_DATABASE=funding_source
-export BT_MIGRATION_TARGET_DATABASE=bolter_target
-export BT_MIGRATION_GATEWAY_DATABASE=bolter_gateway
-export BT_MIGRATION_MAINTENANCE_DATABASE=postgres
-export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_writer
-export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_writer
+export BT_MIGRATION_SOURCE_DATABASE=funding_source_test
+export BT_MIGRATION_TARGET_DATABASE=bolter_platform_test
+export BT_MIGRATION_GATEWAY_DATABASE=bolter_gateway_test
+export BT_MIGRATION_MAINTENANCE_DATABASE=postgres_test
+export BT_MIGRATION_SOURCE_ROLE=funding_source_test_migrator
+export BT_MIGRATION_TARGET_ROLE=bolter_platform_test_migrator
+export BT_MIGRATION_GATEWAY_ROLE=bolter_gateway_test_migrator
+export BT_MIGRATION_MAINTENANCE_ROLE=bolter_platform_test_admin
+export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_test_writer
+export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_test_writer
 ```
+
+Service names are only connection locators and may use arbitrary labels. Before
+any database mutation, the tool compares `current_database()` and `current_user`
+with these explicit Test identities. Source, Platform, and Gateway identity
+pairs must be distinct; a Test-looking service name cannot authorize a Live or
+misrouted connection.
 
 The immutable Git provenance gate must already be recorded and verified before
 backup. Confirm the current phase without changing state:
@@ -64,7 +74,9 @@ output:
   --id backup-001 \
   --artifact .local/migration/artifacts/backup.dump \
   --evidence-dir .local/migration/evidence \
-  --source-service "$BT_MIGRATION_SOURCE_SERVICE"
+  --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE"
 ```
 
 Restore into a clean verification database, then capture the deterministic
@@ -78,14 +90,20 @@ source-side final delta:
   --evidence-dir .local/migration/evidence \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
   --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
-  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE" \
+  --maintenance-role "$BT_MIGRATION_MAINTENANCE_ROLE"
 ```
 
 Capture one full custom snapshot from the still-authorized source in a read-only
-session, verify the archive catalog, recreate the target through an explicit
-maintenance connection, restore the snapshot, verify that the target schema is
-nonempty, and record only the checksum of the source high-water probe:
+session. The tool samples the source high-water mark immediately before and
+after `pg_dump` and requires exact digest equality before it validates the
+archive or mutates the target. If the samples differ, it deletes the unsafe
+dump, leaves the workflow at `restored`, and requires a new final delta. Once
+stable, it verifies the archive catalog, recreates the target through an
+explicit maintenance connection, restores the snapshot, verifies that the
+target schema is nonempty, and records the accepted high-water checksum:
 
 ```sh
 .local/bin/migration-tool final-delta \
@@ -94,10 +112,13 @@ nonempty, and record only the checksum of the source high-water probe:
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
   --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE" \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
   --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
-  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE" \
+  --maintenance-role "$BT_MIGRATION_MAINTENANCE_ROLE"
 ```
 
 Raise the database-level one-writer fence after the final snapshot. The tool
@@ -114,6 +135,8 @@ effective `CONNECT` result because PostgreSQL may grant it through `PUBLIC`:
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
   --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
@@ -122,8 +145,10 @@ Apply the repository-owned route mapping. Immediately before any irreversible
 write, the tool repeats the source high-water probe and compares its digest with
 the final-delta evidence. A mismatch stops before backfill, restores the source
 writer, records `SOURCE_HIGH_WATER_MISMATCH`, returns to `restored`, and requires
-a new final delta. A match invokes the production backfill without resolving or
-printing opaque credential references:
+a new final delta. A match migrates the restored Platform schema through
+repository migration 15, verifies `platform_account_routes` plus the account
+mode/environment columns, then invokes the production backfill without
+resolving or printing opaque credential references:
 
 ```sh
 .local/bin/migration-tool backfill \
@@ -132,10 +157,13 @@ printing opaque credential references:
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
   --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE" \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
   --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
   --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
+  --gateway-role "$BT_MIGRATION_GATEWAY_ROLE" \
   --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
@@ -150,6 +178,9 @@ it is visible through runtime diagnostics for recovery. Retry the exact command
 with the same mapping bytes and identities. The stable operation ID, snapshot
 ID, and request digest make Gateway replay the existing pending row and let the
 Platform write converge. Changed input is rejected as an operation conflict.
+If another operation owns the pending runtime head, the conditional head update
+returns `GATEWAY_PENDING_HEAD_CONFLICT`; both database transactions roll back
+and the operator must resolve the competing pending intent before retrying.
 
 | Failure point | Durable state | Identical retry |
 | --- | --- | --- |
@@ -196,6 +227,8 @@ phase:
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
   --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```

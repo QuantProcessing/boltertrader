@@ -26,6 +26,7 @@ type Command struct {
 	ExpectedOutput       string
 	ExpectedOutputSHA    string
 	CaptureOutputAsInput bool
+	MatchCapturedInput   bool
 }
 
 type CommandResult struct {
@@ -51,6 +52,10 @@ type ExecutionRequest struct {
 	TargetDatabase      string
 	GatewayDatabase     string
 	MaintenanceDatabase string
+	SourceRole          string
+	TargetRole          string
+	GatewayRole         string
+	MaintenanceRole     string
 	SourceWriterRole    string
 	TargetWriterRole    string
 	repositoryRoot      string
@@ -139,6 +144,15 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 				return ExecutionResult{}, fmt.Errorf("SOURCE_HIGH_WATER_MISMATCH: source writer restored; capture a new final delta")
 			}
 			return ExecutionResult{}, err
+		}
+		if command.MatchCapturedInput && (inputSHA == "" || sha256Hex(bytes.TrimSpace(result.Output)) != inputSHA) {
+			if request.Operation == FinalDelta {
+				if removeErr := os.Remove(request.ArtifactPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+					return ExecutionResult{}, fmt.Errorf("SOURCE_CHANGED_DURING_FINAL_DELTA: discard unsafe snapshot: %w", removeErr)
+				}
+				return ExecutionResult{}, fmt.Errorf("SOURCE_CHANGED_DURING_FINAL_DELTA: snapshot discarded; capture a new final delta")
+			}
+			return ExecutionResult{}, fmt.Errorf("%s captured input mismatch", request.Operation)
 		}
 		commandProofs = append(commandProofs, commandDigest(command, result.Output))
 		if command.CaptureOutputAsInput {
@@ -284,14 +298,14 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	if strings.TrimSpace(request.EvidenceDir) == "" {
 		return nil, Request{}, nil, "", fmt.Errorf("evidence directory is required")
 	}
-	for _, identity := range []string{request.SourceService, request.TargetService, request.GatewayService, request.MaintenanceService, request.SourceDatabase, request.TargetDatabase, request.GatewayDatabase, request.MaintenanceDatabase, request.SourceWriterRole, request.TargetWriterRole} {
+	for _, identity := range []string{request.SourceDatabase, request.TargetDatabase, request.GatewayDatabase, request.SourceRole, request.TargetRole, request.GatewayRole, request.MaintenanceRole, request.SourceWriterRole, request.TargetWriterRole} {
 		if containsIdentityToken(identity, "live") {
 			return nil, Request{}, nil, "", fmt.Errorf("cross-mode database or role identity rejected")
 		}
 	}
 	apply := Request{Operation: request.Operation, ID: request.ID, Verifier: request.Verifier, Reason: request.Reason}
 	source, err := postgresService(request.SourceService)
-	if err != nil && (request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Rollback) {
+	if err != nil && (request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Rollback) {
 		return nil, Request{}, nil, "", err
 	}
 	target, targetErr := postgresService(request.TargetService)
@@ -317,20 +331,42 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if database != "" {
 			connection += " dbname=" + database
 		}
-		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection}
+		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align"}
 		for _, variable := range variables {
 			args = append(args, "--set", variable)
 		}
 		args = append(args, "--file", "-")
 		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
 	}
+	identityProbe := func(service, database, role, label string) (Command, error) {
+		expectedRole, roleErr := postgresIdentifier(label+" connection role", role)
+		if roleErr != nil {
+			return Command{}, roleErr
+		}
+		if !containsIdentityToken(expectedRole, "test") || containsIdentityToken(expectedRole, "live") {
+			return Command{}, fmt.Errorf("cross-mode database or role identity rejected")
+		}
+		probe := psqlInput(service, database, `SELECT (current_database()=:'expected_database' AND current_user=:'expected_role')::text;`+"\n", "expected_database="+database, "expected_role="+expectedRole)
+		probe.ExpectedOutput = "true"
+		probe.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
+		return probe, nil
+	}
 	switch request.Operation {
 	case Backup:
+		sourceDatabase, databaseErr := postgresIdentifier("source database", request.SourceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		probe, probeErr := identityProbe(source, sourceDatabase, request.SourceRole, "source")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
 		return []Command{
-			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source}},
+			probe,
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source + " dbname=" + sourceDatabase}},
 			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
-		}, apply, []string{"dump-created", "dump-format-readable"}, "", nil
+		}, apply, []string{"connected-identities-verified", "dump-created", "dump-format-readable"}, "", nil
 	case Restore:
 		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
 		if databaseErr != nil {
@@ -340,14 +376,24 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
+		targetProbe, probeErr := identityProbe(target, targetDatabase, request.TargetRole, "target")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		maintenanceProbe, probeErr := identityProbe(maintenance, maintenanceDatabase, request.MaintenanceRole, "maintenance")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
 		apply.ArtifactPath = request.ArtifactPath
 		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 		verify.ExpectedOutput = "true"
 		return []Command{
+			targetProbe,
+			maintenanceProbe,
 			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
 			verify,
-		}, apply, []string{"clean-target-created", "restored-schema-nonempty"}, "", nil
+		}, apply, []string{"connected-identities-verified", "clean-target-created", "restored-schema-nonempty"}, "", nil
 	case FinalDelta:
 		sourceDatabase, databaseErr := postgresIdentifier("source database", request.SourceDatabase)
 		if databaseErr != nil {
@@ -357,9 +403,21 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
 		}
+		sourceProbe, probeErr := identityProbe(source, sourceDatabase, request.SourceRole, "source")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		targetProbe, probeErr := identityProbe(target, targetDatabase, request.TargetRole, "target")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
 		maintenanceDatabase, databaseErr := postgresIdentifier("maintenance database", request.MaintenanceDatabase)
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
+		}
+		maintenanceProbe, probeErr := identityProbe(maintenance, maintenanceDatabase, request.MaintenanceRole, "maintenance")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
 		}
 		apply.ArtifactPath = request.ArtifactPath
 		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
@@ -368,22 +426,37 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		check.ExpectedOutput = "on"
 		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 		verify.ExpectedOutput = "true"
-		highWater := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
-		highWater.Env = readOnly
-		highWater.CaptureOutputAsInput = true
+		highWaterBefore := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
+		highWaterBefore.Env = readOnly
+		highWaterBefore.CaptureOutputAsInput = true
+		highWaterAfter := highWaterBefore
+		highWaterAfter.CaptureOutputAsInput = false
+		highWaterAfter.MatchCapturedInput = true
 		return []Command{
+			sourceProbe,
+			targetProbe,
+			maintenanceProbe,
 			check,
+			highWaterBefore,
 			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
+			highWaterAfter,
 			{Name: "pg_restore", Args: []string{"--list", request.ArtifactPath}},
 			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
 			verify,
-			highWater,
-		}, apply, []string{"capture-session-read-only", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
+		}, apply, []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
 	case Fence:
 		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
 			return nil, Request{}, nil, "", identityErr
+		}
+		sourceProbe, probeErr := identityProbe(source, sourceDatabase, request.SourceRole, "source")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		targetProbe, probeErr := identityProbe(target, targetDatabase, request.TargetRole, "target")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
 		}
 		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		fenceSQL := `REVOKE CONNECT ON DATABASE :"database" FROM :"writer_role"; ALTER ROLE :"writer_role" NOLOGIN; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=:'writer_role' AND pid<>pg_backend_pid();` + "\n"
@@ -393,12 +466,14 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
 		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
+			sourceProbe,
+			targetProbe,
 			sourceBefore,
 			psqlInput(source, "", fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
 			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
 			targetAfter,
-		}, apply, []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
+		}, apply, []string{"connected-identities-verified", "source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
 	case Backfill:
 		root := manifest.TargetRepo
 		if request.repositoryRoot != "" {
@@ -439,26 +514,48 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if target == gateway && targetDatabase == gatewayDatabase {
 			return nil, Request{}, nil, "", fmt.Errorf("Platform and Gateway databases must be separate")
 		}
+		sourceRole, roleErr := postgresIdentifier("source connection role", request.SourceRole)
+		if roleErr != nil {
+			return nil, Request{}, nil, "", roleErr
+		}
+		targetRole, roleErr := postgresIdentifier("target connection role", request.TargetRole)
+		if roleErr != nil {
+			return nil, Request{}, nil, "", roleErr
+		}
+		gatewayRole, roleErr := postgresIdentifier("Gateway connection role", request.GatewayRole)
+		if roleErr != nil {
+			return nil, Request{}, nil, "", roleErr
+		}
 		command := Command{Name: "account-route-backfill", Args: []string{
 			"--mapping", backfillPath,
 			"--source-service", source,
 			"--source-database", sourceDatabase,
+			"--source-role", sourceRole,
 			"--platform-service", target,
 			"--platform-database", targetDatabase,
+			"--platform-role", targetRole,
 			"--gateway-service", gateway,
 			"--gateway-database", gatewayDatabase,
+			"--gateway-role", gatewayRole,
 		}}
 		highWater := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
 		highWater.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
 		highWater.ExpectedOutputSHA = capturedHighWater
-		return []Command{highWater, command}, apply, []string{"source-high-water-equal", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
+		migrate := Command{Name: "platform-migrate", Args: []string{"--service", target, "--database", targetDatabase, "--role", targetRole}}
+		verifySchema := psql(target, targetDatabase, `SELECT (COALESCE((SELECT max(version) FROM platform_schema_migrations),0)=15 AND to_regclass('platform_account_routes') IS NOT NULL AND (SELECT count(*)=2 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='platform_accounts' AND column_name IN ('mode','native_environment')))::text`)
+		verifySchema.ExpectedOutput = "true"
+		sourceProbe, probeErr := identityProbe(source, sourceDatabase, sourceRole, "source")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		return []Command{sourceProbe, highWater, migrate, verifySchema, command}, apply, []string{"connected-identities-verified", "source-high-water-equal", "platform-schema-migrated", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
 		realEnv := []string{"BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0", "BT_LIVE_PRIVATE_WRITES_ENABLED=0"}
 		realBrowser := Command{Name: "npm", Args: []string{"--prefix", "web", "run", "test:e2e", "--", "platform-real.spec.ts"}, Dir: manifest.TargetRepo, Env: realEnv}
 		return []Command{
 			{Name: "go", Args: []string{"test", "./credential", "./routeprofile", "./secretstore", "./gateway/...", "./cmd/exchange-gateway", "./migration", "./cmd/migration-tool", "./cmd/account-route-backfill", "./scripts"}, Dir: manifest.TargetRepo},
-			{Name: "go", Args: []string{"test", "./internal/config", "./internal/platform/accounts", "./internal/platform/secret", "./internal/store/postgres", "./cmd/platform-credential"}, Dir: filepath.Join(manifest.TargetRepo, "backend")},
+			{Name: "go", Args: []string{"test", "./internal/config", "./internal/platform/accounts", "./internal/platform/secret", "./internal/store/postgres", "./cmd/platform-credential", "./cmd/platform-migrate"}, Dir: filepath.Join(manifest.TargetRepo, "backend")},
 			{Name: "make", Args: []string{"test-browser"}, Dir: manifest.TargetRepo},
 			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
 			realBrowser,
@@ -467,24 +564,34 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			realBrowser,
 		}, apply, []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}, "", nil
 	case Rollback:
-		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
+		sourceDatabase, sourceWriterRole, targetDatabase, targetWriterRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
 			return nil, Request{}, nil, "", identityErr
 		}
+		sourceProbe, probeErr := identityProbe(source, sourceDatabase, request.SourceRole, "source")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		targetProbe, probeErr := identityProbe(target, targetDatabase, request.TargetRole, "target")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
 		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		restoreSQL := `ALTER ROLE :"writer_role" LOGIN; GRANT CONNECT ON DATABASE :"database" TO :"writer_role";` + "\n"
-		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
 		sourceBefore.ExpectedOutput = "false|0"
-		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
 		sourceAfter.ExpectedOutput = "true|0"
-		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetWriterRole)
 		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
+			sourceProbe,
+			targetProbe,
 			sourceBefore,
-			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceWriterRole),
 			sourceAfter,
 			targetAfter,
-		}, apply, []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
+		}, apply, []string{"connected-identities-verified", "source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
 	}

@@ -50,6 +50,13 @@ func TestMigrateAppliesPlatformSchemaIdempotently(t *testing.T) {
 	if want := expectedPlatformMigrationCount(t); versions != want {
 		t.Fatalf("migration versions=%d want %d", versions, want)
 	}
+	var latestVersion int
+	if err := database.QueryRowContext(ctx, `SELECT max(version) FROM platform_schema_migrations`).Scan(&latestVersion); err != nil {
+		t.Fatal(err)
+	}
+	if latestVersion != 15 {
+		t.Fatalf("latest migration version=%d want 15", latestVersion)
+	}
 	for _, table := range []string{"platform_identities", "platform_accounts", "platform_commands", "platform_work_items", "platform_portfolio_fills"} {
 		var exists bool
 		if err := database.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
@@ -560,7 +567,7 @@ func TestMigrateAdoptsVerifiedLegacyPlatformSchema(t *testing.T) {
 	if displayName != "Legacy Account" {
 		t.Fatalf("legacy account display name=%q", displayName)
 	}
-	for _, table := range []string{"platform_work_items", "platform_portfolio_fills"} {
+	for _, table := range []string{"platform_account_routes", "platform_work_items", "platform_portfolio_fills"} {
 		var exists bool
 		if err := database.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
 			t.Fatal(err)
@@ -568,6 +575,13 @@ func TestMigrateAdoptsVerifiedLegacyPlatformSchema(t *testing.T) {
 		if !exists {
 			t.Fatalf("post-adoption table %s is missing", table)
 		}
+	}
+	var accountIdentityColumns int
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='platform_accounts' AND column_name IN ('mode','native_environment')`).Scan(&accountIdentityColumns); err != nil {
+		t.Fatal(err)
+	}
+	if accountIdentityColumns != 2 {
+		t.Fatalf("platform account identity columns=%d want 2", accountIdentityColumns)
 	}
 }
 

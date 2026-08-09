@@ -61,6 +61,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	targetDatabase := flags.String("target-database", "", "non-secret target database name")
 	gatewayDatabase := flags.String("gateway-database", "", "non-secret Gateway database name")
 	maintenanceDatabase := flags.String("maintenance-database", "", "non-secret maintenance database name")
+	sourceRole := flags.String("source-role", "", "expected source PostgreSQL connection role")
+	targetRole := flags.String("target-role", "", "expected target PostgreSQL connection role")
+	gatewayRole := flags.String("gateway-role", "", "expected Gateway PostgreSQL connection role")
+	maintenanceRole := flags.String("maintenance-role", "", "expected maintenance PostgreSQL connection role")
 	sourceWriterRole := flags.String("source-writer-role", "", "non-secret source canonical writer role")
 	targetWriterRole := flags.String("target-writer-role", "", "non-secret target canonical writer role")
 	verifier := flags.String("verifier", "", "non-secret verifier identity")
@@ -85,6 +89,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, GatewayService: *gatewayService, MaintenanceService: *maintenanceService,
 			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase, GatewayDatabase: *gatewayDatabase,
 			MaintenanceDatabase: *maintenanceDatabase,
+			SourceRole:          *sourceRole,
+			TargetRole:          *targetRole,
+			GatewayRole:         *gatewayRole,
+			MaintenanceRole:     *maintenanceRole,
 			SourceWriterRole:    *sourceWriterRole, TargetWriterRole: *targetWriterRole,
 		}, migration.ExecuteOptions{})
 		if executeErr != nil {

@@ -10,7 +10,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 )
 
 const maxCredentialBundle = 32 << 10
@@ -44,6 +47,7 @@ type provisionResult struct {
 }
 
 var provisionAccount = provisionProductionAccount
+var readCredentialInput = readCredentialBundle
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	for _, arg := range args {
@@ -78,7 +82,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	bundle, err := readCredentialBundle(stdin)
+	bundle, err := readCredentialInput(stdin)
 	if err != nil {
 		return err
 	}
@@ -136,16 +140,44 @@ func readCredentialBundle(reader io.Reader) ([]byte, error) {
 }
 
 func readTTYCredentialBundle(reader io.Reader, setEcho func(bool) error) ([]byte, error) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+	defer signal.Stop(signals)
+	return readTTYCredentialBundleWithSignals(reader, setEcho, signals)
+}
+
+type ttyReadResult struct {
+	data []byte
+	err  error
+}
+
+func readTTYCredentialBundleWithSignals(reader io.Reader, setEcho func(bool) error, signals <-chan os.Signal) ([]byte, error) {
 	if err := setEcho(false); err != nil {
 		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
 	}
-	restored := false
-	defer func() {
-		if !restored {
-			_ = setEcho(true)
-		}
+	var restoreOnce sync.Once
+	var restoreErr error
+	restore := func() error {
+		restoreOnce.Do(func() { restoreErr = setEcho(true) })
+		return restoreErr
+	}
+	defer restore()
+	results := make(chan ttyReadResult, 1)
+	go func() {
+		data, err := bufio.NewReader(io.LimitReader(reader, maxCredentialBundle+1)).ReadBytes('\n')
+		results <- ttyReadResult{data: data, err: err}
 	}()
-	data, err := bufio.NewReader(io.LimitReader(reader, maxCredentialBundle+1)).ReadBytes('\n')
+	var data []byte
+	var err error
+	select {
+	case <-signals:
+		if restore() != nil {
+			return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
+		}
+		return nil, fmt.Errorf("CREDENTIAL_STDIN_INTERRUPTED")
+	case result := <-results:
+		data, err = result.data, result.err
+	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 || len(data) > maxCredentialBundle || !json.Valid(data) {
 		clear(data)
@@ -155,11 +187,10 @@ func readTTYCredentialBundle(reader io.Reader, setEcho func(bool) error) ([]byte
 		clear(data)
 		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
 	}
-	if err := setEcho(true); err != nil {
+	if err := restore(); err != nil {
 		clear(data)
 		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
 	}
-	restored = true
 	return data, nil
 }
 

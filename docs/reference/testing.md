@@ -44,7 +44,8 @@ Passing G010 is not authorization or evidence for G011, and neither gate
 authorizes Live private writes.
 
 The fenced migration validation order is fixed: targeted offline-safe Go
-packages, fixture-backed browser gates, one Docker-free G010 read pass, the
+packages (including Platform credential and schema-migration commands),
+fixture-backed browser gates, one Docker-free G010 read pass, the
 real browser continuity/stream/idempotency gate, a supervised restart, then the
 same G010 and real-browser gates again. Do not replace the targeted Go commands
 with `go test ./...` and do not add venue acceptance targets to this sequence.

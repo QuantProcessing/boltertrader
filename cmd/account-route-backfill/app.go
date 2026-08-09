@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,10 +40,13 @@ type backfillRequest struct {
 	Mode             string
 	SourceService    string
 	SourceDatabase   string
+	SourceRole       string
 	PlatformService  string
 	PlatformDatabase string
+	PlatformRole     string
 	GatewayService   string
 	GatewayDatabase  string
+	GatewayRole      string
 	Artifact         mappingArtifact
 }
 
@@ -81,7 +86,18 @@ type backfillResult struct {
 	AccountIDs []string `json:"accountIds"`
 }
 
+type connectedIdentity struct {
+	database string
+	role     string
+}
+
+type identityQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 var executeBackfill = executeProductionBackfill
+
+var errGatewayPendingHeadConflict = errors.New("GATEWAY_PENDING_HEAD_CONFLICT")
 
 func run(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("account-route-backfill", flag.ContinueOnError)
@@ -90,10 +106,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	mode := flags.String("mode", "test", "process mode")
 	sourceService := flags.String("source-service", "", "non-secret legacy PostgreSQL service name")
 	sourceDatabase := flags.String("source-database", "", "non-secret legacy PostgreSQL database name")
+	sourceRole := flags.String("source-role", "", "expected legacy PostgreSQL connection role")
 	platformService := flags.String("platform-service", "", "non-secret Platform PostgreSQL service name")
 	platformDatabase := flags.String("platform-database", "", "non-secret Platform PostgreSQL database name")
+	platformRole := flags.String("platform-role", "", "expected Platform PostgreSQL connection role")
 	gatewayService := flags.String("gateway-service", "", "non-secret Gateway PostgreSQL service name")
 	gatewayDatabase := flags.String("gateway-database", "", "non-secret Gateway PostgreSQL database name")
+	gatewayRole := flags.String("gateway-role", "", "expected Gateway PostgreSQL connection role")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -109,10 +128,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := validateIdentifier("source database", *sourceDatabase, 63, false); err != nil {
 		return err
 	}
+	if err := validateIdentifier("source role", *sourceRole, 63, false); err != nil {
+		return err
+	}
 	if err := validateIdentifier("Platform service", *platformService, 64, true); err != nil {
 		return err
 	}
 	if err := validateIdentifier("Platform database", *platformDatabase, 63, false); err != nil {
+		return err
+	}
+	if err := validateIdentifier("Platform role", *platformRole, 63, false); err != nil {
 		return err
 	}
 	if err := validateIdentifier("Gateway service", *gatewayService, 64, true); err != nil {
@@ -121,13 +146,23 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err := validateIdentifier("Gateway database", *gatewayDatabase, 63, false); err != nil {
 		return err
 	}
+	if err := validateIdentifier("Gateway role", *gatewayRole, 63, false); err != nil {
+		return err
+	}
 	if *platformService == *gatewayService && *platformDatabase == *gatewayDatabase {
 		return fmt.Errorf("PLATFORM_GATEWAY_DATABASES_MUST_BE_SEPARATE")
 	}
-	for _, identity := range []string{*sourceService, *sourceDatabase, *platformService, *platformDatabase, *gatewayService, *gatewayDatabase} {
-		if strings.Contains(identity, "live") {
+	for _, identity := range []string{*sourceDatabase, *sourceRole, *platformDatabase, *platformRole, *gatewayDatabase, *gatewayRole} {
+		if !containsIdentityToken(identity, "test") || containsIdentityToken(identity, "live") {
 			return fmt.Errorf("CROSS_MODE_DATABASE_IDENTITY")
 		}
+	}
+	if err := requireDistinctConnectedIdentities(
+		connectedIdentity{database: *sourceDatabase, role: *sourceRole},
+		connectedIdentity{database: *platformDatabase, role: *platformRole},
+		connectedIdentity{database: *gatewayDatabase, role: *gatewayRole},
+	); err != nil {
+		return err
 	}
 	data, err := os.ReadFile(*mappingPath)
 	if err != nil {
@@ -138,9 +173,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	result, err := executeBackfill(context.Background(), backfillRequest{
-		Mode: *mode, SourceService: *sourceService, SourceDatabase: *sourceDatabase,
-		PlatformService: *platformService, PlatformDatabase: *platformDatabase,
-		GatewayService: *gatewayService, GatewayDatabase: *gatewayDatabase, Artifact: artifact,
+		Mode: *mode, SourceService: *sourceService, SourceDatabase: *sourceDatabase, SourceRole: *sourceRole,
+		PlatformService: *platformService, PlatformDatabase: *platformDatabase, PlatformRole: *platformRole,
+		GatewayService: *gatewayService, GatewayDatabase: *gatewayDatabase, GatewayRole: *gatewayRole, Artifact: artifact,
 	})
 	if err != nil {
 		return err
@@ -155,6 +190,10 @@ func executeProductionBackfill(ctx context.Context, request backfillRequest) (ba
 		return backfillResult{}, fmt.Errorf("LEGACY_SOURCE_UNAVAILABLE")
 	}
 	defer source.Close()
+	sourceIdentity, err := verifyConnectedIdentity(ctx, source, "source", request.SourceDatabase, request.SourceRole, request.Mode)
+	if err != nil {
+		return backfillResult{}, err
+	}
 	accounts, err := readLegacyAccounts(ctx, source, request.Mode)
 	if err != nil {
 		return backfillResult{}, err
@@ -168,11 +207,22 @@ func executeProductionBackfill(ctx context.Context, request backfillRequest) (ba
 		return backfillResult{}, fmt.Errorf("PLATFORM_DATABASE_UNAVAILABLE")
 	}
 	defer platform.Close()
+	platformIdentity, err := verifyConnectedIdentity(ctx, platform, "platform", request.PlatformDatabase, request.PlatformRole, request.Mode)
+	if err != nil {
+		return backfillResult{}, err
+	}
 	gateway, err := pgxpool.New(ctx, postgresConnection(request.GatewayService, request.GatewayDatabase))
 	if err != nil {
 		return backfillResult{}, fmt.Errorf("GATEWAY_DATABASE_UNAVAILABLE")
 	}
 	defer gateway.Close()
+	gatewayIdentity, err := verifyConnectedIdentity(ctx, gateway, "gateway", request.GatewayDatabase, request.GatewayRole, request.Mode)
+	if err != nil {
+		return backfillResult{}, err
+	}
+	if err := requireDistinctConnectedIdentities(sourceIdentity, platformIdentity, gatewayIdentity); err != nil {
+		return backfillResult{}, err
+	}
 	coordinator := &postgresCoordinator{platform: platform, gateway: gateway}
 	if err := writeAccountPlans(ctx, coordinator, plans); err != nil {
 		return backfillResult{}, err
@@ -187,6 +237,42 @@ func executeProductionBackfill(ctx context.Context, request backfillRequest) (ba
 
 func postgresConnection(service, database string) string {
 	return "service=" + service + " dbname=" + database
+}
+
+func verifyConnectedIdentity(ctx context.Context, querier identityQuerier, label, expectedDatabase, expectedRole, mode string) (connectedIdentity, error) {
+	if mode != "test" || !containsIdentityToken(expectedDatabase, "test") || !containsIdentityToken(expectedRole, "test") || containsIdentityToken(expectedDatabase, "live") || containsIdentityToken(expectedRole, "live") {
+		return connectedIdentity{}, fmt.Errorf("CROSS_MODE_DATABASE_IDENTITY")
+	}
+	var observed connectedIdentity
+	if err := querier.QueryRow(ctx, `SELECT current_database(), current_user`).Scan(&observed.database, &observed.role); err != nil {
+		return connectedIdentity{}, fmt.Errorf("%s_CONNECTED_IDENTITY_UNAVAILABLE", strings.ToUpper(label))
+	}
+	if observed.database != expectedDatabase || observed.role != expectedRole {
+		return connectedIdentity{}, fmt.Errorf("CONNECTED_DATABASE_IDENTITY_MISMATCH")
+	}
+	return observed, nil
+}
+
+func requireDistinctConnectedIdentities(identities ...connectedIdentity) error {
+	seen := make(map[connectedIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		if _, duplicate := seen[identity]; duplicate {
+			return fmt.Errorf("CONNECTED_DATABASE_IDENTITIES_MUST_BE_DISTINCT")
+		}
+		seen[identity] = struct{}{}
+	}
+	return nil
+}
+
+func containsIdentityToken(value, want string) bool {
+	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(char rune) bool {
+		return char == '_' || char == '-' || char == '.'
+	}) {
+		if token == want {
+			return true
+		}
+	}
+	return false
 }
 
 type legacyQuerier interface {
@@ -313,6 +399,9 @@ func writeAccountPlans(ctx context.Context, coordinator backfillCoordinator, pla
 			return fmt.Errorf("BACKFILL_WRITE_BLOCKED")
 		}
 		if err := coordinator.StageGateway(ctx, plan); err != nil {
+			if errors.Is(err, errGatewayPendingHeadConflict) {
+				return errGatewayPendingHeadConflict
+			}
 			return fmt.Errorf("BACKFILL_WRITE_BLOCKED")
 		}
 	}
@@ -358,28 +447,43 @@ func (coordinator *postgresCoordinator) StagePlatform(ctx context.Context, plan 
 }
 
 func (coordinator *postgresCoordinator) StageGateway(ctx context.Context, plan accountPlan) error {
+	return stageGatewayPlan(ctx, coordinator.gatewayTx, plan)
+}
+
+type gatewayPlanTx interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func stageGatewayPlan(ctx context.Context, transaction gatewayPlanTx, plan accountPlan) error {
 	digest := plan.RequestDigest
-	result, err := coordinator.gatewayTx.Exec(ctx, `INSERT INTO gateway_runtime_snapshots(snapshot_id,account_id,operation_id,request_digest,venue,native_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (operation_id) DO NOTHING`, plan.SnapshotID, plan.AccountID, plan.OperationID, digest, plan.Venue, plan.NativeEnvironment, plan.OpaqueReference, plan.DesiredRevision, plan.RuntimeGeneration, plan.CredentialVersion, plan.RequestedState)
+	result, err := transaction.Exec(ctx, `INSERT INTO gateway_runtime_snapshots(snapshot_id,account_id,operation_id,request_digest,venue,native_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (operation_id) DO NOTHING`, plan.SnapshotID, plan.AccountID, plan.OperationID, digest, plan.Venue, plan.NativeEnvironment, plan.OpaqueReference, plan.DesiredRevision, plan.RuntimeGeneration, plan.CredentialVersion, plan.RequestedState)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		var existingDigest string
 		var existingSnapshot uuid.UUID
-		if err := coordinator.gatewayTx.QueryRow(ctx, `SELECT request_digest,snapshot_id FROM gateway_runtime_snapshots WHERE operation_id=$1`, plan.OperationID).Scan(&existingDigest, &existingSnapshot); err != nil || existingDigest != digest || existingSnapshot != plan.SnapshotID {
+		if err := transaction.QueryRow(ctx, `SELECT request_digest,snapshot_id FROM gateway_runtime_snapshots WHERE operation_id=$1`, plan.OperationID).Scan(&existingDigest, &existingSnapshot); err != nil || existingDigest != digest || existingSnapshot != plan.SnapshotID {
 			return fmt.Errorf("gateway operation conflict")
 		}
 	}
 	for _, route := range plan.Routes {
-		if _, err := coordinator.gatewayTx.Exec(ctx, `INSERT INTO gateway_runtime_snapshot_routes(snapshot_id,route_id,product,settlement_asset,route_profile_id,requested_state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (snapshot_id,route_id) DO UPDATE SET product=EXCLUDED.product,settlement_asset=EXCLUDED.settlement_asset,route_profile_id=EXCLUDED.route_profile_id,requested_state=EXCLUDED.requested_state`, plan.SnapshotID, route.RouteID, route.Product, route.SettlementAsset, route.RouteProfileID, route.RequestedState); err != nil {
+		if _, err := transaction.Exec(ctx, `INSERT INTO gateway_runtime_snapshot_routes(snapshot_id,route_id,product,settlement_asset,route_profile_id,requested_state) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (snapshot_id,route_id) DO UPDATE SET product=EXCLUDED.product,settlement_asset=EXCLUDED.settlement_asset,route_profile_id=EXCLUDED.route_profile_id,requested_state=EXCLUDED.requested_state`, plan.SnapshotID, route.RouteID, route.Product, route.SettlementAsset, route.RouteProfileID, route.RequestedState); err != nil {
 			return err
 		}
 	}
-	if _, err := coordinator.gatewayTx.Exec(ctx, `INSERT INTO gateway_desired_operations(operation_id,snapshot_id,request_digest,state) VALUES($1,$2,$3,'prepared') ON CONFLICT (operation_id) DO NOTHING`, plan.OperationID, plan.SnapshotID, digest); err != nil {
+	if _, err := transaction.Exec(ctx, `INSERT INTO gateway_desired_operations(operation_id,snapshot_id,request_digest,state) VALUES($1,$2,$3,'prepared') ON CONFLICT (operation_id) DO NOTHING`, plan.OperationID, plan.SnapshotID, digest); err != nil {
 		return err
 	}
-	_, err = coordinator.gatewayTx.Exec(ctx, `INSERT INTO gateway_account_runtime_heads(account_id,pending_snapshot_id) VALUES($1,$2) ON CONFLICT (account_id) DO UPDATE SET pending_snapshot_id=EXCLUDED.pending_snapshot_id,updated_at=now() WHERE gateway_account_runtime_heads.pending_snapshot_id IS NULL OR gateway_account_runtime_heads.pending_snapshot_id=EXCLUDED.pending_snapshot_id`, plan.AccountID, plan.SnapshotID)
-	return err
+	result, err = transaction.Exec(ctx, `INSERT INTO gateway_account_runtime_heads(account_id,pending_snapshot_id) VALUES($1,$2) ON CONFLICT (account_id) DO UPDATE SET pending_snapshot_id=EXCLUDED.pending_snapshot_id,updated_at=now() WHERE gateway_account_runtime_heads.pending_snapshot_id IS NULL OR gateway_account_runtime_heads.pending_snapshot_id=EXCLUDED.pending_snapshot_id`, plan.AccountID, plan.SnapshotID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return errGatewayPendingHeadConflict
+	}
+	return nil
 }
 
 func (coordinator *postgresCoordinator) Commit(ctx context.Context) error {

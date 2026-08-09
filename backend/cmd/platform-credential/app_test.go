@@ -3,9 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -73,6 +76,57 @@ func TestTTYInputRestoresEchoAfterInvalidBundle(t *testing.T) {
 	}
 }
 
+func TestTTYInputRestoresEchoAfterInjectedTerminationSignal(t *testing.T) {
+	reader := &blockingReader{release: make(chan struct{})}
+	t.Cleanup(func() { close(reader.release) })
+	signals := make(chan os.Signal, 1)
+	signals <- syscall.SIGTERM
+	var transitions []bool
+	_, err := readTTYCredentialBundleWithSignals(reader, func(enabled bool) error {
+		transitions = append(transitions, enabled)
+		return nil
+	}, signals)
+	if err == nil || !strings.Contains(err.Error(), "CREDENTIAL_STDIN_INTERRUPTED") || len(transitions) != 2 || transitions[0] || !transitions[1] {
+		t.Fatalf("error=%v transitions=%v", err, transitions)
+	}
+}
+
+func TestRunRestoresTTYEchoBeforeProvisioningError(t *testing.T) {
+	metadata := writeMetadata(t)
+	priorReader := readCredentialInput
+	priorProvision := provisionAccount
+	var transitions []bool
+	readCredentialInput = func(io.Reader) ([]byte, error) {
+		return readTTYCredentialBundleWithSignals(strings.NewReader("{}\n"), func(enabled bool) error {
+			transitions = append(transitions, enabled)
+			return nil
+		}, make(chan os.Signal))
+	}
+	provisionAccount = func(context.Context, provisionRequest) (provisionResult, error) {
+		if len(transitions) != 2 || transitions[0] || !transitions[1] {
+			t.Fatalf("echo was not restored before service call: %v", transitions)
+		}
+		return provisionResult{}, fmt.Errorf("synthetic service failure")
+	}
+	t.Cleanup(func() {
+		readCredentialInput = priorReader
+		provisionAccount = priorProvision
+	})
+	err := run([]string{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1"}, strings.NewReader("ignored"), &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || len(transitions) != 2 {
+		t.Fatalf("error=%v transitions=%v", err, transitions)
+	}
+}
+
+type blockingReader struct {
+	release chan struct{}
+}
+
+func (reader *blockingReader) Read([]byte) (int, error) {
+	<-reader.release
+	return 0, io.EOF
+}
+
 func TestRunRejectsNonLoopbackAndGatewayBypassConfigurationBeforeReadingStdin(t *testing.T) {
 	metadata := writeMetadata(t)
 	for _, args := range [][]string{
@@ -83,6 +137,13 @@ func TestRunRejectsNonLoopbackAndGatewayBypassConfigurationBeforeReadingStdin(t 
 		if err := run(args, reader, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 			t.Fatalf("unsafe configuration accepted: %v", args)
 		}
+	}
+}
+
+func TestPlatformCredentialRejectsDeceptiveConnectedDatabaseIdentity(t *testing.T) {
+	err := validateConnectedPlatformIdentity("bolter_platform_live", "bolter_platform_live", "bolter_platform_test", "bolter_platform_test")
+	if err == nil || !strings.Contains(err.Error(), "CONNECTED_DATABASE_IDENTITY_MISMATCH") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

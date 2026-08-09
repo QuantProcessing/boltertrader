@@ -44,6 +44,13 @@ func provisionProductionAccount(ctx context.Context, request provisionRequest) (
 	if err := database.PingContext(ctx); err != nil {
 		return provisionResult{}, fmt.Errorf("PLATFORM_DATABASE_UNAVAILABLE")
 	}
+	var observedDatabase, observedRole string
+	if err := database.QueryRowContext(ctx, `SELECT current_database(), current_user`).Scan(&observedDatabase, &observedRole); err != nil {
+		return provisionResult{}, fmt.Errorf("PLATFORM_CONNECTED_IDENTITY_UNAVAILABLE")
+	}
+	if err := validateConnectedPlatformIdentity(observedDatabase, observedRole, cfg.DatabaseName, cfg.DatabaseRole); err != nil {
+		return provisionResult{}, err
+	}
 	provider, err := productionSecretProvider(cfg)
 	if err != nil {
 		return provisionResult{}, fmt.Errorf("SECRET_STORE_UNAVAILABLE")
@@ -81,6 +88,13 @@ func provisionProductionAccount(ctx context.Context, request provisionRequest) (
 		return provisionResult{}, fmt.Errorf("ACCOUNT_PROVISIONING_BLOCKED")
 	}
 	return provisionResult{AccountID: account.ID, OperationID: string(operationID), State: string(account.State)}, nil
+}
+
+func validateConnectedPlatformIdentity(observedDatabase, observedRole, expectedDatabase, expectedRole string) error {
+	if observedDatabase != expectedDatabase || observedRole != expectedRole {
+		return fmt.Errorf("CONNECTED_DATABASE_IDENTITY_MISMATCH")
+	}
+	return nil
 }
 
 type commandKeychainRunner struct{}

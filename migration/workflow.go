@@ -315,22 +315,22 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"}
 	case Backup:
 		subject = artifactSHA
-		required = []string{"dump-created", "dump-format-readable"}
+		required = []string{"connected-identities-verified", "dump-created", "dump-format-readable"}
 	case Restore:
 		subject = artifactSHA
-		required = []string{"clean-target-created", "restored-schema-nonempty"}
+		required = []string{"connected-identities-verified", "clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"capture-session-read-only", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		required = []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
 		if !validSHA256(proof.InputSHA) {
 			return fmt.Errorf("final delta proof is missing captured source high-water")
 		}
 	case Fence:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		required = []string{"connected-identities-verified", "source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		required = []string{"source-high-water-equal", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}
+		required = []string{"connected-identities-verified", "source-high-water-equal", "platform-schema-migrated", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		subject = proofStateDigest(manifest)
 		required = []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}
@@ -339,7 +339,7 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		required = []string{"connected-identities-verified", "source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	}
 	if proof.Subject != subject || !sameStringSet(proof.Checks, required) {
 		return fmt.Errorf("operation proof subject or checks do not match required postconditions")
