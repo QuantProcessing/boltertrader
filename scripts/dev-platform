@@ -154,6 +154,7 @@ refresh_starting_identity() {
 	[ "$(process_start_time "$pid")" = "$(sed -n '1p' "$start_file")" ] || return 1
 	observed_command=$(process_command "$pid")
 	[ -n "$observed_command" ] || return 1
+	[ "$(process_start_time "$pid")" = "$(sed -n '1p' "$start_file")" ] || return 1
 	write_command_identity "$service" "$observed_command"
 }
 

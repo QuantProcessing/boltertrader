@@ -129,6 +129,85 @@ while :; do sleep 1; done
 	runLauncher(t, repo, env, "down")
 }
 
+func TestDevPlatformDoesNotRewriteIdentityWhenStartTimeChangesAfterCommandSample(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	process := exec.Command("sleep", "60")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = process.Process.Kill(); _, _ = process.Process.Wait() })
+
+	startOutput, err := exec.Command("ps", "-p", fmt.Sprint(process.Process.Pid), "-o", "lstart=").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.TrimSpace(string(startOutput))
+	modeDir := filepath.Join(runtimeDir, "state", "test")
+	pidDir := filepath.Join(modeDir, "pids")
+	ownershipDir := filepath.Join(modeDir, "ownership")
+	for _, dir := range []string{pidDir, ownershipDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(pidDir, "postgres.pid"), []byte(fmt.Sprintf("%d\n", process.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ownershipDir, "postgres.start"), []byte(start+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commandPath := filepath.Join(ownershipDir, "postgres.command")
+	if err := os.WriteFile(commandPath, []byte("trusted-command\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	shimDir := filepath.Join(runtimeDir, "bin")
+	if err := os.MkdirAll(shimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	trigger := filepath.Join(runtimeDir, "command-sampled")
+	emitted := filepath.Join(runtimeDir, "changed-start-emitted")
+	psPath, err := exec.LookPath("ps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(shimDir, "ps"), fmt.Sprintf(`#!/bin/sh
+set -eu
+if [ "${1:-}" = "-p" ] && [ "${2:-}" = "%d" ] && [ "${3:-}" = "-o" ] && [ "${4:-}" = "command=" ]; then
+	printf 'replacement-command\n'
+	: >%q
+	exit 0
+fi
+if [ "${1:-}" = "-p" ] && [ "${2:-}" = "%d" ] && [ "${3:-}" = "-o" ] && [ "${4:-}" = "lstart=" ] && [ -f %q ] && [ ! -f %q ]; then
+	: >%q
+	printf 'changed-process-start-time\n'
+	exit 0
+fi
+exec %q "$@"
+`, process.Process.Pid, trigger, process.Process.Pid, trigger, emitted, emitted, psPath))
+
+	env := launcherEnv(runtimeDir)
+	for index := range env {
+		if strings.HasPrefix(env[index], "PATH=") {
+			env[index] = "PATH=" + shimDir + ":" + strings.TrimPrefix(env[index], "PATH=")
+		}
+	}
+	env = append(env, "BT_DEV_POSTGRES_READY_CMD=true")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "wait")
+	cmd.Dir, cmd.Env = repo, env
+	if output, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("wait accepted a changed process identity: %s", output)
+	}
+	command, err := os.ReadFile(commandPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(command)); got != "trusted-command" {
+		t.Fatalf("changed process rewrote command identity to %q", got)
+	}
+}
+
 func TestDevPlatformBootstrapTargetsManagedPostgres(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
