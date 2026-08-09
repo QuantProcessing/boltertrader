@@ -1,14 +1,14 @@
 {
-  "contractVersion": "boltertrader-product-platform-upgrade/v4",
-  "revision": 4,
+  "contractVersion": "boltertrader-product-platform-upgrade/v5",
+  "revision": 5,
   "listenerRouteCounts": {
     "platform-browser": 43,
     "platform-funding-work": 12,
-    "gateway-internal": 21
+    "gateway-internal": 16
   },
-  "strictMutationCount": 29,
+  "strictMutationCount": 24,
   "nestedPayloadCount": 14,
-  "strictMutationsSHA256": "f9c19dd2e61263adc78c25ae1b0b39783ffe355dd2f2ca203d395d597b0aebf0",
+  "strictMutationsSHA256": "35799f7247bb6863a0d7605292f2c831d96c2fea2dd54cf763376880e64cf94c",
   "strictNestedPayloadsSHA256": "3cd00485a0021ab5db84f449e17258255b32b17168dcf34000e62f8f0d21ea6a",
   "schemaIdentifiers": [
     "MetaEnvelope",

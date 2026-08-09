@@ -193,7 +193,7 @@ components:
           additionalProperties: false
           required: [code, message, requestId, retryable]
           properties:
-            code: {type: string}
+            code: {type: string, enum: [OPERATION_ID_CONFLICT, ROUTE_PROFILE_CONFLICT, CANDIDATE_NOT_READY, PROMOTION_FENCE_CONFLICT, HANDOFF_DRAIN_BLOCKED, RETIRED_SECRET_REFERENCE, PRIVATE_STREAM_GAP, LIVE_WRITE_DISABLED]}
             message: {type: string}
             requestId: {type: string}
             retryable: {type: boolean}

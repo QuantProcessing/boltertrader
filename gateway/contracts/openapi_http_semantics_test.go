@@ -267,7 +267,14 @@ func TestOpenAPIErrorEnvelopeDocumentsCorrelationAndRetryability(t *testing.T) {
 }
 
 func TestOpenAPIEnumeratesRouteRuntimeStableErrors(t *testing.T) {
-	document := readRawOpenAPI(t)
+	data, err := os.ReadFile("../../api/exchange-gateway/v1/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
 	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
 	envelope := schemas["ErrorEnvelope"].(map[string]any)
 	errorObject := envelope["properties"].(map[string]any)["error"].(map[string]any)

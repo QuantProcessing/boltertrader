@@ -26,7 +26,7 @@ func TestRouteAwareV5MutationAuthorityIsFrozen(t *testing.T) {
 		t.Fatalf("contract identity=%s/r%d want v5/r5", contract.ContractVersion, contract.Revision)
 	}
 	want := map[string][]string{
-		"POST /api/v1/accounts": {"venue", "displayName", "productPolicy", "routes", "credentialBundle"},
+		"POST /api/v1/accounts":                    {"venue", "displayName", "productPolicy", "routes", "credentialBundle"},
 		"POST /api/v1/accounts/{accountId}/rotate": {"credentialBundle"},
 		"PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}": {
 			"operationId", "accountId", "venue", "nativeEnvironment", "secretRef",
