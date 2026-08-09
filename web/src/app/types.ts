@@ -18,7 +18,7 @@ export interface Account {
   mode: Mode;
   nativeEnvironment: NativeEnvironment;
   displayName: string;
-  productPolicy: ProductPolicy[];
+  productIds: ProductPolicy[];
   status: AccountState;
   desiredStateRevision: number;
   runtimeGeneration: number;
@@ -32,6 +32,8 @@ export interface CredentialFieldDescriptor {
   key: string;
   label: string;
   metadata?: boolean;
+  required?: boolean;
+  valueType?: "string" | "integer";
 }
 
 export interface CredentialSchema {

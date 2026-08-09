@@ -53,7 +53,7 @@ const account: Account = {
   mode: "test",
   nativeEnvironment: "demo",
   status: "active",
-  productPolicy: ["manual"],
+  productIds: ["manual"],
   desiredStateRevision: 3,
   runtimeGeneration: 2,
   credentialVersion: 1,
@@ -117,6 +117,16 @@ function renderAccounts(overrides: Partial<React.ComponentProps<typeof AccountsR
 }
 
 describe("AccountsRoute", () => {
+  it("consumes serialized backend account, runtime, and catalog projections", () => {
+    const account = JSON.parse(`{"accountId":"serialized","venue":"binance","mode":"test","nativeEnvironment":"demo","displayName":"Serialized account","productIds":["manual"],"routes":[],"status":"active","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}`) as Account;
+    const venue = JSON.parse(`{"venue":"binance","environment":"demo","nativeEnvironment":"demo","ready":true,"products":["funding","manual"],"credentialSchema":{"schemaVersion":1,"authKind":"api_key_secret","fields":[{"key":"apiKey","label":"API key"},{"key":"apiSecret","label":"API secret"}]},"routeProfiles":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","label":"Perp / USDT"}]}`) as Venue;
+    const runtime = JSON.parse(`{"accountId":"serialized","active":{"desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1,"requestedState":"active","routes":[]},"retiring":[],"desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1,"runtimeVersion":1,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":1,"lastAppliedRuntimeGeneration":1,"blockedReason":null,"capabilities":[],"observedAt":"2026-08-05T00:00:00Z"}`) as RuntimeView;
+
+    renderAccounts({ accounts: [account], venues: [venue], runtimes: { serialized: [runtime] } });
+    expect(screen.getByText("Serialized account")).toBeVisible();
+    expect(screen.getAllByText("manual").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Edit Serialized account" })).toBeVisible();
+  });
   it("renders page-level account sections without surface framing", () => {
     renderAccounts();
 
@@ -167,7 +177,7 @@ describe("AccountsRoute", () => {
     await waitFor(() => expect(props.onCreate).toHaveBeenCalledWith({
       venue: "binance",
       displayName: "Binance Demo",
-      productPolicy: ["funding", "manual"],
+      productIds: ["funding", "manual"],
       routes: [
         { routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: "binance.spot.usdt.demo.v1", requestedState: "active" },
         { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "active" },
@@ -247,6 +257,43 @@ describe("AccountsRoute", () => {
     } });
     await waitFor(() => expect(screen.queryByLabelText("Replacement API secret for Test account")).not.toBeInTheDocument());
     expect(document.body).not.toHaveTextContent("replacement-secret");
+  });
+
+  it("preserves credential descriptor types and optional metadata during rotation", async () => {
+    const typedVenue: Venue = {
+      ...venues[0],
+      credentialSchema: {
+        schemaVersion: 1,
+        authKind: "lighter_signer",
+        fields: [
+          { key: "accountIndex", label: "Account index", metadata: true, required: true, valueType: "integer" },
+          { key: "accountAddress", label: "Account address", metadata: true, required: false, valueType: "string" },
+          { key: "privateKey", label: "Private key", required: true, valueType: "string" },
+        ],
+      },
+    };
+    const props = renderAccounts({ accounts: [account], venues: [typedVenue] });
+
+    await userEvent.click(screen.getByRole("button", { name: "Rotate Test account credentials" }));
+    const accountIndex = screen.getByLabelText("Replacement Account index for Test account");
+    const accountAddress = screen.getByLabelText("Replacement Account address for Test account");
+    const privateKey = screen.getByLabelText("Replacement Private key for Test account");
+    expect(accountIndex).toHaveAttribute("type", "number");
+    expect(accountIndex).toBeRequired();
+    expect(accountAddress).toHaveAttribute("type", "text");
+    expect(accountAddress).not.toBeRequired();
+    expect(privateKey).toHaveAttribute("type", "password");
+    await userEvent.type(accountIndex, "7");
+    await userEvent.type(privateKey, "replacement-private-key");
+    await userEvent.click(screen.getByRole("button", { name: "Submit rotation" }));
+
+    expect(props.onAction).toHaveBeenCalledWith("a1", "rotate", { credentialBundle: {
+      schemaVersion: 1,
+      venue: "binance",
+      authKind: "lighter_signer",
+      metadata: { accountIndex: 7 },
+      secrets: { privateKey: "replacement-private-key" },
+    } });
   });
 
   it("renders active, pending, and retiring route diagnostics with retry", async () => {
@@ -368,10 +415,8 @@ describe("AccountsRoute", () => {
     await userEvent.clear(screen.getByLabelText("Account name for Test account"));
     await userEvent.type(screen.getByLabelText("Account name for Test account"), "Primary test");
     await userEvent.click(screen.getByLabelText("Funding product for Test account"));
-    await userEvent.click(screen.getByLabelText("Perp / USDT route for Test account"));
-    await userEvent.click(screen.getByLabelText("Spot / USDT route for Test account"));
     await userEvent.click(screen.getByRole("button", { name: "Save account" }));
-    expect(props.onAction).toHaveBeenCalledWith("a1", "update", { displayName: "Primary test", productPolicy: ["manual", "funding"], routes: [{ routeId: "spot-usdt", product: "spot", settlementAsset: "USDT", routeProfileId: "binance.spot.usdt.demo.v1", requestedState: "active" }, { routeId: "perp-usdt", product: "perp", settlementAsset: "USDT", routeProfileId: "binance.perp.usdt.demo.v1", requestedState: "disabled" }] });
+    expect(props.onAction).toHaveBeenCalledWith("a1", "update", { displayName: "Primary test", productIds: ["manual", "funding"] });
 
     await userEvent.click(screen.getByRole("button", { name: "Remove Test account" }));
     expect(props.onAction).toHaveBeenCalledTimes(1);

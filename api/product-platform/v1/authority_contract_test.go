@@ -67,7 +67,7 @@ func TestV5AccountAndGatewayMutationsAreRouteAware(t *testing.T) {
 		t.Fatalf("contract=%s/r%d", contract.ContractVersion, contract.Revision)
 	}
 	want := map[string][]string{
-		"POST /api/v1/accounts":                                                  {"venue", "displayName", "productPolicy", "routes", "credentialBundle"},
+		"POST /api/v1/accounts":                                                  {"venue", "displayName", "productIds", "routes", "credentialBundle"},
 		"POST /api/v1/accounts/{accountId}/rotate":                               {"credentialBundle"},
 		"PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}": {"operationId", "accountId", "venue", "nativeEnvironment", "secretRef", "desiredStateRevision", "runtimeGeneration", "credentialVersion", "requestedState", "routes"},
 	}

@@ -23,6 +23,27 @@ type CaptureWindow = Window & {
   __btRealtimePayloads?: RealtimeCapture[];
 };
 
+export function assertSafeRealPlatformURL(value: string): URL {
+  const target = new URL(value);
+  const loopback = target.hostname === "127.0.0.1" || target.hostname === "localhost" || target.hostname === "[::1]";
+  const safe = (target.protocol === "http:" || target.protocol === "https:")
+    && loopback
+    && target.port !== ""
+    && target.username === ""
+    && target.password === ""
+    && target.pathname === "/"
+    && target.search === ""
+    && target.hash === "";
+  if (!safe) throw new Error("Real-browser acceptance requires an explicit, non-deceptive loopback Platform URL.");
+  return target;
+}
+
+export function assertTestSessionMode(value: unknown): void {
+  const principal = value && typeof value === "object" && "principal" in value ? value.principal : null;
+  const mode = principal && typeof principal === "object" && "mode" in principal ? principal.mode : null;
+  if (mode !== "test") throw new Error("Real-browser acceptance requires authoritative exact Test mode.");
+}
+
 export function assertNoAuthoritativeAccountWrites(requests: BrowserRequestFact[]): void {
   const allowedWrite = (request: BrowserRequestFact) => request.method === "POST"
     && (/^\/api\/v1\/auth\/login$/.test(request.path) || /^\/api\/v1\/accounts\/[^/]+\/validate$/.test(request.path));

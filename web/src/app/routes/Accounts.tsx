@@ -26,7 +26,7 @@ type RouteDiagnostic = {
   route?: RouteRuntimeView;
 };
 
-const accountProducts = (account: Account) => account.productPolicy;
+const accountProducts = (account: Account) => account.productIds;
 const accountEnvironment = (account: Account) => account.nativeEnvironment;
 const displayFinding = (value: unknown, fallback?: string) => safeFinding(value, fallback).replaceAll("_", " ");
 const supportedEnvironments = new Set(["demo", "testnet", "live"]);
@@ -36,9 +36,14 @@ const modeConflictFinding = (venue: Venue, mode: Mode) => `Mode conflict: ${venu
 
 function credentialBundle(venue: Venue, values: Record<string, string>) {
   const schema = venue.credentialSchema;
-  const metadata: Record<string, string> = {};
+  const metadata: Record<string, string | number> = {};
   const secrets: Record<string, string> = {};
-  for (const field of schema.fields) (field.metadata ? metadata : secrets)[field.key] = values[field.key] ?? "";
+  for (const field of schema.fields) {
+    const value = values[field.key] ?? "";
+    if (!value && field.required === false) continue;
+    if (field.metadata) metadata[field.key] = field.valueType === "integer" ? Number(value) : value;
+    else secrets[field.key] = value;
+  }
   return { schemaVersion: schema.schemaVersion, venue: venue.venue, authKind: schema.authKind, metadata, secrets };
 }
 
@@ -90,7 +95,6 @@ export function AccountsRoute(props: AccountsProps) {
   const [editingID, setEditingID] = useState("");
   const [editDisplayName, setEditDisplayName] = useState("");
   const [editProducts, setEditProducts] = useState<ProductPolicy[]>([]);
-  const [editRoutes, setEditRoutes] = useState<string[]>([]);
   const [editError, setEditError] = useState("");
   const [removingID, setRemovingID] = useState("");
   const [removalError, setRemovalError] = useState("");
@@ -109,8 +113,8 @@ export function AccountsRoute(props: AccountsProps) {
     if (!selectedVenue || modeConflict) return;
     const routes: AccountRoute[] = profiles.filter((profile) => selectedRoutes.includes(profile.routeId)).map(({ label: _label, ...profile }) => ({ ...profile, requestedState: "active" }));
     try {
-      const productPolicy = (["funding", "manual"] as const).filter((product) => products.includes(product));
-      await props.onCreate({ venue: selectedVenue.venue, displayName: displayName.trim(), productPolicy, routes, credentialBundle: credentialBundle(selectedVenue, credentials) });
+      const productIds = (["funding", "manual"] as const).filter((product) => products.includes(product));
+      await props.onCreate({ venue: selectedVenue.venue, displayName: displayName.trim(), productIds, routes, credentialBundle: credentialBundle(selectedVenue, credentials) });
       setDisplayName("");
     } catch (error) {
       setFormError(displayFinding(error instanceof Error ? error.message : error, "Account creation failed."));
@@ -125,9 +129,6 @@ export function AccountsRoute(props: AccountsProps) {
   const rotationSchema = rotatingVenue?.credentialSchema;
   const editingAccount = props.accounts.find((account) => account.accountId === editingID);
   const removingAccount = props.accounts.find((account) => account.accountId === removingID);
-  const editingVenue = props.venues.find((venue) => venue.venue === editingAccount?.venue && venue.nativeEnvironment === editingAccount?.nativeEnvironment)
-    ?? props.venues.find((venue) => venue.venue === editingAccount?.venue);
-  const editingProfiles = editingVenue?.routeProfiles ?? [];
   const setOperationError = (accountID: string, value?: unknown) => setOperationErrors((current) => {
     const next = { ...current };
     if (value === undefined) delete next[accountID];
@@ -149,7 +150,6 @@ export function AccountsRoute(props: AccountsProps) {
     setEditingID(account.accountId);
     setEditDisplayName(account.displayName);
     setEditProducts([...accountProducts(account)]);
-    setEditRoutes(account.routes.filter((route) => route.requestedState === "active").map((route) => route.routeId));
     setEditError("");
     setRotatingID("");
     setRemovingID("");
@@ -161,9 +161,8 @@ export function AccountsRoute(props: AccountsProps) {
       setEditError("Account name and at least one product are required.");
       return;
     }
-    const routes = editingProfiles.map(({ label: _label, ...profile }) => ({ ...profile, requestedState: editRoutes.includes(profile.routeId) ? "active" : "disabled" } as AccountRoute));
     try {
-      await props.onAction(editingID, "update", { displayName: editDisplayName.trim(), productPolicy: editProducts, routes });
+      await props.onAction(editingID, "update", { displayName: editDisplayName.trim(), productIds: editProducts });
       setEditingID("");
       setOperationError(editingID);
     } catch (error) {
@@ -213,8 +212,8 @@ export function AccountsRoute(props: AccountsProps) {
           {operationErrors[account.accountId] && <tr className="account-operation-error"><td colSpan={5}><div className="finding finding--danger" role="alert" aria-label={`${account.displayName} operation error`}>{operationErrors[account.accountId]}</div></td></tr>}
         </Fragment>)}</tbody></table></div>
         {props.accounts.length === 0 && <div className="empty-state"><CircleCheck /><strong>No accounts configured</strong><span>{props.readiness.ready ? "Platform is ready for account provisioning." : "Account provisioning is unavailable."}</span></div>}
-        {editingAccount && <form className="rotation-panel" onSubmit={saveEdit}><div><strong>Edit {editingAccount.displayName}</strong></div><label>{`Account name for ${editingAccount.displayName}`}<input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} required /></label><fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product for ${editingAccount.displayName}`} type="checkbox" checked={editProducts.includes(product)} onChange={() => toggle(product, setEditProducts)} /><span>{product}</span></label>)}</fieldset><fieldset className="route-options"><legend>Route activation</legend>{editingProfiles.map((profile) => <label className="check-control" key={profile.routeId}><input aria-label={`${profile.label} route for ${editingAccount.displayName}`} type="checkbox" checked={editRoutes.includes(profile.routeId)} onChange={() => toggle(profile.routeId, setEditRoutes)} /><span>{profile.label}</span></label>)}</fieldset>{editError && <div className="finding finding--danger" role="alert">{editError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => setEditingID("")}>Cancel</button><button className="button button--primary" disabled={props.busy || editRoutes.length === 0}>Save account</button></div></form>}
-        {rotatingAccount && rotatingVenue && rotationSchema && <form className="rotation-panel" onSubmit={rotate}><div><strong>Rotate {rotatingAccount.displayName}</strong><span>Replacement fields are write-only.</span></div>{rotationSchema.fields.map((field) => <label key={field.key}>{`Replacement ${field.label} for ${rotatingAccount.displayName}`}<input type="password" autoComplete="new-password" value={rotationCredentials[field.key] ?? ""} onChange={(event) => setRotationCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}{rotationError && <div className="finding finding--danger" role="alert">{rotationError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => { setRotatingID(""); setRotationCredentials({}); }}>Cancel</button><button className="button button--primary" disabled={props.busy}>Submit rotation</button></div></form>}
+        {editingAccount && <form className="rotation-panel" onSubmit={saveEdit}><div><strong>Edit {editingAccount.displayName}</strong></div><label>{`Account name for ${editingAccount.displayName}`}<input value={editDisplayName} onChange={(event) => setEditDisplayName(event.target.value)} required /></label><fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product for ${editingAccount.displayName}`} type="checkbox" checked={editProducts.includes(product)} onChange={() => toggle(product, setEditProducts)} /><span>{product}</span></label>)}</fieldset>{editError && <div className="finding finding--danger" role="alert">{editError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => setEditingID("")}>Cancel</button><button className="button button--primary" disabled={props.busy}>Save account</button></div></form>}
+        {rotatingAccount && rotatingVenue && rotationSchema && <form className="rotation-panel" onSubmit={rotate}><div><strong>Rotate {rotatingAccount.displayName}</strong><span>Replacement fields are write-only.</span></div>{rotationSchema.fields.map((field) => <label key={field.key}>{`Replacement ${field.label} for ${rotatingAccount.displayName}`}<input type={field.valueType === "integer" ? "number" : field.metadata ? "text" : "password"} autoComplete="new-password" value={rotationCredentials[field.key] ?? ""} onChange={(event) => setRotationCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required={field.required !== false} /></label>)}{rotationError && <div className="finding finding--danger" role="alert">{rotationError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => { setRotatingID(""); setRotationCredentials({}); }}>Cancel</button><button className="button button--primary" disabled={props.busy}>Submit rotation</button></div></form>}
         {removingAccount && <div className="rotation-panel" role="group" aria-label={`Remove ${removingAccount.displayName}`}><div><strong>Remove {removingAccount.displayName}?</strong><span>Open positions, reservations, or commands may block removal.</span></div>{removalError && <div className="finding finding--danger" role="alert">{removalError}</div>}<div className="row-actions"><button type="button" className="button button--secondary" onClick={() => setRemovingID("")}>Cancel</button><button type="button" className="button button--danger" disabled={props.busy} onClick={async () => { setRemovalError(""); try { await props.onAction(removingAccount.accountId, "remove"); setRemovingID(""); setOperationError(removingAccount.accountId); } catch (error) { const message = displayFinding(error instanceof Error ? error.message : error); setRemovalError(message); setOperationError(removingAccount.accountId, message); } }}>Confirm removal</button></div></div>}
       </div>
       <form className="account-form" onSubmit={create}>
@@ -224,7 +223,7 @@ export function AccountsRoute(props: AccountsProps) {
         <label>Account name<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></label>
         <fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product`} type="checkbox" checked={products.includes(product)} onChange={() => toggle(product, setProducts)} /><span>{product}</span></label>)}</fieldset>
         <fieldset className="route-options"><legend>Routes</legend>{profiles.map((profile) => <label className="check-control" key={profile.routeId}><input aria-label={`${profile.label} route`} type="checkbox" checked={selectedRoutes.includes(profile.routeId)} onChange={() => toggle(profile.routeId, setSelectedRoutes)} /><span>{profile.label}</span></label>)}</fieldset>
-        {schema?.fields.map((field) => <label key={field.key}>{field.label}<input type="password" autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}
+        {schema?.fields.map((field) => <label key={field.key}>{field.label}<input type={field.valueType === "integer" ? "number" : field.metadata ? "text" : "password"} autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required={field.required !== false} /></label>)}
         {modeConflict && <div className="finding finding--danger" role="alert">{modeFinding}</div>}
         {formError && <div className="finding finding--danger" role="alert">{formError}</div>}
         <button className="button button--primary button--wide" disabled={props.busy || !selectedVenue || modeConflict || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>

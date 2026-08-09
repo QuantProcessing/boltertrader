@@ -86,7 +86,7 @@ func TestTypedAccountCreateReplaysIdempotentlyAndRejectsChangedBody(t *testing.T
 	_ = RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
 		return platformaccounts.Blockers{}, nil
 	}})
-	body := `{"venue":"binance","displayName":"Primary","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key-canary","apiSecret":"secret-canary"}}}`
+	body := `{"venue":"binance","displayName":"Primary","productIds":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key-canary","apiSecret":"secret-canary"}}}`
 	request := func(payload string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(payload))
 		req.Header.Set("Idempotency-Key", " typed-create ")
@@ -104,5 +104,42 @@ func TestTypedAccountCreateReplaysIdempotentlyAndRejectsChangedBody(t *testing.T
 	response := request(changed)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "IDEMPOTENCY_CONFLICT") {
 		t.Fatalf("changed status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAccountResponsesExposeCanonicalBrowserIdentityAndPATCHRejectsLegacyFields(t *testing.T) {
+	service, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: routeSecretWriter{ref: "opaque-ref"}, Audit: routeAuditWriter{}, ID: func() string { return "acct_contract" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	if err := RegisterAccountRoutes(mux, AccountRoutesOptions{Service: service, Authenticate: func(*http.Request) (string, error) { return "principal", nil }, AuthorizeMutation: func(*http.Request) error { return nil }, Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+		return platformaccounts.Blockers{}, nil
+	}, Mode: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"venue":"binance","displayName":"Primary","productIds":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}}`))
+	create.Header.Set("Idempotency-Key", "create-contract")
+	created := httptest.NewRecorder()
+	mux.ServeHTTP(created, create)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	body := created.Body.String()
+	for _, required := range []string{`"mode":"test"`, `"nativeEnvironment":"demo"`, `"productIds":["manual"]`} {
+		if !strings.Contains(body, required) {
+			t.Errorf("response missing %s: %s", required, body)
+		}
+	}
+	if strings.Contains(body, "productPolicy") || strings.Contains(body, "opaque-ref") {
+		t.Fatalf("response leaked legacy/private field: %s", body)
+	}
+
+	patch := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/acct_contract", strings.NewReader(`{"displayName":"Updated","productPolicy":["manual"],"routes":[]}`))
+	patch.Header.Set("If-Match", AccountETag(1))
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, patch)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("legacy PATCH status=%d body=%s", response.Code, response.Body.String())
 	}
 }

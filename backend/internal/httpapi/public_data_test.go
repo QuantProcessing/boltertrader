@@ -30,7 +30,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 	t.Helper()
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	catalogProjection, err := catalog.NewProjection(catalogSourceFunc(func(context.Context) (catalog.Snapshot, error) {
-		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "testnet", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "testnet", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}, nil
+		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}, nil
 	}), time.Minute, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)

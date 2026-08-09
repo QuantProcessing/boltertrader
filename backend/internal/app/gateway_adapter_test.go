@@ -463,6 +463,37 @@ func TestGatewayAdapterRejectsNonTerminalOrMismatchedRotationProof(t *testing.T)
 	}
 }
 
+func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"building","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := adapter.ListAccountRuntimes(context.Background(), "browser-a", "test", "account-a")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.Active == nil || item.Pending == nil || len(item.Retiring) != 1 || len(item.Active.Routes) != 1 || item.Pending.State != "building" || item.Retiring[0].CredentialVersion != 1 {
+		t.Fatalf("incomplete lifecycle projection: %+v", item)
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"operationId", "secretRef", "provider", "token"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("runtime projection leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 func validAdapterRotationCleanupRequest() accounts.RotationCleanupRequest {
 	return accounts.RotationCleanupRequest{
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "acct_1",

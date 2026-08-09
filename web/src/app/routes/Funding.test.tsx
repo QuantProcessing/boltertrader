@@ -11,7 +11,7 @@ const account = (accountId: string, displayName: string, venue: string) => ({
   mode: "test" as const,
   nativeEnvironment: "demo" as const,
   status: "active" as const,
-  productPolicy: ["funding" as const],
+  productIds: ["funding" as const],
   desiredStateRevision: 1,
   runtimeGeneration: 1,
   credentialVersion: 1,

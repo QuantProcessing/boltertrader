@@ -47,19 +47,46 @@ type AccountCapabilityProjection struct {
 	Operations CapabilityOperations `json:"operations"`
 }
 
+type RouteRuntimeProjection struct {
+	RouteID         string `json:"routeId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	RouteProfileID  string `json:"routeProfileId"`
+	RequestedState  string `json:"requestedState"`
+	Ready           bool   `json:"ready"`
+	Reason          string `json:"reason,omitempty"`
+}
+
+type RuntimeSnapshotProjection struct {
+	DesiredStateRevision int64                    `json:"desiredStateRevision"`
+	RuntimeGeneration    int64                    `json:"runtimeGeneration"`
+	CredentialVersion    int64                    `json:"credentialVersion"`
+	RequestedState       string                   `json:"requestedState"`
+	Routes               []RouteRuntimeProjection `json:"routes"`
+}
+
+type PendingRuntimeSnapshotProjection struct {
+	RuntimeSnapshotProjection
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
 type AccountRuntimeProjection struct {
-	AccountID                       string                        `json:"accountId"`
-	DesiredStateRevision            int64                         `json:"desiredStateRevision"`
-	RuntimeGeneration               int64                         `json:"runtimeGeneration"`
-	CredentialVersion               int64                         `json:"credentialVersion"`
-	RuntimeVersion                  int64                         `json:"runtimeVersion"`
-	Readiness                       ProjectionReadiness           `json:"readiness"`
-	WriteReadiness                  ProjectionReadiness           `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision int64                         `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    int64                         `json:"lastAppliedRuntimeGeneration"`
-	BlockedReason                   *string                       `json:"blockedReason"`
-	Capabilities                    []AccountCapabilityProjection `json:"capabilities"`
-	ObservedAt                      time.Time                     `json:"observedAt"`
+	AccountID                       string                            `json:"accountId"`
+	Active                          *RuntimeSnapshotProjection        `json:"active,omitempty"`
+	Pending                         *PendingRuntimeSnapshotProjection `json:"pending,omitempty"`
+	Retiring                        []RuntimeSnapshotProjection       `json:"retiring"`
+	DesiredStateRevision            int64                             `json:"desiredStateRevision"`
+	RuntimeGeneration               int64                             `json:"runtimeGeneration"`
+	CredentialVersion               int64                             `json:"credentialVersion"`
+	RuntimeVersion                  int64                             `json:"runtimeVersion"`
+	Readiness                       ProjectionReadiness               `json:"readiness"`
+	WriteReadiness                  ProjectionReadiness               `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision int64                             `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    int64                             `json:"lastAppliedRuntimeGeneration"`
+	BlockedReason                   *string                           `json:"blockedReason"`
+	Capabilities                    []AccountCapabilityProjection     `json:"capabilities"`
+	ObservedAt                      time.Time                         `json:"observedAt"`
 }
 
 type AccountRuntimeProjectionReader interface {

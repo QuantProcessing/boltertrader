@@ -47,7 +47,6 @@ type createAccountRequest struct {
 	VenueEnvironment platformaccounts.Environment    `json:"venueEnvironment"`
 	DisplayName      string                          `json:"displayName"`
 	ProductIDs       []string                        `json:"productIds"`
-	ProductPolicy    []string                        `json:"productPolicy"`
 	Routes           []platformaccounts.AccountRoute `json:"routes"`
 	CredentialBundle json.RawMessage                 `json:"credentialBundle"`
 	SecretMaterial   json.RawMessage                 `json:"secretMaterial"`
@@ -105,7 +104,7 @@ func (routes *accountRoutes) create(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, ProductPolicy: request.ProductPolicy, Routes: request.Routes, CredentialBundle: request.CredentialBundle, SecretMaterial: request.SecretMaterial}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, Routes: request.Routes, CredentialBundle: request.CredentialBundle, SecretMaterial: request.SecretMaterial}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
 	clear(request.CredentialBundle)
 	clear(request.SecretMaterial)
 	if err != nil {

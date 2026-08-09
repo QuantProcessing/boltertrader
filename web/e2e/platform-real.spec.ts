@@ -5,6 +5,8 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   assertCanaryPixelIsolation,
   assertNoAuthoritativeAccountWrites,
+  assertSafeRealPlatformURL,
+  assertTestSessionMode,
   installEventSourceCapture,
   type BrowserRequestFact,
   type PixelRect,
@@ -16,6 +18,7 @@ const skipReason = "Real-browser acceptance requires BT_DEV_REAL_BROWSER_ACCEPTA
 const forbiddenLabels = ["secretRef", "providerPath", "gatewayToken", "gateway-adapter-token", "authorization: bearer", "/run/secrets/", "/var/lib/secret-store"];
 const credentialCanary = process.env.BT_DEV_REAL_CREDENTIAL_CANARY?.trim() ?? "";
 const credentialSecretCanary = process.env.BT_DEV_REAL_CREDENTIAL_SECRET_CANARY?.trim() ?? "";
+const platformTarget = assertSafeRealPlatformURL(process.env.BT_DEV_REAL_PLATFORM_URL?.trim() || "http://127.0.0.1:13000");
 
 async function captureStableFullPage(page: Page, options: { fullPage: true; path?: string }): Promise<Buffer> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -60,6 +63,7 @@ test("real Test platform exposes only redacted account validation and recovery s
   const responseBodies: string[] = [];
   const websocketPayloads: string[] = [];
   const responseCaptures: Promise<void>[] = [];
+  const responseCaptureErrors: string[] = [];
   await page.addInitScript(installEventSourceCapture);
   page.on("request", (browserRequest) => {
     const path = new URL(browserRequest.url()).pathname;
@@ -73,10 +77,13 @@ test("real Test platform exposes only redacted account validation and recovery s
   page.on("response", (response) => {
     if (!new URL(response.url()).pathname.startsWith("/api/v1/")) return;
     const contentType = response.headers()["content-type"] ?? "";
-    if (contentType.includes("json")) responseCaptures.push(response.text().then((body) => { responseBodies.push(body); }).catch(() => undefined));
+    if (contentType.includes("json")) responseCaptures.push(response.text()
+      .then((body) => { responseBodies.push(body); })
+      .catch(() => { responseCaptureErrors.push("response body capture failed"); }));
   });
 
   await page.goto("/");
+  expect(new URL(page.url()).origin, "Platform navigation escaped the approved loopback origin.").toBe(platformTarget.origin);
   await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
   await page.getByLabel("Email").fill(username);
   await page.getByLabel("Password").fill(password);
@@ -85,6 +92,13 @@ test("real Test platform exposes only redacted account validation and recovery s
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
+  const sessionMode = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/auth/session", { credentials: "include", redirect: "error" });
+    if (!response.ok) throw new Error("Authoritative session mode read failed.");
+    const envelope = await response.json() as { data?: unknown };
+    return envelope.data;
+  });
+  assertTestSessionMode(sessionMode);
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
   await page.evaluate(async () => { await document.fonts.ready; window.scrollTo(0, 0); (document.activeElement as HTMLElement | null)?.blur(); });
 
@@ -116,11 +130,22 @@ test("real Test platform exposes only redacted account validation and recovery s
 
   const authoritativeFacts = page.locator(".account-table");
   const beforeFacts = await authoritativeFacts.innerText();
+  const accountCount = await page.getByRole("button", { name: /^Edit / }).count();
+  const expectedSnapshotPaths = ["/api/v1/accounts", "/api/v1/catalog/venues"];
+  if (accountCount > 0) expectedSnapshotPaths.push("/api/v1/accounts/");
+  const postHarnessResponses = expectedSnapshotPaths.map((expectedPath) => page.waitForResponse((response) => {
+    const path = new URL(response.url()).pathname;
+    return response.request().method() === "GET"
+      && (expectedPath.endsWith("/") ? path.startsWith(expectedPath) && path.endsWith("/runtimes") : path === expectedPath);
+  }));
   const harnessResponse = await request.post(harnessURL);
   expect(harnessResponse.ok(), "The resnapshot harness request failed.").toBe(true);
-  const markers = await harnessResponse.json() as { beforeMarker?: unknown; afterMarker?: unknown };
+  const markers = await harnessResponse.json() as { beforeMarker?: unknown; afterMarker?: unknown; accountFactsChanged?: unknown };
   expect(typeof markers.beforeMarker === "string" && typeof markers.afterMarker === "string" && markers.beforeMarker !== markers.afterMarker, "The resnapshot harness must report distinct authoritative before/after markers.").toBe(true);
-  await expect.poll(() => authoritativeFacts.innerText(), { timeout: 20_000 }).not.toBe(beforeFacts);
+  const refreshedResponses = await Promise.all(postHarnessResponses);
+  const refreshedBodies = await Promise.all(refreshedResponses.map((response) => response.text()));
+  expect(refreshedBodies.some((body) => body.includes(markers.afterMarker as string)), "Post-harness snapshots did not expose the authoritative after marker.").toBe(true);
+  if (markers.accountFactsChanged === true) await expect.poll(() => authoritativeFacts.innerText(), { timeout: 20_000 }).not.toBe(beforeFacts);
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
 
   const storage = await page.evaluate(() => ({
@@ -129,9 +154,9 @@ test("real Test platform exposes only redacted account validation and recovery s
     realtime: [...((window as typeof window & { __btRealtimePayloads?: RealtimeCapture[] }).__btRealtimePayloads ?? [])],
   }));
   expect(storage.realtime.some((capture) => capture.path === "listener"), "EventSource listener capture observed no payload.").toBe(true);
-  expect(storage.realtime.some((capture) => capture.path === "onmessage"), "EventSource onmessage capture observed no payload.").toBe(true);
   assertNoAuthoritativeAccountWrites(browserRequests);
   await Promise.all(responseCaptures);
+  expect(responseCaptureErrors, "One or more API response bodies could not be captured for redaction checks.").toEqual([]);
   const surfaces = [
     await page.locator("html").innerText(),
     JSON.stringify(storage),

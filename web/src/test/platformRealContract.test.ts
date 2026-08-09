@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error -- Playwright's installed runtime bundles pngjs without public declarations.
 import { PNG } from "playwright-core/lib/utilsBundle";
 
-import { assertCanaryPixelIsolation, assertNoAuthoritativeAccountWrites, installEventSourceCapture } from "../../e2e/real-acceptance-helpers";
+import { assertCanaryPixelIsolation, assertNoAuthoritativeAccountWrites, assertSafeRealPlatformURL, assertTestSessionMode, installEventSourceCapture } from "../../e2e/real-acceptance-helpers";
 
 const specPath = resolve(process.cwd(), "e2e/platform-real.spec.ts");
 const helperPath = resolve(process.cwd(), "e2e/real-acceptance-helpers.ts");
@@ -19,6 +19,21 @@ async function acceptanceSource(): Promise<string> {
 }
 
 describe("real browser acceptance contract", () => {
+  it("accepts only explicit loopback HTTP targets without deceptive URL components", () => {
+    expect(assertSafeRealPlatformURL("http://127.0.0.1:13001").origin).toBe("http://127.0.0.1:13001");
+    expect(assertSafeRealPlatformURL("http://localhost:13001").origin).toBe("http://localhost:13001");
+    expect(assertSafeRealPlatformURL("http://[::1]:13001").origin).toBe("http://[::1]:13001");
+    for (const target of ["https://platform.example.com:443", "http://127.0.0.1", "ftp://127.0.0.1:13001", "http://platform.example.com@127.0.0.1:13001", "http://127.0.0.1:13001/redirect"]) {
+      expect(() => assertSafeRealPlatformURL(target)).toThrow("loopback");
+    }
+  });
+
+  it("requires an authoritative Test session before non-login posts", () => {
+    expect(() => assertTestSessionMode({ principal: { mode: "test" } })).not.toThrow();
+    expect(() => assertTestSessionMode({ principal: { mode: "live" } })).toThrow("exact Test mode");
+    expect(() => assertTestSessionMode({ principal: {} })).toThrow("exact Test mode");
+  });
+
   it("never submits an authoritative account mutation", async () => {
     const source = await acceptanceSource();
 
@@ -100,6 +115,25 @@ describe("real browser acceptance contract", () => {
     expect(source).toContain('path: "listener"');
     expect(source).toContain('record("listener"');
     expect(source).toContain('record("onmessage"');
+  });
+
+  it("does not swallow response capture failures and expects named production SSE only", async () => {
+    const source = await acceptanceSource();
+
+    expect(source).not.toContain("catch(() => undefined)");
+    expect(source).toContain('capture.path === "listener"');
+    expect(source).not.toContain('capture.path === "onmessage"');
+  });
+
+  it("arms authoritative snapshot waits before invoking the resnapshot harness", async () => {
+    const source = await acceptanceSource();
+    const waits = source.indexOf("postHarnessResponses");
+    const harness = source.indexOf("request.post(harnessURL)");
+
+    expect(waits).toBeGreaterThan(0);
+    expect(harness).toBeGreaterThan(waits);
+    expect(source).toContain('"/api/v1/accounts"');
+    expect(source).toContain('"/api/v1/catalog/venues"');
   });
 
   it("decodes stable full-page before, with, and after screenshots", async () => {
