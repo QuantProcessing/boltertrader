@@ -135,7 +135,7 @@ accounts: []
 	}
 }
 
-func TestValidateLegacyEmptyModeDerivesModeFromAccountEnvironment(t *testing.T) {
+func TestValidateLegacyEmptyModeDefaultsGloballyToTest(t *testing.T) {
 	base, err := config.LoadYAML([]byte(validOneAccountYAML()))
 	if err != nil {
 		t.Fatal(err)
@@ -148,8 +148,8 @@ func TestValidateLegacyEmptyModeDerivesModeFromAccountEnvironment(t *testing.T) 
 	live := base
 	live.Accounts = append([]config.AccountConfig(nil), base.Accounts...)
 	live.Accounts[0].Environment = "live"
-	if err := live.Validate(); err != nil {
-		t.Fatalf("empty mode with live account: %v", err)
+	if err := live.Validate(); err == nil {
+		t.Fatal("empty mode accepted live profile instead of defaulting globally to Test")
 	}
 
 	live.Server.Mode = "test"
@@ -159,6 +159,29 @@ func TestValidateLegacyEmptyModeDerivesModeFromAccountEnvironment(t *testing.T) 
 	live.Server.Mode = "live"
 	if err := live.Validate(); err != nil {
 		t.Fatalf("explicit Live mode with live account: %v", err)
+	}
+}
+
+func TestValidateRuntimeIdentityUsesTrustedProcessMode(t *testing.T) {
+	for _, test := range []struct {
+		mode, venue, environment string
+	}{
+		{mode: "test", venue: "binance", environment: "live"},
+		{mode: "live", venue: "binance", environment: "demo"},
+		{mode: "live", venue: "bybit", environment: "testnet"},
+	} {
+		t.Run(test.mode+"_rejects_"+test.environment, func(t *testing.T) {
+			derivedMode := "test"
+			if test.environment == "live" {
+				derivedMode = "live"
+			}
+			if err := config.ValidateRuntimeIdentity(derivedMode, "acct_1", test.venue, test.environment); err != nil {
+				t.Fatalf("old environment-derived mode precondition is invalid: %v", err)
+			}
+			if err := config.ValidateRuntimeIdentity(test.mode, "acct_1", test.venue, test.environment); err == nil {
+				t.Fatal("cross-mode runtime identity accepted")
+			}
+		})
 	}
 }
 

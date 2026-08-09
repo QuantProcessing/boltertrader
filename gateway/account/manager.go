@@ -787,7 +787,7 @@ func (manager *Manager) validateDesired(desired DesiredRuntime) error {
 	if err := desired.AccountID.Validate(); err != nil {
 		return err
 	}
-	if err := config.ValidateRuntimeIdentity(string(desired.AccountID), desired.Venue, desired.VenueEnvironment); err != nil {
+	if err := config.ValidateRuntimeIdentity(string(manager.runtimeMode), string(desired.AccountID), desired.Venue, desired.VenueEnvironment); err != nil {
 		return err
 	}
 	if desired.Mode != manager.runtimeMode {

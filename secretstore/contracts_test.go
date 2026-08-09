@@ -1,7 +1,9 @@
 package secretstore_test
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -19,12 +21,47 @@ func TestOpaqueRefRejectsPathLikeValues(t *testing.T) {
 func TestOpaqueRefAcceptsCanonicalRawURLBase64(t *testing.T) {
 	raw := strings.Repeat("A", 42) + "E"
 	ref, err := secretstore.ParseOpaqueRef(raw)
-	if err != nil || ref.String() != raw {
+	if err != nil || ref.RawForTrustedBoundary() != raw {
 		t.Fatalf("ref=%q err=%v", ref, err)
 	}
 	for _, invalid := range []string{strings.Repeat("A", 42) + "=", strings.Repeat("A", 42) + "/", strings.Repeat("A", 42) + " ", strings.Repeat("A", 42) + "B"} {
 		if _, err := secretstore.ParseOpaqueRef(invalid); !errors.Is(err, secretstore.ErrInvalidReference) {
 			t.Fatalf("invalid=%q err=%v", invalid, err)
+		}
+	}
+}
+
+func TestOpaqueRefExposesRawOnlyAtTrustedBoundary(t *testing.T) {
+	raw := strings.Repeat("A", 43)
+	ref, err := secretstore.ParseOpaqueRef(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ref.RawForTrustedBoundary(); got != raw {
+		t.Fatalf("raw=%q want canonical reference", got)
+	}
+}
+
+func TestOpaqueRefOrdinaryFormattingAndJSONAreRedacted(t *testing.T) {
+	raw := strings.Repeat("A", 43)
+	ref, err := secretstore.ParseOpaqueRef(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted := []string{
+		fmt.Sprintf("%s", ref),
+		fmt.Sprintf("%v", ref),
+		fmt.Sprintf("%+v", ref),
+		fmt.Sprintf("%#v", ref),
+		string(encoded),
+	}
+	for _, output := range formatted {
+		if strings.Contains(output, raw) || !strings.Contains(output, "redacted") {
+			t.Fatalf("unsafe opaque reference formatting %q", output)
 		}
 	}
 }

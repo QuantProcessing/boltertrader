@@ -45,19 +45,19 @@ type AccountConfig struct {
 
 // ValidateRuntimeIdentity validates the product-agnostic portion of a dynamic
 // account request. Product and settlement stay runtime-discovered facts.
-func ValidateRuntimeIdentity(accountID, venue, environment string) error {
+func ValidateRuntimeIdentity(processMode, accountID, venue, environment string) error {
 	if strings.TrimSpace(accountID) == "" {
 		return fmt.Errorf("account_id is required")
+	}
+	mode := routeprofile.Mode(strings.ToLower(strings.TrimSpace(processMode)))
+	if mode != routeprofile.ModeTest && mode != routeprofile.ModeLive {
+		return fmt.Errorf("process mode must be test or live")
 	}
 	venue = strings.ToLower(strings.TrimSpace(venue))
 	environment = strings.ToLower(strings.TrimSpace(environment))
 	registry := routeprofile.DefaultRegistry()
 	if !registry.KnowsVenue(venue) {
 		return fmt.Errorf("unknown venue %q", venue)
-	}
-	mode := routeprofile.ModeTest
-	if environment == string(routeprofile.EnvironmentLive) {
-		mode = routeprofile.ModeLive
 	}
 	if registry.SupportsEnvironment(mode, venue, routeprofile.NativeEnvironment(environment)) {
 		return nil
@@ -201,6 +201,9 @@ func (file File) Validate() error {
 	}
 	seen := map[string]struct{}{}
 	configuredMode := routeprofile.Mode(file.Server.Mode)
+	if configuredMode == "" {
+		configuredMode = routeprofile.ModeTest
+	}
 	for _, account := range file.Accounts {
 		if account.AccountID == "" {
 			return fmt.Errorf("account_id is required")
@@ -209,14 +212,7 @@ func (file File) Validate() error {
 			return fmt.Errorf("duplicate account_id %q", account.AccountID)
 		}
 		seen[account.AccountID] = struct{}{}
-		mode := configuredMode
-		if mode == "" {
-			mode = routeprofile.ModeTest
-			if account.Environment == string(routeprofile.EnvironmentLive) {
-				mode = routeprofile.ModeLive
-			}
-		}
-		if err := validateProfile(mode, account); err != nil {
+		if err := validateProfile(configuredMode, account); err != nil {
 			return err
 		}
 		if err := validateCredentials(account.Credentials); err != nil {
