@@ -117,3 +117,24 @@ func TestDesiredAccountMigrationFreezesRecoveryAndCredentialFences(t *testing.T)
 		}
 	}
 }
+
+func TestRuntimeSnapshotMigrationFreezesImmutableHeadsAndRecovery(t *testing.T) {
+	sql := strings.ToLower(RuntimeSnapshotsMigrationSQL())
+	for _, required := range []string{
+		"gateway_runtime_snapshots", "operation_id uuid not null unique",
+		"gateway_runtime_snapshot_routes", "gateway_account_runtime_heads",
+		"active_snapshot_id", "pending_snapshot_id",
+		"gateway_desired_operations", "references gateway_runtime_snapshots(operation_id)",
+		"gateway_candidate_observations", "gateway_retiring_generations",
+		"gateway_retired_secret_refs", "gateway_desired_operations_recovery",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("runtime snapshot migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"api_secret", "secret_value", "secret_material", "private_key", "raw_credential"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("runtime snapshot migration contains forbidden credential field %q", forbidden)
+		}
+	}
+}

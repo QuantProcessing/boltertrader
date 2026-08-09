@@ -18,6 +18,7 @@ func TestDesiredStateStoreRealPostgresCASRecoveryRotationAndRedaction(t *testing
 	}
 	postgresStore := newStoreForTest(pool, storeOptions{identity: testIdentityGenerator()})
 	var _ store.DesiredStateStore = postgresStore
+	var _ store.RuntimeSnapshotStore = postgresStore
 
 	desired := store.DesiredAccount{
 		AccountID:            testAccountID(t),

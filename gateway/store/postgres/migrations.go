@@ -20,3 +20,11 @@ func DesiredAccountsMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func RuntimeSnapshotsMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/003_runtime_snapshots.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

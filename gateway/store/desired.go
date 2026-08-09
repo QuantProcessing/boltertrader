@@ -2,19 +2,239 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 var (
 	ErrDesiredStateRevisionConflict = errors.New("gateway desired-state revision conflict")
 	ErrStaleRuntimeGeneration       = errors.New("gateway stale runtime generation")
 	ErrInvalidAccountTransition     = errors.New("gateway invalid account transition")
+	ErrOperationConflict            = errors.New("gateway desired operation conflict")
+	ErrPromotionFenceConflict       = errors.New("gateway promotion fence conflict")
+	ErrCandidateNotReady            = errors.New("gateway candidate not ready")
+	ErrRetiredSecretReference       = errors.New("gateway retired secret reference")
 )
+
+type RouteState string
+
+const (
+	RouteActive   RouteState = "active"
+	RouteDisabled RouteState = "disabled"
+)
+
+type RouteDefinition struct {
+	RouteID         domain.RouteID
+	Product         string
+	SettlementAsset string
+	RouteProfileID  string
+	RequestedState  RouteState
+}
+
+func (route RouteDefinition) Validate() error {
+	if err := route.RouteID.Validate(); err != nil {
+		return err
+	}
+	if route.Product != "spot" && route.Product != "perp" {
+		return fmt.Errorf("route product is invalid")
+	}
+	if route.Product == "spot" && route.SettlementAsset != "" {
+		return fmt.Errorf("spot route settlement asset is invalid")
+	}
+	if route.SettlementAsset != strings.ToUpper(route.SettlementAsset) || strings.ContainsAny(route.SettlementAsset, "\n\r\t ") {
+		return fmt.Errorf("route settlement asset is invalid")
+	}
+	if err := validateOpaqueValue("route profile id", route.RouteProfileID, 256); err != nil {
+		return err
+	}
+	if route.RequestedState != RouteActive && route.RequestedState != RouteDisabled {
+		return fmt.Errorf("route requested state is invalid")
+	}
+	return nil
+}
+
+type DesiredSnapshot struct {
+	SnapshotID        uuid.UUID
+	OperationID       secretstore.OperationID
+	RequestDigest     string
+	AccountID         domain.AccountID
+	Venue             string
+	NativeEnvironment string
+	SecretRef         secretstore.OpaqueRef
+	Fence             domain.AccountFence
+	RequestedState    DesiredAccountState
+	Routes            []RouteDefinition
+	CreatedAt         time.Time
+}
+
+func (snapshot DesiredSnapshot) Validate() error {
+	if snapshot.SnapshotID == uuid.Nil {
+		return fmt.Errorf("snapshot id is required")
+	}
+	if _, err := secretstore.ParseOperationID(snapshot.OperationID.String()); err != nil {
+		return err
+	}
+	if err := snapshot.AccountID.Validate(); err != nil {
+		return err
+	}
+	if snapshot.Fence.AccountID != snapshot.AccountID {
+		return fmt.Errorf("snapshot account fence mismatch")
+	}
+	if err := snapshot.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := validateOpaqueValue("venue", snapshot.Venue, 128); err != nil {
+		return err
+	}
+	switch snapshot.NativeEnvironment {
+	case "demo", "testnet", "live":
+	default:
+		return fmt.Errorf("native environment is invalid")
+	}
+	if _, err := secretstore.ParseOpaqueRef(snapshot.SecretRef.RawForTrustedBoundary()); err != nil {
+		return err
+	}
+	if err := snapshot.RequestedState.Validate(); err != nil {
+		return err
+	}
+	if len(snapshot.Routes) == 0 {
+		return fmt.Errorf("snapshot routes are required")
+	}
+	seen := make(map[domain.RouteID]struct{}, len(snapshot.Routes))
+	for _, route := range snapshot.Routes {
+		if err := route.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seen[route.RouteID]; exists {
+			return fmt.Errorf("snapshot route id is duplicated")
+		}
+		seen[route.RouteID] = struct{}{}
+	}
+	return nil
+}
+
+func (snapshot DesiredSnapshot) CanonicalDigest() (string, error) {
+	if err := snapshot.Validate(); err != nil {
+		return "", err
+	}
+	routes := append([]RouteDefinition(nil), snapshot.Routes...)
+	sort.Slice(routes, func(i, j int) bool { return routes[i].RouteID < routes[j].RouteID })
+	type canonicalRoute struct {
+		RouteID         string     `json:"routeId"`
+		Product         string     `json:"product"`
+		SettlementAsset string     `json:"settlementAsset"`
+		RouteProfileID  string     `json:"routeProfileId"`
+		RequestedState  RouteState `json:"requestedState"`
+	}
+	canonicalRoutes := make([]canonicalRoute, 0, len(routes))
+	for _, route := range routes {
+		canonicalRoutes = append(canonicalRoutes, canonicalRoute{string(route.RouteID), route.Product, route.SettlementAsset, route.RouteProfileID, route.RequestedState})
+	}
+	payload := struct {
+		AccountID         string              `json:"accountId"`
+		Venue             string              `json:"venue"`
+		NativeEnvironment string              `json:"nativeEnvironment"`
+		SecretRef         string              `json:"secretRef"`
+		Fence             domain.AccountFence `json:"fence"`
+		RequestedState    DesiredAccountState `json:"requestedState"`
+		Routes            []canonicalRoute    `json:"routes"`
+	}{string(snapshot.AccountID), snapshot.Venue, snapshot.NativeEnvironment, snapshot.SecretRef.RawForTrustedBoundary(), snapshot.Fence, snapshot.RequestedState, canonicalRoutes}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("encode desired snapshot digest: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+type OperationState string
+
+const (
+	OperationPrepared        OperationState = "prepared"
+	OperationCandidateReady  OperationState = "candidate_ready"
+	OperationCandidateFailed OperationState = "candidate_failed"
+	OperationApplied         OperationState = "applied"
+)
+
+type CandidateState string
+
+const (
+	CandidateBuilding CandidateState = "building"
+	CandidateReady    CandidateState = "ready"
+	CandidateFailed   CandidateState = "failed"
+)
+
+type CandidateObservation struct {
+	OperationID         secretstore.OperationID
+	ObservationRevision uint64
+	RouteID             domain.RouteID
+	State               CandidateState
+	ReasonCode          string
+	ObservedAt          time.Time
+}
+
+type PendingSnapshot struct {
+	DesiredSnapshot
+	OperationState OperationState
+	Observations   []CandidateObservation
+}
+
+type ActiveSnapshot struct {
+	DesiredSnapshot
+	PromotedAt time.Time
+}
+
+type RuntimeState struct {
+	AccountID domain.AccountID
+	Active    *ActiveSnapshot
+	Pending   *PendingSnapshot
+}
+
+type PromotionRequest struct {
+	AccountID           domain.AccountID
+	OperationID         secretstore.OperationID
+	ExpectedActiveFence domain.AccountFence
+}
+
+type PromotionResult struct {
+	Active   ActiveSnapshot
+	Retiring *ActiveSnapshot
+}
+
+type TombstoneRequest struct {
+	Scope             secretstore.Scope
+	SecretRef         secretstore.OpaqueRef
+	AccountID         domain.AccountID
+	TombstoneRevision uint64
+}
+
+type Tombstone struct {
+	TombstoneRequest
+	CreatedAt time.Time
+}
+
+// RuntimeSnapshotStore owns immutable candidate/active runtime truth. The
+// legacy DesiredStateStore remains available during the compatibility window.
+type RuntimeSnapshotStore interface {
+	PreparePending(context.Context, DesiredSnapshot) (PendingSnapshot, error)
+	RecordCandidateObservation(context.Context, CandidateObservation) error
+	MarkCandidateReady(context.Context, secretstore.OperationID) error
+	PromotePending(context.Context, PromotionRequest) (PromotionResult, error)
+	LoadRuntimeState(context.Context, domain.AccountID) (RuntimeState, error)
+	ListRuntimeStateForRecovery(context.Context) ([]RuntimeState, error)
+	TombstoneSecretReference(context.Context, TombstoneRequest) (Tombstone, error)
+	IsSecretReferenceRetired(context.Context, secretstore.Scope, secretstore.OpaqueRef) (bool, error)
+}
 
 type DesiredAccountState string
 

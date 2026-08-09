@@ -4,6 +4,10 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/secretstore"
+	"github.com/google/uuid"
 )
 
 func validDesiredAccount() DesiredAccount {
@@ -86,5 +90,45 @@ func TestDesiredAccountLifecycleRejectsUnsafeShortcuts(t *testing.T) {
 		if err := ValidateDesiredAccountTransition(transition[0], transition[1]); !errors.Is(err, ErrInvalidAccountTransition) {
 			t.Errorf("unsafe transition %s -> %s error = %v", transition[0], transition[1], err)
 		}
+	}
+}
+
+func TestDesiredSnapshotDigestIsRouteOrderIndependentAndRejectsDuplicateRoutes(t *testing.T) {
+	op, err := secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c33")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := DesiredSnapshot{
+		SnapshotID:        uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c34"),
+		OperationID:       op,
+		AccountID:         "account-a",
+		Venue:             "binance",
+		NativeEnvironment: "demo",
+		SecretRef:         ref,
+		Fence:             domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1},
+		RequestedState:    DesiredActive,
+		Routes: []RouteDefinition{
+			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive},
+			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive},
+		},
+	}
+	digest, err := snapshot.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversed := snapshot
+	reversed.Routes = []RouteDefinition{snapshot.Routes[1], snapshot.Routes[0]}
+	reversedDigest, err := reversed.CanonicalDigest()
+	if err != nil || reversedDigest != digest {
+		t.Fatalf("reversed digest=%q want=%q err=%v", reversedDigest, digest, err)
+	}
+	duplicate := snapshot
+	duplicate.Routes = []RouteDefinition{snapshot.Routes[0], snapshot.Routes[0]}
+	if _, err := duplicate.CanonicalDigest(); err == nil {
+		t.Fatal("duplicate route accepted")
 	}
 }

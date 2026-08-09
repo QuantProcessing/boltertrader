@@ -244,8 +244,8 @@ func TestMigrateRealPostgresConcurrentStartersSerialize(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 2 {
-		t.Fatalf("schema_migrations rows = %d, want 2", rows)
+	if rows != 3 {
+		t.Fatalf("schema_migrations rows = %d, want 3", rows)
 	}
 }
 
