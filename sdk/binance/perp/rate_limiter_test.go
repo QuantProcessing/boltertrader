@@ -2,11 +2,15 @@ package perp
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/QuantProcessing/boltertrader/gateway/ratelimit"
 )
 
 func TestClient_DefaultRateLimiterKeysMatchBinanceFuturesQuotas(t *testing.T) {
@@ -81,4 +85,67 @@ func TestKeyedRateLimiterRespectsContextCancellation(t *testing.T) {
 	if err := limiter.Wait(ctx, []string{"binance:global"}); err == nil {
 		t.Fatal("expected context deadline error")
 	}
+}
+
+func TestClientWithGatewayTransportDisablesPerpSDKLocalLimiter(t *testing.T) {
+	var calls atomic.Int64
+	transport, err := ratelimit.NewTransport(
+		ratelimit.NewCoordinator(time.Now),
+		vectorProviderFunc(func(*http.Request, ratelimit.RequestScope) []ratelimit.Key {
+			return []ratelimit.Key{{Kind: ratelimit.VenueProfile, Value: "binance/test/binance.perp.usdt.demo.v1"}}
+		}),
+		ratelimit.PublicScope,
+		roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"serverTime":123}`)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := NewClient()
+	if client.RateLimiter == nil {
+		t.Fatal("standalone constructor unexpectedly disabled the SDK limiter")
+	}
+	client.RateLimiter = NewKeyedRateLimiter(map[string]RateLimitQuota{
+		"binance:global": {Limit: 1, Interval: 80 * time.Millisecond},
+	})
+	client = client.WithGatewayTransport(transport)
+	if client.RateLimiter != nil {
+		t.Fatal("gateway transport did not disable the SDK-local limiter")
+	}
+
+	var out struct {
+		ServerTime int64 `json:"serverTime"`
+	}
+	start := time.Now()
+	if err := client.Get(context.Background(), "/fapi/v1/time", nil, false, &out); err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	if err := client.Get(context.Background(), "/fapi/v1/time", nil, false, &out); err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 50*time.Millisecond {
+		t.Fatalf("gateway transport still paid limiter delay: %s", elapsed)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected 2 HTTP calls through gateway transport, got %d", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+type vectorProviderFunc func(*http.Request, ratelimit.RequestScope) []ratelimit.Key
+
+func (fn vectorProviderFunc) Keys(request *http.Request, scope ratelimit.RequestScope) []ratelimit.Key {
+	return fn(request, scope)
 }

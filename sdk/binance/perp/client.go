@@ -112,6 +112,15 @@ func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 	return c
 }
 
+func (c *Client) WithGatewayTransport(transport http.RoundTripper) *Client {
+	if c.HTTPClient == nil {
+		c.HTTPClient = &http.Client{Timeout: 10 * time.Second}
+	}
+	c.HTTPClient.Transport = transport
+	c.RateLimiter = nil
+	return c
+}
+
 func (c *Client) WithRateLimiter(limiter *KeyedRateLimiter) *Client {
 	c.RateLimiter = limiter
 	return c

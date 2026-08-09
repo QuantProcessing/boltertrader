@@ -3,8 +3,11 @@ package account
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/QuantProcessing/boltertrader/credential"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -22,11 +25,11 @@ func (handle *candidateHandleStub) Close() error                { handle.closed 
 type candidateBuilderStub struct {
 	failRoute domain.RouteID
 	handles   map[domain.RouteID]*candidateHandleStub
-	material  []byte
+	decoded   *credential.Decoded
 }
 
-func (builder *candidateBuilderStub) BuildRoute(_ context.Context, _ store.DesiredSnapshot, route store.RouteDefinition, material []byte) (CandidateRoute, error) {
-	builder.material = append(builder.material[:0], material...)
+func (builder *candidateBuilderStub) BuildRoute(_ context.Context, _ store.DesiredSnapshot, route store.RouteDefinition, decoded *credential.Decoded) (CandidateRoute, error) {
+	builder.decoded = decoded
 	handle := &candidateHandleStub{}
 	if route.RouteID == builder.failRoute {
 		handle.probeErr = errors.New("authentication failed")
@@ -38,6 +41,31 @@ func (builder *candidateBuilderStub) BuildRoute(_ context.Context, _ store.Desir
 type candidateResolverStub struct {
 	calls int
 	value []byte
+}
+
+type runtimeStateStoreStub struct {
+	mu     sync.Mutex
+	next   store.ActiveSnapshot
+	states []store.RuntimeState
+	calls  int
+	err    error
+}
+
+func (runtimeStore *runtimeStateStoreStub) PromotePending(_ context.Context, request store.PromotionRequest) (store.PromotionResult, error) {
+	runtimeStore.mu.Lock()
+	defer runtimeStore.mu.Unlock()
+	runtimeStore.calls++
+	if runtimeStore.err != nil {
+		return store.PromotionResult{}, runtimeStore.err
+	}
+	if runtimeStore.next.AccountID != request.AccountID || runtimeStore.next.OperationID != request.OperationID {
+		return store.PromotionResult{}, store.ErrOperationConflict
+	}
+	return store.PromotionResult{Active: runtimeStore.next}, nil
+}
+
+func (runtimeStore *runtimeStateStoreStub) ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error) {
+	return runtimeStore.states, nil
 }
 
 func (resolver *candidateResolverStub) Check(context.Context) error { return nil }
@@ -57,7 +85,7 @@ func TestCandidatePromotesSpotAndPerpAsOneGeneration(t *testing.T) {
 	if got := manager.ActiveSnapshot(pending.AccountID); got != nil {
 		t.Fatal("candidate became active before durable promotion")
 	}
-	if err := manager.PublishPromoted(context.Background(), group, pending.Fence); err != nil {
+	if err := promoteGroup(manager, group); err != nil {
 		t.Fatal(err)
 	}
 	active := manager.ActiveSnapshot(pending.AccountID)
@@ -74,7 +102,7 @@ func TestOneFailedRouteDestroysWholeCandidateAndPreservesActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.PublishPromoted(context.Background(), group, first.Fence); err != nil {
+	if err := promoteGroup(manager, group); err != nil {
 		t.Fatal(err)
 	}
 	before := manager.ActiveSnapshot(first.AccountID)
@@ -99,7 +127,7 @@ func TestOneFailedRouteDestroysWholeCandidateAndPreservesActive(t *testing.T) {
 func TestCandidateResolvesCredentialBundleOnceForAllRoutes(t *testing.T) {
 	builder := &candidateBuilderStub{handles: map[domain.RouteID]*candidateHandleStub{}}
 	manager := newRuntimeGroupTestManager(builder)
-	resolver := &candidateResolverStub{value: []byte("credential-bundle-canary")}
+	resolver := &candidateResolverStub{value: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key-canary","apiSecret":"secret-canary"}}`)}
 	manager.credentialResolver = resolver
 	if _, err := manager.BuildCandidate(context.Background(), runtimeGroupPending(t)); err != nil {
 		t.Fatal(err)
@@ -107,8 +135,12 @@ func TestCandidateResolvesCredentialBundleOnceForAllRoutes(t *testing.T) {
 	if resolver.calls != 1 {
 		t.Fatalf("resolver calls=%d want=1", resolver.calls)
 	}
-	if string(builder.material) != "credential-bundle-canary" {
-		t.Fatal("route builder did not receive decoded bundle bytes")
+	if builder.decoded == nil || builder.decoded.AuthKind != credential.AuthAPIKeySecret {
+		t.Fatalf("route builder decoded=%+v", builder.decoded)
+	}
+	credentials, ok := builder.decoded.Credentials.(*credential.APIKeySecret)
+	if !ok || credentials.APIKey != "" || credentials.APISecret != "" {
+		t.Fatalf("decoded credentials were not cleared after construction: %+v", builder.decoded)
 	}
 }
 
@@ -117,7 +149,7 @@ func TestPromotionWaitsForOldGenerationHandoffLease(t *testing.T) {
 	manager := newRuntimeGroupTestManager(builder)
 	first := runtimeGroupPending(t)
 	active, err := manager.BuildCandidate(context.Background(), first)
-	if err != nil || manager.PublishPromoted(context.Background(), active, first.Fence) != nil {
+	if err != nil || promoteGroup(manager, active) != nil {
 		t.Fatalf("seed active err=%v", err)
 	}
 	lease, err := active.Admission.Acquire(domain.WriteFence{AccountFence: first.Fence, RouteID: "spot"})
@@ -133,7 +165,7 @@ func TestPromotionWaitsForOldGenerationHandoffLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- manager.PublishPromoted(context.Background(), candidate, next.Fence) }()
+	go func() { done <- promoteGroup(manager, candidate) }()
 	select {
 	case err := <-done:
 		t.Fatalf("promotion crossed in-flight handoff: %v", err)
@@ -145,12 +177,53 @@ func TestPromotionWaitsForOldGenerationHandoffLease(t *testing.T) {
 	}
 }
 
+func TestPromotionFailureReopensActiveGenerationAdmission(t *testing.T) {
+	builder := &candidateBuilderStub{handles: map[domain.RouteID]*candidateHandleStub{}}
+	manager := newRuntimeGroupTestManager(builder)
+	first := runtimeGroupPending(t)
+	active, err := manager.BuildCandidate(context.Background(), first)
+	if err != nil || promoteGroup(manager, active) != nil {
+		t.Fatalf("seed active err=%v", err)
+	}
+
+	next := runtimeGroupPending(t)
+	next.OperationID, _ = secretstore.ParseOperationID("018f47a8-2578-7d3c-9d7d-5e4f4a445c44")
+	next.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c45")
+	next.Fence.DesiredStateRevision++
+	next.Fence.RuntimeGeneration++
+	candidate, err := manager.BuildCandidate(context.Background(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeStore := manager.runtimeStore.(*runtimeStateStoreStub)
+	runtimeStore.err = store.ErrPromotionFenceConflict
+	if _, err := manager.PromoteCandidate(context.Background(), candidate); !errors.Is(err, store.ErrPromotionFenceConflict) {
+		t.Fatalf("promotion err=%v", err)
+	}
+	lease, err := active.Admission.Acquire(domain.WriteFence{AccountFence: first.Fence, RouteID: "spot"})
+	if err != nil {
+		t.Fatalf("active admission remained closed after failed promotion: %v", err)
+	}
+	lease.Release()
+}
+
 func newRuntimeGroupTestManager(builder RuntimeGroupBuilder) *Manager {
 	return &Manager{
 		entries: map[domain.AccountID]*entry{}, runtimes: map[domain.AccountID]RuntimeAccount{},
 		groups: map[domain.AccountID]*accountRuntime{}, groupBuilder: builder,
 		profileRegistry: NewProfileRegistry(nil), runtimeMode: RuntimeModeTest,
+		credentialResolver: &candidateResolverStub{value: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)},
+		runtimeStore:       &runtimeStateStoreStub{},
 	}
+}
+
+func promoteGroup(manager *Manager, group *RuntimeGroup) error {
+	runtimeStore := manager.runtimeStore.(*runtimeStateStoreStub)
+	runtimeStore.mu.Lock()
+	runtimeStore.next = store.ActiveSnapshot{DesiredSnapshot: group.Snapshot, PromotedAt: time.Now()}
+	runtimeStore.mu.Unlock()
+	_, err := manager.PromoteCandidate(context.Background(), group)
+	return err
 }
 
 func runtimeGroupPending(t *testing.T) store.PendingSnapshot {

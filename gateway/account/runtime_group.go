@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/QuantProcessing/boltertrader/credential"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -31,12 +32,17 @@ type CandidateRoute interface {
 }
 
 type RuntimeGroupBuilder interface {
-	BuildRoute(context.Context, store.DesiredSnapshot, store.RouteDefinition, []byte) (CandidateRoute, error)
+	BuildRoute(context.Context, store.DesiredSnapshot, store.RouteDefinition, *credential.Decoded) (CandidateRoute, error)
 }
 
 type ScopedCredentialResolver interface {
 	Check(context.Context) error
 	Resolve(context.Context, secretstore.OpaqueRef) ([]byte, error)
+}
+
+type RuntimeStateStore interface {
+	PromotePending(context.Context, store.PromotionRequest) (store.PromotionResult, error)
+	ListRuntimeStateForRecovery(context.Context) ([]store.RuntimeState, error)
 }
 
 type RouteRuntime struct {
@@ -146,6 +152,16 @@ func (admission *GenerationAdmission) CloseAndWait(ctx context.Context) error {
 	}
 }
 
+func (admission *GenerationAdmission) reopen() {
+	admission.mu.Lock()
+	defer admission.mu.Unlock()
+	if !admission.closed {
+		return
+	}
+	admission.closed = false
+	admission.drained = make(chan struct{})
+}
+
 func (manager *Manager) EnsureAccountOwnership(accountID domain.AccountID) error {
 	if err := accountID.Validate(); err != nil {
 		return err
@@ -171,16 +187,20 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	if manager.profileRegistry == nil || manager.profileRegistry.Validate(manager.runtimeMode, pending.DesiredSnapshot) != nil {
 		return nil, ErrCandidateFailed
 	}
-	var material []byte
-	if manager.credentialResolver != nil {
-		var err error
-		material, err = manager.credentialResolver.Resolve(ctx, pending.SecretRef)
-		if err != nil || len(material) == 0 {
-			clear(material)
-			return nil, ErrCandidateFailed
-		}
-		defer clear(material)
+	if manager.credentialResolver == nil {
+		return nil, ErrCandidateFailed
 	}
+	material, err := manager.credentialResolver.Resolve(ctx, pending.SecretRef)
+	if err != nil || len(material) == 0 {
+		clear(material)
+		return nil, ErrCandidateFailed
+	}
+	decoded, err := credential.DefaultRegistry().Decode(pending.Venue, material)
+	clear(material)
+	if err != nil {
+		return nil, ErrCandidateFailed
+	}
+	defer decoded.Clear()
 	if err := manager.EnsureAccountOwnership(pending.AccountID); err != nil {
 		return nil, err
 	}
@@ -196,7 +216,7 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 		if definition.RequestedState == store.RouteDisabled {
 			continue
 		}
-		handle, err := manager.groupBuilder.BuildRoute(ctx, pending.DesiredSnapshot, definition, material)
+		handle, err := manager.groupBuilder.BuildRoute(ctx, pending.DesiredSnapshot, definition, decoded)
 		if err != nil || handle == nil {
 			group.destroy()
 			return nil, ErrCandidateFailed
@@ -217,29 +237,55 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	return group, nil
 }
 
-func (manager *Manager) PublishPromoted(ctx context.Context, group *RuntimeGroup, promotedFence domain.AccountFence) error {
-	if group == nil || group.State != GroupCandidate || group.Snapshot.Fence != promotedFence {
-		return ErrCandidateMismatch
+func (manager *Manager) PromoteCandidate(ctx context.Context, group *RuntimeGroup) (store.PromotionResult, error) {
+	if group == nil || group.State != GroupCandidate || manager.runtimeStore == nil {
+		return store.PromotionResult{}, ErrCandidateMismatch
 	}
 	manager.groupMu.Lock()
 	runtime := manager.groups[group.Snapshot.AccountID]
 	if runtime == nil || runtime.candidate != group {
 		manager.groupMu.Unlock()
-		return ErrCandidateMismatch
+		return store.PromotionResult{}, ErrCandidateMismatch
 	}
 	old := runtime.activeGroup
 	manager.groupMu.Unlock()
 	if old != nil {
 		if err := old.Admission.CloseAndWait(ctx); err != nil {
-			return err
+			old.Admission.reopen()
+			return store.PromotionResult{}, err
 		}
 	}
+	expected := domain.AccountFence{}
+	if old != nil {
+		expected = old.Snapshot.Fence
+	}
+	result, err := manager.runtimeStore.PromotePending(ctx, store.PromotionRequest{
+		AccountID: group.Snapshot.AccountID, OperationID: group.Snapshot.OperationID,
+		ExpectedActiveFence: expected,
+	})
+	if err != nil {
+		if old != nil {
+			old.Admission.reopen()
+		}
+		return store.PromotionResult{}, err
+	}
+	if result.Active.SnapshotID != group.Snapshot.SnapshotID || result.Active.OperationID != group.Snapshot.OperationID || result.Active.Fence != group.Snapshot.Fence {
+		return store.PromotionResult{}, ErrCandidateMismatch
+	}
+	if err := manager.publishApplied(group, result.Active); err != nil {
+		return store.PromotionResult{}, err
+	}
+	return result, nil
+}
+
+func (manager *Manager) publishApplied(group *RuntimeGroup, active store.ActiveSnapshot) error {
 	manager.groupMu.Lock()
 	defer manager.groupMu.Unlock()
-	runtime = manager.groups[group.Snapshot.AccountID]
-	if runtime == nil || runtime.candidate != group || runtime.activeGroup != old {
+	runtime := manager.groups[group.Snapshot.AccountID]
+	if runtime == nil || runtime.candidate != group {
 		return ErrCandidateMismatch
 	}
+	old := runtime.activeGroup
 	if old != nil {
 		old.State = GroupRetiring
 		runtime.retiring[old.Snapshot.Fence.RuntimeGeneration] = old
@@ -257,7 +303,38 @@ func (manager *Manager) PublishPromoted(ctx context.Context, group *RuntimeGroup
 	group.State = GroupActive
 	runtime.activeGroup = group
 	runtime.candidate = nil
-	runtime.active.Store(&RoutingSnapshot{Fence: promotedFence, Routes: routes})
+	runtime.active.Store(&RoutingSnapshot{Fence: active.Fence, Routes: routes})
+	return nil
+}
+
+func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
+	if manager.runtimeStore == nil {
+		return ErrCandidateMismatch
+	}
+	states, err := manager.runtimeStore.ListRuntimeStateForRecovery(ctx)
+	if err != nil {
+		return err
+	}
+	for _, state := range states {
+		if state.Active == nil {
+			continue
+		}
+		candidate, err := manager.BuildCandidate(ctx, store.PendingSnapshot{DesiredSnapshot: state.Active.DesiredSnapshot, OperationState: store.OperationApplied})
+		if err != nil {
+			return err
+		}
+		if err := manager.publishApplied(candidate, *state.Active); err != nil {
+			return err
+		}
+	}
+	for _, state := range states {
+		if state.Pending == nil {
+			continue
+		}
+		if _, err := manager.BuildCandidate(ctx, *state.Pending); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
