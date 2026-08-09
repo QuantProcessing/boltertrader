@@ -322,7 +322,12 @@ fresh_instance_id() {
 
 start_service() {
 	service=$1
-	if is_owned "$service"; then printf '%s already running\n' "$service"; return; fi
+	START_SERVICE_STATE=unknown
+	if is_owned "$service"; then
+		START_SERVICE_STATE=already-ready
+		printf '%s already running\n' "$service"
+		return
+	fi
 	command=$(configured_value "$service" CMD)
 	[ -n "$command" ] || fail "BT_DEV_$(service_key "$service")_CMD is required"
 	log_file="$LOG_DIR/$service.log"
@@ -366,6 +371,7 @@ start_service() {
 	write_command_identity "$service" "$observed_command"
 	printf 'starting\n' >"$OWNERSHIP_DIR/$service.starting"
 	if [ "$service" = "funding-worker" ]; then printf '%s\n' "$instance_id" >"$OWNERSHIP_DIR/funding-worker.instance"; fi
+	START_SERVICE_STATE=started
 	printf '%s started\n' "$service"
 }
 
@@ -426,7 +432,12 @@ up() {
 	trap 'rc=$?; trap - EXIT; if [ "$rc" -ne 0 ]; then down >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
 	trap 'down >/dev/null 2>&1 || true' INT TERM HUP
 	for service in $SERVICES_START; do
-		start_service "$service"; wait_service "$service"
+		start_service "$service"
+		case "$START_SERVICE_STATE" in
+			started) wait_service "$service" ;;
+			already-ready) wait_owned_service "$service" ;;
+			*) fail "$service returned an invalid start state" ;;
+		esac
 		[ "$service" != "postgres" ] || run_bootstrap
 	done
 	trap - EXIT INT TERM HUP

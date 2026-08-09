@@ -64,6 +64,71 @@ while :; do sleep 1; done
 	}
 }
 
+func TestDevPlatformUpReusesReadyServices(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	events := filepath.Join(runtimeDir, "events")
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+set -eu
+name=$1
+events=$2
+printf 'start:%s\n' "$name" >>"$events"
+touch "$events.$name.ready"
+trap 'printf "stop:%s\n" "$name" >>"$events"; exit 0' TERM INT
+while :; do sleep 1; done
+`)
+
+	env := launcherEnv(runtimeDir)
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		name := strings.ToLower(strings.ReplaceAll(service, "_", "-"))
+		env = append(env,
+			"BT_DEV_"+service+"_CMD="+helper+" "+name+" "+events,
+			"BT_DEV_"+service+"_READY_CMD=test -f "+events+"."+name+".ready",
+		)
+	}
+	env = append(env,
+		"BT_DEV_FUNDING_WORKER_DRAIN_CMD=true",
+		"BT_DEV_DB_BOOTSTRAP_CMD=printf 'bootstrap:database\\n' >>"+events,
+		"BT_DEV_SECRET_BOOTSTRAP_CMD=printf 'bootstrap:secret-store\\n' >>"+events,
+	)
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+	})
+
+	runLauncher(t, repo, env, "up")
+	initialPIDs := make(map[string]string)
+	for _, service := range []string{"postgres", "gateway", "platform", "funding-worker", "web"} {
+		payload, err := os.ReadFile(filepath.Join(runtimeDir, "state", "test", "pids", service+".pid"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		initialPIDs[service] = strings.TrimSpace(string(payload))
+	}
+
+	runLauncher(t, repo, env, "up")
+	for service, initialPID := range initialPIDs {
+		payload, err := os.ReadFile(filepath.Join(runtimeDir, "state", "test", "pids", service+".pid"))
+		if err != nil {
+			t.Fatalf("second up stopped %s: %v", service, err)
+		}
+		if got := strings.TrimSpace(string(payload)); got != initialPID {
+			t.Errorf("second up restarted %s: pid=%s, want %s", service, got, initialPID)
+		}
+	}
+
+	got := readLines(t, events)
+	want := []string{
+		"start:postgres", "bootstrap:database", "bootstrap:secret-store", "start:gateway", "start:platform", "start:funding-worker", "start:web",
+		"bootstrap:database", "bootstrap:secret-store",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("events after repeated up:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 func TestDevPlatformAllowsOwnedCommandExecBeforeReadiness(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()
