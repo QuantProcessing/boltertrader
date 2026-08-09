@@ -34,6 +34,7 @@ const runtime = (overrides: Partial<RuntimeView> = {}): RuntimeView => ({
 describe("authoritative view models", () => {
   it("requires complete authoritative venue and runtime contracts", () => {
     expectTypeOf<Venue["nativeEnvironment"]>().toEqualTypeOf<NativeEnvironment>();
+    expectTypeOf<Venue["environment"]>().toEqualTypeOf<NativeEnvironment>();
     expectTypeOf<Venue["products"]>().toEqualTypeOf<ProductPolicy[]>();
     expectTypeOf<Venue["credentialSchema"]>().toEqualTypeOf<CredentialSchema>();
     expectTypeOf<Venue["routeProfiles"]>().toEqualTypeOf<RouteProfile[]>();

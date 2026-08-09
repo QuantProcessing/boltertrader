@@ -46,7 +46,7 @@ export interface RouteProfile extends Omit<AccountRoute, "requestedState"> {
 
 export interface Venue {
   venue: string;
-  environment: string;
+  environment: NativeEnvironment;
   nativeEnvironment: NativeEnvironment;
   ready: boolean;
   products: ProductPolicy[];

@@ -139,6 +139,19 @@ describe("AccountsRoute", () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects an invalid venue environment from a runtime catalog fixture", () => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    renderAccounts({
+      venues: [{ ...venues[0], environment: "paper" as Venue["environment"] }],
+      onCreate,
+    });
+
+    expect(screen.getByRole("option", { name: "binance" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsupported venue environment.");
+    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+    expect(onCreate).not.toHaveBeenCalled();
+  });
+
   it("builds a typed v5 account request and clears every credential field", async () => {
     const props = renderAccounts();
 

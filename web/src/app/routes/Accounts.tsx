@@ -29,7 +29,9 @@ type RouteDiagnostic = {
 const accountProducts = (account: Account) => account.productPolicy;
 const accountEnvironment = (account: Account) => account.nativeEnvironment;
 const displayFinding = (value: unknown, fallback?: string) => safeFinding(value, fallback).replaceAll("_", " ");
-const modeCompatible = (venue: Venue, mode: Mode) => mode === "live" ? venue.environment === "live" : venue.environment !== "live";
+const supportedEnvironments = new Set(["demo", "testnet", "live"]);
+const validEnvironment = (venue: Venue) => supportedEnvironments.has(venue.environment);
+const modeCompatible = (venue: Venue, mode: Mode) => validEnvironment(venue) && (mode === "live" ? venue.environment === "live" : venue.environment !== "live");
 const modeConflictFinding = (venue: Venue, mode: Mode) => `Mode conflict: ${venue.environment} venue is unavailable in ${mode === "live" ? "Live" : "Test"} mode.`;
 
 function credentialBundle(venue: Venue, values: Record<string, string>) {
@@ -74,6 +76,7 @@ export function AccountsRoute(props: AccountsProps) {
   const [venueKey, setVenueKey] = useState(initialVenue ? `${initialVenue.venue}:${initialVenue.environment}` : "");
   const selectedVenue = available.find((venue) => `${venue.venue}:${venue.environment}` === venueKey) ?? initialVenue;
   const modeConflict = selectedVenue ? !modeCompatible(selectedVenue, props.mode) : false;
+  const modeFinding = selectedVenue && !validEnvironment(selectedVenue) ? "Unsupported venue environment." : selectedVenue ? modeConflictFinding(selectedVenue, props.mode) : "";
   const schema = selectedVenue?.credentialSchema;
   const profiles = selectedVenue?.routeProfiles ?? [];
   const [displayName, setDisplayName] = useState("");
@@ -222,7 +225,7 @@ export function AccountsRoute(props: AccountsProps) {
         <fieldset><legend>Product policy</legend>{(["funding", "manual"] as const).map((product) => <label className="check-control" key={product}><input aria-label={`${product[0].toUpperCase()}${product.slice(1)} product`} type="checkbox" checked={products.includes(product)} onChange={() => toggle(product, setProducts)} /><span>{product}</span></label>)}</fieldset>
         <fieldset className="route-options"><legend>Routes</legend>{profiles.map((profile) => <label className="check-control" key={profile.routeId}><input aria-label={`${profile.label} route`} type="checkbox" checked={selectedRoutes.includes(profile.routeId)} onChange={() => toggle(profile.routeId, setSelectedRoutes)} /><span>{profile.label}</span></label>)}</fieldset>
         {schema?.fields.map((field) => <label key={field.key}>{field.label}<input type="password" autoComplete="new-password" value={credentials[field.key] ?? ""} onChange={(event) => setCredentials((current) => ({ ...current, [field.key]: event.target.value }))} required /></label>)}
-        {modeConflict && selectedVenue && <div className="finding finding--danger" role="alert">{modeConflictFinding(selectedVenue, props.mode)}</div>}
+        {modeConflict && <div className="finding finding--danger" role="alert">{modeFinding}</div>}
         {formError && <div className="finding finding--danger" role="alert">{formError}</div>}
         <button className="button button--primary button--wide" disabled={props.busy || !selectedVenue || modeConflict || products.length === 0 || selectedRoutes.length === 0}><Plus />Add account</button>
       </form>

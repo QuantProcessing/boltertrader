@@ -38,7 +38,7 @@ export default defineConfig({
   fullyParallel: false,
   use: {
     baseURL,
-    trace: "on-first-retry",
+    trace: "off",
     screenshot: "only-on-failure",
   },
   projects: [

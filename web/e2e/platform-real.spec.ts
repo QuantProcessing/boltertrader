@@ -1,7 +1,15 @@
-import { expect, test } from "@playwright/test";
-// Playwright bundles pngjs for its own screenshot assertions without publishing this internal module's types.
-// @ts-expect-error -- runtime export verified by the installed Playwright package.
-import { PNG } from "playwright-core/lib/utilsBundle";
+import { writeFile } from "node:fs/promises";
+
+import { expect, test, type Page } from "@playwright/test";
+
+import {
+  assertCanaryPixelIsolation,
+  assertNoAuthoritativeAccountWrites,
+  installEventSourceCapture,
+  type BrowserRequestFact,
+  type PixelRect,
+  type RealtimeCapture,
+} from "./real-acceptance-helpers";
 
 const optedIn = process.env.BT_DEV_REAL_BROWSER_ACCEPTANCE === "1";
 const skipReason = "Real-browser acceptance requires BT_DEV_REAL_BROWSER_ACCEPTANCE=1 with exact FT_MODE=test.";
@@ -9,18 +17,35 @@ const forbiddenLabels = ["secretRef", "providerPath", "gatewayToken", "gateway-a
 const credentialCanary = process.env.BT_DEV_REAL_CREDENTIAL_CANARY?.trim() ?? "";
 const credentialSecretCanary = process.env.BT_DEV_REAL_CREDENTIAL_SECRET_CANARY?.trim() ?? "";
 
-function pixelMismatchRatio(before: Buffer, after: Buffer): number {
-  const baseline = PNG.sync.read(before);
-  const result = PNG.sync.read(after);
-  if (baseline.width !== result.width || baseline.height !== result.height) return 1;
-  let mismatches = 0;
-  for (let index = 0; index < baseline.data.length; index += 4) {
-    if (baseline.data[index] !== result.data[index]
-      || baseline.data[index + 1] !== result.data[index + 1]
-      || baseline.data[index + 2] !== result.data[index + 2]
-      || baseline.data[index + 3] !== result.data[index + 3]) mismatches += 1;
+async function captureStableFullPage(page: Page, options: { fullPage: true; path?: string }): Promise<Buffer> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const first = await page.screenshot({ fullPage: options.fullPage });
+    await page.waitForTimeout(80);
+    const second = await page.screenshot({ fullPage: options.fullPage });
+    if (!first.equals(second)) continue;
+    if (options.path) await writeFile(options.path, second);
+    return second;
   }
-  return mismatches / (baseline.width * baseline.height);
+  throw new Error("Full-page rendering did not become deterministic.");
+}
+
+async function credentialPixelRects(page: Page): Promise<PixelRect[]> {
+  const scale = await page.evaluate(() => devicePixelRatio);
+  const scrollY = await page.evaluate(() => window.scrollY);
+  const inputs = page.locator(".account-form input[type=password]");
+  const rects: PixelRect[] = [];
+  for (let index = 0; index < await inputs.count(); index += 1) {
+    const box = await inputs.nth(index).boundingBox();
+    if (!box) throw new Error("Credential input is not visible for pixel validation.");
+    const padding = 4;
+    rects.push({
+      x: Math.floor((box.x - padding) * scale),
+      y: Math.floor((box.y + scrollY - padding) * scale),
+      width: Math.ceil((box.width + padding * 2) * scale),
+      height: Math.ceil((box.height + padding * 2) * scale),
+    });
+  }
+  return rects;
 }
 
 test.skip(!optedIn, skipReason);
@@ -30,26 +55,20 @@ test("real Test platform exposes only redacted account validation and recovery s
   const password = process.env.BT_DEV_REAL_PASSWORD!;
   const harnessURL = process.env.BT_DEV_REAL_TEST_HARNESS_RESNAPSHOT_URL!.trim();
 
+  const browserRequests: BrowserRequestFact[] = [];
   const consoleMessages: string[] = [];
   const responseBodies: string[] = [];
-  const realtimePayloads: string[] = [];
+  const websocketPayloads: string[] = [];
   const responseCaptures: Promise<void>[] = [];
-  await page.addInitScript(() => {
-    const payloads: string[] = [];
-    Object.defineProperty(window, "__btRealtimePayloads", { configurable: false, value: payloads });
-    const nativeAdd = EventSource.prototype.addEventListener as (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => void;
-    EventSource.prototype.addEventListener = function (this: EventSource, type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) {
-      const capture = (event: Event) => {
-        if (event instanceof MessageEvent && typeof event.data === "string") payloads.push(event.data);
-      };
-      nativeAdd.call(this, type, capture, options);
-      nativeAdd.call(this, type, listener, options);
-    } as typeof EventSource.prototype.addEventListener;
+  await page.addInitScript(installEventSourceCapture);
+  page.on("request", (browserRequest) => {
+    const path = new URL(browserRequest.url()).pathname;
+    if (path.startsWith("/api/v1/")) browserRequests.push({ method: browserRequest.method(), path });
   });
   page.on("console", (message) => consoleMessages.push(message.text()));
   page.on("websocket", (socket) => {
-    socket.on("framereceived", (event) => realtimePayloads.push(typeof event.payload === "string" ? event.payload : event.payload.toString("utf8")));
-    socket.on("framesent", (event) => realtimePayloads.push(typeof event.payload === "string" ? event.payload : event.payload.toString("utf8")));
+    socket.on("framereceived", (event) => websocketPayloads.push(typeof event.payload === "string" ? event.payload : event.payload.toString("utf8")));
+    socket.on("framesent", (event) => websocketPayloads.push(typeof event.payload === "string" ? event.payload : event.payload.toString("utf8")));
   });
   page.on("response", (response) => {
     if (!new URL(response.url()).pathname.startsWith("/api/v1/")) return;
@@ -65,28 +84,34 @@ test("real Test platform exposes only redacted account validation and recovery s
   await expect(page.getByRole("heading", { name: "Trading overview" })).toBeVisible();
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
+  await expect(page.getByText("connected", { exact: true })).toBeVisible();
+  await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+  await page.evaluate(async () => { await document.fonts.ready; window.scrollTo(0, 0); (document.activeElement as HTMLElement | null)?.blur(); });
 
   const credentialInputs = page.locator(".account-form input[type=password]");
-  expect(await credentialInputs.count(), "The real Test catalog must expose a credential schema.").toBeGreaterThan(0);
-  const blankCredentialPixels: Buffer[] = [];
-  for (let index = 0; index < await credentialInputs.count(); index += 1) {
-    blankCredentialPixels.push(await credentialInputs.nth(index).screenshot());
-  }
-  await page.getByLabel("Account name").fill(`Browser acceptance ${Date.now()}`);
+  expect(await credentialInputs.count(), "The real Test catalog must expose controlled credential fields.").toBeGreaterThan(0);
+  const allowedRects = await credentialPixelRects(page);
+  const beforePixels = await captureStableFullPage(page, { fullPage: true });
   for (let index = 0; index < await credentialInputs.count(); index += 1) {
     await credentialInputs.nth(index).fill(index === 0 ? credentialCanary : credentialSecretCanary);
   }
-  await page.getByRole("button", { name: "Add account" }).click();
-  for (let index = 0; index < blankCredentialPixels.length; index += 1) {
-    await expect(credentialInputs.nth(index)).toHaveValue("");
-    const clearedPixels = await credentialInputs.nth(index).screenshot();
-    expect(pixelMismatchRatio(blankCredentialPixels[index], clearedPixels), "Credential input did not return to its visually blank state.").toBeLessThan(0.01);
-  }
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  const withCanaryPixels = await captureStableFullPage(page, { fullPage: true });
+  for (let index = 0; index < await credentialInputs.count(); index += 1) await credentialInputs.nth(index).fill("");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  const afterPixels = await captureStableFullPage(page, { fullPage: true, path: testInfo.outputPath("real-accounts-redaction.png") });
+  assertCanaryPixelIsolation(beforePixels, withCanaryPixels, afterPixels, allowedRects);
 
   const validations = page.getByRole("button", { name: /^Retry validation for / });
   if (await validations.count()) {
+    const validationResponse = page.waitForResponse((response) => response.request().method() === "POST" && /^\/api\/v1\/accounts\/[^/]+\/validate$/.test(new URL(response.url()).pathname));
     await validations.first().click();
-    await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
+    await validationResponse;
+  } else {
+    const accountRead = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/v1/accounts");
+    await page.getByRole("button", { name: "Refresh accounts" }).click();
+    await accountRead;
+    await expect(page.getByText("No accounts configured")).toBeVisible();
   }
 
   const authoritativeFacts = page.locator(".account-table");
@@ -98,20 +123,22 @@ test("real Test platform exposes only redacted account validation and recovery s
   await expect.poll(() => authoritativeFacts.innerText(), { timeout: 20_000 }).not.toBe(beforeFacts);
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
 
-  await page.screenshot({ path: testInfo.outputPath("real-accounts-redaction.png"), fullPage: true });
   const storage = await page.evaluate(() => ({
     local: Object.fromEntries(Object.entries(localStorage)),
     session: Object.fromEntries(Object.entries(sessionStorage)),
-    realtime: [...((window as typeof window & { __btRealtimePayloads?: string[] }).__btRealtimePayloads ?? [])],
+    realtime: [...((window as typeof window & { __btRealtimePayloads?: RealtimeCapture[] }).__btRealtimePayloads ?? [])],
   }));
+  expect(storage.realtime.some((capture) => capture.path === "listener"), "EventSource listener capture observed no payload.").toBe(true);
+  expect(storage.realtime.some((capture) => capture.path === "onmessage"), "EventSource onmessage capture observed no payload.").toBe(true);
+  assertNoAuthoritativeAccountWrites(browserRequests);
   await Promise.all(responseCaptures);
   const surfaces = [
     await page.locator("html").innerText(),
     JSON.stringify(storage),
     consoleMessages.join("\n"),
     responseBodies.join("\n"),
-    storage.realtime.join("\n"),
-    realtimePayloads.join("\n"),
+    storage.realtime.map((capture) => capture.data).join("\n"),
+    websocketPayloads.join("\n"),
   ];
   const forbidden = [credentialCanary, credentialSecretCanary, ...forbiddenLabels];
   for (const surface of surfaces) {
