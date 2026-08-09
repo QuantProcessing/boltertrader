@@ -10,7 +10,10 @@ import (
 )
 
 type authorityContract struct {
-	Conventions struct {
+	ContractVersion string              `json:"contractVersion"`
+	Revision        int                 `json:"revision"`
+	StrictMutations map[string][]string `json:"strictMutations"`
+	Conventions     struct {
 		Modes                             []string `json:"modes"`
 		LivePrivateWritesEnabledByDefault bool     `json:"livePrivateWritesEnabledByDefault"`
 	} `json:"conventions"`
@@ -56,6 +59,23 @@ type authorityContract struct {
 			OwnerRole string `json:"ownerRole"`
 		} `json:"databases"`
 	} `json:"runtime"`
+}
+
+func TestV5AccountAndGatewayMutationsAreRouteAware(t *testing.T) {
+	contract := readAuthorityContract(t)
+	if contract.ContractVersion != "boltertrader-product-platform-upgrade/v5" || contract.Revision != 5 {
+		t.Fatalf("contract=%s/r%d", contract.ContractVersion, contract.Revision)
+	}
+	want := map[string][]string{
+		"POST /api/v1/accounts":                                                  {"venue", "displayName", "productPolicy", "routes", "credentialBundle"},
+		"POST /api/v1/accounts/{accountId}/rotate":                               {"credentialBundle"},
+		"PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}": {"operationId", "accountId", "venue", "nativeEnvironment", "secretRef", "desiredStateRevision", "runtimeGeneration", "credentialVersion", "requestedState", "routes"},
+	}
+	for route, fields := range want {
+		if !reflect.DeepEqual(contract.StrictMutations[route], fields) {
+			t.Errorf("%s fields=%v want=%v", route, contract.StrictMutations[route], fields)
+		}
+	}
 }
 
 func TestListenerCredentialsCannotCrossAuthenticate(t *testing.T) {

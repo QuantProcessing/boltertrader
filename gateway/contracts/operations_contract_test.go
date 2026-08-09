@@ -52,6 +52,19 @@ func TestAcceptanceCrosswalkHasExactlyTwentySevenExecutableEntries(t *testing.T)
 	}
 }
 
+func TestAcceptanceCrosswalkFreezesRouteAwareV5Contracts(t *testing.T) {
+	data, err := os.ReadFile("testdata/acceptance_crosswalk.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, testName := range []string{"TestOpenAPIRouteAwarePrivateWriteFences", "TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated", "TestV5AccountAndGatewayMutationsAreRouteAware"} {
+		if !strings.Contains(text, testName) {
+			t.Errorf("acceptance crosswalk missing %s", testName)
+		}
+	}
+}
+
 func TestGatewayOperationsDocsAndMakeTargetsAreComplete(t *testing.T) {
 	for _, path := range []string{
 		"../../docs/guides/exchange-gateway.md",

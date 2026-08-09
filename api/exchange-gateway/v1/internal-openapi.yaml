@@ -126,7 +126,7 @@ components:
         desiredStateRevision: {type: integer, minimum: 1}
         runtimeGeneration: {type: integer, minimum: 1}
         credentialVersion: {type: integer, minimum: 1}
-        requestedState: {type: string, enum: [active, disabled]}
+        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
         routes: {type: array, minItems: 1, maxItems: 32, items: {$ref: '#/components/schemas/DesiredRoute'}}
     WriteFence:
       type: object
@@ -156,17 +156,51 @@ components:
         accountId: {type: string}
         requestedState: {type: string}
         routes: {type: array, items: {$ref: '#/components/schemas/DesiredRoute'}}
-        active: {type: [object, 'null']}
-        pending: {type: [object, 'null']}
+        active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
+        pending: {$ref: '#/components/schemas/PendingSnapshotView'}
     RuntimeView:
       type: object
       additionalProperties: false
       required: [accountId, retiring]
       properties:
         accountId: {type: string}
-        active: {type: [object, 'null']}
-        pending: {type: [object, 'null']}
-        retiring: {type: array, items: {type: object}}
+        active: {$ref: '#/components/schemas/RuntimeSnapshotView'}
+        pending: {$ref: '#/components/schemas/PendingSnapshotView'}
+        retiring: {type: array, items: {$ref: '#/components/schemas/RuntimeSnapshotView'}}
+    RouteRuntimeView:
+      type: object
+      additionalProperties: false
+      required: [routeId, product, routeProfileId, requestedState, ready]
+      properties:
+        routeId: {type: string}
+        product: {type: string, enum: [spot, perp]}
+        settlementAsset: {type: string}
+        routeProfileId: {type: string}
+        requestedState: {type: string, enum: [active, disabled]}
+        ready: {type: boolean}
+        reason: {type: string}
+    RuntimeSnapshotView:
+      type: object
+      additionalProperties: false
+      required: [desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes]
+      properties:
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
+    PendingSnapshotView:
+      type: object
+      additionalProperties: false
+      required: [desiredStateRevision, runtimeGeneration, credentialVersion, requestedState, routes, state]
+      properties:
+        desiredStateRevision: {type: integer, minimum: 1}
+        runtimeGeneration: {type: integer, minimum: 1}
+        credentialVersion: {type: integer, minimum: 1}
+        requestedState: {type: string, enum: [creating, active, rotating, draining, drained, disabled, removing, removed]}
+        routes: {type: array, items: {$ref: '#/components/schemas/RouteRuntimeView'}}
+        state: {type: string, enum: [prepared, building, ready, blocked]}
+        reason: {type: string}
     RuntimeAccount:
       type: object
       additionalProperties: false

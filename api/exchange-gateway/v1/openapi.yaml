@@ -78,10 +78,16 @@ paths:
     patch:
       operationId: amendOrder
       parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AmendOrderRequest'}}}
       responses: {'501': {description: unsupported capability}, default: {$ref: '#/components/responses/Error'}}
     delete:
       operationId: cancelOrder
       parameters: [{name: gateway_order_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CancelOrderRequest'}}}
       responses: {'202': {description: cancel accepted}, default: {$ref: '#/components/responses/Error'}}
   /v1/open-orders:
     get:
@@ -296,6 +302,30 @@ components:
         limit_price: {type: string}
         limit_policy: {type: string, enum: [resting, ioc, post_only]}
         reduce_only: {type: boolean}
+        desired_state_revision: {type: integer, minimum: 1}
+        runtime_generation: {type: integer, minimum: 1}
+        credential_version: {type: integer, minimum: 1}
+    AmendOrderRequest:
+      type: object
+      required: [account_id, route_id, idempotency_key, desired_state_revision, runtime_generation, credential_version]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        route_id: {type: string}
+        idempotency_key: {type: string}
+        quantity: {type: string}
+        limit_price: {type: string}
+        desired_state_revision: {type: integer, minimum: 1}
+        runtime_generation: {type: integer, minimum: 1}
+        credential_version: {type: integer, minimum: 1}
+    CancelOrderRequest:
+      type: object
+      required: [account_id, route_id, idempotency_key, desired_state_revision, runtime_generation, credential_version]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        route_id: {type: string}
+        idempotency_key: {type: string}
         desired_state_revision: {type: integer, minimum: 1}
         runtime_generation: {type: integer, minimum: 1}
         credential_version: {type: integer, minimum: 1}

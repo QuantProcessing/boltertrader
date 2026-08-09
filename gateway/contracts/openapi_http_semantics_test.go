@@ -3,6 +3,7 @@ package contracts
 import (
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -107,6 +108,51 @@ func TestOpenAPIDocumentsImplementedFiltersPaginationBodiesAndStatuses(t *testin
 		sort.Strings(want)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s statuses=%v want=%v", key, got, want)
+		}
+	}
+}
+
+func TestOpenAPIRouteAwarePrivateWriteFences(t *testing.T) {
+	data, err := os.ReadFile("../../api/exchange-gateway/v1/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	paths := document["paths"].(map[string]any)
+	for _, write := range []struct {
+		path, method, schema string
+	}{
+		{"/v1/orders", "post", "PlaceOrderRequest"},
+		{"/v1/orders/{gateway_order_id}", "patch", "AmendOrderRequest"},
+		{"/v1/orders/{gateway_order_id}", "delete", "CancelOrderRequest"},
+	} {
+		operation := paths[write.path].(map[string]any)[write.method].(map[string]any)
+		body, ok := operation["requestBody"].(map[string]any)
+		if !ok || body["required"] != true {
+			t.Errorf("%s %s must require a body", write.method, write.path)
+			continue
+		}
+		content := body["content"].(map[string]any)["application/json"].(map[string]any)
+		if got := content["schema"].(map[string]any)["$ref"]; got != "#/components/schemas/"+write.schema {
+			t.Errorf("%s %s schema=%v", write.method, write.path, got)
+		}
+	}
+	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
+	wantFence := []string{"account_id", "credential_version", "desired_state_revision", "route_id", "runtime_generation"}
+	for _, name := range []string{"PlaceOrderRequest", "AmendOrderRequest", "CancelOrderRequest"} {
+		schema, ok := schemas[name].(map[string]any)
+		if !ok {
+			t.Errorf("missing schema %s", name)
+			continue
+		}
+		required := stringSlice(schema["required"])
+		for _, field := range wantFence {
+			if !slices.Contains(required, field) {
+				t.Errorf("schema %s does not require %s: %v", name, field, required)
+			}
 		}
 	}
 }

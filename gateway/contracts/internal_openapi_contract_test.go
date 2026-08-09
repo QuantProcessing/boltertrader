@@ -16,6 +16,7 @@ type internalSchema struct {
 	AdditionalProperties any                       `yaml:"additionalProperties"`
 	Required             []string                  `yaml:"required"`
 	Properties           map[string]internalSchema `yaml:"properties"`
+	Items                *internalSchema           `yaml:"items"`
 }
 
 type internalResponse struct {
@@ -146,6 +147,12 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 	if !reflect.DeepEqual(desired.Required, wantDesired) {
 		t.Fatalf("DesiredApplyRequest required=%v want=%v", desired.Required, wantDesired)
 	}
+	wantStates := []string{"active", "creating", "disabled", "drained", "draining", "removed", "removing", "rotating"}
+	gotStates := desired.Properties["requestedState"].Enum
+	sort.Strings(gotStates)
+	if !reflect.DeepEqual(gotStates, wantStates) {
+		t.Errorf("DesiredApplyRequest requestedState=%v want=%v", gotStates, wantStates)
+	}
 	for _, name := range []string{"DesiredRuntimeView", "RuntimeView"} {
 		schema := document.Components.Schemas[name]
 		for _, forbidden := range []string{"secretRef", "previousSecretRef", "credentialBundle", "providerPath", "gatewayToken"} {
@@ -153,6 +160,20 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 				t.Errorf("response schema %s exposes %s", name, forbidden)
 			}
 		}
+	}
+	for _, name := range []string{"RouteRuntimeView", "RuntimeSnapshotView", "PendingSnapshotView"} {
+		schema := document.Components.Schemas[name]
+		if schema.AdditionalProperties != false || len(schema.Properties) == 0 {
+			t.Errorf("redacted schema %s is not strict: %+v", name, schema)
+		}
+	}
+	desiredView := document.Components.Schemas["DesiredRuntimeView"]
+	if desiredView.Properties["active"].Ref != "#/components/schemas/RuntimeSnapshotView" || desiredView.Properties["pending"].Ref != "#/components/schemas/PendingSnapshotView" {
+		t.Errorf("DesiredRuntimeView snapshot refs=%+v", desiredView.Properties)
+	}
+	runtimeView := document.Components.Schemas["RuntimeView"]
+	if runtimeView.Properties["active"].Ref != "#/components/schemas/RuntimeSnapshotView" || runtimeView.Properties["pending"].Ref != "#/components/schemas/PendingSnapshotView" || runtimeView.Properties["retiring"].Items == nil || runtimeView.Properties["retiring"].Items.Ref != "#/components/schemas/RuntimeSnapshotView" {
+		t.Errorf("RuntimeView snapshot refs=%+v", runtimeView.Properties)
 	}
 	wantErrors := []string{
 		"CANDIDATE_NOT_READY", "HANDOFF_DRAIN_BLOCKED", "LIVE_WRITE_DISABLED", "OPERATION_ID_CONFLICT",

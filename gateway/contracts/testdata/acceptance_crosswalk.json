@@ -18,7 +18,7 @@
     },
     {
       "id": "GW-AC04",
-      "tests": ["TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder", "FuzzStrictJSONDecoder"],
+      "tests": ["TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder", "FuzzStrictJSONDecoder", "TestOpenAPIRouteAwarePrivateWriteFences"],
       "evidence": ["make test-gateway-offline", ".omx/evidence/exchange-gateway/g006-rest-api.md"]
     },
     {
@@ -113,7 +113,7 @@
     },
     {
       "id": "GW-AC23",
-      "tests": ["TestGatewayProductionImportBoundary", "TestGatewayOperationsDocsAndMakeTargetsAreComplete"],
+      "tests": ["TestGatewayProductionImportBoundary", "TestGatewayOperationsDocsAndMakeTargetsAreComplete", "TestV5AccountAndGatewayMutationsAreRouteAware"],
       "evidence": ["make test-gateway-security", ".omx/evidence/exchange-gateway/g003-process-foundation.md"]
     },
     {
@@ -128,7 +128,7 @@
     },
     {
       "id": "GW-AC26",
-      "tests": ["TestOpenAPIInventoryAndSecurityAreStructurallyFrozen", "TestOpenAPIPrivateEventDocumentsEnvelopeAndClosedKinds"],
+      "tests": ["TestOpenAPIInventoryAndSecurityAreStructurallyFrozen", "TestOpenAPIPrivateEventDocumentsEnvelopeAndClosedKinds", "TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated"],
       "evidence": ["make test-gateway-security", ".omx/evidence/exchange-gateway/g007-private-websocket-events.md"]
     },
     {
