@@ -153,8 +153,14 @@ func TestManagerPrivateStreamStateParticipatesInWriteReadiness(t *testing.T) {
 	if err := manager.SetPrivateStreamState("good", true, ""); err != nil {
 		t.Fatal(err)
 	}
+	if status, err := manager.Status("good"); err != nil || status.WriteReady || status.Reason != ReasonPrivateStreamStarting {
+		t.Fatalf("reconnected-before-barrier status=%+v err=%v", status, err)
+	}
+	if err := manager.ObservePrivateStreamBarrier("good", "snapshot-1", 42); err != nil {
+		t.Fatal(err)
+	}
 	if status, err := manager.Status("good"); err != nil || !status.WriteReady || status.Reason != "" {
-		t.Fatalf("recovered status=%+v err=%v", status, err)
+		t.Fatalf("barrier-complete status=%+v err=%v", status, err)
 	}
 	if err := manager.SetPrivateStreamState("missing", false, ReasonPrivateStreamGap); !errors.Is(err, ErrUnknownAccount) {
 		t.Fatalf("unknown account error=%v", err)

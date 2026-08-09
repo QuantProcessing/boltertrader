@@ -51,6 +51,7 @@ type Options struct {
 	RuntimeGroupBuilder RuntimeGroupBuilder
 	CredentialResolver  ScopedCredentialResolver
 	ProfileRegistry     *ProfileRegistry
+	RuntimeStore        RuntimeStateStore
 }
 
 type RuntimeMode string
@@ -168,6 +169,7 @@ type Manager struct {
 	groupBuilder       RuntimeGroupBuilder
 	credentialResolver ScopedCredentialResolver
 	profileRegistry    *ProfileRegistry
+	runtimeStore       RuntimeStateStore
 }
 
 type entry struct {
@@ -176,6 +178,8 @@ type entry struct {
 	handle              clientHandle
 	privateStreamReady  bool
 	privateStreamReason string
+	privateSnapshotID   string
+	privateSequence     uint64
 }
 
 type clientHandle interface {
@@ -219,6 +223,7 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 		groupBuilder:       options.RuntimeGroupBuilder,
 		credentialResolver: options.CredentialResolver,
 		profileRegistry:    options.ProfileRegistry,
+		runtimeStore:       options.RuntimeStore,
 	}
 	if manager.runtimeMode == "" {
 		manager.runtimeMode = RuntimeModeTest
@@ -436,8 +441,43 @@ func (manager *Manager) SetPrivateStreamState(accountID domain.AccountID, ready 
 	if !ok {
 		return ErrUnknownAccount
 	}
-	entry.privateStreamReady = ready
-	entry.privateStreamReason = reason
+	if ready {
+		entry.privateStreamReady = false
+		entry.privateStreamReason = ReasonPrivateStreamStarting
+		entry.privateSnapshotID = ""
+		entry.privateSequence = 0
+	} else {
+		entry.privateStreamReady = false
+		entry.privateStreamReason = reason
+		entry.privateSnapshotID = ""
+		entry.privateSequence = 0
+	}
+	return nil
+}
+
+func (manager *Manager) ObservePrivateStreamBarrier(accountID domain.AccountID, snapshotID string, sequence uint64) error {
+	if err := accountID.Validate(); err != nil {
+		return err
+	}
+	if snapshotID == "" || snapshotID != strings.TrimSpace(snapshotID) || len(snapshotID) > 256 || strings.ContainsAny(snapshotID, "\n\r\t") || sequence == 0 {
+		return fmt.Errorf("private stream barrier is invalid")
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.closed {
+		return ErrManagerClosed
+	}
+	entry, ok := manager.entries[accountID]
+	if !ok {
+		return ErrUnknownAccount
+	}
+	if entry.privateStreamReason != ReasonPrivateStreamStarting {
+		return fmt.Errorf("private stream barrier is not expected")
+	}
+	entry.privateSnapshotID = snapshotID
+	entry.privateSequence = sequence
+	entry.privateStreamReady = true
+	entry.privateStreamReason = ""
 	return nil
 }
 
