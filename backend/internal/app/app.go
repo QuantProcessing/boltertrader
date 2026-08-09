@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -52,6 +53,7 @@ type App struct {
 	reconciler    *orders.Reconciler
 	reconcileStop context.CancelFunc
 	reconcileDone chan struct{}
+	secretReady   bool
 }
 
 type Dependencies struct {
@@ -154,6 +156,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
+	secretReady := secretStore.Readiness(context.Background()) == nil
 	auditService, err := audit.New(auditStore, nil, randomID("audit"))
 	if err != nil {
 		return nil, err
@@ -198,7 +201,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	}
 	readiness := platformsystem.NewReadiness()
 	databaseReady := dependencies.Database != nil
-	secretReady := dependencies.SecretProvider != nil
 	readiness.Update("process", readinessComponent(true, ""))
 	readiness.Update("database", readinessComponent(databaseReady, "database_dependency_missing"))
 	readiness.Update("secretStore", readinessComponent(secretReady, "secret_provider_missing"))
@@ -343,12 +345,13 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return readinessComponent(workService.AnyWorkerReady(), "worker_not_ready")
 	})
 	return &App{
-		cfg:        cfg,
-		contract:   contract,
-		accounts:   accountService,
-		browser:    &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		work:       &http.Server{Addr: cfg.WorkListenAddr, Handler: workHandler},
-		reconciler: reconciliationRunner,
+		cfg:         cfg,
+		contract:    contract,
+		accounts:    accountService,
+		browser:     &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
+		work:        &http.Server{Addr: cfg.WorkListenAddr, Handler: workHandler},
+		reconciler:  reconciliationRunner,
+		secretReady: secretReady,
 	}, nil
 }
 
@@ -408,6 +411,9 @@ func readinessComponent(ready bool, missingReason string) platformsystem.Compone
 }
 
 func (a *App) Start(ctx context.Context) error {
+	if !a.secretReady {
+		return fmt.Errorf("Secret Store is unavailable")
+	}
 	var err error
 	a.startOnce.Do(func() {
 		a.browserLn, err = net.Listen("tcp", a.cfg.BrowserListenAddr)
@@ -490,11 +496,39 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
+	credentialProvider, err := newProductionSecretProvider(cfg)
+	if err != nil {
+		return err
+	}
+	defer credentialProvider.Close()
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter})
 	if err != nil {
 		return err
 	}
 	return app.Start(ctx)
+}
+
+type commandKeychainRunner struct{}
+
+func (commandKeychainRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+func newProductionSecretProvider(cfg config.Config) (*secretstore.FilesystemProvider, error) {
+	var source secretstore.KeySource
+	switch cfg.SecretKeySource {
+	case "file":
+		source = secretstore.FileKeySource{Path: cfg.SecretMasterKeyFile}
+	case "keychain":
+		source = secretstore.KeychainSource{Service: cfg.SecretKeychainService, Account: cfg.SecretKeychainAccount, Runner: commandKeychainRunner{}}
+	default:
+		return nil, fmt.Errorf("Secret Store key source is invalid")
+	}
+	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: cfg.SecretStoreDir, Mode: secretstore.Mode(cfg.Mode), KeySource: source})
+	if err != nil {
+		return nil, fmt.Errorf("initialize Secret Store: %w", err)
+	}
+	return provider, nil
 }
 
 func loadContract() (backendcontract.Contract, error) {

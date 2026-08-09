@@ -43,11 +43,14 @@ func RegisterAccountRoutes(mux *http.ServeMux, options AccountRoutesOptions) err
 type accountRoutes struct{ options AccountRoutesOptions }
 
 type createAccountRequest struct {
-	Venue            string                       `json:"venue"`
-	VenueEnvironment platformaccounts.Environment `json:"venueEnvironment"`
-	DisplayName      string                       `json:"displayName"`
-	ProductIDs       []string                     `json:"productIds"`
-	SecretMaterial   json.RawMessage              `json:"secretMaterial"`
+	Venue            string                          `json:"venue"`
+	VenueEnvironment platformaccounts.Environment    `json:"venueEnvironment"`
+	DisplayName      string                          `json:"displayName"`
+	ProductIDs       []string                        `json:"productIds"`
+	ProductPolicy    []string                        `json:"productPolicy"`
+	Routes           []platformaccounts.AccountRoute `json:"routes"`
+	CredentialBundle json.RawMessage                 `json:"credentialBundle"`
+	SecretMaterial   json.RawMessage                 `json:"secretMaterial"`
 }
 
 type updateAccountRequest struct {
@@ -56,7 +59,8 @@ type updateAccountRequest struct {
 }
 
 type rotateAccountRequest struct {
-	SecretMaterial json.RawMessage `json:"secretMaterial"`
+	CredentialBundle json.RawMessage `json:"credentialBundle"`
+	SecretMaterial   json.RawMessage `json:"secretMaterial"`
 }
 
 func (routes *accountRoutes) list(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +105,8 @@ func (routes *accountRoutes) create(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, SecretMaterial: request.SecretMaterial}, principal)
+	account, err := routes.options.Service.Create(r.Context(), platformaccounts.CreateRequest{Venue: request.Venue, VenueEnvironment: request.VenueEnvironment, DisplayName: request.DisplayName, ProductIDs: request.ProductIDs, ProductPolicy: request.ProductPolicy, Routes: request.Routes, CredentialBundle: request.CredentialBundle, SecretMaterial: request.SecretMaterial}, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	clear(request.CredentialBundle)
 	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
@@ -167,7 +172,12 @@ func (routes *accountRoutes) rotate(w http.ResponseWriter, r *http.Request) {
 		routes.validationFailure(w, r, err)
 		return
 	}
-	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, request.SecretMaterial, principal)
+	bundle := request.CredentialBundle
+	if len(bundle) == 0 {
+		bundle = request.SecretMaterial
+	}
+	account, err := routes.options.Service.Rotate(r.Context(), r.PathValue("accountId"), revision, bundle, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
+	clear(request.CredentialBundle)
 	clear(request.SecretMaterial)
 	if err != nil {
 		routes.failure(w, r, err)
@@ -234,7 +244,7 @@ func (routes *accountRoutes) remove(w http.ResponseWriter, r *http.Request) {
 		routes.failure(w, r, platformaccounts.ErrAccountBlocked)
 		return
 	}
-	account, err := routes.options.Service.Remove(r.Context(), r.PathValue("accountId"), revision, principal)
+	account, err := routes.options.Service.Remove(r.Context(), r.PathValue("accountId"), revision, principal, strings.TrimSpace(r.Header.Get("Idempotency-Key")))
 	if err != nil {
 		routes.failure(w, r, err)
 		return

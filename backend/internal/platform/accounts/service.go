@@ -26,6 +26,10 @@ type SecretCleaner interface {
 	Delete(context.Context, string) error
 }
 
+type SecretOperationLookup interface {
+	LookupOperation(context.Context, secretstore.OperationID) (string, error)
+}
+
 type AuditRecord struct {
 	PrincipalID string    `json:"principalId"`
 	Action      string    `json:"action"`
@@ -46,6 +50,9 @@ type Options struct {
 	Now         func() time.Time
 	ID          func() string
 	OperationID func() secretstore.OperationID
+	Gateway     GatewayDesiredClient
+	Mode        secretstore.Mode
+	Hooks       LifecycleHooks
 }
 
 type Service struct {
@@ -55,6 +62,9 @@ type Service struct {
 	now         func() time.Time
 	id          func() string
 	operationID func() secretstore.OperationID
+	gateway     GatewayDesiredClient
+	mode        secretstore.Mode
+	Hooks       LifecycleHooks
 }
 
 func New(options Options) (*Service, error) {
@@ -74,10 +84,20 @@ func New(options Options) (*Service, error) {
 	if options.OperationID == nil {
 		options.OperationID = func() secretstore.OperationID { return secretstore.OperationID(uuid.NewString()) }
 	}
-	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID, operationID: options.OperationID}, nil
+	if options.Mode == "" {
+		options.Mode = secretstore.ModeTest
+	}
+	return &Service{store: options.Store, secrets: options.Secrets, audit: options.Audit, now: options.Now, id: options.ID, operationID: options.OperationID, gateway: options.Gateway, mode: options.Mode, Hooks: options.Hooks}, nil
 }
 
-func (service *Service) Create(ctx context.Context, request CreateRequest, principalID string) (Account, error) {
+func (service *Service) Create(ctx context.Context, request CreateRequest, principalID string, idempotencyKey ...string) (Account, error) {
+	if len(idempotencyKey) > 0 && idempotencyKey[0] != "" && (len(request.Routes) > 0 || len(request.CredentialBundle) > 0) {
+		return service.createDurable(ctx, request, principalID, idempotencyKey[0])
+	}
+	return service.createLegacy(ctx, request, principalID)
+}
+
+func (service *Service) createLegacy(ctx context.Context, request CreateRequest, principalID string) (Account, error) {
 	if err := validateCreate(request); err != nil {
 		return Account{}, err
 	}
@@ -127,7 +147,7 @@ func (service *Service) Activate(ctx context.Context, id string, revision int64,
 	return service.transition(ctx, id, revision, StateActive, principalID, "account.activate", nil)
 }
 
-func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string) (Account, error) {
+func (service *Service) Rotate(ctx context.Context, id string, revision int64, secretMaterial []byte, principalID string, _ ...string) (Account, error) {
 	if len(secretMaterial) == 0 {
 		return Account{}, errors.New("secret material is required")
 	}
@@ -175,7 +195,7 @@ func (service *Service) Disable(ctx context.Context, id string, revision int64, 
 	return service.transition(ctx, id, revision, StateDisabled, principalID, "account.disable", nil)
 }
 
-func (service *Service) Remove(ctx context.Context, id string, revision int64, principalID string) (Account, error) {
+func (service *Service) Remove(ctx context.Context, id string, revision int64, principalID string, _ ...string) (Account, error) {
 	return service.transition(ctx, id, revision, StateRemoving, principalID, "account.remove", nil)
 }
 

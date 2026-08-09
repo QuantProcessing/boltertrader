@@ -29,6 +29,31 @@ func TestLoadRequiresProtectedCredentialsAndKeepsOnlyTokenDigest(t *testing.T) {
 	}
 }
 
+func TestSecretStoreConfigurationIsExplicitAndModeScoped(t *testing.T) {
+	setValidEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SecretKeySource != "file" || cfg.SecretStoreNamespace != "boltertrader/test" || !filepath.IsAbs(cfg.SecretStoreDir) {
+		t.Fatalf("secret config=%+v", cfg)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"relative store":       func(value *Config) { value.SecretStoreDir = "relative" },
+		"cross mode namespace": func(value *Config) { value.SecretStoreNamespace = "boltertrader/live" },
+		"unsupported version":  func(value *Config) { value.SecretMasterKeyVersion = "v2" },
+		"mixed branches":       func(value *Config) { value.SecretKeychainService = "service" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cfg
+			mutate(&changed)
+			if err := changed.Validate(); err == nil {
+				t.Fatal("Validate succeeded")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnsafeManualPreviewSigningKeys(t *testing.T) {
 	t.Run("inline", func(t *testing.T) {
 		setValidEnvironment(t)
@@ -217,6 +242,16 @@ func setValidEnvironment(t *testing.T) {
 	t.Setenv(GatewayURLEnv, "http://127.0.0.1:18082")
 	t.Setenv(GatewayTokenFileEnv, gatewayPath)
 	setManualPreviewKeyFile(t, "test", strings.Repeat("manual-preview-key-", 2), 0o600)
+	secretRoot := t.TempDir()
+	secretKey := filepath.Join(secretRoot, "secret-store-master.key")
+	if err := os.WriteFile(secretKey, []byte(strings.Repeat("01", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(SecretKeySourceEnv, "file")
+	t.Setenv(SecretStoreDirEnv, filepath.Join(secretRoot, "secret-store"))
+	t.Setenv(SecretStoreNamespaceEnv, "boltertrader/test")
+	t.Setenv(SecretMasterKeyVersionEnv, "v1")
+	t.Setenv(SecretMasterKeyFileEnv, secretKey)
 }
 
 func setManualPreviewKeyFile(t *testing.T, mode, value string, permission os.FileMode) {
@@ -255,6 +290,8 @@ func clearEnvironment(t *testing.T) {
 		"BT_MANUAL_PREVIEW_SIGNING_KEY", ManualPreviewSigningKeyFileEnv,
 		LivePrivateWritesEnabledEnv,
 		FundingLiveEnabledEnv, FundingLiveMaxNotionalEnv,
+		SecretKeySourceEnv, SecretStoreDirEnv, SecretStoreNamespaceEnv, SecretMasterKeyVersionEnv,
+		SecretMasterKeyFileEnv, SecretKeychainServiceEnv, SecretKeychainAccountEnv,
 	} {
 		t.Setenv(key, "")
 	}

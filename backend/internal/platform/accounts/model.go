@@ -167,6 +167,9 @@ type CreateRequest struct {
 	DisplayName      string
 	ProductIDs       []string
 	SecretMaterial   []byte
+	ProductPolicy    []string
+	Routes           []AccountRoute
+	CredentialBundle []byte
 }
 
 type Blockers struct {

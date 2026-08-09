@@ -23,6 +23,13 @@ const (
 	FundingLiveEnabledEnv          = "BT_FUNDING_LIVE_ENABLED"
 	FundingLiveMaxNotionalEnv      = "BT_FUNDING_LIVE_MAX_NOTIONAL"
 	LivePrivateWritesEnabledEnv    = "BT_LIVE_PRIVATE_WRITES_ENABLED"
+	SecretKeySourceEnv             = "BT_SECRET_KEY_SOURCE"
+	SecretStoreDirEnv              = "BT_SECRET_STORE_DIR"
+	SecretStoreNamespaceEnv        = "BT_SECRET_STORE_NAMESPACE"
+	SecretMasterKeyVersionEnv      = "BT_SECRET_MASTER_KEY_VERSION"
+	SecretMasterKeyFileEnv         = "BT_SECRET_MASTER_KEY_FILE"
+	SecretKeychainServiceEnv       = "BT_SECRET_KEYCHAIN_SERVICE"
+	SecretKeychainAccountEnv       = "BT_SECRET_KEYCHAIN_ACCOUNT"
 )
 
 type Config struct {
@@ -43,6 +50,13 @@ type Config struct {
 	DatabaseRole                string
 	FundingLiveEnabled          bool
 	FundingLiveMaxNotional      string
+	SecretKeySource             string
+	SecretStoreDir              string
+	SecretStoreNamespace        string
+	SecretMasterKeyVersion      string
+	SecretMasterKeyFile         string
+	SecretKeychainService       string
+	SecretKeychainAccount       string
 }
 
 func Load() (Config, error) {
@@ -70,6 +84,16 @@ func Load() (Config, error) {
 		DatabaseRole:                strings.TrimSpace(os.Getenv("BT_PLATFORM_DATABASE_ROLE")),
 		FundingLiveEnabled:          fundingLiveEnabled,
 		FundingLiveMaxNotional:      strings.TrimSpace(os.Getenv(FundingLiveMaxNotionalEnv)),
+		SecretKeySource:             strings.TrimSpace(os.Getenv(SecretKeySourceEnv)),
+		SecretStoreDir:              strings.TrimSpace(os.Getenv(SecretStoreDirEnv)),
+		SecretStoreNamespace:        strings.TrimSpace(os.Getenv(SecretStoreNamespaceEnv)),
+		SecretMasterKeyVersion:      strings.TrimSpace(os.Getenv(SecretMasterKeyVersionEnv)),
+		SecretMasterKeyFile:         strings.TrimSpace(os.Getenv(SecretMasterKeyFileEnv)),
+		SecretKeychainService:       strings.TrimSpace(os.Getenv(SecretKeychainServiceEnv)),
+		SecretKeychainAccount:       strings.TrimSpace(os.Getenv(SecretKeychainAccountEnv)),
+	}
+	if cfg.SecretKeySource == "" {
+		return Config{}, fmt.Errorf("%s is required", SecretKeySourceEnv)
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(LivePrivateWritesEnabledEnv))) {
 	case "", "false":
@@ -181,6 +205,29 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.LivePrivateWritesEnabled && cfg.Mode != "live" {
 		return fmt.Errorf("%s is valid only when BT_MODE=live", LivePrivateWritesEnabledEnv)
+	}
+	if cfg.SecretKeySource != "" {
+		if !filepath.IsAbs(cfg.SecretStoreDir) {
+			return fmt.Errorf("%s must be absolute", SecretStoreDirEnv)
+		}
+		if cfg.SecretStoreNamespace != "boltertrader/"+cfg.Mode {
+			return fmt.Errorf("%s must match BT_MODE", SecretStoreNamespaceEnv)
+		}
+		if cfg.SecretMasterKeyVersion != "v1" {
+			return fmt.Errorf("%s must be v1", SecretMasterKeyVersionEnv)
+		}
+		switch cfg.SecretKeySource {
+		case "file":
+			if !filepath.IsAbs(cfg.SecretMasterKeyFile) || cfg.SecretKeychainService != "" || cfg.SecretKeychainAccount != "" {
+				return fmt.Errorf("file Secret Store key source is invalid")
+			}
+		case "keychain":
+			if cfg.SecretMasterKeyFile != "" || cfg.SecretKeychainService == "" || cfg.SecretKeychainAccount == "" {
+				return fmt.Errorf("keychain Secret Store key source is invalid")
+			}
+		default:
+			return fmt.Errorf("%s must be file or keychain", SecretKeySourceEnv)
+		}
 	}
 	return nil
 }
