@@ -148,6 +148,9 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 	if err != nil || route.validate() != nil || !route.WriteReady || route.CheckWriteFence == nil {
 		return Result{}, ErrWriteNotReady
 	}
+	if route.RouteID != "" && route.RouteID != request.RouteID {
+		return Result{}, ErrWriteNotReady
+	}
 	payload, payloadHash, err := canonicalPlacePayload(request)
 	if err != nil {
 		return Result{}, err
@@ -192,7 +195,7 @@ func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest)
 		return result, err
 	}
 	preparedRequest.ClientOrderID = reserved.ClientOrderID
-	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest, request.WriteFence)
+	result, err = coordinator.dispatch(ctx, route, prepared, preparedRequest, request.RouteID, request.WriteFence)
 	if err != nil {
 		markAccountNotReady(gate)
 	}
@@ -587,15 +590,27 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 		if route.CheckWriteFence == nil || validateWriteFence(fence, command.AccountID) != nil {
 			return false, ErrWriteNotReady
 		}
-		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, fence)
+		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, payload.RouteID, fence)
 		return dispatchErr == nil && result.State != domain.StateUncertain, dispatchErr
 	}
 	return coordinator.reconcile(ctx, route, command)
 }
 
-func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, fence account.WriteFence) (Result, error) {
+func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepared store.StoredCommand, request exchange.PlaceOrderRequest, routeID domain.RouteID, fence account.WriteFence) (Result, error) {
 	if route.CheckWriteFence == nil || validateWriteFence(fence, prepared.AccountID) != nil {
 		return resultFromStored(prepared), ErrWriteNotReady
+	}
+	var lease account.HandoffLease
+	if route.Admission != nil {
+		var err error
+		lease, err = route.Admission.Acquire(domain.WriteFence{AccountFence: domain.AccountFence{
+			AccountID: fence.AccountID, DesiredStateRevision: fence.DesiredStateRevision,
+			RuntimeGeneration: fence.RuntimeGeneration, CredentialVersion: fence.CredentialVersion,
+		}, RouteID: routeID})
+		if err != nil {
+			return resultFromStored(prepared), ErrWriteNotReady
+		}
+		defer lease.Release()
 	}
 	eventID, err := coordinator.identity.EventID()
 	if err != nil {

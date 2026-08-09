@@ -77,21 +77,46 @@ type GenerationAdmission struct {
 	closed   bool
 	inflight int
 	drained  chan struct{}
+	fence    domain.AccountFence
+	routes   map[domain.RouteID]struct{}
 }
 
 func NewGenerationAdmission() *GenerationAdmission {
 	return &GenerationAdmission{drained: make(chan struct{})}
 }
 
-func (admission *GenerationAdmission) acquire() (func(), error) {
+type HandoffLease interface{ Release() }
+
+type handoffLease struct {
+	release func()
+}
+
+func (lease *handoffLease) Release() { lease.release() }
+
+func newGenerationAdmission(snapshot store.DesiredSnapshot) *GenerationAdmission {
+	admission := NewGenerationAdmission()
+	admission.fence = snapshot.Fence
+	admission.routes = make(map[domain.RouteID]struct{}, len(snapshot.Routes))
+	for _, route := range snapshot.Routes {
+		if route.RequestedState == store.RouteActive {
+			admission.routes[route.RouteID] = struct{}{}
+		}
+	}
+	return admission
+}
+
+func (admission *GenerationAdmission) Acquire(fence domain.WriteFence) (HandoffLease, error) {
 	admission.mu.Lock()
 	defer admission.mu.Unlock()
-	if admission.closed {
+	if admission.closed || fence.AccountFence != admission.fence {
+		return nil, ErrRuntimeBlocked
+	}
+	if _, ok := admission.routes[fence.RouteID]; !ok {
 		return nil, ErrRuntimeBlocked
 	}
 	admission.inflight++
 	var once sync.Once
-	return func() {
+	return &handoffLease{release: func() {
 		once.Do(func() {
 			admission.mu.Lock()
 			admission.inflight--
@@ -100,7 +125,7 @@ func (admission *GenerationAdmission) acquire() (func(), error) {
 			}
 			admission.mu.Unlock()
 		})
-	}, nil
+	}}, nil
 }
 
 func (admission *GenerationAdmission) CloseAndWait(ctx context.Context) error {
@@ -162,7 +187,7 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	group := &RuntimeGroup{
 		Snapshot:  pending.DesiredSnapshot,
 		Routes:    make(map[domain.RouteID]*RouteRuntime, len(pending.Routes)),
-		Admission: NewGenerationAdmission(),
+		Admission: newGenerationAdmission(pending.DesiredSnapshot),
 		State:     GroupCandidate,
 	}
 	for _, definition := range pending.Routes {
@@ -192,17 +217,30 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	return group, nil
 }
 
-func (manager *Manager) PublishPromoted(_ context.Context, group *RuntimeGroup, promotedFence domain.AccountFence) error {
+func (manager *Manager) PublishPromoted(ctx context.Context, group *RuntimeGroup, promotedFence domain.AccountFence) error {
 	if group == nil || group.State != GroupCandidate || group.Snapshot.Fence != promotedFence {
 		return ErrCandidateMismatch
 	}
 	manager.groupMu.Lock()
-	defer manager.groupMu.Unlock()
 	runtime := manager.groups[group.Snapshot.AccountID]
 	if runtime == nil || runtime.candidate != group {
+		manager.groupMu.Unlock()
 		return ErrCandidateMismatch
 	}
-	if old := runtime.activeGroup; old != nil {
+	old := runtime.activeGroup
+	manager.groupMu.Unlock()
+	if old != nil {
+		if err := old.Admission.CloseAndWait(ctx); err != nil {
+			return err
+		}
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime = manager.groups[group.Snapshot.AccountID]
+	if runtime == nil || runtime.candidate != group || runtime.activeGroup != old {
+		return ErrCandidateMismatch
+	}
+	if old != nil {
 		old.State = GroupRetiring
 		runtime.retiring[old.Snapshot.Fence.RuntimeGeneration] = old
 	}

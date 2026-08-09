@@ -112,6 +112,39 @@ func TestCandidateResolvesCredentialBundleOnceForAllRoutes(t *testing.T) {
 	}
 }
 
+func TestPromotionWaitsForOldGenerationHandoffLease(t *testing.T) {
+	builder := &candidateBuilderStub{handles: map[domain.RouteID]*candidateHandleStub{}}
+	manager := newRuntimeGroupTestManager(builder)
+	first := runtimeGroupPending(t)
+	active, err := manager.BuildCandidate(context.Background(), first)
+	if err != nil || manager.PublishPromoted(context.Background(), active, first.Fence) != nil {
+		t.Fatalf("seed active err=%v", err)
+	}
+	lease, err := active.Admission.Acquire(domain.WriteFence{AccountFence: first.Fence, RouteID: "spot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := runtimeGroupPending(t)
+	next.SnapshotID = uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c36")
+	next.Fence.DesiredStateRevision++
+	next.Fence.RuntimeGeneration++
+	candidate, err := manager.BuildCandidate(context.Background(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- manager.PublishPromoted(context.Background(), candidate, next.Fence) }()
+	select {
+	case err := <-done:
+		t.Fatalf("promotion crossed in-flight handoff: %v", err)
+	default:
+	}
+	lease.Release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newRuntimeGroupTestManager(builder RuntimeGroupBuilder) *Manager {
 	return &Manager{
 		entries: map[domain.AccountID]*entry{}, runtimes: map[domain.AccountID]RuntimeAccount{},

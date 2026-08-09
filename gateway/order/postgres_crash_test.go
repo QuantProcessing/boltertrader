@@ -194,6 +194,7 @@ func runCoordinatorCrashChild(t *testing.T) {
 	}
 	_, err = coordinator.Place(context.Background(), PlaceRequest{
 		PrincipalID: "crash-principal", AccountID: accountID,
+		RouteID:        "spot",
 		InstrumentID:   "binance:demo:spot:BTC-USDT",
 		IdempotencyKey: domain.IdempotencyKey("idem-" + strings.ReplaceAll(phase, "_", "-")),
 		Side:           exchange.SideBuy, Type: exchange.OrderTypeLimit,

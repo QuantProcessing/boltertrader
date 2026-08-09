@@ -29,6 +29,7 @@ var (
 type PlaceRequest struct {
 	PrincipalID    domain.PrincipalID
 	AccountID      domain.AccountID
+	RouteID        domain.RouteID
 	InstrumentID   domain.InstrumentID
 	IdempotencyKey domain.IdempotencyKey
 	CorrelationID  domain.EventID
@@ -46,6 +47,9 @@ func (request PlaceRequest) validateIdentity() error {
 		return err
 	}
 	if err := request.AccountID.Validate(); err != nil {
+		return err
+	}
+	if err := request.RouteID.Validate(); err != nil {
 		return err
 	}
 	if err := request.InstrumentID.Validate(); err != nil {
@@ -86,12 +90,18 @@ type Result struct {
 }
 
 type Route struct {
+	RouteID         domain.RouteID
 	Driver          Driver
 	Instrument      exchange.Instrument
 	Product         exchange.Product
 	WriteReady      bool
 	Reason          string
 	CheckWriteFence func(account.WriteFence) error
+	Admission       HandoffAdmission
+}
+
+type HandoffAdmission interface {
+	Acquire(domain.WriteFence) (account.HandoffLease, error)
 }
 
 func (route Route) validate() error {
@@ -278,6 +288,7 @@ func newAccountGate() *accountGate {
 
 type durablePlacePayload struct {
 	AccountID            domain.AccountID     `json:"account_id"`
+	RouteID              domain.RouteID       `json:"route_id"`
 	InstrumentID         domain.InstrumentID  `json:"instrument_id"`
 	Side                 exchange.Side        `json:"side"`
 	Type                 exchange.OrderType   `json:"type"`
@@ -295,7 +306,7 @@ func canonicalPlacePayload(request PlaceRequest) (json.RawMessage, string, error
 		return nil, "", err
 	}
 	payload, err := json.Marshal(durablePlacePayload{
-		AccountID: request.AccountID, InstrumentID: request.InstrumentID,
+		AccountID: request.AccountID, RouteID: request.RouteID, InstrumentID: request.InstrumentID,
 		Side: request.Side, Type: request.Type, Quantity: request.Quantity.String(),
 		LimitPrice: request.LimitPrice.String(), LimitPolicy: request.LimitPolicy, ReduceOnly: request.ReduceOnly,
 		DesiredStateRevision: request.WriteFence.DesiredStateRevision, RuntimeGeneration: request.WriteFence.RuntimeGeneration, CredentialVersion: request.WriteFence.CredentialVersion,
@@ -317,7 +328,7 @@ func decodePlacePayload(payload json.RawMessage) (durablePlacePayload, error) {
 	if err := decoder.Decode(&decoded); err != nil {
 		return durablePlacePayload{}, fmt.Errorf("decode durable order payload")
 	}
-	if decoded.AccountID.Validate() != nil || decoded.InstrumentID.Validate() != nil {
+	if decoded.AccountID.Validate() != nil || decoded.RouteID.Validate() != nil || decoded.InstrumentID.Validate() != nil {
 		return durablePlacePayload{}, fmt.Errorf("decode durable order payload")
 	}
 	if _, err := decimal.NewFromString(decoded.Quantity); err != nil {

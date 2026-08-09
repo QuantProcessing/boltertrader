@@ -794,6 +794,7 @@ func newCoordinatorFixture(t *testing.T) *coordinatorFixture {
 func (fixture *coordinatorFixture) placeRequest() PlaceRequest {
 	return PlaceRequest{
 		PrincipalID: "principal-a", AccountID: fixture.accountID,
+		RouteID:      "spot",
 		InstrumentID: "binance:demo:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
 		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
