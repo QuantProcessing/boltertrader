@@ -496,10 +496,41 @@ func TestManagerDynamicLifecycleIsolationBlockersAndRestore(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsRouteProfileModeConflictBeforeLifecycleValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		managerMode RuntimeMode
+		desiredMode RuntimeMode
+		venue       string
+		environment string
+	}{
+		{name: "Test rejects live", managerMode: RuntimeModeTest, desiredMode: RuntimeModeTest, venue: "binance", environment: "live"},
+		{name: "Live rejects demo", managerMode: RuntimeModeLive, desiredMode: RuntimeModeLive, venue: "binance", environment: "demo"},
+		{name: "Live rejects testnet", managerMode: RuntimeModeLive, desiredMode: RuntimeModeLive, venue: "bybit", environment: "testnet"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := newLifecycleTestManager(t, test.managerMode)
+			desired := desiredTestAccount(t, 1, 1, 1, "opaque_mode_conflict")
+			desired.Mode = test.desiredMode
+			desired.Venue = test.venue
+			desired.VenueEnvironment = test.environment
+			if _, err := manager.CreateRuntime(context.Background(), desired); err == nil {
+				t.Fatal("cross-mode profile reached runtime creation")
+			}
+			lifecycle := manager.lifecycle.(*fakeRuntimeLifecycle)
+			if lifecycle.validations != 0 || lifecycle.activations != 0 {
+				t.Fatalf("lifecycle calls validations=%d activations=%d", lifecycle.validations, lifecycle.activations)
+			}
+		})
+	}
+}
+
 func TestManagerLiveWritesAreDefaultDenied(t *testing.T) {
 	manager := newLifecycleTestManager(t, RuntimeModeLive)
 	desired := desiredTestAccount(t, 1, 1, 1, "opaque_live")
 	desired.Mode = RuntimeModeLive
+	desired.VenueEnvironment = "live"
 	if _, err := manager.CreateRuntime(context.Background(), desired); err != nil {
 		t.Fatal(err)
 	}
@@ -559,11 +590,13 @@ func TestManagerCloseDeactivatesActiveDynamicRuntime(t *testing.T) {
 type fakeRuntimeLifecycle struct {
 	validateErr   error
 	blockers      RuntimeBlockers
+	validations   int
 	activations   int
 	deactivations int
 }
 
 func (lifecycle *fakeRuntimeLifecycle) Validate(context.Context, DesiredRuntime) error {
+	lifecycle.validations++
 	return lifecycle.validateErr
 }
 func (lifecycle *fakeRuntimeLifecycle) Activate(context.Context, DesiredRuntime) error {

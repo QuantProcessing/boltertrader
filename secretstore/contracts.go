@@ -3,6 +3,7 @@ package secretstore
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -72,7 +73,20 @@ func ParseOpaqueRef(raw string) (OpaqueRef, error) {
 	return OpaqueRef(raw), nil
 }
 
-func (reference OpaqueRef) String() string { return string(reference) }
+func (reference OpaqueRef) String() string {
+	if reference == "" {
+		return "secretstore.OpaqueRef{redacted, invalid}"
+	}
+	return "secretstore.OpaqueRef{value:redacted}"
+}
+
+func (reference OpaqueRef) GoString() string { return reference.String() }
+
+func (reference OpaqueRef) MarshalJSON() ([]byte, error) { return json.Marshal(reference.String()) }
+
+// RawForTrustedBoundary returns the canonical reference for provider storage or
+// internal transport. Ordinary formatting must never use this accessor.
+func (reference OpaqueRef) RawForTrustedBoundary() string { return string(reference) }
 
 type CredentialWriter interface {
 	Check(context.Context, Scope) error
