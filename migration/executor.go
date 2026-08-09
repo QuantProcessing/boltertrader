@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,12 +18,14 @@ import (
 const evidenceGenerator = "boltertrader-migration-tool"
 
 type Command struct {
-	Name           string
-	Args           []string
-	Env            []string
-	Dir            string
-	Stdin          []byte
-	ExpectedOutput string
+	Name                 string
+	Args                 []string
+	Env                  []string
+	Dir                  string
+	Stdin                []byte
+	ExpectedOutput       string
+	ExpectedOutputSHA    string
+	CaptureOutputAsInput bool
 }
 
 type CommandResult struct {
@@ -129,9 +132,18 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 			return ExecutionResult{}, fmt.Errorf("%s command failed", request.Operation)
 		}
 		if err := verifyCommandPostcondition(request.Operation, index, command, result); err != nil {
+			if request.Operation == Backfill && errors.Is(err, errSourceHighWaterMismatch) {
+				if rollbackErr := rollbackAfterHighWaterMismatch(ctx, manifestData, manifest, request, options, run); rollbackErr != nil {
+					return ExecutionResult{}, fmt.Errorf("SOURCE_HIGH_WATER_MISMATCH; automatic source writer restore failed: %w", rollbackErr)
+				}
+				return ExecutionResult{}, fmt.Errorf("SOURCE_HIGH_WATER_MISMATCH: source writer restored; capture a new final delta")
+			}
 			return ExecutionResult{}, err
 		}
 		commandProofs = append(commandProofs, commandDigest(command, result.Output))
+		if command.CaptureOutputAsInput {
+			inputSHA = sha256Hex(bytes.TrimSpace(result.Output))
+		}
 	}
 	artifactSHA, err := digestFile(applyRequest.ArtifactPath, request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Backfill)
 	if err != nil {
@@ -149,6 +161,7 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		GeneratedBy: evidenceGenerator, PreStateSHA: sha256Hex(manifestData), InputSHA: inputSHA, Commands: commandProofs,
 	}
 	applyRequest.generatedEvidence = &proof
+	applyRequest.capturedInputSHA = inputSHA
 	evidencePath, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, request.Operation, proof)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -160,6 +173,43 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		return ExecutionResult{}, err
 	}
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
+}
+
+var errSourceHighWaterMismatch = errors.New("source high-water mismatch")
+
+func rollbackAfterHighWaterMismatch(ctx context.Context, manifestData []byte, manifest Manifest, request ExecutionRequest, options ExecuteOptions, run CommandRunner) error {
+	rollbackRequest := request
+	rollbackRequest.Operation = Rollback
+	rollbackRequest.Reason = "SOURCE_HIGH_WATER_MISMATCH"
+	commands, applyRequest, checks, inputSHA, err := executionPlan(manifest, rollbackRequest)
+	if err != nil {
+		return err
+	}
+	proofs := make([]commandEvidence, 0, len(commands))
+	for index, command := range commands {
+		result, runErr := run(ctx, command)
+		if runErr != nil {
+			return fmt.Errorf("rollback command failed")
+		}
+		if err := verifyCommandPostcondition(Rollback, index, command, result); err != nil {
+			return err
+		}
+		proofs = append(proofs, commandDigest(command, result.Output))
+	}
+	proof := operationProof{SchemaVersion: 1, Operation: Rollback, Status: "pass", MigrationID: manifest.MigrationID,
+		Subject: proofStateDigest(manifest), Checks: checks, GeneratedBy: evidenceGenerator,
+		PreStateSHA: sha256Hex(manifestData), InputSHA: inputSHA, Commands: proofs}
+	applyRequest.generatedEvidence = &proof
+	evidencePath, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, Rollback, proof)
+	if err != nil {
+		return err
+	}
+	applyRequest.ProofPath = evidencePath
+	if _, err := applyLocked(request.ManifestPath, applyRequest, ApplyOptions{Now: options.Now, execution: &executionCapability{}}); err != nil {
+		_ = os.Remove(evidencePath)
+		return err
+	}
+	return nil
 }
 
 func executeRecordImportLocked(request ExecutionRequest, options ExecuteOptions, manifestData []byte, manifest Manifest) (ExecutionResult, error) {
@@ -221,6 +271,7 @@ func replayExecution(manifest Manifest, evidenceDir string, request Request, com
 		if digestErr != nil || artifactSHA != event.ArtifactSHA {
 			return nil, fmt.Errorf("%s replay conflict: artifact changed", request.Operation)
 		}
+		request.capturedInputSHA = proof.InputSHA
 		if (inputSHA != "" && proof.InputSHA != inputSHA) || requestFingerprint(request, artifactSHA, event.ProofSHA) != event.Fingerprint {
 			return nil, fmt.Errorf("%s replay conflict: request changed", request.Operation)
 		}
@@ -232,6 +283,11 @@ func replayExecution(manifest Manifest, evidenceDir string, request Request, com
 func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Request, []string, string, error) {
 	if strings.TrimSpace(request.EvidenceDir) == "" {
 		return nil, Request{}, nil, "", fmt.Errorf("evidence directory is required")
+	}
+	for _, identity := range []string{request.SourceService, request.TargetService, request.GatewayService, request.MaintenanceService, request.SourceDatabase, request.TargetDatabase, request.GatewayDatabase, request.MaintenanceDatabase, request.SourceWriterRole, request.TargetWriterRole} {
+		if containsIdentityToken(identity, "live") {
+			return nil, Request{}, nil, "", fmt.Errorf("cross-mode database or role identity rejected")
+		}
 	}
 	apply := Request{Operation: request.Operation, ID: request.ID, Verifier: request.Verifier, Reason: request.Reason}
 	source, err := postgresService(request.SourceService)
@@ -312,6 +368,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		check.ExpectedOutput = "on"
 		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 		verify.ExpectedOutput = "true"
+		highWater := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
+		highWater.Env = readOnly
+		highWater.CaptureOutputAsInput = true
 		return []Command{
 			check,
 			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "--file", request.ArtifactPath, "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
@@ -319,7 +378,8 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
 			verify,
-		}, apply, []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
+			highWater,
+		}, apply, []string{"capture-session-read-only", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil
 	case Fence:
 		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
@@ -353,6 +413,17 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if digestErr != nil {
 			return nil, Request{}, nil, "", digestErr
 		}
+		sourceDatabase, databaseErr := postgresIdentifier("source database", request.SourceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		if _, _, _, _, identityErr := fenceIdentities(request); identityErr != nil {
+			return nil, Request{}, nil, "", identityErr
+		}
+		capturedHighWater := latestDeltaInputSHA(manifest)
+		if !validSHA256(capturedHighWater) {
+			return nil, Request{}, nil, "", fmt.Errorf("captured source high-water evidence is unavailable; capture a new final delta")
+		}
 		targetDatabase, databaseErr := postgresIdentifier("target database", request.TargetDatabase)
 		if databaseErr != nil {
 			return nil, Request{}, nil, "", databaseErr
@@ -370,22 +441,31 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		}
 		command := Command{Name: "account-route-backfill", Args: []string{
 			"--mapping", backfillPath,
+			"--source-service", source,
+			"--source-database", sourceDatabase,
 			"--platform-service", target,
 			"--platform-database", targetDatabase,
 			"--gateway-service", gateway,
 			"--gateway-database", gatewayDatabase,
 		}}
-		return []Command{command}, apply, []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
+		highWater := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
+		highWater.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
+		highWater.ExpectedOutputSHA = capturedHighWater
+		return []Command{highWater, command}, apply, []string{"source-high-water-equal", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
+		realEnv := []string{"BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0", "BT_LIVE_PRIVATE_WRITES_ENABLED=0"}
+		realBrowser := Command{Name: "npm", Args: []string{"--prefix", "web", "run", "test:e2e", "--", "platform-real.spec.ts"}, Dir: manifest.TargetRepo, Env: realEnv}
 		return []Command{
-			{Name: "go", Args: []string{"test", "./..."}, Dir: manifest.TargetRepo},
+			{Name: "go", Args: []string{"test", "./credential", "./routeprofile", "./secretstore", "./gateway/...", "./cmd/exchange-gateway", "./migration", "./cmd/migration-tool", "./cmd/account-route-backfill", "./scripts"}, Dir: manifest.TargetRepo},
+			{Name: "go", Args: []string{"test", "./internal/config", "./internal/platform/accounts", "./internal/platform/secret", "./internal/store/postgres", "./cmd/platform-credential"}, Dir: filepath.Join(manifest.TargetRepo, "backend")},
 			{Name: "make", Args: []string{"test-browser"}, Dir: manifest.TargetRepo},
-			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo},
-			{Name: "make", Args: []string{"dev-platform-down"}, Dir: manifest.TargetRepo},
-			{Name: "make", Args: []string{"dev-platform-up"}, Dir: manifest.TargetRepo},
-			{Name: "make", Args: []string{"dev-platform-status"}, Dir: manifest.TargetRepo},
-		}, apply, []string{"browser", "offline", "real-test", "restart-recovery"}, "", nil
+			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
+			realBrowser,
+			{Name: "make", Args: []string{"dev-platform-restart"}, Dir: manifest.TargetRepo},
+			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
+			realBrowser,
+		}, apply, []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}, "", nil
 	case Rollback:
 		sourceDatabase, sourceRole, targetDatabase, targetRole, identityErr := fenceIdentities(request)
 		if identityErr != nil {
@@ -410,6 +490,15 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	}
 }
 
+func containsIdentityToken(value, want string) bool {
+	for _, token := range strings.FieldsFunc(strings.ToLower(value), func(char rune) bool { return char == '_' || char == '-' || char == '.' }) {
+		if token == want {
+			return true
+		}
+	}
+	return false
+}
+
 func proofSubject(manifest Manifest, request Request, artifactSHA string) string {
 	switch request.Operation {
 	case Backup, Restore, FinalDelta:
@@ -427,6 +516,9 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 	if command.ExpectedOutput != "" && strings.TrimSpace(string(result.Output)) != command.ExpectedOutput {
 		return fmt.Errorf("%s postcondition verification failed", operation)
 	}
+	if command.ExpectedOutputSHA != "" && sha256Hex(bytes.TrimSpace(result.Output)) != command.ExpectedOutputSHA {
+		return errSourceHighWaterMismatch
+	}
 	if command.Name != "psql" || len(command.Args) == 0 {
 		return nil
 	}
@@ -442,6 +534,15 @@ func verifyCommandPostcondition(operation Operation, index int, command Command,
 		}
 	}
 	return nil
+}
+
+func latestDeltaInputSHA(manifest Manifest) string {
+	for index := len(manifest.Workflow.Events) - 1; index >= 0; index-- {
+		if manifest.Workflow.Events[index].Operation == FinalDelta {
+			return manifest.Workflow.Events[index].InputSHA
+		}
+	}
+	return ""
 }
 
 func fenceIdentities(request ExecutionRequest) (string, string, string, string, error) {

@@ -43,9 +43,7 @@ type provisionResult struct {
 	State       string `json:"state"`
 }
 
-var provisionAccount = func(context.Context, provisionRequest) (provisionResult, error) {
-	return provisionResult{}, fmt.Errorf("PLATFORM_SERVICE_HANDOFF_REQUIRED")
-}
+var provisionAccount = provisionProductionAccount
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	for _, arg := range args {
@@ -122,21 +120,7 @@ func readMetadata(path string) (accountMetadata, error) {
 
 func readCredentialBundle(reader io.Reader) ([]byte, error) {
 	if file, ok := reader.(*os.File); ok && isTerminal(file) {
-		if err := setTerminalEcho(file, false); err != nil {
-			return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
-		}
-		defer setTerminalEcho(file, true)
-		data, err := bufio.NewReader(io.LimitReader(file, maxCredentialBundle+1)).ReadBytes('\n')
-		data = bytes.TrimSpace(data)
-		if len(data) == 0 || len(data) > maxCredentialBundle || !json.Valid(data) {
-			clear(data)
-			return nil, fmt.Errorf("INVALID_CREDENTIAL_BUNDLE")
-		}
-		if err != nil && err != io.EOF {
-			clear(data)
-			return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
-		}
-		return data, nil
+		return readTTYCredentialBundle(file, func(enabled bool) error { return setTerminalEcho(file, enabled) })
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, maxCredentialBundle+1))
 	if err != nil || len(data) == 0 || len(data) > maxCredentialBundle {
@@ -148,6 +132,34 @@ func readCredentialBundle(reader io.Reader) ([]byte, error) {
 		clear(data)
 		return nil, fmt.Errorf("INVALID_CREDENTIAL_BUNDLE")
 	}
+	return data, nil
+}
+
+func readTTYCredentialBundle(reader io.Reader, setEcho func(bool) error) ([]byte, error) {
+	if err := setEcho(false); err != nil {
+		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_ = setEcho(true)
+		}
+	}()
+	data, err := bufio.NewReader(io.LimitReader(reader, maxCredentialBundle+1)).ReadBytes('\n')
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || len(data) > maxCredentialBundle || !json.Valid(data) {
+		clear(data)
+		return nil, fmt.Errorf("INVALID_CREDENTIAL_BUNDLE")
+	}
+	if err != nil && err != io.EOF {
+		clear(data)
+		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
+	}
+	if err := setEcho(true); err != nil {
+		clear(data)
+		return nil, fmt.Errorf("CREDENTIAL_STDIN_UNAVAILABLE")
+	}
+	restored = true
 	return data, nil
 }
 

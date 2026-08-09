@@ -83,6 +83,7 @@ type Request struct {
 	ActivationAt      string
 	CutoverAt         string
 	generatedEvidence *operationProof
+	capturedInputSHA  string
 }
 
 type ApplyOptions struct {
@@ -203,7 +204,7 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 	}
 	manifest.Workflow.Events = append(manifest.Workflow.Events, Event{
 		Sequence: len(manifest.Workflow.Events) + 1, Epoch: manifest.Workflow.Epoch, Operation: request.Operation, At: at,
-		Fingerprint: fingerprint, ArtifactSHA: artifactSHA, ProofSHA: proofSHA, Name: safeName(request),
+		Fingerprint: fingerprint, ArtifactSHA: artifactSHA, InputSHA: generatedInputSHA(request), ProofSHA: proofSHA, Name: safeName(request),
 		Verifier: request.Verifier, Reason: request.Reason,
 		ActivationAt: request.ActivationAt, CutoverAt: request.CutoverAt,
 	})
@@ -214,6 +215,13 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 		return Result{}, err
 	}
 	return Result{Phase: manifest.Workflow.Phase}, nil
+}
+
+func generatedInputSHA(request Request) string {
+	if request.generatedEvidence == nil {
+		return request.capturedInputSHA
+	}
+	return request.generatedEvidence.InputSHA
 }
 
 func applyExecuted(manifestPath string, request Request, options ApplyOptions) (Result, error) {
@@ -313,16 +321,19 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		required = []string{"capture-session-read-only", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		if !validSHA256(proof.InputSHA) {
+			return fmt.Errorf("final delta proof is missing captured source high-water")
+		}
 	case Fence:
 		subject = proofStateDigest(manifest)
 		required = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		required = []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}
+		required = []string{"source-high-water-equal", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		subject = proofStateDigest(manifest)
-		required = []string{"browser", "offline", "real-test", "restart-recovery"}
+		required = []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}
 	case RecordActivation:
 		subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		required = []string{"one-writer-target", "target-activated"}
@@ -782,6 +793,7 @@ func validateWorkflow(manifest Manifest) error {
 		case Backfill:
 			request.Name = event.Name
 		}
+		request.capturedInputSHA = event.InputSHA
 		if requestFingerprint(request, event.ArtifactSHA, event.ProofSHA) != event.Fingerprint {
 			return fmt.Errorf("workflow ledger fingerprint mismatch at sequence %d", event.Sequence)
 		}
@@ -1011,7 +1023,7 @@ func writeManifestAtomic(path string, manifest Manifest) error {
 }
 
 func requestFingerprint(request Request, artifactSHA, proofSHA string) string {
-	value := strings.Join([]string{string(request.Operation), request.ID, request.Name, artifactSHA, proofSHA, request.Verifier, request.Reason}, "\x00")
+	value := strings.Join([]string{string(request.Operation), request.ID, request.Name, artifactSHA, generatedInputSHA(request), proofSHA, request.Verifier, request.Reason}, "\x00")
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }

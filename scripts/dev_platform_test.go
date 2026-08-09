@@ -816,6 +816,32 @@ func TestDockerFreeOperatorGuideIsLinkedAndPreservesSafetyBoundary(t *testing.T)
 	}
 }
 
+func TestLauncherHelpAndRealGateDocumentExactG010Sequence(t *testing.T) {
+	repo := repoRoot(t)
+	launcher, err := os.ReadFile(filepath.Join(repo, "scripts", "dev-platform"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"help)", ". ./scripts/dev-platform.env.example", "make dev-platform-doctor", "make dev-platform-up", "make dev-platform-status", "BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real", "G010 no-trade", "G011 Test-write"} {
+		if !strings.Contains(string(launcher), want) {
+			t.Errorf("launcher help missing %q", want)
+		}
+	}
+	realGate, err := os.ReadFile(filepath.Join(repo, "scripts", "test-real-platform"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(realGate)
+	if strings.Count(text, "http://127.0.0.1:18091/api/v1/system/readiness") < 2 || strings.Count(text, "http://127.0.0.1:13001/") < 2 {
+		t.Fatalf("real gate does not repeat readiness/browser reads: %s", text)
+	}
+	for _, want := range []string{"G010", "no-trade", "G011", "Test-write", "no venue writes"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("real gate missing %q", want)
+		}
+	}
+}
+
 func TestDevPlatformPassesCompletePlatformEnvironment(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()

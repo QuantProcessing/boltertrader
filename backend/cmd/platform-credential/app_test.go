@@ -61,3 +61,31 @@ func TestRunRejectsCredentialFlagsAndLiveMode(t *testing.T) {
 		}
 	}
 }
+
+func TestTTYInputRestoresEchoAfterInvalidBundle(t *testing.T) {
+	var transitions []bool
+	_, err := readTTYCredentialBundle(strings.NewReader("not-json\n"), func(enabled bool) error {
+		transitions = append(transitions, enabled)
+		return nil
+	})
+	if err == nil || len(transitions) != 2 || transitions[0] || !transitions[1] {
+		t.Fatalf("error=%v transitions=%v", err, transitions)
+	}
+}
+
+func TestRunRejectsNonLoopbackAndGatewayBypassConfigurationBeforeReadingStdin(t *testing.T) {
+	metadata := writeMetadata(t)
+	for _, args := range [][]string{
+		{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1", "--platform-url", "http://192.0.2.1:18091"},
+		{"--mode", "test", "--account-file", metadata, "--idempotency-key", "provision-1", "--gateway-bypass"},
+	} {
+		reader := &panicReader{}
+		if err := run(args, reader, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Fatalf("unsafe configuration accepted: %v", args)
+		}
+	}
+}
+
+type panicReader struct{}
+
+func (*panicReader) Read([]byte) (int, error) { panic("stdin read before configuration rejection") }

@@ -23,9 +23,11 @@ in the evidence directory.
 ```sh
 export BT_MIGRATION_SOURCE_SERVICE=funding_source_migration
 export BT_MIGRATION_TARGET_SERVICE=bolter_target_migration
+export BT_MIGRATION_GATEWAY_SERVICE=bolter_gateway_migration
 export BT_MIGRATION_MAINTENANCE_SERVICE=bolter_target_maintenance
 export BT_MIGRATION_SOURCE_DATABASE=funding_source
 export BT_MIGRATION_TARGET_DATABASE=bolter_target
+export BT_MIGRATION_GATEWAY_DATABASE=bolter_gateway
 export BT_MIGRATION_MAINTENANCE_DATABASE=postgres
 export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_writer
 export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_writer
@@ -80,7 +82,25 @@ source-side final delta:
   --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
 ```
 
-Raise the database-level one-writer fence before the final snapshot. The tool
+Capture one full custom snapshot from the still-authorized source in a read-only
+session, verify the archive catalog, recreate the target through an explicit
+maintenance connection, restore the snapshot, verify that the target schema is
+nonempty, and record only the checksum of the source high-water probe:
+
+```sh
+.local/bin/migration-tool final-delta \
+  --manifest migration/manifest.json \
+  --artifact .local/migration/artifacts/final-snapshot.dump \
+  --evidence-dir .local/migration/evidence \
+  --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
+```
+
+Raise the database-level one-writer fence after the final snapshot. The tool
 executes a role-scoped `REVOKE CONNECT`, sets both canonical writer roles to
 `NOLOGIN`, terminates existing sessions for those roles, and verifies writer
 login and session state before it records the fence. It does not claim an
@@ -98,35 +118,46 @@ effective `CONNECT` result because PostgreSQL may grant it through `PUBLIC`:
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
 
-Capture one full custom snapshot from the fenced source in a read-only session,
-verify the archive catalog, recreate the target through an explicit maintenance
-connection, restore the snapshot, and verify that the target schema is nonempty:
+Apply the repository-owned route mapping. Immediately before any irreversible
+write, the tool repeats the source high-water probe and compares its digest with
+the final-delta evidence. A mismatch stops before backfill, restores the source
+writer, records `SOURCE_HIGH_WATER_MISMATCH`, returns to `restored`, and requires
+a new final delta. A match invokes the production backfill without resolving or
+printing opaque credential references:
 
 ```sh
-.local/bin/migration-tool final-delta \
+.local/bin/migration-tool backfill \
   --manifest migration/manifest.json \
-  --artifact .local/migration/artifacts/final-snapshot.dump \
+  --backfill-mapping migration/backfills/account-route-v1.json \
   --evidence-dir .local/migration/evidence \
   --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
   --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
-  --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
-  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE"
+  --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
+  --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
+  --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
+  --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE"
 ```
 
-Apply each repository-owned SQL backfill by exact path. The runner hashes the
-script before execution, runs it in one transaction with a migration-only
-target write override, and rejects any pre/post content drift:
+The backfill stages deterministic Platform routes and a Gateway operation in
+`prepared` state with only `pending_snapshot_id` populated. It commits Gateway
+before Platform. If the process exits, or the Platform commit fails, between
+those commits, Gateway can retain one harmless pending-only snapshot while the
+Platform transaction remains unapplied. That snapshot cannot enter order
+handoff or execution gating because those paths read only `active_snapshot_id`;
+it is visible through runtime diagnostics for recovery. Retry the exact command
+with the same mapping bytes and identities. The stable operation ID, snapshot
+ID, and request digest make Gateway replay the existing pending row and let the
+Platform write converge. Changed input is rejected as an operation conflict.
 
-```sh
-.local/bin/migration-tool backfill \
-  --manifest migration/manifest.json \
-  --backfill-script backend/migrations/0013_principal_scoped_accounting.sql \
-  --evidence-dir .local/migration/evidence \
-  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
-  --target-database "$BT_MIGRATION_TARGET_DATABASE"
-```
+| Failure point | Durable state | Identical retry |
+| --- | --- | --- |
+| Before Gateway commit | Neither database is committed | Stages both transactions again |
+| Gateway commit outcome is ambiguous | Gateway has either no row or the same pending-only row; Platform is not committed | Accepts an absent row or verifies the existing operation, snapshot, and digest, then converges Platform |
+| After Gateway commit, before Platform commit | Gateway has the pending-only row; Platform is not committed | Reuses the identical Gateway row and commits Platform |
+| After Platform commit, before the workflow event is recorded | Both databases contain the deterministic plan; Gateway remains pending-only | Replays the same database plan idempotently, then records the workflow event |
+| After the workflow event is recorded | Both databases and migration evidence are committed | Returns the recorded workflow replay without database commands |
 
 Run offline, browser, read-only real-Test, and restart/recovery gates. The real
 gate retains its explicit Test-only attestation and default-denied venue-write
@@ -143,8 +174,8 @@ BT_DEV_REAL_STACK_ACCEPTANCE=1 .local/bin/migration-tool validate \
 ```
 
 `prepare-activation` stops at `activation-ready`. There is no `activate` or
-`retire` execution command. Activation evidence and retirement preparation are
-separate, externally authorized G010 surfaces.
+`retire` execution command. G010 is a no-trade validation gate; it does not
+authorize G011 Test writes, activation, retirement, or Live private writes.
 
 ## Retry And Recovery
 

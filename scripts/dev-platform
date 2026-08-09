@@ -517,8 +517,22 @@ reset() {
 	rm -rf "$STATE_DIR" "$SECRET_STORE_DIR/$MODE"; rm -f "$TOKEN_FILE" "$GATEWAY_TOKEN_FILE" "$MANUAL_PREVIEW_KEY_FILE" "$SECRET_MASTER_KEY_FILE"
 }
 
+help() {
+	cat <<'EOF'
+Docker-free local Platform sequence:
+  . ./scripts/dev-platform.env.example
+  make dev-platform-doctor
+  make dev-platform-up
+  make dev-platform-status
+  BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real
+
+The final command is the G010 no-trade gate. G011 Test-write requires a separate
+explicit handoff and scoped Test credentials; neither boundary enables Live writes.
+EOF
+}
+
 case "${1:-}" in
 	up) up ;; down) down ;; restart) down; up ;; status|ps) status ;; wait) wait_all ;;
-	logs) logs ;; doctor) doctor ;; reset) reset ;; drain-funding-worker) drain_funding_worker ;;
-	*) fail "usage: scripts/dev-platform {up|down|restart|status|wait|logs|ps|doctor|reset|drain-funding-worker}" ;;
+	logs) logs ;; doctor) doctor ;; reset) reset ;; drain-funding-worker) drain_funding_worker ;; help) help ;;
+	*) fail "usage: scripts/dev-platform {up|down|restart|status|wait|logs|ps|doctor|reset|drain-funding-worker|help}" ;;
 esac

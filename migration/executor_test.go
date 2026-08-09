@@ -164,13 +164,17 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	result, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, SourceService: "funding-source", SourceDatabase: "funding_source", SourceWriterRole: "funding_writer",
+		TargetService: "bolter-platform", TargetDatabase: "bolter_platform", TargetWriterRole: "bolter_writer", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		if command.Name == "psql" {
+			return CommandResult{Output: []byte("captured-high-water")}, nil
+		}
 		if command.Name != "account-route-backfill" {
 			t.Fatalf("command = %+v", command)
 		}
 		joined := strings.Join(command.Args, " ")
-		for _, want := range []string{"--mapping", scriptPath, "--platform-service", "bolter-platform", "--platform-database", "bolter_platform", "--gateway-service", "bolter-gateway", "--gateway-database", "bolter_gateway"} {
+		for _, want := range []string{"--mapping", scriptPath, "--source-service", "funding-source", "--source-database", "funding_source", "--platform-service", "bolter-platform", "--platform-database", "bolter_platform", "--gateway-service", "bolter-gateway", "--gateway-database", "bolter_gateway"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("backfill command missing %q: %+v", want, command)
 			}
@@ -193,7 +197,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	}
 	if _, err := Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, SourceService: "funding-source", SourceDatabase: "funding_source", SourceWriterRole: "funding_writer", TargetService: "bolter-platform", TargetDatabase: "bolter_platform", TargetWriterRole: "bolter_writer", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
 		return CommandResult{}, nil
 	}}); err == nil || !strings.Contains(err.Error(), "replay conflict") {
@@ -210,9 +214,9 @@ func TestExecuteBackfillRejectsScriptChangedDuringCommand(t *testing.T) {
 	}
 	_, err = Execute(context.Background(), ExecutionRequest{
 		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(),
-		BackfillPath: scriptPath, TargetService: "bolter-platform", TargetDatabase: "bolter_platform", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
+		BackfillPath: scriptPath, SourceService: "funding-source", SourceDatabase: "funding_source", SourceWriterRole: "funding_writer", TargetService: "bolter-platform", TargetDatabase: "bolter_platform", TargetWriterRole: "bolter_writer", GatewayService: "bolter-gateway", GatewayDatabase: "bolter_gateway", repositoryRoot: repoRoot,
 	}, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
-		return CommandResult{}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
+		return CommandResult{Output: []byte("captured-high-water")}, os.WriteFile(scriptPath, []byte("select 2;"), 0o600)
 	}})
 	if err == nil || !strings.Contains(err.Error(), "changed during execution") {
 		t.Fatalf("error = %v", err)
@@ -278,6 +282,22 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	}
 }
 
+func TestExecutablePlansRejectCrossModeDatabaseAndRoleIdentities(t *testing.T) {
+	for name, mutate := range map[string]func(*ExecutionRequest){
+		"source service":  func(request *ExecutionRequest) { request.SourceService = "funding_live" },
+		"target database": func(request *ExecutionRequest) { request.TargetDatabase = "bolter_platform_live" },
+		"writer role":     func(request *ExecutionRequest) { request.SourceWriterRole = "funding_live_writer" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := ExecutionRequest{Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source_test", TargetService: "target_test", SourceDatabase: "source_test", TargetDatabase: "target_test", SourceWriterRole: "source_test_writer", TargetWriterRole: "target_test_writer"}
+			mutate(&request)
+			if _, _, _, _, err := executionPlan(Manifest{}, request); err == nil || !strings.Contains(err.Error(), "cross-mode") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestRollbackPlanDoesNotClaimEffectiveConnectVerification(t *testing.T) {
 	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Rollback, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
@@ -329,7 +349,7 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 6 {
+	if len(commands) != 7 {
 		t.Fatalf("commands = %+v", commands)
 	}
 	var dumps int
@@ -338,14 +358,76 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 			dumps++
 		}
 	}
-	if dumps != 1 || commands[2].Name != "pg_restore" || !containsArg(commands[2].Args, "--list") {
+	if dumps != 1 || commands[2].Name != "pg_restore" || !containsArg(commands[2].Args, "--list") || commands[6].Name != "psql" || !commands[6].CaptureOutputAsInput {
 		t.Fatalf("final snapshot is not captured once and archive-verified: %+v", commands)
 	}
 	if !strings.Contains(strings.Join(commands[3].Args, " "), "service=target_admin dbname=postgres") || !strings.Contains(string(commands[3].Stdin), "DROP DATABASE") {
 		t.Fatalf("final snapshot does not recreate through maintenance connection: %+v", commands[3])
 	}
-	if commands[4].Name != "pg_restore" || commands[5].ExpectedOutput != "true" || !containsString(checks, "restored-schema-nonempty") {
+	if commands[4].Name != "pg_restore" || commands[5].ExpectedOutput != "true" || commands[6].Name != "psql" || !containsString(checks, "source-high-water-captured") || !containsString(checks, "restored-schema-nonempty") {
 		t.Fatalf("final snapshot is not applied and verified: commands=%+v checks=%v", commands, checks)
+	}
+}
+
+func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *testing.T) {
+	root := t.TempDir()
+	commands, _, checks, _, err := executionPlan(Manifest{TargetRepo: root}, ExecutionRequest{Operation: Validate, EvidenceDir: t.TempDir(), Verifier: "operator"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 8 {
+		t.Fatalf("commands=%+v", commands)
+	}
+	joined := make([]string, len(commands))
+	for index, command := range commands {
+		joined[index] = command.Name + " " + strings.Join(command.Args, " ")
+		if strings.Contains(joined[index], "go test ./...") {
+			t.Fatalf("unsafe broad Go gate remains: %s", joined[index])
+		}
+	}
+	for index, want := range []string{"go test ./credential", "go test ./internal/config", "make test-browser", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts", "make dev-platform-restart", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts"} {
+		if !strings.Contains(joined[index], want) {
+			t.Fatalf("command[%d]=%q want %q", index, joined[index], want)
+		}
+	}
+	for _, want := range []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"} {
+		if !containsString(checks, want) {
+			t.Fatalf("checks=%v missing %q", checks, want)
+		}
+	}
+}
+
+func TestBackfillHighWaterMismatchRestoresSourceAndInvalidatesDelta(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	repoRoot, artifactPath := canonicalBackfillFixture(t, `{"schemaVersion":1,"mappings":[]}`)
+	var names []string
+	_, err := Execute(context.Background(), ExecutionRequest{
+		Operation: Backfill, ManifestPath: manifestPath, EvidenceDir: t.TempDir(), BackfillPath: artifactPath,
+		SourceService: "source", SourceDatabase: "source_db", SourceWriterRole: "source_writer",
+		TargetService: "target", TargetDatabase: "target_db", TargetWriterRole: "target_writer",
+		GatewayService: "gateway", GatewayDatabase: "gateway_db", repositoryRoot: repoRoot,
+	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		names = append(names, command.Name)
+		if len(names) == 1 {
+			return CommandResult{Output: []byte("changed-high-water")}, nil
+		}
+		if command.ExpectedOutput != "" {
+			return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
+		}
+		return CommandResult{Output: []byte("ok")}, nil
+	}})
+	if err == nil || !strings.Contains(err.Error(), "SOURCE_HIGH_WATER_MISMATCH") {
+		t.Fatalf("error=%v commands=%v", err, names)
+	}
+	for _, name := range names {
+		if name == "account-route-backfill" {
+			t.Fatalf("backfill ran after mismatch: %v", names)
+		}
+	}
+	manifest := readWorkflowManifest(t, manifestPath)
+	last := manifest.Workflow.Events[len(manifest.Workflow.Events)-1]
+	if manifest.Workflow.Phase != PhaseRestored || last.Operation != Rollback || last.Reason != "SOURCE_HIGH_WATER_MISMATCH" || manifest.FinalDeltaSHA256 != nil {
+		t.Fatalf("mismatch was not durably invalidated: phase=%s last=%+v", manifest.Workflow.Phase, last)
 	}
 }
 
@@ -385,7 +467,7 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 6 || first.EvidencePath == "" || readWorkflowManifest(t, manifestPath).Workflow.Phase != PhaseDeltaCaptured {
+	if calls != 7 || first.EvidencePath == "" || readWorkflowManifest(t, manifestPath).Workflow.Phase != PhaseDeltaCaptured {
 		t.Fatalf("final snapshot result=%+v calls=%d", first, calls)
 	}
 	second, err := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
