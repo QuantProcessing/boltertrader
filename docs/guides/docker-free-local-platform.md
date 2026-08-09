@@ -34,6 +34,9 @@ make dev-platform-up
 make dev-platform-status
 ```
 
+Run `./scripts/dev-platform help` to print this exact sequence and the G010/G011
+safety boundary.
+
 The supervisor creates mode-scoped opaque files beneath
 `$FT_LOCAL_RUNTIME_DIR/credentials/test` with permissions `0600`. It does not
 print their contents. The Platform receives only the Secret Store source
@@ -64,7 +67,8 @@ ready:
 BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real
 ```
 
-This gate performs readiness reads only. It does not activate migration
+This gate repeats readiness and browser-root reads so restart checks can prove
+stable local availability. It performs no mutation. It does not activate migration
 cutover, retire the source system, configure venue credentials, or submit venue
 writes. A zero-account inventory is a valid ready result.
 

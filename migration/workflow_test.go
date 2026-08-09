@@ -271,6 +271,27 @@ func TestWorkflowRejectsTamperedLedgerSequence(t *testing.T) {
 	}
 }
 
+func TestWorkflowRejectsTamperedFinalDeltaInputSHA(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	manifest := readWorkflowManifest(t, manifestPath)
+	for index := range manifest.Workflow.Events {
+		if manifest.Workflow.Events[index].Operation == FinalDelta {
+			manifest.Workflow.Events[index].InputSHA = sha256Hex([]byte("tampered-high-water"))
+			break
+		}
+	}
+	if err := writeManifestAtomic(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorkflow(data); err == nil || !strings.Contains(err.Error(), "fingerprint mismatch") {
+		t.Fatalf("tampered input SHA error = %v", err)
+	}
+}
+
 func TestWorkflowRejectsGenericUntypedProof(t *testing.T) {
 	manifestPath := copyManifest(t)
 	proof := writeArtifact(t, "proof.json", `{"status":"pass"}`)
@@ -482,28 +503,29 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		proof.Checks = []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"}
 	case Backup:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"dump-created", "dump-format-readable"}
+		proof.Checks = []string{"connected-identities-verified", "dump-created", "dump-format-readable"}
 	case Restore:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"clean-target-created", "restored-schema-nonempty"}
+		proof.Checks = []string{"connected-identities-verified", "clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		proof.Subject = artifactSHA
-		proof.Checks = []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		proof.InputSHA = sha256Hex([]byte("captured-high-water"))
+		proof.Checks = []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
 	case Fence:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		proof.Checks = []string{"connected-identities-verified", "source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		proof.Checks = []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}
+		proof.Checks = []string{"connected-identities-verified", "source-high-water-equal", "platform-schema-migrated", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"browser", "offline", "real-test", "restart-recovery"}
+		proof.Checks = []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}
 	case RecordActivation:
 		proof.Subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		proof.Checks = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		proof.Subject = proofStateDigest(manifest)
-		proof.Checks = []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		proof.Checks = []string{"connected-identities-verified", "source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	default:
 		return request
 	}
@@ -512,5 +534,6 @@ func withProof(t *testing.T, manifestPath string, request Request) Request {
 		t.Fatal(err)
 	}
 	request.ProofPath = writeArtifact(t, "proof.json", string(data))
+	request.capturedInputSHA = proof.InputSHA
 	return request
 }

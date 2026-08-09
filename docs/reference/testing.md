@@ -37,11 +37,18 @@ configuration contains identifiers and protected file paths only; commands and
 diagnostics never emit key or credential material.
 
 `BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real` is the **G010 no-trade gate**.
-It performs local readiness reads and does not provision accounts, enable
+It performs repeated local readiness and browser-root reads and does not provision accounts, enable
 private routes, or call a venue. **G011 is a separate Test-write boundary** and
 requires an explicit handoff, scoped Test credentials, and write attestation.
 Passing G010 is not authorization or evidence for G011, and neither gate
 authorizes Live private writes.
+
+The fenced migration validation order is fixed: targeted offline-safe Go
+packages (including Platform credential and schema-migration commands),
+fixture-backed browser gates, one Docker-free G010 read pass, the
+real browser continuity/stream/idempotency gate, a supervised restart, then the
+same G010 and real-browser gates again. Do not replace the targeted Go commands
+with `go test ./...` and do not add venue acceptance targets to this sequence.
 
 ## Nine-venue external command inventory
 

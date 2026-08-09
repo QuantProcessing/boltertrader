@@ -73,16 +73,18 @@ type Event struct {
 }
 
 type Request struct {
-	Operation         Operation
-	ID                string
-	Name              string
-	ArtifactPath      string
-	ProofPath         string
-	Verifier          string
-	Reason            string
-	ActivationAt      string
-	CutoverAt         string
-	generatedEvidence *operationProof
+	Operation           Operation
+	ID                  string
+	Name                string
+	ArtifactPath        string
+	ProofPath           string
+	Verifier            string
+	Reason              string
+	ActivationAt        string
+	CutoverAt           string
+	generatedEvidence   *operationProof
+	capturedInputSHA    string
+	acceptedArtifactSHA string
 }
 
 type ApplyOptions struct {
@@ -156,8 +158,14 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 	if manifest.Workflow.Phase == "" {
 		manifest.Workflow.Phase = inferPhase(manifest)
 	}
+	if err := requireUsableTarget(manifest, request.Operation); err != nil {
+		return Result{}, err
+	}
 	if err := validateWorkflow(manifest); err != nil {
 		return Result{}, err
+	}
+	if request.generatedEvidence != nil && request.generatedEvidence.PreStateSHA != sha256Hex(data) {
+		return Result{}, fmt.Errorf("generated operation evidence pre-state does not match migration manifest")
 	}
 	priorOperation := false
 	for _, event := range manifest.Workflow.Events {
@@ -203,7 +211,7 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 	}
 	manifest.Workflow.Events = append(manifest.Workflow.Events, Event{
 		Sequence: len(manifest.Workflow.Events) + 1, Epoch: manifest.Workflow.Epoch, Operation: request.Operation, At: at,
-		Fingerprint: fingerprint, ArtifactSHA: artifactSHA, ProofSHA: proofSHA, Name: safeName(request),
+		Fingerprint: fingerprint, ArtifactSHA: artifactSHA, InputSHA: generatedInputSHA(request), ProofSHA: proofSHA, Name: safeName(request),
 		Verifier: request.Verifier, Reason: request.Reason,
 		ActivationAt: request.ActivationAt, CutoverAt: request.CutoverAt,
 	})
@@ -214,6 +222,13 @@ func applyLocked(manifestPath string, request Request, options ApplyOptions) (Re
 		return Result{}, err
 	}
 	return Result{Phase: manifest.Workflow.Phase}, nil
+}
+
+func generatedInputSHA(request Request) string {
+	if request.generatedEvidence == nil {
+		return request.capturedInputSHA
+	}
+	return request.generatedEvidence.InputSHA
 }
 
 func applyExecuted(manifestPath string, request Request, options ApplyOptions) (Result, error) {
@@ -241,9 +256,15 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 			return "", "", err
 		}
 	}
-	artifactSHA, err := digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore || request.Operation == Backfill)
-	if err != nil {
-		return "", "", err
+	artifactSHA := request.acceptedArtifactSHA
+	if artifactSHA == "" {
+		var err error
+		artifactSHA, err = digestFile(request.ArtifactPath, request.Operation == Backup || request.Operation == FinalDelta || request.Operation == Restore || request.Operation == Backfill)
+		if err != nil {
+			return "", "", err
+		}
+	} else if !validSHA256(artifactSHA) {
+		return "", "", fmt.Errorf("accepted artifact checksum is invalid")
 	}
 	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == RecordActivation || request.Operation == Rollback
 	var proofSHA string
@@ -307,28 +328,31 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 		required = []string{"source-commit-matches", "source-tree-matches", "subtree-import-matches"}
 	case Backup:
 		subject = artifactSHA
-		required = []string{"dump-created", "dump-format-readable"}
+		required = []string{"connected-identities-verified", "dump-created", "dump-format-readable"}
 	case Restore:
 		subject = artifactSHA
-		required = []string{"clean-target-created", "restored-schema-nonempty"}
+		required = []string{"connected-identities-verified", "clean-target-created", "restored-schema-nonempty"}
 	case FinalDelta:
 		subject = artifactSHA
-		required = []string{"capture-session-read-only", "final-snapshot-readable", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		required = []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}
+		if !validSHA256(proof.InputSHA) {
+			return fmt.Errorf("final delta proof is missing captured source high-water")
+		}
 	case Fence:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		required = []string{"connected-identities-verified", "source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	case Backfill:
 		subject = proofStateDigest(manifest) + "/" + request.Name + "/" + artifactSHA
-		required = []string{"mapping-content-stable", "durable-idempotent-saga", "pending-only"}
+		required = []string{"connected-identities-verified", "source-high-water-equal", "platform-schema-migrated", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}
 	case Validate:
 		subject = proofStateDigest(manifest)
-		required = []string{"browser", "offline", "real-test", "restart-recovery"}
+		required = []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}
 	case RecordActivation:
 		subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		required = []string{"one-writer-target", "target-activated"}
 	case Rollback:
 		subject = proofStateDigest(manifest)
-		required = []string{"source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
+		required = []string{"connected-identities-verified", "source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}
 	}
 	if proof.Subject != subject || !sameStringSet(proof.Checks, required) {
 		return fmt.Errorf("operation proof subject or checks do not match required postconditions")
@@ -416,6 +440,9 @@ func operationPostconditionHolds(manifest Manifest, request Request) bool {
 
 func validatePredecessor(manifest Manifest, operation Operation) error {
 	phase := manifest.Workflow.Phase
+	if err := requireUsableTarget(manifest, operation); err != nil {
+		return err
+	}
 	switch operation {
 	case Backup:
 		if phase != PhaseProvenanceReady {
@@ -464,6 +491,13 @@ func validatePredecessor(manifest Manifest, operation Operation) error {
 	return nil
 }
 
+func requireUsableTarget(manifest Manifest, operation Operation) error {
+	if manifest.TargetInvalidatedAt != nil && operation != FinalDelta {
+		return fmt.Errorf("target is invalidated; a new explicit final delta is required")
+	}
+	return nil
+}
+
 func transition(manifest *Manifest, request Request, artifactSHA, at string) error {
 	switch request.Operation {
 	case RecordImport:
@@ -505,6 +539,7 @@ func transition(manifest *Manifest, request Request, artifactSHA, at string) err
 			return fmt.Errorf("final delta requires verified restore; current phase is %s", manifest.Workflow.Phase)
 		}
 		manifest.FinalDeltaAt, manifest.FinalDeltaSHA256 = stringPtr(at), stringPtr(artifactSHA)
+		manifest.TargetInvalidatedAt, manifest.TargetInvalidationReason = nil, nil
 		manifest.Workflow.Phase = PhaseDeltaCaptured
 	case Fence:
 		if manifest.Workflow.Phase != PhaseDeltaCaptured {
@@ -621,12 +656,19 @@ func validateWorkflowState(manifest Manifest) error {
 	hasBackup := manifest.BackupID != nil || manifest.BackupSHA256 != nil
 	hasRestore := manifest.RestoreVerifiedAt != nil
 	hasDelta := manifest.FinalDeltaAt != nil || manifest.FinalDeltaSHA256 != nil
+	hasTargetInvalidation := manifest.TargetInvalidatedAt != nil || manifest.TargetInvalidationReason != nil
 	hasFence := manifest.OneWriterFenceAt != nil
 	hasBackfill := len(manifest.BackfillScripts) != 0 || manifest.Workflow.IrreversibleAt != nil || manifest.Workflow.IrreversibleStep != nil
 	hasValidation := manifest.ValidationAt != nil
 	hasActivation := manifest.TargetActivationAt != nil || manifest.CutoverAt != nil
 	if manifest.SourceRetirementAt != nil {
 		return problem("source retirement is outside preparation scope")
+	}
+	if (manifest.TargetInvalidatedAt == nil) != (manifest.TargetInvalidationReason == nil) {
+		return problem("target invalidation evidence is incomplete")
+	}
+	if hasTargetInvalidation && phase != PhaseRestored {
+		return problem("target invalidation is only valid in restored phase")
 	}
 	if phase == PhaseBaseline {
 		if manifest.Workflow.Epoch != 0 {
@@ -782,6 +824,7 @@ func validateWorkflow(manifest Manifest) error {
 		case Backfill:
 			request.Name = event.Name
 		}
+		request.capturedInputSHA = event.InputSHA
 		if requestFingerprint(request, event.ArtifactSHA, event.ProofSHA) != event.Fingerprint {
 			return fmt.Errorf("workflow ledger fingerprint mismatch at sequence %d", event.Sequence)
 		}
@@ -1011,7 +1054,7 @@ func writeManifestAtomic(path string, manifest Manifest) error {
 }
 
 func requestFingerprint(request Request, artifactSHA, proofSHA string) string {
-	value := strings.Join([]string{string(request.Operation), request.ID, request.Name, artifactSHA, proofSHA, request.Verifier, request.Reason}, "\x00")
+	value := strings.Join([]string{string(request.Operation), request.ID, request.Name, artifactSHA, generatedInputSHA(request), proofSHA, request.Verifier, request.Reason}, "\x00")
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }

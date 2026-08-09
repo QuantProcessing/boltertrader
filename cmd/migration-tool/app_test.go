@@ -64,14 +64,16 @@ func TestRunWiresFinalSnapshotDatabaseAndMaintenanceInputs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run([]string{
 		"final-delta", "--manifest", copyFixture(t), "--artifact", "final.dump", "--evidence-dir", "evidence",
-		"--source-service", "source", "--source-database", "source_db",
-		"--target-service", "target", "--target-database", "target_db",
-		"--maintenance-service", "target_admin", "--maintenance-database", "postgres",
+		"--source-service", "source", "--source-database", "source_test", "--source-role", "source_test_migrator",
+		"--target-service", "target", "--target-database", "target_test", "--target-role", "target_test_migrator",
+		"--maintenance-service", "target_admin", "--maintenance-database", "postgres_test", "--maintenance-role", "target_test_admin",
 	}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("final-delta: %v stderr=%s", err, stderr.String())
 	}
-	if executed.SourceDatabase != "source_db" || executed.TargetDatabase != "target_db" || executed.MaintenanceService != "target_admin" || executed.MaintenanceDatabase != "postgres" {
+	if executed.SourceDatabase != "source_test" || executed.SourceRole != "source_test_migrator" ||
+		executed.TargetDatabase != "target_test" || executed.TargetRole != "target_test_migrator" ||
+		executed.MaintenanceService != "target_admin" || executed.MaintenanceDatabase != "postgres_test" || executed.MaintenanceRole != "target_test_admin" {
 		t.Fatalf("execution request = %+v", executed)
 	}
 }
