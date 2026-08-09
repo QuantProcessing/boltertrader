@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -45,7 +46,7 @@ func TestAppStartsAndStops(t *testing.T) {
 		GatewayToken:                []byte("gateway-adapter-token-with-at-least-32-bytes"),
 		Mode:                        "test",
 	}
-	app, err := New(cfg)
+	app, err := NewWithDependencies(cfg, testDependencies())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +62,24 @@ func TestAppStartsAndStops(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("app did not stop")
+	}
+}
+
+func TestStartRejectsMissingCredentialWriterBeforeListen(t *testing.T) {
+	cfg := testConfig(t, "test")
+	app, err := NewWithDependencies(cfg, Dependencies{MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "Secret Store") {
+		t.Fatalf("Start error=%v", err)
+	}
+	for _, address := range []string{cfg.BrowserListenAddr, cfg.WorkListenAddr} {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Fatalf("listener %s was bound before secret check: %v", address, err)
+		}
+		_ = listener.Close()
 	}
 }
 

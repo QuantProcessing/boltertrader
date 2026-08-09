@@ -177,6 +177,7 @@ func TestLivePrivateWritesRequireExplicitLiveConfiguration(t *testing.T) {
 	}
 
 	t.Setenv("BT_MODE", "live")
+	t.Setenv(SecretStoreNamespaceEnv, "boltertrader/live")
 	t.Setenv("BT_PLATFORM_DATABASE", "bolter_platform_live")
 	t.Setenv("BT_PLATFORM_DATABASE_ROLE", "bolter_platform_live")
 	gatewayDir := filepath.Join(t.TempDir(), "live")
