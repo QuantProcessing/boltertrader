@@ -1382,7 +1382,7 @@ func verifyActivationPriorState(ctx context.Context, manifest Manifest, request 
 		Passed     bool   `json:"passed"`
 	}
 	artifacts := make([]artifactFact, 0, len(plan.Events))
-	currentProofs := make([]currentPostconditionFact, 0, 8)
+	currentProofs := make([]currentPostconditionFact, 0, validateCommandCount)
 	for _, prior := range plan.Events {
 		if err := requireActivationPriorRegularFile(prior.EvidencePath); err != nil {
 			return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior %s proof is unsafe", prior.Operation)
@@ -1447,8 +1447,8 @@ func verifyActivationPriorState(ctx context.Context, manifest Manifest, request 
 		if prior.Operation != Validate {
 			continue
 		}
-		if len(commands) != 8 {
-			return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate replay does not contain eight current probes")
+		if len(commands) != validateCommandCount {
+			return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate replay does not contain %d current probes", validateCommandCount)
 		}
 		for index, command := range commands {
 			result, runErr := run(ctx, command)
@@ -1461,7 +1461,7 @@ func verifyActivationPriorState(ctx context.Context, manifest Manifest, request 
 			})
 		}
 	}
-	if len(currentProofs) != 8 {
+	if len(currentProofs) != validateCommandCount {
 		return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate current postconditions are incomplete")
 	}
 	artifactData, err := json.Marshal(artifacts)

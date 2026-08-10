@@ -2330,7 +2330,7 @@ func TestExecuteActivationRequiresExplicitPriorReplayPlan(t *testing.T) {
 	}
 }
 
-func TestVerifyActivationPriorStateRerunsOnlyEightValidateCurrentProbes(t *testing.T) {
+func TestVerifyActivationPriorStateRerunsOnlySixValidateCurrentProbes(t *testing.T) {
 	manifest, request, plan := generatedActivationPriorFixture(t)
 	calls := 0
 	observation, err := verifyActivationPriorState(context.Background(), manifest, request, plan, ActivationAttempt{ID: "attempt-1"}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
@@ -2343,7 +2343,7 @@ func TestVerifyActivationPriorStateRerunsOnlyEightValidateCurrentProbes(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 8 || observation.AttemptID != "attempt-1" || !validSHA256(observation.PlanSHA256) || !validSHA256(observation.ArtifactSetSHA256) || !validSHA256(observation.CurrentPostconditionsSHA256) {
+	if calls != 6 || observation.AttemptID != "attempt-1" || !validSHA256(observation.PlanSHA256) || !validSHA256(observation.ArtifactSetSHA256) || !validSHA256(observation.CurrentPostconditionsSHA256) {
 		t.Fatalf("calls=%d observation=%+v", calls, observation)
 	}
 	calls = 0
@@ -2428,7 +2428,7 @@ func TestExecuteActivationReplayAcceptsDifferentSuccessfulValidateStdout(t *test
 	if err != nil {
 		t.Fatalf("activated replay with different successful stdout: %v", err)
 	}
-	if !replayed.Replayed || verificationRun != 2 || probeCalls != 16 {
+	if !replayed.Replayed || verificationRun != 2 || probeCalls != 12 {
 		t.Fatalf("replay=%+v verification runs=%d probe calls=%d", replayed, verificationRun, probeCalls)
 	}
 }

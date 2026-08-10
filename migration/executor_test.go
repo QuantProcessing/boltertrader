@@ -1217,7 +1217,7 @@ func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 8 {
+	if len(commands) != 6 {
 		t.Fatalf("commands=%+v", commands)
 	}
 	joined := make([]string, len(commands))
@@ -1226,8 +1226,11 @@ func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *test
 		if strings.Contains(joined[index], "go test ./...") {
 			t.Fatalf("unsafe broad Go gate remains: %s", joined[index])
 		}
+		if strings.Contains(joined[index], "platform-real.spec.ts") {
+			t.Fatalf("real browser spec escaped the snapshot-bound test-real harness: %s", joined[index])
+		}
 	}
-	for index, want := range []string{"go test ./credential", "go test ./internal/config ./internal/platform/accounts ./internal/platform/secret ./internal/store/postgres ./cmd/platform-credential ./cmd/platform-migrate", "make test-browser", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts", "./scripts/dev-platform restart-app", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts"} {
+	for index, want := range []string{"go test ./credential", "go test ./internal/config ./internal/platform/accounts ./internal/platform/secret ./internal/store/postgres ./cmd/platform-credential ./cmd/platform-migrate", "make test-browser", "make test-real", "./scripts/dev-platform restart-app", "make test-real"} {
 		if !strings.Contains(joined[index], want) {
 			t.Fatalf("command[%d]=%q want %q", index, joined[index], want)
 		}

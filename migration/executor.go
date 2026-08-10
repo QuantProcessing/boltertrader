@@ -22,6 +22,8 @@ const evidenceGenerator = "boltertrader-migration-tool"
 
 const maxFinalDeltaArchiveSize int64 = 1<<63 - 2
 
+const validateCommandCount = 6
+
 type Command struct {
 	Name                 string
 	Args                 []string
@@ -881,16 +883,13 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	case Validate:
 		apply.Verifier = request.Verifier
 		realEnv := []string{"BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0", "BT_LIVE_PRIVATE_WRITES_ENABLED=0", "BT_GATEWAY_STARTUP_PROFILE=migration-validation", "BT_PLATFORM_STARTUP_PROFILE=migration-validation", "BT_FUNDING_STARTUP_PROFILE=migration-validation"}
-		realBrowser := Command{Name: "npm", Args: []string{"--prefix", "web", "run", "test:e2e", "--", "platform-real.spec.ts"}, Dir: manifest.TargetRepo, Env: realEnv}
 		return []Command{
 			{Name: "go", Args: []string{"test", "./credential", "./routeprofile", "./secretstore", "./gateway/...", "./cmd/exchange-gateway", "./migration", "./cmd/migration-tool", "./cmd/account-route-backfill", "./scripts"}, Dir: manifest.TargetRepo},
 			{Name: "go", Args: []string{"test", "./internal/config", "./internal/platform/accounts", "./internal/platform/secret", "./internal/store/postgres", "./cmd/platform-credential", "./cmd/platform-migrate"}, Dir: filepath.Join(manifest.TargetRepo, "backend")},
 			{Name: "make", Args: []string{"test-browser"}, Dir: manifest.TargetRepo},
 			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
-			realBrowser,
 			{Name: "./scripts/dev-platform", Args: []string{"restart-app"}, Dir: manifest.TargetRepo, Env: realEnv},
 			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
-			realBrowser,
 		}, apply, []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}, "", nil
 	case Rollback:
 		sourceDatabase, sourceWriterRole, targetDatabase, targetWriterRole, identityErr := fenceIdentities(request)
