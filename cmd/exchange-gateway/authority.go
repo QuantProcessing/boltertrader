@@ -66,9 +66,15 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 		return httpapi.AuthorityResponse{Body: views([]store.RuntimeState{state})[0]}, nil
 	case httpapi.AuthorityRuntimeReadiness:
 		return httpapi.AuthorityResponse{Body: httpapi.RuntimeReadiness{Ready: true}}, nil
+	case httpapi.AuthorityCatalogVenues:
+		return httpapi.AuthorityResponse{Body: profileAuthorityVenues(authority.mode, nil)}, nil
+	case httpapi.AuthorityCatalogInstruments:
+		revision := sha256.Sum256([]byte("[]"))
+		return httpapi.AuthorityResponse{Body: authorityCatalogInstruments{
+			Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: time.Now().UTC(), Instruments: []authorityInstrument{},
+		}}, nil
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
-		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityCatalogVenues,
-		httpapi.AuthorityCatalogInstruments, httpapi.AuthorityMarketData:
+		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData:
 		return httpapi.AuthorityResponse{Body: []any{}}, nil
 	default:
 		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
@@ -904,11 +910,25 @@ func (authority *gatewayAuthority) activeRouteLifecycleState(accountID domain.Ac
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
 	resources := reads.manager.Accounts()
-	registry := reads.profiles
+	venues := profileAuthorityVenues(reads.mode, reads.profiles)
+	indexes := make(map[string]int, len(venues))
+	for index, venue := range venues {
+		indexes[venue.Venue+"\x00"+venue.Environment] = index
+	}
+	for _, resource := range resources {
+		key := string(resource.Venue) + "\x00" + string(resource.Environment)
+		if index, ok := indexes[key]; ok {
+			venues[index].Ready = venues[index].Ready || resource.ReadReady
+		}
+	}
+	return venues
+}
+
+func profileAuthorityVenues(runtimeMode account.RuntimeMode, registry *routeprofile.Registry) []authorityVenue {
 	if registry == nil {
 		registry = routeprofile.DefaultRegistry()
 	}
-	mode := routeprofile.Mode(reads.mode)
+	mode := routeprofile.Mode(runtimeMode)
 	if mode == "" {
 		mode = routeprofile.ModeTest
 	}
@@ -922,12 +942,6 @@ func (reads managerAuthorityReads) Venues() []authorityVenue {
 		}
 		indexes[key] = len(venues)
 		venues = append(venues, authorityVenue{Venue: profile.Venue, Environment: string(profile.NativeEnvironment)})
-	}
-	for _, resource := range resources {
-		key := string(resource.Venue) + "\x00" + string(resource.Environment)
-		if index, ok := indexes[key]; ok {
-			venues[index].Ready = venues[index].Ready || resource.ReadReady
-		}
 	}
 	sort.Slice(venues, func(i, j int) bool {
 		if venues[i].Venue == venues[j].Venue {

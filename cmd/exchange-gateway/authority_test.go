@@ -375,6 +375,38 @@ func TestGatewayAuthorityProjectsConfiguredCatalogAndMarketData(t *testing.T) {
 	}
 }
 
+func TestMigrationValidationPublishesStaticTestCatalogWithoutPrivateRuntime(t *testing.T) {
+	authority := validationSnapshotAuthority{mode: account.RuntimeModeTest}
+	venuesResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogVenues})
+	if err != nil {
+		t.Fatal(err)
+	}
+	venues, ok := venuesResponse.Body.([]authorityVenue)
+	if !ok || len(venues) == 0 {
+		t.Fatalf("venues=%T %+v", venuesResponse.Body, venuesResponse.Body)
+	}
+	seen := make(map[string]struct{}, len(venues))
+	for _, venue := range venues {
+		key := venue.Venue + "\x00" + venue.Environment
+		if venue.Venue == "" || venue.Environment == "" || venue.Environment == "live" || venue.Ready {
+			t.Fatalf("unsafe validation venue=%+v", venue)
+		}
+		if _, exists := seen[key]; exists {
+			t.Fatalf("duplicate validation venue=%+v", venue)
+		}
+		seen[key] = struct{}{}
+	}
+
+	instrumentsResponse, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityCatalogInstruments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instruments, ok := instrumentsResponse.Body.(authorityCatalogInstruments)
+	if !ok || instruments.Revision == "" || instruments.ObservedAt.IsZero() || instruments.Instruments == nil || len(instruments.Instruments) != 0 {
+		t.Fatalf("instruments=%T %+v", instrumentsResponse.Body, instrumentsResponse.Body)
+	}
+}
+
 func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs(t *testing.T) {
 	ctx := context.Background()
 	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
