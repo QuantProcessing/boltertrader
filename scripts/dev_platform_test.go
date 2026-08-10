@@ -1043,10 +1043,13 @@ func TestLauncherHelpAndRealGateDocumentExactG010Sequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(realGate)
-	if strings.Count(text, "http://127.0.0.1:18091/api/v1/system/readiness") < 2 || strings.Count(text, "http://127.0.0.1:13001/") < 2 {
-		t.Fatalf("real gate does not repeat readiness/browser reads: %s", text)
+	if strings.Contains(text, "curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/readiness") {
+		t.Fatal("real gate probes authenticated browser readiness without a user session")
 	}
-	for _, want := range []string{"G010", "no-trade", "G011", "Test-write", "no venue writes"} {
+	if strings.Count(text, "http://127.0.0.1:13001/") < 2 {
+		t.Fatalf("real gate does not repeat browser reads: %s", text)
+	}
+	for _, want := range []string{"BT_DEV_REAL_BROWSER_ACCEPTANCE=1", "test:e2e:real", "G010", "no-trade", "G011", "Test-write", "no venue writes"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("real gate missing %q", want)
 		}
