@@ -91,8 +91,8 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		writeAuthority = unavailableWriteAuthority{}
 	}
 	writeReady, writeReason := writeAuthority.Ready(context.Background())
-	if cfg.StartupProfile == config.StartupMigrationValidation && writeReady {
-		return nil, fmt.Errorf("migration-validation requires runtime writer USAGE to be absent")
+	if cfg.StartupProfile == config.StartupMigrationValidation && (writeReady || writeReason != "writer_role_unavailable") {
+		return nil, fmt.Errorf("migration-validation requires verified absent runtime writer USAGE")
 	}
 	validationProfile := cfg.StartupProfile == config.StartupMigrationValidation
 	liveMaximum := decimal.Zero
@@ -364,12 +364,12 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
 		WriteAuthority: writeAuthority,
-		Accounts:    &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
-		Audit:       &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
-		PublicData:  publicAPI,
-		Trading:     &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog, FundingAccounting: fundingProjection.(httpapi.FundingAccountingRefresher)},
-		Funding:     &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
-		Projections: &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
+		Accounts:       &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
+		Audit:          &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
+		PublicData:     publicAPI,
+		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog, FundingAccounting: fundingProjection.(httpapi.FundingAccountingRefresher)},
+		Funding:        &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Projections:    &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
 	})
 	if err != nil {
 		return nil, err

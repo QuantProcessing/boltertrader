@@ -159,7 +159,7 @@ func (cfg Config) Validate() error {
 		return fmt.Errorf("BT_MODE must be test or live")
 	}
 	switch cfg.StartupProfile {
-	case StartupNormal:
+	case "", StartupNormal:
 	case StartupMigrationValidation:
 		if cfg.Mode != "test" {
 			return fmt.Errorf("%s is valid only when BT_MODE=test", PlatformStartupProfileEnv)

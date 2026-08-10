@@ -154,7 +154,11 @@ func TestReadinessIncludesNamedComponentsWithoutChangingRequiredHealth(t *testin
 	monitor.SetPostgresHealthy(true)
 	monitor.SetComponent("canonicalWrites", false, "database_authority_not_ready")
 	readiness := monitor.Readiness()
-	if !readiness.Ready { t.Fatalf("optional component changed required readiness: %+v", readiness) }
+	if !readiness.Ready {
+		t.Fatalf("optional component changed required readiness: %+v", readiness)
+	}
 	component, ok := readiness.Components["canonicalWrites"]
-	if !ok || component.Ready || component.Reason != "database_authority_not_ready" { t.Fatalf("canonicalWrites = %+v, present=%t", component, ok) }
+	if !ok || component.Ready || component.Reason != "database_authority_not_ready" {
+		t.Fatalf("canonicalWrites = %+v, present=%t", component, ok)
+	}
 }

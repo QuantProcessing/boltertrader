@@ -228,12 +228,14 @@ type InternalOptions struct {
 	Authority    InternalAuthority
 	Authenticate func(*http.Request) error
 	MaxBodyBytes int64
+	WriteReady   func() bool
 }
 
 type InternalHandler struct {
 	authority    InternalAuthority
 	authenticate func(*http.Request) error
 	bodyLimit    int64
+	writeReady   func() bool
 	mux          *http.ServeMux
 }
 
@@ -266,7 +268,7 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, mux: http.NewServeMux()}
 	handler.register()
 	return handler, nil
 }
@@ -274,6 +276,10 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 func (handler *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if handler.authenticate(r) != nil {
 		handler.writeError(w, r, http.StatusUnauthorized, "GATEWAY_ADAPTER_AUTH_REQUIRED", false)
+		return
+	}
+	if r.Method == http.MethodPut && handler.writeReady != nil && !handler.writeReady() {
+		handler.writeError(w, r, http.StatusServiceUnavailable, "GATEWAY_WRITES_NOT_READY", true)
 		return
 	}
 	handler.mux.ServeHTTP(w, r)

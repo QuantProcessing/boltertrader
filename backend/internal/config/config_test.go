@@ -235,10 +235,10 @@ func TestMigrationValidationProfileIsTestOnlyAndNonLive(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Config){
-		"live mode":            func(value *Config) { value.Mode = "live" },
-		"funding live":         func(value *Config) { value.FundingLiveEnabled = true },
-		"private writes live":  func(value *Config) { value.LivePrivateWritesEnabled = true },
-		"unknown profile":      func(value *Config) { value.StartupProfile = "other" },
+		"live mode":           func(value *Config) { value.Mode = "live" },
+		"funding live":        func(value *Config) { value.FundingLiveEnabled = true },
+		"private writes live": func(value *Config) { value.LivePrivateWritesEnabled = true },
+		"unknown profile":     func(value *Config) { value.StartupProfile = "other" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := cfg

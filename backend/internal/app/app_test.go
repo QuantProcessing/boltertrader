@@ -144,8 +144,39 @@ func TestNewUsesConfiguredGatewayReadSourcesForManualPreview(t *testing.T) {
 		t.Fatalf("observed Gateway did not report ready: %s", readiness.Body.String())
 	}
 	preview := appRequest(t, app, cookie, csrf, http.MethodPost, "/api/v1/products/manual/execution-previews", `{"accountId":"account-a","instrumentId":"BTC-USDT","side":"buy","orderType":"market","quantity":"2","limitPrice":"","timeInForce":"ioc","reduceOnly":false,"mode":"test"}`, "")
-	if preview.Code != http.StatusNotFound {
+	if preview.Code != http.StatusServiceUnavailable || !strings.Contains(preview.Body.String(), "CANONICAL_WRITES_NOT_READY") {
 		t.Fatalf("preview=%d body=%s", preview.Code, preview.Body.String())
+	}
+}
+
+func TestMigrationValidationRequiresWriterUsageAbsent(t *testing.T) {
+	cfg := testConfig(t, "test")
+	cfg.StartupProfile = config.StartupMigrationValidation
+	dependencies := testDependencies()
+	if _, err := NewWithDependencies(cfg, dependencies); err == nil || !strings.Contains(err.Error(), "writer USAGE") {
+		t.Fatalf("NewWithDependencies() error=%v", err)
+	}
+	dependencies.WriteAuthority = nil
+	if _, err := NewWithDependencies(cfg, dependencies); err == nil || !strings.Contains(err.Error(), "verified absent") {
+		t.Fatalf("unverified NewWithDependencies() error=%v", err)
+	}
+
+	dependencies.WriteAuthority = NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true})
+	app, err := NewWithDependencies(cfg, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.reconciler != nil || app.accountReconciler != nil {
+		t.Fatal("migration validation constructed a background reconciler")
+	}
+	cookie, csrf := appLogin(t, app)
+	response := appRequest(t, app, cookie, csrf, http.MethodPost, "/api/v1/reservations", `{}`, "")
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CANONICAL_WRITES_NOT_READY") {
+		t.Fatalf("reservation=%d body=%s", response.Code, response.Body.String())
+	}
+	readiness := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/system/status", "", "")
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"canonicalWrites":{"ready":false`) {
+		t.Fatalf("status=%d body=%s", readiness.Code, readiness.Body.String())
 	}
 }
 
@@ -473,7 +504,7 @@ func (readyMarketDataProbe) CheckMarketDataRoute(context.Context) error { return
 func (readyMarketDataProbe) CheckRuntimeRoute(context.Context) error    { return nil }
 
 func testDependencies() Dependencies {
-	return Dependencies{SecretProvider: appSecretProvider{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}}
+	return Dependencies{SecretProvider: appSecretProvider{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}, WriteAuthority: NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true, WriterUsage: true, FullCapabilityGrants: true, EffectiveTablePrivileges: true, EffectiveSequencePrivileges: true})}
 }
 
 type appSecretProvider struct{}

@@ -20,13 +20,21 @@ type File struct {
 }
 
 type ServerConfig struct {
-	Mode                   string     `yaml:"mode" json:"mode"`
-	Listen                 string     `yaml:"listen" json:"listen"`
-	AllowNonLoopbackListen bool       `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
-	AuthTokenRef           secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
-	InternalListen         string     `yaml:"internal_listen,omitempty" json:"internal_listen,omitempty"`
-	InternalAuthTokenRef   secret.Ref `yaml:"internal_auth_token_ref,omitempty" json:"internal_auth_token_ref,omitempty"`
+	StartupProfile         StartupProfile `yaml:"startup_profile,omitempty" json:"startup_profile"`
+	Mode                   string         `yaml:"mode" json:"mode"`
+	Listen                 string         `yaml:"listen" json:"listen"`
+	AllowNonLoopbackListen bool           `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
+	AuthTokenRef           secret.Ref     `yaml:"auth_token_ref" json:"auth_token_ref"`
+	InternalListen         string         `yaml:"internal_listen,omitempty" json:"internal_listen,omitempty"`
+	InternalAuthTokenRef   secret.Ref     `yaml:"internal_auth_token_ref,omitempty" json:"internal_auth_token_ref,omitempty"`
 }
+
+type StartupProfile string
+
+const (
+	StartupProfileNormal              StartupProfile = "normal"
+	StartupProfileMigrationValidation StartupProfile = "migration-validation"
+)
 
 type PostgresConfig struct {
 	DSNRef secret.Ref `yaml:"dsn_ref" json:"dsn_ref"`
@@ -134,6 +142,10 @@ func LoadYAML(data []byte) (File, error) {
 	if file.Server.Mode == "" {
 		file.Server.Mode = "test"
 	}
+	file.Server.StartupProfile = StartupProfile(strings.ToLower(strings.TrimSpace(string(file.Server.StartupProfile))))
+	if file.Server.StartupProfile == "" {
+		file.Server.StartupProfile = StartupProfileNormal
+	}
 	if err := file.Validate(); err != nil {
 		return File{}, err
 	}
@@ -141,6 +153,9 @@ func LoadYAML(data []byte) (File, error) {
 }
 
 func (file File) Validate() error {
+	if file.Server.StartupProfile != "" && file.Server.StartupProfile != StartupProfileNormal && file.Server.StartupProfile != StartupProfileMigrationValidation {
+		return fmt.Errorf("server startup_profile must be normal or migration-validation")
+	}
 	if file.Server.Mode != "" && file.Server.Mode != "test" && file.Server.Mode != "live" {
 		return fmt.Errorf("server mode must be test or live")
 	}
@@ -177,6 +192,7 @@ func (file File) Validate() error {
 func (file File) Hash() (string, error) {
 	sanitized := hashFile{
 		Server: hashServer{
+			StartupProfile:         file.Server.StartupProfile,
 			Mode:                   file.Server.Mode,
 			Listen:                 file.Server.Listen,
 			AllowNonLoopbackListen: file.Server.AllowNonLoopbackListen,
@@ -204,6 +220,7 @@ func (file File) GoString() string { return file.String() }
 
 func (file File) MarshalJSON() ([]byte, error) {
 	server := map[string]any{
+		"startup_profile":           file.Server.StartupProfile,
 		"mode":                      file.Server.Mode,
 		"listen":                    file.Server.Listen,
 		"allow_non_loopback_listen": file.Server.AllowNonLoopbackListen,
@@ -242,12 +259,13 @@ type hashFile struct {
 	Postgres hashPostgres `json:"postgres"`
 }
 type hashServer struct {
-	Mode                   string `json:"mode"`
-	Listen                 string `json:"listen"`
-	AllowNonLoopbackListen bool   `json:"allow_non_loopback_listen"`
-	AuthTokenRef           string `json:"auth_token_ref"`
-	InternalListen         string `json:"internal_listen,omitempty"`
-	InternalAuthTokenRef   string `json:"internal_auth_token_ref,omitempty"`
+	StartupProfile         StartupProfile `json:"startup_profile"`
+	Mode                   string         `json:"mode"`
+	Listen                 string         `json:"listen"`
+	AllowNonLoopbackListen bool           `json:"allow_non_loopback_listen"`
+	AuthTokenRef           string         `json:"auth_token_ref"`
+	InternalListen         string         `json:"internal_listen,omitempty"`
+	InternalAuthTokenRef   string         `json:"internal_auth_token_ref,omitempty"`
 }
 type hashPostgres struct {
 	DSNRef string `json:"dsn_ref"`

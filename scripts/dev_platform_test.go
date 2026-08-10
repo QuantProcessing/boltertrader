@@ -129,6 +129,44 @@ while :; do sleep 1; done
 	}
 }
 
+func TestDevPlatformRestartAppPreservesPostgresIdentity(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+set -eu
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+	env := launcherEnv(runtimeDir)
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		env = append(env, "BT_DEV_"+service+"_CMD="+helper, "BT_DEV_"+service+"_READY_CMD=true")
+	}
+	env = append(env, "BT_DEV_FUNDING_WORKER_DRAIN_CMD=true")
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+	})
+	runLauncher(t, repo, env, "up")
+	pidPath := filepath.Join(runtimeDir, "state", "test", "pids", "postgres.pid")
+	startPath := filepath.Join(runtimeDir, "state", "test", "ownership", "postgres.start")
+	pidBefore, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startBefore, err := os.ReadFile(startPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runLauncher(t, repo, env, "restart-app")
+	pidAfter, _ := os.ReadFile(pidPath)
+	startAfter, _ := os.ReadFile(startPath)
+	if string(pidAfter) != string(pidBefore) || string(startAfter) != string(startBefore) {
+		t.Fatalf("postgres identity changed: pid %q -> %q, start %q -> %q", pidBefore, pidAfter, startBefore, startAfter)
+	}
+}
+
 func TestDevPlatformAllowsOwnedCommandExecBeforeReadiness(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()

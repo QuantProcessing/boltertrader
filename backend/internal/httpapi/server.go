@@ -30,15 +30,19 @@ type Options struct {
 	Trading         *TradingOptions
 	Funding         *FundingRoutesOptions
 	Projections     *BrowserProjectionRoutesOptions
-	WriteAuthority  interface{ Ready(context.Context) (bool, string) }
+	WriteAuthority  interface {
+		Ready(context.Context) (bool, string)
+	}
 }
 
 type Server struct {
-	sessions *session.Service
-	mode     string
-	contract frozencontract.Contract
-	mux      *http.ServeMux
-	writeAuthority interface{ Ready(context.Context) (bool, string) }
+	sessions       *session.Service
+	mode           string
+	contract       frozencontract.Contract
+	mux            *http.ServeMux
+	writeAuthority interface {
+		Ready(context.Context) (bool, string)
+	}
 }
 
 func New(options Options) (http.Handler, error) {

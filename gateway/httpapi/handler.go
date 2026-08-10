@@ -81,6 +81,29 @@ type Handler struct {
 	mux        *http.ServeMux
 }
 
+type WriteGate struct{ ready func() bool }
+
+func NewWriteGate(ready func() bool) WriteGate { return WriteGate{ready: ready} }
+
+func (gate WriteGate) Wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isMutationRequest(r) && (gate.ready == nil || !gate.ready()) {
+			writeError(w, http.StatusServiceUnavailable, "GATEWAY_WRITES_NOT_READY", "gateway writes are not ready", "", true)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isMutationRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodPut:
+		return true
+	default:
+		return false
+	}
+}
+
 type Route struct {
 	Method  string
 	Pattern string
@@ -118,6 +141,25 @@ var routes = []Route{
 
 func Routes() []Route {
 	return append([]Route(nil), routes...)
+}
+
+// NewMigrationValidationHandler exposes the public read surface without any
+// private runtime dependency. Database-backed projections can be mounted by
+// the executable while mutations remain guarded by WriteGate.
+func NewMigrationValidationHandler(monitor *health.Monitor) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/health/live", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, monitor.Liveness()) })
+	mux.HandleFunc("GET /v1/health/ready", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, monitor.Readiness()) })
+	for _, route := range routes {
+		if route.Method != http.MethodGet || strings.HasPrefix(route.Pattern, "/v1/health/") || strings.HasSuffix(route.Pattern, "/ws") {
+			continue
+		}
+		pattern := route.Method + " " + route.Pattern
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		})
+	}
+	return mux
 }
 
 func NewHandler(options Options) (*Handler, error) {

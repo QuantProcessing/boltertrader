@@ -8,10 +8,10 @@ type WriteAuthority interface {
 
 type WriteAuthorityFacts struct {
 	RuntimeInherits              bool
-	WriterUsage                 bool
-	FullCapabilityGrants        bool
-	EffectiveTablePrivileges    bool
-	EffectiveSequencePrivileges bool
+	WriterUsage                  bool
+	FullCapabilityGrants         bool
+	EffectiveTablePrivileges     bool
+	EffectiveSequencePrivileges  bool
 	CanonicalOwnershipViolations int
 }
 
