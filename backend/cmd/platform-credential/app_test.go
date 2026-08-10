@@ -104,6 +104,7 @@ func setPlatformCredentialTestEnvironment(t *testing.T, gatewayURL string) {
 	t.Setenv("BT_BOOTSTRAP_PASSWORD_HASH", string(hash))
 	t.Setenv("BT_PLATFORM_DATABASE", "bolter_platform_test")
 	t.Setenv("BT_PLATFORM_DATABASE_ROLE", "bolter_platform_test")
+	t.Setenv(config.LivePrivateWritesEnabledEnv, "false")
 	t.Setenv(config.GatewayURLEnv, gatewayURL)
 
 	writeProtected := func(directory, name, value string) string {
