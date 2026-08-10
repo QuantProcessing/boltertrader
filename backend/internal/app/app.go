@@ -71,6 +71,7 @@ type Dependencies struct {
 	AccountingSource      accounting.AuthoritativeSource
 	ReconciliationGateway orders.ReconciliationGateway
 	AccountGateway        accounts.GatewayDesiredClient
+	WriteAuthority        WriteAuthority
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -85,6 +86,15 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	writeAuthority := dependencies.WriteAuthority
+	if writeAuthority == nil {
+		writeAuthority = unavailableWriteAuthority{}
+	}
+	writeReady, writeReason := writeAuthority.Ready(context.Background())
+	if cfg.StartupProfile == config.StartupMigrationValidation && writeReady {
+		return nil, fmt.Errorf("migration-validation requires runtime writer USAGE to be absent")
+	}
+	validationProfile := cfg.StartupProfile == config.StartupMigrationValidation
 	liveMaximum := decimal.Zero
 	if cfg.FundingLiveEnabled {
 		parsedMaximum, parseErr := decimal.NewFromString(cfg.FundingLiveMaxNotional)
@@ -121,8 +131,10 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if dependencies.Database != nil {
 		sessionStore = postgres.NewSessionStore(dependencies.Database)
 		persistentIdentities := postgres.NewIdentityStore(dependencies.Database)
-		if err := seedBootstrapIdentity(context.Background(), persistentIdentities, cfg); err != nil {
-			return nil, fmt.Errorf("seed bootstrap identity: %w", err)
+		if !validationProfile {
+			if err := seedBootstrapIdentity(context.Background(), persistentIdentities, cfg); err != nil {
+				return nil, fmt.Errorf("seed bootstrap identity: %w", err)
+			}
 		}
 		identityStore = persistentIdentities
 		accountStore = postgres.NewAccountStore(dependencies.Database)
@@ -172,7 +184,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 
 	now := func() time.Time { return time.Now().UTC() }
 	var accountLifecycleReconciler *accountReconciler
-	if dependencies.AccountGateway != nil && dependencies.RuntimeProbe != nil {
+	if !validationProfile && dependencies.AccountGateway != nil && dependencies.RuntimeProbe != nil {
 		credentialReconciler, reconcileErr := accounts.NewReconciler(accountStore, accountSecrets, dependencies.AccountGateway, now)
 		if reconcileErr != nil {
 			return nil, reconcileErr
@@ -248,6 +260,10 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return readinessComponent(true, "")
 	})
 	readiness.Update("fundingWorker", readinessComponent(false, "worker_not_registered"))
+	readiness.SetEvaluator("canonicalWrites", func() platformsystem.Component {
+		ready, reason := writeAuthority.Ready(context.Background())
+		return readinessComponent(ready, reason)
+	})
 	authenticate := httpapi.SessionAuthenticator(sessionService)
 	principal := func(r *http.Request) (string, string, error) {
 		cookie, cookieErr := r.Cookie(httpapi.SessionCookieName)
@@ -286,7 +302,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		reconciliationGateway, _ = dependencies.FundingGateway.(orders.ReconciliationGateway)
 	}
 	var reconciliationRunner *orders.Reconciler
-	if reconciliationGateway != nil {
+	if !validationProfile && reconciliationGateway != nil {
 		reconciliationRunner, err = orders.NewReconciler(commandService, reconciliationGateway, reconciliationDispatcher{manual: manualService, funding: fundingProcessor}, orders.Mode(cfg.Mode), now)
 		if err != nil {
 			return nil, err
@@ -298,7 +314,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	}
 	fundingPlanProducer.WithAdmission(fundingAdmission).WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))
 	var accountingIngestor *accounting.Ingestor
-	if dependencies.AccountingSource != nil {
+	if !validationProfile && dependencies.AccountingSource != nil {
 		accountingObserver, observerErr := newAccountingFactObserver(activityLog, auditService)
 		if observerErr != nil {
 			return nil, observerErr
@@ -347,6 +363,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	workService.SetLiveWritesEnabled(cfg.FundingLiveEnabled)
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
+		WriteAuthority: writeAuthority,
 		Accounts:    &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
 		Audit:       &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
 		PublicData:  publicAPI,
@@ -359,7 +376,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	}
 	workHandler, err := workapi.New(workapi.Options{
 		TokenDigest: cfg.FundingWorkerTokenDigest, Mode: cfg.Mode, ContractVersion: workapi.ContractVersion,
-		Service: workService,
+		Service: workService, WriteAuthority: writeAuthority,
 		OnReadiness: func(ready bool) {
 			readiness.Update("fundingWorker", readinessComponent(ready, "worker_not_registered"))
 		},
