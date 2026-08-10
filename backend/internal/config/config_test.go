@@ -130,6 +130,9 @@ func TestLoadRejectsCredentialDefaultsAndUnsafeTokenFiles(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.token), test.permission); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(path, test.permission); err != nil {
+				t.Fatal(err)
+			}
 			t.Setenv(FundingWorkerTokenFileEnv, path)
 			if _, err := Load(); err == nil {
 				t.Fatal("Load() error = nil")
@@ -290,6 +293,9 @@ func setManualPreviewKeyFile(t *testing.T, mode, value string, permission os.Fil
 	}
 	path := filepath.Join(dir, "manual-preview-signing.key")
 	if err := os.WriteFile(path, []byte(value), permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, permission); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(ManualPreviewSigningKeyFileEnv, path)
