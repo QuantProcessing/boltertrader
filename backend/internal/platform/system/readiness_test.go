@@ -41,3 +41,21 @@ func TestReadinessEvaluatorIsRecomputedForEverySnapshot(t *testing.T) {
 		t.Fatalf("latched evaluated component=%+v", component)
 	}
 }
+
+func TestCanonicalWritesIsNamedAndNonblocking(t *testing.T) {
+	service := NewReadiness()
+	for _, name := range RequiredComponents {
+		service.Update(name, Component{Ready: true, Reason: "ready"})
+	}
+	service.Update("canonicalWrites", Component{Ready: false, Reason: "writer_role_unavailable"})
+	snapshot := service.Readiness()
+	if !snapshot.Ready {
+		t.Fatalf("canonical writes blocked health readiness: %#v", snapshot)
+	}
+	if component, ok := snapshot.Components["canonicalWrites"]; !ok || component.Ready || component.Reason != "writer_role_unavailable" {
+		t.Fatalf("canonicalWrites=%+v present=%v", component, ok)
+	}
+	if reasons := snapshot.BlockingReasons(); len(reasons) != 0 {
+		t.Fatalf("BlockingReasons()=%v", reasons)
+	}
+}

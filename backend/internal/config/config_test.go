@@ -223,6 +223,33 @@ func TestFundingLiveAdmissionConfigurationIsExplicitAndModeScoped(t *testing.T) 
 	}
 }
 
+func TestMigrationValidationProfileIsTestOnlyAndNonLive(t *testing.T) {
+	setValidEnvironment(t)
+	t.Setenv(PlatformStartupProfileEnv, string(StartupMigrationValidation))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StartupProfile != StartupMigrationValidation {
+		t.Fatalf("StartupProfile=%q", cfg.StartupProfile)
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"live mode":            func(value *Config) { value.Mode = "live" },
+		"funding live":         func(value *Config) { value.FundingLiveEnabled = true },
+		"private writes live":  func(value *Config) { value.LivePrivateWritesEnabled = true },
+		"unknown profile":      func(value *Config) { value.StartupProfile = "other" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cfg
+			mutate(&changed)
+			if err := changed.Validate(); err == nil {
+				t.Fatal("Validate() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	clearEnvironment(t)

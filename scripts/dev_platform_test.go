@@ -636,7 +636,8 @@ func TestDevPlatformContractAndExamples(t *testing.T) {
 		`WORKER_ID=${BT_FUNDING_WORKER_ID:-funding-default-$MODE}`,
 		`BT_MANUAL_PREVIEW_SIGNING_KEY_FILE`,
 		`BT_SECRET_KEY_SOURCE`, `BT_SECRET_STORE_DIR`, `BT_SECRET_STORE_NAMESPACE`,
-		`BT_SECRET_MASTER_KEY_VERSION`, `boltertrader-product-platform-upgrade/v5`,
+		`BT_SECRET_MASTER_KEY_VERSION`, `boltertrader-product-platform-upgrade/v4`,
+		`start-app`, `stop-app`, `restart-app`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Errorf("launcher is missing frozen contract value %q", required)

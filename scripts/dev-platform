@@ -14,6 +14,8 @@ fi
 
 SERVICES_START="postgres gateway platform funding-worker web"
 SERVICES_STOP="web funding-worker platform gateway postgres"
+SERVICES_APP_START="gateway platform funding-worker web"
+SERVICES_APP_STOP="web funding-worker platform gateway"
 FIXED_PORTS="postgres:15432 gateway:18082 platform-browser:18091 platform-work:18092 web:13001"
 
 RUNTIME_DIR=${FT_LOCAL_RUNTIME_DIR:-/tmp/boltertrader-local}
@@ -255,7 +257,7 @@ funding_worker_generation() {
 	[ -f "$OWNERSHIP_DIR/funding-worker.instance" ] || return 1
 	instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
 	[ -n "$instance_id" ] || return 1
-	body=$(printf '{"workerId":"%s","instanceId":"%s","productId":"funding","mode":"%s","contractVersion":"boltertrader-product-platform-upgrade/v5"}' "$WORKER_ID" "$instance_id" "$MODE")
+	body=$(printf '{"workerId":"%s","instanceId":"%s","productId":"funding","mode":"%s","contractVersion":"boltertrader-product-platform-upgrade/v4"}' "$WORKER_ID" "$instance_id" "$MODE")
 	response=$({
 		printf 'oauth2-bearer = "'
 		tr -d '\r\n' <"$TOKEN_FILE"
@@ -350,7 +352,7 @@ start_service() {
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \
 			BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}" \
 			BT_FUNDING_WORKER_TOKEN_FILE="$TOKEN_FILE" BT_FUNDING_WORKER_ID="$WORKER_ID" \
-			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v5" \
+			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v4" \
 			sh -c "exec $command" >>"$log_file" 2>&1 &
 	elif [ "$service" = "web" ]; then
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \
@@ -469,6 +471,36 @@ down() {
 	return "$drain_failed"
 }
 
+stop_app() {
+	validate_mode; prepare_directories; is_owned postgres || fail "postgres is not an owned ready process"
+	postgres_pid=$(sed -n '1p' "$PID_DIR/postgres.pid")
+	postgres_start=$(sed -n '1p' "$OWNERSHIP_DIR/postgres.start")
+	drain_failed=0
+	for service in $SERVICES_APP_STOP; do
+		if [ "$service" = "funding-worker" ]; then drain_worker || drain_failed=1; fi
+		stop_service "$service"
+	done
+	is_owned postgres || fail "postgres identity changed during stop-app"
+	[ "$(sed -n '1p' "$PID_DIR/postgres.pid")" = "$postgres_pid" ] || fail "postgres pid changed during stop-app"
+	[ "$(sed -n '1p' "$OWNERSHIP_DIR/postgres.start")" = "$postgres_start" ] || fail "postgres start time changed during stop-app"
+	return "$drain_failed"
+}
+
+start_app() {
+	validate_mode; prepare_directories; validate_runtime_config; is_owned postgres || fail "postgres is not an owned ready process"
+	postgres_pid=$(sed -n '1p' "$PID_DIR/postgres.pid")
+	postgres_start=$(sed -n '1p' "$OWNERSHIP_DIR/postgres.start")
+	for service in $SERVICES_APP_START; do
+		start_service "$service"
+		case "$START_SERVICE_STATE" in started) wait_service "$service" ;; already-ready) wait_owned_service "$service" ;; *) fail "$service returned an invalid start state" ;; esac
+	done
+	is_owned postgres || fail "postgres identity changed during start-app"
+	[ "$(sed -n '1p' "$PID_DIR/postgres.pid")" = "$postgres_pid" ] || fail "postgres pid changed during start-app"
+	[ "$(sed -n '1p' "$OWNERSHIP_DIR/postgres.start")" = "$postgres_start" ] || fail "postgres start time changed during start-app"
+}
+
+restart_app() { stop_app; start_app; }
+
 status() {
 	validate_mode; prepare_directories; failed=0
 	for service in $SERVICES_START; do
@@ -532,7 +564,7 @@ EOF
 }
 
 case "${1:-}" in
-	up) up ;; down) down ;; restart) down; up ;; status|ps) status ;; wait) wait_all ;;
+	up) up ;; down) down ;; restart) down; up ;; start-app) start_app ;; stop-app) stop_app ;; restart-app) restart_app ;; status|ps) status ;; wait) wait_all ;;
 	logs) logs ;; doctor) doctor ;; reset) reset ;; drain-funding-worker) drain_funding_worker ;; help) help ;;
-	*) fail "usage: scripts/dev-platform {up|down|restart|status|wait|logs|ps|doctor|reset|drain-funding-worker|help}" ;;
+	*) fail "usage: scripts/dev-platform {up|down|restart|start-app|stop-app|restart-app|status|wait|logs|ps|doctor|reset|drain-funding-worker|help}" ;;
 esac

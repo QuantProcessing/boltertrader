@@ -47,10 +47,18 @@ type fakeProtocolClient struct {
 	failed        bool
 	failedOptions []FailOptions
 	drained       bool
+	passiveCalls  int
 	events        []string
 }
 
 func (client *fakeProtocolClient) Register(context.Context) (int, error) { return 7, nil }
+
+func (client *fakeProtocolClient) PassiveStatus(context.Context) error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.passiveCalls++
+	return nil
+}
 
 func (client *fakeProtocolClient) Heartbeat(context.Context, HeartbeatOptions) (Registration, error) {
 	client.mu.Lock()
@@ -202,6 +210,33 @@ func (client *fakeProtocolClient) Drain(context.Context, DrainOptions) error {
 	client.drained = true
 	client.events = append(client.events, "drain")
 	return nil
+}
+
+func TestMigrationValidationPassivelyChecksAndNeverMutatesProtocol(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeProtocolClient{}
+	ready := 0
+	identities, err := NewFileIdentityStore(t.TempDir()+"/identities.json", "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(RuntimeOptions{
+		Client:          client,
+		Processor:       processorFunc(func(context.Context, Work) (Outcome, error) { return Outcome{}, nil }),
+		Identities:      identities,
+		ValidationReady: func() error { ready++; cancel(); return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ValidateAndWait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.passiveCalls != 1 || ready != 1 || client.claimCalls != 0 || client.heartbeats != 0 || client.drained || client.completed || client.failed {
+		t.Fatalf("passive=%d ready=%d claims=%d heartbeats=%d drained=%t completed=%t failed=%t", client.passiveCalls, ready, client.claimCalls, client.heartbeats, client.drained, client.completed, client.failed)
+	}
 }
 
 func TestRuntimeResnapshotsRenewsCompletesAndDrains(t *testing.T) {

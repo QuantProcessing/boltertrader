@@ -74,6 +74,28 @@ func TestClientRegistersClaimsAndDrainsWithScopedBearer(t *testing.T) {
 	}
 }
 
+func TestPassiveStatusUsesOnlyGET(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer test-worker-token" {
+			t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"data":{"mode":"test"}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, Token: "test-worker-token", WorkerID: "worker-a", InstanceID: "instance-a", Mode: "test", ContractVersion: workContractVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.PassiveStatus(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(seen, ","); got != "GET /internal/v1/funding-work/status" {
+		t.Fatalf("requests=%s", got)
+	}
+}
+
 func TestClientRejectsForbiddenWorkerEnvironment(t *testing.T) {
 	for _, env := range []string{"BT_GATEWAY_URL", "BT_GATEWAY_TOKEN_FILE", "GATEWAY_AUTH_TOKEN_FILE", "BT_LIVE_PRIVATE_WRITES_ENABLED", "DATABASE_URL", "BT_SECRET_MASTER_KEY_FILE", "TRADING_SECRET"} {
 		t.Setenv(env, "must-not-be-visible")
@@ -178,6 +200,21 @@ func TestConfigFromEnvironmentReadsTokenFileAndRequiresWorkerScope(t *testing.T)
 	}
 	if config.Token != "test-worker-token" || config.WorkerID != "worker-a" || config.Mode != "test" {
 		t.Fatalf("config=%+v", config)
+	}
+}
+
+func TestMigrationValidationProfileRequiresTestAndNoLiveWrites(t *testing.T) {
+	if err := (Config{StartupProfile: "migration-validation", Mode: "test"}).ValidateStartupProfile(); err != nil {
+		t.Fatalf("test validation profile: %v", err)
+	}
+	for _, config := range []Config{
+		{StartupProfile: "migration-validation", Mode: "live"},
+		{StartupProfile: "migration-validation", Mode: "test", LiveEnabled: true},
+		{StartupProfile: "unknown", Mode: "test"},
+	} {
+		if err := config.ValidateStartupProfile(); err == nil {
+			t.Fatalf("accepted config %+v", config)
+		}
 	}
 }
 

@@ -19,6 +19,15 @@ type correlationAudit struct {
 	records []platformaccounts.AuditRecord
 }
 
+type testWriteAuthority struct{ ready bool }
+
+func (authority testWriteAuthority) Ready(context.Context) (bool, string) {
+	if authority.ready {
+		return true, "ready"
+	}
+	return false, "writer_role_unavailable"
+}
+
 func (audit *correlationAudit) Append(_ context.Context, record platformaccounts.AuditRecord) error {
 	audit.records = append(audit.records, record)
 	return nil
@@ -141,5 +150,42 @@ func TestGeneratedRequestIDIsStableAcrossAccountAuditAndResponse(t *testing.T) {
 	}
 	if body.Meta.RequestID == "" || len(audit.records) != 1 || audit.records[0].RequestID != body.Meta.RequestID {
 		t.Fatalf("response requestId=%q audit=%+v", body.Meta.RequestID, audit.records)
+	}
+}
+
+func TestCanonicalWriteGateRejectsBeforeAccountStoreOrAudit(t *testing.T) {
+	hash, err := session.HashPassword("correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: hash, Mode: "test", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := sessions.Login(context.Background(), "owner", "correct horse battery staple")
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit := &correlationAudit{}
+	accountService, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: &routeSecretWriter{ref: "opaque-ref"}, Audit: audit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(Options{
+		Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, WriteAuthority: testWriteAuthority{},
+		Accounts: &AccountRoutesOptions{Service: accountService, Authenticate: SessionAuthenticator(sessions), AuthorizeMutation: SessionMutationAuthorizer(sessions)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"not":"decoded"}`))
+	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: login.Session.Token})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CANONICAL_WRITES_NOT_READY") {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	if len(audit.records) != 0 {
+		t.Fatalf("audit records=%+v", audit.records)
 	}
 }
