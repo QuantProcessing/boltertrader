@@ -268,6 +268,7 @@ authenticated_get() {
 		printf 'oauth2-bearer = "'
 		tr -d '\r\n' <"$token_path"
 		printf '"\n'
+		printf 'header = "X-Bolter-Mode: %s"\n' "$MODE"
 	} | curl --fail --silent --show-error --config - "$url" >/dev/null
 }
 

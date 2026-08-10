@@ -591,6 +591,7 @@ while :; do sleep 1; done
 	for _, required := range []string{
 		"request=--fail --silent --show-error --config - http://127.0.0.1:18082/internal/v1/runtime/status\nconfig=oauth2-bearer = \"" + gatewayToken + "\"",
 		"request=--fail --silent --show-error --config - http://127.0.0.1:18082/internal/v1/runtime/readiness\nconfig=oauth2-bearer = \"" + gatewayToken + "\"",
+		`header = "X-Bolter-Mode: test"`,
 		"oauth2-bearer = \"" + fundingToken + "\"",
 	} {
 		if !strings.Contains(string(requestLog), required) {
