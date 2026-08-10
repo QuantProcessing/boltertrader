@@ -140,11 +140,66 @@ func (row staticIdentityRow) Scan(destinations ...any) error {
 func TestReadLegacyAccountsReturnsEmptyOnlyWhenCatalogProvesRelationAbsent(t *testing.T) {
 	source := &legacyCatalogQuerier{relationPresent: false, queryErr: errors.New("account query must not run")}
 	accounts, err := readLegacyAccounts(context.Background(), source, "test")
-	if err != nil || len(accounts) != 0 {
+	if err != nil || accounts == nil || len(accounts) != 0 {
 		t.Fatalf("accounts=%v error=%v", accounts, err)
 	}
 	if !source.catalogCalled || source.queryCalled {
 		t.Fatalf("catalogCalled=%t queryCalled=%t", source.catalogCalled, source.queryCalled)
+	}
+	if !strings.Contains(source.catalogSQL, "to_regclass('public.platform_accounts')") {
+		t.Fatalf("catalog query is not schema-qualified: %s", source.catalogSQL)
+	}
+}
+
+func TestReadPlatformAccountsRejectsPartialSchema(t *testing.T) {
+	source := &legacyCatalogQuerier{
+		relationPresent: true,
+		schemaColumns:   []string{"account_id:text:NO", "venue:text:NO"},
+		queryErr:        errors.New("account query must not run"),
+	}
+	_, err := readLegacyAccounts(context.Background(), source, "test")
+	if err == nil || !strings.Contains(err.Error(), "SOURCE_PLATFORM_ACCOUNTS_SCHEMA_INVALID") {
+		t.Fatalf("error=%v", err)
+	}
+	if !source.schemaCalled || source.queryCalled {
+		t.Fatalf("schemaCalled=%t queryCalled=%t", source.schemaCalled, source.queryCalled)
+	}
+}
+
+func TestReadPlatformAccountsRejectsIncompatibleSchema(t *testing.T) {
+	source := &legacyCatalogQuerier{
+		relationPresent: true,
+		schemaColumns: []string{
+			"account_id:text:NO", "credential_version:integer:NO", "desired_state_revision:bigint:NO",
+			"product_ids:jsonb:NO", "runtime_generation:bigint:NO", "secret_ref:text:YES",
+			"state:text:NO", "venue:text:NO", "venue_environment:text:NO",
+		},
+	}
+	_, err := readLegacyAccounts(context.Background(), source, "test")
+	if err == nil || !strings.Contains(err.Error(), "SOURCE_PLATFORM_ACCOUNTS_SCHEMA_INVALID") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReadPlatformAccountsUsesQualifiedCompleteRelation(t *testing.T) {
+	source := &legacyCatalogQuerier{
+		relationPresent: true,
+		schemaColumns: []string{
+			"account_id:text:NO", "credential_version:bigint:NO", "desired_state_revision:bigint:NO",
+			"product_ids:jsonb:NO", "runtime_generation:bigint:NO", "secret_ref:text:YES",
+			"state:text:NO", "venue:text:NO", "venue_environment:text:NO",
+		},
+		queryErr: errors.New("qualified relation reached"),
+	}
+	_, err := readLegacyAccounts(context.Background(), source, "test")
+	if err == nil || !strings.Contains(err.Error(), "LEGACY_IDENTITY_READ_BLOCKED") {
+		t.Fatalf("error=%v", err)
+	}
+	if !source.schemaCalled || !source.queryCalled {
+		t.Fatalf("schemaCalled=%t queryCalled=%t", source.schemaCalled, source.queryCalled)
+	}
+	if !strings.Contains(source.querySQL, "FROM public.platform_accounts") {
+		t.Fatalf("account query is not schema-qualified: %s", source.querySQL)
 	}
 }
 
@@ -160,7 +215,15 @@ func TestReadLegacyAccountsRejectsCatalogPreflightFailure(t *testing.T) {
 }
 
 func TestReadLegacyAccountsRejectsPresentRelationQueryFailure(t *testing.T) {
-	source := &legacyCatalogQuerier{relationPresent: true, queryErr: errors.New("schema drift")}
+	source := &legacyCatalogQuerier{
+		relationPresent: true,
+		schemaColumns: []string{
+			"account_id:text:NO", "credential_version:bigint:NO", "desired_state_revision:bigint:NO",
+			"product_ids:jsonb:NO", "runtime_generation:bigint:NO", "secret_ref:text:YES",
+			"state:text:NO", "venue:text:NO", "venue_environment:text:NO",
+		},
+		queryErr: errors.New("schema drift"),
+	}
 	_, err := readLegacyAccounts(context.Background(), source, "test")
 	if err == nil || !strings.Contains(err.Error(), "LEGACY_IDENTITY_READ_BLOCKED") {
 		t.Fatalf("error=%v", err)
@@ -172,24 +235,36 @@ func TestReadLegacyAccountsRejectsPresentRelationQueryFailure(t *testing.T) {
 
 type legacyCatalogQuerier struct {
 	relationPresent bool
+	schemaColumns   []string
 	catalogErr      error
+	schemaErr       error
 	queryErr        error
 	catalogCalled   bool
+	schemaCalled    bool
 	queryCalled     bool
+	catalogSQL      string
+	querySQL        string
 }
 
-func (querier *legacyCatalogQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+func (querier *legacyCatalogQuerier) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	if strings.Contains(sql, "information_schema.columns") {
+		querier.schemaCalled = true
+		return legacyCatalogRow{columns: querier.schemaColumns, err: querier.schemaErr}
+	}
 	querier.catalogCalled = true
+	querier.catalogSQL = sql
 	return legacyCatalogRow{present: querier.relationPresent, err: querier.catalogErr}
 }
 
-func (querier *legacyCatalogQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (querier *legacyCatalogQuerier) Query(_ context.Context, sql string, _ ...any) (pgx.Rows, error) {
 	querier.queryCalled = true
+	querier.querySQL = sql
 	return nil, querier.queryErr
 }
 
 type legacyCatalogRow struct {
 	present bool
+	columns []string
 	err     error
 }
 
@@ -197,7 +272,14 @@ func (row legacyCatalogRow) Scan(destinations ...any) error {
 	if row.err != nil {
 		return row.err
 	}
-	*destinations[0].(*bool) = row.present
+	switch destination := destinations[0].(type) {
+	case *bool:
+		*destination = row.present
+	case *[]string:
+		*destination = append([]string(nil), row.columns...)
+	default:
+		return fmt.Errorf("unexpected scan destination %T", destination)
+	}
 	return nil
 }
 

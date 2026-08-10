@@ -302,15 +302,42 @@ type legacyQuerier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
+var sourcePlatformAccountSchema = []string{
+	"account_id:text:NO",
+	"credential_version:bigint:NO",
+	"desired_state_revision:bigint:NO",
+	"product_ids:jsonb:NO",
+	"runtime_generation:bigint:NO",
+	"secret_ref:text:YES",
+	"state:text:NO",
+	"venue:text:NO",
+	"venue_environment:text:NO",
+}
+
 func readLegacyAccounts(ctx context.Context, source legacyQuerier, mode string) ([]legacyAccount, error) {
 	var relationPresent bool
-	if err := source.QueryRow(ctx, `SELECT to_regclass('platform_accounts') IS NOT NULL`).Scan(&relationPresent); err != nil {
+	if err := source.QueryRow(ctx, `SELECT to_regclass('public.platform_accounts') IS NOT NULL`).Scan(&relationPresent); err != nil {
 		return nil, fmt.Errorf("LEGACY_IDENTITY_READ_BLOCKED")
 	}
 	if !relationPresent {
 		return []legacyAccount{}, nil
 	}
-	rows, err := source.Query(ctx, `SELECT account_id,venue,venue_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,state,product_ids FROM platform_accounts WHERE CASE WHEN venue_environment='live' THEN 'live' ELSE 'test' END=$1 ORDER BY account_id`, mode)
+	var schema []string
+	if err := source.QueryRow(ctx, `
+		SELECT COALESCE(
+			array_agg(column_name || ':' || data_type || ':' || is_nullable ORDER BY column_name),
+			ARRAY[]::text[]
+		)
+		FROM information_schema.columns
+		WHERE table_schema='public'
+		  AND table_name='platform_accounts'
+		  AND column_name = ANY($1)`, []string{
+		"account_id", "credential_version", "desired_state_revision", "product_ids",
+		"runtime_generation", "secret_ref", "state", "venue", "venue_environment",
+	}).Scan(&schema); err != nil || !slices.Equal(schema, sourcePlatformAccountSchema) {
+		return nil, fmt.Errorf("SOURCE_PLATFORM_ACCOUNTS_SCHEMA_INVALID")
+	}
+	rows, err := source.Query(ctx, `SELECT account_id,venue,venue_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,state,product_ids FROM public.platform_accounts WHERE CASE WHEN venue_environment='live' THEN 'live' ELSE 'test' END=$1 ORDER BY account_id`, mode)
 	if err != nil {
 		return nil, fmt.Errorf("LEGACY_IDENTITY_READ_BLOCKED")
 	}
