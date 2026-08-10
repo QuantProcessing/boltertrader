@@ -283,7 +283,7 @@ case "$*" in
 esac
 `)
 	makeShim := filepath.Join(binDir, "make")
-	writeExecutable(t, makeShim, "#!/bin/sh\nset -eu\nprintf 'make %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n")
+	writeExecutable(t, makeShim, "#!/bin/sh\nset -eu\nprintf 'make %s profiles %s %s %s\\n' \"$*\" \"${BT_GATEWAY_STARTUP_PROFILE:-}\" \"${BT_PLATFORM_STARTUP_PROFILE:-}\" \"${BT_FUNDING_STARTUP_PROFILE:-}\" >>\"$FAKE_COMMAND_LOG\"\n")
 	npm := filepath.Join(binDir, "npm")
 	writeExecutable(t, npm, "#!/bin/sh\nset -eu\nprintf 'npm %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n[ \"${FAKE_BROWSER_FAIL:-0}\" = 0 ]\n")
 
@@ -464,6 +464,10 @@ func (h *g010Harness) assertValidationProfiles() {
 	validate := strings.Index(commands, "migration-tool validate advance")
 	if restart < 0 || validate < restart {
 		h.t.Fatalf("validation stack was not restarted with all validation profiles before validation:\n%s", commands)
+	}
+	recheck := strings.Index(commands[validate:], "make test-real profiles migration-validation migration-validation migration-validation")
+	if recheck < 0 {
+		h.t.Fatalf("post-validation real stack check did not retain all validation profiles:\n%s", commands)
 	}
 }
 
