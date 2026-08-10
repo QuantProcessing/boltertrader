@@ -2,6 +2,7 @@ package migration
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestBaselineRejectsIncoherentQuiescenceSnapshot(t *testing.T) {
 
 func readManifest(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile("manifest.json")
+	data, err := os.ReadFile(filepath.Join("testdata", "manifest.baseline.json"))
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}

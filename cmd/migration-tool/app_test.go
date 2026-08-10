@@ -288,7 +288,7 @@ func sha256String(value string) string {
 
 func copyFixture(t *testing.T) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "migration", "manifest.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "migration", "testdata", "manifest.baseline.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package migration_test
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -52,9 +53,9 @@ type manifest struct {
 }
 
 func TestMigrationManifestFreezesProvenanceWithoutClaimingCutover(t *testing.T) {
-	data, err := os.ReadFile("manifest.json")
+	data, err := os.ReadFile(filepath.Join("testdata", "manifest.baseline.json"))
 	if err != nil {
-		t.Fatalf("read manifest: %v", err)
+		t.Fatalf("read manifest fixture: %v", err)
 	}
 	var got manifest
 	if err := json.Unmarshal(data, &got); err != nil {
