@@ -748,6 +748,37 @@ func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *t
 	}
 }
 
+func TestFinalDeltaSourceReadsBindRoleAndReadOnlyModeInConnection(t *testing.T) {
+	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
+		Operation: FinalDelta, EvidenceDir: t.TempDir(), ArtifactPath: "final.dump",
+		SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator",
+		TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator",
+		MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `service=source dbname=source_test options='-c role=source_test_migrator -c default_transaction_read_only=on'`
+	for _, index := range []int{0, 3, 4, 5, 6} {
+		command := commands[index]
+		if got := postgresConnectionArgument(command); got != want {
+			t.Fatalf("command %d source connection=%q, want %q", index, got, want)
+		}
+		if containsString(command.Env, "PGOPTIONS=-c default_transaction_read_only=on") {
+			t.Fatalf("command %d still relies on service-overridable PGOPTIONS: %+v", index, command)
+		}
+	}
+}
+
+func postgresConnectionArgument(command Command) string {
+	for _, argument := range command.Args {
+		if strings.HasPrefix(argument, "service=") {
+			return argument
+		}
+	}
+	return ""
+}
+
 func TestFinalDeltaSamplesHighWaterBeforeAndAfterDumpBeforeTargetMutation(t *testing.T) {
 	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: FinalDelta, EvidenceDir: t.TempDir(), ArtifactPath: "final.dump",

@@ -593,19 +593,24 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			return nil, Request{}, nil, "", fmt.Errorf("maintenance %w", err)
 		}
 	}
-	psql := func(service, database, query string) Command {
+	postgresConnection := func(service, database string) string {
 		connection := "service=" + service
 		if database != "" {
 			connection += " dbname=" + database
 		}
+		return connection
+	}
+	readOnlyConnection := func(service, database, role string) string {
+		return postgresConnection(service, database) + " options='-c role=" + role + " -c default_transaction_read_only=on'"
+	}
+	psqlConnection := func(connection, query string) Command {
 		return Command{Name: "psql", Args: []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align", "--command", query}}
 	}
+	psql := func(service, database, query string) Command {
+		return psqlConnection(postgresConnection(service, database), query)
+	}
 	psqlInput := func(service, database, script string, variables ...string) Command {
-		connection := "service=" + service
-		if database != "" {
-			connection += " dbname=" + database
-		}
-		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align"}
+		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", postgresConnection(service, database), "--tuples-only", "--no-align"}
 		for _, variable := range variables {
 			args = append(args, "--set", variable)
 		}
@@ -621,9 +626,8 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if roleErr != nil {
 			return Command{}, roleErr
 		}
-		probe := psqlInput(service, expectedDatabase, `SELECT (current_database()=:'expected_database' AND current_user=:'expected_role')::text;`+"\n", "expected_database="+expectedDatabase, "expected_role="+expectedRole)
+		probe := psqlConnection(readOnlyConnection(service, expectedDatabase, expectedRole), `SELECT (current_database()=:'expected_database' AND current_user=:'expected_role')::text;`)
 		probe.ExpectedOutput = "true"
-		probe.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
 		return probe, nil
 	}
 	switch request.Operation {
@@ -708,14 +712,12 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			return nil, Request{}, nil, "", err
 		}
 		apply.ArtifactPath = request.ArtifactPath
-		readOnly := []string{"PGOPTIONS=-c default_transaction_read_only=on"}
-		check := psql(source, sourceDatabase, "SHOW transaction_read_only")
-		check.Env = readOnly
+		sourceReadOnlyConnection := readOnlyConnection(source, sourceDatabase, request.SourceRole)
+		check := psqlConnection(sourceReadOnlyConnection, "SHOW transaction_read_only")
 		check.ExpectedOutput = "on"
 		verify := psql(target, targetDatabase, "SELECT (count(*) > 0)::text FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema')")
 		verify.ExpectedOutput = "true"
-		highWaterBefore := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
-		highWaterBefore.Env = readOnly
+		highWaterBefore := psqlConnection(sourceReadOnlyConnection, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
 		highWaterBefore.CaptureOutputAsInput = true
 		highWaterAfter := highWaterBefore
 		highWaterAfter.CaptureOutputAsInput = false
@@ -726,7 +728,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			maintenanceProbe,
 			check,
 			highWaterBefore,
-			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", "service=" + source + " dbname=" + sourceDatabase}, Env: readOnly},
+			{Name: "pg_dump", Args: []string{"--format=custom", "--no-owner", "--no-privileges", sourceReadOnlyConnection}},
 			highWaterAfter,
 			{Name: "pg_restore", Args: []string{"--list"}},
 			psqlInput(maintenance, maintenanceDatabase, `SET ROLE :"owner"; DROP DATABASE IF EXISTS :"database" WITH (FORCE); RESET ROLE;`+"\n", "database="+targetDatabase, "owner="+request.TargetRole),
@@ -852,8 +854,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			"--gateway-database", gatewayDatabase,
 			"--gateway-role", gatewayRole,
 		}}
-		highWater := psql(source, sourceDatabase, `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
-		highWater.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
+		highWater := psqlConnection(readOnlyConnection(source, sourceDatabase, request.SourceRole), `SELECT COALESCE(json_agg(row_to_json(mark) ORDER BY mark.relid)::text,'[]') FROM (SELECT relid::text,n_tup_ins,n_tup_upd,n_tup_del FROM pg_stat_user_tables) mark`)
 		highWater.ExpectedOutputSHA = capturedHighWater
 		migrate := Command{Name: platformMigrateExecutable, Args: []string{"--service", target, "--database", targetDatabase, "--role", targetRole}}
 		verifySchema := psql(target, targetDatabase, `SELECT (COALESCE((SELECT max(version) FROM platform_schema_migrations),0)=15 AND to_regclass('platform_account_routes') IS NOT NULL AND (SELECT count(*)=2 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='platform_accounts' AND column_name IN ('mode','native_environment')))::text`)
