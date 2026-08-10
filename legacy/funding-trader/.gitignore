@@ -1,8 +1,0 @@
-.pnpm-store/
-.playwright-cli/
-**/.playwright-cli/
-prototype/output/
-output/
-.omx/
-.DS_Store
-**/*.tsbuildinfo
