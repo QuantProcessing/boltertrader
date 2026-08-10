@@ -580,6 +580,51 @@ func TestRestorePlanUsesExplicitMaintenanceConnection(t *testing.T) {
 	}
 }
 
+func TestDatabaseRecreationBindsQuotedTargetOwnerForRestoreAndFinalDelta(t *testing.T) {
+	for _, operation := range []Operation{Restore, FinalDelta} {
+		t.Run(string(operation), func(t *testing.T) {
+			request := ExecutionRequest{
+				Operation: operation, EvidenceDir: t.TempDir(), ArtifactPath: "snapshot.dump",
+				SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator",
+				TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator",
+				MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
+			}
+			commands, _, _, _, err := executionPlan(Manifest{}, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			create := databaseCreateCommand(t, commands)
+			if !strings.Contains(string(create.Stdin), `CREATE DATABASE :"database" OWNER :"owner"`) ||
+				strings.Contains(string(create.Stdin), request.TargetRole) ||
+				!containsArg(create.Args, "owner="+request.TargetRole) {
+				t.Fatalf("database owner is not safely variable-bound: command=%+v stdin=%q", create, create.Stdin)
+			}
+
+			changed := request
+			changed.TargetRole = "alternate_test_migrator"
+			changedCommands, _, _, _, err := executionPlan(Manifest{}, changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changedCreate := databaseCreateCommand(t, changedCommands)
+			if commandDigest(create, nil).ArgvSHA256 == commandDigest(changedCreate, nil).ArgvSHA256 {
+				t.Fatal("target database owner is not digest-bound to the recreate command")
+			}
+		})
+	}
+}
+
+func databaseCreateCommand(t *testing.T, commands []Command) Command {
+	t.Helper()
+	for _, command := range commands {
+		if command.Name == "psql" && strings.Contains(string(command.Stdin), "CREATE DATABASE") {
+			return command
+		}
+	}
+	t.Fatal("database create command is missing")
+	return Command{}
+}
+
 func TestFinalSnapshotPlanCapturesOneReadableArchiveAndAppliesToCleanTarget(t *testing.T) {
 	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: FinalDelta, EvidenceDir: t.TempDir(), ArtifactPath: "final.dump",

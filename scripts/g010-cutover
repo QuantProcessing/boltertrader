@@ -89,7 +89,9 @@ SOURCE_WRITER_ROLE=${BT_G010_SOURCE_WRITER_ROLE:-bolter_funding_test_writer}
 TARGET_WRITER_ROLE=${BT_G010_TARGET_WRITER_ROLE:-bolter_platform_test_writer}
 
 require_test_identity() {
-	case "$2" in test|test_*|*_test|*_test_*) ;; *) fail "$1 must be a mode-scoped Test identity" ;; esac
+	identity=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr '.:-' '___')
+	case "$identity" in live|live_*|*_live|*_live_*) fail "$1 must be a mode-scoped Test identity without a Live token" ;; esac
+	case "$identity" in test|test_*|*_test|*_test_*) ;; *) fail "$1 must be a mode-scoped Test identity" ;; esac
 }
 require_test_identity BT_G010_SOURCE_SERVICE "$SOURCE_SERVICE"
 require_test_identity BT_G010_TARGET_SERVICE "$TARGET_SERVICE"
@@ -133,14 +135,6 @@ migration_tool() {
 	fi
 }
 
-has_evidence() {
-	kind=$1
-	for proof in "$EVIDENCE_DIR"/*"$kind"*.json; do
-		[ -f "$proof" ] && [ ! -L "$proof" ] && return 0
-	done
-	return 1
-}
-
 phase_at_least() {
 	want=$1
 	case "$phase:$want" in
@@ -169,81 +163,120 @@ recheck_real_stack() {
 		"$NPM" --prefix web run test:e2e:real || fail "real browser verification failed"
 }
 
-"$DEV_PLATFORM" doctor >/dev/null || fail "Secret Store or service permission checks failed"
-"$DEV_PLATFORM" status >/dev/null || fail "local Test services are unhealthy"
-"$DEV_PLATFORM" wait >/dev/null || fail "local Test services did not become ready"
+run_backup() {
+	migration_tool backup --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --id g010-test-backup --artifact "$BACKUP_ARTIFACT" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE"
+}
 
-status=$(migration_tool status --manifest "$MANIFEST") || fail "migration-tool status failed"
-phase=$(printf '%s\n' "$status" | sed -n 's/.*"phase"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-case "$phase" in
-	baseline|provenance-ready|backed-up|restored|delta-captured|fenced|backfilled|validated|activation-ready|activated) ;;
-	retirement-ready) fail "G010 must stop before source retirement" ;;
-	*) fail "migration-tool status returned an unsupported phase" ;;
-esac
+run_restore() {
+	migration_tool restore --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --artifact "$BACKUP_ARTIFACT" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE" --verifier g010-cutover
+}
 
-if phase_at_least backed-up; then
-	[ -f "$BACKUP_ARTIFACT" ] && [ ! -L "$BACKUP_ARTIFACT" ] && has_evidence backup || fail "backup evidence is absent"
-fi
-if phase_at_least restored; then
-	has_evidence restore || fail "restore evidence is absent"
-fi
-if phase_at_least delta-captured; then
-	[ -f "$DELTA_ARTIFACT" ] && [ ! -L "$DELTA_ARTIFACT" ] && has_evidence final-delta || fail "final delta evidence is absent"
-fi
-if phase_at_least fenced; then
-	has_evidence fence || fail "fence evidence is absent"
-	[ "$(writer_state "$SOURCE_SERVICE" "$SOURCE_DATABASE" "$SOURCE_WRITER_ROLE")" = 'false|0' ] || fail "source writer remains active after fence"
-	[ "$(writer_state "$TARGET_SERVICE" "$TARGET_DATABASE" "$TARGET_WRITER_ROLE")" = 'false|0' ] || fail "target writer remains active after fence"
-fi
-if phase_at_least backfilled; then
-	has_evidence backfill || fail "backfill evidence is absent"
-fi
-if phase_at_least validated; then
-	has_evidence validate || fail "validation evidence is absent"
-	recheck_real_stack
-fi
+run_final_delta() {
+	migration_tool final-delta --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --artifact "$DELTA_ARTIFACT" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
+}
+
+run_fence() {
+	migration_tool fence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE"
+}
 
 BACKFILL_MAPPING=${BT_G010_BACKFILL_MAPPING:-migration/backfills/account-route-v1.json}
 reject_private_route "$BACKFILL_MAPPING"
-case "$phase" in
-	baseline)
-		IMPORT_COMMIT=${BT_G010_IMPORT_COMMIT:-$(git rev-parse HEAD)}
-		case "$IMPORT_COMMIT" in ????????-*) fail "BT_G010_IMPORT_COMMIT must be a git object id" ;; esac
-		[ "${#IMPORT_COMMIT}" -eq 40 ] || fail "BT_G010_IMPORT_COMMIT must be a 40-character git object id"
-		migration_tool record-import --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --id "$IMPORT_COMMIT"
-		;;
-	provenance-ready)
-		migration_tool backup --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --id g010-test-backup --artifact "$BACKUP_ARTIFACT" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE"
-		;;
-	backed-up)
-		migration_tool restore --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --artifact "$BACKUP_ARTIFACT" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE" --verifier g010-cutover
-		;;
-	restored)
-		migration_tool final-delta --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --artifact "$DELTA_ARTIFACT" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
-		;;
-	delta-captured)
-		migration_tool fence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE"
-		;;
-	fenced)
-		migration_tool backfill --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --backfill-mapping "$BACKFILL_MAPPING" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE"
-		;;
-	backfilled)
+
+run_backfill() {
+	migration_tool backfill --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --backfill-mapping "$BACKFILL_MAPPING" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE"
+}
+
+run_validate() {
+	migration_tool validate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --verifier g010-cutover
+}
+
+revalidate_completed() {
+	if phase_at_least backed-up; then
+		run_backup || fail "migration-tool backup failed"
+	fi
+	if phase_at_least restored; then
+		run_restore || fail "migration-tool restore failed"
+	fi
+	if phase_at_least delta-captured; then
+		run_final_delta || fail "migration-tool final-delta failed"
+	fi
+	if phase_at_least fenced; then
+		run_fence || fail "migration-tool fence failed"
+		[ "$(writer_state "$SOURCE_SERVICE" "$SOURCE_DATABASE" "$SOURCE_WRITER_ROLE")" = 'false|0' ] || fail "source writer remains active after fence"
+		[ "$(writer_state "$TARGET_SERVICE" "$TARGET_DATABASE" "$TARGET_WRITER_ROLE")" = 'false|0' ] || fail "target writer remains active after fence"
+	fi
+	if phase_at_least backfilled; then
+		run_backfill || fail "migration-tool backfill failed"
+	fi
+	if phase_at_least validated; then
+		run_validate || fail "migration-tool validate failed"
+	fi
+}
+
+verify_structured_evidence() {
+	if [ -n "${BT_G010_ACTIVATION_PROOF:-}" ]; then
+		migration_tool verify-evidence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --import-commit "$IMPORT_COMMIT" --activation-proof "$BT_G010_ACTIVATION_PROOF" || fail "migration-tool verify-evidence failed"
+	else
+		migration_tool verify-evidence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --import-commit "$IMPORT_COMMIT" || fail "migration-tool verify-evidence failed"
+	fi
+}
+
+IMPORT_COMMIT=${BT_G010_IMPORT_COMMIT:-$(git rev-parse HEAD)}
+[ "${#IMPORT_COMMIT}" -eq 40 ] || fail "BT_G010_IMPORT_COMMIT must be a 40-character git object id"
+case "$IMPORT_COMMIT" in *[!0-9a-f]*) fail "BT_G010_IMPORT_COMMIT must be a lowercase git object id" ;; esac
+
+while :; do
+	status=$(migration_tool status --manifest "$MANIFEST") || fail "migration-tool status failed"
+	phase=$(printf '%s\n' "$status" | sed -n 's/.*"phase"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	case "$phase" in
+		baseline|provenance-ready|backed-up|restored|delta-captured|fenced|backfilled|validated|activation-ready|activated) ;;
+		retirement-ready) fail "G010 must stop before source retirement" ;;
+		*) fail "migration-tool status returned an unsupported phase" ;;
+	esac
+	verify_structured_evidence
+	revalidate_completed
+	if phase_at_least validated; then
 		recheck_real_stack
-		migration_tool validate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --verifier g010-cutover
-		;;
-	validated)
-		migration_tool prepare-activation --manifest "$MANIFEST"
-		;;
-	activation-ready)
-		if [ -n "${BT_G010_ACTIVATION_AT:-}" ] || [ -n "${BT_G010_CUTOVER_AT:-}" ]; then
+	fi
+
+	case "$phase" in
+		baseline)
+			migration_tool record-import --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --id "$IMPORT_COMMIT" || fail "migration-tool record-import failed"
+			;;
+		provenance-ready)
+			run_backup || fail "migration-tool backup failed"
+			;;
+		backed-up)
+			run_restore || fail "migration-tool restore failed"
+			;;
+		restored)
+			run_final_delta || fail "migration-tool final-delta failed"
+			;;
+		delta-captured)
+			run_fence || fail "migration-tool fence failed"
+			;;
+		fenced)
+			run_backfill || fail "migration-tool backfill failed"
+			;;
+		backfilled)
+			"$DEV_PLATFORM" doctor >/dev/null || fail "Secret Store or service permission checks failed"
+			run_validate || fail "migration-tool validate failed"
+			;;
+		validated)
+			migration_tool prepare-activation --manifest "$MANIFEST" || fail "migration-tool prepare-activation failed"
+			;;
+		activation-ready)
+			if [ -z "${BT_G010_ACTIVATION_AT:-}" ] && [ -z "${BT_G010_CUTOVER_AT:-}" ]; then
+				printf 'g010-cutover: activation-ready; awaiting externally observed activation evidence\n'
+				exit 0
+			fi
 			[ -n "${BT_G010_ACTIVATION_AT:-}" ] && [ -n "${BT_G010_CUTOVER_AT:-}" ] || fail "activation and cutover timestamps must be supplied together"
 			[ -f "${BT_G010_ACTIVATION_PROOF:-}" ] && [ ! -L "$BT_G010_ACTIVATION_PROOF" ] || fail "BT_G010_ACTIVATION_PROOF must name the external activation proof"
-			migration_tool record-activation-evidence --manifest "$MANIFEST" --proof "$BT_G010_ACTIVATION_PROOF" --activation-at "$BT_G010_ACTIVATION_AT" --cutover-at "$BT_G010_CUTOVER_AT" --verifier g010-cutover
-		else
-			printf 'g010-cutover: activation-ready; awaiting externally observed activation evidence\n'
-		fi
-		;;
-	activated)
-		printf 'g010-cutover: activated; source retirement remains outside G010\n'
-		;;
-esac
+			migration_tool record-activation-evidence --manifest "$MANIFEST" --proof "$BT_G010_ACTIVATION_PROOF" --activation-at "$BT_G010_ACTIVATION_AT" --cutover-at "$BT_G010_CUTOVER_AT" --verifier g010-cutover || fail "migration-tool record-activation-evidence failed"
+			;;
+		activated)
+			printf 'g010-cutover: activated; source retirement remains outside G010\n'
+			exit 0
+			;;
+	esac
+done

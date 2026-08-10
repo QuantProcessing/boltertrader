@@ -88,6 +88,32 @@ func TestRunDoesNotExposeActivationOrRetirementExecutionCommands(t *testing.T) {
 	}
 }
 
+func TestRunVerifyEvidenceUsesReadOnlyStructuredVerifier(t *testing.T) {
+	manifest := copyFixture(t)
+	before, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = run([]string{
+		"verify-evidence", "--manifest", manifest, "--evidence-dir", t.TempDir(),
+		"--import-commit", strings.Repeat("a", 40),
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("verify-evidence: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"phase":"baseline"`) {
+		t.Fatalf("verify-evidence output = %q", stdout.String())
+	}
+	data, readErr := os.ReadFile(manifest)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != string(before) {
+		t.Fatal("verify-evidence mutated the manifest")
+	}
+}
+
 func copyFixture(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "migration", "manifest.json"))

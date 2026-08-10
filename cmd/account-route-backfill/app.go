@@ -298,10 +298,18 @@ func containsIdentityToken(value, want string) bool {
 }
 
 type legacyQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 func readLegacyAccounts(ctx context.Context, source legacyQuerier, mode string) ([]legacyAccount, error) {
+	var relationPresent bool
+	if err := source.QueryRow(ctx, `SELECT to_regclass('platform_accounts') IS NOT NULL`).Scan(&relationPresent); err != nil {
+		return nil, fmt.Errorf("LEGACY_IDENTITY_READ_BLOCKED")
+	}
+	if !relationPresent {
+		return []legacyAccount{}, nil
+	}
 	rows, err := source.Query(ctx, `SELECT account_id,venue,venue_environment,secret_ref,desired_state_revision,runtime_generation,credential_version,state,product_ids FROM platform_accounts WHERE CASE WHEN venue_environment='live' THEN 'live' ELSE 'test' END=$1 ORDER BY account_id`, mode)
 	if err != nil {
 		return nil, fmt.Errorf("LEGACY_IDENTITY_READ_BLOCKED")

@@ -32,6 +32,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if command == "status" {
 		return runStatus(args[1:], stdout, stderr)
 	}
+	if command == "verify-evidence" {
+		return runVerifyEvidence(args[1:], stdout, stderr)
+	}
 	operation, ok := map[string]migration.Operation{
 		"record-import": migration.RecordImport,
 		"backup":        migration.Backup, "restore": migration.Restore, "final-delta": migration.FinalDelta,
@@ -115,6 +118,28 @@ func run(args []string, stdout, stderr io.Writer) error {
 		ActivationPrepared: result.Phase == migration.PhaseActivationReady,
 		RetirementPrepared: result.Phase == migration.PhaseRetirementReady,
 	})
+}
+
+func runVerifyEvidence(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("verify-evidence", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	manifestPath := flags.String("manifest", "", "migration manifest path")
+	evidenceDir := flags.String("evidence-dir", "", "generated evidence directory")
+	importCommit := flags.String("import-commit", "", "recorded import commit")
+	activationProof := flags.String("activation-proof", "", "external activation proof path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*manifestPath) == "" || strings.TrimSpace(*evidenceDir) == "" || strings.TrimSpace(*importCommit) == "" {
+		return fmt.Errorf("--manifest, --evidence-dir, and --import-commit are required and positional arguments are not accepted")
+	}
+	if err := migration.VerifyEvidence(migration.EvidenceVerificationRequest{
+		ManifestPath: *manifestPath, EvidenceDir: *evidenceDir, ImportCommit: *importCommit,
+		ActivationProofPath: *activationProof,
+	}); err != nil {
+		return err
+	}
+	return runStatus([]string{"--manifest", *manifestPath}, stdout, stderr)
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) error {

@@ -484,7 +484,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{
 			targetProbe,
 			maintenanceProbe,
-			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE); CREATE DATABASE :"database" OWNER :"owner";`+"\n", "database="+targetDatabase, "owner="+request.TargetRole),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase, request.ArtifactPath}},
 			verify,
 		}, apply, []string{"connected-identities-verified", "clean-target-created", "restored-schema-nonempty"}, "", nil
@@ -543,7 +543,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			highWaterAfter,
 			{Name: "pg_restore", Args: []string{"--list"}},
 			psqlInput(maintenance, maintenanceDatabase, `DROP DATABASE IF EXISTS :"database" WITH (FORCE);`+"\n", "database="+targetDatabase),
-			psqlInput(maintenance, maintenanceDatabase, `CREATE DATABASE :"database";`+"\n", "database="+targetDatabase),
+			psqlInput(maintenance, maintenanceDatabase, `CREATE DATABASE :"database" OWNER :"owner";`+"\n", "database="+targetDatabase, "owner="+request.TargetRole),
 			{Name: "pg_restore", Args: []string{"--exit-on-error", "--no-owner", "--no-privileges", "--dbname", "service=" + target + " dbname=" + targetDatabase}},
 			verify,
 		}, apply, []string{"connected-identities-verified", "capture-session-read-only", "source-high-water-stable-across-dump", "final-snapshot-readable", "source-high-water-captured", "clean-target-created", "final-snapshot-applied", "restored-schema-nonempty"}, "", nil

@@ -137,6 +137,70 @@ func (row staticIdentityRow) Scan(destinations ...any) error {
 	return nil
 }
 
+func TestReadLegacyAccountsReturnsEmptyOnlyWhenCatalogProvesRelationAbsent(t *testing.T) {
+	source := &legacyCatalogQuerier{relationPresent: false, queryErr: errors.New("account query must not run")}
+	accounts, err := readLegacyAccounts(context.Background(), source, "test")
+	if err != nil || len(accounts) != 0 {
+		t.Fatalf("accounts=%v error=%v", accounts, err)
+	}
+	if !source.catalogCalled || source.queryCalled {
+		t.Fatalf("catalogCalled=%t queryCalled=%t", source.catalogCalled, source.queryCalled)
+	}
+}
+
+func TestReadLegacyAccountsRejectsCatalogPreflightFailure(t *testing.T) {
+	source := &legacyCatalogQuerier{catalogErr: errors.New("catalog unavailable"), queryErr: errors.New("account query must not run")}
+	_, err := readLegacyAccounts(context.Background(), source, "test")
+	if err == nil || !strings.Contains(err.Error(), "LEGACY_IDENTITY_READ_BLOCKED") {
+		t.Fatalf("error=%v", err)
+	}
+	if !source.catalogCalled || source.queryCalled {
+		t.Fatalf("catalogCalled=%t queryCalled=%t", source.catalogCalled, source.queryCalled)
+	}
+}
+
+func TestReadLegacyAccountsRejectsPresentRelationQueryFailure(t *testing.T) {
+	source := &legacyCatalogQuerier{relationPresent: true, queryErr: errors.New("schema drift")}
+	_, err := readLegacyAccounts(context.Background(), source, "test")
+	if err == nil || !strings.Contains(err.Error(), "LEGACY_IDENTITY_READ_BLOCKED") {
+		t.Fatalf("error=%v", err)
+	}
+	if !source.catalogCalled || !source.queryCalled {
+		t.Fatalf("catalogCalled=%t queryCalled=%t", source.catalogCalled, source.queryCalled)
+	}
+}
+
+type legacyCatalogQuerier struct {
+	relationPresent bool
+	catalogErr      error
+	queryErr        error
+	catalogCalled   bool
+	queryCalled     bool
+}
+
+func (querier *legacyCatalogQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+	querier.catalogCalled = true
+	return legacyCatalogRow{present: querier.relationPresent, err: querier.catalogErr}
+}
+
+func (querier *legacyCatalogQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	querier.queryCalled = true
+	return nil, querier.queryErr
+}
+
+type legacyCatalogRow struct {
+	present bool
+	err     error
+}
+
+func (row legacyCatalogRow) Scan(destinations ...any) error {
+	if row.err != nil {
+		return row.err
+	}
+	*destinations[0].(*bool) = row.present
+	return nil
+}
+
 func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
 	path := writeMapping(t)
 	prior := executeBackfill
