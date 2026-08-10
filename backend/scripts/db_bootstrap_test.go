@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -28,8 +29,8 @@ func TestDatabaseBootstrapFreezesSeparatedTestAuthority(t *testing.T) {
 		"REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
 		"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
 		"GRANT pg_signal_backend TO bolter_platform_test_admin",
-		"SET ROLE bolter_platform_test_admin",
-		"SELECT CASE WHEN current_user = 'bolter_platform_test_admin'",
+		"maintenance_user=bolter_platform_test_admin",
+		"current_user <> session_user OR current_user <> 'bolter_platform_test_admin'",
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("bootstrap missing %q", required)
@@ -60,6 +61,187 @@ func TestDatabaseBootstrapKeepsLiveRolesUnprivilegedAndInherited(t *testing.T) {
 	}
 	if strings.Contains(script, "GRANT bolter_platform_live_writer") || strings.Contains(script, "GRANT bolter_gateway_live_writer") {
 		t.Fatal("bootstrap grants a Live writer membership")
+	}
+}
+
+func TestDatabaseBootstrapMaintenanceRoleUsesOnlyDelegableAlterAttributes(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	start := strings.Index(script, `PGUSER=$maintenance_user "$PSQL"`)
+	if start < 0 {
+		t.Fatal("bootstrap does not open an authenticated maintenance-role block")
+	}
+	end := strings.Index(script[start:], `PGUSER=$cluster_admin_user "$PSQL"`)
+	if end < 0 {
+		t.Fatal("bootstrap does not close the authenticated maintenance-role block")
+	}
+	maintenanceBlock := script[start : start+end]
+	protectedAlter := regexp.MustCompile(`(?i)ALTER ROLE[^;\n]*(?:SUPERUSER|REPLICATION|BYPASSRLS)`)
+	if match := protectedAlter.FindString(maintenanceBlock); match != "" {
+		t.Fatalf("maintenance role attempts a superuser-only role alteration: %s", match)
+	}
+	for _, protected := range []string{"rolsuper", "rolreplication", "rolbypassrls"} {
+		if !strings.Contains(maintenanceBlock, protected) {
+			t.Errorf("maintenance role does not fail closed on existing %s drift", protected)
+		}
+	}
+}
+
+func TestDatabaseBootstrapTemporarilyDelegatesExistingRolesBeforeMaintenanceAlter(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	maintenanceSession := strings.Index(script, `PGUSER=$maintenance_user "$PSQL"`)
+	if maintenanceSession < 0 {
+		t.Fatal("bootstrap does not open an authenticated maintenance-role block")
+	}
+	clusterNormalization := strings.Index(script[maintenanceSession:], `PGUSER=$cluster_admin_user "$PSQL"`)
+	if clusterNormalization < 0 {
+		t.Fatal("bootstrap does not contain ordered maintenance-role boundaries")
+	}
+	if !strings.Contains(script[:maintenanceSession], "GRANT %I TO bolter_platform_test_admin WITH ADMIN OPTION") {
+		t.Fatal("existing roles are not delegated before maintenance-role ALTER statements")
+	}
+	afterReset := script[maintenanceSession+clusterNormalization:]
+	normalized := strings.Join(strings.Fields(afterReset), " ")
+	selfGrantCleanup := strings.Index(normalized, "GRANTED BY bolter_platform_test_admin")
+	adminDowngrade := strings.Index(normalized, "WITH ADMIN FALSE")
+	if selfGrantCleanup < 0 || adminDowngrade < 0 || selfGrantCleanup > adminDowngrade {
+		t.Fatal("bootstrap does not clean historical self-grants before removing temporary ADMIN OPTION")
+	}
+	for _, cleanup := range []string{
+		"GRANT bolter_funding_test_migrator, bolter_platform_test_migrator, bolter_gateway_test_migrator TO bolter_platform_test_admin WITH ADMIN FALSE",
+		"REVOKE bolter_funding_test FROM bolter_platform_test_admin",
+		"REVOKE bolter_platform_live, bolter_gateway_live FROM bolter_platform_test_admin",
+	} {
+		if !strings.Contains(normalized, cleanup) {
+			t.Errorf("bootstrap does not remove temporary role authority %q", cleanup)
+		}
+	}
+}
+
+func TestDatabaseBootstrapNormalizesMaintenanceMembershipOptions(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(payload)), " ")
+	for _, required := range []string{
+		"GRANT bolter_funding_test_migrator, bolter_platform_test_migrator, bolter_gateway_test_migrator TO bolter_platform_test_admin WITH SET TRUE",
+		"GRANT bolter_funding_test_migrator, bolter_platform_test_migrator, bolter_gateway_test_migrator TO bolter_platform_test_admin WITH INHERIT FALSE",
+		"GRANT bolter_funding_test_migrator, bolter_platform_test_migrator, bolter_gateway_test_migrator TO bolter_platform_test_admin WITH ADMIN FALSE",
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("bootstrap does not normalize final migrator membership with %q", required)
+		}
+	}
+}
+
+func TestDatabaseBootstrapAuthenticatesAsMaintenanceRole(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(payload)), " ")
+	for _, required := range []string{
+		"maintenance_user=bolter_platform_test_admin",
+		`PGUSER=$maintenance_user "$PSQL"`,
+		"current_user = session_user AND current_user = 'bolter_platform_test_admin'",
+		`PGUSER=$maintenance_user "$PSQL" -v ON_ERROR_STOP=1 -d "$database"`,
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("bootstrap does not authenticate the bounded maintenance session with %q", required)
+		}
+	}
+}
+
+func TestDatabaseBootstrapRunsDatabaseACLsThroughExactOwners(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(payload)), " ")
+	for database, owner := range map[string]string{
+		"bolter_funding_test":  "bolter_funding_test_migrator",
+		"bolter_platform_test": "bolter_platform_test_migrator",
+		"bolter_gateway_test":  "bolter_gateway_test_migrator",
+		"bolter_platform_live": "bolter_platform_live",
+		"bolter_gateway_live":  "bolter_gateway_live",
+	} {
+		pattern := regexp.MustCompile(`SET ROLE ` + owner + `;.*ALTER DATABASE ` + database + ` OWNER TO ` + owner + `;.*REVOKE CONNECT ON DATABASE ` + database + ` FROM PUBLIC;.*RESET ROLE;`)
+		if !pattern.MatchString(normalized) {
+			t.Errorf("database %s ownership and ACLs do not run through exact owner %s", database, owner)
+		}
+	}
+}
+
+func TestDatabaseBootstrapRepairsLegacyTestOwnersBeforeMaintenanceACLs(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	secondMaintenance := strings.LastIndex(script, `PGUSER=$maintenance_user "$PSQL" -v ON_ERROR_STOP=1 -d postgres`)
+	if secondMaintenance < 0 {
+		t.Fatal("bootstrap does not contain the database maintenance session")
+	}
+	normalizedRepair := strings.Join(strings.Fields(script[:secondMaintenance]), " ")
+	for database, owner := range map[string]string{
+		"bolter_funding_test":  "bolter_funding_test_migrator",
+		"bolter_platform_test": "bolter_platform_test_migrator",
+		"bolter_gateway_test":  "bolter_gateway_test_migrator",
+	} {
+		repair := "SELECT 'ALTER DATABASE " + database + " OWNER TO " + owner + "' WHERE EXISTS (SELECT 1 FROM pg_database WHERE datname = '" + database + "')\\gexec"
+		if !strings.Contains(normalizedRepair, repair) {
+			t.Errorf("bootstrap does not repair fixed database %s to owner %s before maintenance ACLs", database, owner)
+		}
+	}
+}
+
+func TestDatabaseBootstrapBoundsMaintenanceTargetConnect(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized := strings.Join(strings.Fields(string(payload)), " ")
+	for _, database := range []string{"bolter_funding_test", "bolter_platform_test", "bolter_gateway_test"} {
+		grant := "GRANT CONNECT ON DATABASE " + database + " TO bolter_platform_test_admin"
+		if !strings.Contains(normalized, grant) {
+			t.Errorf("bootstrap does not grant bounded maintenance CONNECT for %s", database)
+		}
+	}
+	for _, required := range []string{
+		`-v database="$database"`,
+		`REVOKE CONNECT ON DATABASE :"database" FROM bolter_platform_test_admin`,
+	} {
+		if !strings.Contains(normalized, required) {
+			t.Errorf("bootstrap does not revoke bounded maintenance CONNECT with %q", required)
+		}
+	}
+}
+
+func TestDatabaseBootstrapMaintenanceRoleNeverGrantsAuthorityToItself(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	start := strings.Index(script, `PGUSER=$maintenance_user "$PSQL"`)
+	if start < 0 {
+		t.Fatal("bootstrap does not open an authenticated maintenance-role block")
+	}
+	end := strings.Index(script[start:], `PGUSER=$cluster_admin_user "$PSQL"`)
+	if end < 0 {
+		t.Fatal("bootstrap does not close the authenticated maintenance-role block")
+	}
+	maintenanceBlock := script[start : start+end]
+	if strings.Contains(maintenanceBlock, "TO bolter_platform_test_admin") {
+		t.Fatal("maintenance role grants role authority back to itself")
 	}
 }
 
