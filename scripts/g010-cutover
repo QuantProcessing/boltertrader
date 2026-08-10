@@ -200,6 +200,14 @@ run_validate() {
 	migration_tool validate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --verifier g010-cutover
 }
 
+validation_supervisor() {
+	action=$1
+	env BT_GATEWAY_STARTUP_PROFILE=migration-validation \
+		BT_PLATFORM_STARTUP_PROFILE=migration-validation \
+		BT_FUNDING_STARTUP_PROFILE=migration-validation \
+		"$DEV_PLATFORM" "$action"
+}
+
 run_activate() {
 	migration_tool activate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --journal "$EVIDENCE_DIR/activation-attempt.json" --state-dir "$STATE_DIR" --backup-id g010-test-backup --backup-artifact "$BACKUP_ARTIFACT" --final-delta-artifact "$DELTA_ARTIFACT" --backfill-mapping "$BACKFILL_MAPPING" --verifier g010-cutover --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-runtime-role "$TARGET_RUNTIME_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE" --gateway-runtime-role "$GATEWAY_RUNTIME_ROLE" --gateway-writer-role "$GATEWAY_WRITER_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
 }
@@ -249,6 +257,9 @@ while :; do
 		exit 0
 	fi
 	verify_structured_evidence
+	case "$phase" in
+		validated|activation-ready) validation_supervisor start-app || fail "validation services failed to start" ;;
+	esac
 	revalidate_completed
 	if phase_at_least validated; then
 		recheck_real_stack
@@ -275,6 +286,7 @@ while :; do
 			;;
 		backfilled)
 			"$DEV_PLATFORM" doctor >/dev/null || fail "Secret Store or service permission checks failed"
+			validation_supervisor restart-app || fail "validation services failed to restart"
 			run_validate || fail "migration-tool validate failed"
 			;;
 		validated)

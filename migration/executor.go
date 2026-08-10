@@ -880,7 +880,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return []Command{sourceProbe, highWater, migrate, verifySchema, command}, apply, []string{"connected-identities-verified", "source-high-water-equal", "platform-schema-migrated", "mapping-content-stable", "durable-idempotent-saga", "pending-only"}, inputSHA, nil
 	case Validate:
 		apply.Verifier = request.Verifier
-		realEnv := []string{"BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0", "BT_LIVE_PRIVATE_WRITES_ENABLED=0"}
+		realEnv := []string{"BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0", "BT_LIVE_PRIVATE_WRITES_ENABLED=0", "BT_GATEWAY_STARTUP_PROFILE=migration-validation", "BT_PLATFORM_STARTUP_PROFILE=migration-validation", "BT_FUNDING_STARTUP_PROFILE=migration-validation"}
 		realBrowser := Command{Name: "npm", Args: []string{"--prefix", "web", "run", "test:e2e", "--", "platform-real.spec.ts"}, Dir: manifest.TargetRepo, Env: realEnv}
 		return []Command{
 			{Name: "go", Args: []string{"test", "./credential", "./routeprofile", "./secretstore", "./gateway/...", "./cmd/exchange-gateway", "./migration", "./cmd/migration-tool", "./cmd/account-route-backfill", "./scripts"}, Dir: manifest.TargetRepo},
@@ -888,7 +888,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 			{Name: "make", Args: []string{"test-browser"}, Dir: manifest.TargetRepo},
 			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
 			realBrowser,
-			{Name: "make", Args: []string{"dev-platform-restart"}, Dir: manifest.TargetRepo},
+			{Name: "./scripts/dev-platform", Args: []string{"restart-app"}, Dir: manifest.TargetRepo, Env: realEnv},
 			{Name: "make", Args: []string{"test-real"}, Dir: manifest.TargetRepo, Env: realEnv},
 			realBrowser,
 		}, apply, []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}, "", nil

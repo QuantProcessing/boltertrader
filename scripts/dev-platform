@@ -29,6 +29,8 @@ OWNERSHIP_DIR="$STATE_DIR/ownership"
 CREDENTIAL_DIR="$RUNTIME_DIR/credentials/$MODE"
 EXPECTED_TOKEN_FILE="$CREDENTIAL_DIR/funding-worker.token"
 TOKEN_FILE=${BT_FUNDING_WORKER_TOKEN_FILE:-$EXPECTED_TOKEN_FILE}
+GATEWAY_STARTUP_PROFILE=${BT_GATEWAY_STARTUP_PROFILE:-normal}
+PLATFORM_STARTUP_PROFILE=${BT_PLATFORM_STARTUP_PROFILE:-normal}
 FUNDING_STARTUP_PROFILE=${BT_FUNDING_STARTUP_PROFILE:-normal}
 FUNDING_STATE_FILE="$STATE_DIR/funding-worker.state"
 EXPECTED_GATEWAY_TOKEN_FILE="$CREDENTIAL_DIR/gateway-adapter.token"
@@ -126,6 +128,13 @@ validate_mode() {
 	[ "$SECRET_STORE_NAMESPACE" = "$EXPECTED_SECRET_STORE_NAMESPACE" ] || fail "BT_SECRET_STORE_NAMESPACE must be $EXPECTED_SECRET_STORE_NAMESPACE"
 	[ "$SECRET_MASTER_KEY_VERSION" = v1 ] || fail "BT_SECRET_MASTER_KEY_VERSION must be v1"
 	[ "$BT_GATEWAY_URL" = "http://127.0.0.1:18082" ] || fail "BT_GATEWAY_URL must be http://127.0.0.1:18082"
+	for profile in "$GATEWAY_STARTUP_PROFILE" "$PLATFORM_STARTUP_PROFILE" "$FUNDING_STARTUP_PROFILE"; do
+		case "$profile" in
+			normal) ;;
+			migration-validation) [ "$MODE" = test ] || fail "migration-validation startup profiles require Test mode" ;;
+			*) fail "startup profiles must be normal or migration-validation" ;;
+		esac
+	done
 }
 
 ensure_token() {
@@ -381,9 +390,13 @@ start_service() {
 			BT_WEB_LISTEN_ADDR="${BT_WEB_LISTEN_ADDR:-127.0.0.1:13001}" \
 			BT_PLATFORM_BROWSER_URL="${BT_PLATFORM_BROWSER_URL:-http://127.0.0.1:18091/api/v1}" \
 			sh -c "exec $command" >>"$log_file" 2>&1 &
+	elif [ "$service" = "gateway" ]; then
+		nohup env BT_GATEWAY_STARTUP_PROFILE="$GATEWAY_STARTUP_PROFILE" \
+			sh -c "exec $command" >>"$log_file" 2>&1 &
 	elif [ "$service" = "platform" ]; then
 		nohup env BT_MODE="$BT_MODE" FT_MODE="$MODE" \
 			BT_PLATFORM_DATABASE="$BT_PLATFORM_DATABASE" BT_PLATFORM_DATABASE_ROLE="$BT_PLATFORM_DATABASE_ROLE" \
+			BT_PLATFORM_STARTUP_PROFILE="$PLATFORM_STARTUP_PROFILE" \
 			BT_MANUAL_PREVIEW_SIGNING_KEY_FILE="$MANUAL_PREVIEW_KEY_FILE" \
 			BT_SECRET_KEY_SOURCE="$SECRET_KEY_SOURCE" BT_SECRET_STORE_DIR="$SECRET_STORE_DIR" \
 			BT_SECRET_STORE_NAMESPACE="$SECRET_STORE_NAMESPACE" BT_SECRET_MASTER_KEY_VERSION="$SECRET_MASTER_KEY_VERSION" \

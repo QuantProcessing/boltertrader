@@ -177,6 +177,7 @@ func TestG010Cutover(t *testing.T) {
 			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "activate",
 		)
 		h.assertValidationGateAfter("backfill")
+		h.assertValidationProfiles()
 		h.assertActivationRoles("bolter_platform_test_migrator", "bolter_platform_test", "bolter_gateway_test_migrator", "bolter_gateway_test")
 		h.assertActivationArgv()
 		h.assertNoPrivateWriteCommand()
@@ -270,7 +271,7 @@ func newG010Harness(t *testing.T, repo, phase string) *g010Harness {
 	migrationTool := filepath.Join(binDir, "migration-tool")
 	writeExecutable(t, migrationTool, fakeMigrationTool)
 	devPlatform := filepath.Join(binDir, "dev-platform")
-	writeExecutable(t, devPlatform, "#!/bin/sh\nset -eu\nprintf 'dev-platform %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n")
+	writeExecutable(t, devPlatform, "#!/bin/sh\nset -eu\nprintf 'dev-platform %s profiles %s %s %s\\n' \"$*\" \"${BT_GATEWAY_STARTUP_PROFILE:-}\" \"${BT_PLATFORM_STARTUP_PROFILE:-}\" \"${BT_FUNDING_STARTUP_PROFILE:-}\" >>\"$FAKE_COMMAND_LOG\"\n")
 	psql := filepath.Join(binDir, "psql")
 	writeExecutable(t, psql, `#!/bin/sh
 set -eu
@@ -453,6 +454,16 @@ func (h *g010Harness) assertValidationGateAfter(operation string) {
 	}
 	if strings.Contains(commands[:advance], "dev-platform ") || strings.Contains(commands[:advance], "npm ") {
 		h.t.Fatalf("full stack gate ran during an intermediate legacy phase:\n%s", commands)
+	}
+}
+
+func (h *g010Harness) assertValidationProfiles() {
+	h.t.Helper()
+	commands := h.commands()
+	restart := strings.Index(commands, "dev-platform restart-app profiles migration-validation migration-validation migration-validation")
+	validate := strings.Index(commands, "migration-tool validate advance")
+	if restart < 0 || validate < restart {
+		h.t.Fatalf("validation stack was not restarted with all validation profiles before validation:\n%s", commands)
 	}
 }
 

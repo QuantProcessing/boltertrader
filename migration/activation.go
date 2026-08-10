@@ -1053,7 +1053,7 @@ func verifyActivationEnvironment() error {
 			return fmt.Errorf("activation environment contains forbidden %s", name)
 		}
 	}
-	for _, name := range []string{"BT_PLATFORM_STARTUP_PROFILE", "BT_FUNDING_STARTUP_PROFILE"} {
+	for _, name := range []string{"BT_GATEWAY_STARTUP_PROFILE", "BT_PLATFORM_STARTUP_PROFILE", "BT_FUNDING_STARTUP_PROFILE"} {
 		if value := os.Getenv(name); value != "" && value != "normal" {
 			return fmt.Errorf("activation requires %s=normal", name)
 		}
@@ -2161,7 +2161,7 @@ SELECT (NOT EXISTS (
 		supervisor = filepath.Join(request.repositoryRoot, "scripts", "dev-platform")
 	}
 	normalSupervisor := func(action string) Command {
-		return Command{Name: "env", Args: []string{"BT_PLATFORM_STARTUP_PROFILE=normal", "BT_FUNDING_STARTUP_PROFILE=normal", supervisor, action}}
+		return Command{Name: "env", Args: []string{"BT_GATEWAY_STARTUP_PROFILE=normal", "BT_PLATFORM_STARTUP_PROFILE=normal", "BT_FUNDING_STARTUP_PROFILE=normal", supervisor, action}}
 	}
 	postgresIdentity := ""
 	verifyPostgresIdentity := func(ctx context.Context) error {

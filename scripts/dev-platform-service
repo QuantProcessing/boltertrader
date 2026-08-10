@@ -50,7 +50,12 @@ case "$service" in
 		BT_GATEWAY_DATABASE=bolter_gateway_test
 		BT_GATEWAY_DATABASE_ROLE=bolter_gateway_test
 		export BT_DEV_GATEWAY_TOKEN BT_DEV_GATEWAY_POSTGRES_DSN BT_GATEWAY_DATABASE BT_GATEWAY_DATABASE_ROLE
-		exec "$bin_dir/exchange-gateway" -config gateway/dev-platform.test.yaml
+		case "${BT_GATEWAY_STARTUP_PROFILE:-normal}" in
+			normal) gateway_config=gateway/dev-platform.test.yaml ;;
+			migration-validation) gateway_config=gateway/dev-platform.validation.test.yaml ;;
+			*) fail "BT_GATEWAY_STARTUP_PROFILE must be normal or migration-validation" ;;
+		esac
+		exec "$bin_dir/exchange-gateway" -config "$gateway_config"
 		;;
 	platform)
 		build_backend_go "$bin_dir/platform-api" ./cmd/platform-api

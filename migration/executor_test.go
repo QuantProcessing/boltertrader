@@ -1227,7 +1227,7 @@ func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *test
 			t.Fatalf("unsafe broad Go gate remains: %s", joined[index])
 		}
 	}
-	for index, want := range []string{"go test ./credential", "go test ./internal/config ./internal/platform/accounts ./internal/platform/secret ./internal/store/postgres ./cmd/platform-credential ./cmd/platform-migrate", "make test-browser", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts", "make dev-platform-restart", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts"} {
+	for index, want := range []string{"go test ./credential", "go test ./internal/config ./internal/platform/accounts ./internal/platform/secret ./internal/store/postgres ./cmd/platform-credential ./cmd/platform-migrate", "make test-browser", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts", "./scripts/dev-platform restart-app", "make test-real", "npm --prefix web run test:e2e -- platform-real.spec.ts"} {
 		if !strings.Contains(joined[index], want) {
 			t.Fatalf("command[%d]=%q want %q", index, joined[index], want)
 		}

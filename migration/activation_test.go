@@ -156,7 +156,7 @@ func TestActivationEnvironmentRejectsModeAndVenueWriteDrift(t *testing.T) {
 		t.Fatal("venue write opt-in was accepted")
 	}
 	t.Setenv("BOLTER_ENABLE_BINANCE_WRITES", "")
-	for _, name := range []string{"BT_PLATFORM_STARTUP_PROFILE", "BT_FUNDING_STARTUP_PROFILE"} {
+	for _, name := range []string{"BT_GATEWAY_STARTUP_PROFILE", "BT_PLATFORM_STARTUP_PROFILE", "BT_FUNDING_STARTUP_PROFILE"} {
 		t.Setenv(name, "migration-validation")
 		if err := verifyActivationEnvironment(); err == nil || !strings.Contains(err.Error(), name) {
 			t.Fatalf("migration-validation profile %s was accepted: %v", name, err)
@@ -1224,6 +1224,7 @@ func TestExecuteActivationRejectsUnprovenCommittedWriterGrantRecovery(t *testing
 }
 
 func TestDefaultActivationSupervisorPreservesPostgres(t *testing.T) {
+	t.Setenv("BT_GATEWAY_STARTUP_PROFILE", "migration-validation")
 	t.Setenv("BT_PLATFORM_STARTUP_PROFILE", "migration-validation")
 	t.Setenv("BT_FUNDING_STARTUP_PROFILE", "migration-validation")
 	stateDir := t.TempDir()
@@ -1284,7 +1285,7 @@ func TestDefaultActivationSupervisorPreservesPostgres(t *testing.T) {
 			continue
 		}
 		arguments := strings.Join(command.Args, " ")
-		profilesNormal := strings.Contains(arguments, "BT_PLATFORM_STARTUP_PROFILE=normal") && strings.Contains(arguments, "BT_FUNDING_STARTUP_PROFILE=normal")
+		profilesNormal := strings.Contains(arguments, "BT_GATEWAY_STARTUP_PROFILE=normal") && strings.Contains(arguments, "BT_PLATFORM_STARTUP_PROFILE=normal") && strings.Contains(arguments, "BT_FUNDING_STARTUP_PROFILE=normal")
 		startNormal = startNormal || profilesNormal && strings.HasSuffix(arguments, " start-app")
 		waitNormal = waitNormal || profilesNormal && strings.HasSuffix(arguments, " wait")
 	}

@@ -3,6 +3,8 @@ package config_test
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,5 +137,24 @@ func TestMigrationValidationStartupProfile(t *testing.T) {
 	data = strings.Replace(validYAML(), "server:\n", "server:\n  startup_profile: unsafe\n", 1)
 	if _, err := config.LoadYAML([]byte(data)); err == nil {
 		t.Fatal("unknown startup profile succeeded")
+	}
+}
+
+func TestDevPlatformConfigsDeclareNormalAndMigrationValidationProfiles(t *testing.T) {
+	for name, want := range map[string]config.StartupProfile{
+		"dev-platform.test.yaml":            config.StartupProfileNormal,
+		"dev-platform.validation.test.yaml": config.StartupProfileMigrationValidation,
+	} {
+		data, err := os.ReadFile(filepath.Join("..", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := config.LoadYAML(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if file.Server.Mode != "test" || file.Server.StartupProfile != want {
+			t.Fatalf("%s server=%+v", name, file.Server)
+		}
 	}
 }
