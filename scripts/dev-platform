@@ -151,6 +151,13 @@ ensure_tokens() {
 
 process_start_time() { ps -p "$1" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 process_command() { ps -p "$1" -o command= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+file_mode() {
+	if mode=$(stat -f '%Lp' "$1" 2>/dev/null); then
+		printf '%s\n' "$mode"
+	else
+		stat -c '%a' "$1"
+	fi
+}
 
 write_command_identity() {
 	service=$1
@@ -277,10 +284,14 @@ funding_worker_generation() {
 funding_worker_ready() {
 	if [ "$FUNDING_STARTUP_PROFILE" = "migration-validation" ]; then
 		sentinel="$FUNDING_STATE_FILE.migration-validation.ready"
-		[ -f "$sentinel" ] || return 1
+		[ -f "$sentinel" ] && [ ! -L "$sentinel" ] || return 1
 		[ "$(file_mode "$sentinel")" = 600 ] || return 1
+		[ -f "$OWNERSHIP_DIR/funding-worker.instance" ] || return 1
+		instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
+		[ -n "$instance_id" ] || return 1
 		grep -q '"profile":"migration-validation"' "$sentinel" || return 1
 		grep -q '"workerId":"'"$WORKER_ID"'"' "$sentinel" || return 1
+		grep -q '"instanceId":"'"$instance_id"'"' "$sentinel" || return 1
 		return 0
 	fi
 	generation=$(funding_worker_generation) || return 1
