@@ -90,6 +90,7 @@ describe("real-browser resnapshot harness", () => {
     });
     const injected = new TextDecoder().decode((await reader.read()).value);
     expect(injected).toContain("event: realtime.resnapshot_required");
+    expect(injected).toContain('"cursor":"harness-1"');
     expect(injected).toContain("marker-2");
 
     const replay = await fetch(new URL("__bt/resnapshot", harnessURL), {

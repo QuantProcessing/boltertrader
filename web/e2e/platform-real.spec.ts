@@ -122,10 +122,10 @@ test("real Test platform exposes only redacted account validation and recovery s
   for (let index = 0; index < await credentialInputs.count(); index += 1) {
     await credentialInputs.nth(index).fill(index === 0 ? credentialCanary : credentialSecretCanary);
   }
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0); });
   const withCanaryPixels = await captureStableFullPage(page, { fullPage: true });
   for (let index = 0; index < await credentialInputs.count(); index += 1) await credentialInputs.nth(index).fill("");
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() => { (document.activeElement as HTMLElement | null)?.blur(); window.scrollTo(0, 0); });
   const afterPixels = await captureStableFullPage(page, { fullPage: true, path: testInfo.outputPath("real-accounts-redaction.png") });
   assertCanaryPixelIsolation(beforePixels, withCanaryPixels, afterPixels, allowedRects);
 

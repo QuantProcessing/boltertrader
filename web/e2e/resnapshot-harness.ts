@@ -153,15 +153,16 @@ export function createResnapshotHarness(options: HarnessOptions) {
       ...snapshot(),
     };
     replays.set(idempotencyKey, result);
+    const eventCursor = `harness-${triggerCount}`;
     const envelope = JSON.stringify({
       eventId: `harness-event-${triggerCount}`,
       sequence: triggerCount,
-      cursor: "",
+      cursor: eventCursor,
       kind: "realtime.resnapshot_required",
       observedAt: now().toISOString(),
       payload: { marker },
     });
-    const event = `id: harness-${triggerCount}\nevent: realtime.resnapshot_required\ndata: ${envelope}\n\n`;
+    const event = `id: ${eventCursor}\nevent: realtime.resnapshot_required\ndata: ${envelope}\n\n`;
     for (const stream of streams) stream.write(event);
     return result;
   };
