@@ -1055,6 +1055,7 @@ while :; do sleep 1; done
 	text := string(contents)
 	for _, required := range []string{
 		"BT_MODE=test", "FT_MODE=test", "BT_PLATFORM_DATABASE=bolter_platform_test", "BT_PLATFORM_DATABASE_ROLE=bolter_platform_test",
+		"BT_LIVE_PRIVATE_WRITES_ENABLED=false",
 		"BT_MANUAL_PREVIEW_SIGNING_KEY_FILE=" + filepath.Join(runtimeDir, "credentials", "test", "manual-preview-signing.key"),
 		"BT_SECRET_KEY_SOURCE=file", "BT_SECRET_STORE_DIR=" + filepath.Join(runtimeDir, "secret-store"),
 		"BT_SECRET_STORE_NAMESPACE=boltertrader/test", "BT_SECRET_MASTER_KEY_VERSION=v1",
