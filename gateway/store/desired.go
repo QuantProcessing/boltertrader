@@ -25,6 +25,7 @@ var (
 	ErrCandidateNotReady            = errors.New("gateway candidate not ready")
 	ErrRetiredSecretReference       = errors.New("gateway retired secret reference")
 	ErrHandoffDrainBlocked          = errors.New("gateway handoff drain blocked")
+	ErrMigrationPromotionConflict   = errors.New("gateway migration promotion conflict")
 )
 
 type RouteState string
@@ -220,6 +221,95 @@ type PromotionRequest struct {
 type PromotionResult struct {
 	Active   ActiveSnapshot
 	Retiring *ActiveSnapshot
+}
+
+type MigrationPromotionItem struct {
+	AccountID            domain.AccountID
+	OperationID          string
+	DesiredStateRevision int64
+	RuntimeGeneration    int64
+	CredentialVersion    int64
+	RouteSetSHA256       string
+	InputSHA256          string
+}
+
+type MigrationPromotionRequest struct {
+	MigrationID string
+	FenceSHA256 string
+	Items       []MigrationPromotionItem
+}
+
+type MigrationPromotionDigest struct {
+	PendingSHA256      string
+	ActiveSHA256       string
+	OperationSetSHA256 string
+}
+
+type MigrationPromotionResult struct {
+	Before   MigrationPromotionDigest
+	After    MigrationPromotionDigest
+	Replayed bool
+}
+
+func (request MigrationPromotionRequest) OperationSetSHA256() (string, error) {
+	if err := validateOpaqueValue("migration id", request.MigrationID, 128); err != nil || !validSHA256(request.FenceSHA256) {
+		return "", ErrMigrationPromotionConflict
+	}
+	items := append([]MigrationPromotionItem(nil), request.Items...)
+	sort.Slice(items, func(i, j int) bool { return items[i].AccountID < items[j].AccountID })
+	seenAccounts := make(map[domain.AccountID]struct{}, len(items))
+	seenOperations := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.AccountID.Validate() != nil || item.DesiredStateRevision < 1 || item.RuntimeGeneration < 1 || item.CredentialVersion < 1 || !validSHA256(item.RouteSetSHA256) || !validSHA256(item.InputSHA256) {
+			return "", ErrMigrationPromotionConflict
+		}
+		operationID, err := uuid.Parse(item.OperationID)
+		if err != nil || operationID == uuid.Nil {
+			return "", ErrMigrationPromotionConflict
+		}
+		if _, duplicate := seenAccounts[item.AccountID]; duplicate {
+			return "", ErrMigrationPromotionConflict
+		}
+		if _, duplicate := seenOperations[item.OperationID]; duplicate {
+			return "", ErrMigrationPromotionConflict
+		}
+		seenAccounts[item.AccountID] = struct{}{}
+		seenOperations[item.OperationID] = struct{}{}
+	}
+	payload := struct {
+		MigrationID string                   `json:"migrationId"`
+		FenceSHA256 string                   `json:"fenceSha256"`
+		Items       []MigrationPromotionItem `json:"items"`
+	}{request.MigrationID, request.FenceSHA256, items}
+	return canonicalSHA256(payload)
+}
+
+func MigrationRouteSetSHA256(routes []RouteDefinition) (string, error) {
+	routes = append([]RouteDefinition(nil), routes...)
+	sort.Slice(routes, func(i, j int) bool { return routes[i].RouteID < routes[j].RouteID })
+	for _, route := range routes {
+		if err := route.Validate(); err != nil {
+			return "", ErrMigrationPromotionConflict
+		}
+	}
+	return canonicalSHA256(routes)
+}
+
+func canonicalSHA256(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", ErrMigrationPromotionConflict
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size
 }
 
 type RotationFinalizationRequest struct {

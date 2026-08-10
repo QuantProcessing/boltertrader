@@ -101,6 +101,33 @@ func TestRuntimeSnapshotPromotionReplayMonotonicFenceAndPromotedAtRecovery(t *te
 	}
 }
 
+func TestMigrationPromotionCrashBeforeCommitReplaysExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	postgresStore := newRuntimeSnapshotTestStore(t, ctx)
+	snapshot := runtimeSnapshotFixture(t, "018f47a8-2578-7d3c-9d7d-5e4f4a445d41", "018f47a8-2578-7d3c-9d7d-5e4f4a445d42", 1)
+	pending, err := postgresStore.PreparePending(ctx, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := migrationPromotionRequest(t, pending.DesiredSnapshot)
+	injected := errors.New("injected crash before migration promotion commit")
+	if _, err := postgresStore.promoteMigrationPendingSet(ctx, request, func(context.Context) error { return injected }); !errors.Is(err, injected) {
+		t.Fatalf("injected crash err=%v", err)
+	}
+	state, err := postgresStore.LoadRuntimeState(ctx, snapshot.AccountID)
+	if err != nil || state.Pending == nil || state.Active != nil {
+		t.Fatalf("state after rollback=%+v err=%v", state, err)
+	}
+	first, err := postgresStore.PromoteMigrationPendingSet(ctx, request)
+	if err != nil || first.Replayed {
+		t.Fatalf("retry result=%+v err=%v", first, err)
+	}
+	replay, err := postgresStore.PromoteMigrationPendingSet(ctx, request)
+	if err != nil || !replay.Replayed || replay.After != first.After {
+		t.Fatalf("replay=%+v err=%v first=%+v", replay, err, first)
+	}
+}
+
 func TestRuntimeRetirementIsAtomicReplayableAndRejectsUnresolvedHandoff(t *testing.T) {
 	ctx := context.Background()
 	postgresStore := newRuntimeSnapshotTestStore(t, ctx)
