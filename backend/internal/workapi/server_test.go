@@ -2,6 +2,7 @@ package workapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,15 @@ import (
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
 )
+
+type testWriteAuthority struct{ ready bool }
+
+func (authority testWriteAuthority) Ready(context.Context) (bool, string) {
+	if authority.ready {
+		return true, "ready"
+	}
+	return false, "writer_role_unavailable"
+}
 
 func TestWorkAuthAndStrictValidation(t *testing.T) {
 	srv := newTestHandler(t)
@@ -41,6 +51,23 @@ func TestWorkAuthAndStrictValidation(t *testing.T) {
 	srv.ServeHTTP(regRec, reg)
 	if regRec.Code != http.StatusCreated {
 		t.Fatalf("code=%d want 201", regRec.Code)
+	}
+}
+
+func TestCanonicalWriteGateRejectsBeforeWorkDispatch(t *testing.T) {
+	handler, err := New(Options{
+		TokenDigest: sha256.Sum256([]byte("test-worker-token")), Mode: "test", ContractVersion: ContractVersion,
+		WriteAuthority: testWriteAuthority{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/funding-work/workers/registrations", strings.NewReader(`not-json`))
+	request.Header.Set("Authorization", "Bearer test-worker-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CANONICAL_WRITES_NOT_READY") {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

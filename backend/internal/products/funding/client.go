@@ -31,6 +31,7 @@ type Config struct {
 	LiveEnabled     bool
 	LiveMaxNotional string
 	HTTPClient      *http.Client
+	StartupProfile  string
 }
 
 type Client struct {
@@ -259,7 +260,25 @@ func ConfigFromEnvironment() (Config, error) {
 		StateFile:       stateFile,
 		LiveEnabled:     liveEnabled,
 		LiveMaxNotional: strings.TrimSpace(os.Getenv("BT_FUNDING_LIVE_MAX_NOTIONAL")),
+		StartupProfile:  strings.TrimSpace(os.Getenv("BT_FUNDING_STARTUP_PROFILE")),
 	}, nil
+}
+
+func (config Config) ValidateStartupProfile() error {
+	switch config.StartupProfile {
+	case "", "normal":
+		return nil
+	case "migration-validation":
+		if config.Mode != "test" {
+			return fmt.Errorf("BT_FUNDING_STARTUP_PROFILE=migration-validation requires FT_MODE=test")
+		}
+		if config.LiveEnabled {
+			return fmt.Errorf("migration-validation forbids Funding Live writes")
+		}
+		return nil
+	default:
+		return fmt.Errorf("BT_FUNDING_STARTUP_PROFILE must be normal or migration-validation")
+	}
 }
 
 func parseFundingLiveEnabled(value string) (bool, error) {
@@ -330,6 +349,15 @@ func (client *Client) Register(ctx context.Context) (int, error) {
 		"workerId": client.workerID, "instanceId": client.instanceID, "productId": "funding", "mode": client.mode, "contractVersion": client.contractVersion,
 	}, http.StatusCreated, &response, requestOptions{idempotencyKey: idempotencyKey})
 	return response.Data.generation(), err
+}
+
+// PassiveStatus verifies loopback Platform availability without joining or
+// mutating the worker protocol.
+func (client *Client) PassiveStatus(ctx context.Context) error {
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	return client.requestJSON(ctx, http.MethodGet, frozenWorkBasePath+"/status", nil, http.StatusOK, &response, requestOptions{})
 }
 
 func (client *Client) Heartbeat(ctx context.Context, options HeartbeatOptions) (Registration, error) {

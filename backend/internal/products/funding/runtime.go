@@ -76,6 +76,7 @@ type RuntimeOptions struct {
 	RetryInterval     time.Duration
 	ClaimWaitSeconds  int
 	ShutdownTimeout   time.Duration
+	ValidationReady   func() error
 }
 
 type Runtime struct {
@@ -86,6 +87,7 @@ type Runtime struct {
 	retryInterval     time.Duration
 	claimWaitSeconds  int
 	shutdownTimeout   time.Duration
+	validationReady   func() error
 
 	mu          sync.Mutex
 	generation  int
@@ -113,8 +115,27 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		client: options.Client, processor: options.Processor, identities: options.Identities,
 		heartbeatInterval: options.HeartbeatInterval,
 		retryInterval:     options.RetryInterval, claimWaitSeconds: options.ClaimWaitSeconds,
-		shutdownTimeout: options.ShutdownTimeout,
+		shutdownTimeout: options.ShutdownTimeout, validationReady: options.ValidationReady,
 	}, nil
+}
+
+// ValidateAndWait performs only the passive Platform probe, publishes local
+// readiness, and remains alive until the supervisor cancels the process.
+func (runtime *Runtime) ValidateAndWait(ctx context.Context) error {
+	passive, ok := runtime.client.(interface{ PassiveStatus(context.Context) error })
+	if !ok {
+		return fmt.Errorf("protocol client does not support passive status")
+	}
+	if err := passive.PassiveStatus(ctx); err != nil {
+		return err
+	}
+	if runtime.validationReady != nil {
+		if err := runtime.validationReady(); err != nil {
+			return err
+		}
+	}
+	<-ctx.Done()
+	return nil
 }
 
 func (runtime *Runtime) Run(ctx context.Context) error {
