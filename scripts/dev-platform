@@ -29,6 +29,8 @@ OWNERSHIP_DIR="$STATE_DIR/ownership"
 CREDENTIAL_DIR="$RUNTIME_DIR/credentials/$MODE"
 EXPECTED_TOKEN_FILE="$CREDENTIAL_DIR/funding-worker.token"
 TOKEN_FILE=${BT_FUNDING_WORKER_TOKEN_FILE:-$EXPECTED_TOKEN_FILE}
+FUNDING_STARTUP_PROFILE=${BT_FUNDING_STARTUP_PROFILE:-normal}
+FUNDING_STATE_FILE="$STATE_DIR/funding-worker.state"
 EXPECTED_GATEWAY_TOKEN_FILE="$CREDENTIAL_DIR/gateway-adapter.token"
 GATEWAY_TOKEN_FILE=${BT_GATEWAY_TOKEN_FILE:-$EXPECTED_GATEWAY_TOKEN_FILE}
 EXPECTED_MANUAL_PREVIEW_KEY_FILE="$CREDENTIAL_DIR/manual-preview-signing.key"
@@ -273,6 +275,14 @@ funding_worker_generation() {
 }
 
 funding_worker_ready() {
+	if [ "$FUNDING_STARTUP_PROFILE" = "migration-validation" ]; then
+		sentinel="$FUNDING_STATE_FILE.migration-validation.ready"
+		[ -f "$sentinel" ] || return 1
+		[ "$(file_mode "$sentinel")" = 600 ] || return 1
+		grep -q '"profile":"migration-validation"' "$sentinel" || return 1
+		grep -q '"workerId":"'"$WORKER_ID"'"' "$sentinel" || return 1
+		return 0
+	fi
 	generation=$(funding_worker_generation) || return 1
 	instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
 	{
@@ -353,6 +363,7 @@ start_service() {
 			BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}" \
 			BT_FUNDING_WORKER_TOKEN_FILE="$TOKEN_FILE" BT_FUNDING_WORKER_ID="$WORKER_ID" \
 			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v4" \
+			BT_FUNDING_STARTUP_PROFILE="$FUNDING_STARTUP_PROFILE" BT_FUNDING_WORKER_STATE_FILE="$FUNDING_STATE_FILE" \
 			sh -c "exec $command" >>"$log_file" 2>&1 &
 	elif [ "$service" = "web" ]; then
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \

@@ -16,6 +16,7 @@ type Monitor struct {
 	postgresHealthy bool
 	postgres        Dependency
 	ownership       map[string]Dependency
+	components      map[string]Component
 }
 
 type Liveness struct {
@@ -23,12 +24,30 @@ type Liveness struct {
 }
 
 type Readiness struct {
-	Ready   bool     `json:"ready"`
-	Reasons []string `json:"reasons,omitempty"`
+	Ready      bool                 `json:"ready"`
+	Reasons    []string             `json:"reasons,omitempty"`
+	Components map[string]Component `json:"components"`
+}
+
+type Component struct {
+	Ready  bool   `json:"ready"`
+	Reason string `json:"reason"`
 }
 
 func NewMonitor() *Monitor {
-	return &Monitor{ownership: map[string]Dependency{}}
+	return &Monitor{ownership: map[string]Dependency{}, components: map[string]Component{}}
+}
+
+func (monitor *Monitor) SetComponent(name string, ready bool, reason string) {
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	monitor.components[name] = Component{Ready: ready, Reason: reason}
+}
+
+func (monitor *Monitor) Component(name string) Component {
+	monitor.mu.RLock()
+	defer monitor.mu.RUnlock()
+	return monitor.components[name]
 }
 
 func (monitor *Monitor) SetPostgresHealthy(healthy bool) {
@@ -67,6 +86,10 @@ func (monitor *Monitor) Readiness() Readiness {
 	for _, dependency := range monitor.ownership {
 		ownership = append(ownership, dependency)
 	}
+	components := make(map[string]Component, len(monitor.components))
+	for name, component := range monitor.components {
+		components[name] = component
+	}
 	monitor.mu.RUnlock()
 
 	reasons := make([]string, 0, 2)
@@ -83,7 +106,7 @@ func (monitor *Monitor) Readiness() Readiness {
 		}
 	}
 	sort.Strings(reasons)
-	return Readiness{Ready: len(reasons) == 0, Reasons: reasons}
+	return Readiness{Ready: len(reasons) == 0, Reasons: reasons, Components: components}
 }
 
 func NewHandler(monitor *Monitor) http.Handler {

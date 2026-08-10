@@ -27,7 +27,9 @@ type Options struct {
 	Service         *work.Service
 	WorkerValidator WorkerValidator
 	OnReadiness     func(bool)
-	WriteAuthority  interface{ Ready(context.Context) (bool, string) }
+	WriteAuthority  interface {
+		Ready(context.Context) (bool, string)
+	}
 }
 
 // WorkerValidator is the narrow platform/work interface consumed by workapi for
@@ -45,7 +47,9 @@ type handler struct {
 	service         *work.Service
 	workerValidator WorkerValidator
 	onReadiness     func(bool)
-	writeAuthority  interface{ Ready(context.Context) (bool, string) }
+	writeAuthority  interface {
+		Ready(context.Context) (bool, string)
+	}
 }
 
 func New(options Options) (http.Handler, error) {

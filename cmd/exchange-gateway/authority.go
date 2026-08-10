@@ -37,6 +37,44 @@ type gatewayAuthority struct {
 	now         func() time.Time
 }
 
+type validationSnapshotAuthority struct {
+	snapshots store.RuntimeSnapshotStore
+	mode      account.RuntimeMode
+}
+
+func (authority validationSnapshotAuthority) Execute(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
+	views := func(states []store.RuntimeState) []httpapi.RuntimeView {
+		projector := gatewayAuthority{snapshots: authority.snapshots, mode: authority.mode}
+		result := make([]httpapi.RuntimeView, 0, len(states))
+		for _, state := range states {
+			result = append(result, projector.runtimeView(state))
+		}
+		return result
+	}
+	switch request.Operation {
+	case httpapi.AuthorityRuntimeStatus, httpapi.AuthorityListRuntimeAccounts, httpapi.AuthorityListDesired:
+		states, err := authority.snapshots.ListRuntimeStateForRecovery(ctx)
+		if err != nil {
+			return httpapi.AuthorityResponse{}, authorityError(err)
+		}
+		return httpapi.AuthorityResponse{Body: map[string]any{"mode": authority.mode, "accounts": views(states)}}, nil
+	case httpapi.AuthorityGetRuntimeAccount, httpapi.AuthorityGetDesired:
+		state, err := authority.snapshots.LoadRuntimeState(ctx, domain.AccountID(request.AccountID))
+		if err != nil {
+			return httpapi.AuthorityResponse{}, authorityError(err)
+		}
+		return httpapi.AuthorityResponse{Body: views([]store.RuntimeState{state})[0]}, nil
+	case httpapi.AuthorityRuntimeReadiness:
+		return httpapi.AuthorityResponse{Body: httpapi.RuntimeReadiness{Ready: true}}, nil
+	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
+		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityCatalogVenues,
+		httpapi.AuthorityCatalogInstruments, httpapi.AuthorityMarketData:
+		return httpapi.AuthorityResponse{Body: []any{}}, nil
+	default:
+		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
+	}
+}
+
 type authorityVenue struct {
 	Venue       string `json:"venue"`
 	Environment string `json:"environment"`
@@ -720,6 +758,21 @@ func (authority *gatewayAuthority) enrichRuntimeView(view *httpapi.RuntimeView, 
 	view.LastAppliedDesiredStateRevision = int64(fence.DesiredStateRevision)
 	view.LastAppliedRuntimeGeneration = int64(fence.RuntimeGeneration)
 	view.ObservedAt = active.PromotedAt.UTC()
+	if authority.manager == nil {
+		view.Readiness = httpapi.RuntimeProjectionReadiness{Ready: true}
+		view.WriteReadiness = httpapi.RuntimeProjectionReadiness{Ready: false, Reason: "canonical_writes_not_ready"}
+		blocked := "canonical_writes_not_ready"
+		view.BlockedReason = &blocked
+		for _, route := range active.Routes {
+			for _, row := range capability.StaticMatrix().Rows {
+				if row.Venue == active.Venue && row.Product == route.Product && row.Settlement == route.SettlementAsset {
+					view.Capabilities = append(view.Capabilities, httpapi.RuntimeCapabilityView{RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: false, Operations: row.Operations})
+					break
+				}
+			}
+		}
+		return
+	}
 
 	routing := authority.manager.ActiveSnapshot(active.AccountID)
 	readReady := routing != nil && routing.Fence == active.Fence

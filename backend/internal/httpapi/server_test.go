@@ -162,10 +162,6 @@ func TestCanonicalWriteGateRejectsBeforeAccountStoreOrAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	login, err := sessions.Login(context.Background(), "owner", "correct horse battery staple")
-	if err != nil {
-		t.Fatal(err)
-	}
 	audit := &correlationAudit{}
 	accountService, err := platformaccounts.New(platformaccounts.Options{Store: platformaccounts.NewMemoryStore(), Secrets: &routeSecretWriter{ref: "opaque-ref"}, Audit: audit})
 	if err != nil {
@@ -173,13 +169,35 @@ func TestCanonicalWriteGateRejectsBeforeAccountStoreOrAudit(t *testing.T) {
 	}
 	handler, err := New(Options{
 		Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, WriteAuthority: testWriteAuthority{},
-		Accounts: &AccountRoutesOptions{Service: accountService, Authenticate: SessionAuthenticator(sessions), AuthorizeMutation: SessionMutationAuthorizer(sessions)},
+		Accounts: &AccountRoutesOptions{
+			Service: accountService, Authenticate: SessionAuthenticator(sessions), AuthorizeMutation: SessionMutationAuthorizer(sessions),
+			Blockers: func(context.Context, string) (platformaccounts.Blockers, error) {
+				return platformaccounts.Blockers{}, nil
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	loginRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"owner","password":"correct horse battery staple"}`))
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, loginRequest)
+	if loginResponse.Code != http.StatusOK {
+		t.Fatalf("login=%d body=%s", loginResponse.Code, loginResponse.Body.String())
+	}
+	var loginBody struct {
+		Data struct {
+			Session struct {
+				CSRFToken string `json:"csrfToken"`
+			} `json:"session"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(loginResponse.Body.Bytes(), &loginBody); err != nil {
+		t.Fatal(err)
+	}
+	login := loginResponse.Result().Cookies()[0]
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/accounts", strings.NewReader(`{"not":"decoded"}`))
-	request.AddCookie(&http.Cookie{Name: SessionCookieName, Value: login.Session.Token})
+	request.AddCookie(login)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "CANONICAL_WRITES_NOT_READY") {
@@ -187,5 +205,20 @@ func TestCanonicalWriteGateRejectsBeforeAccountStoreOrAudit(t *testing.T) {
 	}
 	if len(audit.records) != 0 {
 		t.Fatalf("audit records=%+v", audit.records)
+	}
+	sessionRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	sessionRequest.AddCookie(login)
+	sessionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(sessionResponse, sessionRequest)
+	if sessionResponse.Code != http.StatusOK {
+		t.Fatalf("session=%d body=%s", sessionResponse.Code, sessionResponse.Body.String())
+	}
+	logoutRequest := httptest.NewRequest(http.MethodDelete, "/api/v1/auth/session", nil)
+	logoutRequest.AddCookie(login)
+	logoutRequest.Header.Set("X-CSRF-Token", loginBody.Data.Session.CSRFToken)
+	logoutResponse := httptest.NewRecorder()
+	handler.ServeHTTP(logoutResponse, logoutRequest)
+	if logoutResponse.Code != http.StatusNoContent {
+		t.Fatalf("logout=%d body=%s", logoutResponse.Code, logoutResponse.Body.String())
 	}
 }

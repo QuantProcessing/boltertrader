@@ -406,6 +406,38 @@ func TestRunRejectsCredentialResolverFailureBeforeListen(t *testing.T) {
 	}
 }
 
+func TestMigrationValidationSkipsPrivateRuntimeConstruction(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "gateway.yaml")
+	yaml := strings.Replace(minimalConfigYAML(), "server:\n", "server:\n  startup_profile: migration-validation\n", 1)
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TOKEN", "auth-token")
+	t.Setenv("POSTGRES_DSN", "postgres://user:pass@127.0.0.1/db?sslmode=disable")
+	privateCall := func(name string) { t.Fatalf("migration validation called %s", name) }
+	err := run(context.Background(), []string{"-config", configPath}, runtimeDeps{
+		checkCredentialResolver:  func(context.Context) error { privateCall("credential resolver"); return nil },
+		connectPostgres:          func(context.Context, string) (process.PostgresPool, error) { return fakePool{}, nil },
+		validateDatabaseIdentity: testValidateDatabaseIdentity,
+		verifyCanonicalWrites:    func(context.Context, process.PostgresPool) (bool, error) { return false, nil },
+		migrate:                  func(context.Context, process.PostgresPool) error { privateCall("migration"); return nil },
+		buildAccountManager:      func(context.Context) (process.AccountManager, error) { privateCall("account manager"); return nil, nil },
+		buildOrderCoordinator: func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
+			privateCall("order coordinator")
+			return nil, nil
+		},
+		buildValidationHandler: func(*health.Monitor, process.PostgresPool) (http.Handler, error) {
+			return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+		},
+		listen: func(network, _ string) (net.Listener, error) { return net.Listen(network, "127.0.0.1:0") },
+		wait:   func(ctx context.Context, service *process.Service) error { return service.Shutdown(ctx) },
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+}
+
 func TestProductionGatewayCredentialResolverUsesModeScopedFilesystemProvider(t *testing.T) {
 	root := t.TempDir()
 	keyFile := filepath.Join(root, "credentials", "test", "secret-store-master.key")

@@ -50,6 +50,35 @@ func TestServiceStartsWithDynamicZeroAccountRuntime(t *testing.T) {
 	}
 }
 
+func TestMigrationValidationSkipsPrivateRuntimeAndCanonicalMutations(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.config.Server.StartupProfile = config.StartupProfileMigrationValidation
+	var calls []string
+	deps := fixtureDeps(fixture, &calls)
+	deps.CheckCredentialResolver = func(context.Context) error { calls = append(calls, "credential_check"); return nil }
+	deps.VerifyCanonicalWrites = func(context.Context, process.PostgresPool) (bool, error) {
+		calls = append(calls, "verify_writes")
+		return false, nil
+	}
+	deps.ValidationHandlerFactory = func(*health.Monitor, process.PostgresPool) (http.Handler, error) {
+		calls = append(calls, "build_validation_handler")
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
+	service, err := process.Start(t.Context(), fixture.config, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Shutdown(context.Background()) }()
+	want := []string{"resolve:env://TOKEN", "resolve:env://POSTGRES_DSN", "connect", "ping", "validate_identity", "verify_writes", "build_validation_handler", "listen"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("startup calls = %v, want %v", calls, want)
+	}
+	component := service.Health().Component("canonicalWrites")
+	if component.Ready {
+		t.Fatalf("canonicalWrites = %+v", component)
+	}
+}
+
 func TestServiceResolvesOptionalInternalAuthAsOperationalSecret(t *testing.T) {
 	fixture := newFixture(t)
 	internalRef, err := secret.ParseRef("env://INTERNAL_TOKEN")

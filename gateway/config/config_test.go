@@ -126,8 +126,14 @@ postgres:
 func TestMigrationValidationStartupProfile(t *testing.T) {
 	data := strings.Replace(validYAML(), "server:\n", "server:\n  startup_profile: migration-validation\n", 1)
 	file, err := config.LoadYAML([]byte(data))
-	if err != nil { t.Fatal(err) }
-	if file.Server.StartupProfile != config.StartupProfileMigrationValidation { t.Fatalf("startup profile = %q", file.Server.StartupProfile) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Server.StartupProfile != config.StartupProfileMigrationValidation {
+		t.Fatalf("startup profile = %q", file.Server.StartupProfile)
+	}
 	data = strings.Replace(validYAML(), "server:\n", "server:\n  startup_profile: unsafe\n", 1)
-	if _, err := config.LoadYAML([]byte(data)); err == nil { t.Fatal("unknown startup profile succeeded") }
+	if _, err := config.LoadYAML([]byte(data)); err == nil {
+		t.Fatal("unknown startup profile succeeded")
+	}
 }

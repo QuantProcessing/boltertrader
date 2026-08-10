@@ -286,7 +286,9 @@ func TestGatewayWriteGateRejectsInternalPUTBeforeDecodeAndDispatch(t *testing.T)
 	handler, err := NewInternalHandler(InternalOptions{
 		Authority: authority, Authenticate: func(*http.Request) error { return nil }, WriteReady: func() bool { return false },
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{
 		"/internal/v1/accounts/desired/a/operations/op",
 		"/internal/v1/accounts/desired/a/retirements/op",
@@ -298,5 +300,7 @@ func TestGatewayWriteGateRejectsInternalPUTBeforeDecodeAndDispatch(t *testing.T)
 			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
 		}
 	}
-	if len(authority.requests) != 0 { t.Fatalf("authority dispatched %d requests", len(authority.requests)) }
+	if len(authority.requests) != 0 {
+		t.Fatalf("authority dispatched %d requests", len(authority.requests))
+	}
 }

@@ -41,12 +41,14 @@ type runtimeDeps struct {
 	checkCredentialResolver  func(context.Context) error
 	connectPostgres          func(context.Context, string) (process.PostgresPool, error)
 	validateDatabaseIdentity func(context.Context, process.PostgresPool) error
+	verifyCanonicalWrites    func(context.Context, process.PostgresPool) (bool, error)
 	migrate                  func(context.Context, process.PostgresPool) error
 	buildAccountManager      func(context.Context) (process.AccountManager, error)
 	restoreAccountManager    func(context.Context, process.PostgresPool, process.AccountManager) error
 	buildOrderCoordinator    func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
 	buildHandler             func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
 	buildInternalHandler     func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
+	buildValidationHandler   func(*health.Monitor, process.PostgresPool) (http.Handler, error)
 	listen                   func(network, address string) (net.Listener, error)
 	listenInternal           func(network, address string) (net.Listener, error)
 	wait                     func(context.Context, *process.Service) error
@@ -96,7 +98,8 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	validateDatabaseIdentity := defaultValidateDatabaseIdentity(deps.validateDatabaseIdentity, runtimeMode)
 	credentialResolver := deps.credentialResolver
 	var credentialProvider *secretstore.FilesystemProvider
-	if credentialResolver == nil && deps.buildAccountManager == nil {
+	validationProfile := file.Server.StartupProfile == config.StartupProfileMigrationValidation
+	if !validationProfile && credentialResolver == nil && deps.buildAccountManager == nil {
 		credentialProvider, credentialResolver, err = newGatewayCredentialResolver(runtimeMode)
 		if err != nil {
 			return err
@@ -109,7 +112,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	}
 	runtimeLifecycle := deps.runtimeLifecycle
 	var productionLifecycle *productionRuntimeLifecycle
-	if runtimeLifecycle == nil && (deps.resolveRuntimeSecret != nil || deps.activateRuntime != nil || deps.deactivateRuntime != nil || deps.runtimeBlockers != nil) {
+	if !validationProfile && runtimeLifecycle == nil && (deps.resolveRuntimeSecret != nil || deps.activateRuntime != nil || deps.deactivateRuntime != nil || deps.runtimeBlockers != nil) {
 		runtimeLifecycle, err = newOpaqueRuntimeLifecycle(
 			deps.resolveRuntimeSecret, deps.activateRuntime, deps.deactivateRuntime, deps.runtimeBlockers,
 		)
@@ -117,28 +120,32 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("configure internal runtime lifecycle failed")
 		}
 	}
-	if runtimeLifecycle == nil {
+	if !validationProfile && runtimeLifecycle == nil {
 		productionLifecycle = &productionRuntimeLifecycle{}
 		runtimeLifecycle = productionLifecycle
 	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
 	var internalHandler http.Handler
 	var restoredAuthority *gatewayAuthority
+	var gatewayMonitor *health.Monitor
+	var internalAuth auth.BearerMiddleware
 	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
 	if file.Server.InternalListen != "" {
-		internalAuth, authErr := auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
+		var authErr error
+		internalAuth, authErr = auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
 		if authErr != nil {
 			return fmt.Errorf("configure internal auth failed")
 		}
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
-		})
+		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready })
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
 		ResolveSecret:            provider.Resolve,
 		ConnectPostgres:          observedConnectPostgres(metrics, connectPostgres),
 		ValidateDatabaseIdentity: validateDatabaseIdentity,
+		VerifyCanonicalWrites:    defaultVerifyCanonicalWrites(deps.verifyCanonicalWrites, runtimeMode),
 		Migrate:                  observedMigrate(metrics, migrate),
 		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
 		RestoreAccountManager: func(restoreCtx context.Context, pool process.PostgresPool, manager process.AccountManager) error {
@@ -165,6 +172,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
 		Listen:                defaultListen(deps.listen),
 		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
+			gatewayMonitor = monitor
 			publicHandler, handlerErr := publicHandlerFactory(monitor, pool, accounts, orders)
 			if handlerErr != nil {
 				return nil, handlerErr
@@ -176,6 +184,42 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 				}
 			}
 			return modeAttestedHandler(runtimeMode, publicHandler), nil
+		},
+		ValidationHandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool) (http.Handler, error) {
+			gatewayMonitor = monitor
+			if file.Server.InternalListen != "" {
+				if deps.buildInternalHandler != nil {
+					var handlerErr error
+					internalHandler, handlerErr = deps.buildInternalHandler(ctx, pool, nil)
+					if handlerErr != nil {
+						return nil, handlerErr
+					}
+				} else {
+					realPool, ok := pool.(*pgxpool.Pool)
+					if !ok {
+						return nil, fmt.Errorf("postgres pool type")
+					}
+					var handlerErr error
+					internalHandler, handlerErr = httpapi.NewInternalHandler(httpapi.InternalOptions{
+						Authority: validationSnapshotAuthority{snapshots: postgres.NewStore(realPool), mode: runtimeMode},
+						Authenticate: func(request *http.Request) error {
+							if _, ok := auth.Principal(request.Context()); !ok {
+								return errors.New("internal authentication required")
+							}
+							return nil
+						},
+						WriteReady: func() bool { return monitor.Component("canonicalWrites").Ready },
+					})
+					if handlerErr != nil {
+						return nil, handlerErr
+					}
+				}
+				internalHandler = internalAuth.Wrap(httpapi.NewWriteGate(func() bool { return monitor.Component("canonicalWrites").Ready }).Wrap(internalHandler))
+			}
+			if deps.buildValidationHandler != nil {
+				return deps.buildValidationHandler(monitor, pool)
+			}
+			return authMiddleware.Wrap(httpapi.NewMigrationValidationHandler(monitor)), nil
 		},
 	}
 	service, err := process.Start(ctx, file, processDeps)
@@ -243,6 +287,7 @@ func defaultInternalHandlerFactory(
 	override func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error),
 	authMiddleware auth.BearerMiddleware,
 	authorityProvider func() *gatewayAuthority,
+	writeReady func() bool,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -255,7 +300,8 @@ func defaultInternalHandlerFactory(
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
 			handler, err = httpapi.NewInternalHandler(httpapi.InternalOptions{
-				Authority: authority,
+				Authority:  authority,
+				WriteReady: writeReady,
 				Authenticate: func(request *http.Request) error {
 					if _, ok := auth.Principal(request.Context()); !ok {
 						return errors.New("internal authentication required")
@@ -267,7 +313,7 @@ func defaultInternalHandlerFactory(
 		if err != nil || handler == nil {
 			return nil, fmt.Errorf("internal HTTP API setup")
 		}
-		return authMiddleware.Wrap(handler), nil
+		return authMiddleware.Wrap(httpapi.NewWriteGate(writeReady).Wrap(handler)), nil
 	}
 }
 
@@ -655,6 +701,24 @@ func validateConnectedDatabaseIdentity(database, role, expectedIdentity string) 
 		return fmt.Errorf("postgres identity mismatch")
 	}
 	return nil
+}
+
+func defaultVerifyCanonicalWrites(override func(context.Context, process.PostgresPool) (bool, error), mode account.RuntimeMode) func(context.Context, process.PostgresPool) (bool, error) {
+	if override != nil {
+		return override
+	}
+	return func(ctx context.Context, pool process.PostgresPool) (bool, error) {
+		realPool, ok := pool.(*pgxpool.Pool)
+		if !ok {
+			return false, fmt.Errorf("postgres pool type")
+		}
+		writerRole := "bolter_gateway_" + string(mode) + "_writer"
+		var ready bool
+		if err := realPool.QueryRow(ctx, `SELECT pg_has_role(current_user, $1, 'USAGE')`, writerRole).Scan(&ready); err != nil {
+			return false, fmt.Errorf("verify gateway writer authority")
+		}
+		return ready, nil
+	}
 }
 
 func defaultMigrate(override func(context.Context, process.PostgresPool) error) func(context.Context, process.PostgresPool) error {

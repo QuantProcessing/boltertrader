@@ -12,6 +12,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/config"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
+	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 )
 
@@ -36,12 +37,14 @@ type Dependencies struct {
 	ResolveSecret            func(context.Context, secret.Ref) (string, error)
 	ConnectPostgres          func(context.Context, string) (PostgresPool, error)
 	ValidateDatabaseIdentity func(context.Context, PostgresPool) error
+	VerifyCanonicalWrites    func(context.Context, PostgresPool) (bool, error)
 	Migrate                  func(context.Context, PostgresPool) error
 	BuildAccountManager      func(context.Context) (AccountManager, error)
 	RestoreAccountManager    func(context.Context, PostgresPool, AccountManager) error
 	BuildOrderCoordinator    func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
 	Listen                   func(network, address string) (net.Listener, error)
 	HandlerFactory           func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
+	ValidationHandlerFactory func(*health.Monitor, PostgresPool) (http.Handler, error)
 }
 
 type Service struct {
@@ -71,7 +74,15 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 	if err := validateDeps(deps); err != nil {
 		return nil, err
 	}
-	if deps.CheckCredentialResolver != nil {
+	validation := file.Server.StartupProfile == config.StartupProfileMigrationValidation
+	if validation {
+		if deps.ValidationHandlerFactory == nil {
+			return nil, fmt.Errorf("process validation dependencies are incomplete")
+		}
+	} else if deps.Migrate == nil || deps.BuildAccountManager == nil || deps.RestoreAccountManager == nil || deps.BuildOrderCoordinator == nil {
+		return nil, fmt.Errorf("process dependencies are incomplete")
+	}
+	if !validation && deps.CheckCredentialResolver != nil {
 		if err := deps.CheckCredentialResolver(ctx); err != nil {
 			return nil, safeErr("check credential resolver", err)
 		}
@@ -99,6 +110,41 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 		return nil, safeErr("validate postgres identity", err)
 	}
 	service.monitor.SetPostgresDependency(poolDependency{pool: pool})
+	writesReady := false
+	writeReason := "database_authority_not_ready"
+	if deps.VerifyCanonicalWrites != nil {
+		var verifyErr error
+		writesReady, verifyErr = deps.VerifyCanonicalWrites(ctx, pool)
+		if verifyErr != nil {
+			writesReady = false
+			writeReason = "database_authority_verification_failed"
+			if validation {
+				return nil, safeErr("verify canonical writes", verifyErr)
+			}
+		}
+	}
+	service.monitor.SetComponent("canonicalWrites", writesReady, writeReason)
+	if validation && writesReady {
+		return nil, safeErr("validate migration profile authority", fmt.Errorf("canonical writes are enabled"))
+	}
+	if !validation {
+		service.monitor.SetComponent("canonicalWrites", writesReady, map[bool]string{true: "", false: writeReason}[writesReady])
+	}
+	if validation {
+		var handler http.Handler
+		handler, err = deps.ValidationHandlerFactory(service.monitor, service.pool)
+		if err != nil || handler == nil {
+			if err == nil {
+				err = fmt.Errorf("HTTP handler is nil")
+			}
+			return nil, safeErr("build validation HTTP handler", err)
+		}
+		started, startErr := startHTTP(file, deps, service, httpapi.NewWriteGate(func() bool { return service.monitor.Component("canonicalWrites").Ready }).Wrap(handler))
+		if startErr != nil {
+			err = startErr
+		}
+		return started, startErr
+	}
 	if err = deps.Migrate(ctx, pool); err != nil {
 		return nil, safeErr("migrate postgres", err)
 	}
@@ -141,7 +187,16 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 			}
 			return nil, safeErr("build HTTP handler", err)
 		}
+		handler = httpapi.NewWriteGate(func() bool { return service.monitor.Component("canonicalWrites").Ready }).Wrap(handler)
 	}
+	started, startErr := startHTTP(file, deps, service, handler)
+	if startErr != nil {
+		err = startErr
+	}
+	return started, startErr
+}
+
+func startHTTP(file config.File, deps Dependencies, service *Service, handler http.Handler) (*Service, error) {
 	listener, err := deps.Listen("tcp", file.Server.Listen)
 	if err != nil {
 		return nil, safeErr("listen", err)
@@ -243,7 +298,7 @@ func (service *Service) readyToClosePool() bool {
 }
 
 func validateDeps(deps Dependencies) error {
-	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.ValidateDatabaseIdentity == nil || deps.Migrate == nil || deps.BuildAccountManager == nil || deps.RestoreAccountManager == nil || deps.BuildOrderCoordinator == nil || deps.Listen == nil {
+	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.ValidateDatabaseIdentity == nil || deps.Listen == nil {
 		return fmt.Errorf("process dependencies are incomplete")
 	}
 	return nil
