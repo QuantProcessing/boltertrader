@@ -2,11 +2,31 @@ package authority
 
 const (
 	PlatformV15MigrationDigest = "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9"
-	PlatformV15Digest          = "1a67c896f4560b1f16f34c11ccf569b18bec396b074036a08102fe6c7d17073c"
+	PlatformV15Digest          = "8b97ccb94b33e20eb76ddea364b43fa982825a729b90d4acae63b098fb268c28"
 )
 
 func PlatformV15() Matrix {
-	objects := make([]Object, 0, 28)
+	objects := make([]Object, 0, 47)
+	for _, name := range []string{
+		"activities",
+		"alerts",
+		"audit_events",
+		"execution_fills",
+		"execution_legs",
+		"execution_previews",
+		"execution_transitions",
+		"executions",
+		"funding_observations",
+		"idempotency_records",
+		"opportunities",
+		"positions",
+		"read_model_events",
+		"schema_migrations",
+		"sessions",
+		"users",
+	} {
+		objects = append(objects, table(name, MigrationOnly, nil, nil))
+	}
 	objects = append(objects, table("platform_schema_migrations", MigrationOnly, []string{"SELECT"}, nil))
 	objects = append(objects, table("platform_sessions", ValidationAuthSession, []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil))
 	for _, name := range []string{
@@ -37,9 +57,12 @@ func PlatformV15() Matrix {
 		objects = append(objects, table(name, Canonical, []string{"SELECT"}, []string{"INSERT", "UPDATE", "DELETE"}))
 	}
 	objects = append(objects,
+		migrationSequence("audit_events_id_seq"),
+		migrationSequence("execution_transitions_id_seq"),
 		sequence("platform_funding_execution_transitions_id_seq"),
 		sequence("platform_realtime_events_sequence_seq"),
 		sequence("platform_work_lease_seq"),
+		migrationSequence("read_model_events_id_seq"),
 		Object{Schema: "public", Name: "platform_valid_funding_account_fences(jsonb)", Kind: Routine, Class: MigrationOnly, Writer: []string{"EXECUTE"}, Probe: "SELECT has_function_privilege(current_user, 'public.platform_valid_funding_account_fences(jsonb)', 'EXECUTE')"},
 	)
 	return Matrix{
@@ -62,4 +85,8 @@ func table(name string, class ObjectClass, runtime, writer []string) Object {
 
 func sequence(name string) Object {
 	return Object{Schema: "public", Name: name, Kind: Sequence, Class: Canonical, Writer: []string{"USAGE", "SELECT", "UPDATE"}, Probe: "SELECT last_value FROM public." + name}
+}
+
+func migrationSequence(name string) Object {
+	return Object{Schema: "public", Name: name, Kind: Sequence, Class: MigrationOnly, Probe: "SELECT last_value FROM public." + name}
 }

@@ -22,10 +22,13 @@ func TestPlatformV15IsExhaustiveAndStable(t *testing.T) {
 	if got := matrix.Class("platform_audit"); got != authority.Canonical {
 		t.Fatalf("class=%s", got)
 	}
+	if got := matrix.Class("activities"); got != authority.MigrationOnly {
+		t.Fatalf("legacy class=%s", got)
+	}
 	if got := matrix.Digest(); got != authority.PlatformV15Digest {
 		t.Fatalf("digest=%s", got)
 	}
-	assertInventory(t, matrix, 25, 3, 1)
+	assertInventory(t, matrix, 41, 6, 1)
 }
 
 func TestGatewayV6IsExhaustiveAndStable(t *testing.T) {

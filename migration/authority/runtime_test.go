@@ -29,6 +29,7 @@ func TestVerifyRuntimeCatalogAcceptsPreAndPostActivationAuthority(t *testing.T) 
 func TestVerifyRuntimeCatalogRejectsEveryStructuralDriftClass(t *testing.T) {
 	matrix := authority.PlatformV15()
 	base := validRuntimeCatalog(matrix, false)
+	canonicalIndex := catalogObjectIndex(t, base, "platform_accounts")
 	tests := []struct {
 		name string
 		want string
@@ -57,14 +58,22 @@ func TestVerifyRuntimeCatalogRejectsEveryStructuralDriftClass(t *testing.T) {
 		{name: "unknown object", want: "AUTHORITY_MATRIX_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
 			snapshot.Objects = append(snapshot.Objects, authority.CatalogObject{Schema: "public", Name: "platform_unknown", Kind: authority.Table, Owner: matrix.Roles.Migrator})
 		}},
-		{name: "object owner", want: "RUNTIME_OWNS_CANONICAL_OBJECT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[0].Owner = matrix.Roles.Runtime }},
-		{name: "public object privilege", want: "PUBLIC_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[0].PublicPrivileges = []string{"SELECT"} }},
-		{name: "runtime direct privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
-			snapshot.Objects[0].RuntimePrivileges = append(snapshot.Objects[0].RuntimePrivileges, "INSERT")
+		{name: "object owner", want: "RUNTIME_OWNS_CANONICAL_OBJECT", edit: func(snapshot *authority.CatalogSnapshot) {
+			snapshot.Objects[canonicalIndex].Owner = matrix.Roles.Runtime
 		}},
-		{name: "writer direct privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[2].WriterPrivileges = nil }},
-		{name: "runtime effective privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[0].EffectiveRuntimePrivileges = nil }},
-		{name: "writer effective privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[2].EffectiveWriterPrivileges = nil }},
+		{name: "public object privilege", want: "PUBLIC_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
+			snapshot.Objects[canonicalIndex].PublicPrivileges = []string{"SELECT"}
+		}},
+		{name: "runtime direct privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
+			snapshot.Objects[canonicalIndex].RuntimePrivileges = append(snapshot.Objects[canonicalIndex].RuntimePrivileges, "INSERT")
+		}},
+		{name: "writer direct privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) { snapshot.Objects[canonicalIndex].WriterPrivileges = nil }},
+		{name: "runtime effective privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
+			snapshot.Objects[canonicalIndex].EffectiveRuntimePrivileges = nil
+		}},
+		{name: "writer effective privilege", want: "PRIVILEGE_AUTHORITY_DRIFT", edit: func(snapshot *authority.CatalogSnapshot) {
+			snapshot.Objects[canonicalIndex].EffectiveWriterPrivileges = nil
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -75,6 +84,17 @@ func TestVerifyRuntimeCatalogRejectsEveryStructuralDriftClass(t *testing.T) {
 			}
 		})
 	}
+}
+
+func catalogObjectIndex(t *testing.T, snapshot authority.CatalogSnapshot, name string) int {
+	t.Helper()
+	for index, object := range snapshot.Objects {
+		if object.Name == name {
+			return index
+		}
+	}
+	t.Fatalf("catalog object %q is missing", name)
+	return -1
 }
 
 func validRuntimeCatalog(matrix authority.Matrix, writerMembership bool) authority.CatalogSnapshot {
