@@ -116,7 +116,7 @@ func TestRealtimeStreamAllowsInitialSubscriptionWithoutCursor(t *testing.T) {
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" {
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" || !strings.HasPrefix(response.Body.String(), ": connected\n\n") {
 		t.Fatalf("initial realtime response = %d %s", response.Code, response.Body.String())
 	}
 }

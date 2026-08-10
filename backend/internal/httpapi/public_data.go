@@ -174,14 +174,18 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
 	for _, event := range events {
 		if err := writeSSE(w, event); err != nil {
 			return
 		}
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return
 	}
 	flusher.Flush()
 	updates, unsubscribe := api.dependencies.Realtime.SubscribeScoped(16, principal, mode)
