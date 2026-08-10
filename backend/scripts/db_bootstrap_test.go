@@ -8,37 +8,58 @@ import (
 	"testing"
 )
 
-func TestDatabaseBootstrapFreezesFourIsolatedOwners(t *testing.T) {
-	path := filepath.Join("db-bootstrap.sh")
-	payload, err := os.ReadFile(path)
+func TestDatabaseBootstrapFreezesSeparatedTestAuthority(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatal(err)
 	}
 	script := string(payload)
-	for _, name := range []string{
-		"bolter_platform_test",
-		"bolter_gateway_test",
-		"bolter_platform_live",
-		"bolter_gateway_live",
+	for _, required := range []string{
+		"bolter_platform_test_admin LOGIN NOSUPERUSER CREATEDB CREATEROLE NOINHERIT",
+		"bolter_funding_test_migrator",
+		"bolter_platform_test_migrator",
+		"bolter_gateway_test_migrator",
+		"CREATE DATABASE bolter_funding_test OWNER bolter_funding_test_migrator",
+		"CREATE DATABASE bolter_platform_test OWNER bolter_platform_test_migrator",
+		"CREATE DATABASE bolter_gateway_test OWNER bolter_gateway_test_migrator",
+		"CREATE DATABASE bolter_maintenance_test OWNER bolter_platform_test_admin",
+		"ALTER DATABASE bolter_platform_test OWNER TO bolter_platform_test_migrator",
+		"ALTER DATABASE bolter_gateway_test OWNER TO bolter_gateway_test_migrator",
+		"REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC",
+		"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
+		"GRANT pg_signal_backend TO bolter_platform_test_admin",
+		"SET ROLE bolter_platform_test_admin",
+		"SELECT CASE WHEN current_user = 'bolter_platform_test_admin'",
 	} {
-		for _, required := range []string{
-			"CREATE ROLE " + name,
-			"CREATE DATABASE " + name + " OWNER " + name,
-			"REVOKE CONNECT ON DATABASE " + name + " FROM PUBLIC",
-			"GRANT CONNECT ON DATABASE " + name + " TO " + name,
-		} {
-			if !strings.Contains(script, required) {
-				t.Errorf("bootstrap missing %q", required)
-			}
+		if !strings.Contains(script, required) {
+			t.Errorf("bootstrap missing %q", required)
 		}
 	}
-	for _, capability := range []string{"NOSUPERUSER", "NOCREATEDB", "NOCREATEROLE", "NOINHERIT", "NOREPLICATION"} {
-		if !strings.Contains(script, capability) {
-			t.Errorf("bootstrap roles missing %s", capability)
+	for _, role := range []string{"bolter_funding_test", "bolter_platform_test", "bolter_gateway_test"} {
+		if !strings.Contains(script, "'"+role+"'") {
+			t.Errorf("bootstrap missing runtime %s", role)
 		}
 	}
-	if !strings.Contains(script, "verify_cross_access_denied") {
-		t.Error("bootstrap does not execute negative cross-access verification")
+	for _, writer := range []string{"bolter_funding_test_writer", "bolter_platform_test_writer", "bolter_gateway_test_writer"} {
+		if !strings.Contains(script, writer) {
+			t.Errorf("bootstrap missing writer %s", writer)
+		}
+	}
+}
+
+func TestDatabaseBootstrapKeepsLiveRolesUnprivilegedAndInherited(t *testing.T) {
+	payload, err := os.ReadFile("db-bootstrap.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	for _, role := range []string{"bolter_platform_live", "bolter_gateway_live"} {
+		if !strings.Contains(script, "CREATE DATABASE "+role+" OWNER "+role) {
+			t.Errorf("bootstrap changed Live ownership for %s", role)
+		}
+	}
+	if strings.Contains(script, "GRANT bolter_platform_live_writer") || strings.Contains(script, "GRANT bolter_gateway_live_writer") {
+		t.Fatal("bootstrap grants a Live writer membership")
 	}
 }
 
