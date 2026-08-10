@@ -128,6 +128,10 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	run := options.Run
+	if run == nil {
+		run = runCommand
+	}
 	if request.Operation == Backfill {
 		acceptedPath, acceptErr := acceptMappingSnapshot(applyRequest.ArtifactPath, request.EvidenceDir, inputSHA)
 		if acceptErr != nil {
@@ -145,6 +149,14 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		if replay, replayErr := replayExecution(manifest, request.EvidenceDir, applyRequest, commands, inputSHA); replayErr != nil || replay != nil {
 			if replayErr != nil {
 				return ExecutionResult{}, replayErr
+			}
+			if request.Operation == Validate {
+				for index, command := range commands {
+					result, runErr := run(ctx, command)
+					if runErr != nil || verifyCommandPostcondition(request.Operation, index, command, result) != nil {
+						return ExecutionResult{}, fmt.Errorf("validate current postcondition failed")
+					}
+				}
 			}
 			return *replay, nil
 		}
@@ -164,10 +176,6 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 				commands[index].StdinFile = acceptedArchive.File()
 			}
 		}
-	}
-	run := options.Run
-	if run == nil {
-		run = runCommand
 	}
 	commandProofs := make([]commandEvidence, 0, len(commands))
 	acceptedArchiveSHA := ""

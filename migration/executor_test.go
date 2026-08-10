@@ -1071,6 +1071,30 @@ func TestValidationPlanUsesTargetedOfflineThenRealReadRestartRepeatOrder(t *test
 	}
 }
 
+func TestValidateReplayRerunsCurrentPostconditions(t *testing.T) {
+	manifestPath := preparedThroughFence(t)
+	backfill := withProof(t, manifestPath, Request{Operation: Backfill, Name: "001-platform.sql"})
+	if _, err := applyExecuted(manifestPath, backfill, ApplyOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	evidenceDir := t.TempDir()
+	request := ExecutionRequest{Operation: Validate, ManifestPath: manifestPath, EvidenceDir: evidenceDir, Verifier: "operator"}
+	first, err := Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		return CommandResult{Output: []byte("current validation passed")}, nil
+	}})
+	if err != nil || first.Replayed {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	calls := 0
+	_, err = Execute(context.Background(), request, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		calls++
+		return CommandResult{}, errors.New("current validation drift")
+	}})
+	if err == nil || calls == 0 || !strings.Contains(err.Error(), "validate current postcondition failed") {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
 func TestBackfillHighWaterMismatchRestoresSourceAndInvalidatesDelta(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
 	repoRoot, artifactPath := canonicalBackfillFixture(t, `{"schemaVersion":1,"mappings":[]}`)
