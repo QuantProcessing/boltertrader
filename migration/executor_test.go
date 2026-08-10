@@ -759,7 +759,7 @@ func TestFinalDeltaSourceReadsBindRoleAndReadOnlyModeInConnection(t *testing.T) 
 		t.Fatal(err)
 	}
 	want := `service=source dbname=source_test options='-c role=source_test_migrator -c default_transaction_read_only=on'`
-	for _, index := range []int{0, 3, 4, 5, 6} {
+	for _, index := range []int{3, 4, 5, 6} {
 		command := commands[index]
 		if got := postgresConnectionArgument(command); got != want {
 			t.Fatalf("command %d source connection=%q, want %q", index, got, want)

@@ -609,16 +609,13 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	psql := func(service, database, query string) Command {
 		return psqlConnection(postgresConnection(service, database), query)
 	}
-	psqlInputConnection := func(connection, script string, variables ...string) Command {
-		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", connection, "--tuples-only", "--no-align"}
+	psqlInput := func(service, database, script string, variables ...string) Command {
+		args := []string{"--no-psqlrc", "--set", "ON_ERROR_STOP=1", "--dbname", postgresConnection(service, database), "--tuples-only", "--no-align"}
 		for _, variable := range variables {
 			args = append(args, "--set", variable)
 		}
 		args = append(args, "--file", "-")
 		return Command{Name: "psql", Args: args, Stdin: []byte(script)}
-	}
-	psqlInput := func(service, database, script string, variables ...string) Command {
-		return psqlInputConnection(postgresConnection(service, database), script, variables...)
 	}
 	identityProbe := func(service, database, role, label string) (Command, error) {
 		expectedDatabase, databaseErr := expectedTestIdentity(label+" database", database)
@@ -629,8 +626,9 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if roleErr != nil {
 			return Command{}, roleErr
 		}
-		probe := psqlInputConnection(readOnlyConnection(service, expectedDatabase, expectedRole), `SELECT (current_database()=:'expected_database' AND current_user=:'expected_role')::text;`+"\n", "expected_database="+expectedDatabase, "expected_role="+expectedRole)
+		probe := psqlInput(service, expectedDatabase, `SELECT (current_database()=:'expected_database' AND current_user=:'expected_role')::text;`+"\n", "expected_database="+expectedDatabase, "expected_role="+expectedRole)
 		probe.ExpectedOutput = "true"
+		probe.Env = []string{"PGOPTIONS=-c default_transaction_read_only=on"}
 		return probe, nil
 	}
 	switch request.Operation {
