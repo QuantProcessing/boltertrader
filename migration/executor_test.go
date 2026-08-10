@@ -400,6 +400,9 @@ func TestAcceptMappingSnapshotRejectsNonPrivateExistingPath(t *testing.T) {
 			if err := os.WriteFile(path, []byte("accepted mapping"), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{name: "symlink", setup: func(t *testing.T, path string) {
 			if err := os.Symlink(source, path); err != nil {

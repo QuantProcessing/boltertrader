@@ -1145,7 +1145,14 @@ func TestDevPlatformTestAndLiveStateAreIsolated(t *testing.T) {
 }
 
 func launcherEnv(runtimeDir string) []string {
-	return append(os.Environ(),
+	environment := make([]string, 0, len(os.Environ())+9)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "BT_") || strings.HasPrefix(entry, "FT_") || strings.HasPrefix(entry, "BOLTER_") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment,
 		"FT_LOCAL_RUNTIME_DIR="+runtimeDir,
 		"FT_MODE=test",
 		"BT_DEV_START_TIMEOUT_SECONDS=10",
