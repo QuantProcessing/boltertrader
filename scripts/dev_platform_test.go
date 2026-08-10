@@ -657,6 +657,7 @@ func TestDevPlatformMigrationValidationAcceptsCurrentPrivateSentinel(t *testing.
 	writeExecutable(t, helper, `#!/bin/sh
 set -eu
 if [ "${BT_FUNDING_STARTUP_PROFILE:-}" = migration-validation ] && [ -n "${BT_FUNDING_WORKER_STATE_FILE:-}" ]; then
+  [ -n "${GOMODCACHE:-}" ] && [ -n "${GOCACHE:-}" ] || exit 42
   sentinel="$BT_FUNDING_WORKER_STATE_FILE.migration-validation.ready"
   printf '{"workerId":"%s","instanceId":"%s","profile":"migration-validation","observedAt":"2026-08-10T00:00:00Z"}\n' \
     "$BT_FUNDING_WORKER_ID" "$BT_FUNDING_WORKER_INSTANCE_ID" >"$sentinel"

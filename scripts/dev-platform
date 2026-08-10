@@ -382,7 +382,16 @@ start_service() {
 	log_file="$LOG_DIR/$service.log"
 	if [ "$service" = "funding-worker" ]; then
 		instance_id=$(fresh_instance_id)
+		funding_go_mod_cache=${GOMODCACHE:-}
+		funding_go_build_cache=${GOCACHE:-}
+		if [ -z "$funding_go_mod_cache" ] || [ -z "$funding_go_build_cache" ]; then
+			command -v go >/dev/null 2>&1 || fail "go is required to start the local funding worker"
+			[ -n "$funding_go_mod_cache" ] || funding_go_mod_cache=$(go env GOMODCACHE)
+			[ -n "$funding_go_build_cache" ] || funding_go_build_cache=$(go env GOCACHE)
+		fi
+		[ -n "$funding_go_mod_cache" ] && [ -n "$funding_go_build_cache" ] || fail "Go cache paths are unavailable for the local funding worker"
 		nohup env -i PATH="${PATH:-/usr/bin:/bin}" FT_MODE="$MODE" \
+			GOMODCACHE="$funding_go_mod_cache" GOCACHE="$funding_go_build_cache" \
 			BT_PLATFORM_WORK_URL="${BT_PLATFORM_WORK_URL:-http://127.0.0.1:18092}" \
 			BT_FUNDING_WORKER_TOKEN_FILE="$TOKEN_FILE" BT_FUNDING_WORKER_ID="$WORKER_ID" \
 			BT_FUNDING_WORKER_INSTANCE_ID="$instance_id" BT_FUNDING_WORK_CONTRACT_VERSION="boltertrader-product-platform-upgrade/v4" \
