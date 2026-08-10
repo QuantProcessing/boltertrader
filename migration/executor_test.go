@@ -636,6 +636,32 @@ func TestRestorePlanUsesExplicitMaintenanceConnection(t *testing.T) {
 	}
 }
 
+func TestDatabaseRecreationDropsUnderBoundTargetOwnerRole(t *testing.T) {
+	for _, operation := range []Operation{Restore, FinalDelta} {
+		t.Run(string(operation), func(t *testing.T) {
+			request := ExecutionRequest{
+				Operation: operation, EvidenceDir: t.TempDir(), ArtifactPath: "snapshot.dump",
+				SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator",
+				TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator",
+				MaintenanceService: "target_admin", MaintenanceDatabase: "postgres_test", MaintenanceRole: "target_test_admin",
+			}
+			commands, _, _, _, err := executionPlan(Manifest{}, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			drop := databaseDropCommand(t, commands)
+			script := string(drop.Stdin)
+			setRole := strings.Index(script, `SET ROLE :"owner";`)
+			dropDatabase := strings.Index(script, `DROP DATABASE IF EXISTS :"database" WITH (FORCE);`)
+			resetRole := strings.Index(script, "RESET ROLE;")
+			if setRole < 0 || dropDatabase < setRole || resetRole < dropDatabase ||
+				strings.Contains(script, request.TargetRole) || !containsArg(drop.Args, "owner="+request.TargetRole) {
+				t.Fatalf("database drop does not run as the safely bound target owner: command=%+v stdin=%q", drop, drop.Stdin)
+			}
+		})
+	}
+}
+
 func TestDatabaseRecreationBindsQuotedTargetOwnerForRestoreAndFinalDelta(t *testing.T) {
 	for _, operation := range []Operation{Restore, FinalDelta} {
 		t.Run(string(operation), func(t *testing.T) {
@@ -668,6 +694,17 @@ func TestDatabaseRecreationBindsQuotedTargetOwnerForRestoreAndFinalDelta(t *test
 			}
 		})
 	}
+}
+
+func databaseDropCommand(t *testing.T, commands []Command) Command {
+	t.Helper()
+	for _, command := range commands {
+		if command.Name == "psql" && strings.Contains(string(command.Stdin), "DROP DATABASE") {
+			return command
+		}
+	}
+	t.Fatal("database drop command is missing")
+	return Command{}
 }
 
 func databaseCreateCommand(t *testing.T, commands []Command) Command {
