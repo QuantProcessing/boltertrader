@@ -687,6 +687,43 @@ while :; do sleep 1; done
 	runLauncher(t, repo, env, "up")
 }
 
+func TestDevPlatformMigrationValidationRestartSkipsUnregisteredWorkerDrain(t *testing.T) {
+	repo := repoRoot(t)
+	runtimeDir := t.TempDir()
+	helper := filepath.Join(runtimeDir, "service.sh")
+	writeExecutable(t, helper, `#!/bin/sh
+set -eu
+if [ "${BT_FUNDING_STARTUP_PROFILE:-}" = migration-validation ] && [ -n "${BT_FUNDING_WORKER_STATE_FILE:-}" ]; then
+  sentinel="$BT_FUNDING_WORKER_STATE_FILE.migration-validation.ready"
+  printf '{"workerId":"%s","instanceId":"%s","profile":"migration-validation","observedAt":"2026-08-10T00:00:00Z"}\n' \
+    "$BT_FUNDING_WORKER_ID" "$BT_FUNDING_WORKER_INSTANCE_ID" >"$sentinel"
+  chmod 600 "$sentinel"
+fi
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+`)
+	env := append(launcherEnv(runtimeDir),
+		"BT_FUNDING_STARTUP_PROFILE=migration-validation",
+		"BT_DEV_START_TIMEOUT_SECONDS=2",
+		"BT_DEV_FUNDING_WORKER_DRAIN_CMD=false",
+	)
+	for _, service := range []string{"POSTGRES", "GATEWAY", "PLATFORM", "FUNDING_WORKER", "WEB"} {
+		ready := "true"
+		if service == "FUNDING_WORKER" {
+			ready = ""
+		}
+		env = append(env, "BT_DEV_"+service+"_CMD="+helper, "BT_DEV_"+service+"_READY_CMD="+ready)
+	}
+	t.Cleanup(func() {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "down")
+		cmd.Dir, cmd.Env = repo, env
+		_, _ = cmd.CombinedOutput()
+	})
+
+	runLauncher(t, repo, env, "up")
+	runLauncher(t, repo, env, "restart-app")
+}
+
 func TestDevPlatformWillNotStopProcessWithMismatchedOwnership(t *testing.T) {
 	repo := repoRoot(t)
 	runtimeDir := t.TempDir()

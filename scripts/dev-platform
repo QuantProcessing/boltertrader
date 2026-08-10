@@ -475,6 +475,10 @@ run_with_timeout() {
 
 drain_worker() {
 	is_owned funding-worker || return 0
+	if [ "$FUNDING_STARTUP_PROFILE" = "migration-validation" ]; then
+		funding_worker_ready || { printf 'dev-platform: migration-validation funding-worker readiness is unavailable\n' >&2; return 1; }
+		return 0
+	fi
 	drain=$(configured_value funding-worker DRAIN_CMD)
 	[ -n "$drain" ] || { printf 'dev-platform: funding-worker drain command is missing\n' >&2; return 1; }
 	run_with_timeout "$DRAIN_TIMEOUT" "$drain" || { printf 'dev-platform: funding-worker drain failed or timed out\n' >&2; return 1; }
