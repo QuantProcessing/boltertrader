@@ -184,14 +184,14 @@ run_final_delta() {
 }
 
 run_fence() {
-	migration_tool fence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE"
+	migration_tool fence --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
 }
 
 BACKFILL_MAPPING=${BT_G010_BACKFILL_MAPPING:-migration/backfills/account-route-v1.json}
 reject_private_route "$BACKFILL_MAPPING"
 
 run_backfill() {
-	migration_tool backfill --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --backfill-mapping "$BACKFILL_MAPPING" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE"
+	migration_tool backfill --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --backfill-mapping "$BACKFILL_MAPPING" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
 }
 
 run_validate() {

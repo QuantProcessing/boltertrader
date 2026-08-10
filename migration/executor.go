@@ -587,7 +587,7 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		return nil, Request{}, nil, "", targetErr
 	}
 	maintenance := ""
-	if request.Operation == Restore || request.Operation == FinalDelta {
+	if request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Rollback {
 		maintenance, err = postgresService(request.MaintenanceService)
 		if err != nil {
 			return nil, Request{}, nil, "", fmt.Errorf("maintenance %w", err)
@@ -750,23 +750,36 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if probeErr != nil {
 			return nil, Request{}, nil, "", probeErr
 		}
-		if err := requireDistinctExpectedIdentities(expectedIdentity{database: sourceDatabase, role: request.SourceRole}, expectedIdentity{database: targetDatabase, role: request.TargetRole}); err != nil {
+		maintenanceDatabase, databaseErr := postgresIdentifier("maintenance database", request.MaintenanceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		maintenanceProbe, probeErr := identityProbe(maintenance, maintenanceDatabase, request.MaintenanceRole, "maintenance")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		if err := requireDistinctExpectedIdentities(
+			expectedIdentity{database: sourceDatabase, role: request.SourceRole},
+			expectedIdentity{database: targetDatabase, role: request.TargetRole},
+			expectedIdentity{database: maintenanceDatabase, role: request.MaintenanceRole},
+		); err != nil {
 			return nil, Request{}, nil, "", err
 		}
 		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		fenceSQL := `REVOKE CONNECT ON DATABASE :"database" FROM :"writer_role"; ALTER ROLE :"writer_role" NOLOGIN; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename=:'writer_role' AND pid<>pg_backend_pid();` + "\n"
-		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
-		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceBefore := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
+		sourceAfter := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceRole)
 		sourceAfter.ExpectedOutput = "false|0"
-		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
+		targetAfter := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetRole)
 		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
 			sourceProbe,
 			targetProbe,
+			maintenanceProbe,
 			sourceBefore,
-			psqlInput(source, "", fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
+			psqlInput(maintenance, maintenanceDatabase, fenceSQL, "database="+sourceDatabase, "writer_role="+sourceRole),
 			sourceAfter,
-			psqlInput(target, "", fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
+			psqlInput(maintenance, maintenanceDatabase, fenceSQL, "database="+targetDatabase, "writer_role="+targetRole),
 			targetAfter,
 		}, apply, []string{"connected-identities-verified", "source-writer-login-disabled", "source-writer-sessions-terminated", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil
 	case Backfill:
@@ -892,22 +905,35 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		if probeErr != nil {
 			return nil, Request{}, nil, "", probeErr
 		}
-		if err := requireDistinctExpectedIdentities(expectedIdentity{database: sourceDatabase, role: request.SourceRole}, expectedIdentity{database: targetDatabase, role: request.TargetRole}); err != nil {
+		maintenanceDatabase, databaseErr := postgresIdentifier("maintenance database", request.MaintenanceDatabase)
+		if databaseErr != nil {
+			return nil, Request{}, nil, "", databaseErr
+		}
+		maintenanceProbe, probeErr := identityProbe(maintenance, maintenanceDatabase, request.MaintenanceRole, "maintenance")
+		if probeErr != nil {
+			return nil, Request{}, nil, "", probeErr
+		}
+		if err := requireDistinctExpectedIdentities(
+			expectedIdentity{database: sourceDatabase, role: request.SourceRole},
+			expectedIdentity{database: targetDatabase, role: request.TargetRole},
+			expectedIdentity{database: maintenanceDatabase, role: request.MaintenanceRole},
+		); err != nil {
 			return nil, Request{}, nil, "", err
 		}
 		stateQuery := `SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin`
 		restoreSQL := `ALTER ROLE :"writer_role" LOGIN; GRANT CONNECT ON DATABASE :"database" TO :"writer_role";` + "\n"
-		sourceBefore := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
+		sourceBefore := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
 		sourceBefore.ExpectedOutput = "false|0"
-		sourceAfter := psqlInput(source, "", stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
+		sourceAfter := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+sourceDatabase, "writer_role="+sourceWriterRole)
 		sourceAfter.ExpectedOutput = "true|0"
-		targetAfter := psqlInput(target, "", stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetWriterRole)
+		targetAfter := psqlInput(maintenance, maintenanceDatabase, stateQuery+"\n", "database="+targetDatabase, "writer_role="+targetWriterRole)
 		targetAfter.ExpectedOutput = "false|0"
 		return []Command{
 			sourceProbe,
 			targetProbe,
+			maintenanceProbe,
 			sourceBefore,
-			psqlInput(source, "", restoreSQL, "database="+sourceDatabase, "writer_role="+sourceWriterRole),
+			psqlInput(maintenance, maintenanceDatabase, restoreSQL, "database="+sourceDatabase, "writer_role="+sourceWriterRole),
 			sourceAfter,
 			targetAfter,
 		}, apply, []string{"connected-identities-verified", "source-writer-login-restored", "source-writer-sessions-cleared", "target-writer-login-disabled", "target-writer-sessions-terminated"}, "", nil

@@ -503,6 +503,7 @@ func validBackfillExecutionRequest(t *testing.T, root, mapping string) Execution
 		SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator", SourceWriterRole: "source_test_writer",
 		TargetService: "platform", TargetDatabase: "platform_test", TargetRole: "platform_test_migrator", TargetWriterRole: "platform_test_writer",
 		GatewayService: "gateway", GatewayDatabase: "gateway_test", GatewayRole: "gateway_test_migrator", repositoryRoot: root,
+		MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
 	}
 }
 
@@ -528,14 +529,15 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 	commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
 		SourceDatabase: "funding_source_test", TargetDatabase: "bolter_target_test", SourceRole: "funding_source_test_migrator", TargetRole: "bolter_target_test_migrator", SourceWriterRole: "funding_test_writer", TargetWriterRole: "bolter_test_writer",
+		MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 7 {
+	if len(commands) != 8 {
 		t.Fatalf("commands = %+v", commands)
 	}
-	for _, index := range []int{3, 5} {
+	for _, index := range []int{4, 6} {
 		command := commands[index]
 		args := strings.Join(command.Args, " ")
 		stdin := string(command.Stdin)
@@ -546,11 +548,45 @@ func TestFencePlanUsesDigestibleNonTransactionalPSQLInput(t *testing.T) {
 			t.Fatal("controlled psql input was not digest-bound")
 		}
 	}
-	if commands[2].ExpectedOutput != "" {
+	if commands[3].ExpectedOutput != "" {
 		t.Fatal("fence incorrectly requires writer sessions to be drained before termination")
 	}
-	if strings.Contains(string(commands[4].Stdin), "has_database_privilege") || commands[4].ExpectedOutput != "false|0" {
-		t.Fatalf("fence verifies an ineffective CONNECT assertion: %+v", commands[4])
+	if strings.Contains(string(commands[5].Stdin), "has_database_privilege") || commands[5].ExpectedOutput != "false|0" {
+		t.Fatalf("fence verifies an ineffective CONNECT assertion: %+v", commands[5])
+	}
+}
+
+func TestFenceAndRollbackRunRoleChangesThroughVerifiedMaintenanceConnection(t *testing.T) {
+	for _, operation := range []Operation{Fence, Rollback} {
+		t.Run(string(operation), func(t *testing.T) {
+			commands, _, _, _, err := executionPlan(Manifest{}, ExecutionRequest{
+				Operation: operation, EvidenceDir: t.TempDir(),
+				SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator", SourceWriterRole: "source_test_writer",
+				TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator", TargetWriterRole: "target_test_writer",
+				MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantConnection := "service=maintenance dbname=maintenance_test"
+			var maintenanceVerified bool
+			var roleChanges int
+			for _, command := range commands {
+				connection := postgresConnectionArgument(command)
+				if connection == wantConnection && command.ExpectedOutput == "true" {
+					maintenanceVerified = true
+				}
+				if strings.Contains(string(command.Stdin), "ALTER ROLE") {
+					roleChanges++
+					if connection != wantConnection {
+						t.Fatalf("role change does not use verified maintenance connection: %+v", command)
+					}
+				}
+			}
+			if !maintenanceVerified || roleChanges == 0 {
+				t.Fatalf("maintenance verification=%v roleChanges=%d commands=%+v", maintenanceVerified, roleChanges, commands)
+			}
+		})
 	}
 }
 
@@ -561,7 +597,7 @@ func TestExecutablePlansRejectCrossModeDatabaseAndRoleIdentities(t *testing.T) {
 		"writer role":     func(request *ExecutionRequest) { request.SourceWriterRole = "funding_live_writer" },
 	} {
 		t.Run(name, func(t *testing.T) {
-			request := ExecutionRequest{Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source_test", TargetService: "target_test", SourceDatabase: "source_test", TargetDatabase: "target_test", SourceRole: "source_test_migrator", TargetRole: "target_test_migrator", SourceWriterRole: "source_test_writer", TargetWriterRole: "target_test_writer"}
+			request := ExecutionRequest{Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source_test", TargetService: "target_test", SourceDatabase: "source_test", TargetDatabase: "target_test", SourceRole: "source_test_migrator", TargetRole: "target_test_migrator", SourceWriterRole: "source_test_writer", TargetWriterRole: "target_test_writer", MaintenanceService: "maintenance_test", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin"}
 			mutate(&request)
 			if _, _, _, _, err := executionPlan(Manifest{}, request); err == nil || !strings.Contains(err.Error(), "cross-mode") {
 				t.Fatalf("error=%v", err)
@@ -575,6 +611,7 @@ func TestExecutablePlansRejectUnscopedAndDuplicateTestIdentities(t *testing.T) {
 		Operation: Fence, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
 		SourceDatabase: "funding_source_test", SourceRole: "funding_source_test_migrator", SourceWriterRole: "funding_source_test_writer",
 		TargetDatabase: "bolter_platform_test", TargetRole: "bolter_platform_test_migrator", TargetWriterRole: "bolter_platform_test_writer",
+		MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
 	}
 	for name, mutate := range map[string]func(*ExecutionRequest){
 		"unscoped source database": func(request *ExecutionRequest) { request.SourceDatabase = "funding_prod" },
@@ -599,11 +636,12 @@ func TestRollbackPlanDoesNotClaimEffectiveConnectVerification(t *testing.T) {
 	commands, _, checks, _, err := executionPlan(Manifest{}, ExecutionRequest{
 		Operation: Rollback, EvidenceDir: t.TempDir(), SourceService: "source", TargetService: "target",
 		SourceDatabase: "funding_source_test", TargetDatabase: "bolter_target_test", SourceRole: "funding_source_test_migrator", TargetRole: "bolter_target_test_migrator", SourceWriterRole: "funding_test_writer", TargetWriterRole: "bolter_test_writer",
+		MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 6 || !strings.Contains(string(commands[3].Stdin), "GRANT CONNECT") {
+	if len(commands) != 7 || !strings.Contains(string(commands[4].Stdin), "GRANT CONNECT") {
 		t.Fatalf("rollback no longer executes the role-scoped connect grant: %+v", commands)
 	}
 	for _, check := range checks {
@@ -1321,6 +1359,7 @@ func TestBackfillHighWaterMismatchRestoresSourceAndInvalidatesDelta(t *testing.T
 		SourceService: "source", SourceDatabase: "source_test", SourceRole: "source_test_migrator", SourceWriterRole: "source_test_writer",
 		TargetService: "target", TargetDatabase: "target_test", TargetRole: "target_test_migrator", TargetWriterRole: "target_test_writer",
 		GatewayService: "gateway", GatewayDatabase: "gateway_test", GatewayRole: "gateway_test_migrator", repositoryRoot: repoRoot,
+		MaintenanceService: "maintenance", MaintenanceDatabase: "maintenance_test", MaintenanceRole: "maintenance_test_admin",
 	}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
 		names = append(names, command.Name)
 		if command.Name == "psql" && strings.Contains(strings.Join(command.Args, " "), "pg_stat_user_tables") {
