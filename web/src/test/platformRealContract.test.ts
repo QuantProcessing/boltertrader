@@ -141,7 +141,7 @@ describe("real browser acceptance contract", () => {
   it("arms authoritative snapshot waits before invoking the resnapshot harness", async () => {
     const source = await acceptanceSource();
     const waits = source.indexOf("postHarnessResponses");
-    const harness = source.indexOf("request.post(harnessURL)");
+    const harness = source.indexOf("request.post(harnessURL");
 
     expect(waits).toBeGreaterThan(0);
     expect(harness).toBeGreaterThan(waits);
@@ -150,6 +150,7 @@ describe("real browser acceptance contract", () => {
     expect(source).toContain("triggerCount");
     expect(source).toContain("canonicalMutationCount");
     expect(source).toContain("activeHeadMutationCount");
+    expect(source).toContain('"Idempotency-Key"');
   });
 
   it("requires one successful recovery and zero authoritative harness effects", async () => {

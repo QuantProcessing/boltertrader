@@ -25,8 +25,9 @@ if (optedIn) {
   assertSafeRealPlatformURL(process.env.BT_DEV_REAL_PLATFORM_URL!);
   const harnessURL = new URL(process.env.BT_DEV_REAL_TEST_HARNESS_RESNAPSHOT_URL!);
   if ((harnessURL.protocol !== "http:" && harnessURL.protocol !== "https:")
-    || (harnessURL.hostname !== "127.0.0.1" && harnessURL.hostname !== "localhost" && harnessURL.hostname !== "[::1]")
-    || !harnessURL.port || harnessURL.username || harnessURL.password || harnessURL.hash) {
+    || harnessURL.hostname !== "127.0.0.1"
+    || !harnessURL.port || harnessURL.username || harnessURL.password
+    || harnessURL.pathname !== "/__bt/resnapshot" || harnessURL.search || harnessURL.hash) {
     throw new Error("Real-browser acceptance requires a loopback-only resnapshot harness.");
   }
 }

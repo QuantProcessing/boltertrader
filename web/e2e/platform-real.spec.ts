@@ -143,7 +143,7 @@ test("real Test platform exposes only redacted account validation and recovery s
     return response.request().method() === "GET"
       && (expectedPath.endsWith("/") ? path.startsWith(expectedPath) && path.endsWith("/runtimes") : path === expectedPath);
   }));
-  const harnessResponse = await request.post(harnessURL);
+  const harnessResponse = await request.post(harnessURL, { headers: { "Idempotency-Key": "g010-real-browser-resnapshot" } });
   expect(harnessResponse.ok(), "The resnapshot harness request failed.").toBe(true);
   const markers = await harnessResponse.json() as {
     beforeMarker?: unknown;

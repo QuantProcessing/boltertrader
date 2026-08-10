@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:real": "playwright test --config playwright.real.config.ts"
+    "test:e2e:real": "playwright test --config playwright.real.config.ts",
+    "test:e2e:real:harness": "node --experimental-strip-types e2e/resnapshot-harness.ts"
   },
   "dependencies": {
     "lucide-react": "^0.539.0",
