@@ -172,8 +172,6 @@ recheck_real_stack() {
 		BT_FUNDING_STARTUP_PROFILE=migration-validation \
 		BT_DEV_REAL_STACK_ACCEPTANCE=1 FT_MODE=test BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0 BT_LIVE_PRIVATE_WRITES_ENABLED=0 \
 		"$MAKE" test-real || fail "real stack verification failed"
-	BT_DEV_REAL_BROWSER_ACCEPTANCE=1 FT_MODE=test BT_DEV_ENABLE_LIVE_PRIVATE_WRITES=0 BT_LIVE_PRIVATE_WRITES_ENABLED=0 \
-		"$NPM" --prefix web run test:e2e:real || fail "real browser verification failed"
 }
 
 run_backup() {

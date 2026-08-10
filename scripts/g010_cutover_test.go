@@ -128,12 +128,12 @@ func TestG010Cutover(t *testing.T) {
 		h.rejects(driver, "real browser verification failed")
 
 		h = newG010Harness(t, repo, "validated")
-		h.set("FAKE_BROWSER_FAIL", "1")
-		h.rejects(driver, "real browser verification failed")
+		h.set("FAKE_REAL_STACK_FAIL", "1")
+		h.rejects(driver, "real stack verification failed")
 
 		h = newG010Harness(t, repo, "activation-ready")
-		h.set("FAKE_BROWSER_FAIL", "1")
-		h.rejects(driver, "real browser verification failed")
+		h.set("FAKE_REAL_STACK_FAIL", "1")
+		h.rejects(driver, "real stack verification failed")
 	})
 
 	t.Run("binds writer state variables through psql stdin", func(t *testing.T) {
@@ -283,7 +283,7 @@ case "$*" in
 esac
 `)
 	makeShim := filepath.Join(binDir, "make")
-	writeExecutable(t, makeShim, "#!/bin/sh\nset -eu\nprintf 'make %s profiles %s %s %s\\n' \"$*\" \"${BT_GATEWAY_STARTUP_PROFILE:-}\" \"${BT_PLATFORM_STARTUP_PROFILE:-}\" \"${BT_FUNDING_STARTUP_PROFILE:-}\" >>\"$FAKE_COMMAND_LOG\"\n")
+	writeExecutable(t, makeShim, "#!/bin/sh\nset -eu\nprintf 'make %s profiles %s %s %s\\n' \"$*\" \"${BT_GATEWAY_STARTUP_PROFILE:-}\" \"${BT_PLATFORM_STARTUP_PROFILE:-}\" \"${BT_FUNDING_STARTUP_PROFILE:-}\" >>\"$FAKE_COMMAND_LOG\"\n[ \"${FAKE_REAL_STACK_FAIL:-0}\" = 0 ]\n")
 	npm := filepath.Join(binDir, "npm")
 	writeExecutable(t, npm, "#!/bin/sh\nset -eu\nprintf 'npm %s\\n' \"$*\" >>\"$FAKE_COMMAND_LOG\"\n[ \"${FAKE_BROWSER_FAIL:-0}\" = 0 ]\n")
 
@@ -468,6 +468,9 @@ func (h *g010Harness) assertValidationProfiles() {
 	recheck := strings.Index(commands[validate:], "make test-real profiles migration-validation migration-validation migration-validation")
 	if recheck < 0 {
 		h.t.Fatalf("post-validation real stack check did not retain all validation profiles:\n%s", commands)
+	}
+	if strings.Contains(commands[validate:], "npm --prefix web run test:e2e:real") {
+		h.t.Fatalf("post-validation browser check escaped the snapshot-bound test-real harness:\n%s", commands)
 	}
 }
 
