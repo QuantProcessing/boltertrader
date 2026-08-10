@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,6 +30,7 @@ import (
 	fundingexecution "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/execution"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/planning"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/backend/internal/workapi"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 )
@@ -71,6 +74,33 @@ func TestMigrateAppliesPlatformSchemaIdempotently(t *testing.T) {
 	}
 	if err := Migrate(ctx, database); !errors.Is(err, ErrMigrationMismatch) {
 		t.Fatalf("checksum mismatch error=%v want %v", err, ErrMigrationMismatch)
+	}
+}
+
+func TestWorkAPIRegistrationPersistsPostgresSafeModeScope(t *testing.T) {
+	database, _ := openIntegrationDatabaseWithMigrations(t, true)
+	service := work.NewWithStore(workapi.ContractVersion, time.Minute, NewWorkStore(database))
+	handler, err := workapi.New(workapi.Options{
+		TokenDigest: sha256.Sum256([]byte("test-worker-token")), Mode: "test",
+		ContractVersion: workapi.ContractVersion, Service: service,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/funding-work/workers/registrations", strings.NewReader(`{"workerId":"funding-pg-worker","instanceId":"instance-a","productId":"funding","mode":"test","contractVersion":"boltertrader-product-platform-upgrade/v4"}`))
+	request.Header.Set("Authorization", "Bearer test-worker-token")
+	request.Header.Set("Idempotency-Key", "register-funding-pg-worker")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("registration=%d body=%s", response.Code, response.Body.String())
+	}
+	var workerID string
+	if err := database.QueryRow(`SELECT worker_id FROM platform_work_workers`).Scan(&workerID); err != nil {
+		t.Fatal(err)
+	}
+	if workerID != "test:funding-pg-worker" || strings.ContainsRune(workerID, '\x00') {
+		t.Fatalf("persisted worker key=%q", workerID)
 	}
 }
 

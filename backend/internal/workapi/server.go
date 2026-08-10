@@ -453,7 +453,7 @@ func (h *handler) validateWorkerHeaders(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *handler) workerKey(workerID string) string {
-	return h.mode + "\x00" + strings.TrimSpace(workerID)
+	return h.mode + ":" + strings.TrimSpace(workerID)
 }
 
 func (h *handler) writeFactPage(w http.ResponseWriter, r *http.Request, snapshot bool) {

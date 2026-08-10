@@ -54,6 +54,17 @@ func TestWorkAuthAndStrictValidation(t *testing.T) {
 	}
 }
 
+func TestWorkerKeyUsesPostgresSafeModeScope(t *testing.T) {
+	testKey := (&handler{mode: "test"}).workerKey(" worker-a ")
+	liveKey := (&handler{mode: "live"}).workerKey("worker-a")
+	if testKey != "test:worker-a" || liveKey != "live:worker-a" {
+		t.Fatalf("scoped worker keys test=%q live=%q", testKey, liveKey)
+	}
+	if strings.ContainsRune(testKey, '\x00') || strings.ContainsRune(liveKey, '\x00') || testKey == liveKey {
+		t.Fatalf("worker keys are not PostgreSQL-safe and mode-scoped: test=%q live=%q", testKey, liveKey)
+	}
+}
+
 func TestCanonicalWriteGateRejectsBeforeWorkDispatch(t *testing.T) {
 	handler, err := New(Options{
 		TokenDigest: sha256.Sum256([]byte("test-worker-token")), Mode: "test", ContractVersion: ContractVersion,
