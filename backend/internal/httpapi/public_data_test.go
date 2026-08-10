@@ -107,6 +107,37 @@ func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
 	}
 }
 
+func TestRealtimeStreamAllowsInitialSubscriptionWithoutCursor(t *testing.T) {
+	handler, _ := newPublicDataHandler(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("initial realtime response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRealtimeStreamResumesFromLastEventID(t *testing.T) {
+	handler, hub := newPublicDataHandler(t)
+	first, _ := hub.Publish("catalog.updated", map[string]string{"revision": "one"})
+	second, _ := hub.Publish("market_data.updated", map[string]string{"instrumentId": "btc-usdt"})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream", nil).WithContext(ctx)
+	request.Header.Set("Last-Event-ID", first.Cursor)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), first.EventID) || !strings.Contains(response.Body.String(), second.EventID) {
+		t.Fatalf("Last-Event-ID resume response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestRealtimeStreamScopesPrivateReplayToPrincipal(t *testing.T) {
 	handler, hub := newPublicDataHandler(t)
 	activity, err := NewActivityLog(8, time.Now, hub)

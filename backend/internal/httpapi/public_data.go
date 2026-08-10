@@ -148,7 +148,7 @@ func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
-	if err := validateQuery(r, []string{"cursor"}); err != nil {
+	if err := validateOptionalQuery(r, []string{"cursor"}); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
 		return
 	}
@@ -200,8 +200,20 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 }
 
 func validateQuery(r *http.Request, required []string) error {
-	allowed := make(map[string]struct{}, len(required))
+	if err := validateOptionalQuery(r, required); err != nil {
+		return err
+	}
 	for _, name := range required {
+		if strings.TrimSpace(r.URL.Query().Get(name)) == "" {
+			return fmt.Errorf("query field %q is required", name)
+		}
+	}
+	return nil
+}
+
+func validateOptionalQuery(r *http.Request, optional []string) error {
+	allowed := make(map[string]struct{}, len(optional))
+	for _, name := range optional {
 		allowed[name] = struct{}{}
 	}
 	for name, values := range r.URL.Query() {
@@ -210,11 +222,6 @@ func validateQuery(r *http.Request, required []string) error {
 		}
 		if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
 			return fmt.Errorf("query field %q must appear once with a value", name)
-		}
-	}
-	for _, name := range required {
-		if strings.TrimSpace(r.URL.Query().Get(name)) == "" {
-			return fmt.Errorf("query field %q is required", name)
 		}
 	}
 	return nil
