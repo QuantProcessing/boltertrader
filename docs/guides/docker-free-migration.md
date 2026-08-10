@@ -2,8 +2,7 @@
 
 The migration tool executes fixed PostgreSQL, Go, and Make argv plans and writes
 typed evidence only after every command and postcondition succeeds. It never
-uses Docker, reads an `.env` file, activates target writes, retires the source,
-or sends venue orders.
+uses Docker, reads an `.env` file, retires the source, or sends venue orders.
 
 ## Prerequisites
 
@@ -45,6 +44,7 @@ export BT_MIGRATION_GATEWAY_ROLE=bolter_gateway_test_migrator
 export BT_MIGRATION_MAINTENANCE_ROLE=bolter_platform_test_admin
 export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_test_writer
 export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_test_writer
+export BT_MIGRATION_GATEWAY_WRITER_ROLE=bolter_gateway_test_writer
 ```
 
 Service names are only connection locators and may use arbitrary labels. Before
@@ -214,6 +214,37 @@ Run offline, browser, read-only real-Test, and restart/recovery gates. The real
 gate retains its explicit Test-only attestation and default-denied venue-write
 checks:
 
+Capture the redacted database state immediately before and after the validating
+browser cycle, then compare it while allowing only that cycle's session token
+digest. Snapshot artifacts contain hashes and counts, never row values:
+
+```sh
+FT_MODE=test .local/bin/migration-tool validation-snapshot \
+  --platform-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --platform-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
+  --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
+  --output .local/migration/evidence/browser-before.json
+
+# Run the one validating browser cycle and retain its session token digest.
+
+FT_MODE=test .local/bin/migration-tool validation-snapshot \
+  --platform-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --platform-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
+  --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
+  --output .local/migration/evidence/browser-after.json
+
+FT_MODE=test .local/bin/migration-tool validation-compare \
+  --before .local/migration/evidence/browser-before.json \
+  --after .local/migration/evidence/browser-after.json \
+  --allowed-session-id "$BT_VALIDATING_SESSION_DIGEST"
+```
+
+`validation-compare` exits nonzero for canonical Platform drift,
+migration-object drift, Gateway active-head drift, or any session lifecycle
+outside the named validating session.
+
 ```sh
 BT_DEV_REAL_STACK_ACCEPTANCE=1 .local/bin/migration-tool validate \
   --manifest migration/manifest.json \
@@ -222,11 +253,35 @@ BT_DEV_REAL_STACK_ACCEPTANCE=1 .local/bin/migration-tool validate \
 
 .local/bin/migration-tool prepare-activation \
   --manifest migration/manifest.json
+
+.local/bin/migration-tool activate \
+  --manifest migration/manifest.json \
+  --evidence-dir .local/migration/evidence \
+  --journal .local/migration/evidence/activation-attempt.json \
+  --state-dir "${FT_LOCAL_RUNTIME_DIR:-/tmp/boltertrader-local}/state/test" \
+  --source-service "$BT_MIGRATION_SOURCE_SERVICE" \
+  --source-database "$BT_MIGRATION_SOURCE_DATABASE" \
+  --source-role "$BT_MIGRATION_SOURCE_ROLE" \
+  --source-writer-role "$BT_MIGRATION_SOURCE_WRITER_ROLE" \
+  --target-service "$BT_MIGRATION_TARGET_SERVICE" \
+  --target-database "$BT_MIGRATION_TARGET_DATABASE" \
+  --target-role "$BT_MIGRATION_TARGET_ROLE" \
+  --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE" \
+  --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
+  --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
+  --gateway-role "$BT_MIGRATION_GATEWAY_ROLE" \
+  --gateway-writer-role "$BT_MIGRATION_GATEWAY_WRITER_ROLE" \
+  --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
+  --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE" \
+  --maintenance-role "$BT_MIGRATION_MAINTENANCE_ROLE"
 ```
 
-`prepare-activation` stops at `activation-ready`. There is no `activate` or
-`retire` execution command. G010 is a no-trade validation gate; it does not
-authorize G011 Test writes, activation, retirement, or Live private writes.
+`prepare-activation` stops at `activation-ready`. `activate` creates or resumes
+the manifest-bound attempt, promotes the exact pending Gateway set, grants the
+two Test writer memberships atomically, restarts the owned Test services, and
+generates the activation evidence. It rejects caller-authored proof and
+timestamp flags. `retire` remains unsupported, and G010 never authorizes Live
+private writes or venue orders.
 
 ## Retry And Recovery
 

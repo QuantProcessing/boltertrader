@@ -94,11 +94,11 @@ func TestG010Cutover(t *testing.T) {
 
 	t.Run("revalidates activation evidence on restart", func(t *testing.T) {
 		h := newG010Harness(t, repo, "activated")
-		proof := h.env["BT_G010_ACTIVATION_PROOF"]
+		proof := filepath.Join(h.evidenceDir, "009-activate.json")
 		if err := os.WriteFile(proof, []byte("{\"status\":\"pass\",\"tampered\":true}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		h.rejects(driver, "record-activation-evidence evidence changed")
+		h.rejects(driver, "activate evidence changed")
 	})
 
 	t.Run("rejects post fence writers and failed browser verification", func(t *testing.T) {
@@ -130,14 +130,14 @@ func TestG010Cutover(t *testing.T) {
 		h.rejects(driver, "private venue write route")
 	})
 
-	t.Run("one invocation reaches activation ready through durable phases", func(t *testing.T) {
+	t.Run("one invocation reaches activated through durable phases", func(t *testing.T) {
 		h := newG010Harness(t, repo, "baseline")
 		h.accepts(driver)
-		if phase := h.phase(); phase != "activation-ready" {
-			t.Fatalf("durable phase=%q, want activation-ready", phase)
+		if phase := h.phase(); phase != "activated" {
+			t.Fatalf("durable phase=%q, want activated", phase)
 		}
 		h.assertMigrationAdvances(
-			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation",
+			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "activate",
 		)
 		h.assertValidationGateAfter("backfill")
 		h.assertNoPrivateWriteCommand()
@@ -152,11 +152,11 @@ func TestG010Cutover(t *testing.T) {
 		}
 
 		h.accepts(driver)
-		if phase := h.phase(); phase != "activation-ready" {
-			t.Fatalf("phase after resume=%q, want activation-ready", phase)
+		if phase := h.phase(); phase != "activated" {
+			t.Fatalf("phase after resume=%q, want activated", phase)
 		}
 		h.assertMigrationAdvances(
-			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation",
+			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "activate",
 		)
 		h.assertNoPrivateWriteCommand()
 	})
@@ -230,14 +230,10 @@ esac
 
 	manifest := filepath.Join(root, "manifest.json")
 	backfill := filepath.Join(root, "account-route-v1.json")
-	activationProof := filepath.Join(root, "activation-proof.json")
 	if err := os.WriteFile(manifest, []byte("fake durable manifest owned by migration-tool\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(backfill, []byte("{\"routes\":[]}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(activationProof, []byte("{\"schemaVersion\":1,\"operation\":\"record-activation-evidence\",\"status\":\"pass\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h := &g010Harness{
@@ -251,7 +247,6 @@ esac
 		"BT_G010_MANIFEST_PATH": manifest, "BT_G010_MIGRATION_TOOL": migrationTool,
 		"BT_G010_DEV_PLATFORM": devPlatform, "BT_G010_PSQL": psql, "BT_G010_MAKE": makeShim, "BT_G010_NPM": npm,
 		"BT_G010_IMPORT_COMMIT": strings.Repeat("a", 40), "BT_G010_BACKFILL_MAPPING": backfill,
-		"BT_G010_ACTIVATION_AT": "2026-08-10T01:00:00Z", "BT_G010_CUTOVER_AT": "2026-08-10T01:01:00Z", "BT_G010_ACTIVATION_PROOF": activationProof,
 		"FAKE_PHASE_FILE": phaseFile, "FAKE_LEDGER_FILE": ledgerFile, "FAKE_EVIDENCE_DIR": evidenceDir,
 		"FAKE_INTERRUPT_MARKER": interruptMarker, "FAKE_COMMAND_LOG": commandLog,
 		"BT_GATEWAY_URL": "http://127.0.0.1:18082", "BT_PLATFORM_BROWSER_URL": "http://127.0.0.1:18091/api/v1",
@@ -270,11 +265,6 @@ esac
 	for _, operation := range operationsToPhase(phase) {
 		h.seed(operation)
 	}
-	if phase != "activated" {
-		h.unset("BT_G010_ACTIVATION_AT")
-		h.unset("BT_G010_CUTOVER_AT")
-		h.unset("BT_G010_ACTIVATION_PROOF")
-	}
 	if err := os.WriteFile(commandLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +272,7 @@ esac
 }
 
 func operationsToPhase(phase string) []string {
-	all := []string{"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "record-activation-evidence"}
+	all := []string{"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "activate"}
 	phases := []string{"baseline", "provenance-ready", "backed-up", "restored", "delta-captured", "fenced", "backfilled", "validated", "activation-ready", "activated"}
 	for index, candidate := range phases {
 		if phase == candidate {
@@ -304,8 +294,6 @@ func (h *g010Harness) seed(operation string) {
 		args = append(args, "--artifact", h.deltaArtifact)
 	case "backfill":
 		args = append(args, "--backfill-mapping", h.env["BT_G010_BACKFILL_MAPPING"])
-	case "record-activation-evidence":
-		args = append(args, "--proof", h.env["BT_G010_ACTIVATION_PROOF"], "--activation-at", h.env["BT_G010_ACTIVATION_AT"], "--cutover-at", h.env["BT_G010_CUTOVER_AT"])
 	}
 	cmd := exec.Command(h.env["BT_G010_MIGRATION_TOOL"], args...)
 	cmd.Env = h.environ()
@@ -446,9 +434,9 @@ if [ "$operation" = verify-evidence ]; then
 				proof="$FAKE_EVIDENCE_DIR/$(printf '%03d' "$sequence")-$recorded.json"
 				[ -f "$proof" ] && [ "$(hash_file "$proof")" = "$proof_sha" ] || { printf 'record-import evidence changed\n' >&2; exit 1; }
 				;;
-			record-activation-evidence)
-				proof=$(arg_value --activation-proof "$@")
-				[ -f "$proof" ] && [ "$(hash_file "$proof")" = "$proof_sha" ] || { printf 'record-activation-evidence evidence changed\n' >&2; exit 1; }
+			activate)
+				proof="$FAKE_EVIDENCE_DIR/$(printf '%03d' "$sequence")-$recorded.json"
+				[ -f "$proof" ] && [ "$(hash_file "$proof")" = "$proof_sha" ] || { printf 'activate evidence changed\n' >&2; exit 1; }
 				;;
 		esac
 	done <"$FAKE_LEDGER_FILE"
@@ -489,7 +477,7 @@ case "$phase:$operation" in
 	fenced:backfill) next=backfilled ;;
 	backfilled:validate) next=validated ;;
 	validated:prepare-activation) next=activation-ready ;;
-	activation-ready:record-activation-evidence) next=activated ;;
+	activation-ready:activate) next=activated ;;
 	*) printf '%s is not legal from %s\n' "$operation" "$phase" >&2; exit 1 ;;
 esac
 
@@ -507,10 +495,6 @@ sequence=$(( $(wc -l <"$FAKE_LEDGER_FILE") + 1 ))
 proof_sha=-
 case "$operation" in
 	prepare-activation) ;;
-	record-activation-evidence)
-		proof=$(arg_value --proof "$@")
-		proof_sha=$(hash_file "$proof")
-		;;
 	*)
 		proof="$FAKE_EVIDENCE_DIR/$(printf '%03d' "$sequence")-$operation.json"
 		printf '{"schemaVersion":1,"operation":"%s","status":"pass","generatedBy":"migration-tool/executor-v1","artifactSha256":"%s"}\n' "$operation" "$artifact_sha" >"$proof"

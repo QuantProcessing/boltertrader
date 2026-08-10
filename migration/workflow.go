@@ -27,6 +27,7 @@ const (
 	Backfill          Operation = "backfill"
 	Validate          Operation = "validate"
 	PrepareActivation Operation = "prepare-activation"
+	Activate          Operation = "activate"
 	RecordActivation  Operation = "record-activation-evidence"
 	PrepareRetirement Operation = "prepare-retirement"
 	Rollback          Operation = "rollback"
@@ -243,7 +244,7 @@ func applyExecuted(manifestPath string, request Request, options ApplyOptions) (
 
 func operationRequiresExecution(operation Operation) bool {
 	switch operation {
-	case Backup, Restore, FinalDelta, Fence, Backfill, Validate, Rollback:
+	case Backup, Restore, FinalDelta, Fence, Backfill, Validate, Activate, Rollback:
 		return true
 	default:
 		return false
@@ -266,7 +267,7 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 	} else if !validSHA256(artifactSHA) {
 		return "", "", fmt.Errorf("accepted artifact checksum is invalid")
 	}
-	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == RecordActivation || request.Operation == Rollback
+	proofRequired := request.Operation == RecordImport || request.Operation == Backup || request.Operation == Restore || request.Operation == FinalDelta || request.Operation == Fence || request.Operation == Backfill || request.Operation == Validate || request.Operation == Activate || request.Operation == RecordActivation || request.Operation == Rollback
 	var proofSHA string
 	if proofRequired {
 		proofData, digest, err := readProof(request.ProofPath)
@@ -347,6 +348,9 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 	case Validate:
 		subject = proofStateDigest(manifest)
 		required = []string{"offline-targeted", "fixture-browser", "real-test-read", "restart-recovery", "real-browser-repeat", "readiness-stream-idempotency"}
+	case Activate:
+		subject = proofStateDigest(manifest)
+		required = []string{"source-fenced", "gateway-promoted", "writers-granted", "connect-restored", "services-started", "activation-verified"}
 	case RecordActivation:
 		subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		required = []string{"one-writer-target", "target-activated"}
@@ -427,7 +431,7 @@ func operationPostconditionHolds(manifest Manifest, request Request) bool {
 		return manifest.ValidationAt != nil
 	case PrepareActivation:
 		return manifest.Workflow.Phase == PhaseActivationReady || manifest.Workflow.Phase == PhaseActivated || manifest.Workflow.Phase == PhaseRetirementReady
-	case RecordActivation:
+	case Activate, RecordActivation:
 		return manifest.Workflow.Phase == PhaseActivated || manifest.Workflow.Phase == PhaseRetirementReady
 	case PrepareRetirement:
 		return manifest.Workflow.Phase == PhaseRetirementReady
@@ -472,9 +476,9 @@ func validatePredecessor(manifest Manifest, operation Operation) error {
 		if phase != PhaseValidated {
 			return fmt.Errorf("activation preparation requires validation; current phase is %s", phase)
 		}
-	case RecordActivation:
+	case Activate, RecordActivation:
 		if phase != PhaseActivationReady {
-			return fmt.Errorf("activation evidence requires activation-ready preparation; current phase is %s", phase)
+			return fmt.Errorf("activation requires activation-ready preparation; current phase is %s", phase)
 		}
 	case PrepareRetirement:
 		if phase != PhaseActivated {
@@ -578,6 +582,19 @@ func transition(manifest *Manifest, request Request, artifactSHA, at string) err
 			return fmt.Errorf("activation preparation requires validation; current phase is %s", manifest.Workflow.Phase)
 		}
 		manifest.Workflow.Phase = PhaseActivationReady
+	case Activate:
+		activationAt, activationErr := time.Parse(time.RFC3339Nano, request.ActivationAt)
+		cutoverAt, cutoverErr := time.Parse(time.RFC3339Nano, request.CutoverAt)
+		if activationErr != nil || cutoverErr != nil || !cutoverAt.After(activationAt) {
+			return fmt.Errorf("generated activation timestamps are invalid")
+		}
+		manifest.TargetActivationAt = stringPtr(request.ActivationAt)
+		manifest.CutoverAt = stringPtr(request.CutoverAt)
+		manifest.OneWriter.TargetCanonicalWritesEnabled = true
+		manifest.Workflow.Phase = PhaseActivated
+		if manifest.ActivationAttempt == nil || manifest.ActivationAttempt.Boundary != ActivationVerified {
+			return fmt.Errorf("activation attempt is not verified")
+		}
 	case RecordActivation:
 		activationAt, err := time.Parse(time.RFC3339, request.ActivationAt)
 		if err != nil {
@@ -810,7 +827,7 @@ func validateWorkflow(manifest Manifest) error {
 			return fmt.Errorf("workflow ledger timestamps must be valid and strictly increasing")
 		}
 		previous = parsed
-		if event.Operation == RecordActivation {
+		if event.Operation == Activate || event.Operation == RecordActivation {
 			activationAt, activationErr := time.Parse(time.RFC3339, event.ActivationAt)
 			cutoverAt, cutoverErr := time.Parse(time.RFC3339, event.CutoverAt)
 			if activationErr != nil || cutoverErr != nil || !cutoverAt.After(activationAt) || cutoverAt.After(parsed) {
@@ -846,7 +863,7 @@ func validateWorkflow(manifest Manifest) error {
 			backfillNames = append(backfillNames, event.Name)
 		case Validate:
 			validationEvent = event
-		case RecordActivation:
+		case Activate, RecordActivation:
 			activationEvent = event
 		case Rollback:
 			deltaEvent, fenceEvent, validationEvent = nil, nil, nil
@@ -888,7 +905,7 @@ func validateWorkflow(manifest Manifest) error {
 		PhaseProvenanceReady: RecordImport, PhaseBackedUp: Backup, PhaseRestored: Restore,
 		PhaseFenced: Fence, PhaseDeltaCaptured: FinalDelta, PhaseBackfilled: Backfill,
 		PhaseValidated: Validate, PhaseActivationReady: PrepareActivation,
-		PhaseActivated: RecordActivation, PhaseRetirementReady: PrepareRetirement,
+		PhaseActivated: activationEventOperation(manifest), PhaseRetirementReady: PrepareRetirement,
 	}[manifest.Workflow.Phase]
 	last := events[len(events)-1].Operation
 	if manifest.Workflow.Phase == PhaseRestored && last == Rollback {
@@ -902,7 +919,7 @@ func validateWorkflow(manifest Manifest) error {
 
 func knownOperation(operation Operation) bool {
 	switch operation {
-	case RecordImport, Backup, Restore, FinalDelta, Fence, Backfill, Validate, PrepareActivation, RecordActivation, PrepareRetirement, Rollback:
+	case RecordImport, Backup, Restore, FinalDelta, Fence, Backfill, Validate, PrepareActivation, Activate, RecordActivation, PrepareRetirement, Rollback:
 		return true
 	default:
 		return false
@@ -944,7 +961,7 @@ func advanceLedger(phase Phase, epoch int, event Event) (Phase, int, error) {
 		if phase == PhaseValidated {
 			return PhaseActivationReady, epoch, nil
 		}
-	case RecordActivation:
+	case Activate, RecordActivation:
 		if phase == PhaseActivationReady {
 			return PhaseActivated, epoch, nil
 		}
@@ -965,7 +982,16 @@ func operationNeedsArtifact(operation Operation) bool {
 }
 
 func operationNeedsProof(operation Operation) bool {
-	return operation == RecordImport || operation == Backup || operation == Restore || operation == FinalDelta || operation == Fence || operation == Backfill || operation == Validate || operation == RecordActivation || operation == Rollback
+	return operation == RecordImport || operation == Backup || operation == Restore || operation == FinalDelta || operation == Fence || operation == Backfill || operation == Validate || operation == Activate || operation == RecordActivation || operation == Rollback
+}
+
+func activationEventOperation(manifest Manifest) Operation {
+	for index := len(manifest.Workflow.Events) - 1; index >= 0; index-- {
+		if manifest.Workflow.Events[index].Operation == Activate || manifest.Workflow.Events[index].Operation == RecordActivation {
+			return manifest.Workflow.Events[index].Operation
+		}
+	}
+	return Activate
 }
 
 func digestFile(path string, required bool) (string, error) {

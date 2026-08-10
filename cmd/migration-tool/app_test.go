@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,13 +80,31 @@ func TestRunWiresFinalSnapshotDatabaseAndMaintenanceInputs(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotExposeActivationOrRetirementExecutionCommands(t *testing.T) {
-	for _, command := range []string{"activate", "retire"} {
-		var stdout, stderr bytes.Buffer
-		err := run([]string{command, "--manifest", "unused"}, &stdout, &stderr)
-		if err == nil || !strings.Contains(err.Error(), "unsupported command") {
-			t.Fatalf("%s error = %v", command, err)
+func TestRunActivateIsExecutableAndRetirementIsUnsupported(t *testing.T) {
+	originalExecute := executeMigration
+	t.Cleanup(func() { executeMigration = originalExecute })
+	var executed migration.ExecutionRequest
+	executeMigration = func(_ context.Context, request migration.ExecutionRequest, _ migration.ExecuteOptions) (migration.ExecutionResult, error) {
+		executed = request
+		return migration.ExecutionResult{Result: migration.Result{Phase: migration.PhaseActivated}}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"activate", "--manifest", "manifest.json", "--evidence-dir", "evidence", "--journal", "evidence/attempt.json", "--state-dir", "runtime/state/test", "--source-service", "source_test", "--source-database", "source_test", "--source-role", "source_test", "--target-service", "platform_test", "--target-database", "platform_test", "--target-role", "platform_test", "--target-writer-role", "platform_test_writer", "--gateway-service", "gateway_test", "--gateway-database", "gateway_test", "--gateway-role", "gateway_test", "--gateway-writer-role", "gateway_test_writer", "--maintenance-service", "maintenance_test", "--maintenance-database", "maintenance_test", "--maintenance-role", "maintenance_test"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if executed.Operation != migration.Activate || executed.GatewayWriterRole != "gateway_test_writer" || executed.JournalPath != "evidence/attempt.json" || executed.StateDir != "runtime/state/test" {
+		t.Fatalf("execution request = %+v", executed)
+	}
+	for _, flag := range []string{"--proof", "--activation-at", "--cutover-at"} {
+		stdout.Reset()
+		stderr.Reset()
+		if err := run([]string{"activate", "--manifest", "manifest.json", flag, "caller-value"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "not accepted") {
+			t.Fatalf("%s error = %v", flag, err)
 		}
+	}
+	if err := run([]string{"retire", "--manifest", "unused"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "unsupported command") {
+		t.Fatalf("retire error = %v", err)
 	}
 }
 
@@ -112,6 +132,41 @@ func TestRunVerifyEvidenceUsesReadOnlyStructuredVerifier(t *testing.T) {
 	if string(data) != string(before) {
 		t.Fatal("verify-evidence mutated the manifest")
 	}
+}
+
+func TestRunValidationCompareAllowsOnlyNamedSessionLifecycle(t *testing.T) {
+	t.Setenv("FT_MODE", "test")
+	base := migration.ValidationSnapshot{MatrixSHA256: strings.Repeat("a", 64), PlatformCanonicalSHA256: strings.Repeat("b", 64), PlatformMigrationSHA256: strings.Repeat("c", 64), GatewayActiveSHA256: strings.Repeat("d", 64), AuthSessionDigests: map[string]string{}}
+	allowedID := "browser-session"
+	after := base
+	after.AuthSessionDigests = map[string]string{sha256String(allowedID): strings.Repeat("e", 64)}
+	beforePath, afterPath := filepath.Join(t.TempDir(), "before.json"), filepath.Join(t.TempDir(), "after.json")
+	if err := writePrivateJSON(beforePath, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateJSON(afterPath, after); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"validation-compare", "--before", beforePath, "--after", afterPath, "--allowed-session-id", allowedID}, &stdout, &stderr); err != nil {
+		t.Fatalf("compare: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"sessionLifecycleAllowed":true`) {
+		t.Fatalf("output=%s", stdout.String())
+	}
+	after.AuthSessionDigests[sha256String("other-session")] = strings.Repeat("f", 64)
+	if err := writePrivateJSON(afterPath, after); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := run([]string{"validation-compare", "--before", beforePath, "--after", afterPath, "--allowed-session-id", allowedID}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "drift") {
+		t.Fatalf("drift error=%v", err)
+	}
+}
+
+func sha256String(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func copyFixture(t *testing.T) string {

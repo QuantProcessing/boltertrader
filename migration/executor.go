@@ -64,12 +64,16 @@ type ExecutionRequest struct {
 	MaintenanceRole     string
 	SourceWriterRole    string
 	TargetWriterRole    string
+	GatewayWriterRole   string
+	JournalPath         string
+	StateDir            string
 	repositoryRoot      string
 }
 
 type ExecuteOptions struct {
-	Run CommandRunner
-	Now func() time.Time
+	Run        CommandRunner
+	Now        func() time.Time
+	Activation *ActivationDependencies
 }
 
 type ExecutionResult struct {
@@ -110,6 +114,9 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	}
 	if err := validateWorkflow(manifest); err != nil {
 		return ExecutionResult{}, err
+	}
+	if request.Operation == Activate {
+		return executeActivationLocked(ctx, request, options, manifest)
 	}
 	if request.Operation == RecordImport {
 		return executeRecordImportLocked(request, options, manifestData, manifest)

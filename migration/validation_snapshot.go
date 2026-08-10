@@ -28,12 +28,17 @@ type SnapshotSource interface {
 }
 
 type ValidationSnapshot struct {
-	MatrixSHA256            string    `json:"matrixSha256"`
-	PlatformCanonicalSHA256 string    `json:"platformCanonicalSha256"`
-	PlatformMigrationSHA256 string    `json:"platformMigrationSha256"`
-	GatewayActiveSHA256     string    `json:"gatewayActiveSha256"`
-	AuthSessionSHA256       string    `json:"authSessionSha256"`
-	CapturedAt              time.Time `json:"capturedAt"`
+	MatrixSHA256            string            `json:"matrixSha256"`
+	PlatformCanonicalSHA256 string            `json:"platformCanonicalSha256"`
+	PlatformMigrationSHA256 string            `json:"platformMigrationSha256"`
+	GatewayActiveSHA256     string            `json:"gatewayActiveSha256"`
+	AuthSessionSHA256       string            `json:"authSessionSha256"`
+	PlatformCanonicalCount  int               `json:"platformCanonicalCount"`
+	PlatformMigrationCount  int               `json:"platformMigrationCount"`
+	GatewayActiveCount      int               `json:"gatewayActiveCount"`
+	AuthSessionCount        int               `json:"authSessionCount"`
+	AuthSessionDigests      map[string]string `json:"authSessionDigests"`
+	CapturedAt              time.Time         `json:"capturedAt"`
 	authSessions            map[string]SnapshotRow
 }
 
@@ -104,6 +109,11 @@ func CaptureValidationSnapshot(ctx context.Context, source SnapshotSource, platf
 		PlatformMigrationSHA256: jsonSHA256(migration),
 		GatewayActiveSHA256:     bytesSHA256(gatewayEncoded),
 		AuthSessionSHA256:       bytesSHA256(sessionEncoded),
+		PlatformCanonicalCount:  len(canonical),
+		PlatformMigrationCount:  len(migration),
+		GatewayActiveCount:      len(gatewayRows),
+		AuthSessionCount:        len(sessions),
+		AuthSessionDigests:      sessionDigests(sessionCopy),
 		CapturedAt:              time.Now().UTC(),
 		authSessions:            sessionCopy,
 	}, nil
@@ -117,8 +127,41 @@ func CompareValidationSnapshots(before, after ValidationSnapshot, allowedSession
 		CanonicalUnchanged:      before.PlatformCanonicalSHA256 == after.PlatformCanonicalSHA256,
 		GatewayHeadsUnchanged:   before.GatewayActiveSHA256 == after.GatewayActiveSHA256,
 		MigrationUnchanged:      before.PlatformMigrationSHA256 == after.PlatformMigrationSHA256,
-		SessionLifecycleAllowed: sessionsEqualExcept(before.authSessions, after.authSessions, allowedSessionID),
+		SessionLifecycleAllowed: sessionDigestsEqualExcept(snapshotSessionDigests(before), snapshotSessionDigests(after), bytesSHA256([]byte(allowedSessionID))),
 	}, nil
+}
+
+func sessionDigests(sessions map[string]SnapshotRow) map[string]string {
+	digests := make(map[string]string, len(sessions))
+	for id, row := range sessions {
+		encoded, _ := canonicalRows([]SnapshotRow{row})
+		digests[bytesSHA256([]byte(id))] = bytesSHA256(encoded)
+	}
+	return digests
+}
+
+func snapshotSessionDigests(snapshot ValidationSnapshot) map[string]string {
+	if snapshot.AuthSessionDigests != nil {
+		return snapshot.AuthSessionDigests
+	}
+	return sessionDigests(snapshot.authSessions)
+}
+
+func sessionDigestsEqualExcept(before, after map[string]string, excluded string) bool {
+	if excluded == bytesSHA256(nil) {
+		excluded = ""
+	}
+	for id, digest := range before {
+		if id != excluded && after[id] != digest {
+			return false
+		}
+	}
+	for id, digest := range after {
+		if id != excluded && before[id] != digest {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalRows(rows []SnapshotRow) ([]byte, error) {
