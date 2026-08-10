@@ -28,34 +28,36 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
 	"github.com/QuantProcessing/boltertrader/gateway/order"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
+	"github.com/QuantProcessing/boltertrader/gateway/publicconn"
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type runtimeDeps struct {
-	checkCredentialResolver func(context.Context) error
-	connectPostgres         func(context.Context, string) (process.PostgresPool, error)
-	migrate                 func(context.Context, process.PostgresPool) error
-	registerAccount         func(context.Context, process.PostgresPool, process.AccountRegistration) error
-	acquireOwnership        func(context.Context, process.PostgresPool, process.AccountRegistration) (process.Ownership, error)
-	buildAccountManager     func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error)
-	buildOrderCoordinator   func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
-	buildHandler            func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
-	buildInternalHandler    func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
-	listen                  func(network, address string) (net.Listener, error)
-	listenInternal          func(network, address string) (net.Listener, error)
-	wait                    func(context.Context, *process.Service) error
-	metrics                 *observability.Metrics
-	runtimeMode             account.RuntimeMode
-	runtimeLifecycle        account.RuntimeLifecycle
-	resolveRuntimeSecret    func(context.Context, secret.OpaqueRef) (string, error)
-	activateRuntime         func(context.Context, account.DesiredRuntime, string) error
-	deactivateRuntime       func(context.Context, domain.AccountID) error
-	runtimeBlockers         func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
-	credentialResolver      account.ScopedCredentialResolver
+	checkCredentialResolver  func(context.Context) error
+	connectPostgres          func(context.Context, string) (process.PostgresPool, error)
+	validateDatabaseIdentity func(context.Context, process.PostgresPool) error
+	migrate                  func(context.Context, process.PostgresPool) error
+	buildAccountManager      func(context.Context) (process.AccountManager, error)
+	restoreAccountManager    func(context.Context, process.PostgresPool, process.AccountManager) error
+	buildOrderCoordinator    func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
+	buildHandler             func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error)
+	buildInternalHandler     func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
+	listen                   func(network, address string) (net.Listener, error)
+	listenInternal           func(network, address string) (net.Listener, error)
+	wait                     func(context.Context, *process.Service) error
+	metrics                  *observability.Metrics
+	runtimeMode              account.RuntimeMode
+	runtimeLifecycle         account.RuntimeLifecycle
+	resolveRuntimeSecret     func(context.Context, secret.OpaqueRef) (string, error)
+	activateRuntime          func(context.Context, account.DesiredRuntime, string) error
+	deactivateRuntime        func(context.Context, domain.AccountID) error
+	runtimeBlockers          func(context.Context, domain.AccountID) (account.RuntimeBlockers, error)
+	credentialResolver       account.ScopedCredentialResolver
 }
 
 func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error) {
@@ -87,12 +89,11 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	}
 	connectPostgres := defaultConnectPostgres(deps.connectPostgres)
 	migrate := defaultMigrate(deps.migrate)
-	registerAccount := defaultRegisterAccount(deps.registerAccount)
-	acquireOwnership := defaultAcquireOwnership(deps.acquireOwnership)
 	runtimeMode := deps.runtimeMode
 	if runtimeMode == "" {
 		runtimeMode = account.RuntimeMode(file.Server.Mode)
 	}
+	validateDatabaseIdentity := defaultValidateDatabaseIdentity(deps.validateDatabaseIdentity, runtimeMode)
 	credentialResolver := deps.credentialResolver
 	var credentialProvider *secretstore.FilesystemProvider
 	if credentialResolver == nil && deps.buildAccountManager == nil {
@@ -107,7 +108,8 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		checkCredentialResolver = credentialResolver.Check
 	}
 	runtimeLifecycle := deps.runtimeLifecycle
-	if file.Server.InternalListen != "" && deps.buildInternalHandler == nil && runtimeLifecycle == nil {
+	var productionLifecycle *productionRuntimeLifecycle
+	if runtimeLifecycle == nil && (deps.resolveRuntimeSecret != nil || deps.activateRuntime != nil || deps.deactivateRuntime != nil || deps.runtimeBlockers != nil) {
 		runtimeLifecycle, err = newOpaqueRuntimeLifecycle(
 			deps.resolveRuntimeSecret, deps.activateRuntime, deps.deactivateRuntime, deps.runtimeBlockers,
 		)
@@ -115,26 +117,53 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 			return fmt.Errorf("configure internal runtime lifecycle failed")
 		}
 	}
+	if runtimeLifecycle == nil {
+		productionLifecycle = &productionRuntimeLifecycle{}
+		runtimeLifecycle = productionLifecycle
+	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
 	var internalHandler http.Handler
+	var restoredAuthority *gatewayAuthority
 	var internalHandlerFactory func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error)
 	if file.Server.InternalListen != "" {
 		internalAuth, authErr := auth.NewBearerMiddleware(ctx, provider, file.Server.InternalAuthTokenRef)
 		if authErr != nil {
 			return fmt.Errorf("configure internal auth failed")
 		}
-		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, runtimeMode)
+		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
+			return restoredAuthority
+		})
 	}
 	processDeps := process.Dependencies{
-		CheckCredentialResolver: checkCredentialResolver,
-		ResolveSecret:           provider.Resolve,
-		ConnectPostgres:         observedConnectPostgres(metrics, connectPostgres),
-		Migrate:                 observedMigrate(metrics, migrate),
-		RegisterAccount:         observedRegisterAccount(metrics, registerAccount),
-		AcquireOwnership:        observedAcquireOwnership(metrics, acquireOwnership),
-		BuildAccountManager:     defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
-		BuildOrderCoordinator:   defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
-		Listen:                  defaultListen(deps.listen),
+		CheckCredentialResolver:  checkCredentialResolver,
+		ResolveSecret:            provider.Resolve,
+		ConnectPostgres:          observedConnectPostgres(metrics, connectPostgres),
+		ValidateDatabaseIdentity: validateDatabaseIdentity,
+		Migrate:                  observedMigrate(metrics, migrate),
+		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
+		RestoreAccountManager: func(restoreCtx context.Context, pool process.PostgresPool, manager process.AccountManager) error {
+			if deps.restoreAccountManager != nil {
+				return deps.restoreAccountManager(restoreCtx, pool, manager)
+			}
+			realPool, poolOK := pool.(*pgxpool.Pool)
+			realManager, managerOK := manager.(*account.Manager)
+			if !poolOK || !managerOK {
+				return fmt.Errorf("runtime restore dependency type")
+			}
+			if productionLifecycle != nil {
+				if attachErr := productionLifecycle.attach(realPool, realManager); attachErr != nil {
+					return attachErr
+				}
+			}
+			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, runtimeMode)
+			if restoreErr != nil {
+				return restoreErr
+			}
+			restoredAuthority = authority
+			return nil
+		},
+		BuildOrderCoordinator: defaultBuildOrderCoordinator(deps.buildOrderCoordinator, authMiddleware.PrincipalID(), metrics),
+		Listen:                defaultListen(deps.listen),
 		HandlerFactory: func(monitor *health.Monitor, pool process.PostgresPool, accounts process.AccountManager, orders process.OrderCoordinator) (http.Handler, error) {
 			publicHandler, handlerErr := publicHandlerFactory(monitor, pool, accounts, orders)
 			if handlerErr != nil {
@@ -213,7 +242,7 @@ func modeAttestedHandler(mode account.RuntimeMode, next http.Handler) http.Handl
 func defaultInternalHandlerFactory(
 	override func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error),
 	authMiddleware auth.BearerMiddleware,
-	mode account.RuntimeMode,
+	authorityProvider func() *gatewayAuthority,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -221,14 +250,9 @@ func defaultInternalHandlerFactory(
 		if override != nil {
 			handler, err = override(ctx, pool, accounts)
 		} else {
-			realPool, poolOK := pool.(*pgxpool.Pool)
-			manager, managerOK := accounts.(*account.Manager)
-			if !poolOK || !managerOK {
-				return nil, fmt.Errorf("internal authority dependency type")
-			}
-			authority, authorityErr := newGatewayAuthority(ctx, postgres.NewStore(realPool), manager, mode)
-			if authorityErr != nil {
-				return nil, authorityErr
+			authority := authorityProvider()
+			if authority == nil {
+				return nil, fmt.Errorf("internal authority is unavailable")
 			}
 			handler, err = httpapi.NewInternalHandler(httpapi.InternalOptions{
 				Authority: authority,
@@ -328,13 +352,18 @@ func withOperationalHTTP(api http.Handler, metrics *observability.Metrics) http.
 	return mux
 }
 
-func accountMetricSnapshot(manager *account.Manager) observability.SnapshotProvider {
+type accountMetricSource interface {
+	Accounts() []account.Resource
+	RouteStatus(domain.AccountID, string, string) (account.Status, error)
+}
+
+func accountMetricSnapshot(manager accountMetricSource) observability.SnapshotProvider {
 	return func(_ time.Time) ([]observability.AccountState, []observability.CatalogState) {
 		resources := manager.Accounts()
 		accounts := make([]observability.AccountState, 0, len(resources))
 		catalogs := make([]observability.CatalogState, 0, len(resources))
 		for _, resource := range resources {
-			status, err := manager.Status(resource.AccountID)
+			status, err := manager.RouteStatus(resource.AccountID, string(resource.Product), resource.Settlement)
 			if err != nil {
 				continue
 			}
@@ -395,6 +424,11 @@ func defaultBuildOrderCoordinator(
 			events.Close()
 			return nil, fmt.Errorf("private stream manager setup")
 		}
+		if err := manager.SetRuntimeAccountObserver(newRuntimeAccountObserver(streams, coordinator)); err != nil {
+			streams.Close()
+			events.Close()
+			return nil, fmt.Errorf("private stream account observer setup")
+		}
 		return processOrderCoordinator{Coordinator: coordinator, Events: events, Streams: streams}, nil
 	}
 }
@@ -423,30 +457,6 @@ func observedMigrate(
 	}
 }
 
-func observedRegisterAccount(
-	metrics *observability.Metrics,
-	register func(context.Context, process.PostgresPool, process.AccountRegistration) error,
-) func(context.Context, process.PostgresPool, process.AccountRegistration) error {
-	return func(ctx context.Context, pool process.PostgresPool, registration process.AccountRegistration) error {
-		start := time.Now()
-		err := register(ctx, pool, registration)
-		metrics.ObservePostgres(observability.PostgresRegister, postgresErrorClass(err), time.Since(start))
-		return err
-	}
-}
-
-func observedAcquireOwnership(
-	metrics *observability.Metrics,
-	acquire func(context.Context, process.PostgresPool, domain.AccountID) (process.Ownership, error),
-) func(context.Context, process.PostgresPool, domain.AccountID) (process.Ownership, error) {
-	return func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-		start := time.Now()
-		ownership, err := acquire(ctx, pool, accountID)
-		metrics.ObservePostgres(observability.PostgresOwnership, postgresErrorClass(err), time.Since(start))
-		return ownership, err
-	}
-}
-
 func postgresErrorClass(err error) observability.PostgresErrorClass {
 	switch {
 	case err == nil:
@@ -455,6 +465,34 @@ func postgresErrorClass(err error) observability.PostgresErrorClass {
 		return observability.PostgresUnavailable
 	default:
 		return observability.PostgresInternal
+	}
+}
+
+type runtimeAccountObserver struct {
+	observers []account.RuntimeAccountObserver
+}
+
+func newRuntimeAccountObserver(observers ...account.RuntimeAccountObserver) *runtimeAccountObserver {
+	return &runtimeAccountObserver{observers: append([]account.RuntimeAccountObserver(nil), observers...)}
+}
+
+func (observer *runtimeAccountObserver) RegisterAccount(accountID domain.AccountID) error {
+	registered := 0
+	for _, current := range observer.observers {
+		if err := current.RegisterAccount(accountID); err != nil {
+			for index := registered - 1; index >= 0; index-- {
+				observer.observers[index].UnregisterAccount(accountID)
+			}
+			return err
+		}
+		registered++
+	}
+	return nil
+}
+
+func (observer *runtimeAccountObserver) UnregisterAccount(accountID domain.AccountID) {
+	for index := len(observer.observers) - 1; index >= 0; index-- {
+		observer.observers[index].UnregisterAccount(accountID)
 	}
 }
 
@@ -489,32 +527,44 @@ func (coordinator processOrderCoordinator) Close(ctx context.Context) error {
 }
 
 func defaultBuildAccountManager(
-	override func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error),
+	override func(context.Context) (process.AccountManager, error),
 	lifecycle account.RuntimeLifecycle,
 	credentialResolver account.ScopedCredentialResolver,
 	mode account.RuntimeMode,
-) func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
+) func(context.Context) (process.AccountManager, error) {
 	if override != nil {
 		return override
 	}
-	return func(ctx context.Context, accounts []config.AccountConfig, resolved map[string]string) (process.AccountManager, error) {
+	return func(ctx context.Context) (process.AccountManager, error) {
 		gatewayCatalog, err := catalog.NewService(5*time.Minute, time.Now)
 		if err != nil {
 			return nil, fmt.Errorf("catalog setup")
 		}
 		exchangeCatalog := exchange.NewDefaultMemoryCatalog()
 		httpClient := &http.Client{Timeout: 30 * time.Second}
-		manager, err := account.NewManager(ctx, accounts, account.Options{
-			Secrets:             secret.StaticProvider(resolved),
-			ExchangeCatalog:     exchangeCatalog,
-			GatewayCatalog:      gatewayCatalog,
-			HTTPClient:          httpClient,
-			RuntimeMode:         mode,
-			Lifecycle:           lifecycle,
-			CredentialResolver:  credentialResolver,
-			RuntimeGroupBuilder: account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
+		trustedProfiles := routeprofile.DefaultRegistry()
+		publicFactory, err := publicconn.NewExchangeFactory(httpClient, trustedProfiles)
+		if err != nil {
+			return nil, fmt.Errorf("public connector factory setup")
+		}
+		publicConnectors, err := publicconn.NewRegistry(publicFactory, trustedProfiles)
+		if err != nil {
+			return nil, fmt.Errorf("public connector registry setup")
+		}
+		manager, err := account.NewManager(ctx, nil, account.Options{
+			ExchangeCatalog:         exchangeCatalog,
+			GatewayCatalog:          gatewayCatalog,
+			HTTPClient:              httpClient,
+			RuntimeMode:             mode,
+			Lifecycle:               lifecycle,
+			CredentialResolver:      credentialResolver,
+			RuntimeGroupBuilder:     account.NewFactoryRuntimeGroupBuilder(httpClient, exchangeCatalog),
+			ProfileRegistry:         account.NewProfileRegistry(trustedProfiles),
+			PublicConnectors:        publicConnectors,
+			RequirePublicConnectors: true,
 		})
 		if err != nil {
+			_ = publicConnectors.Close()
 			return nil, fmt.Errorf("account manager setup")
 		}
 		return manager, nil
@@ -579,6 +629,34 @@ func defaultConnectPostgres(override func(context.Context, string) (process.Post
 	}
 }
 
+func defaultValidateDatabaseIdentity(override func(context.Context, process.PostgresPool) error, mode account.RuntimeMode) func(context.Context, process.PostgresPool) error {
+	if override != nil {
+		return override
+	}
+	return func(ctx context.Context, pool process.PostgresPool) error {
+		if mode != account.RuntimeModeTest && mode != account.RuntimeModeLive {
+			return fmt.Errorf("postgres identity configuration is invalid")
+		}
+		expectedIdentity := "bolter_gateway_" + string(mode)
+		realPool, ok := pool.(*pgxpool.Pool)
+		if !ok {
+			return fmt.Errorf("postgres pool type")
+		}
+		var database, role string
+		if err := realPool.QueryRow(ctx, `SELECT current_database(), current_user`).Scan(&database, &role); err != nil {
+			return fmt.Errorf("query postgres identity")
+		}
+		return validateConnectedDatabaseIdentity(database, role, expectedIdentity)
+	}
+}
+
+func validateConnectedDatabaseIdentity(database, role, expectedIdentity string) error {
+	if database != expectedIdentity || role != expectedIdentity {
+		return fmt.Errorf("postgres identity mismatch")
+	}
+	return nil
+}
+
 func defaultMigrate(override func(context.Context, process.PostgresPool) error) func(context.Context, process.PostgresPool) error {
 	if override != nil {
 		return override
@@ -589,42 +667,6 @@ func defaultMigrate(override func(context.Context, process.PostgresPool) error) 
 			return fmt.Errorf("postgres pool type")
 		}
 		return postgres.Migrate(ctx, realPool)
-	}
-}
-
-func defaultRegisterAccount(override func(context.Context, process.PostgresPool, process.AccountRegistration) error) func(context.Context, process.PostgresPool, process.AccountRegistration) error {
-	if override != nil {
-		return override
-	}
-	return func(ctx context.Context, pool process.PostgresPool, registration process.AccountRegistration) error {
-		realPool, ok := pool.(*pgxpool.Pool)
-		if !ok {
-			return fmt.Errorf("postgres pool type")
-		}
-		return postgres.NewStore(realPool).RegisterAccount(ctx, postgres.AccountRegistration{
-			AccountID:   registration.AccountID,
-			Venue:       registration.Venue,
-			Product:     registration.Product,
-			Environment: registration.Environment,
-			Settlement:  registration.Settlement,
-			ConfigHash:  registration.ConfigHash,
-			Status:      registration.Status,
-		})
-	}
-}
-
-func defaultAcquireOwnership(override func(context.Context, process.PostgresPool, process.AccountRegistration) (process.Ownership, error)) func(context.Context, process.PostgresPool, domain.AccountID) (process.Ownership, error) {
-	if override != nil {
-		return func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-			return override(ctx, pool, process.AccountRegistration{AccountID: accountID})
-		}
-	}
-	return func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-		realPool, ok := pool.(*pgxpool.Pool)
-		if !ok {
-			return nil, fmt.Errorf("postgres pool type")
-		}
-		return postgres.AcquireAccountOwnership(ctx, realPool, accountID)
 	}
 }
 

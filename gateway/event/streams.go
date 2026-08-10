@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -23,6 +24,19 @@ type StreamAccounts interface {
 	Spot(domain.AccountID) (exchange.SpotClient, error)
 	Perp(domain.AccountID) (exchange.PerpClient, error)
 	SetPrivateStreamState(domain.AccountID, bool, string) error
+}
+
+type atomicStreamRouteSource interface {
+	SelectOrderRoute(context.Context, domain.AccountID, domain.InstrumentID, account.OrderRoutePurpose, account.OrderRouteSelector) (account.SelectedOrderRoute, error)
+}
+
+type privateStreamBarrierObserver interface {
+	ObservePrivateStreamBarrier(domain.AccountID, string, uint64) error
+}
+
+type privateStreamRouteObserver interface {
+	SetPrivateStreamRouteState(domain.WriteFence, bool, string) error
+	ObservePrivateStreamRouteBarrier(domain.WriteFence, string, uint64) error
 }
 
 type StreamReconciler interface {
@@ -74,12 +88,30 @@ type StreamManager struct {
 	recoveryTimeout    time.Duration
 	subscriptionBuffer int
 
-	mu       sync.Mutex
-	versions map[string]domain.ResourceVersion
-	cancel   context.CancelFunc
-	wait     sync.WaitGroup
-	started  bool
-	closed   bool
+	mu               sync.Mutex
+	versions         map[string]domain.ResourceVersion
+	barrierSequences map[domain.AccountID]uint64
+	routeBarriers    map[domain.WriteFence]uint64
+
+	startMu       sync.Mutex
+	lifecycleMu   sync.Mutex
+	lifecycleOps  sync.WaitGroup
+	runContext    context.Context
+	cancel        context.CancelFunc
+	runGeneration uint64
+	wait          sync.WaitGroup
+	registered    map[domain.AccountID]struct{}
+	supervisors   map[domain.AccountID]*accountSupervisor
+	transitions   map[domain.AccountID]*sync.Mutex
+	started       bool
+	closed        bool
+	closeOnce     sync.Once
+	closeDone     chan struct{}
+}
+
+type accountSupervisor struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewStreamManager(options StreamOptions) (*StreamManager, error) {
@@ -102,7 +134,11 @@ func NewStreamManager(options StreamOptions) (*StreamManager, error) {
 		accounts: options.Accounts, reconciler: options.Reconciler, hub: options.Hub,
 		principal: options.PrincipalID, reconnectBackoff: options.ReconnectBackoff,
 		recoveryTimeout: options.RecoveryTimeout, subscriptionBuffer: options.SubscriptionBuffer,
-		versions: make(map[string]domain.ResourceVersion),
+		versions: make(map[string]domain.ResourceVersion), barrierSequences: make(map[domain.AccountID]uint64),
+		routeBarriers: make(map[domain.WriteFence]uint64),
+		registered:    make(map[domain.AccountID]struct{}), supervisors: make(map[domain.AccountID]*accountSupervisor),
+		transitions: make(map[domain.AccountID]*sync.Mutex),
+		closeDone:   make(chan struct{}),
 	}, nil
 }
 
@@ -124,52 +160,255 @@ func (manager *StreamManager) Start(ctx context.Context, accountIDs []domain.Acc
 		seen[accountID] = struct{}{}
 	}
 
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
+	manager.startMu.Lock()
+	defer manager.startMu.Unlock()
+	manager.lifecycleMu.Lock()
 	if manager.closed {
+		manager.lifecycleMu.Unlock()
 		return ErrClosed
 	}
 	if manager.started {
+		manager.lifecycleMu.Unlock()
 		return nil
 	}
-	runContext, cancel := context.WithCancel(ctx)
-	manager.cancel = cancel
-	manager.started = true
 	for accountID := range seen {
-		if err := manager.reconciler.SuspendAccount(accountID); err != nil {
-			cancel()
-			return fmt.Errorf("suspend account before private stream failed")
+		manager.registered[accountID] = struct{}{}
+	}
+	runContext, cancel := context.WithCancel(ctx)
+	manager.runContext = runContext
+	manager.cancel = cancel
+	manager.runGeneration++
+	runGeneration := manager.runGeneration
+	manager.started = true
+	registered := make([]domain.AccountID, 0, len(manager.registered))
+	for accountID := range manager.registered {
+		registered = append(registered, accountID)
+	}
+	manager.lifecycleMu.Unlock()
+	for _, accountID := range registered {
+		if err := manager.startAccount(accountID, runGeneration); err != nil {
+			manager.rollbackStart(runGeneration, cancel)
+			return err
 		}
-		if err := manager.accounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting); err != nil {
-			cancel()
-			return fmt.Errorf("mark private stream starting failed")
-		}
-		manager.wait.Add(1)
-		go manager.superviseAccount(runContext, accountID)
 	}
 	return nil
+}
+
+func (manager *StreamManager) RegisterAccount(accountID domain.AccountID) error {
+	if err := accountID.Validate(); err != nil {
+		return err
+	}
+	transition := manager.accountTransition(accountID)
+	transition.Lock()
+	defer transition.Unlock()
+
+	manager.lifecycleMu.Lock()
+	if manager.closed {
+		manager.lifecycleMu.Unlock()
+		return ErrClosed
+	}
+	manager.registered[accountID] = struct{}{}
+	if !manager.started {
+		manager.lifecycleMu.Unlock()
+		return nil
+	}
+	runGeneration := manager.runGeneration
+	runContext := manager.runContext
+	supervisor := manager.supervisors[accountID]
+	manager.lifecycleOps.Add(1)
+	if supervisor != nil {
+		supervisor.cancel()
+	}
+	manager.lifecycleMu.Unlock()
+	defer manager.lifecycleOps.Done()
+
+	if supervisor != nil {
+		<-supervisor.done
+		manager.lifecycleMu.Lock()
+		if manager.supervisors[accountID] == supervisor {
+			delete(manager.supervisors, accountID)
+		}
+		manager.lifecycleMu.Unlock()
+	}
+	return manager.prepareAndInstallAccount(accountID, runGeneration, runContext)
+}
+
+func (manager *StreamManager) UnregisterAccount(accountID domain.AccountID) {
+	if err := accountID.Validate(); err != nil {
+		return
+	}
+	transition := manager.accountTransition(accountID)
+	transition.Lock()
+	defer transition.Unlock()
+
+	manager.lifecycleMu.Lock()
+	if manager.closed {
+		manager.lifecycleMu.Unlock()
+		return
+	}
+	delete(manager.registered, accountID)
+	supervisor := manager.supervisors[accountID]
+	manager.lifecycleOps.Add(1)
+	if supervisor != nil {
+		supervisor.cancel()
+	}
+	manager.lifecycleMu.Unlock()
+	defer manager.lifecycleOps.Done()
+
+	if supervisor != nil {
+		<-supervisor.done
+		manager.lifecycleMu.Lock()
+		if manager.supervisors[accountID] == supervisor {
+			delete(manager.supervisors, accountID)
+		}
+		manager.lifecycleMu.Unlock()
+	}
+}
+
+func (manager *StreamManager) accountTransition(accountID domain.AccountID) *sync.Mutex {
+	manager.lifecycleMu.Lock()
+	defer manager.lifecycleMu.Unlock()
+	transition := manager.transitions[accountID]
+	if transition == nil {
+		transition = &sync.Mutex{}
+		manager.transitions[accountID] = transition
+	}
+	return transition
+}
+
+func (manager *StreamManager) startAccount(accountID domain.AccountID, runGeneration uint64) error {
+	transition := manager.accountTransition(accountID)
+	transition.Lock()
+	defer transition.Unlock()
+
+	manager.lifecycleMu.Lock()
+	if manager.closed {
+		manager.lifecycleMu.Unlock()
+		return ErrClosed
+	}
+	if !manager.started || manager.runGeneration != runGeneration {
+		manager.lifecycleMu.Unlock()
+		return nil
+	}
+	if _, registered := manager.registered[accountID]; !registered {
+		manager.lifecycleMu.Unlock()
+		return nil
+	}
+	if manager.supervisors[accountID] != nil {
+		manager.lifecycleMu.Unlock()
+		return nil
+	}
+	runContext := manager.runContext
+	manager.lifecycleOps.Add(1)
+	manager.lifecycleMu.Unlock()
+	defer manager.lifecycleOps.Done()
+	return manager.prepareAndInstallAccount(accountID, runGeneration, runContext)
+}
+
+func (manager *StreamManager) prepareAndInstallAccount(
+	accountID domain.AccountID,
+	runGeneration uint64,
+	runContext context.Context,
+) error {
+	if err := runContext.Err(); err != nil {
+		return err
+	}
+	if err := manager.reconciler.SuspendAccount(accountID); err != nil {
+		return fmt.Errorf("suspend account before private stream failed")
+	}
+	if err := manager.accounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting); err != nil {
+		return fmt.Errorf("mark private stream starting failed")
+	}
+
+	manager.lifecycleMu.Lock()
+	defer manager.lifecycleMu.Unlock()
+	if manager.closed {
+		return ErrClosed
+	}
+	if !manager.started || manager.runGeneration != runGeneration || manager.runContext != runContext {
+		return nil
+	}
+	if _, registered := manager.registered[accountID]; !registered {
+		return nil
+	}
+	if manager.supervisors[accountID] != nil {
+		return nil
+	}
+	if err := runContext.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(runContext)
+	supervisor := &accountSupervisor{cancel: cancel, done: make(chan struct{})}
+	manager.supervisors[accountID] = supervisor
+	manager.wait.Add(1)
+	go func() {
+		defer manager.wait.Done()
+		defer close(supervisor.done)
+		manager.superviseAccount(ctx, accountID)
+	}()
+	return nil
+}
+
+func (manager *StreamManager) rollbackStart(runGeneration uint64, cancel context.CancelFunc) {
+	cancel()
+	manager.lifecycleMu.Lock()
+	if manager.runGeneration != runGeneration {
+		manager.lifecycleMu.Unlock()
+		return
+	}
+	manager.started = false
+	manager.runContext = nil
+	manager.cancel = nil
+	supervisors := make(map[domain.AccountID]*accountSupervisor, len(manager.supervisors))
+	for accountID, supervisor := range manager.supervisors {
+		supervisors[accountID] = supervisor
+		supervisor.cancel()
+	}
+	manager.lifecycleMu.Unlock()
+	for _, supervisor := range supervisors {
+		<-supervisor.done
+	}
+	manager.lifecycleMu.Lock()
+	for accountID, supervisor := range supervisors {
+		if manager.supervisors[accountID] == supervisor {
+			delete(manager.supervisors, accountID)
+		}
+	}
+	manager.lifecycleMu.Unlock()
 }
 
 func (manager *StreamManager) Close() {
 	if manager == nil {
 		return
 	}
-	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return
-	}
-	manager.closed = true
-	cancel := manager.cancel
-	manager.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	manager.wait.Wait()
+	manager.closeOnce.Do(func() {
+		manager.lifecycleMu.Lock()
+		manager.closed = true
+		manager.started = false
+		if manager.cancel != nil {
+			manager.cancel()
+		}
+		for _, supervisor := range manager.supervisors {
+			supervisor.cancel()
+		}
+		manager.lifecycleMu.Unlock()
+		manager.lifecycleOps.Wait()
+		manager.wait.Wait()
+		close(manager.closeDone)
+	})
+	<-manager.closeDone
 }
 
 func (manager *StreamManager) superviseAccount(ctx context.Context, accountID domain.AccountID) {
-	defer manager.wait.Done()
+	if routes, ok := manager.accounts.(atomicStreamRouteSource); ok {
+		if manager.superviseDynamicAccount(ctx, accountID, routes) {
+			return
+		}
+	}
+	manager.superviseStaticAccount(ctx, accountID)
+}
+
+func (manager *StreamManager) superviseStaticAccount(ctx context.Context, accountID domain.AccountID) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -194,9 +433,16 @@ func (manager *StreamManager) superviseAccount(ctx context.Context, accountID do
 			}
 			continue
 		}
-		if err := manager.accounts.SetPrivateStreamState(accountID, true, ""); err != nil {
+		if err := manager.activatePrivateStream(ctx, accountID, streams); err != nil {
 			streams.close()
-			return
+			if ctx.Err() != nil {
+				return
+			}
+			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return
+			}
+			continue
 		}
 		manager.publishHealth(accountID)
 
@@ -211,6 +457,313 @@ func (manager *StreamManager) superviseAccount(ctx context.Context, accountID do
 			}
 		}
 	}
+}
+
+type dynamicRouteFault struct {
+	routeID domain.RouteID
+	streams *accountStreams
+}
+
+type dynamicRouteActivation struct {
+	routeID domain.RouteID
+	streams *accountStreams
+	err     error
+}
+
+type dynamicRouteReconnect struct {
+	routeID domain.RouteID
+	streams *accountStreams
+	ok      bool
+}
+
+func (manager *StreamManager) superviseDynamicAccount(
+	ctx context.Context,
+	accountID domain.AccountID,
+	routes atomicStreamRouteSource,
+) bool {
+	observer, ok := manager.accounts.(privateStreamRouteObserver)
+	if !ok {
+		return false
+	}
+	for {
+		if ctx.Err() != nil {
+			return true
+		}
+		snapshot, err := manager.accounts.Instruments(accountID)
+		if err != nil || len(snapshot.Instruments) == 0 {
+			manager.unavailable(accountID, "private_stream_connect_failed", true)
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return true
+			}
+			continue
+		}
+		plan, dynamic, err := manager.selectDynamicStreamPlan(ctx, routes, accountID, snapshot)
+		if !dynamic {
+			return false
+		}
+		if err != nil {
+			manager.unavailable(accountID, "private_stream_connect_failed", true)
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return true
+			}
+			continue
+		}
+		manager.runDynamicAccount(ctx, accountID, plan, observer)
+		return true
+	}
+}
+
+func (manager *StreamManager) runDynamicAccount(
+	ctx context.Context,
+	accountID domain.AccountID,
+	plan dynamicStreamPlan,
+	observer privateStreamRouteObserver,
+) {
+	routeIDs := make([]domain.RouteID, 0, len(plan.routes))
+	for routeID := range plan.routes {
+		routeIDs = append(routeIDs, routeID)
+	}
+	sort.Slice(routeIDs, func(i, j int) bool { return routeIDs[i] < routeIDs[j] })
+	faults := make(chan dynamicRouteFault, len(routeIDs)*4)
+	activations := make(chan dynamicRouteActivation, len(routeIDs)*4)
+	reconnects := make(chan dynamicRouteReconnect)
+
+	for ctx.Err() == nil {
+		sessions := make(map[domain.RouteID]*accountStreams, len(routeIDs))
+		initializationFailed := false
+		for _, routeID := range routeIDs {
+			fence := domain.WriteFence{AccountFence: plan.generation, RouteID: routeID}
+			if err := observer.SetPrivateStreamRouteState(fence, true, ""); err != nil {
+				initializationFailed = true
+				break
+			}
+			streams, err := manager.openDynamicRouteStreams(ctx, accountID, routeID, plan.routes[routeID], faults)
+			if err != nil {
+				manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true, observer)
+				initializationFailed = true
+				break
+			}
+			sessions[routeID] = streams
+		}
+		if initializationFailed {
+			closeDynamicRouteSessions(sessions)
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return
+			}
+			continue
+		}
+
+		recoveryContext, cancel := context.WithTimeout(ctx, manager.recoveryTimeout)
+		report, recoveryErr := manager.reconciler.RecoverAccount(recoveryContext, accountID)
+		cancel()
+		if recoveryErr != nil || !report.WriteReady {
+			closeDynamicRouteSessions(sessions)
+			for _, routeID := range routeIDs {
+				manager.dynamicRouteUnavailable(accountID, domain.WriteFence{
+					AccountFence: plan.generation, RouteID: routeID,
+				}, "private_stream_recovery_failed", true, observer)
+			}
+			if !waitContext(ctx, manager.reconnectBackoff) {
+				return
+			}
+			continue
+		}
+		for routeID, streams := range sessions {
+			manager.waitDynamicRouteActivation(ctx, routeID, streams, activations)
+		}
+		retrying := make(map[domain.RouteID]bool, len(routeIDs))
+
+		for len(sessions)+len(retrying) > 0 {
+			select {
+			case <-ctx.Done():
+				closeDynamicRouteSessions(sessions)
+				return
+			case activation := <-activations:
+				if sessions[activation.routeID] != activation.streams || activation.err != nil {
+					continue
+				}
+				fence := domain.WriteFence{AccountFence: plan.generation, RouteID: activation.routeID}
+				if err := manager.observeDynamicRouteBarrier(observer, fence); err != nil {
+					activation.streams.close()
+					delete(sessions, activation.routeID)
+					manager.dynamicRouteUnavailable(accountID, fence, "private_stream_barrier_failed", true, observer)
+					retrying[activation.routeID] = true
+					manager.startDynamicRouteReconnect(
+						ctx, accountID, fence, plan.routes[activation.routeID], faults, observer, reconnects,
+					)
+					continue
+				}
+				manager.publishHealth(accountID)
+			case fault := <-faults:
+				if sessions[fault.routeID] != fault.streams {
+					continue
+				}
+				fault.streams.close()
+				delete(sessions, fault.routeID)
+				fence := domain.WriteFence{AccountFence: plan.generation, RouteID: fault.routeID}
+				manager.dynamicRouteUnavailable(accountID, fence, account.ReasonPrivateStreamGap, true, observer)
+				retrying[fault.routeID] = true
+				manager.startDynamicRouteReconnect(
+					ctx, accountID, fence, plan.routes[fault.routeID], faults, observer, reconnects,
+				)
+			case reconnect := <-reconnects:
+				if !retrying[reconnect.routeID] {
+					if reconnect.streams != nil {
+						reconnect.streams.close()
+					}
+					continue
+				}
+				delete(retrying, reconnect.routeID)
+				if !reconnect.ok || reconnect.streams == nil {
+					closeDynamicRouteSessions(sessions)
+					return
+				}
+				sessions[reconnect.routeID] = reconnect.streams
+				manager.waitDynamicRouteActivation(ctx, reconnect.routeID, reconnect.streams, activations)
+			}
+		}
+		return
+	}
+}
+
+func (manager *StreamManager) startDynamicRouteReconnect(
+	ctx context.Context,
+	accountID domain.AccountID,
+	fence domain.WriteFence,
+	selected []selectedStreamRoute,
+	faults chan<- dynamicRouteFault,
+	observer privateStreamRouteObserver,
+	results chan<- dynamicRouteReconnect,
+) {
+	go func() {
+		streams, ok := manager.reconnectDynamicRoute(ctx, accountID, fence, selected, faults, observer)
+		result := dynamicRouteReconnect{routeID: fence.RouteID, streams: streams, ok: ok}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+			if streams != nil {
+				streams.close()
+			}
+		}
+	}()
+}
+
+func (manager *StreamManager) reconnectDynamicRoute(
+	ctx context.Context,
+	accountID domain.AccountID,
+	fence domain.WriteFence,
+	selected []selectedStreamRoute,
+	faults chan<- dynamicRouteFault,
+	observer privateStreamRouteObserver,
+) (*accountStreams, bool) {
+	for waitContext(ctx, manager.reconnectBackoff) {
+		if err := observer.SetPrivateStreamRouteState(fence, true, ""); err != nil {
+			return nil, false
+		}
+		streams, err := manager.openDynamicRouteStreams(ctx, accountID, fence.RouteID, selected, faults)
+		if err != nil {
+			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_connect_failed", true, observer)
+			continue
+		}
+		recoveryContext, cancel := context.WithTimeout(ctx, manager.recoveryTimeout)
+		report, recoveryErr := manager.reconciler.RecoverAccount(recoveryContext, accountID)
+		cancel()
+		if recoveryErr != nil || !report.WriteReady {
+			streams.close()
+			manager.dynamicRouteUnavailable(accountID, fence, "private_stream_recovery_failed", true, observer)
+			continue
+		}
+		return streams, true
+	}
+	return nil, false
+}
+
+func (manager *StreamManager) waitDynamicRouteActivation(
+	ctx context.Context,
+	routeID domain.RouteID,
+	streams *accountStreams,
+	results chan<- dynamicRouteActivation,
+) {
+	go func() {
+		result := dynamicRouteActivation{routeID: routeID, streams: streams}
+		select {
+		case <-ctx.Done():
+			result.err = ctx.Err()
+		case <-streams.faults:
+			result.err = fmt.Errorf("private stream fault before snapshot")
+		case <-streams.snapshot:
+		}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func (manager *StreamManager) observeDynamicRouteBarrier(observer privateStreamRouteObserver, fence domain.WriteFence) error {
+	snapshotID, err := manager.hub.identity.EventID()
+	if err != nil {
+		return err
+	}
+	manager.mu.Lock()
+	manager.routeBarriers[fence]++
+	sequence := manager.routeBarriers[fence]
+	manager.mu.Unlock()
+	return observer.ObservePrivateStreamRouteBarrier(fence, string(snapshotID), sequence)
+}
+
+func (manager *StreamManager) dynamicRouteUnavailable(
+	accountID domain.AccountID,
+	fence domain.WriteFence,
+	reason string,
+	resync bool,
+	observer privateStreamRouteObserver,
+) {
+	_ = manager.reconciler.SuspendAccount(accountID)
+	_ = observer.SetPrivateStreamRouteState(fence, false, reason)
+	manager.publishHealth(accountID)
+	if resync {
+		_, _ = manager.hub.PublishResync(manager.principal, accountID, reason)
+	}
+}
+
+func closeDynamicRouteSessions(sessions map[domain.RouteID]*accountStreams) {
+	for _, streams := range sessions {
+		streams.close()
+	}
+}
+
+func (manager *StreamManager) activatePrivateStream(ctx context.Context, accountID domain.AccountID, streams *accountStreams) error {
+	if err := manager.accounts.SetPrivateStreamState(accountID, true, ""); err != nil {
+		return err
+	}
+	observer, requiresBarrier := manager.accounts.(privateStreamBarrierObserver)
+	if !requiresBarrier {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-streams.faults:
+		return fmt.Errorf("private stream fault before snapshot")
+	case <-streams.snapshot:
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-streams.faults:
+		return fmt.Errorf("private stream fault before barrier")
+	default:
+	}
+	snapshotID, err := manager.hub.identity.EventID()
+	if err != nil {
+		return err
+	}
+	manager.mu.Lock()
+	manager.barrierSequences[accountID]++
+	sequence := manager.barrierSequences[accountID]
+	manager.mu.Unlock()
+	return observer.ObservePrivateStreamBarrier(accountID, string(snapshotID), sequence)
 }
 
 func (manager *StreamManager) unavailable(accountID domain.AccountID, reason string, resync bool) {
@@ -234,13 +787,37 @@ func (manager *StreamManager) publishHealth(accountID domain.AccountID) {
 }
 
 type accountStreams struct {
-	cancel    context.CancelFunc
-	faults    chan struct{}
-	mu        sync.Mutex
-	closers   []func() error
-	once      sync.Once
-	faultOnce sync.Once
-	onFault   func()
+	cancel           context.CancelFunc
+	faults           chan struct{}
+	snapshot         chan struct{}
+	mu               sync.Mutex
+	closers          []func() error
+	snapshotMu       sync.Mutex
+	pendingSnapshots map[domain.RouteID]struct{}
+	once             sync.Once
+	faultOnce        sync.Once
+	onFault          func()
+}
+
+func (streams *accountStreams) expectSnapshots(routes map[domain.RouteID]struct{}) {
+	streams.snapshotMu.Lock()
+	defer streams.snapshotMu.Unlock()
+	streams.pendingSnapshots = make(map[domain.RouteID]struct{}, len(routes))
+	for routeID := range routes {
+		streams.pendingSnapshots[routeID] = struct{}{}
+	}
+}
+
+func (streams *accountStreams) observeSnapshot(routeID domain.RouteID) {
+	streams.snapshotMu.Lock()
+	defer streams.snapshotMu.Unlock()
+	if _, pending := streams.pendingSnapshots[routeID]; !pending {
+		return
+	}
+	delete(streams.pendingSnapshots, routeID)
+	if len(streams.pendingSnapshots) == 0 {
+		close(streams.snapshot)
+	}
 }
 
 func (streams *accountStreams) add(close func() error) {
@@ -284,7 +861,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 	}
 	streamContext, cancel := context.WithCancel(ctx)
 	streams := &accountStreams{
-		cancel: cancel, faults: make(chan struct{}, 1),
+		cancel: cancel, faults: make(chan struct{}, 1), snapshot: make(chan struct{}),
 		onFault: func() {
 			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
 		},
@@ -293,6 +870,14 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 		streams.close()
 		return nil, err
 	}
+	if routes, dynamic := manager.accounts.(atomicStreamRouteSource); dynamic {
+		if err := manager.openDynamicAccountStreams(streamContext, streams, routes, accountID, snapshot); err != nil {
+			return closeOnError(err)
+		}
+		return streams, nil
+	}
+	staticRoute := domain.RouteID("static")
+	streams.expectSnapshots(map[domain.RouteID]struct{}{staticRoute: {}})
 
 	switch status.Product {
 	case exchange.ProductSpot:
@@ -310,7 +895,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 				return closeOnError(err)
 			}
 		}
-		if err := manager.openBalances(streamContext, streams, socket, accountID); err != nil {
+		if err := manager.openBalances(streamContext, streams, socket, accountID, staticRoute); err != nil {
 			return closeOnError(err)
 		}
 	case exchange.ProductPerp:
@@ -328,11 +913,199 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 				return closeOnError(err)
 			}
 		}
-		if err := manager.openBalances(streamContext, streams, socket, accountID); err != nil {
+		if err := manager.openBalances(streamContext, streams, socket, accountID, staticRoute); err != nil {
 			return closeOnError(err)
 		}
 	default:
 		return closeOnError(fmt.Errorf("private stream product unsupported"))
+	}
+	return streams, nil
+}
+
+type selectedStreamRoute struct {
+	instrumentID domain.InstrumentID
+	selection    account.SelectedOrderRoute
+}
+
+type dynamicStreamPlan struct {
+	generation domain.AccountFence
+	routes     map[domain.RouteID][]selectedStreamRoute
+}
+
+func (manager *StreamManager) selectDynamicStreamPlan(
+	ctx context.Context,
+	routes atomicStreamRouteSource,
+	accountID domain.AccountID,
+	snapshot catalog.Snapshot,
+) (dynamicStreamPlan, bool, error) {
+	plan := dynamicStreamPlan{routes: make(map[domain.RouteID][]selectedStreamRoute)}
+	for _, public := range snapshot.Instruments {
+		route, err := routes.SelectOrderRoute(ctx, accountID, public.ID, account.OrderRouteRecovery, account.OrderRouteSelector{})
+		if err != nil {
+			return dynamicStreamPlan{}, true, fmt.Errorf("private stream route selection failed")
+		}
+		if !route.Dynamic {
+			return dynamicStreamPlan{}, false, nil
+		}
+		if route.Orders == nil || route.RouteID.Validate() != nil || route.Fence.Validate() != nil ||
+			route.Fence.AccountID != accountID || route.Status.AccountID != accountID {
+			return dynamicStreamPlan{}, true, fmt.Errorf("private stream route selection failed")
+		}
+		if plan.generation == (domain.AccountFence{}) {
+			plan.generation = route.Fence
+		} else if plan.generation != route.Fence {
+			return dynamicStreamPlan{}, true, fmt.Errorf("private stream generation changed")
+		}
+		switch route.Instrument.Identity.Product {
+		case exchange.ProductSpot:
+			if _, ok := route.Orders.(interface{ WebSocket() exchange.SpotWebSocket }); !ok {
+				return dynamicStreamPlan{}, true, fmt.Errorf("private stream spot client unavailable")
+			}
+		case exchange.ProductPerp:
+			if _, ok := route.Orders.(interface{ WebSocket() exchange.PerpWebSocket }); !ok {
+				return dynamicStreamPlan{}, true, fmt.Errorf("private stream perp client unavailable")
+			}
+		default:
+			return dynamicStreamPlan{}, true, fmt.Errorf("private stream product unsupported")
+		}
+		plan.routes[route.RouteID] = append(plan.routes[route.RouteID], selectedStreamRoute{
+			instrumentID: public.ID,
+			selection:    route,
+		})
+	}
+	if plan.generation == (domain.AccountFence{}) || len(plan.routes) == 0 {
+		return dynamicStreamPlan{}, true, fmt.Errorf("private stream instruments unavailable")
+	}
+	return plan, true, nil
+}
+
+func (manager *StreamManager) openDynamicAccountStreams(
+	ctx context.Context,
+	streams *accountStreams,
+	routes atomicStreamRouteSource,
+	accountID domain.AccountID,
+	snapshot catalog.Snapshot,
+) error {
+	plan, dynamic, err := manager.selectDynamicStreamPlan(ctx, routes, accountID, snapshot)
+	if err != nil || !dynamic {
+		return fmt.Errorf("private stream route selection failed")
+	}
+	selected := make([]selectedStreamRoute, 0, len(snapshot.Instruments))
+	for _, routeSelections := range plan.routes {
+		selected = append(selected, routeSelections...)
+	}
+
+	balanceRoutes := make(map[domain.RouteID]struct{})
+	for _, streamRoute := range selected {
+		balanceRoutes[streamRoute.selection.RouteID] = struct{}{}
+	}
+	streams.expectSnapshots(balanceRoutes)
+	openedBalanceRoutes := make(map[domain.RouteID]struct{}, len(balanceRoutes))
+	for _, streamRoute := range selected {
+		route := streamRoute.selection
+		switch route.Instrument.Identity.Product {
+		case exchange.ProductSpot:
+			client := route.Orders.(interface{ WebSocket() exchange.SpotWebSocket })
+			socket := client.WebSocket()
+			if socket == nil {
+				return fmt.Errorf("private stream spot socket unavailable")
+			}
+			if err := manager.openSpotInstrument(ctx, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+				return err
+			}
+			if _, opened := openedBalanceRoutes[route.RouteID]; !opened {
+				if err := manager.openBalances(ctx, streams, socket, accountID, route.RouteID); err != nil {
+					return err
+				}
+				openedBalanceRoutes[route.RouteID] = struct{}{}
+			}
+		case exchange.ProductPerp:
+			client := route.Orders.(interface{ WebSocket() exchange.PerpWebSocket })
+			socket := client.WebSocket()
+			if socket == nil {
+				return fmt.Errorf("private stream perp socket unavailable")
+			}
+			if err := manager.openPerpInstrument(ctx, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+				return err
+			}
+			if _, opened := openedBalanceRoutes[route.RouteID]; !opened {
+				if err := manager.openBalances(ctx, streams, socket, accountID, route.RouteID); err != nil {
+					return err
+				}
+				openedBalanceRoutes[route.RouteID] = struct{}{}
+			}
+		}
+	}
+	return nil
+}
+
+func (manager *StreamManager) openDynamicRouteStreams(
+	ctx context.Context,
+	accountID domain.AccountID,
+	routeID domain.RouteID,
+	selected []selectedStreamRoute,
+	faults chan<- dynamicRouteFault,
+) (*accountStreams, error) {
+	streamContext, cancel := context.WithCancel(ctx)
+	var streams *accountStreams
+	streams = &accountStreams{
+		cancel: cancel, faults: make(chan struct{}, 1), snapshot: make(chan struct{}),
+		onFault: func() {
+			select {
+			case faults <- dynamicRouteFault{routeID: routeID, streams: streams}:
+			default:
+			}
+		},
+	}
+	streams.expectSnapshots(map[domain.RouteID]struct{}{routeID: {}})
+	closeOnError := func(err error) (*accountStreams, error) {
+		streams.close()
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return closeOnError(fmt.Errorf("private stream route selection failed"))
+	}
+	balanceOpened := false
+	for _, streamRoute := range selected {
+		route := streamRoute.selection
+		if route.RouteID != routeID {
+			return closeOnError(fmt.Errorf("private stream route selection failed"))
+		}
+		switch route.Instrument.Identity.Product {
+		case exchange.ProductSpot:
+			client := route.Orders.(interface{ WebSocket() exchange.SpotWebSocket })
+			socket := client.WebSocket()
+			if socket == nil {
+				return closeOnError(fmt.Errorf("private stream spot socket unavailable"))
+			}
+			if err := manager.openSpotInstrument(streamContext, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+				return closeOnError(err)
+			}
+			if !balanceOpened {
+				if err := manager.openBalances(streamContext, streams, socket, accountID, routeID); err != nil {
+					return closeOnError(err)
+				}
+				balanceOpened = true
+			}
+		case exchange.ProductPerp:
+			client := route.Orders.(interface{ WebSocket() exchange.PerpWebSocket })
+			socket := client.WebSocket()
+			if socket == nil {
+				return closeOnError(fmt.Errorf("private stream perp socket unavailable"))
+			}
+			if err := manager.openPerpInstrument(streamContext, streams, socket, accountID, streamRoute.instrumentID, route.Instrument); err != nil {
+				return closeOnError(err)
+			}
+			if !balanceOpened {
+				if err := manager.openBalances(streamContext, streams, socket, accountID, routeID); err != nil {
+					return closeOnError(err)
+				}
+				balanceOpened = true
+			}
+		}
+	}
+	if !balanceOpened {
+		return closeOnError(fmt.Errorf("private stream route selection failed"))
 	}
 	return streams, nil
 }
@@ -400,6 +1173,7 @@ func (manager *StreamManager) openBalances(
 	streams *accountStreams,
 	socket exchange.SpotWebSocket,
 	accountID domain.AccountID,
+	routeID domain.RouteID,
 ) error {
 	balances, err := socket.WatchBalances(ctx, exchange.WatchAccountRequest{
 		Options: exchange.WatchOptions{Buffer: manager.subscriptionBuffer},
@@ -408,7 +1182,13 @@ func (manager *StreamManager) openBalances(
 		return err
 	}
 	monitorSubscription(ctx, streams, balances, func(event exchange.BalanceEvent) error {
-		return manager.publishBalances(accountID, event)
+		if err := manager.publishBalances(accountID, event); err != nil {
+			return err
+		}
+		if event.Kind == exchange.EventSnapshot {
+			streams.observeSnapshot(routeID)
+		}
+		return nil
 	})
 	return nil
 }

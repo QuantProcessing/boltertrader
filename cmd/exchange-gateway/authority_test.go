@@ -22,6 +22,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 )
 
@@ -133,7 +134,7 @@ func TestManagerAuthorityReadsFetchesFundingOnlyWhenCapabilityAdvertisesIt(t *te
 	accounts := &fakeAuthorityAccounts{
 		resources:  []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, ReadReady: true}},
 		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
-		perp:       perp, capability: capability.Row{Operations: capability.Operations{Funding: true}},
+		perp:       perp, capability: capability.Row{Product: "perp", Operations: capability.Operations{Funding: true}},
 	}
 	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "testnet", "perp", "BTC-USDT")
 	if err != nil || fact.FundingRate != "0.0007" || fact.BestBidSize != "2.5" || fact.BestAskSize != "3.25" || len(fact.Bids) != 1 || len(fact.Asks) != 1 || len(fact.FundingHistory) != 1 || !fact.FundingObservedAt.Equal(observedAt.Add(time.Second)) || !fact.FundingTime.Equal(fundingTime) || !fact.NextFundingTime.Equal(nextFundingTime) || perp.fundingCalls != 1 || perp.historyCalls != 1 || perp.bookLimit != authorityDepthLimit || perp.historyLimit != authorityFundingHistoryLimit {
@@ -159,11 +160,36 @@ func TestManagerAuthorityReadsSelectsExactEnvironmentAndProduct(t *testing.T) {
 			{AccountID: "demo-perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, ReadReady: true},
 		},
 		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
-		perp:       perp, capability: capability.Row{Operations: capability.Operations{Funding: true}},
+		perp:       perp, capability: capability.Row{Product: "perp", Operations: capability.Operations{Funding: true}},
 	}
 	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "demo", "perp", "BTC-USDT")
 	if err != nil || fact.Environment != "demo" || fact.Product != "perp" || accounts.resolvedAccount != "demo-perp" {
 		t.Fatalf("fact=%+v resolved=%q err=%v", fact, accounts.resolvedAccount, err)
+	}
+}
+
+func TestManagerAuthorityReadsSelectsCapabilityForExactRoute(t *testing.T) {
+	observedAt := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
+	perp := &fakeAuthorityPerp{
+		book:    exchange.OrderBook{Time: observedAt, Bids: []exchange.BookLevel{{Price: decimal.NewFromInt(100), Quantity: decimal.NewFromInt(1)}}, Asks: []exchange.BookLevel{{Price: decimal.NewFromInt(101), Quantity: decimal.NewFromInt(2)}}},
+		funding: exchange.FundingRate{Rate: decimal.RequireFromString("0.0001"), ObservedAt: observedAt, FundingTime: observedAt.Add(time.Hour), NextFundingTime: observedAt.Add(9 * time.Hour)},
+	}
+	accounts := &fakeAuthorityAccounts{
+		resources: []account.Resource{{
+			AccountID: "multi-route", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+			Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true,
+		}},
+		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
+		perp:       perp,
+		capability: capability.Row{Product: "spot", Operations: capability.Operations{}},
+		capabilities: []capability.Row{
+			{Product: "spot", Operations: capability.Operations{}},
+			{Product: "perp", Settlement: "USDT", Operations: capability.Operations{Funding: true}},
+		},
+	}
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "demo", "perp", "BTC-USDT")
+	if err != nil || fact.FundingRate != "0.0001" || perp.fundingCalls != 1 {
+		t.Fatalf("fact=%+v fundingCalls=%d err=%v", fact, perp.fundingCalls, err)
 	}
 }
 
@@ -176,24 +202,68 @@ func TestManagerAuthorityReadsProjectsGatewayRuntimeFacts(t *testing.T) {
 		},
 		status:     account.Status{Resource: account.Resource{AccountID: "account-a", Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true, WriteReady: true}},
 		capability: capability.Row{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", Operations: capability.Operations{Place: true, Cancel: true, Fills: true, Positions: true}},
+		capabilities: []capability.Row{
+			{RowID: "binance:spot", Venue: "binance", Product: "spot", Operations: capability.Operations{Place: true, Cancel: true}},
+			{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", Operations: capability.Operations{Place: true, Cancel: true, Fills: true, Positions: true}},
+		},
 	}
 	projection, err := (managerAuthorityReads{manager: accounts}).Runtime("account-a")
-	if err != nil || projection.AccountID != "account-a" || projection.RuntimeVersion != 9 || projection.LastAppliedDesiredStateRevision != 7 || !projection.Readiness.Ready || !projection.WriteReadiness.Ready || len(projection.Capabilities) != 1 || !projection.Capabilities[0].WriteReady || !projection.ObservedAt.Equal(observedAt) {
+	if err != nil || projection.AccountID != "account-a" || projection.RuntimeVersion != 9 || projection.LastAppliedDesiredStateRevision != 7 || !projection.Readiness.Ready || !projection.WriteReadiness.Ready || len(projection.Capabilities) != 2 || !projection.Capabilities[0].WriteReady || !projection.Capabilities[1].WriteReady || !projection.ObservedAt.Equal(observedAt) {
 		t.Fatalf("Runtime()=%+v err=%v", projection, err)
 	}
 }
 
+func TestManagerAuthorityReadsDerivesCapabilityReadinessFromExactRouteStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     account.Status
+		wantRead   bool
+		wantWrite  bool
+		wantReason string
+	}{
+		{name: "private stream gap", status: account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ReasonPrivateStreamGap}}, wantRead: true, wantReason: account.ReasonPrivateStreamGap},
+		{name: "stale catalog", status: account.Status{Resource: account.Resource{Reason: catalog.ReasonCatalogStale}}, wantReason: catalog.ReasonCatalogStale},
+		{name: "live write denied", status: account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ErrLiveWriteDisabled.Error()}}, wantRead: true, wantReason: account.ErrLiveWriteDisabled.Error()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			accounts := &fakeAuthorityAccounts{
+				runtime: account.RuntimeAccount{
+					Desired: account.DesiredRuntime{AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2},
+					State:   account.RuntimeStateActive, Ready: true, RuntimeVersion: 9, LastAppliedDesiredStateRevision: 7, LastAppliedRuntimeGeneration: 3, ObservedAt: time.Now(),
+				},
+				status:        account.Status{Resource: account.Resource{AccountID: "account-a", ReadReady: true, WriteReady: true}},
+				capabilities:  []capability.Row{{RowID: "binance:perp:USDT", Venue: "binance", Product: "perp", Settlement: "USDT", Operations: capability.Operations{Place: true}}},
+				routeStatuses: map[string]account.Status{"perp\x00USDT": test.status},
+			}
+			projection, err := (managerAuthorityReads{manager: accounts}).Runtime("account-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(accounts.routeStatusCalls) != 1 || accounts.routeStatusCalls[0] != "perp\x00USDT" {
+				t.Fatalf("route status calls=%q", accounts.routeStatusCalls)
+			}
+			if projection.Readiness.Ready != test.wantRead || projection.WriteReadiness.Ready != test.wantWrite || projection.WriteReadiness.Reason != test.wantReason || len(projection.Capabilities) != 1 || projection.Capabilities[0].WriteReady != test.wantWrite {
+				t.Fatalf("projection=%+v", projection)
+			}
+		})
+	}
+}
+
 type fakeAuthorityAccounts struct {
-	resources       []account.Resource
-	instrumentErr   error
-	snapshot        catalog.Snapshot
-	instrument      exchange.Instrument
-	perp            exchange.PerpClient
-	capability      capability.Row
-	resolvedAccount domain.AccountID
-	snapshots       map[domain.AccountID]catalog.Snapshot
-	runtime         account.RuntimeAccount
-	status          account.Status
+	resources        []account.Resource
+	instrumentErr    error
+	snapshot         catalog.Snapshot
+	instrument       exchange.Instrument
+	perp             exchange.PerpClient
+	capability       capability.Row
+	capabilities     []capability.Row
+	resolvedAccount  domain.AccountID
+	snapshots        map[domain.AccountID]catalog.Snapshot
+	runtime          account.RuntimeAccount
+	status           account.Status
+	routeStatuses    map[string]account.Status
+	routeStatusCalls []string
 }
 
 func (accounts *fakeAuthorityAccounts) Accounts() []account.Resource { return accounts.resources }
@@ -217,10 +287,24 @@ func (accounts *fakeAuthorityAccounts) Perp(domain.AccountID) (exchange.PerpClie
 func (accounts *fakeAuthorityAccounts) Capability(domain.AccountID) (capability.Row, error) {
 	return accounts.capability, nil
 }
+func (accounts *fakeAuthorityAccounts) Capabilities(domain.AccountID) ([]capability.Row, error) {
+	if len(accounts.capabilities) == 0 {
+		return []capability.Row{accounts.capability}, nil
+	}
+	return append([]capability.Row(nil), accounts.capabilities...), nil
+}
 func (accounts *fakeAuthorityAccounts) Runtime(domain.AccountID) (account.RuntimeAccount, error) {
 	return accounts.runtime, nil
 }
 func (accounts *fakeAuthorityAccounts) Status(domain.AccountID) (account.Status, error) {
+	return accounts.status, nil
+}
+func (accounts *fakeAuthorityAccounts) RouteStatus(_ domain.AccountID, product, settlement string) (account.Status, error) {
+	key := product + "\x00" + settlement
+	accounts.routeStatusCalls = append(accounts.routeStatusCalls, key)
+	if status, ok := accounts.routeStatuses[key]; ok {
+		return status, nil
+	}
 	return accounts.status, nil
 }
 
@@ -432,6 +516,58 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 	if !ok || status.Mode != account.RuntimeModeTest || len(status.Accounts) != 1 {
 		t.Fatalf("active status=%T %+v", statusResponse.Body, statusResponse.Body)
 	}
+}
+
+func TestGatewayAuthorityRuntimeListAndStatusJSONOmitSecretReference(t *testing.T) {
+	ctx := context.Background()
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedActiveAuthorityAccount(t, ctx, authority)
+	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/internal/v1/accounts/runtime", "/internal/v1/runtime/status"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			assertRuntimeJSONHasNoSecretRef(t, response.Body.Bytes(), "opaque-initial")
+		})
+	}
+}
+
+func assertRuntimeJSONHasNoSecretRef(t *testing.T, encoded []byte, canary string) {
+	t.Helper()
+	if strings.Contains(strings.ToLower(string(encoded)), strings.ToLower(canary)) {
+		t.Fatalf("runtime response leaked secret canary: %s", encoded)
+	}
+	var value any
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		t.Fatal(err)
+	}
+	var visit func(any)
+	visit = func(current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				if strings.EqualFold(key, "secretRef") {
+					t.Errorf("runtime response serialized forbidden field %q: %s", key, encoded)
+				}
+				visit(child)
+			}
+		case []any:
+			for _, child := range typed {
+				visit(child)
+			}
+		}
+	}
+	visit(value)
 }
 
 type staticAuthorityReads struct {
@@ -813,6 +949,17 @@ func (resolver authorityStaticCredentialResolver) Resolve(context.Context, secre
 	return append([]byte(nil), resolver.bundle...), nil
 }
 
+type authorityFailOnceCredentialResolver struct{ failures int }
+
+func (*authorityFailOnceCredentialResolver) Check(context.Context) error { return nil }
+func (resolver *authorityFailOnceCredentialResolver) Resolve(context.Context, secretstore.OpaqueRef) ([]byte, error) {
+	if resolver.failures > 0 {
+		resolver.failures--
+		return nil, errors.New("temporary credential resolver failure")
+	}
+	return authorityCredentialResolver{}.Resolve(context.Background(), "")
+}
+
 type snapshotAuthorityStore struct {
 	*memoryDesiredStore
 	pending           *store.PendingSnapshot
@@ -969,7 +1116,7 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	const applyOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
@@ -1049,6 +1196,125 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	if !errors.As(err, &authorityErr) || authorityErr.Code != "OPERATION_ID_CONFLICT" {
 		t.Fatalf("conflicting replay err=%T %v", err, err)
 	}
+}
+
+func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallbacks(t *testing.T) {
+	gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := &productionRuntimeLifecycle{}
+	manager, err := account.NewManager(context.Background(), nil, account.Options{
+		GatewayCatalog: gatewayCatalog, HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest,
+		RuntimeGroupBuilder: authorityCandidateBuilder{}, CredentialResolver: authorityCredentialResolver{},
+		Lifecycle: lifecycle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	if err := lifecycle.attach(blockerQuerierStub{}, manager); err != nil {
+		t.Fatal(err)
+	}
+	store := newSnapshotAuthorityStore()
+	authority, err := newGatewayAuthority(context.Background(), store, manager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const applyOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445d01"
+	const retireOperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445d02"
+	if _, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
+			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		},
+	}); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	response, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityRetireDesired, Mode: "test", AccountID: "account-a", OperationID: retireOperationID,
+		Retirement: &httpapi.RetireRequest{
+			OperationID: retireOperationID, AccountID: "account-a", DesiredStateRevision: 2,
+			RuntimeGeneration: 1, CredentialVersion: 1,
+		},
+	})
+	view, ok := response.Body.(httpapi.RuntimeView)
+	if err != nil || !ok || !view.Tombstoned || manager.ActiveSnapshot("account-a") != nil {
+		t.Fatalf("retire response=%T %+v active=%+v err=%v", response.Body, response.Body, manager.ActiveSnapshot("account-a"), err)
+	}
+}
+
+func TestProductionRuntimeLifecycleUsesDatabaseBlockersAndFailsClosed(t *testing.T) {
+	lifecycle := &productionRuntimeLifecycle{}
+	positions := &positionBlockerSourceStub{positions: 3}
+	if err := lifecycle.attach(blockerQuerierStub{openOrders: 2, uncertainCommands: 1}, positions); err != nil {
+		t.Fatal(err)
+	}
+	blockers, err := lifecycle.Blockers(context.Background(), "account-a")
+	if err != nil || blockers.OpenOrders != 2 || blockers.Positions != 3 || blockers.UncertainCommands != 1 || !blockers.Any() {
+		t.Fatalf("blockers=%+v err=%v", blockers, err)
+	}
+	if err := lifecycle.Deactivate(context.Background(), "account-a"); err != nil {
+		t.Fatalf("snapshot deactivation: %v", err)
+	}
+	if err := lifecycle.attach(blockerQuerierStub{err: errors.New("postgres-secret-canary")}, positions); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lifecycle.Blockers(context.Background(), "account-a"); err == nil || strings.Contains(err.Error(), "postgres-secret-canary") {
+		t.Fatalf("blocker query error=%v", err)
+	}
+	if err := lifecycle.attach(blockerQuerierStub{}, &positionBlockerSourceStub{err: errors.New("position-secret-canary")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lifecycle.Blockers(context.Background(), "account-a"); err == nil || strings.Contains(err.Error(), "position-secret-canary") {
+		t.Fatalf("position blocker query error=%v", err)
+	}
+	if err := lifecycle.attach(blockerQuerierStub{}, nil); err == nil {
+		t.Fatal("missing position blocker source was accepted")
+	}
+	if err := lifecycle.Activate(context.Background(), authorityDesiredRuntime(t, "opaque-provider-ref")); err == nil {
+		t.Fatal("legacy activation unexpectedly enabled")
+	}
+}
+
+type positionBlockerSourceStub struct {
+	positions int
+	err       error
+}
+
+func (source *positionBlockerSourceStub) RuntimePositionBlockers(context.Context, domain.AccountID) (int, error) {
+	return source.positions, source.err
+}
+
+type blockerQuerierStub struct {
+	openOrders        int
+	uncertainCommands int
+	err               error
+}
+
+func (querier blockerQuerierStub) QueryRow(context.Context, string, ...any) pgx.Row {
+	return blockerRowStub{openOrders: querier.openOrders, uncertainCommands: querier.uncertainCommands, err: querier.err}
+}
+
+type blockerRowStub struct {
+	openOrders        int
+	uncertainCommands int
+	err               error
+}
+
+func (row blockerRowStub) Scan(destinations ...any) error {
+	if row.err != nil {
+		return row.err
+	}
+	if len(destinations) != 2 {
+		return errors.New("unexpected blocker scan")
+	}
+	*(destinations[0].(*int)) = row.openOrders
+	*(destinations[1].(*int)) = row.uncertainCommands
+	return nil
 }
 
 func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *testing.T) {
@@ -1213,7 +1479,7 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
@@ -1288,7 +1554,7 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{
@@ -1333,7 +1599,7 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		}
 	}
 
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: false, Reason: account.ReasonPrivateStreamGap}}, nil
 	}
 	gap, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
@@ -1341,10 +1607,11 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	gapView := gap.Body.(httpapi.RuntimeView)
-	if !gapView.Readiness.Ready || gapView.WriteReadiness.Ready || gapView.WriteReadiness.Reason != account.ReasonPrivateStreamGap || gapView.BlockedReason == nil || *gapView.BlockedReason != account.ReasonPrivateStreamGap {
+	if !gapView.Readiness.Ready || gapView.WriteReadiness.Ready || gapView.WriteReadiness.Reason != account.ReasonPrivateStreamGap || gapView.BlockedReason == nil || *gapView.BlockedReason != account.ReasonPrivateStreamGap ||
+		gapView.Active == nil || gapView.Active.Routes[0].Ready || gapView.Active.Routes[0].Reason != account.ReasonPrivateStreamGap {
 		t.Fatalf("gap view=%+v", gapView)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	recovered, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
@@ -1352,10 +1619,11 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	recoveredView := recovered.Body.(httpapi.RuntimeView)
-	if !recoveredView.Readiness.Ready || !recoveredView.WriteReadiness.Ready || recoveredView.BlockedReason != nil {
+	if !recoveredView.Readiness.Ready || !recoveredView.WriteReadiness.Ready || recoveredView.BlockedReason != nil ||
+		recoveredView.Active == nil || !recoveredView.Active.Routes[0].Ready || recoveredView.Active.Routes[0].Reason != "" {
 		t.Fatalf("recovered view=%+v", recoveredView)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{Reason: catalog.ReasonCatalogStale}}, nil
 	}
 	stale, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
@@ -1363,10 +1631,11 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleView := stale.Body.(httpapi.RuntimeView)
-	if staleView.Readiness.Ready || staleView.WriteReadiness.Ready || staleView.Readiness.Reason != catalog.ReasonCatalogStale || staleView.BlockedReason == nil || *staleView.BlockedReason != catalog.ReasonCatalogStale {
+	if staleView.Readiness.Ready || staleView.WriteReadiness.Ready || staleView.Readiness.Reason != catalog.ReasonCatalogStale || staleView.BlockedReason == nil || *staleView.BlockedReason != catalog.ReasonCatalogStale ||
+		staleView.Active == nil || staleView.Active.Routes[0].Ready || staleView.Active.Routes[0].Reason != catalog.ReasonCatalogStale {
 		t.Fatalf("stale view=%+v", staleView)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ReasonExactLookupUnavailable}}, nil
 	}
 	exactLookupUnavailable, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
@@ -1374,8 +1643,25 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 		t.Fatal(err)
 	}
 	exactLookupView := exactLookupUnavailable.Body.(httpapi.RuntimeView)
-	if !exactLookupView.Readiness.Ready || exactLookupView.WriteReadiness.Ready || exactLookupView.WriteReadiness.Reason != account.ReasonExactLookupUnavailable || exactLookupView.BlockedReason == nil || *exactLookupView.BlockedReason != account.ReasonExactLookupUnavailable {
+	if !exactLookupView.Readiness.Ready || exactLookupView.WriteReadiness.Ready || exactLookupView.WriteReadiness.Reason != account.ReasonExactLookupUnavailable || exactLookupView.BlockedReason == nil || *exactLookupView.BlockedReason != account.ReasonExactLookupUnavailable ||
+		exactLookupView.Active == nil || exactLookupView.Active.Routes[0].Ready || exactLookupView.Active.Routes[0].Reason != account.ReasonExactLookupUnavailable {
 		t.Fatalf("exact lookup view=%+v", exactLookupView)
+	}
+	authority.routeStatus = func(_ domain.AccountID, product, settlement string) (account.Status, error) {
+		if product != "spot" || settlement != "" {
+			t.Fatalf("RouteStatus product=%q settlement=%q", product, settlement)
+		}
+		return account.Status{Resource: account.Resource{ReadReady: true, Reason: account.ErrLiveWriteDisabled.Error()}}, nil
+	}
+	authority.mode = account.RuntimeModeLive
+	liveDenied, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetRuntimeAccount, AccountID: "account-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveDeniedView := liveDenied.Body.(httpapi.RuntimeView)
+	if !liveDeniedView.Readiness.Ready || liveDeniedView.WriteReadiness.Ready || liveDeniedView.WriteReadiness.Reason != account.ErrLiveWriteDisabled.Error() || liveDeniedView.Capabilities[0].WriteReady ||
+		liveDeniedView.Active == nil || !liveDeniedView.Active.Routes[0].Ready || liveDeniedView.Active.Routes[0].Reason != "" {
+		t.Fatalf("live denied view=%+v", liveDeniedView)
 	}
 }
 
@@ -1397,7 +1683,7 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority.status = func(domain.AccountID) (account.Status, error) {
+	authority.routeStatus = func(domain.AccountID, string, string) (account.Status, error) {
 		return account.Status{Resource: account.Resource{ReadReady: true, WriteReady: true}}, nil
 	}
 	const operationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c33"
@@ -1474,6 +1760,66 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("pending view leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *testing.T) {
+	newManager := func(t *testing.T, resolver account.ScopedCredentialResolver) *account.Manager {
+		t.Helper()
+		gatewayCatalog, err := catalog.NewService(time.Minute, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manager, err := account.NewManager(context.Background(), nil, account.Options{
+			Secrets: secret.StaticProvider{}, ExchangeCatalog: exchange.NewDefaultMemoryCatalog(), GatewayCatalog: gatewayCatalog,
+			HTTPClient: &http.Client{}, RuntimeMode: account.RuntimeModeTest, RuntimeGroupBuilder: authorityCandidateBuilder{},
+			CredentialResolver: resolver,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = manager.Close() })
+		return manager
+	}
+	request := httpapi.AuthorityRequest{
+		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a",
+		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
+		DesiredApply: &httpapi.DesiredApplyRequest{
+			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
+			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		},
+	}
+	snapshotStore := newSnapshotAuthorityStore()
+	firstAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, newManager(t, authorityCredentialResolver{}), account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := firstAuthority.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotStore.promotions != 1 {
+		t.Fatalf("initial promotions=%d", snapshotStore.promotions)
+	}
+
+	restartedManager := newManager(t, &authorityFailOnceCredentialResolver{failures: 1})
+	restartedAuthority, err := newGatewayAuthority(context.Background(), snapshotStore, restartedManager, account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if active := restartedManager.ActiveSnapshot("account-a"); active != nil {
+		t.Fatalf("startup failure unexpectedly restored active=%+v", active)
+	}
+	if _, err := restartedAuthority.Execute(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	active := restartedManager.ActiveSnapshot("account-a")
+	if active == nil || active.Fence.RuntimeGeneration != 1 || len(active.Routes) != 1 {
+		t.Fatalf("exact replay did not restore active=%+v", active)
+	}
+	if snapshotStore.promotions != 1 {
+		t.Fatalf("exact replay promotions=%d, want 1", snapshotStore.promotions)
 	}
 }
 

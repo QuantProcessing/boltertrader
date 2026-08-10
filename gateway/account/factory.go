@@ -47,11 +47,50 @@ type factoryRuntimeGroupBuilder struct {
 type factoryCandidateRoute struct{ handle clientHandle }
 
 func (route factoryCandidateRoute) Probe(ctx context.Context) error {
-	_, err := route.handle.refresh(ctx)
-	return err
+	if ctx == nil || route.handle == nil || !route.handle.exactLookupReady() {
+		return fmt.Errorf("private route readiness failed")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if client, ok := route.handle.spot(); ok {
+		if _, err := client.Balances(ctx); err != nil {
+			return fmt.Errorf("private route readiness failed")
+		}
+		return nil
+	}
+	if client, ok := route.handle.perp(); ok {
+		if _, err := client.Balances(ctx); err != nil {
+			return fmt.Errorf("private route readiness failed")
+		}
+		return nil
+	}
+	return fmt.Errorf("private route readiness failed")
 }
 
 func (route factoryCandidateRoute) Close() error { return route.handle.close() }
+
+func (route factoryCandidateRoute) SpotClient() (exchange.SpotClient, bool) {
+	return route.handle.spot()
+}
+
+func (route factoryCandidateRoute) PerpClient() (exchange.PerpClient, bool) {
+	return route.handle.perp()
+}
+
+func (route factoryCandidateRoute) OrderClient() (exchange.OrderREST, bool) {
+	if client, ok := route.handle.spot(); ok {
+		return client, true
+	}
+	if client, ok := route.handle.perp(); ok {
+		return client, true
+	}
+	return nil, false
+}
+
+func (route factoryCandidateRoute) ExactLookupReady() bool {
+	return route.handle.exactLookupReady()
+}
 
 func NewFactoryRuntimeGroupBuilder(httpClient *http.Client, catalog exchange.InstrumentCatalog) RuntimeGroupBuilder {
 	return factoryRuntimeGroupBuilder{httpClient: httpClient, catalog: catalog}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -238,6 +239,65 @@ func TestCoordinatorRecoveryRejectsPreparedCommandWithoutCompleteFence(t *testin
 	}
 	if got := fixture.driver.PlaceCalls(); got != 0 {
 		t.Fatalf("incomplete recovered fence made %d venue calls", got)
+	}
+}
+
+func TestCoordinatorRecoveryRoutesDurableCommandToRecordedRetiringGeneration(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	request := fixture.placeRequest()
+	request.RouteID = "spot-retiring"
+	request.WriteFence = account.WriteFence{
+		AccountID: fixture.accountID, DesiredStateRevision: 7,
+		RuntimeGeneration: 11, CredentialVersion: 3,
+	}
+	payload, payloadHash, err := canonicalPlacePayload(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.store.ReserveCommand(context.Background(), store.ReserveCommandRequest{
+		PrincipalID: request.PrincipalID, AccountID: request.AccountID,
+		InstrumentID: request.InstrumentID, IdempotencyKey: request.IdempotencyKey,
+		CorrelationID: "018f0000-0000-7000-8000-000000000001",
+		PayloadHash:   payloadHash, Payload: payload,
+	}); err != nil {
+		t.Fatalf("ReserveCommand: %v", err)
+	}
+
+	activeDriver := &fakeDriver{}
+	recoveryRoute := fixture.router.route
+	recoveryRoute.CheckWriteFence = func(fence account.WriteFence) error {
+		if fence != request.WriteFence {
+			return account.ErrStaleWriteFence
+		}
+		return nil
+	}
+	router := &recordingFencedRecoveryRouter{
+		activeRoute: Route{
+			Driver: activeDriver, Instrument: fixture.instrument,
+			Product: exchange.ProductSpot, WriteReady: true,
+			CheckWriteFence: func(account.WriteFence) error { return nil },
+		},
+		recoveryRoute: recoveryRoute,
+	}
+	coordinator := newTestCoordinator(t, fixture.store, router, fixture.publisher, Hooks{})
+	report, err := coordinator.RecoverAccount(context.Background(), fixture.accountID)
+	if err != nil || !report.WriteReady || report.Resolved != 1 {
+		t.Fatalf("RecoverAccount report=%+v err=%v", report, err)
+	}
+
+	accountID, instrumentID, routeID, fence, calls := router.RecoveryRequest()
+	wantFence := domain.AccountFence{
+		AccountID: request.AccountID, DesiredStateRevision: request.WriteFence.DesiredStateRevision,
+		RuntimeGeneration: request.WriteFence.RuntimeGeneration, CredentialVersion: request.WriteFence.CredentialVersion,
+	}
+	if calls != 1 || accountID != request.AccountID || instrumentID != request.InstrumentID || routeID != request.RouteID || fence != wantFence {
+		t.Fatalf("recovery request calls=%d account=%s instrument=%s route=%s fence=%+v", calls, accountID, instrumentID, routeID, fence)
+	}
+	if got := fixture.driver.PlaceCalls(); got != 1 {
+		t.Fatalf("retiring generation place calls=%d want=1", got)
+	}
+	if got := activeDriver.PlaceCalls(); got != 0 {
+		t.Fatalf("active generation received recovered command: %d calls", got)
 	}
 }
 
@@ -477,6 +537,71 @@ func TestCoordinatorReconcileDueUsesExactReadOnlyEvidenceAndNeverPlacesAgain(t *
 	}
 	if got := fixture.store.taskCount(); got != 0 {
 		t.Fatalf("resolved reconciliation tasks=%d, want 0", got)
+	}
+}
+
+func TestCoordinatorPeriodicallyReconcilesAccountRegisteredAfterZeroAccountStart(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.driver.placeErr = exchange.ErrAmbiguousOutcome
+	fixture.driver.recordAccepted = false
+	coordinator, err := NewCoordinator(Options{
+		Store: fixture.store, Router: fixture.router,
+		Identity:                  domain.NewIdentityGenerator(domain.IdentityGeneratorOptions{}),
+		Now:                       time.Now,
+		ReconciliationDelay:       time.Nanosecond,
+		ReconciliationInterval:    time.Millisecond,
+		ReconciliationLease:       time.Second,
+		ReconciliationLimit:       10,
+		MaxReconciliationAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("NewCoordinator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := coordinator.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
+	if err := coordinator.Start(t.Context(), nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := coordinator.RegisterAccount(fixture.accountID); err != nil {
+		t.Fatalf("RegisterAccount: %v", err)
+	}
+	if _, err := coordinator.RecoverAccount(t.Context(), fixture.accountID); err != nil {
+		t.Fatalf("RecoverAccount: %v", err)
+	}
+
+	result, err := coordinator.Place(t.Context(), fixture.placeRequest())
+	if !errors.Is(err, ErrOutcomeUncertain) || result.State != domain.StateUncertain {
+		t.Fatalf("ambiguous Place result=%+v err=%v", result, err)
+	}
+	fixture.driver.mu.Lock()
+	fixture.driver.placeErr = nil
+	fixture.driver.orders[result.ClientOrderID] = foundExactResult(
+		fixture.instrument, result.ClientOrderID, "venue-recovered", domain.StateOpen,
+	)
+	fixture.driver.mu.Unlock()
+
+	deadline := time.Now().Add(time.Second)
+	for fixture.store.taskCount() != 0 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := fixture.store.taskCount(); got != 0 {
+		t.Fatalf("dynamic account reconciliation tasks=%d, want 0", got)
+	}
+	if got := fixture.driver.PlaceCalls(); got != 1 {
+		t.Fatalf("periodic reconciliation repeated venue write: %d calls", got)
+	}
+}
+
+func TestCoordinatorStartRejectsInvalidAccountListWithoutPartialRegistration(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	if err := fixture.coordinator.Start(t.Context(), []domain.AccountID{fixture.accountID, ""}); err == nil {
+		t.Fatal("Start accepted invalid account list")
+	}
+	if got := fixture.coordinator.reconciliationAccountIDs(); len(got) != 0 {
+		t.Fatalf("failed Start retained reconciliation accounts=%v", got)
 	}
 }
 
@@ -877,6 +1002,50 @@ func (router *fakeRouter) Route(context.Context, domain.AccountID, domain.Instru
 	router.mu.Lock()
 	defer router.mu.Unlock()
 	return router.route, router.err
+}
+
+type recordingFencedRecoveryRouter struct {
+	mu            sync.Mutex
+	activeRoute   Route
+	recoveryRoute Route
+	accountID     domain.AccountID
+	instrumentID  domain.InstrumentID
+	routeID       domain.RouteID
+	fence         domain.AccountFence
+	recoveryCalls int
+}
+
+func (router *recordingFencedRecoveryRouter) Route(context.Context, domain.AccountID, domain.InstrumentID) (Route, error) {
+	return router.activeRoute, nil
+}
+
+func (router *recordingFencedRecoveryRouter) RouteForRecoveryCommand(
+	_ context.Context,
+	accountID domain.AccountID,
+	instrumentID domain.InstrumentID,
+	routeID domain.RouteID,
+	fence domain.AccountFence,
+) (Route, error) {
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	router.accountID = accountID
+	router.instrumentID = instrumentID
+	router.routeID = routeID
+	router.fence = fence
+	router.recoveryCalls++
+	return router.recoveryRoute, nil
+}
+
+func (router *recordingFencedRecoveryRouter) RecoveryRequest() (
+	domain.AccountID,
+	domain.InstrumentID,
+	domain.RouteID,
+	domain.AccountFence,
+	int,
+) {
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	return router.accountID, router.instrumentID, router.routeID, router.fence, router.recoveryCalls
 }
 
 type fakeDriver struct {

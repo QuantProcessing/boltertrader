@@ -3,6 +3,7 @@ package process_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"reflect"
@@ -16,347 +17,182 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 )
 
-func TestServiceStartupOrdersDependenciesBeforeListeningAndMarksReady(t *testing.T) {
+func TestServiceStartsWithDynamicZeroAccountRuntime(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
-	var retainedSecrets map[string]string
-	deps := process.Dependencies{
-		ResolveSecret: func(ctx context.Context, ref secret.Ref) (string, error) {
-			calls = append(calls, "resolve:"+ref.RawForProvider())
-			return fixture.secrets[ref.RawForProvider()], nil
-		},
-		ConnectPostgres: func(ctx context.Context, dsn string) (process.PostgresPool, error) {
-			calls = append(calls, "connect")
-			if dsn != fixture.dsn {
-				t.Fatalf("dsn = %q, want fixture dsn", dsn)
-			}
-			return fakePool{calls: &calls}, nil
-		},
-		Migrate: func(ctx context.Context, pool process.PostgresPool) error {
-			calls = append(calls, "migrate")
-			return nil
-		},
-		RegisterAccount: func(ctx context.Context, pool process.PostgresPool, registration process.AccountRegistration) error {
-			calls = append(calls, "register:"+string(registration.AccountID))
-			if registration.ConfigHash == "" || len(registration.ConfigHash) != 64 {
-				t.Fatalf("config hash = %q, want sha256 hex", registration.ConfigHash)
-			}
-			return nil
-		},
-		AcquireOwnership: func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-			calls = append(calls, "ownership:"+string(accountID))
-			return fakeOwnership{calls: &calls}, nil
-		},
-		BuildAccountManager: func(ctx context.Context, accounts []config.AccountConfig, resolved map[string]string) (process.AccountManager, error) {
-			calls = append(calls, "build_accounts")
-			if len(accounts) != 1 || resolved["env://API_SECRET"] != "secret" {
-				t.Fatalf("account build inputs accounts=%d resolved=%v", len(accounts), resolved)
-			}
-			retainedSecrets = resolved
-			return &fakeAccountManager{calls: &calls}, nil
-		},
-		BuildOrderCoordinator: func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
-			calls = append(calls, "build_orders")
-			return &fakeOrderCoordinator{calls: &calls}, nil
-		},
-		Listen: func(network, address string) (net.Listener, error) {
-			calls = append(calls, "listen:"+network+":"+address)
-			if address != "127.0.0.1:0" {
-				t.Fatalf("listen address = %q, want loopback config", address)
-			}
-			return newFakeListener(), nil
-		},
-	}
+	deps := fixtureDeps(fixture, &calls)
 
-	service, err := process.Start(context.Background(), fixture.config, deps)
+	service, err := process.Start(t.Context(), fixture.config, deps)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = service.Shutdown(context.Background()) }()
 
-	wantPrefix := []string{
+	want := []string{
 		"resolve:env://TOKEN",
 		"resolve:env://POSTGRES_DSN",
-		"resolve:env://API_KEY",
-		"resolve:env://API_SECRET",
 		"connect",
 		"ping",
+		"validate_identity",
 		"migrate",
-		"register:acct-a",
-		"ownership:acct-a",
 		"build_accounts",
 		"accounts_start",
+		"restore_accounts",
 		"build_orders",
-		"orders_recover:acct-a",
-		"listen:tcp:127.0.0.1:0",
+		"orders_start:0",
+		"listen",
 	}
-	if !reflect.DeepEqual(calls[:len(wantPrefix)], wantPrefix) {
-		t.Fatalf("startup calls = %v, want prefix %v", calls, wantPrefix)
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("startup calls = %v, want %v", calls, want)
 	}
 	if ready := service.Health().Readiness(); !ready.Ready {
-		t.Fatalf("readiness = %+v, want ready after listener bind", ready)
-	}
-	if len(retainedSecrets) != 0 {
-		t.Fatalf("process retained resolved secret map after client construction: %v", retainedSecrets)
+		t.Fatalf("readiness = %+v, want ready", ready)
 	}
 }
 
-func TestServiceBuildsHTTPHandlerAfterRecoveryAndBeforeListenerBind(t *testing.T) {
+func TestServiceResolvesOptionalInternalAuthAsOperationalSecret(t *testing.T) {
+	fixture := newFixture(t)
+	internalRef, err := secret.ParseRef("env://INTERNAL_TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.config.Server.InternalListen = "127.0.0.1:1"
+	fixture.config.Server.InternalAuthTokenRef = internalRef
+	fixture.secrets[internalRef.RawForProvider()] = "internal-token"
+	var calls []string
+
+	service, err := process.Start(t.Context(), fixture.config, fixtureDeps(fixture, &calls))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = service.Shutdown(context.Background()) }()
+	if got := calls[:3]; !reflect.DeepEqual(got, []string{
+		"resolve:env://TOKEN", "resolve:env://POSTGRES_DSN", "resolve:env://INTERNAL_TOKEN",
+	}) {
+		t.Fatalf("resolved refs = %v", got)
+	}
+}
+
+func TestServiceBuildsHandlerAfterEmptyRecoveryAndBeforeListen(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
-	deps.HandlerFactory = func(
-		_ *health.Monitor,
-		pool process.PostgresPool,
-		_ process.AccountManager,
-		_ process.OrderCoordinator,
-	) (http.Handler, error) {
+	deps.HandlerFactory = func(*health.Monitor, process.PostgresPool, process.AccountManager, process.OrderCoordinator) (http.Handler, error) {
 		calls = append(calls, "build_handler")
-		if _, ok := pool.(fakePool); !ok {
-			t.Fatalf("handler pool=%T, want startup PostgreSQL pool", pool)
-		}
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
 	}
 
-	service, err := process.Start(context.Background(), fixture.config, deps)
+	service, err := process.Start(t.Context(), fixture.config, deps)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() { _ = service.Shutdown(context.Background()) }()
-
-	recovery := indexOf(calls, "orders_recover:acct-a")
-	handler := indexOf(calls, "build_handler")
-	listen := indexOf(calls, "listen")
-	if recovery < 0 || handler < 0 || listen < 0 || !(recovery < handler && handler < listen) {
-		t.Fatalf("startup calls=%v, want recovery < handler < listen", calls)
+	if recovery, handler, listen := indexOf(calls, "orders_start:0"), indexOf(calls, "build_handler"), indexOf(calls, "listen"); recovery < 0 || handler < 0 || listen < 0 || !(recovery < handler && handler < listen) {
+		t.Fatalf("startup calls = %v", calls)
 	}
 }
 
-func TestServiceHandlerBuildFailureNeverBindsListener(t *testing.T) {
+func TestServiceRestoresDynamicAccountIDsBeforeOrderRecovery(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
-	deps.HandlerFactory = func(
-		_ *health.Monitor,
-		_ process.PostgresPool,
-		_ process.AccountManager,
-		_ process.OrderCoordinator,
-	) (http.Handler, error) {
-		calls = append(calls, "build_handler")
-		return nil, errors.New("handler failed with auth-token")
+	deps.RestoreAccountManager = func(_ context.Context, _ process.PostgresPool, accounts process.AccountManager) error {
+		calls = append(calls, "restore_accounts")
+		accounts.(*fakeAccountManager).accountIDs = []domain.AccountID{"restored-dynamic"}
+		return nil
 	}
-
-	_, err := process.Start(context.Background(), fixture.config, deps)
-	if err == nil {
-		t.Fatal("Start succeeded, want handler build failure")
+	service, err := process.Start(t.Context(), fixture.config, deps)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(err.Error(), "auth-token") {
-		t.Fatalf("handler build error leaked detail: %v", err)
-	}
-	if indexOf(calls, "listen") >= 0 {
-		t.Fatalf("listener bound after handler failure: %v", calls)
-	}
-	for _, want := range []string{"orders_close", "accounts_close", "release", "pool_close"} {
-		if indexOf(calls, want) < 0 {
-			t.Fatalf("startup cleanup calls=%v, missing %s", calls, want)
-		}
+	defer func() { _ = service.Shutdown(context.Background()) }()
+	if restore, recovery := indexOf(calls, "restore_accounts"), indexOf(calls, "orders_start:1"); restore < 0 || recovery < 0 || restore >= recovery {
+		t.Fatalf("startup calls = %v", calls)
 	}
 }
 
-func TestServiceStartupFailureBeforeListenLeavesNoListenerAndCleansOwnership(t *testing.T) {
+func TestServiceStartupFailureCleansDynamicRuntimeBeforePool(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
-	deps.AcquireOwnership = func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-		calls = append(calls, "ownership:"+string(accountID))
-		return fakeOwnership{calls: &calls}, nil
-	}
-	deps.Listen = func(network, address string) (net.Listener, error) {
-		calls = append(calls, "listen")
-		return nil, errors.New("bind failed with canary secret")
-	}
-
-	_, err := process.Start(context.Background(), fixture.config, deps)
-	if err == nil {
-		t.Fatal("Start succeeded, want failure")
-	}
-	joined := strings.Join(calls, ",")
-	if !strings.Contains(joined, "release") {
-		t.Fatalf("calls = %v, want ownership release on listen failure", calls)
-	}
-	if !strings.Contains(joined, "pool_close") {
-		t.Fatalf("calls = %v, want pool close on startup failure", calls)
-	}
-	if strings.Contains(err.Error(), "auth-token") || strings.Contains(err.Error(), fixture.dsn) {
-		t.Fatalf("startup error leaked secret/DSN: %v", err)
-	}
-}
-
-func indexOf(values []string, want string) int {
-	for index, value := range values {
-		if value == want {
-			return index
-		}
-	}
-	return -1
-}
-
-func TestServiceAccountManagerStartFailureCleansManagerOwnershipAndPoolBeforeListen(t *testing.T) {
-	fixture := newFixture(t)
-	var calls []string
-	deps := fixtureDeps(fixture, &calls)
-	manager := &fakeAccountManager{calls: &calls, startErr: errors.New("catalog refresh failed with secret canary")}
-	deps.BuildAccountManager = func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
-		calls = append(calls, "build_accounts")
-		return manager, nil
-	}
 	deps.Listen = func(string, string) (net.Listener, error) {
 		calls = append(calls, "listen")
-		return newFakeListenerWithCalls(&calls), nil
+		return nil, errors.New("bind failed with postgres://secret")
 	}
 
-	_, err := process.Start(context.Background(), fixture.config, deps)
+	_, err := process.Start(t.Context(), fixture.config, deps)
 	if err == nil {
-		t.Fatal("Start succeeded, want account manager start failure")
+		t.Fatal("Start succeeded")
 	}
-	if strings.Contains(strings.ToLower(err.Error()), "secret canary") {
-		t.Fatalf("startup error leaked manager detail: %v", err)
+	if strings.Contains(err.Error(), "postgres://secret") {
+		t.Fatalf("error leaked detail: %v", err)
 	}
-	wantSuffix := []string{"build_accounts", "accounts_start", "accounts_close", "release", "pool_close"}
-	if len(calls) < len(wantSuffix) || !reflect.DeepEqual(calls[len(calls)-len(wantSuffix):], wantSuffix) {
-		t.Fatalf("startup cleanup calls = %v, want suffix %v", calls, wantSuffix)
-	}
-	if strings.Contains(strings.Join(calls, ","), "listen") {
-		t.Fatalf("listener opened after account manager start failure: %v", calls)
+	wantSuffix := []string{"listen", "orders_close", "accounts_close", "pool_close"}
+	if got := calls[len(calls)-len(wantSuffix):]; !reflect.DeepEqual(got, wantSuffix) {
+		t.Fatalf("cleanup calls = %v, want suffix %v", calls, wantSuffix)
 	}
 }
 
-func TestServiceShutdownClosesListenerReleasesOwnershipThenPool(t *testing.T) {
+func TestServiceRejectsWrongDatabaseIdentityBeforeMigrateOrRuntimeBuild(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
+	deps.ValidateDatabaseIdentity = func(context.Context, process.PostgresPool) error {
+		calls = append(calls, "validate_identity")
+		return errors.New("connected to forbidden_database as elevated_role")
+	}
 
-	service, err := process.Start(context.Background(), fixture.config, deps)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	_, err := process.Start(t.Context(), fixture.config, deps)
+	if err == nil {
+		t.Fatal("Start succeeded")
 	}
-	if err := service.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	if strings.Contains(err.Error(), "forbidden_database") || strings.Contains(err.Error(), "elevated_role") {
+		t.Fatalf("identity error leaked detail: %v", err)
 	}
-	joined := strings.Join(calls, ",")
-	for _, want := range []string{"listener_close", "orders_close", "accounts_close", "release", "pool_close"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("calls = %v, missing %s", calls, want)
-		}
-	}
-	if strings.Index(joined, "orders_close") > strings.Index(joined, "accounts_close") ||
-		strings.Index(joined, "accounts_close") > strings.Index(joined, "release") ||
-		strings.Index(joined, "release") > strings.Index(joined, "pool_close") {
-		t.Fatalf("shutdown order = %v, want orders before clients before release before pool close", calls)
+	if got := calls; !reflect.DeepEqual(got, []string{
+		"resolve:env://TOKEN", "resolve:env://POSTGRES_DSN", "connect", "ping", "validate_identity", "pool_close",
+	}) {
+		t.Fatalf("calls = %v", got)
 	}
 }
 
-func TestServiceShutdownRetriesFailedCleanupWithoutClosingDependentPool(t *testing.T) {
-	fixture := newFixture(t)
-	fixture.config.Accounts = append(fixture.config.Accounts, fixture.config.Accounts[0])
-	fixture.config.Accounts[1].AccountID = "acct-b"
-	var calls []string
-	deps := fixtureDeps(fixture, &calls)
-	listener := &flakyListener{calls: &calls, remainingFailures: 1}
-	ownerships := []*flakyOwnership{
-		{name: "acct-a", calls: &calls},
-		{name: "acct-b", calls: &calls, remainingFailures: 1},
-	}
-	nextOwnership := 0
-	deps.Listen = func(network, address string) (net.Listener, error) {
-		calls = append(calls, "listen")
-		return listener, nil
-	}
-	deps.AcquireOwnership = func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-		calls = append(calls, "ownership:"+string(accountID))
-		ownership := ownerships[nextOwnership]
-		nextOwnership++
-		return ownership, nil
-	}
-
-	service, err := process.Start(context.Background(), fixture.config, deps)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	if ready := service.Health().Readiness(); !ready.Ready {
-		t.Fatalf("readiness before shutdown = %+v, want ready", ready)
-	}
-	shutdownStart := len(calls)
-
-	firstErr := service.Shutdown(context.Background())
-	if firstErr == nil {
-		t.Fatal("first Shutdown succeeded, want cleanup failure")
-	}
-	if ready := service.Health().Readiness(); ready.Ready {
-		t.Fatalf("readiness after failed shutdown = %+v, want not ready", ready)
-	}
-	wantFirstShutdown := []string{
-		"listener_close",
-		"orders_close",
-		"accounts_close",
-		"release:acct-b",
-		"release:acct-a",
-	}
-	if got := calls[shutdownStart:]; !reflect.DeepEqual(got, wantFirstShutdown) {
-		t.Fatalf("calls from first Shutdown = %v, want %v", got, wantFirstShutdown)
-	}
-
-	if err := service.Shutdown(context.Background()); err != nil {
-		t.Fatalf("second Shutdown: %v", err)
-	}
-	wantShutdownCalls := append(wantFirstShutdown, "listener_close", "release:acct-b", "pool_close")
-	if got := calls[shutdownStart:]; !reflect.DeepEqual(got, wantShutdownCalls) {
-		t.Fatalf("calls through second Shutdown = %v, want %v", got, wantShutdownCalls)
-	}
-
-	const concurrentCalls = 8
-	done := make(chan error, concurrentCalls)
-	for i := 0; i < concurrentCalls; i++ {
-		go func() {
-			done <- service.Shutdown(context.Background())
-		}()
-	}
-	for i := 0; i < concurrentCalls; i++ {
-		if err := <-done; err != nil {
-			t.Fatalf("concurrent Shutdown %d: %v", i, err)
-		}
-	}
-	if got := calls[shutdownStart:]; !reflect.DeepEqual(got, wantShutdownCalls) {
-		t.Fatalf("calls after idempotent Shutdown = %v, want %v", got, wantShutdownCalls)
-	}
-}
-
-func TestServiceDoesNotReleaseOwnershipUntilAccountClientsClose(t *testing.T) {
+func TestServiceShutdownRetriesAccountCloseBeforePool(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
-	manager := &fakeAccountManager{calls: &calls, remainingFailures: 1}
-	deps.BuildAccountManager = func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
+	manager := &fakeAccountManager{calls: &calls, remainingCloseFailures: 1}
+	deps.BuildAccountManager = func(context.Context) (process.AccountManager, error) {
 		calls = append(calls, "build_accounts")
 		return manager, nil
 	}
-	service, err := process.Start(context.Background(), fixture.config, deps)
+	service, err := process.Start(t.Context(), fixture.config, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
 	start := len(calls)
-	if err := service.Shutdown(context.Background()); err == nil {
-		t.Fatal("first Shutdown succeeded, want account close failure")
+	if err := service.Shutdown(t.Context()); err == nil {
+		t.Fatal("first Shutdown succeeded")
 	}
-	if got := calls[start:]; !reflect.DeepEqual(got, []string{"listener_close", "orders_close", "accounts_close"}) {
-		t.Fatalf("first shutdown calls=%v", got)
+	if indexOf(calls[start:], "pool_close") >= 0 {
+		t.Fatalf("pool closed before account manager: %v", calls[start:])
 	}
-	if err := service.Shutdown(context.Background()); err != nil {
+	if err := service.Shutdown(t.Context()); err != nil {
 		t.Fatalf("second Shutdown: %v", err)
 	}
-	if got := calls[start:]; !reflect.DeepEqual(got, []string{"listener_close", "orders_close", "accounts_close", "accounts_close", "release", "pool_close"}) {
-		t.Fatalf("retry shutdown calls=%v", got)
+	if got := calls[start:]; !reflect.DeepEqual(got, []string{
+		"listener_close", "orders_close", "accounts_close", "accounts_close", "pool_close",
+	}) {
+		t.Fatalf("shutdown calls = %v", got)
 	}
+}
+
+func indexOf(values []string, want string) int {
+	for i, value := range values {
+		if value == want {
+			return i
+		}
+	}
+	return -1
 }
 
 type fixture struct {
@@ -367,131 +203,103 @@ type fixture struct {
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
-	authRef, _ := secret.ParseRef("env://TOKEN")
-	dsnRef, _ := secret.ParseRef("env://POSTGRES_DSN")
-	apiKeyRef, _ := secret.ParseRef("env://API_KEY")
-	apiSecretRef, _ := secret.ParseRef("env://API_SECRET")
+	authRef, err := secret.ParseRef("env://TOKEN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsnRef, err := secret.ParseRef("env://POSTGRES_DSN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := "postgres://user:pass@127.0.0.1/db?sslmode=disable"
 	return fixture{
 		config: config.File{
 			Server:   config.ServerConfig{Listen: "127.0.0.1:0", AuthTokenRef: authRef},
 			Postgres: config.PostgresConfig{DSNRef: dsnRef},
-			Accounts: []config.AccountConfig{{
-				AccountID:   "acct-a",
-				Venue:       "binance",
-				Product:     "spot",
-				Environment: "demo",
-				Credentials: config.APIKeySecretCredentials{APIKeyRef: apiKeyRef, APISecretRef: apiSecretRef},
-			}},
 		},
-		secrets: map[string]string{
-			"env://TOKEN":        "auth-token",
-			"env://POSTGRES_DSN": "postgres://user:pass@127.0.0.1/db?sslmode=disable",
-			"env://API_KEY":      "key",
-			"env://API_SECRET":   "secret",
-		},
-		dsn: "postgres://user:pass@127.0.0.1/db?sslmode=disable",
+		secrets: map[string]string{"env://TOKEN": "auth-token", "env://POSTGRES_DSN": dsn},
+		dsn:     dsn,
 	}
 }
 
 func fixtureDeps(fixture fixture, calls *[]string) process.Dependencies {
 	return process.Dependencies{
-		ResolveSecret: func(ctx context.Context, ref secret.Ref) (string, error) {
+		ResolveSecret: func(_ context.Context, ref secret.Ref) (string, error) {
 			*calls = append(*calls, "resolve:"+ref.RawForProvider())
 			return fixture.secrets[ref.RawForProvider()], nil
 		},
-		ConnectPostgres: func(ctx context.Context, dsn string) (process.PostgresPool, error) {
+		ConnectPostgres: func(_ context.Context, dsn string) (process.PostgresPool, error) {
 			*calls = append(*calls, "connect")
+			if dsn != fixture.dsn {
+				return nil, errors.New("unexpected dsn")
+			}
 			return fakePool{calls: calls}, nil
 		},
-		Migrate: func(ctx context.Context, pool process.PostgresPool) error {
+		ValidateDatabaseIdentity: func(context.Context, process.PostgresPool) error {
+			*calls = append(*calls, "validate_identity")
+			return nil
+		},
+		Migrate: func(context.Context, process.PostgresPool) error {
 			*calls = append(*calls, "migrate")
 			return nil
 		},
-		RegisterAccount: func(ctx context.Context, pool process.PostgresPool, registration process.AccountRegistration) error {
-			*calls = append(*calls, "register:"+string(registration.AccountID))
-			return nil
-		},
-		AcquireOwnership: func(ctx context.Context, pool process.PostgresPool, accountID domain.AccountID) (process.Ownership, error) {
-			*calls = append(*calls, "ownership:"+string(accountID))
-			return fakeOwnership{calls: calls}, nil
-		},
-		BuildAccountManager: func(context.Context, []config.AccountConfig, map[string]string) (process.AccountManager, error) {
+		BuildAccountManager: func(context.Context) (process.AccountManager, error) {
 			*calls = append(*calls, "build_accounts")
 			return &fakeAccountManager{calls: calls}, nil
+		},
+		RestoreAccountManager: func(_ context.Context, _ process.PostgresPool, accounts process.AccountManager) error {
+			*calls = append(*calls, "restore_accounts")
+			return nil
 		},
 		BuildOrderCoordinator: func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
 			*calls = append(*calls, "build_orders")
 			return &fakeOrderCoordinator{calls: calls}, nil
 		},
-		Listen: func(network, address string) (net.Listener, error) {
+		Listen: func(string, string) (net.Listener, error) {
 			*calls = append(*calls, "listen")
-			return newFakeListenerWithCalls(calls), nil
+			return &fakeListener{Listener: &net.TCPListener{}, calls: calls}, nil
 		},
 	}
 }
 
 type fakePool struct{ calls *[]string }
 
-func (pool fakePool) Ping(ctx context.Context) error {
+func (pool fakePool) Ping(context.Context) error {
 	*pool.calls = append(*pool.calls, "ping")
 	return nil
 }
-
-func (pool fakePool) Close() {
-	*pool.calls = append(*pool.calls, "pool_close")
-}
+func (pool fakePool) Close() { *pool.calls = append(*pool.calls, "pool_close") }
 
 type fakeAccountManager struct {
-	calls             *[]string
-	remainingFailures int
-	startErr          error
+	calls                  *[]string
+	accountIDs             []domain.AccountID
+	remainingCloseFailures int
 }
 
 func (manager *fakeAccountManager) AccountIDs() []domain.AccountID {
-	return []domain.AccountID{"acct-a"}
+	return append([]domain.AccountID(nil), manager.accountIDs...)
 }
-
 func (manager *fakeAccountManager) Start(context.Context) error {
 	*manager.calls = append(*manager.calls, "accounts_start")
-	return manager.startErr
+	return nil
 }
-
 func (manager *fakeAccountManager) Close() error {
 	*manager.calls = append(*manager.calls, "accounts_close")
-	if manager.remainingFailures > 0 {
-		manager.remainingFailures--
-		return errors.New("account manager close failed")
+	if manager.remainingCloseFailures > 0 {
+		manager.remainingCloseFailures--
+		return errors.New("account close failed")
 	}
 	return nil
 }
 
-type fakeOrderCoordinator struct {
-	calls             *[]string
-	remainingFailures int
-	recoverErr        error
-}
+type fakeOrderCoordinator struct{ calls *[]string }
 
 func (coordinator *fakeOrderCoordinator) Start(_ context.Context, accountIDs []domain.AccountID) error {
-	for _, accountID := range accountIDs {
-		*coordinator.calls = append(*coordinator.calls, "orders_recover:"+string(accountID))
-	}
-	return coordinator.recoverErr
-}
-
-func (coordinator *fakeOrderCoordinator) Close(context.Context) error {
-	*coordinator.calls = append(*coordinator.calls, "orders_close")
-	if coordinator.remainingFailures > 0 {
-		coordinator.remainingFailures--
-		return errors.New("order coordinator close failed")
-	}
+	*coordinator.calls = append(*coordinator.calls, fmt.Sprintf("orders_start:%d", len(accountIDs)))
 	return nil
 }
-
-type fakeOwnership struct{ calls *[]string }
-
-func (ownership fakeOwnership) Healthy() bool { return true }
-func (ownership fakeOwnership) Release(ctx context.Context) error {
-	*ownership.calls = append(*ownership.calls, "release")
+func (coordinator *fakeOrderCoordinator) Close(context.Context) error {
+	*coordinator.calls = append(*coordinator.calls, "orders_close")
 	return nil
 }
 
@@ -500,53 +308,7 @@ type fakeListener struct {
 	calls *[]string
 }
 
-func newFakeListener() *fakeListener {
-	return newFakeListenerWithCalls(&[]string{})
-}
-
-func newFakeListenerWithCalls(calls *[]string) *fakeListener {
-	return &fakeListener{Listener: &net.TCPListener{}, calls: calls}
-}
-
 func (listener *fakeListener) Close() error {
 	*listener.calls = append(*listener.calls, "listener_close")
-	return nil
-}
-
-type flakyOwnership struct {
-	name              string
-	calls             *[]string
-	remainingFailures int
-	released          bool
-}
-
-func (ownership *flakyOwnership) Healthy() bool { return !ownership.released }
-func (ownership *flakyOwnership) Release(ctx context.Context) error {
-	*ownership.calls = append(*ownership.calls, "release:"+ownership.name)
-	if ownership.remainingFailures > 0 {
-		ownership.remainingFailures--
-		return errors.New("release failed")
-	}
-	ownership.released = true
-	return nil
-}
-
-type flakyListener struct {
-	net.Listener
-	calls             *[]string
-	remainingFailures int
-	closed            bool
-}
-
-func (listener *flakyListener) Close() error {
-	*listener.calls = append(*listener.calls, "listener_close")
-	if listener.closed {
-		return net.ErrClosed
-	}
-	if listener.remainingFailures > 0 {
-		listener.remainingFailures--
-		return errors.New("close failed")
-	}
-	listener.closed = true
 	return nil
 }

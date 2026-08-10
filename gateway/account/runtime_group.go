@@ -4,12 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/credential"
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/publicconn"
+	gatewaysecret "github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
@@ -31,6 +37,13 @@ const (
 type CandidateRoute interface {
 	Probe(context.Context) error
 	Close() error
+}
+
+type CandidateClientRoute interface {
+	SpotClient() (exchange.SpotClient, bool)
+	PerpClient() (exchange.PerpClient, bool)
+	OrderClient() (exchange.OrderREST, bool)
+	ExactLookupReady() bool
 }
 
 type RuntimeGroupBuilder interface {
@@ -61,10 +74,70 @@ func (manager *Manager) SetRuntimeStateStore(runtimeStore RuntimeStateStore) err
 	return nil
 }
 
+func (manager *Manager) SetRuntimeAccountObserver(observer RuntimeAccountObserver) error {
+	if observer == nil {
+		return ErrCandidateMismatch
+	}
+	manager.observerMu.Lock()
+	defer manager.observerMu.Unlock()
+	if manager.runtimeObserver != nil {
+		return nil
+	}
+	manager.streamSupervision.Store(true)
+
+	manager.groupMu.Lock()
+	accountIDs := make([]domain.AccountID, 0, len(manager.groups))
+	for accountID, runtime := range manager.groups {
+		if runtime == nil || runtime.active.Load() == nil {
+			continue
+		}
+		resetPrivateStreamRouteStates(runtime.activeGroup, true, "")
+		accountIDs = append(accountIDs, accountID)
+	}
+	manager.groupMu.Unlock()
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	attemptedAccountIDs := make([]domain.AccountID, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if err := observer.RegisterAccount(accountID); err != nil {
+			attemptedAccountIDs = append(attemptedAccountIDs, accountID)
+			for _, attemptedID := range attemptedAccountIDs {
+				observer.UnregisterAccount(attemptedID)
+			}
+			return fmt.Errorf("runtime account supervision failed")
+		}
+		attemptedAccountIDs = append(attemptedAccountIDs, accountID)
+	}
+	manager.runtimeObserver = observer
+	return nil
+}
+
+func (manager *Manager) notifyRuntimePromoted(accountID domain.AccountID) error {
+	manager.observerMu.RLock()
+	observer := manager.runtimeObserver
+	manager.observerMu.RUnlock()
+	if observer != nil {
+		if err := observer.RegisterAccount(accountID); err != nil {
+			return fmt.Errorf("runtime account supervision failed")
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) notifyRuntimeRetired(accountID domain.AccountID) {
+	manager.observerMu.RLock()
+	observer := manager.runtimeObserver
+	manager.observerMu.RUnlock()
+	if observer != nil {
+		observer.UnregisterAccount(accountID)
+	}
+}
+
 type RouteRuntime struct {
-	Definition store.RouteDefinition
-	Handle     CandidateRoute
-	closed     bool
+	Definition        store.RouteDefinition
+	Handle            CandidateRoute
+	PublicConnectorID string
+	publicLease       publicconn.Lease
+	closed            bool
 }
 
 type RouteView struct {
@@ -76,13 +149,44 @@ type RouteView struct {
 	WriteReady      bool
 }
 
+type OrderRoutePurpose uint8
+
+const (
+	OrderRouteWrite OrderRoutePurpose = iota
+	OrderRouteRecovery
+	maxDynamicRouteSelectionAttempts = 3
+)
+
+type OrderRouteSelector struct {
+	RouteID domain.RouteID
+	Fence   domain.AccountFence
+}
+
+type SelectedOrderRoute struct {
+	Dynamic    bool
+	Fence      domain.AccountFence
+	RouteID    domain.RouteID
+	Instrument exchange.Instrument
+	Status     Status
+	Orders     exchange.OrderREST
+	Admission  *GenerationAdmission
+}
+
 type RuntimeGroup struct {
-	Snapshot  store.DesiredSnapshot
-	Routes    map[domain.RouteID]*RouteRuntime
-	Admission *GenerationAdmission
-	State     GroupState
-	cleanupMu sync.Mutex
-	cleanup   *runtimeCleanupAttempt
+	Snapshot       store.DesiredSnapshot
+	Routes         map[domain.RouteID]*RouteRuntime
+	privateStreams map[domain.RouteID]privateStreamState
+	Admission      *GenerationAdmission
+	State          GroupState
+	cleanupMu      sync.Mutex
+	cleanup        *runtimeCleanupAttempt
+}
+
+type privateStreamState struct {
+	ready      bool
+	reason     string
+	snapshotID string
+	sequence   uint64
 }
 
 type runtimeCleanupAttempt struct {
@@ -211,13 +315,26 @@ func (manager *Manager) EnsureAccountOwnership(accountID domain.AccountID) error
 }
 
 func (manager *Manager) BuildCandidate(ctx context.Context, pending store.PendingSnapshot) (*RuntimeGroup, error) {
+	return manager.buildCandidate(ctx, pending, false, true)
+}
+
+func (manager *Manager) buildCandidate(ctx context.Context, pending store.PendingSnapshot, lifecycleLocked, attachCandidate bool) (*RuntimeGroup, error) {
 	if ctx == nil || manager.groupBuilder == nil {
 		return nil, ErrCandidateFailed
+	}
+	manager.mu.RLock()
+	closed := manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		return nil, ErrManagerClosed
 	}
 	if err := pending.DesiredSnapshot.Validate(); err != nil {
 		return nil, ErrCandidateFailed
 	}
 	if manager.profileRegistry == nil || manager.profileRegistry.Validate(manager.runtimeMode, pending.DesiredSnapshot) != nil {
+		return nil, ErrCandidateFailed
+	}
+	if manager.requirePublicConnectors && manager.publicConnectors == nil {
 		return nil, ErrCandidateFailed
 	}
 	if manager.credentialResolver == nil {
@@ -249,17 +366,49 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 	if err := manager.EnsureAccountOwnership(pending.AccountID); err != nil {
 		return nil, err
 	}
+	manager.groupMu.Lock()
+	ownership := manager.groups[pending.AccountID]
+	manager.groupMu.Unlock()
+	if ownership == nil {
+		return nil, ErrCandidateFailed
+	}
 	group := &RuntimeGroup{
-		Snapshot:  pending.DesiredSnapshot,
-		Routes:    make(map[domain.RouteID]*RouteRuntime, len(pending.Routes)),
-		Admission: newGenerationAdmission(pending.DesiredSnapshot),
-		State:     GroupCandidate,
+		Snapshot:       pending.DesiredSnapshot,
+		Routes:         make(map[domain.RouteID]*RouteRuntime, len(pending.Routes)),
+		privateStreams: make(map[domain.RouteID]privateStreamState, len(pending.Routes)),
+		Admission:      newGenerationAdmission(pending.DesiredSnapshot),
+		State:          GroupCandidate,
 	}
 	for _, definition := range pending.Routes {
 		runtime := &RouteRuntime{Definition: definition}
 		group.Routes[definition.RouteID] = runtime
 		if definition.RequestedState == store.RouteDisabled {
 			continue
+		}
+		state := privateStreamState{ready: !manager.streamSupervision.Load()}
+		if !state.ready {
+			state.reason = ReasonPrivateStreamStarting
+		}
+		group.privateStreams[definition.RouteID] = state
+		if manager.publicConnectors != nil {
+			profileMode := routeprofile.ModeTest
+			if manager.runtimeMode == RuntimeModeLive {
+				profileMode = routeprofile.ModeLive
+			}
+			key := routeprofile.Key{Venue: pending.Venue, Mode: profileMode, RouteProfileID: definition.RouteProfileID}
+			lease, err := manager.publicConnectors.Acquire(ctx, key)
+			if err != nil || lease == nil {
+				group.destroy()
+				return nil, ErrCandidateFailed
+			}
+			runtime.publicLease = lease
+			runtime.PublicConnectorID = lease.ConnectorID()
+			if _, err := lease.Snapshot(); err != nil {
+				if _, err := manager.publicConnectors.Refresh(ctx, key); err != nil {
+					group.destroy()
+					return nil, ErrCandidateFailed
+				}
+			}
 		}
 		handle, err := manager.groupBuilder.BuildRoute(ctx, pending.DesiredSnapshot, definition, decoded)
 		if err != nil || handle == nil {
@@ -272,17 +421,43 @@ func (manager *Manager) BuildCandidate(ctx context.Context, pending store.Pendin
 			return nil, ErrCandidateFailed
 		}
 	}
+	if !lifecycleLocked {
+		manager.closeMu.Lock()
+		defer manager.closeMu.Unlock()
+	}
+	manager.mu.RLock()
+	closed = manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		group.destroy()
+		return nil, ErrManagerClosed
+	}
 	manager.groupMu.Lock()
 	runtime := manager.groups[pending.AccountID]
-	if runtime.candidate != nil {
-		runtime.candidate.destroy()
+	if runtime == nil || runtime != ownership || runtime.retirement != nil {
+		manager.groupMu.Unlock()
+		group.destroy()
+		return nil, ErrCandidateFailed
 	}
-	runtime.candidate = group
+	if attachCandidate {
+		if runtime.candidate != nil {
+			runtime.candidate.destroy()
+		}
+		runtime.candidate = group
+	}
 	manager.groupMu.Unlock()
 	return group, nil
 }
 
 func (manager *Manager) PromoteCandidate(ctx context.Context, group *RuntimeGroup) (store.PromotionResult, error) {
+	manager.closeMu.Lock()
+	defer manager.closeMu.Unlock()
+	manager.mu.RLock()
+	closed := manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		return store.PromotionResult{}, ErrManagerClosed
+	}
 	if group == nil || group.State != GroupCandidate || manager.runtimeStore == nil {
 		return store.PromotionResult{}, ErrCandidateMismatch
 	}
@@ -319,6 +494,9 @@ func (manager *Manager) PromoteCandidate(ctx context.Context, group *RuntimeGrou
 	}
 	if err := manager.publishApplied(group, result.Active); err != nil {
 		return store.PromotionResult{}, err
+	}
+	if err := manager.notifyRuntimePromoted(group.Snapshot.AccountID); err != nil {
+		return result, err
 	}
 	return result, nil
 }
@@ -445,12 +623,14 @@ func (manager *Manager) RetireRuntime(ctx context.Context, request store.Retirem
 	if err := request.Validate(); err != nil {
 		return store.RetirementResult{}, err
 	}
+	manager.closeMu.Lock()
+	defer manager.closeMu.Unlock()
 
 	manager.groupMu.Lock()
 	runtime := manager.groups[request.AccountID]
 	if runtime == nil {
 		manager.groupMu.Unlock()
-		return manager.runtimeStore.RetireAccount(ctx, request)
+		return manager.replayRetirementWithoutLocalActive(ctx, request)
 	}
 	if runtime.retirement != nil {
 		retirement := runtime.retirement
@@ -460,13 +640,18 @@ func (manager *Manager) RetireRuntime(ctx context.Context, request store.Retirem
 			return store.RetirementResult{}, store.ErrOperationConflict
 		}
 		manager.groupMu.Unlock()
+		manager.notifyRuntimeRetired(request.AccountID)
 		if err := manager.finishRuntimeRetirement(ctx, request.AccountID, runtime, retirement); err != nil {
 			return store.RetirementResult{}, err
 		}
 		return retirement.result, nil
 	}
 	active := runtime.active.Load()
-	if active == nil || runtime.activeGroup == nil || active.Fence != request.ExpectedActiveFence {
+	if active == nil || runtime.activeGroup == nil {
+		manager.groupMu.Unlock()
+		return manager.replayRetirementWithoutLocalActive(ctx, request)
+	}
+	if active.Fence != request.ExpectedActiveFence {
 		manager.groupMu.Unlock()
 		return store.RetirementResult{}, ErrStaleWriteFence
 	}
@@ -546,10 +731,45 @@ func (manager *Manager) RetireRuntime(ctx context.Context, request store.Retirem
 	manager.mu.Lock()
 	delete(manager.runtimes, request.AccountID)
 	manager.mu.Unlock()
+	manager.notifyRuntimeRetired(request.AccountID)
 	if err := manager.finishRuntimeRetirement(ctx, request.AccountID, runtime, retirement); err != nil {
 		return store.RetirementResult{}, err
 	}
 	return retirement.result, nil
+}
+
+func (manager *Manager) replayRetirementWithoutLocalActive(ctx context.Context, request store.RetirementRequest) (store.RetirementResult, error) {
+	states, err := manager.runtimeStore.ListRuntimeStateForRecovery(ctx)
+	if err != nil {
+		return store.RetirementResult{}, fmt.Errorf("runtime retirement state unavailable")
+	}
+	for index := range states {
+		state := &states[index]
+		if state.AccountID != request.AccountID {
+			continue
+		}
+		if !state.Tombstoned {
+			if state.Active != nil && state.Active.Fence == request.ExpectedActiveFence && manager.lifecycle != nil {
+				if _, err := manager.lifecycle.Blockers(ctx, request.AccountID); err != nil {
+					return store.RetirementResult{}, fmt.Errorf("runtime blocker check failed")
+				}
+			}
+			return store.RetirementResult{}, ErrRuntimeBlocked
+		}
+		result, err := manager.runtimeStore.RetireAccount(ctx, request)
+		if err != nil {
+			if errors.Is(err, store.ErrOperationConflict) {
+				return store.RetirementResult{}, store.ErrOperationConflict
+			}
+			return store.RetirementResult{}, fmt.Errorf("runtime retirement replay failed")
+		}
+		if !result.Tombstoned || result.OperationID != request.OperationID || result.AccountID != request.AccountID ||
+			result.TombstoneRevision != request.TombstoneRevision || result.CompletedAt.IsZero() {
+			return store.RetirementResult{}, ErrCandidateMismatch
+		}
+		return result, nil
+	}
+	return store.RetirementResult{}, ErrRuntimeBlocked
 }
 
 func (manager *Manager) finishRuntimeRetirement(ctx context.Context, accountID domain.AccountID, runtime *accountRuntime, retirement *runtimeRetirement) error {
@@ -599,31 +819,231 @@ func (manager *Manager) publishApplied(group *RuntimeGroup, active store.ActiveS
 		}
 	}
 	group.State = GroupActive
+	if manager.streamSupervision.Load() {
+		resetPrivateStreamRouteStates(group, true, "")
+	}
 	runtime.activeGroup = group
 	runtime.candidate = nil
 	runtime.active.Store(&RoutingSnapshot{Fence: active.Fence, Routes: routes})
+	return manager.publishControlPlaneRuntime(active.DesiredSnapshot)
+}
+
+func (manager *Manager) publishControlPlaneRuntime(snapshot store.DesiredSnapshot) error {
+	ref, err := gatewaysecret.ParseOpaqueRef(snapshot.SecretRef.RawForTrustedBoundary())
+	if err != nil {
+		return ErrCandidateMismatch
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	version := uint64(1)
+	if current, ok := manager.runtimes[snapshot.AccountID]; ok {
+		version = current.RuntimeVersion + 1
+	}
+	desired := DesiredRuntime{
+		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
+		Mode: manager.runtimeMode, SecretRef: ref,
+		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
+		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
+	}
+	manager.runtimes[snapshot.AccountID] = appliedRuntime(desired, RuntimeStateActive, true, version)
+	return nil
+}
+
+// RestoreActiveRuntime rebuilds an exact durable active generation without
+// repeating its already-committed promotion.
+func (manager *Manager) RestoreActiveRuntime(ctx context.Context, expected store.ActiveSnapshot) error {
+	if ctx == nil || manager.runtimeStore == nil || expected.PromotedAt.IsZero() || expected.DesiredSnapshot.Validate() != nil {
+		return fmt.Errorf("runtime active restore failed")
+	}
+	manager.closeMu.Lock()
+	defer manager.closeMu.Unlock()
+	if err := manager.restoreActiveRuntimeLocked(ctx, expected); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, ErrManagerClosed) {
+			return ErrManagerClosed
+		}
+		return fmt.Errorf("runtime active restore failed")
+	}
+	return nil
+}
+
+func (manager *Manager) restoreActiveRuntimeLocked(ctx context.Context, expected store.ActiveSnapshot) error {
+	manager.mu.RLock()
+	closed := manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		return ErrManagerClosed
+	}
+	states, err := manager.runtimeStore.ListRuntimeStateForRecovery(ctx)
+	if err != nil {
+		return err
+	}
+	var durable *store.ActiveSnapshot
+	for index := range states {
+		state := &states[index]
+		if state.AccountID != expected.AccountID {
+			continue
+		}
+		if state.Tombstoned || state.Active == nil || !sameDurableActive(*state.Active, expected) {
+			return ErrCandidateMismatch
+		}
+		durable = state.Active
+		break
+	}
+	if durable == nil {
+		return ErrCandidateMismatch
+	}
+
+	manager.groupMu.Lock()
+	runtime := manager.groups[durable.AccountID]
+	if runtime != nil && runtime.activeGroup != nil && runtime.active.Load() != nil {
+		active := runtime.active.Load()
+		exact := active.Fence == durable.Fence && runtime.activeGroup.Snapshot.SnapshotID == durable.SnapshotID &&
+			runtime.activeGroup.Snapshot.OperationID == durable.OperationID && runtime.activeGroup.Snapshot.Fence == durable.Fence
+		supervisionHealthy := privateStreamRoutesReady(runtime.activeGroup)
+		manager.groupMu.Unlock()
+		if !exact {
+			return ErrCandidateMismatch
+		}
+		if !supervisionHealthy {
+			if err := manager.notifyRuntimePromoted(durable.AccountID); err != nil {
+				return err
+			}
+		}
+		return manager.markRuntimeRestoreReady(durable.DesiredSnapshot)
+	}
+	if runtime != nil && (runtime.activeGroup != nil || runtime.active.Load() != nil || runtime.retirement != nil) {
+		manager.groupMu.Unlock()
+		return ErrCandidateMismatch
+	}
+	manager.groupMu.Unlock()
+
+	group, err := manager.buildCandidate(ctx, store.PendingSnapshot{
+		DesiredSnapshot: durable.DesiredSnapshot,
+		OperationState:  store.OperationApplied,
+	}, true, false)
+	if err != nil {
+		return err
+	}
+	if err := manager.publishRestoredActive(group, *durable); err != nil {
+		group.destroy()
+		return err
+	}
+	if err := manager.notifyRuntimePromoted(durable.AccountID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func privateStreamRoutesReady(group *RuntimeGroup) bool {
+	if group == nil || len(group.privateStreams) == 0 {
+		return false
+	}
+	for _, state := range group.privateStreams {
+		if !state.ready {
+			return false
+		}
+	}
+	return true
+}
+
+func sameDurableActive(actual, expected store.ActiveSnapshot) bool {
+	if actual.SnapshotID != expected.SnapshotID || actual.OperationID != expected.OperationID ||
+		actual.AccountID != expected.AccountID || actual.Fence != expected.Fence ||
+		actual.RequestDigest != expected.RequestDigest {
+		return false
+	}
+	actualDigest, actualErr := actual.DesiredSnapshot.CanonicalDigest()
+	expectedDigest, expectedErr := expected.DesiredSnapshot.CanonicalDigest()
+	return actualErr == nil && expectedErr == nil && actualDigest == expectedDigest
+}
+
+func (manager *Manager) publishRestoredActive(group *RuntimeGroup, active store.ActiveSnapshot) error {
+	manager.groupMu.Lock()
+	runtime := manager.groups[group.Snapshot.AccountID]
+	if runtime == nil || runtime.retirement != nil || runtime.activeGroup != nil || runtime.active.Load() != nil {
+		manager.groupMu.Unlock()
+		return ErrCandidateMismatch
+	}
+	routes := make(map[domain.RouteID]RouteView, len(group.Routes))
+	for routeID, route := range group.Routes {
+		routes[routeID] = RouteView{
+			RouteID: routeID, Product: route.Definition.Product,
+			SettlementAsset: route.Definition.SettlementAsset,
+			RouteProfileID:  route.Definition.RouteProfileID,
+			RequestedState:  route.Definition.RequestedState,
+			WriteReady:      route.Handle != nil,
+		}
+	}
+	group.State = GroupActive
+	if manager.streamSupervision.Load() {
+		resetPrivateStreamRouteStates(group, true, "")
+	}
+	runtime.activeGroup = group
+	runtime.active.Store(&RoutingSnapshot{Fence: active.Fence, Routes: routes})
+	manager.groupMu.Unlock()
+	return manager.publishControlPlaneRuntime(active.DesiredSnapshot)
+}
+
+func (manager *Manager) markRuntimeRestoreReady(snapshot store.DesiredSnapshot) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	runtime, ok := manager.runtimes[snapshot.AccountID]
+	if !ok || runtime.Desired.Fence() != (WriteFence{
+		AccountID: snapshot.AccountID, DesiredStateRevision: snapshot.Fence.DesiredStateRevision,
+		RuntimeGeneration: snapshot.Fence.RuntimeGeneration, CredentialVersion: snapshot.Fence.CredentialVersion,
+	}) {
+		return ErrCandidateMismatch
+	}
+	runtime.Ready = true
+	runtime.Reason = ""
+	runtime.ObservedAt = time.Now().UTC()
+	manager.runtimes[snapshot.AccountID] = runtime
 	return nil
 }
 
 func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
-	if manager.runtimeStore == nil {
+	if ctx == nil || manager.runtimeStore == nil {
 		return ErrCandidateMismatch
 	}
 	states, err := manager.runtimeStore.ListRuntimeStateForRecovery(ctx)
 	if err != nil {
 		return err
 	}
-	// Retiring generations stay DB-authoritative after restart; finalization does not rehydrate secret-bearing route handles.
 	for _, state := range states {
 		if state.Tombstoned || state.Active == nil {
 			continue
 		}
-		candidate, err := manager.BuildCandidate(ctx, store.PendingSnapshot{DesiredSnapshot: state.Active.DesiredSnapshot, OperationState: store.OperationApplied})
-		if err != nil {
-			return err
+		if err := manager.RestoreActiveRuntime(ctx, *state.Active); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			manager.recordRuntimeRestoreFailure(state.Active.DesiredSnapshot)
+			continue
 		}
-		if err := manager.publishApplied(candidate, *state.Active); err != nil {
-			return err
+	}
+	for _, state := range states {
+		if state.Tombstoned {
+			continue
+		}
+		for _, retiring := range state.Retiring {
+			group, err := manager.BuildCandidate(ctx, store.PendingSnapshot{DesiredSnapshot: retiring.DesiredSnapshot, OperationState: store.OperationApplied})
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot)
+				continue
+			}
+			if err := manager.installRestoredRetiring(ctx, group); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				group.destroy()
+				manager.recordRuntimeRestoreFailure(retiring.DesiredSnapshot)
+			}
 		}
 	}
 	for _, state := range states {
@@ -631,10 +1051,57 @@ func (manager *Manager) RestoreRuntimeState(ctx context.Context) error {
 			continue
 		}
 		if _, err := manager.BuildCandidate(ctx, *state.Pending); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			manager.recordRuntimeRestoreFailure(state.Pending.DesiredSnapshot)
 		}
 	}
 	return nil
+}
+
+func (manager *Manager) installRestoredRetiring(ctx context.Context, group *RuntimeGroup) error {
+	if err := group.Admission.CloseAndWait(ctx); err != nil {
+		return err
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime := manager.groups[group.Snapshot.AccountID]
+	if runtime == nil || runtime.candidate != group || runtime.retirement != nil {
+		return ErrCandidateMismatch
+	}
+	if existing := runtime.retiring[group.Snapshot.Fence.RuntimeGeneration]; existing != nil {
+		return ErrCandidateMismatch
+	}
+	group.State = GroupRetiring
+	runtime.candidate = nil
+	runtime.retiring[group.Snapshot.Fence.RuntimeGeneration] = group
+	return nil
+}
+
+func (manager *Manager) recordRuntimeRestoreFailure(snapshot store.DesiredSnapshot) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if runtime, ok := manager.runtimes[snapshot.AccountID]; ok {
+		runtime.Ready = false
+		runtime.Reason = ErrCandidateFailed.Error()
+		runtime.ObservedAt = time.Now().UTC()
+		manager.runtimes[snapshot.AccountID] = runtime
+		return
+	}
+	ref, err := gatewaysecret.ParseOpaqueRef(snapshot.SecretRef.RawForTrustedBoundary())
+	if err != nil {
+		return
+	}
+	desired := DesiredRuntime{
+		AccountID: snapshot.AccountID, Venue: snapshot.Venue, VenueEnvironment: snapshot.NativeEnvironment,
+		Mode: manager.runtimeMode, SecretRef: ref,
+		DesiredStateRevision: snapshot.Fence.DesiredStateRevision, RuntimeGeneration: snapshot.Fence.RuntimeGeneration,
+		CredentialVersion: snapshot.Fence.CredentialVersion, RequestedState: RuntimeStateActive,
+	}
+	runtime := appliedRuntime(desired, RuntimeStateActive, false, 1)
+	runtime.Reason = ErrCandidateFailed.Error()
+	manager.runtimes[snapshot.AccountID] = runtime
 }
 
 func (manager *Manager) ActiveSnapshot(accountID domain.AccountID) *RoutingSnapshot {
@@ -658,31 +1125,404 @@ func (manager *Manager) ActiveSnapshot(accountID domain.AccountID) *RoutingSnaps
 func (manager *Manager) ActiveRoute(accountID domain.AccountID, product, settlement string) (domain.RouteID, *GenerationAdmission, error) {
 	manager.groupMu.Lock()
 	defer manager.groupMu.Unlock()
-	runtime := manager.groups[accountID]
-	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
+	routeID, _, group, err := manager.activeRouteLocked(accountID, product, settlement)
+	if err != nil {
 		return "", nil, ErrRuntimeBlocked
 	}
+	return routeID, group.Admission, nil
+}
+
+func (manager *Manager) ActiveRouteClient(accountID domain.AccountID, product, settlement string) (domain.RouteID, exchange.OrderREST, *GenerationAdmission, error) {
+	manager.groupMu.Lock()
+	routeID, route, group, err := manager.activeRouteLocked(accountID, product, settlement)
+	manager.groupMu.Unlock()
+	if err == nil {
+		clientRoute, ok := route.Handle.(CandidateClientRoute)
+		if !ok {
+			return "", nil, nil, ErrRuntimeBlocked
+		}
+		orders, ok := clientRoute.OrderClient()
+		if !ok || orders == nil {
+			return "", nil, nil, ErrRuntimeBlocked
+		}
+		return routeID, orders, group.Admission, nil
+	}
+
+	// Static accounts remain supported for migration-only callers. They have no
+	// runtime route or generation admission.
+	switch exchange.Product(product) {
+	case exchange.ProductSpot:
+		client, clientErr := manager.Spot(accountID)
+		if clientErr != nil {
+			return "", nil, nil, clientErr
+		}
+		return "", client, nil, nil
+	case exchange.ProductPerp:
+		client, clientErr := manager.Perp(accountID)
+		if clientErr != nil {
+			return "", nil, nil, clientErr
+		}
+		return "", client, nil, nil
+	default:
+		return "", nil, nil, ErrProductMismatch
+	}
+}
+
+func (manager *Manager) activeRouteLocked(accountID domain.AccountID, product, settlement string) (domain.RouteID, *RouteRuntime, *RuntimeGroup, error) {
+	runtime := manager.groups[accountID]
+	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
+		return "", nil, nil, ErrRuntimeBlocked
+	}
 	var matched domain.RouteID
+	var matchedRoute *RouteRuntime
 	for routeID, route := range runtime.activeGroup.Routes {
 		definition := route.Definition
 		if definition.RequestedState != store.RouteActive || definition.Product != product || definition.SettlementAsset != settlement {
 			continue
 		}
 		if matched != "" {
-			return "", nil, ErrRuntimeBlocked
+			return "", nil, nil, ErrRuntimeBlocked
 		}
-		matched = routeID
+		matched, matchedRoute = routeID, route
 	}
-	if matched == "" {
-		return "", nil, ErrRuntimeBlocked
+	if matched == "" || matchedRoute == nil {
+		return "", nil, nil, ErrRuntimeBlocked
 	}
-	return matched, runtime.activeGroup.Admission, nil
+	return matched, matchedRoute, runtime.activeGroup, nil
+}
+
+func (manager *Manager) activeProductClient(accountID domain.AccountID, product exchange.Product) (CandidateClientRoute, error) {
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime := manager.groups[accountID]
+	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
+		return nil, ErrUnknownAccount
+	}
+	var matched CandidateClientRoute
+	for _, route := range runtime.activeGroup.Routes {
+		if route.Definition.RequestedState != store.RouteActive || route.Definition.Product != string(product) {
+			continue
+		}
+		clientRoute, ok := route.Handle.(CandidateClientRoute)
+		if !ok || matched != nil {
+			return nil, ErrProductMismatch
+		}
+		matched = clientRoute
+	}
+	if matched == nil {
+		return nil, ErrProductMismatch
+	}
+	return matched, nil
+}
+
+type activeRouteAccess struct {
+	accountID           domain.AccountID
+	venue               exchange.Venue
+	environment         exchange.Environment
+	definition          store.RouteDefinition
+	handle              CandidateRoute
+	publicLease         publicconn.Lease
+	admission           *GenerationAdmission
+	runtimeGeneration   uint64
+	privateStreamReady  bool
+	privateStreamReason string
+}
+
+func (manager *Manager) activeRouteAccesses(accountID domain.AccountID) ([]activeRouteAccess, error) {
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	runtime := manager.groups[accountID]
+	if runtime == nil || runtime.activeGroup == nil || runtime.active.Load() == nil {
+		return nil, ErrUnknownAccount
+	}
+	group := runtime.activeGroup
+	result := make([]activeRouteAccess, 0, len(group.Routes))
+	for _, route := range group.Routes {
+		if route.Definition.RequestedState != store.RouteActive {
+			continue
+		}
+		privateStream := group.privateStreams[route.Definition.RouteID]
+		result = append(result, activeRouteAccess{
+			accountID: accountID, venue: exchange.Venue(group.Snapshot.Venue),
+			environment: exchange.Environment(group.Snapshot.NativeEnvironment),
+			definition:  route.Definition, handle: route.Handle, publicLease: route.publicLease,
+			admission: group.Admission, runtimeGeneration: group.Snapshot.Fence.RuntimeGeneration,
+			privateStreamReady: privateStream.ready, privateStreamReason: privateStream.reason,
+		})
+	}
+	if len(result) == 0 {
+		return nil, ErrRuntimeBlocked
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].definition.RouteID < result[j].definition.RouteID })
+	return result, nil
+}
+
+// RuntimePositionBlockers reads venue-authoritative positions from every
+// active perpetual route and rejects evidence gathered across a generation
+// change.
+func (manager *Manager) RuntimePositionBlockers(ctx context.Context, accountID domain.AccountID) (int, error) {
+	if ctx == nil || accountID.Validate() != nil {
+		return 0, fmt.Errorf("runtime position blocker lookup failed")
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("runtime position blocker lookup failed")
+	}
+
+	manager.groupMu.Lock()
+	runtime := manager.groups[accountID]
+	if runtime == nil || runtime.retirement != nil || runtime.activeGroup == nil {
+		manager.groupMu.Unlock()
+		return 0, fmt.Errorf("runtime position blocker lookup failed")
+	}
+	group := runtime.activeGroup
+	active := runtime.active.Load()
+	if active == nil || active.Fence != group.Snapshot.Fence {
+		manager.groupMu.Unlock()
+		return 0, fmt.Errorf("runtime position blocker lookup failed")
+	}
+	clients := make([]exchange.PerpAccountREST, 0, len(group.Routes))
+	for _, route := range group.Routes {
+		if route.Definition.RequestedState != store.RouteActive || route.Definition.Product != string(exchange.ProductPerp) {
+			continue
+		}
+		clientRoute, ok := route.Handle.(CandidateClientRoute)
+		if !ok {
+			manager.groupMu.Unlock()
+			return 0, fmt.Errorf("runtime position blocker lookup failed")
+		}
+		client, ok := clientRoute.PerpClient()
+		if !ok || client == nil {
+			manager.groupMu.Unlock()
+			return 0, fmt.Errorf("runtime position blocker lookup failed")
+		}
+		clients = append(clients, client)
+	}
+	manager.groupMu.Unlock()
+
+	positions := 0
+	for _, client := range clients {
+		rows, err := client.Positions(ctx, exchange.PositionsRequest{})
+		if err != nil {
+			return 0, fmt.Errorf("runtime position blocker lookup failed")
+		}
+		for _, row := range rows {
+			if !row.Quantity.IsZero() {
+				positions++
+			}
+		}
+	}
+
+	manager.groupMu.Lock()
+	current := manager.groups[accountID]
+	consistent := current == runtime && current != nil && current.retirement == nil &&
+		current.activeGroup == group && current.active.Load() != nil && current.active.Load().Fence == group.Snapshot.Fence
+	manager.groupMu.Unlock()
+	if !consistent {
+		return 0, fmt.Errorf("runtime position blocker lookup failed")
+	}
+	return positions, nil
+}
+
+func (manager *Manager) SelectOrderRoute(
+	ctx context.Context,
+	accountID domain.AccountID,
+	instrumentID domain.InstrumentID,
+	purpose OrderRoutePurpose,
+	selector OrderRouteSelector,
+) (SelectedOrderRoute, error) {
+	if ctx == nil {
+		return SelectedOrderRoute{}, fmt.Errorf("order route context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return SelectedOrderRoute{}, err
+	}
+	if err := accountID.Validate(); err != nil {
+		return SelectedOrderRoute{}, err
+	}
+	if err := instrumentID.Validate(); err != nil {
+		return SelectedOrderRoute{}, err
+	}
+	if purpose != OrderRouteWrite && purpose != OrderRouteRecovery {
+		return SelectedOrderRoute{}, ErrRuntimeBlocked
+	}
+	if selector.RouteID != "" && selector.RouteID.Validate() != nil {
+		return SelectedOrderRoute{}, ErrRuntimeBlocked
+	}
+	if selector.Fence != (domain.AccountFence{}) && selector.Fence.Validate() != nil {
+		return SelectedOrderRoute{}, ErrRuntimeBlocked
+	}
+
+	manager.mu.RLock()
+	_, static := manager.entries[accountID]
+	closed := manager.closed
+	manager.mu.RUnlock()
+	if closed {
+		return SelectedOrderRoute{}, ErrManagerClosed
+	}
+	if static {
+		return manager.selectStaticOrderRoute(ctx, accountID, instrumentID, purpose)
+	}
+
+	for attempt := 0; attempt < maxDynamicRouteSelectionAttempts; attempt++ {
+		type routeCandidate struct {
+			routeID domain.RouteID
+			route   *RouteRuntime
+			access  activeRouteAccess
+		}
+		manager.groupMu.Lock()
+		runtime := manager.groups[accountID]
+		if runtime == nil {
+			manager.groupMu.Unlock()
+			return SelectedOrderRoute{}, ErrUnknownAccount
+		}
+		group, err := selectRuntimeGroup(runtime, purpose, selector.Fence)
+		if err != nil {
+			manager.groupMu.Unlock()
+			return SelectedOrderRoute{}, err
+		}
+		candidates := make([]routeCandidate, 0, len(group.Routes))
+		for routeID, route := range group.Routes {
+			if route.Definition.RequestedState != store.RouteActive || route.publicLease == nil {
+				continue
+			}
+			if selector.RouteID != "" && selector.RouteID != routeID {
+				continue
+			}
+			privateStream := group.privateStreams[routeID]
+			candidates = append(candidates, routeCandidate{
+				routeID: routeID,
+				route:   route,
+				access: activeRouteAccess{
+					accountID: accountID, venue: exchange.Venue(group.Snapshot.Venue),
+					environment: exchange.Environment(group.Snapshot.NativeEnvironment),
+					definition:  route.Definition, handle: route.Handle, publicLease: route.publicLease,
+					admission: group.Admission, runtimeGeneration: group.Snapshot.Fence.RuntimeGeneration,
+					privateStreamReady: privateStream.ready, privateStreamReason: privateStream.reason,
+				},
+			})
+		}
+		manager.groupMu.Unlock()
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].routeID < candidates[j].routeID })
+
+		var matched *routeCandidate
+		var instrument exchange.Instrument
+		for index := range candidates {
+			candidate := &candidates[index]
+			resolved, resolveErr := candidate.access.publicLease.Resolve(ctx, instrumentID)
+			if resolveErr != nil {
+				continue
+			}
+			if string(resolved.Identity.Venue) != group.Snapshot.Venue ||
+				string(resolved.Identity.Product) != candidate.access.definition.Product ||
+				resolved.Identity.SettleAsset != candidate.access.definition.SettlementAsset {
+				return SelectedOrderRoute{}, ErrRuntimeBlocked
+			}
+			if matched != nil {
+				return SelectedOrderRoute{}, ErrRuntimeBlocked
+			}
+			matched, instrument = candidate, resolved
+		}
+		if matched == nil {
+			return SelectedOrderRoute{}, ErrRuntimeBlocked
+		}
+		clientRoute, ok := matched.access.handle.(CandidateClientRoute)
+		if !ok {
+			return SelectedOrderRoute{}, ErrRuntimeBlocked
+		}
+		orders, ok := clientRoute.OrderClient()
+		if !ok || orders == nil {
+			return SelectedOrderRoute{}, ErrRuntimeBlocked
+		}
+		status := manager.dynamicRouteStatus(matched.access, purpose == OrderRouteWrite)
+
+		manager.groupMu.Lock()
+		current := manager.groups[accountID]
+		if current == nil || current != runtime {
+			manager.groupMu.Unlock()
+			return SelectedOrderRoute{}, ErrRuntimeBlocked
+		}
+		currentGroup, currentErr := selectRuntimeGroup(current, purpose, selector.Fence)
+		if currentErr != nil || currentGroup != group || currentGroup.Snapshot.Fence != group.Snapshot.Fence ||
+			currentGroup.Admission != matched.access.admission || currentGroup.Routes[matched.routeID] != matched.route {
+			manager.groupMu.Unlock()
+			if purpose == OrderRouteWrite && selector.Fence == (domain.AccountFence{}) {
+				continue
+			}
+			return SelectedOrderRoute{}, ErrRuntimeBlocked
+		}
+		manager.groupMu.Unlock()
+		return SelectedOrderRoute{
+			Dynamic: true, Fence: group.Snapshot.Fence, RouteID: matched.access.definition.RouteID,
+			Instrument: instrument, Status: status,
+			Orders: orders, Admission: group.Admission,
+		}, nil
+	}
+	return SelectedOrderRoute{}, ErrRuntimeBlocked
+}
+
+func (manager *Manager) selectStaticOrderRoute(
+	ctx context.Context,
+	accountID domain.AccountID,
+	instrumentID domain.InstrumentID,
+	purpose OrderRoutePurpose,
+) (SelectedOrderRoute, error) {
+	instrument, err := manager.Resolve(ctx, accountID, instrumentID)
+	if err != nil {
+		return SelectedOrderRoute{}, err
+	}
+	var status Status
+	if purpose == OrderRouteRecovery {
+		status, err = manager.RecoveryStatus(accountID)
+	} else {
+		status, err = manager.Status(accountID)
+	}
+	if err != nil {
+		return SelectedOrderRoute{}, err
+	}
+	var orders exchange.OrderREST
+	switch instrument.Identity.Product {
+	case exchange.ProductSpot:
+		orders, err = manager.Spot(accountID)
+	case exchange.ProductPerp:
+		orders, err = manager.Perp(accountID)
+	default:
+		err = ErrProductMismatch
+	}
+	if err != nil || orders == nil {
+		return SelectedOrderRoute{}, ErrRuntimeBlocked
+	}
+	return SelectedOrderRoute{Instrument: instrument, Status: status, Orders: orders}, nil
+}
+
+func selectRuntimeGroup(runtime *accountRuntime, purpose OrderRoutePurpose, fence domain.AccountFence) (*RuntimeGroup, error) {
+	active := runtime.active.Load()
+	if purpose == OrderRouteWrite || fence == (domain.AccountFence{}) {
+		if active == nil || runtime.activeGroup == nil || runtime.activeGroup.Snapshot.Fence != active.Fence {
+			return nil, ErrRuntimeBlocked
+		}
+		if fence != (domain.AccountFence{}) && active.Fence != fence {
+			return nil, ErrRuntimeBlocked
+		}
+		return runtime.activeGroup, nil
+	}
+	if active != nil && runtime.activeGroup != nil && active.Fence == fence && runtime.activeGroup.Snapshot.Fence == fence {
+		return runtime.activeGroup, nil
+	}
+	retiring := runtime.retiring[fence.RuntimeGeneration]
+	if retiring == nil || retiring.Snapshot.Fence != fence {
+		return nil, ErrRuntimeBlocked
+	}
+	return retiring, nil
 }
 
 func (group *RuntimeGroup) destroy() {
 	for _, route := range group.Routes {
 		if route.Handle != nil {
 			_ = route.Handle.Close()
+		}
+		if route.publicLease != nil {
+			route.publicLease.Release()
+			route.publicLease = nil
 		}
 	}
 	group.State = GroupDestroyed
@@ -716,14 +1556,17 @@ func (group *RuntimeGroup) destroyConfirmed(ctx context.Context) error {
 
 	failed := false
 	for _, route := range group.Routes {
-		if route.Handle == nil || route.closed {
-			continue
+		if route.Handle != nil && !route.closed {
+			if err := route.Handle.Close(); err != nil {
+				failed = true
+				continue
+			}
+			route.closed = true
 		}
-		if err := route.Handle.Close(); err != nil {
-			failed = true
-			continue
+		if route.publicLease != nil {
+			route.publicLease.Release()
+			route.publicLease = nil
 		}
-		route.closed = true
 	}
 	if failed {
 		attempt.err = ErrRuntimeCleanupFailed

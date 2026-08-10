@@ -23,6 +23,22 @@ type activeRouteSource interface {
 	ActiveRoute(domain.AccountID, string, string) (domain.RouteID, *account.GenerationAdmission, error)
 }
 
+type activeRouteClientSource interface {
+	ActiveRouteClient(domain.AccountID, string, string) (domain.RouteID, exchange.OrderREST, *account.GenerationAdmission, error)
+}
+
+type routeStatusSource interface {
+	RouteStatus(domain.AccountID, string, string) (account.Status, error)
+}
+
+type recoveryRouteStatusSource interface {
+	RecoveryRouteStatus(domain.AccountID, string, string) (account.Status, error)
+}
+
+type atomicOrderRouteSource interface {
+	SelectOrderRoute(context.Context, domain.AccountID, domain.InstrumentID, account.OrderRoutePurpose, account.OrderRouteSelector) (account.SelectedOrderRoute, error)
+}
+
 type AccountRegistry interface {
 	Spot(domain.AccountID) (exchange.SpotClient, error)
 	Perp(domain.AccountID) (exchange.PerpClient, error)
@@ -43,14 +59,30 @@ func NewAccountRouter(accounts AccountRegistry) (*AccountRouter, error) {
 }
 
 func (router *AccountRouter) Route(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID) (Route, error) {
-	return router.route(ctx, accountID, instrumentID, false)
+	return router.route(ctx, accountID, instrumentID, false, account.OrderRouteSelector{})
 }
 
 func (router *AccountRouter) RouteForRecovery(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID) (Route, error) {
-	return router.route(ctx, accountID, instrumentID, true)
+	return router.route(ctx, accountID, instrumentID, true, account.OrderRouteSelector{})
 }
 
-func (router *AccountRouter) route(ctx context.Context, accountID domain.AccountID, instrumentID domain.InstrumentID, recovery bool) (Route, error) {
+func (router *AccountRouter) RouteForRecoveryCommand(
+	ctx context.Context,
+	accountID domain.AccountID,
+	instrumentID domain.InstrumentID,
+	routeID domain.RouteID,
+	fence domain.AccountFence,
+) (Route, error) {
+	return router.route(ctx, accountID, instrumentID, true, account.OrderRouteSelector{RouteID: routeID, Fence: fence})
+}
+
+func (router *AccountRouter) route(
+	ctx context.Context,
+	accountID domain.AccountID,
+	instrumentID domain.InstrumentID,
+	recovery bool,
+	selector account.OrderRouteSelector,
+) (Route, error) {
 	if ctx == nil {
 		return Route{}, fmt.Errorf("order route context is required")
 	}
@@ -63,9 +95,27 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 	if err := instrumentID.Validate(); err != nil {
 		return Route{}, err
 	}
+	if source, ok := router.accounts.(atomicOrderRouteSource); ok {
+		purpose := account.OrderRouteWrite
+		if recovery {
+			purpose = account.OrderRouteRecovery
+		}
+		selected, err := source.SelectOrderRoute(ctx, accountID, instrumentID, purpose, selector)
+		if err != nil {
+			return Route{}, fmt.Errorf("order runtime route unavailable")
+		}
+		return router.routeFromSelection(selected), nil
+	}
+	instrument, err := router.accounts.Resolve(ctx, accountID, instrumentID)
+	if err != nil {
+		return Route{}, fmt.Errorf("order instrument unavailable")
+	}
 	var status account.Status
-	var err error
-	if recovery {
+	if source, routeAware := router.accounts.(recoveryRouteStatusSource); routeAware && recovery {
+		status, err = source.RecoveryRouteStatus(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+	} else if source, routeAware := router.accounts.(routeStatusSource); routeAware {
+		status, err = source.RouteStatus(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+	} else if recovery {
 		status, err = router.accounts.RecoveryStatus(accountID)
 	} else {
 		status, err = router.accounts.Status(accountID)
@@ -73,39 +123,46 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 	if err != nil {
 		return Route{}, fmt.Errorf("order account status unavailable")
 	}
-	instrument, err := router.accounts.Resolve(ctx, accountID, instrumentID)
-	if err != nil {
-		return Route{}, fmt.Errorf("order instrument unavailable")
-	}
 
 	var orders exchange.OrderREST
-	switch instrument.Identity.Product {
-	case exchange.ProductSpot:
-		client, clientErr := router.accounts.Spot(accountID)
-		if clientErr != nil {
-			return Route{}, fmt.Errorf("order client unavailable")
+	var routeID domain.RouteID
+	var admission HandoffAdmission
+	routeClientSelected := false
+	if source, routeAware := router.accounts.(activeRouteClientSource); routeAware {
+		routeClientSelected = true
+		routeID, orders, admission, err = source.ActiveRouteClient(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+		if err != nil || orders == nil {
+			return Route{}, fmt.Errorf("order runtime route unavailable")
 		}
-		orders = client
-	case exchange.ProductPerp:
-		client, clientErr := router.accounts.Perp(accountID)
-		if clientErr != nil {
-			return Route{}, fmt.Errorf("order client unavailable")
+	} else {
+		switch instrument.Identity.Product {
+		case exchange.ProductSpot:
+			client, clientErr := router.accounts.Spot(accountID)
+			if clientErr != nil {
+				return Route{}, fmt.Errorf("order client unavailable")
+			}
+			orders = client
+		case exchange.ProductPerp:
+			client, clientErr := router.accounts.Perp(accountID)
+			if clientErr != nil {
+				return Route{}, fmt.Errorf("order client unavailable")
+			}
+			orders = client
+		default:
+			return Route{}, fmt.Errorf("order product unsupported")
 		}
-		orders = client
-	default:
-		return Route{}, fmt.Errorf("order product unsupported")
 	}
 	lookup, ok := orders.(exchange.ExactOrderLookup)
 	var checkWriteFence func(account.WriteFence) error
 	if checker, supportsFences := router.accounts.(writeFenceChecker); supportsFences {
 		checkWriteFence = checker.CheckWriteFence
 	}
-	var routeID domain.RouteID
-	var admission HandoffAdmission
-	if source, supportsRuntimeRoutes := router.accounts.(activeRouteSource); supportsRuntimeRoutes {
-		routeID, admission, err = source.ActiveRoute(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
-		if err != nil {
-			return Route{}, fmt.Errorf("order runtime route unavailable")
+	if routeID == "" && !routeClientSelected {
+		if source, supportsRuntimeRoutes := router.accounts.(activeRouteSource); supportsRuntimeRoutes {
+			routeID, admission, err = source.ActiveRoute(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+			if err != nil {
+				return Route{}, fmt.Errorf("order runtime route unavailable")
+			}
 		}
 	}
 	reason := status.Reason
@@ -119,6 +176,30 @@ func (router *AccountRouter) route(ctx context.Context, accountID domain.Account
 		Instrument: instrument, Product: instrument.Identity.Product,
 		WriteReady: status.WriteReady && ok && checkWriteFence != nil, Reason: reason, CheckWriteFence: checkWriteFence,
 	}, nil
+}
+
+func (router *AccountRouter) routeFromSelection(selected account.SelectedOrderRoute) Route {
+	lookup, exactLookupReady := selected.Orders.(exchange.ExactOrderLookup)
+	var checkWriteFence func(account.WriteFence) error
+	if checker, ok := router.accounts.(writeFenceChecker); ok {
+		checkWriteFence = checker.CheckWriteFence
+	}
+	reason := selected.Status.Reason
+	if !exactLookupReady {
+		reason = reasonExactLookupUnavailable
+	} else if checkWriteFence == nil {
+		reason = reasonWriteFenceUnavailable
+	}
+	return Route{
+		RouteID:         selected.RouteID,
+		Driver:          &exchangeDriver{orders: selected.Orders, lookup: lookup},
+		Admission:       selected.Admission,
+		Instrument:      selected.Instrument,
+		Product:         selected.Instrument.Identity.Product,
+		WriteReady:      selected.Status.WriteReady && exactLookupReady && checkWriteFence != nil,
+		Reason:          reason,
+		CheckWriteFence: checkWriteFence,
+	}
 }
 
 type exchangeDriver struct {

@@ -700,11 +700,11 @@ func TestCanonicalDevPlatformCommandsAreCompleteAndNonSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical Gateway config is invalid: %v", err)
 	}
-	if gatewayFile.Server.Mode != "test" || gatewayFile.Server.InternalListen != "127.0.0.1:18082" || len(gatewayFile.Accounts) != 0 {
+	if gatewayFile.Server.Mode != "test" || gatewayFile.Server.InternalListen != "127.0.0.1:18082" {
 		t.Fatalf("canonical Gateway config is not a write-free Test config: %+v", gatewayFile)
 	}
-	if !strings.Contains(string(gatewayPayload), "Account inventory is Platform-owned") {
-		t.Fatal("canonical Gateway config does not document zero-inventory readiness")
+	if strings.Contains(string(gatewayPayload), "accounts:") {
+		t.Fatal("canonical Gateway config contains removed static account inventory")
 	}
 }
 

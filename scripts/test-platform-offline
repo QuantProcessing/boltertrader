@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+fail() { printf 'test-platform-offline: %s\n' "$*" >&2; exit 1; }
+
+[ "${RUN_FULL+x}" != x ] || fail "RUN_FULL must be unset"
+[ "${FT_MODE:-}" != live ] || fail "FT_MODE=live is forbidden"
+[ "${BT_FUNDING_LIVE_ENABLED+x}" != x ] || fail "BT_FUNDING_LIVE_ENABLED must be unset"
+
+for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+	case "$name" in
+		BOLTER_ENABLE_*|BOLTER_ALLOW_*_WRITES|*_ACCEPTANCE|*ENABLE*WRITE*|*LIVE*WRITE*|*WRITES_ENABLED)
+			fail "$name must be unset"
+			;;
+	esac
+done
+
+make test-gateway-contract
+make test-gateway-offline
+make test-gateway-race
+make test-gateway-security
+go test ./migration ./cmd/migration-tool ./cmd/account-route-backfill ./scripts -count=1
+(cd backend && go test ./... && go test -race ./... && go vet ./...)
+npm --prefix web run build
+npm --prefix web test -- --run
+npm --prefix web run test:e2e

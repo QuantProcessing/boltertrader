@@ -19,6 +19,7 @@ writes.
 | SDK packages | `make test-sdk` |
 | Capability contract | `make test-capabilities` |
 | Full offline gate | `make test-p6-offline` |
+| Integrated Docker-free Platform gate | `make test-platform-offline` |
 | Runtime race checks | `make test-race` |
 | Offline reference-data checks | `make test-reference-data-offline` |
 
@@ -35,6 +36,29 @@ PostgreSQL, Gateway, Platform, funding worker, and web without Docker. Its
 canonical Gateway has a healthy zero-account inventory. Secret Store launcher
 configuration contains identifiers and protected file paths only; commands and
 diagnostics never emit key or credential material.
+
+`make test-platform-offline` is the canonical integrated implementation gate.
+It runs the following Docker-free sequence in order and stops on the first
+failure:
+
+```sh
+make test-gateway-contract
+make test-gateway-offline
+make test-gateway-race
+make test-gateway-security
+go test ./migration ./cmd/migration-tool ./cmd/account-route-backfill ./scripts -count=1
+(cd backend && go test ./... && go test -race ./... && go vet ./...)
+npm --prefix web run build
+npm --prefix web test -- --run
+npm --prefix web run test:e2e
+```
+
+The aggregate uses `set -eu` and does not source `.env`,
+`scripts/dev-platform.env.example`, or any other environment file. It fails
+closed before invoking tests when `RUN_FULL` is set, `FT_MODE=live`, or a
+venue acceptance, venue opt-in, or Live-write opt-in variable is present with a
+non-empty value. Run it with those variables unset. It performs no external
+venue reads or writes and does not require Docker.
 
 `BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real` is the **G010 no-trade gate**.
 It performs repeated local readiness and browser-root reads and does not provision accounts, enable

@@ -52,3 +52,19 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPlatformOfflineGateHasNoExternalRuntimeDependencies(t *testing.T) {
+	data, err := os.ReadFile("../../scripts/test-platform-offline")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.ToLower(string(data))
+	for _, forbidden := range []string{
+		"docker", "source ", ". .env", "dev-platform.env",
+		"test-real", "test-live", "test-demo",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("offline gate contains external runtime dependency %q", forbidden)
+		}
+	}
+}

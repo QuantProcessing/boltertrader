@@ -20,11 +20,6 @@ type PostgresPool interface {
 	Close()
 }
 
-type Ownership interface {
-	Healthy() bool
-	Release(context.Context) error
-}
-
 type AccountManager interface {
 	Start(context.Context) error
 	AccountIDs() []domain.AccountID
@@ -36,49 +31,37 @@ type OrderCoordinator interface {
 	Close(context.Context) error
 }
 
-type AccountRegistration struct {
-	AccountID   domain.AccountID
-	Venue       string
-	Product     string
-	Environment string
-	Settlement  string
-	ConfigHash  string
-	Status      string
-}
-
 type Dependencies struct {
-	CheckCredentialResolver func(context.Context) error
-	ResolveSecret           func(context.Context, secret.Ref) (string, error)
-	ConnectPostgres         func(context.Context, string) (PostgresPool, error)
-	Migrate                 func(context.Context, PostgresPool) error
-	RegisterAccount         func(context.Context, PostgresPool, AccountRegistration) error
-	AcquireOwnership        func(context.Context, PostgresPool, domain.AccountID) (Ownership, error)
-	BuildAccountManager     func(context.Context, []config.AccountConfig, map[string]string) (AccountManager, error)
-	BuildOrderCoordinator   func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
-	Listen                  func(network, address string) (net.Listener, error)
-	HandlerFactory          func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
+	CheckCredentialResolver  func(context.Context) error
+	ResolveSecret            func(context.Context, secret.Ref) (string, error)
+	ConnectPostgres          func(context.Context, string) (PostgresPool, error)
+	ValidateDatabaseIdentity func(context.Context, PostgresPool) error
+	Migrate                  func(context.Context, PostgresPool) error
+	BuildAccountManager      func(context.Context) (AccountManager, error)
+	RestoreAccountManager    func(context.Context, PostgresPool, AccountManager) error
+	BuildOrderCoordinator    func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
+	Listen                   func(network, address string) (net.Listener, error)
+	HandlerFactory           func(*health.Monitor, PostgresPool, AccountManager, OrderCoordinator) (http.Handler, error)
 }
 
 type Service struct {
-	mu         sync.Mutex
-	monitor    *health.Monitor
-	listener   net.Listener
-	server     *http.Server
-	pool       PostgresPool
-	accounts   AccountManager
-	orders     OrderCoordinator
-	ownerships []Ownership
-	serveDone  chan error
-	cleanup    cleanupState
+	mu        sync.Mutex
+	monitor   *health.Monitor
+	listener  net.Listener
+	server    *http.Server
+	pool      PostgresPool
+	accounts  AccountManager
+	orders    OrderCoordinator
+	serveDone chan error
+	cleanup   cleanupState
 }
 
 type cleanupState struct {
-	server     bool
-	listener   bool
-	accounts   bool
-	orders     bool
-	ownerships []bool
-	pool       bool
+	server   bool
+	listener bool
+	accounts bool
+	orders   bool
+	pool     bool
 }
 
 func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, error) {
@@ -112,40 +95,14 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 	if err = pool.Ping(ctx); err != nil {
 		return nil, safeErr("ping postgres", err)
 	}
+	if err = deps.ValidateDatabaseIdentity(ctx, pool); err != nil {
+		return nil, safeErr("validate postgres identity", err)
+	}
 	service.monitor.SetPostgresDependency(poolDependency{pool: pool})
 	if err = deps.Migrate(ctx, pool); err != nil {
 		return nil, safeErr("migrate postgres", err)
 	}
-	hash, err := file.Hash()
-	if err != nil {
-		return nil, safeErr("hash config", err)
-	}
-	for _, account := range file.Accounts {
-		accountID := domain.AccountID(account.AccountID)
-		registration := AccountRegistration{
-			AccountID:   accountID,
-			Venue:       account.Venue,
-			Product:     account.Product,
-			Environment: account.Environment,
-			Settlement:  account.Settlement,
-			ConfigHash:  hash,
-			Status:      "configured",
-		}
-		if err = deps.RegisterAccount(ctx, pool, registration); err != nil {
-			return nil, safeErr("register account", err)
-		}
-		ownership, acquireErr := deps.AcquireOwnership(ctx, pool, accountID)
-		if acquireErr != nil {
-			err = safeErr("acquire ownership", acquireErr)
-			return nil, err
-		}
-		service.ownerships = append(service.ownerships, ownership)
-		service.cleanup.ownerships = append(service.cleanup.ownerships, false)
-		service.monitor.SetOwnership(account.AccountID, ownership)
-	}
-	buildSecrets := cloneSecrets(resolvedSecrets)
-	accountManager, buildErr := deps.BuildAccountManager(ctx, file.Accounts, buildSecrets)
-	clearSecrets(buildSecrets)
+	accountManager, buildErr := deps.BuildAccountManager(ctx)
 	if buildErr != nil || accountManager == nil {
 		if buildErr == nil {
 			buildErr = fmt.Errorf("account manager is nil")
@@ -156,6 +113,10 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 	service.accounts = accountManager
 	if startErr := service.accounts.Start(ctx); startErr != nil {
 		err = safeErr("start account manager", startErr)
+		return nil, err
+	}
+	if restoreErr := deps.RestoreAccountManager(ctx, pool, service.accounts); restoreErr != nil {
+		err = safeErr("restore account manager", restoreErr)
 		return nil, err
 	}
 	orderCoordinator, buildOrderErr := deps.BuildOrderCoordinator(ctx, pool, service.accounts)
@@ -223,10 +184,6 @@ func (service *Service) Shutdown(ctx context.Context) error {
 	if service.monitor != nil {
 		service.monitor.SetPostgresHealthy(false)
 	}
-	if len(service.cleanup.ownerships) < len(service.ownerships) {
-		service.cleanup.ownerships = append(service.cleanup.ownerships, make([]bool, len(service.ownerships)-len(service.cleanup.ownerships))...)
-	}
-
 	var errs []error
 	if !service.cleanup.server {
 		if service.server == nil {
@@ -264,18 +221,6 @@ func (service *Service) Shutdown(ctx context.Context) error {
 			service.cleanup.accounts = true
 		}
 	}
-	if service.cleanup.accounts {
-		for i := len(service.ownerships) - 1; i >= 0; i-- {
-			if service.cleanup.ownerships[i] {
-				continue
-			}
-			if err := service.ownerships[i].Release(ctx); err != nil {
-				errs = append(errs, safeErr("release ownership", err))
-			} else {
-				service.cleanup.ownerships[i] = true
-			}
-		}
-	}
 	if !service.cleanup.pool && service.readyToClosePool() {
 		if service.pool == nil {
 			service.cleanup.pool = true
@@ -294,27 +239,14 @@ func (service *Service) readyToClosePool() bool {
 	if !service.cleanup.server || !service.cleanup.listener || !service.cleanup.orders || !service.cleanup.accounts {
 		return false
 	}
-	for i := range service.ownerships {
-		if !service.cleanup.ownerships[i] {
-			return false
-		}
-	}
 	return true
 }
 
 func validateDeps(deps Dependencies) error {
-	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.Migrate == nil || deps.RegisterAccount == nil || deps.AcquireOwnership == nil || deps.BuildAccountManager == nil || deps.BuildOrderCoordinator == nil || deps.Listen == nil {
+	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.ValidateDatabaseIdentity == nil || deps.Migrate == nil || deps.BuildAccountManager == nil || deps.RestoreAccountManager == nil || deps.BuildOrderCoordinator == nil || deps.Listen == nil {
 		return fmt.Errorf("process dependencies are incomplete")
 	}
 	return nil
-}
-
-func cloneSecrets(values map[string]string) map[string]string {
-	clone := make(map[string]string, len(values))
-	for key, value := range values {
-		clone[key] = value
-	}
-	return clone
 }
 
 func clearSecrets(values map[string]string) {
@@ -325,10 +257,7 @@ func clearSecrets(values map[string]string) {
 }
 
 func resolveAllSecrets(ctx context.Context, file config.File, resolve func(context.Context, secret.Ref) (string, error)) (map[string]string, error) {
-	refs := []secret.Ref{file.Server.AuthTokenRef, file.Postgres.DSNRef}
-	for _, account := range file.Accounts {
-		refs = append(refs, accountSecretRefs(account.Credentials)...)
-	}
+	refs := file.SecretRefs()
 	values := make(map[string]string, len(refs))
 	for _, ref := range refs {
 		value, err := resolve(ctx, ref)
@@ -338,25 +267,6 @@ func resolveAllSecrets(ctx context.Context, file config.File, resolve func(conte
 		values[ref.RawForProvider()] = value
 	}
 	return values, nil
-}
-
-func accountSecretRefs(credentials any) []secret.Ref {
-	switch value := credentials.(type) {
-	case config.APIKeySecretCredentials:
-		return []secret.Ref{value.APIKeyRef, value.APISecretRef}
-	case config.APIKeySecretPassphraseCredentials:
-		return []secret.Ref{value.APIKeyRef, value.APISecretRef, value.PassphraseRef}
-	case config.LighterCredentials:
-		return []secret.Ref{value.PrivateKeyRef}
-	case config.PrivateKeyCredentials:
-		return []secret.Ref{value.PrivateKeyRef}
-	case config.AsterCredentials:
-		return []secret.Ref{value.APIWalletPrivateKeyRef}
-	case config.NadoCredentials:
-		return []secret.Ref{value.PrivateKeyRef}
-	default:
-		return nil
-	}
 }
 
 func safeErr(stage string, _ error) error {

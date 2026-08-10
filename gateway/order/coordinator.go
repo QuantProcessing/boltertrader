@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
@@ -52,6 +53,7 @@ func NewCoordinator(options Options) (*Coordinator, error) {
 		reconciliationLimit:       options.ReconciliationLimit,
 		maxReconciliationAttempts: options.MaxReconciliationAttempts,
 		gates:                     make(map[domain.AccountID]*accountGate),
+		reconciliationAccounts:    make(map[domain.AccountID]struct{}),
 		idle:                      idle,
 	}, nil
 }
@@ -74,18 +76,17 @@ func (coordinator *Coordinator) Start(ctx context.Context, accountIDs []domain.A
 	if closing {
 		return ErrCoordinatorClosed
 	}
-	seen := make(map[domain.AccountID]struct{}, len(accountIDs))
-	ordered := make([]domain.AccountID, 0, len(accountIDs))
+	validated := make(map[domain.AccountID]struct{}, len(accountIDs))
 	for _, accountID := range accountIDs {
 		if err := accountID.Validate(); err != nil {
 			return err
 		}
-		if _, exists := seen[accountID]; exists {
-			continue
-		}
-		seen[accountID] = struct{}{}
-		ordered = append(ordered, accountID)
+		validated[accountID] = struct{}{}
 	}
+	for accountID := range validated {
+		coordinator.reconciliationAccounts[accountID] = struct{}{}
+	}
+	ordered := coordinator.reconciliationAccountIDsLocked()
 	for _, accountID := range ordered {
 		// Recovery failures remain isolated in the per-account write gate.
 		_, _ = coordinator.RecoverAccount(ctx, accountID)
@@ -94,11 +95,34 @@ func (coordinator *Coordinator) Start(ctx context.Context, accountIDs []domain.A
 	coordinator.runnerCancel = cancel
 	coordinator.runnerDone = make(chan struct{})
 	coordinator.runnerStarted = true
-	go coordinator.reconciliationLoop(loopCtx, ordered, coordinator.runnerDone)
+	go coordinator.reconciliationLoop(loopCtx, coordinator.runnerDone)
 	return nil
 }
 
-func (coordinator *Coordinator) reconciliationLoop(ctx context.Context, accountIDs []domain.AccountID, done chan<- struct{}) {
+func (coordinator *Coordinator) RegisterAccount(accountID domain.AccountID) error {
+	if err := accountID.Validate(); err != nil {
+		return err
+	}
+	if !coordinator.beginOperation() {
+		return ErrCoordinatorClosed
+	}
+	defer coordinator.endOperation()
+	coordinator.runnerMu.Lock()
+	coordinator.reconciliationAccounts[accountID] = struct{}{}
+	coordinator.runnerMu.Unlock()
+	return nil
+}
+
+func (coordinator *Coordinator) UnregisterAccount(accountID domain.AccountID) {
+	if err := accountID.Validate(); err != nil {
+		return
+	}
+	coordinator.runnerMu.Lock()
+	delete(coordinator.reconciliationAccounts, accountID)
+	coordinator.runnerMu.Unlock()
+}
+
+func (coordinator *Coordinator) reconciliationLoop(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(coordinator.reconciliationInterval)
 	defer ticker.Stop()
@@ -107,7 +131,7 @@ func (coordinator *Coordinator) reconciliationLoop(ctx context.Context, accountI
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, accountID := range accountIDs {
+			for _, accountID := range coordinator.reconciliationAccountIDs() {
 				if ctx.Err() != nil {
 					return
 				}
@@ -115,6 +139,21 @@ func (coordinator *Coordinator) reconciliationLoop(ctx context.Context, accountI
 			}
 		}
 	}
+}
+
+func (coordinator *Coordinator) reconciliationAccountIDs() []domain.AccountID {
+	coordinator.runnerMu.Lock()
+	defer coordinator.runnerMu.Unlock()
+	return coordinator.reconciliationAccountIDsLocked()
+}
+
+func (coordinator *Coordinator) reconciliationAccountIDsLocked() []domain.AccountID {
+	accountIDs := make([]domain.AccountID, 0, len(coordinator.reconciliationAccounts))
+	for accountID := range coordinator.reconciliationAccounts {
+		accountIDs = append(accountIDs, accountID)
+	}
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	return accountIDs
 }
 
 func (coordinator *Coordinator) Place(ctx context.Context, request PlaceRequest) (Result, error) {
@@ -558,19 +597,24 @@ func (coordinator *Coordinator) endOperation() {
 }
 
 func (coordinator *Coordinator) recoverCommand(ctx context.Context, command store.StoredCommand) (bool, error) {
+	payload, err := decodePlacePayload(command.Payload)
+	if err != nil || payload.AccountID != command.AccountID || payload.InstrumentID != command.InstrumentID {
+		return false, fmt.Errorf("recover durable order payload failed")
+	}
+	fence := domain.AccountFence{
+		AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision,
+		RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion,
+	}
 	var route Route
-	var err error
-	if recoveryRouter, ok := coordinator.router.(RecoveryRouter); ok {
+	if recoveryRouter, ok := coordinator.router.(FencedRecoveryRouter); ok {
+		route, err = recoveryRouter.RouteForRecoveryCommand(ctx, command.AccountID, command.InstrumentID, payload.RouteID, fence)
+	} else if recoveryRouter, ok := coordinator.router.(RecoveryRouter); ok {
 		route, err = recoveryRouter.RouteForRecovery(ctx, command.AccountID, command.InstrumentID)
 	} else {
 		route, err = coordinator.router.Route(ctx, command.AccountID, command.InstrumentID)
 	}
 	if err != nil || route.validate() != nil || !route.WriteReady {
 		return false, ErrWriteNotReady
-	}
-	payload, err := decodePlacePayload(command.Payload)
-	if err != nil || payload.AccountID != command.AccountID || payload.InstrumentID != command.InstrumentID {
-		return false, fmt.Errorf("recover durable order payload failed")
 	}
 	quantity, _ := decimal.NewFromString(payload.Quantity)
 	limitPrice := decimal.Zero
@@ -586,11 +630,11 @@ func (coordinator *Coordinator) recoverCommand(ctx context.Context, command stor
 		return false, fmt.Errorf("recover durable order payload failed")
 	}
 	if command.State == domain.StatePrepared {
-		fence := account.WriteFence{AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision, RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion}
-		if route.CheckWriteFence == nil || validateWriteFence(fence, command.AccountID) != nil {
+		writeFence := account.WriteFence{AccountID: payload.AccountID, DesiredStateRevision: payload.DesiredStateRevision, RuntimeGeneration: payload.RuntimeGeneration, CredentialVersion: payload.CredentialVersion}
+		if route.CheckWriteFence == nil || validateWriteFence(writeFence, command.AccountID) != nil {
 			return false, ErrWriteNotReady
 		}
-		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, payload.RouteID, fence)
+		result, dispatchErr := coordinator.dispatch(ctx, route, command, request, payload.RouteID, writeFence)
 		return dispatchErr == nil && result.State != domain.StateUncertain, dispatchErr
 	}
 	return coordinator.reconcile(ctx, route, command)

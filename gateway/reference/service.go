@@ -19,6 +19,10 @@ type Registry interface {
 	Instruments(domain.AccountID) (catalog.Snapshot, error)
 }
 
+type multiCapabilityRegistry interface {
+	Capabilities(domain.AccountID) ([]capability.Row, error)
+}
+
 type Service struct{ registry Registry }
 
 type AccountCapability struct {
@@ -59,12 +63,28 @@ func (service *Service) Capabilities(accountID domain.AccountID) ([]AccountCapab
 	}
 	result := make([]AccountCapability, 0, len(accountIDs))
 	for _, current := range accountIDs {
-		row, err := service.registry.Capability(current)
-		if err != nil {
-			return nil, err
+		if registry, ok := service.registry.(multiCapabilityRegistry); ok {
+			rows, rowsErr := registry.Capabilities(current)
+			if rowsErr != nil {
+				return nil, rowsErr
+			}
+			for _, row := range rows {
+				result = append(result, AccountCapability{AccountID: current, Row: row})
+			}
+			continue
+		}
+		row, rowErr := service.registry.Capability(current)
+		if rowErr != nil {
+			return nil, rowErr
 		}
 		result = append(result, AccountCapability{AccountID: current, Row: row})
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].AccountID != result[j].AccountID {
+			return result[i].AccountID < result[j].AccountID
+		}
+		return result[i].Row.RowID < result[j].Row.RowID
+	})
 	return result, nil
 }
 
@@ -135,7 +155,12 @@ func (service *Service) accountIDs(filter domain.AccountID) ([]domain.AccountID,
 		return nil, account.ErrUnknownAccount
 	}
 	accountIDs := make([]domain.AccountID, 0, len(accounts))
+	seen := make(map[domain.AccountID]struct{}, len(accounts))
 	for _, resource := range accounts {
+		if _, exists := seen[resource.AccountID]; exists {
+			continue
+		}
+		seen[resource.AccountID] = struct{}{}
 		accountIDs = append(accountIDs, resource.AccountID)
 	}
 	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })

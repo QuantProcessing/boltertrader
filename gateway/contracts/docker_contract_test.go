@@ -2,95 +2,62 @@ package contracts
 
 import (
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 )
 
-func TestGatewayDockerfileFreezesMinimalNonRootPID1Runtime(t *testing.T) {
-	data, err := os.ReadFile("../../Dockerfile")
-	if err != nil {
-		t.Fatalf("read Dockerfile: %v", err)
-	}
-	text := string(data)
-	for _, required := range []string{
-		"FROM golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5 AS build",
-		"FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6",
-		"CGO_ENABLED=0",
-		"go build -trimpath",
-		"./cmd/exchange-gateway",
-		"./cmd/exchange-gateway-docker-support",
-		"COPY --from=build",
-		"/usr/local/bin/exchange-gateway",
-		"/usr/local/bin/exchange-gateway-docker-support",
-		"USER nonroot:nonroot",
-		`ENTRYPOINT ["/usr/local/bin/exchange-gateway-docker-support"]`,
-		`CMD ["run", "-config", "/etc/boltertrader/gateway.yaml"]`,
-		`HEALTHCHECK`,
-		`"health", "-config", "/etc/boltertrader/gateway.yaml", "-kind", "ready"`,
+func TestDefaultLocalPlatformArtifactsAreDockerFree(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/dev-platform",
+		"../../scripts/dev-platform-service",
+		"../../scripts/test-platform-offline",
 	} {
-		if !strings.Contains(text, required) {
-			t.Errorf("Dockerfile missing %q", required)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
 		}
-	}
-	for _, forbidden := range []string{
-		":latest",
-		"ENTRYPOINT [\"/bin/sh\"",
-		"ENTRYPOINT [\"sh\"",
-		"ENTRYPOINT [\"bash\"",
-		"USER root",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Errorf("Dockerfile contains forbidden runtime contract %q", forbidden)
+		text := strings.ToLower(string(data))
+		if strings.Contains(text, "docker compose") || strings.Contains(text, "docker run") {
+			t.Errorf("default local artifact %s requires Docker", path)
 		}
 	}
 
-	stages := regexp.MustCompile(`(?m)^FROM `).FindAllStringIndex(text, -1)
-	if len(stages) != 2 {
-		t.Fatalf("Dockerfile stages = %d, want exactly build and runtime", len(stages))
+	makeData, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
 	}
-	runtimeStage := text[stages[1][0]:]
-	for _, forbidden := range []string{"COPY .", "COPY gateway", "COPY cmd", "RUN ", "go.mod", ".go "} {
-		if strings.Contains(runtimeStage, forbidden) {
-			t.Errorf("runtime stage contains build/source material %q", forbidden)
+	makefile := string(makeData)
+	for _, target := range []string{
+		"dev-platform-up", "dev-platform-down", "dev-platform-restart",
+		"dev-platform-status", "dev-platform-logs", "dev-platform-reset",
+		"dev-platform-doctor", "test-dev-platform", "test-browser",
+		"test-platform-offline",
+	} {
+		block := contractMakeTargetBlock(makefile, target)
+		if block == "" {
+			t.Errorf("Makefile missing default local target %s", target)
+		} else if strings.Contains(strings.ToLower(block), "docker") {
+			t.Errorf("default local target %s requires Docker", target)
 		}
 	}
 }
 
-func TestGatewayDockerignoreExcludesRepositoryStateTestsAndSecretFiles(t *testing.T) {
-	data, err := os.ReadFile("../../.dockerignore")
-	if err != nil {
-		t.Fatalf("read .dockerignore: %v", err)
-	}
-	lines := make(map[string]struct{})
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "#") {
-			lines[line] = struct{}{}
+func TestHistoricalDockerArtifactsRemainOptional(t *testing.T) {
+	for _, path := range []string{"../../Dockerfile", "../../compose.yaml", "../../docker"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("historical Docker artifact %s: %v", path, err)
 		}
 	}
-	for _, required := range []string{
-		".git",
-		".omx",
-		".env",
-		".env.*",
-		"**/.env",
-		"**/.env.*",
-		"**/*_test.go",
-		"docs",
-		"docker",
-		"*.pem",
-		"*.key",
-		"*.p12",
-		"coverage.out",
-	} {
-		if _, ok := lines[required]; !ok {
-			t.Errorf(".dockerignore missing %q", required)
-		}
+}
+
+func contractMakeTargetBlock(makefile, target string) string {
+	start := strings.Index(makefile, target+":")
+	if start < 0 {
+		return ""
 	}
-	for _, dangerous := range []string{"*secret*", "**/secret", "gateway/secret"} {
-		if _, ok := lines[dangerous]; ok {
-			t.Errorf(".dockerignore would remove the required secret package with %q", dangerous)
-		}
+	rest := makefile[start:]
+	if end := strings.Index(rest, "\n\n"); end >= 0 {
+		return rest[:end]
 	}
+	return rest
 }

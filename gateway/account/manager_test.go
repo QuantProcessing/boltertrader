@@ -52,6 +52,10 @@ func TestManagerConstructsAllTwentyProfilesWithoutNetworkIO(t *testing.T) {
 		if err != nil || row.Venue != account.Venue || row.Product != account.Product || row.Settlement != account.Settlement || row.WriteReadyDefault != wantWriteReady {
 			t.Fatalf("Capability(%s)=%+v err=%v", accountID, row, err)
 		}
+		routeStatus, err := manager.RouteStatus(accountID, account.Product, account.Settlement)
+		if err != nil || routeStatus.AccountID != accountID || routeStatus.Product != exchange.Product(account.Product) {
+			t.Fatalf("RouteStatus(%s)=%+v err=%v", accountID, routeStatus, err)
+		}
 		if account.Product == string(exchange.ProductSpot) {
 			if client, err := manager.Spot(accountID); err != nil || client == nil {
 				t.Fatalf("Spot(%s) client=%v err=%v", accountID, client, err)

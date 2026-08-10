@@ -125,6 +125,10 @@ type RecoveryRouter interface {
 	RouteForRecovery(context.Context, domain.AccountID, domain.InstrumentID) (Route, error)
 }
 
+type FencedRecoveryRouter interface {
+	RouteForRecoveryCommand(context.Context, domain.AccountID, domain.InstrumentID, domain.RouteID, domain.AccountFence) (Route, error)
+}
+
 type Driver interface {
 	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
 	CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error)
@@ -270,6 +274,7 @@ type Coordinator struct {
 	runnerCancel              context.CancelFunc
 	runnerDone                chan struct{}
 	runnerStarted             bool
+	reconciliationAccounts    map[domain.AccountID]struct{}
 }
 
 type accountGate struct {

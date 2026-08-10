@@ -53,6 +53,33 @@ removes Test runtime state only after owned processes have stopped.
 
 ## Acceptance Gates
 
+The canonical integrated implementation gate is Docker-free and runs from a
+clean offline shell:
+
+```sh
+make test-platform-offline
+```
+
+It runs this fixed sequence and stops at the first failure:
+
+```sh
+make test-gateway-contract
+make test-gateway-offline
+make test-gateway-race
+make test-gateway-security
+go test ./migration ./cmd/migration-tool ./cmd/account-route-backfill ./scripts -count=1
+(cd backend && go test ./... && go test -race ./... && go vet ./...)
+npm --prefix web run build
+npm --prefix web test -- --run
+npm --prefix web run test:e2e
+```
+
+The gate does not source `.env`, `scripts/dev-platform.env.example`, or any
+other environment file. Before running a command it rejects any set
+`RUN_FULL`, `FT_MODE=live`, venue acceptance or opt-in variables, and Live-write
+opt-ins. Keep those variables unset; this gate never authorizes an external
+read, Testnet/Demo write, or Live write.
+
 `make test-browser` builds and type-checks the web application, runs unit tests,
 and runs the fixture-backed Playwright browser suite. It performs no external
 writes.

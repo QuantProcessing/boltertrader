@@ -88,6 +88,29 @@ func TestServiceFiltersByAccountAndReportsUnknownAccount(t *testing.T) {
 	}
 }
 
+func TestServiceProjectsAllCapabilitiesForMultiRouteAccountOnce(t *testing.T) {
+	rows := capability.StaticMatrix().Rows
+	registry := &fakeRegistry{
+		accounts: []account.Resource{
+			{AccountID: "multi", Product: exchange.ProductSpot},
+			{AccountID: "multi", Product: exchange.ProductPerp, Settlement: "USDT"},
+		},
+		multiRows: map[domain.AccountID][]capability.Row{"multi": {rows[0], rows[1]}},
+	}
+	service, err := NewService(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := service.Capabilities("")
+	products := map[string]bool{}
+	for _, item := range capabilities {
+		products[item.Row.Product] = true
+	}
+	if err != nil || len(capabilities) != 2 || !products["spot"] || !products["perp"] {
+		t.Fatalf("capabilities=%+v err=%v", capabilities, err)
+	}
+}
+
 func TestRiskLimitsTruthfullyRemainUnavailableUntilExchangeContractExists(t *testing.T) {
 	service, _ := NewService(&fakeRegistry{})
 	reference := service.RiskLimits("")
@@ -106,7 +129,19 @@ func TestRiskLimitsTruthfullyRemainUnavailableUntilExchangeContractExists(t *tes
 type fakeRegistry struct {
 	accounts  []account.Resource
 	rows      map[domain.AccountID]capability.Row
+	multiRows map[domain.AccountID][]capability.Row
 	snapshots map[domain.AccountID]catalog.Snapshot
+}
+
+func (registry *fakeRegistry) Capabilities(accountID domain.AccountID) ([]capability.Row, error) {
+	if rows, ok := registry.multiRows[accountID]; ok {
+		return append([]capability.Row(nil), rows...), nil
+	}
+	row, err := registry.Capability(accountID)
+	if err != nil {
+		return nil, err
+	}
+	return []capability.Row{row}, nil
 }
 
 func (registry *fakeRegistry) Accounts() []account.Resource {

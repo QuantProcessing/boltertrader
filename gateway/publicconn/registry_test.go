@@ -3,12 +3,15 @@ package publicconn
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
+	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/shopspring/decimal"
 )
@@ -17,6 +20,12 @@ type connectorFactoryStub struct {
 	mu     sync.Mutex
 	builds map[routeprofile.Key]int
 	next   func(routeprofile.Key) Connector
+}
+
+type factoryFunc func(context.Context, routeprofile.Key) (Connector, error)
+
+func (build factoryFunc) Build(ctx context.Context, key routeprofile.Key) (Connector, error) {
+	return build(ctx, key)
 }
 
 func (factory *connectorFactoryStub) Build(_ context.Context, key routeprofile.Key) (Connector, error) {
@@ -70,6 +79,59 @@ func (connector *refreshConnector) Refresh(ctx context.Context) ([]exchange.Inst
 
 func (*refreshConnector) Close() error { return nil }
 
+type periodicRefreshConnector struct {
+	mu         sync.Mutex
+	calls      int
+	closes     int
+	called     chan int
+	recovering chan struct{}
+	recover    chan struct{}
+	instrument exchange.Instrument
+}
+
+func (connector *periodicRefreshConnector) Refresh(ctx context.Context) ([]exchange.Instrument, error) {
+	connector.mu.Lock()
+	connector.calls++
+	call := connector.calls
+	connector.mu.Unlock()
+	connector.called <- call
+	switch call {
+	case 2:
+		return nil, errors.New("public refresh failed")
+	case 3:
+		close(connector.recovering)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-connector.recover:
+		}
+	}
+	return []exchange.Instrument{connector.instrument}, nil
+}
+
+func (connector *periodicRefreshConnector) Close() error {
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	connector.closes++
+	return nil
+}
+
+type blockingCloseConnector struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (*blockingCloseConnector) Refresh(context.Context) ([]exchange.Instrument, error) {
+	return nil, nil
+}
+
+func (connector *blockingCloseConnector) Close() error {
+	connector.once.Do(func() { close(connector.entered) })
+	<-connector.release
+	return nil
+}
+
 func TestTwoAccountsShareOnePublicConnector(t *testing.T) {
 	factory := &connectorFactoryStub{}
 	registry, err := NewRegistry(factory, routeprofile.DefaultRegistry())
@@ -90,6 +152,231 @@ func TestTwoAccountsShareOnePublicConnector(t *testing.T) {
 	}
 	one.Release()
 	two.Release()
+}
+
+func TestRegistryPeriodicRefreshMarksStaleFailureAndRecovers(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	connector := &periodicRefreshConnector{
+		called:     make(chan int, 8),
+		recovering: make(chan struct{}),
+		recover:    make(chan struct{}),
+		instrument: publicTestInstrument(exchange.ProductPerp, "USDT"),
+	}
+	registry, err := newRegistry(
+		factoryFunc(func(_ context.Context, candidate routeprofile.Key) (Connector, error) {
+			if candidate != key {
+				return nil, ErrConnectorUnavailable
+			}
+			return connector, nil
+		}),
+		routeprofile.DefaultRegistry(),
+		registryOptions{refreshInterval: 10 * time.Millisecond, catalogMaxAge: 25 * time.Millisecond, now: time.Now},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+
+	if _, err := registry.Refresh(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if call := awaitRefreshCall(t, connector.called); call != 1 {
+		t.Fatalf("initial refresh call=%d want=1", call)
+	}
+	if call := awaitRefreshCall(t, connector.called); call != 2 {
+		t.Fatalf("failed periodic refresh call=%d want=2", call)
+	}
+	select {
+	case <-connector.recovering:
+	case <-time.After(time.Second):
+		t.Fatal("periodic recovery refresh did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !lease.Status().Stale && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	failed := lease.Status()
+	if !failed.Stale || failed.Reason != catalog.ReasonCatalogStale || failed.LastError != catalog.ReasonRefreshFailed {
+		t.Fatalf("failed periodic refresh status=%+v", failed)
+	}
+
+	close(connector.recover)
+	deadline = time.Now().Add(time.Second)
+	for lease.Status().Generation < 2 && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	recovered := lease.Status()
+	if recovered.Stale || !recovered.ReadReady || recovered.Generation != 2 || recovered.Reason != "" || recovered.LastError != "" {
+		t.Fatalf("recovered periodic refresh status=%+v", recovered)
+	}
+}
+
+func TestRegistrySharesAndCancelsOnePeriodicRefreshLifecyclePerEntry(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	connector := &periodicRefreshConnector{
+		called:     make(chan int, 8),
+		recovering: make(chan struct{}),
+		recover:    make(chan struct{}),
+		instrument: publicTestInstrument(exchange.ProductPerp, "USDT"),
+	}
+	factory := &connectorFactoryStub{next: func(routeprofile.Key) Connector { return connector }}
+	registry, err := newRegistry(
+		factory,
+		routeprofile.DefaultRegistry(),
+		registryOptions{refreshInterval: 10 * time.Millisecond, catalogMaxAge: time.Minute, now: time.Now},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if call := awaitRefreshCall(t, connector.called); call != 1 {
+		t.Fatalf("first periodic refresh call=%d want=1", call)
+	}
+	one.Release()
+	if call := awaitRefreshCall(t, connector.called); call != 2 {
+		t.Fatalf("periodic refresh after non-final release call=%d want=2", call)
+	}
+	if call := awaitRefreshCall(t, connector.called); call != 3 {
+		t.Fatalf("blocking periodic refresh call=%d want=3", call)
+	}
+	select {
+	case <-connector.recovering:
+	case <-time.After(time.Second):
+		t.Fatal("blocking periodic refresh did not start")
+	}
+	two.Release()
+
+	connector.mu.Lock()
+	callsAfterRelease := connector.calls
+	closes := connector.closes
+	connector.mu.Unlock()
+	if callsAfterRelease != 3 || closes != 1 || factory.BuildCalls(key) != 1 {
+		t.Fatalf("calls=%d closes=%d builds=%d", callsAfterRelease, closes, factory.BuildCalls(key))
+	}
+	select {
+	case call := <-connector.called:
+		t.Fatalf("periodic refresh continued after final release: call=%d", call)
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func awaitRefreshCall(t *testing.T, calls <-chan int) int {
+	t.Helper()
+	select {
+	case call := <-calls:
+		return call
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connector refresh")
+		return 0
+	}
+}
+
+func TestAcquireWaitsForFinalReleaseCleanupBeforeBuildingReplacement(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	closing := &blockingCloseConnector{entered: make(chan struct{}), release: make(chan struct{})}
+	builtFirst := false
+	factory := &connectorFactoryStub{next: func(routeprofile.Key) Connector {
+		if !builtFirst {
+			builtFirst = true
+			return closing
+		}
+		return &connectorStub{}
+	}}
+	registry, err := NewRegistry(factory, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		first.Release()
+		close(released)
+	}()
+	select {
+	case <-closing.entered:
+	case <-time.After(time.Second):
+		t.Fatal("final release did not begin connector close")
+	}
+
+	acquired := make(chan Lease, 1)
+	acquireErr := make(chan error, 1)
+	go func() {
+		lease, err := registry.Acquire(context.Background(), key)
+		acquired <- lease
+		acquireErr <- err
+	}()
+	select {
+	case lease := <-acquired:
+		if lease != nil {
+			lease.Release()
+		}
+		t.Fatal("replacement acquired before prior connector closed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if builds := factory.BuildCalls(key); builds != 1 {
+		t.Fatalf("factory builds during close=%d want=1", builds)
+	}
+
+	close(closing.release)
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("final release did not complete")
+	}
+	var replacement Lease
+	select {
+	case replacement = <-acquired:
+	case <-time.After(time.Second):
+		t.Fatal("replacement acquire did not resume")
+	}
+	if err := <-acquireErr; err != nil || replacement == nil {
+		t.Fatalf("replacement lease=%v err=%v", replacement, err)
+	}
+	if builds := factory.BuildCalls(key); builds != 2 {
+		t.Fatalf("factory builds after close=%d want=2", builds)
+	}
+	replacement.Release()
+}
+
+func TestLeaseResolvesCanonicalInstrumentFromSharedSnapshot(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	canonical := publicTestInstrument(exchange.ProductPerp, "USDT")
+	connector := &scriptedConnector{instruments: []exchange.Instrument{canonical}}
+	registry, err := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+
+	snapshot, err := registry.Refresh(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := lease.Resolve(context.Background(), domain.InstrumentID(snapshot.Instruments[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Identity != canonical.Identity {
+		t.Fatalf("resolved identity=%+v want=%+v", resolved.Identity, canonical.Identity)
+	}
 }
 
 func TestRegistryCoalescesConcurrentRefreshesAndKeepsSiblingProfilesIsolated(t *testing.T) {
@@ -148,7 +435,22 @@ func TestRegistryCoalescesConcurrentRefreshesAndKeepsSiblingProfilesIsolated(t *
 		snapshot, err := registry.Refresh(context.Background(), key)
 		secondDone <- refreshResult{snapshot: snapshot, err: err}
 	}()
+	deadline := time.Now().Add(time.Second)
+	joined := false
+	for time.Now().Before(deadline) {
+		registry.mu.Lock()
+		waiters := registry.entries[key].refreshWaiters
+		registry.mu.Unlock()
+		if waiters == 1 {
+			joined = true
+			break
+		}
+		runtime.Gosched()
+	}
 	close(connector.release)
+	if !joined {
+		t.Fatal("second refresh did not join the in-flight refresh")
+	}
 	first := <-firstDone
 	second := <-secondDone
 	if first.err != nil || second.err != nil {
@@ -335,6 +637,182 @@ func TestRegistryCloseClosesLeasedConnectorOnce(t *testing.T) {
 	defer connector.mu.Unlock()
 	if connector.closes != 1 {
 		t.Fatalf("connector closes=%d want=1", connector.closes)
+	}
+}
+
+func TestRegistryRejectsAcquireAndRefreshAfterClose(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{}
+	factory := scriptedFactory{key: connector}
+	registry, _ := NewRegistry(factory, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease.Release()
+	if _, err := registry.Acquire(context.Background(), key); !errors.Is(err, ErrConnectorUnavailable) {
+		t.Fatalf("Acquire after Close error=%v", err)
+	}
+	if _, err := registry.Refresh(context.Background(), key); !errors.Is(err, ErrConnectorUnavailable) {
+		t.Fatalf("Refresh after Close error=%v", err)
+	}
+}
+
+func TestLastLeaseReleaseWaitsForInflightRefreshBeforeClosingConnector(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{
+		entered: make(chan struct{}), release: make(chan struct{}),
+		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},
+	}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, refreshErr := registry.Refresh(context.Background(), key)
+		refreshDone <- refreshErr
+	}()
+	<-connector.entered
+
+	releaseDone := make(chan struct{})
+	go func() {
+		lease.Release()
+		close(releaseDone)
+	}()
+	assertStillRefreshingAndOpen(t, connector, releaseDone)
+	close(connector.release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	<-releaseDone
+	assertConnectorCloses(t, connector, 1)
+}
+
+func TestRegistryCloseWaitsForInflightRefreshAndIsIdempotent(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{
+		entered: make(chan struct{}), release: make(chan struct{}),
+		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},
+	}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	if _, err := registry.Acquire(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, refreshErr := registry.Refresh(context.Background(), key)
+		refreshDone <- refreshErr
+	}()
+	<-connector.entered
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- registry.Close() }()
+	var registryCloseDone <-chan struct{}
+	for registryCloseDone == nil {
+		registry.mu.Lock()
+		if registry.closed {
+			registryCloseDone = registry.closeDone
+		}
+		registry.mu.Unlock()
+	}
+	select {
+	case <-registryCloseDone:
+		t.Fatal("registry close completed before in-flight refresh")
+	default:
+	}
+	assertConnectorCloses(t, connector, 0)
+	close(connector.release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	assertConnectorCloses(t, connector, 1)
+}
+
+func TestRegistryCloseJoinsCleanupAlreadyOwnedByLastRelease(t *testing.T) {
+	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	connector := &scriptedConnector{
+		entered: make(chan struct{}), release: make(chan struct{}),
+		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},
+	}
+	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
+	lease, err := registry.Acquire(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, refreshErr := registry.Refresh(context.Background(), key)
+		refreshDone <- refreshErr
+	}()
+	<-connector.entered
+	releaseDone := make(chan struct{})
+	go func() {
+		lease.Release()
+		close(releaseDone)
+	}()
+	for {
+		registry.mu.Lock()
+		current := registry.entries[key]
+		closing := current != nil && current.closing
+		registry.mu.Unlock()
+		if closing {
+			break
+		}
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- registry.Close() }()
+	var registryCloseDone <-chan struct{}
+	for registryCloseDone == nil {
+		registry.mu.Lock()
+		if registry.closed {
+			registryCloseDone = registry.closeDone
+		}
+		registry.mu.Unlock()
+	}
+	select {
+	case <-registryCloseDone:
+		t.Fatal("registry close completed before detached release cleanup")
+	default:
+	}
+	assertConnectorCloses(t, connector, 0)
+	close(connector.release)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	<-releaseDone
+	if err := <-closeDone; err != nil {
+		t.Fatal(err)
+	}
+	assertConnectorCloses(t, connector, 1)
+}
+
+func assertStillRefreshingAndOpen[T any](t *testing.T, connector *scriptedConnector, done <-chan T) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal("cleanup completed before refresh")
+	default:
+	}
+	assertConnectorCloses(t, connector, 0)
+}
+
+func assertConnectorCloses(t *testing.T, connector *scriptedConnector, want int) {
+	t.Helper()
+	connector.mu.Lock()
+	defer connector.mu.Unlock()
+	if connector.closes != want {
+		t.Fatalf("connector closes=%d want=%d", connector.closes, want)
 	}
 }
 
