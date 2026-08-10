@@ -60,6 +60,7 @@ func databaseAuthorityStatements(matrix authority.Matrix, currentDatabase string
 	writerRole := gatewayQuoteIdentifier(matrix.Roles.Writer)
 	databaseName := gatewayQuoteIdentifier(currentDatabase)
 	return []string{
+		`ALTER SCHEMA public OWNER TO ` + migratorRole,
 		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM PUBLIC`,
 		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM ` + writerRole,
 		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + migratorRole + `, ` + runtimeRole + `, ` + maintenanceRole,

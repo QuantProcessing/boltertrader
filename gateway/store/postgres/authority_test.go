@@ -11,6 +11,7 @@ func TestGatewayAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing
 	matrix := authority.GatewayV6()
 	statements := strings.Join(databaseAuthorityStatements(matrix, "bolter_gateway_test"), "\n")
 	for _, want := range []string{
+		`ALTER SCHEMA public OWNER TO "bolter_gateway_test_migrator"`,
 		`REVOKE CONNECT ON DATABASE "bolter_gateway_test" FROM PUBLIC`,
 		`REVOKE CONNECT ON DATABASE "bolter_gateway_test" FROM "bolter_gateway_test_writer"`,
 		`GRANT CONNECT ON DATABASE "bolter_gateway_test" TO "bolter_gateway_test_migrator", "bolter_gateway_test", "bolter_platform_test_admin"`,
