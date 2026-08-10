@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>局部视觉对照 · 资金费率套利</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #05090b; color: #dbe5ea; font-family: Arial, sans-serif; }
+      header { height: 42px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 12px; padding: 0 12px; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+      section { padding: 0 12px 10px; }
+      h2 { margin: 0 0 5px; color: #8e9ba1; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+      .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .crop { position: relative; overflow: hidden; border: 1px solid #334047; background: #0c1317; }
+      .crop img { position: absolute; left: 0; width: 1488px; max-width: none; height: auto; }
+      .table-crop { height: 330px; }
+      .table-crop img { top: -55px; }
+      .ticket-crop { height: 350px; }
+      .ticket-crop img { top: -55px; left: -748px; }
+      .positions-crop { height: 260px; }
+      .positions-crop img { top: -730px; }
+    </style>
+  </head>
+  <body>
+    <header><div>REFERENCE</div><div>IMPLEMENTATION</div></header>
+    <section>
+      <h2>机会表格 · 字体、行高、边框与选中态</h2>
+      <div class="pair">
+        <div class="crop table-crop"><img src="/design-reference.png" alt="参考设计机会表格" /></div>
+        <div class="crop table-crop"><img src="/design-qa-prototype.png" alt="实现机会表格" /></div>
+      </div>
+    </section>
+    <section>
+      <h2>执行工作台 · 控件密度、语义色与步骤状态</h2>
+      <div class="pair">
+        <div class="crop ticket-crop"><img src="/design-reference.png" alt="参考设计执行工作台" /></div>
+        <div class="crop ticket-crop"><img src="/design-qa-prototype.png" alt="实现执行工作台" /></div>
+      </div>
+    </section>
+    <section>
+      <h2>持仓区域 · 列密度、数值层级与状态</h2>
+      <div class="pair">
+        <div class="crop positions-crop"><img src="/design-reference.png" alt="参考设计持仓区域" /></div>
+        <div class="crop positions-crop"><img src="/design-qa-prototype.png" alt="实现持仓区域" /></div>
+      </div>
+    </section>
+  </body>
+</html>

@@ -1,0 +1,20 @@
+services:
+  funding-trader-postgres:
+    image: postgres:16-alpine
+    container_name: funding-trader-postgres-local
+    environment:
+      POSTGRES_DB: funding_trader_test
+      POSTGRES_USER: funding_trader_local
+      POSTGRES_PASSWORD: funding_trader_local_password
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - funding-trader-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U funding_trader_local -d funding_trader_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  funding-trader-postgres-data:

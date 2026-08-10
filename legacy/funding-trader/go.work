@@ -1,0 +1,8 @@
+go 1.26
+
+use (
+	./backend
+	../BolterTrader
+)
+
+replace github.com/QuantProcessing/boltertrader v0.0.0-20260729140337-3297e77bf21d => ../BolterTrader
