@@ -484,6 +484,21 @@ up() {
 	trap - EXIT INT TERM HUP
 }
 
+start_db() {
+	validate_mode; prepare_directories; validate_runtime_config; check_ports; ensure_tokens
+	started_here=0
+	trap 'rc=$?; trap - EXIT; if [ "$rc" -ne 0 ] && [ "$started_here" = 1 ]; then stop_service postgres >/dev/null 2>&1 || true; fi; exit "$rc"' EXIT
+	trap 'if [ "$started_here" = 1 ]; then stop_service postgres >/dev/null 2>&1 || true; fi; exit 1' INT TERM HUP
+	start_service postgres
+	case "$START_SERVICE_STATE" in
+		started) started_here=1; wait_service postgres ;;
+		already-ready) wait_owned_service postgres ;;
+		*) fail "postgres returned an invalid start state" ;;
+	esac
+	run_bootstrap
+	trap - EXIT INT TERM HUP
+}
+
 down() {
 	validate_mode; prepare_directories; drain_failed=0
 	for service in $SERVICES_STOP; do
@@ -586,7 +601,7 @@ EOF
 }
 
 case "${1:-}" in
-	up) up ;; down) down ;; restart) down; up ;; start-app) start_app ;; stop-app) stop_app ;; restart-app) restart_app ;; status|ps) status ;; wait) wait_all ;;
+	up) up ;; down) down ;; restart) down; up ;; start-db) start_db ;; start-app) start_app ;; stop-app) stop_app ;; restart-app) restart_app ;; status|ps) status ;; wait) wait_all ;;
 	logs) logs ;; doctor) doctor ;; reset) reset ;; drain-funding-worker) drain_funding_worker ;; help) help ;;
-	*) fail "usage: scripts/dev-platform {up|down|restart|start-app|stop-app|restart-app|status|wait|logs|ps|doctor|reset|drain-funding-worker|help}" ;;
+	*) fail "usage: scripts/dev-platform {up|down|restart|start-db|start-app|stop-app|restart-app|status|wait|logs|ps|doctor|reset|drain-funding-worker|help}" ;;
 esac
