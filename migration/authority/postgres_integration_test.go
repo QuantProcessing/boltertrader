@@ -127,7 +127,7 @@ func TestAuthorityMatrixRealPostgres(t *testing.T) {
 			FROM pg_database WHERE datname=$1`, database).Scan(&observedOwner, &publicConnect, &maintenanceConnect); err != nil {
 			t.Fatal(err)
 		}
-		if observedOwner != owner || publicConnect || maintenanceConnect {
+		if observedOwner != owner || publicConnect || !maintenanceConnect {
 			t.Fatalf("database=%s owner=%s publicConnect=%t maintenanceConnect=%t", database, observedOwner, publicConnect, maintenanceConnect)
 		}
 	}

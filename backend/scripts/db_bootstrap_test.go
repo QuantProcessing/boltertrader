@@ -203,7 +203,7 @@ func TestDatabaseBootstrapRepairsLegacyTestOwnersBeforeMaintenanceACLs(t *testin
 	}
 }
 
-func TestDatabaseBootstrapBoundsMaintenanceTargetConnect(t *testing.T) {
+func TestDatabaseBootstrapGrantsMaintenanceTargetConnect(t *testing.T) {
 	payload, err := os.ReadFile("db-bootstrap.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -215,13 +215,8 @@ func TestDatabaseBootstrapBoundsMaintenanceTargetConnect(t *testing.T) {
 			t.Errorf("bootstrap does not grant bounded maintenance CONNECT for %s", database)
 		}
 	}
-	for _, required := range []string{
-		`-v database="$database"`,
-		`REVOKE CONNECT ON DATABASE :"database" FROM bolter_platform_test_admin`,
-	} {
-		if !strings.Contains(normalized, required) {
-			t.Errorf("bootstrap does not revoke bounded maintenance CONNECT with %q", required)
-		}
+	if strings.Contains(normalized, `REVOKE CONNECT ON DATABASE :"database" FROM bolter_platform_test_admin`) {
+		t.Fatal("bootstrap revokes target CONNECT required by the NOLOGIN migrator service")
 	}
 }
 

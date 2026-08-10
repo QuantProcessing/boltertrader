@@ -242,7 +242,7 @@ configure_test_database() {
   runtime=$3
   writer=$4
   PGUSER=$maintenance_user "$PSQL" -v ON_ERROR_STOP=1 -d "$database" \
-    -v database="$database" -v migrator="$migrator" -v runtime="$runtime" -v writer="$writer" <<'SQL'
+    -v migrator="$migrator" -v runtime="$runtime" -v writer="$writer" <<'SQL'
 SET ROLE :"migrator";
 SELECT CASE WHEN current_user = :'migrator' THEN current_user ELSE null END;
 ALTER SCHEMA public OWNER TO :"migrator";
@@ -254,7 +254,6 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 GRANT USAGE ON SCHEMA public TO :"runtime", :"writer";
-REVOKE CONNECT ON DATABASE :"database" FROM bolter_platform_test_admin;
 RESET ROLE;
 SELECT CASE WHEN current_user = session_user THEN current_user ELSE null END;
 SQL
