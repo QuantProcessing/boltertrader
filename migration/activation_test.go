@@ -1279,18 +1279,21 @@ func TestDefaultActivationSupervisorPreservesPostgres(t *testing.T) {
 	if strings.Count(joined, "stop-app") != 2 || !strings.Contains(joined, "start-app") {
 		t.Fatalf("supervisor boundaries=%s", joined)
 	}
-	startNormal, waitNormal := false, false
+	validationStop, normalStop, startNormal, waitNormal := false, false, false, false
 	for _, command := range commands {
 		if command.Name != "env" {
 			continue
 		}
 		arguments := strings.Join(command.Args, " ")
 		profilesNormal := strings.Contains(arguments, "BT_GATEWAY_STARTUP_PROFILE=normal") && strings.Contains(arguments, "BT_PLATFORM_STARTUP_PROFILE=normal") && strings.Contains(arguments, "BT_FUNDING_STARTUP_PROFILE=normal")
+		profilesValidation := strings.Contains(arguments, "BT_GATEWAY_STARTUP_PROFILE=migration-validation") && strings.Contains(arguments, "BT_PLATFORM_STARTUP_PROFILE=migration-validation") && strings.Contains(arguments, "BT_FUNDING_STARTUP_PROFILE=migration-validation")
+		validationStop = validationStop || profilesValidation && strings.HasSuffix(arguments, " stop-app")
+		normalStop = normalStop || profilesNormal && strings.HasSuffix(arguments, " stop-app")
 		startNormal = startNormal || profilesNormal && strings.HasSuffix(arguments, " start-app")
 		waitNormal = waitNormal || profilesNormal && strings.HasSuffix(arguments, " wait")
 	}
-	if !startNormal || !waitNormal {
-		t.Fatalf("activation did not force normal startup and named readiness: %+v", commands)
+	if !validationStop || !normalStop || !startNormal || !waitNormal {
+		t.Fatalf("activation did not force validation pre-grant stop and normal post-grant supervision: %+v", commands)
 	}
 	for _, command := range commands {
 		if strings.Contains(string(command.Stdin), "pg_read_file") || strings.Contains(string(command.Stdin), "pg_read_server_files") {
@@ -1748,7 +1751,11 @@ func TestDefaultActivationContainmentAttemptsStopAndFenceAndReportsBothErrors(t 
 				TargetDatabase: "platform_test", TargetRuntimeRole: "platform_test_runtime",
 				GatewayDatabase: "gateway_test", GatewayRuntimeRole: "gateway_test_runtime",
 			}, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
-				if len(command.Args) == 1 && command.Args[0] == "stop-app" {
+				if command.Name == "env" && len(command.Args) > 0 && command.Args[len(command.Args)-1] == "stop-app" {
+					arguments := strings.Join(command.Args, " ")
+					if !strings.Contains(arguments, "BT_GATEWAY_STARTUP_PROFILE=normal") || !strings.Contains(arguments, "BT_PLATFORM_STARTUP_PROFILE=normal") || !strings.Contains(arguments, "BT_FUNDING_STARTUP_PROFILE=normal") {
+						t.Fatalf("containment stop did not force normal profiles: %s", arguments)
+					}
 					stopCalls++
 					if tc.stopError {
 						return CommandResult{}, errors.New("stop exploded")

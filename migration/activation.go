@@ -2163,6 +2163,9 @@ SELECT (NOT EXISTS (
 	normalSupervisor := func(action string) Command {
 		return Command{Name: "env", Args: []string{"BT_GATEWAY_STARTUP_PROFILE=normal", "BT_PLATFORM_STARTUP_PROFILE=normal", "BT_FUNDING_STARTUP_PROFILE=normal", supervisor, action}}
 	}
+	validationSupervisor := func(action string) Command {
+		return Command{Name: "env", Args: []string{"BT_GATEWAY_STARTUP_PROFILE=migration-validation", "BT_PLATFORM_STARTUP_PROFILE=migration-validation", "BT_FUNDING_STARTUP_PROFILE=migration-validation", supervisor, action}}
+	}
 	postgresIdentity := ""
 	verifyPostgresIdentity := func(ctx context.Context) error {
 		databaseStart, err := runChecked(ctx, postgresProbe, "")
@@ -2238,7 +2241,7 @@ SELECT (NOT EXISTS (
 			return ActivationPreGrantObservation{Platform: authorityObservations[0], Gateway: authorityObservations[1], DMLProbeSHA256: activationMeasuredProbeSHA(commands, probeOutputs)}, nil
 		},
 		StopServices: func(ctx context.Context) error {
-			if _, err := runChecked(ctx, Command{Name: supervisor, Args: []string{"stop-app"}}, ""); err != nil {
+			if _, err := runChecked(ctx, validationSupervisor("stop-app"), ""); err != nil {
 				return err
 			}
 			return verifyPostgresIdentity(ctx)
@@ -2440,7 +2443,7 @@ SELECT (NOT EXISTS (
 		},
 		ContainPostGrantFailure: func(ctx context.Context) error {
 			var containmentErrors []error
-			if _, err := runChecked(ctx, Command{Name: supervisor, Args: []string{"stop-app"}}, ""); err != nil {
+			if _, err := runChecked(ctx, normalSupervisor("stop-app"), ""); err != nil {
 				containmentErrors = append(containmentErrors, fmt.Errorf("stop app: %w", err))
 			}
 			if err := verifyPostgresIdentity(ctx); err != nil {
