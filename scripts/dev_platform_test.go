@@ -598,6 +598,11 @@ while :; do sleep 1; done
 			t.Errorf("supervisor readiness used the wrong bearer token; missing %q:\n%s", required, requestLog)
 		}
 	}
+	for _, protectedRoute := range []string{"/api/v1/system/status", "/api/v1/system/readiness"} {
+		if strings.Contains(string(requestLog), protectedRoute) {
+			t.Errorf("supervisor probed authenticated browser route %q without a user session:\n%s", protectedRoute, requestLog)
+		}
+	}
 }
 
 func TestDevPlatformMigrationValidationRejectsStaleSentinel(t *testing.T) {

@@ -352,9 +352,7 @@ builtin_ready() {
 				authenticated_get "$GATEWAY_TOKEN_FILE" http://127.0.0.1:18082/internal/v1/runtime/readiness
 			;;
 		platform)
-			curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/status >/dev/null &&
-				curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/readiness >/dev/null &&
-				authenticated_get "$TOKEN_FILE" http://127.0.0.1:18092/internal/v1/funding-work/status
+			authenticated_get "$TOKEN_FILE" http://127.0.0.1:18092/internal/v1/funding-work/status
 			;;
 		funding-worker)
 			funding_worker_ready
