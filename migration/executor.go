@@ -979,7 +979,7 @@ func acceptMappingSnapshot(sourcePath, evidenceDir, expectedSHA string) (string,
 	if !validSHA256(expectedSHA) {
 		return "", fmt.Errorf("mapping checksum is invalid")
 	}
-	data, sourceSHA, err := verifiedartifact.ReadSnapshot(sourcePath, 1<<20)
+	data, sourceSHA, err := verifiedartifact.ReadRepositorySnapshot(sourcePath, 1<<20)
 	if err != nil {
 		return "", fmt.Errorf("backfill mapping snapshot is unavailable")
 	}

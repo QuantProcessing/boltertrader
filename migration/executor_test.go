@@ -515,7 +515,10 @@ func canonicalBackfillFixture(t *testing.T, content string) (string, string) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(directory, "account-route-v1.json")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writeRepositoryExecutable(t, root, "platform-migrate", 0o700)

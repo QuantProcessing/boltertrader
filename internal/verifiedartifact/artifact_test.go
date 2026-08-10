@@ -53,6 +53,38 @@ func TestReadSnapshotRejectsPermissiveModeAndPathSwap(t *testing.T) {
 	}
 }
 
+func TestReadRepositorySnapshotAcceptsTrackedModeAndRejectsGroupWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    os.FileMode
+		wantErr bool
+	}{
+		{name: "private", mode: 0o600},
+		{name: "tracked", mode: 0o644},
+		{name: "group writable", mode: 0o664, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mapping.json")
+			if err := os.WriteFile(path, []byte(`{"schemaVersion":1}`), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			data, _, err := ReadRepositorySnapshot(path, 1024)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("unsafe repository artifact was accepted")
+				}
+				return
+			}
+			if err != nil || string(data) != `{"schemaVersion":1}` {
+				t.Fatalf("data=%q err=%v", data, err)
+			}
+		})
+	}
+}
+
 func TestOpenStreamRemainsBoundToVerifiedInodeAfterPathReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "archive")
 	writePrivateArtifact(t, path, "original archive")

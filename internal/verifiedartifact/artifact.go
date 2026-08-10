@@ -12,15 +12,20 @@ import (
 )
 
 type Artifact struct {
-	path    string
-	file    *os.File
-	info    os.FileInfo
-	maxSize int64
-	sha256  string
+	path              string
+	file              *os.File
+	info              os.FileInfo
+	maxSize           int64
+	sha256            string
+	metadataValidator func(os.FileInfo) error
 }
 
 func ReadSnapshot(path string, maxSize int64) ([]byte, string, error) {
 	return readSnapshot(path, maxSize, nil)
+}
+
+func ReadRepositorySnapshot(path string, maxSize int64) ([]byte, string, error) {
+	return readSnapshotWithValidator(path, maxSize, nil, validateRepositoryMetadata)
 }
 
 func OpenStream(path string, maxSize int64) (*Artifact, error) {
@@ -46,11 +51,15 @@ func CreateStream(path string, maxSize int64) (*Artifact, error) {
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("verified artifact create rejected")
 	}
-	return &Artifact{path: path, file: file, info: info, maxSize: maxSize}, nil
+	return &Artifact{path: path, file: file, info: info, maxSize: maxSize, metadataValidator: validateMetadata}, nil
 }
 
 func readSnapshot(path string, maxSize int64, beforeOpen func()) ([]byte, string, error) {
-	artifact, err := openStream(path, maxSize, beforeOpen)
+	return readSnapshotWithValidator(path, maxSize, beforeOpen, validateMetadata)
+}
+
+func readSnapshotWithValidator(path string, maxSize int64, beforeOpen func(), validator func(os.FileInfo) error) ([]byte, string, error) {
+	artifact, err := openStreamWithValidator(path, maxSize, beforeOpen, validator)
 	if err != nil {
 		return nil, "", err
 	}
@@ -73,6 +82,10 @@ func readSnapshot(path string, maxSize int64, beforeOpen func()) ([]byte, string
 }
 
 func openStream(path string, maxSize int64, beforeOpen func()) (*Artifact, error) {
+	return openStreamWithValidator(path, maxSize, beforeOpen, validateMetadata)
+}
+
+func openStreamWithValidator(path string, maxSize int64, beforeOpen func(), validator func(os.FileInfo) error) (*Artifact, error) {
 	if maxSize <= 0 {
 		return nil, fmt.Errorf("verified artifact size limit is invalid")
 	}
@@ -80,7 +93,7 @@ func openStream(path string, maxSize int64, beforeOpen func()) (*Artifact, error
 	if err != nil {
 		return nil, fmt.Errorf("verified artifact is unavailable")
 	}
-	if err := validateInfo(pathInfo, maxSize); err != nil {
+	if err := validateInfoWithValidator(pathInfo, maxSize, validator); err != nil {
 		return nil, err
 	}
 	if beforeOpen != nil {
@@ -103,7 +116,7 @@ func openStream(path string, maxSize int64, beforeOpen func()) (*Artifact, error
 	if err != nil {
 		return closeOnError(fmt.Errorf("verified artifact metadata is unavailable"))
 	}
-	if err := validateInfo(fileInfo, maxSize); err != nil {
+	if err := validateInfoWithValidator(fileInfo, maxSize, validator); err != nil {
 		return closeOnError(err)
 	}
 	if !os.SameFile(pathInfo, fileInfo) {
@@ -113,7 +126,7 @@ func openStream(path string, maxSize int64, beforeOpen func()) (*Artifact, error
 	if err != nil {
 		return closeOnError(err)
 	}
-	artifact := &Artifact{path: path, file: file, info: fileInfo, maxSize: maxSize, sha256: digest}
+	artifact := &Artifact{path: path, file: file, info: fileInfo, maxSize: maxSize, sha256: digest, metadataValidator: validator}
 	if err := artifact.Rewind(); err != nil {
 		return closeOnError(err)
 	}
@@ -121,7 +134,11 @@ func openStream(path string, maxSize int64, beforeOpen func()) (*Artifact, error
 }
 
 func validateInfo(info os.FileInfo, maxSize int64) error {
-	if err := validateMetadata(info); err != nil || info.Size() <= 0 || info.Size() > maxSize {
+	return validateInfoWithValidator(info, maxSize, validateMetadata)
+}
+
+func validateInfoWithValidator(info os.FileInfo, maxSize int64, validator func(os.FileInfo) error) error {
+	if validator == nil || validator(info) != nil || info.Size() <= 0 || info.Size() > maxSize {
 		return fmt.Errorf("verified artifact must be a private regular file")
 	}
 	return nil
@@ -134,6 +151,18 @@ func validateMetadata(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(stat.Uid) != os.Geteuid() {
 		return fmt.Errorf("verified artifact owner mismatch")
+	}
+	return nil
+}
+
+func validateRepositoryMetadata(info os.FileInfo) error {
+	mode := info.Mode().Perm()
+	if !info.Mode().IsRegular() || mode != 0o600 && mode != 0o644 {
+		return fmt.Errorf("verified repository artifact must be a read-only regular file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Geteuid() {
+		return fmt.Errorf("verified repository artifact owner mismatch")
 	}
 	return nil
 }
@@ -170,11 +199,11 @@ func (artifact *Artifact) Revalidate() error {
 		return fmt.Errorf("verified artifact is not sealed")
 	}
 	fileInfo, err := artifact.file.Stat()
-	if err != nil || validateInfo(fileInfo, artifact.maxSize) != nil || !os.SameFile(artifact.info, fileInfo) {
+	if err != nil || validateInfoWithValidator(fileInfo, artifact.maxSize, artifact.metadataValidator) != nil || !os.SameFile(artifact.info, fileInfo) {
 		return fmt.Errorf("verified artifact changed after open")
 	}
 	pathInfo, err := os.Lstat(artifact.path)
-	if err != nil || validateInfo(pathInfo, artifact.maxSize) != nil || !os.SameFile(pathInfo, fileInfo) {
+	if err != nil || validateInfoWithValidator(pathInfo, artifact.maxSize, artifact.metadataValidator) != nil || !os.SameFile(pathInfo, fileInfo) {
 		return fmt.Errorf("verified artifact changed after open")
 	}
 	digest, err := hashFile(artifact.file, fileInfo.Size(), artifact.maxSize)
@@ -186,11 +215,11 @@ func (artifact *Artifact) Revalidate() error {
 
 func (artifact *Artifact) Seal() error {
 	fileInfo, err := artifact.file.Stat()
-	if err != nil || validateInfo(fileInfo, artifact.maxSize) != nil || !os.SameFile(artifact.info, fileInfo) {
+	if err != nil || validateInfoWithValidator(fileInfo, artifact.maxSize, artifact.metadataValidator) != nil || !os.SameFile(artifact.info, fileInfo) {
 		return fmt.Errorf("verified artifact changed before seal")
 	}
 	pathInfo, err := os.Lstat(artifact.path)
-	if err != nil || validateInfo(pathInfo, artifact.maxSize) != nil || !os.SameFile(pathInfo, fileInfo) {
+	if err != nil || validateInfoWithValidator(pathInfo, artifact.maxSize, artifact.metadataValidator) != nil || !os.SameFile(pathInfo, fileInfo) {
 		return fmt.Errorf("verified artifact changed before seal")
 	}
 	digest, err := hashFile(artifact.file, fileInfo.Size(), artifact.maxSize)
