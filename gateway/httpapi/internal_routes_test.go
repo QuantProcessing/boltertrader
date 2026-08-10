@@ -280,3 +280,23 @@ func TestRuntimeSnapshotViewPublishesSafeOperationIDWithoutSecrets(t *testing.T)
 		t.Fatalf("runtime view=%s", encoded)
 	}
 }
+
+func TestGatewayWriteGateRejectsInternalPUTBeforeDecodeAndDispatch(t *testing.T) {
+	authority := &fakeInternalAuthority{}
+	handler, err := NewInternalHandler(InternalOptions{
+		Authority: authority, Authenticate: func(*http.Request) error { return nil }, WriteReady: func() bool { return false },
+	})
+	if err != nil { t.Fatal(err) }
+	for _, path := range []string{
+		"/internal/v1/accounts/desired/a/operations/op",
+		"/internal/v1/accounts/desired/a/retirements/op",
+		"/internal/v1/accounts/desired/a/rotation-finalizations/op",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPut, path, strings.NewReader("{")))
+		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "GATEWAY_WRITES_NOT_READY") {
+			t.Fatalf("path=%s status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if len(authority.requests) != 0 { t.Fatalf("authority dispatched %d requests", len(authority.requests)) }
+}

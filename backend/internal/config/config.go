@@ -30,10 +30,19 @@ const (
 	SecretMasterKeyFileEnv         = "BT_SECRET_MASTER_KEY_FILE"
 	SecretKeychainServiceEnv       = "BT_SECRET_KEYCHAIN_SERVICE"
 	SecretKeychainAccountEnv       = "BT_SECRET_KEYCHAIN_ACCOUNT"
+	PlatformStartupProfileEnv      = "BT_PLATFORM_STARTUP_PROFILE"
+)
+
+type StartupProfile string
+
+const (
+	StartupNormal              StartupProfile = "normal"
+	StartupMigrationValidation StartupProfile = "migration-validation"
 )
 
 type Config struct {
 	Mode                        string
+	StartupProfile              StartupProfile
 	BrowserListenAddr           string
 	WorkListenAddr              string
 	BootstrapUsername           string
@@ -72,6 +81,7 @@ func Load() (Config, error) {
 	}
 	cfg := Config{
 		Mode:                        strings.TrimSpace(os.Getenv("BT_MODE")),
+		StartupProfile:              StartupProfile(getenv(PlatformStartupProfileEnv, string(StartupNormal))),
 		BrowserListenAddr:           getenv("BT_PLATFORM_BROWSER_LISTEN_ADDR", "127.0.0.1:18091"),
 		WorkListenAddr:              getenv("BT_PLATFORM_WORK_LISTEN_ADDR", "127.0.0.1:18092"),
 		BootstrapUsername:           strings.TrimSpace(os.Getenv("BT_BOOTSTRAP_USERNAME")),
@@ -147,6 +157,18 @@ func Load() (Config, error) {
 func (cfg Config) Validate() error {
 	if cfg.Mode != "test" && cfg.Mode != "live" {
 		return fmt.Errorf("BT_MODE must be test or live")
+	}
+	switch cfg.StartupProfile {
+	case StartupNormal:
+	case StartupMigrationValidation:
+		if cfg.Mode != "test" {
+			return fmt.Errorf("%s is valid only when BT_MODE=test", PlatformStartupProfileEnv)
+		}
+		if cfg.FundingLiveEnabled || cfg.LivePrivateWritesEnabled {
+			return fmt.Errorf("%s requires all Live write flags to be false", PlatformStartupProfileEnv)
+		}
+	default:
+		return fmt.Errorf("%s must be normal or migration-validation", PlatformStartupProfileEnv)
 	}
 	if cfg.FundingLiveEnabled && cfg.Mode != "live" {
 		return fmt.Errorf("%s is valid only when BT_MODE=live", FundingLiveEnabledEnv)

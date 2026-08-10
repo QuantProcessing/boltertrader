@@ -148,3 +148,13 @@ func containsReason(reasons []string, want string) bool {
 	}
 	return false
 }
+
+func TestReadinessIncludesNamedComponentsWithoutChangingRequiredHealth(t *testing.T) {
+	monitor := health.NewMonitor()
+	monitor.SetPostgresHealthy(true)
+	monitor.SetComponent("canonicalWrites", false, "database_authority_not_ready")
+	readiness := monitor.Readiness()
+	if !readiness.Ready { t.Fatalf("optional component changed required readiness: %+v", readiness) }
+	component, ok := readiness.Components["canonicalWrites"]
+	if !ok || component.Ready || component.Reason != "database_authority_not_ready" { t.Fatalf("canonicalWrites = %+v, present=%t", component, ok) }
+}

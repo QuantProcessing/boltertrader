@@ -86,6 +86,24 @@ func (service *Readiness) snapshot(requireAll bool) Snapshot {
 			ready = false
 		}
 	}
+	for name, component := range stored {
+		if _, ok := components[name]; ok {
+			continue
+		}
+		if evaluator := evaluators[name]; evaluator != nil {
+			component = evaluator()
+		}
+		component.Details = cloneDetails(component.Details)
+		components[name] = component
+	}
+	for name, evaluator := range evaluators {
+		if _, ok := components[name]; ok {
+			continue
+		}
+		component := evaluator()
+		component.Details = cloneDetails(component.Details)
+		components[name] = component
+	}
 	if !requireAll {
 		ready = components["process"].Ready
 	}
@@ -94,7 +112,8 @@ func (service *Readiness) snapshot(requireAll bool) Snapshot {
 
 func (snapshot Snapshot) BlockingReasons() []string {
 	reasons := make([]string, 0)
-	for name, component := range snapshot.Components {
+	for _, name := range RequiredComponents {
+		component := snapshot.Components[name]
 		if !component.Ready {
 			reasons = append(reasons, name+":"+component.Reason)
 		}

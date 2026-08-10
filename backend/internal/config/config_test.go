@@ -317,6 +317,7 @@ func clearEnvironment(t *testing.T) {
 		GatewayURLEnv, GatewayTokenFileEnv, "BT_PLATFORM_DATABASE", "BT_PLATFORM_DATABASE_ROLE",
 		"BT_MANUAL_PREVIEW_SIGNING_KEY", ManualPreviewSigningKeyFileEnv,
 		LivePrivateWritesEnabledEnv,
+		PlatformStartupProfileEnv,
 		FundingLiveEnabledEnv, FundingLiveMaxNotionalEnv,
 		SecretKeySourceEnv, SecretStoreDirEnv, SecretStoreNamespaceEnv, SecretMasterKeyVersionEnv,
 		SecretMasterKeyFileEnv, SecretKeychainServiceEnv, SecretKeychainAccountEnv,

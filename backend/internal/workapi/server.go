@@ -2,6 +2,7 @@ package workapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -26,6 +27,7 @@ type Options struct {
 	Service         *work.Service
 	WorkerValidator WorkerValidator
 	OnReadiness     func(bool)
+	WriteAuthority  interface{ Ready(context.Context) (bool, string) }
 }
 
 // WorkerValidator is the narrow platform/work interface consumed by workapi for
@@ -43,6 +45,7 @@ type handler struct {
 	service         *work.Service
 	workerValidator WorkerValidator
 	onReadiness     func(bool)
+	writeAuthority  interface{ Ready(context.Context) (bool, string) }
 }
 
 func New(options Options) (http.Handler, error) {
@@ -71,7 +74,7 @@ func New(options Options) (http.Handler, error) {
 			workerValidator = serviceValidator
 		}
 	}
-	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux(), service: service, workerValidator: workerValidator, onReadiness: options.OnReadiness}
+	h := &handler{tokenDigest: options.TokenDigest, mode: options.Mode, contract: contract, mux: http.NewServeMux(), service: service, workerValidator: workerValidator, onReadiness: options.OnReadiness, writeAuthority: options.WriteAuthority}
 	h.register()
 	return h, nil
 }
@@ -80,6 +83,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !h.authorized(r) {
 		writeError(w, http.StatusUnauthorized, "WORKER_AUTH_REQUIRED", "worker authorization required", map[string]any{"listener": "platform-funding-work"}, false, requestID(r))
 		return
+	}
+	if h.writeAuthority != nil && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+		if ready, _ := h.writeAuthority.Ready(r.Context()); !ready {
+			writeError(w, http.StatusServiceUnavailable, "CANONICAL_WRITES_NOT_READY", "canonical writes are not ready", nil, true, requestID(r))
+			return
+		}
 	}
 	h.mux.ServeHTTP(w, r)
 }

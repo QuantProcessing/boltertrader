@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,7 @@ type Options struct {
 	Trading         *TradingOptions
 	Funding         *FundingRoutesOptions
 	Projections     *BrowserProjectionRoutesOptions
+	WriteAuthority  interface{ Ready(context.Context) (bool, string) }
 }
 
 type Server struct {
@@ -36,6 +38,7 @@ type Server struct {
 	mode     string
 	contract frozencontract.Contract
 	mux      *http.ServeMux
+	writeAuthority interface{ Ready(context.Context) (bool, string) }
 }
 
 func New(options Options) (http.Handler, error) {
@@ -54,7 +57,7 @@ func New(options Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{sessions: options.Sessions, mode: options.Mode, contract: contract, mux: http.NewServeMux()}
+	s := &Server{sessions: options.Sessions, mode: options.Mode, contract: contract, mux: http.NewServeMux(), writeAuthority: options.WriteAuthority}
 	if err := s.register(options); err != nil {
 		return nil, err
 	}
@@ -69,6 +72,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mux.ServeHTTP(w, r)
 		return
 	}
+	if s.canonicalMutationBlocked(r) {
+		writeError(w, http.StatusServiceUnavailable, "CANONICAL_WRITES_NOT_READY", "canonical writes are not ready", nil, true, requestID(r))
+		return
+	}
 	if r.URL.Path == "/api/v1/auth/login" {
 		s.mux.ServeHTTP(w, r)
 		return
@@ -78,6 +85,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) canonicalMutationBlocked(r *http.Request) bool {
+	if s.writeAuthority == nil || r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return false
+	}
+	if (r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/login") ||
+		(r.Method == http.MethodDelete && r.URL.Path == "/api/v1/auth/session") {
+		return false
+	}
+	ready, _ := s.writeAuthority.Ready(r.Context())
+	return !ready
 }
 
 func (s *Server) register(options Options) error {

@@ -593,6 +593,23 @@ func newTestEventHub(t *testing.T) *gatewayevent.Hub {
 	return hub
 }
 
+func TestGatewayWriteGateRejectsPublicMutationsBeforeDecode(t *testing.T) {
+	fixture := newHTTPFixture(t)
+	handler := NewWriteGate(func() bool { return false }).Wrap(fixture.handler)
+	for _, request := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/orders"},
+		{http.MethodPatch, "/v1/orders/not-an-id"},
+		{http.MethodDelete, "/v1/orders/not-an-id"},
+		{http.MethodPut, "/v1/accounts/not-an-id/instruments/not-an-id/leverage"},
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(request.method, request.path, strings.NewReader("{")))
+		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "GATEWAY_WRITES_NOT_READY") {
+			t.Fatalf("%s %s: status=%d body=%s", request.method, request.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 type fakeHTTPOrders struct {
 	place             order.PlaceRequest
 	placeCalls        int
