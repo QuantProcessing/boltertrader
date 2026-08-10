@@ -15,6 +15,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	storepostgres "github.com/QuantProcessing/boltertrader/gateway/store/postgres"
 )
 
 func TestServiceStartsWithDynamicZeroAccountRuntime(t *testing.T) {
@@ -34,7 +35,7 @@ func TestServiceStartsWithDynamicZeroAccountRuntime(t *testing.T) {
 		"connect",
 		"ping",
 		"validate_identity",
-		"migrate",
+		"verify_authority",
 		"build_accounts",
 		"accounts_start",
 		"restore_accounts",
@@ -56,9 +57,9 @@ func TestMigrationValidationSkipsPrivateRuntimeAndCanonicalMutations(t *testing.
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
 	deps.CheckCredentialResolver = func(context.Context) error { calls = append(calls, "credential_check"); return nil }
-	deps.VerifyCanonicalWrites = func(context.Context, process.PostgresPool) (bool, error) {
+	deps.VerifyDatabaseAuthority = func(context.Context, process.PostgresPool) (storepostgres.AuthorityResult, error) {
 		calls = append(calls, "verify_writes")
-		return false, nil
+		return storepostgres.AuthorityResult{}, nil
 	}
 	deps.ValidationHandlerFactory = func(*health.Monitor, process.PostgresPool) (http.Handler, error) {
 		calls = append(calls, "build_validation_handler")
@@ -76,6 +77,39 @@ func TestMigrationValidationSkipsPrivateRuntimeAndCanonicalMutations(t *testing.
 	component := service.Health().Component("canonicalWrites")
 	if component.Ready {
 		t.Fatalf("canonicalWrites = %+v", component)
+	}
+}
+
+func TestNormalReadOnlyStartupSkipsPrivateRuntimeWithoutWriterMembership(t *testing.T) {
+	fixture := newFixture(t)
+	var calls []string
+	deps := fixtureDeps(fixture, &calls)
+	deps.CheckCredentialResolver = func(context.Context) error {
+		calls = append(calls, "credential_check")
+		return nil
+	}
+	deps.VerifyDatabaseAuthority = func(context.Context, process.PostgresPool) (storepostgres.AuthorityResult, error) {
+		calls = append(calls, "verify_writes")
+		return storepostgres.AuthorityResult{}, nil
+	}
+	deps.ValidationHandlerFactory = func(monitor *health.Monitor, _ process.PostgresPool) (http.Handler, error) {
+		calls = append(calls, "build_read_only_handler")
+		if component := monitor.Component("canonicalWrites"); component.Ready || component.Reason != "writer_role_unavailable" {
+			t.Fatalf("canonicalWrites = %+v", component)
+		}
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
+
+	service, err := process.Start(t.Context(), fixture.config, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Shutdown(context.Background()) }()
+	want := []string{
+		"credential_check", "resolve:env://TOKEN", "resolve:env://POSTGRES_DSN", "connect", "ping", "validate_identity", "verify_writes", "build_read_only_handler", "listen",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("read-only startup calls = %v, want %v", calls, want)
 	}
 }
 
@@ -162,7 +196,7 @@ func TestServiceStartupFailureCleansDynamicRuntimeBeforePool(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsWrongDatabaseIdentityBeforeMigrateOrRuntimeBuild(t *testing.T) {
+func TestServiceRejectsWrongDatabaseIdentityBeforeAuthorityOrRuntimeBuild(t *testing.T) {
 	fixture := newFixture(t)
 	var calls []string
 	deps := fixtureDeps(fixture, &calls)
@@ -182,6 +216,33 @@ func TestServiceRejectsWrongDatabaseIdentityBeforeMigrateOrRuntimeBuild(t *testi
 		"resolve:env://TOKEN", "resolve:env://POSTGRES_DSN", "connect", "ping", "validate_identity", "pool_close",
 	}) {
 		t.Fatalf("calls = %v", got)
+	}
+}
+
+func TestServiceFailsClosedOnDatabaseAuthorityErrorInEveryProfile(t *testing.T) {
+	for _, profile := range []config.StartupProfile{"", config.StartupProfileMigrationValidation} {
+		t.Run(string(profile), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.config.Server.StartupProfile = profile
+			var calls []string
+			deps := fixtureDeps(fixture, &calls)
+			deps.VerifyDatabaseAuthority = func(context.Context, process.PostgresPool) (storepostgres.AuthorityResult, error) {
+				calls = append(calls, "verify_authority")
+				return storepostgres.AuthorityResult{}, errors.New("postgres://secret structural drift")
+			}
+			if profile == config.StartupProfileMigrationValidation {
+				deps.ValidationHandlerFactory = func(*health.Monitor, process.PostgresPool) (http.Handler, error) {
+					return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+				}
+			}
+			_, err := process.Start(t.Context(), fixture.config, deps)
+			if err == nil || strings.Contains(err.Error(), "postgres://secret") {
+				t.Fatalf("error=%v", err)
+			}
+			if indexOf(calls, "build_accounts") >= 0 || indexOf(calls, "listen") >= 0 {
+				t.Fatalf("authority failure started runtime: %v", calls)
+			}
+		})
 	}
 }
 
@@ -268,9 +329,9 @@ func fixtureDeps(fixture fixture, calls *[]string) process.Dependencies {
 			*calls = append(*calls, "validate_identity")
 			return nil
 		},
-		Migrate: func(context.Context, process.PostgresPool) error {
-			*calls = append(*calls, "migrate")
-			return nil
+		VerifyDatabaseAuthority: func(context.Context, process.PostgresPool) (storepostgres.AuthorityResult, error) {
+			*calls = append(*calls, "verify_authority")
+			return storepostgres.AuthorityResult{WriterMembership: true}, nil
 		},
 		BuildAccountManager: func(context.Context) (process.AccountManager, error) {
 			*calls = append(*calls, "build_accounts")

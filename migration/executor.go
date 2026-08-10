@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	storepkg "github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/internal/verifiedartifact"
 )
 
@@ -42,32 +43,37 @@ type CommandResult struct {
 type CommandRunner func(context.Context, Command) (CommandResult, error)
 
 type ExecutionRequest struct {
-	Operation           Operation
-	ManifestPath        string
-	EvidenceDir         string
-	ArtifactPath        string
-	BackfillPath        string
-	ID                  string
-	Verifier            string
-	Reason              string
-	SourceService       string
-	TargetService       string
-	GatewayService      string
-	MaintenanceService  string
-	SourceDatabase      string
-	TargetDatabase      string
-	GatewayDatabase     string
-	MaintenanceDatabase string
-	SourceRole          string
-	TargetRole          string
-	GatewayRole         string
-	MaintenanceRole     string
-	SourceWriterRole    string
-	TargetWriterRole    string
-	GatewayWriterRole   string
-	JournalPath         string
-	StateDir            string
-	repositoryRoot      string
+	Operation              Operation
+	ManifestPath           string
+	EvidenceDir            string
+	ArtifactPath           string
+	BackfillPath           string
+	BackupID               string
+	BackupArtifactPath     string
+	FinalDeltaArtifactPath string
+	ID                     string
+	Verifier               string
+	Reason                 string
+	SourceService          string
+	TargetService          string
+	GatewayService         string
+	MaintenanceService     string
+	SourceDatabase         string
+	TargetDatabase         string
+	GatewayDatabase        string
+	MaintenanceDatabase    string
+	SourceRole             string
+	TargetRole             string
+	GatewayRole            string
+	TargetRuntimeRole      string
+	GatewayRuntimeRole     string
+	MaintenanceRole        string
+	SourceWriterRole       string
+	TargetWriterRole       string
+	GatewayWriterRole      string
+	JournalPath            string
+	StateDir               string
+	repositoryRoot         string
 }
 
 type ExecuteOptions struct {
@@ -90,6 +96,16 @@ type commandEvidence struct {
 }
 
 func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptions) (executionResult ExecutionResult, executionErr error) {
+	if request.Operation == Activate {
+		if err := validateActivationExecutionRoles(request); err != nil {
+			return ExecutionResult{}, err
+		}
+		if options.Activation == nil {
+			if err := validateCanonicalActivationPaths(request); err != nil {
+				return ExecutionResult{}, err
+			}
+		}
+	}
 	lock, err := AcquireLock(request.ManifestPath)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -185,6 +201,8 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		}
 	}
 	commandProofs := make([]commandEvidence, 0, len(commands))
+	var backfillPromotionRequest *storepkg.MigrationPromotionRequest
+	backfillPromotionDigest := ""
 	acceptedArchiveSHA := ""
 	archiveSealed := false
 	targetMutationInProgress := false
@@ -226,6 +244,18 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 				return ExecutionResult{}, fmt.Errorf("SOURCE_HIGH_WATER_MISMATCH: source writer restored; capture a new final delta")
 			}
 			return ExecutionResult{}, err
+		}
+		if request.Operation == Backfill && filepath.Base(command.Name) == "account-route-backfill" {
+			promotionRequest, decodeErr := decodeBackfillPromotionOutput(result.Output, manifest.MigrationID, latestOperationProofSHA(manifest, Fence))
+			if decodeErr != nil {
+				return ExecutionResult{}, decodeErr
+			}
+			promotionDigest, digestErr := promotionRequest.OperationSetSHA256()
+			if digestErr != nil {
+				return ExecutionResult{}, fmt.Errorf("backfill promotion request digest is invalid")
+			}
+			backfillPromotionRequest = &promotionRequest
+			backfillPromotionDigest = promotionDigest
 		}
 		if command.MatchCapturedInput && (inputSHA == "" || sha256Hex(bytes.TrimSpace(result.Output)) != inputSHA) {
 			if request.Operation == FinalDelta {
@@ -280,6 +310,13 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 		Subject: proofSubject(manifest, applyRequest, artifactSHA), Checks: checks,
 		GeneratedBy: evidenceGenerator, PreStateSHA: sha256Hex(manifestData), InputSHA: inputSHA, Commands: commandProofs,
 	}
+	if request.Operation == Backfill {
+		if backfillPromotionRequest == nil {
+			return ExecutionResult{}, fmt.Errorf("backfill promotion evidence is unavailable")
+		}
+		proof.PromotionRequest = backfillPromotionRequest
+		proof.PromotionOperationSetSHA256 = backfillPromotionDigest
+	}
 	applyRequest.generatedEvidence = &proof
 	applyRequest.capturedInputSHA = inputSHA
 	evidencePath, err := writeExecutionEvidence(request.EvidenceDir, len(manifest.Workflow.Events)+1, request.Operation, proof)
@@ -294,6 +331,136 @@ func Execute(ctx context.Context, request ExecutionRequest, options ExecuteOptio
 	}
 	targetMutationInProgress = false
 	return ExecutionResult{Result: result, EvidencePath: evidencePath, InputSHA256: inputSHA}, nil
+}
+
+func validateCanonicalActivationPaths(request ExecutionRequest) error {
+	repositoryRoot, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("canonical activation repository root is unavailable")
+	}
+	repositoryRoot, err = filepath.Abs(repositoryRoot)
+	if err != nil {
+		return fmt.Errorf("canonical activation repository root is unavailable")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(repositoryRoot)
+	if err != nil || resolvedRoot != repositoryRoot {
+		return fmt.Errorf("canonical activation repository root must not use symlinks")
+	}
+	runtimeRoot := os.Getenv("FT_LOCAL_RUNTIME_DIR")
+	if runtimeRoot == "" {
+		runtimeRoot = "/tmp/boltertrader-local"
+	}
+	if !filepath.IsAbs(runtimeRoot) || filepath.Clean(runtimeRoot) != runtimeRoot {
+		return fmt.Errorf("canonical activation runtime root is invalid")
+	}
+	expected := []struct {
+		label string
+		got   string
+		want  string
+	}{
+		{"manifest", request.ManifestPath, filepath.Join(repositoryRoot, "migration", "manifest.json")},
+		{"state directory", request.StateDir, filepath.Join(runtimeRoot, "state", "test")},
+		{"evidence directory", request.EvidenceDir, filepath.Join(runtimeRoot, "migration", "test", "evidence")},
+		{"journal", request.JournalPath, filepath.Join(runtimeRoot, "migration", "test", "evidence", "activation-attempt.json")},
+		{"backup artifact", request.BackupArtifactPath, filepath.Join(runtimeRoot, "migration", "test", "backup.dump")},
+		{"final delta artifact", request.FinalDeltaArtifactPath, filepath.Join(runtimeRoot, "migration", "test", "final-delta.dump")},
+		{"backfill artifact", request.BackfillPath, filepath.Join(repositoryRoot, "migration", "backfills", "account-route-v1.json")},
+	}
+	for _, path := range expected {
+		actual, err := filepath.Abs(path.got)
+		if err != nil || actual != path.want {
+			return fmt.Errorf("%s must match the canonical Test activation path", path.label)
+		}
+		root := runtimeRoot
+		if path.label == "manifest" || path.label == "backfill artifact" {
+			root = repositoryRoot
+		}
+		if err := rejectSymlinkedPathComponents(root, path.want); err != nil {
+			return fmt.Errorf("%s canonical Test activation path contains a symlink", path.label)
+		}
+	}
+	if request.BackupID != "g010-test-backup" || request.Verifier != "g010-cutover" {
+		return fmt.Errorf("activation prior replay identity must match the canonical Test cutover")
+	}
+	return nil
+}
+
+func rejectSymlinkedPathComponents(root, path string) error {
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path escapes its canonical root")
+	}
+	current := root
+	components := []string{"."}
+	if relative != "." {
+		components = append(components, strings.Split(relative, string(filepath.Separator))...)
+	}
+	for _, component := range components {
+		if component != "." {
+			current = filepath.Join(current, component)
+		}
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinked path component")
+		}
+	}
+	return nil
+}
+
+func validateActivationExecutionRoles(request ExecutionRequest) error {
+	if _, err := expectedTestIdentity("target connection role", request.TargetRole); err != nil {
+		return err
+	}
+	if _, err := expectedTestIdentity("Gateway connection role", request.GatewayRole); err != nil {
+		return err
+	}
+	if _, err := expectedTestIdentity("target runtime role", request.TargetRuntimeRole); err != nil {
+		return err
+	}
+	if _, err := expectedTestIdentity("Gateway runtime role", request.GatewayRuntimeRole); err != nil {
+		return err
+	}
+	if request.TargetRuntimeRole == request.TargetRole {
+		return fmt.Errorf("target runtime role must differ from target connection role")
+	}
+	if request.GatewayRuntimeRole == request.GatewayRole {
+		return fmt.Errorf("Gateway runtime role must differ from Gateway connection role")
+	}
+	canonical := []struct {
+		label string
+		got   string
+		want  string
+	}{
+		{"source service", request.SourceService, "funding_source_test"},
+		{"target service", request.TargetService, "platform_target_test"},
+		{"Gateway service", request.GatewayService, "gateway_test"},
+		{"maintenance service", request.MaintenanceService, "platform_maintenance_test"},
+		{"source database", request.SourceDatabase, "bolter_funding_test"},
+		{"target database", request.TargetDatabase, "bolter_platform_test"},
+		{"Gateway database", request.GatewayDatabase, "bolter_gateway_test"},
+		{"maintenance database", request.MaintenanceDatabase, "bolter_maintenance_test"},
+		{"source migrator", request.SourceRole, "bolter_funding_test_migrator"},
+		{"target migrator", request.TargetRole, "bolter_platform_test_migrator"},
+		{"Gateway migrator", request.GatewayRole, "bolter_gateway_test_migrator"},
+		{"target runtime", request.TargetRuntimeRole, "bolter_platform_test"},
+		{"Gateway runtime", request.GatewayRuntimeRole, "bolter_gateway_test"},
+		{"maintenance role", request.MaintenanceRole, "bolter_platform_test_admin"},
+		{"source writer", request.SourceWriterRole, "bolter_funding_test_writer"},
+		{"target writer", request.TargetWriterRole, "bolter_platform_test_writer"},
+		{"Gateway writer", request.GatewayWriterRole, "bolter_gateway_test_writer"},
+	}
+	for _, identity := range canonical {
+		if identity.got != identity.want {
+			return fmt.Errorf("%s must match the canonical Test activation identity", identity.label)
+		}
+	}
+	return nil
 }
 
 var errSourceHighWaterMismatch = errors.New("source high-water mismatch")
@@ -380,6 +547,11 @@ func replayExecution(manifest Manifest, evidenceDir string, request Request, com
 		var proof operationProof
 		if json.Unmarshal(data, &proof) != nil || proof.GeneratedBy != evidenceGenerator || !validSHA256(proof.PreStateSHA) || len(proof.Commands) != len(commands) {
 			return nil, fmt.Errorf("%s replay conflict: generated evidence is invalid", request.Operation)
+		}
+		if request.Operation == Backfill {
+			if err := validateBackfillPromotionProof(manifest, proof); err != nil {
+				return nil, fmt.Errorf("backfill replay conflict: generated promotion evidence is invalid: %w", err)
+			}
 		}
 		for commandIndex, command := range commands {
 			planned := commandDigest(command, nil)
@@ -668,6 +840,8 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 		command := Command{Name: backfillExecutable, Args: []string{
 			"--mapping", backfillPath,
 			"--mapping-sha256", inputSHA,
+			"--migration-id", manifest.MigrationID,
+			"--fence-sha256", latestOperationProofSHA(manifest, Fence),
 			"--source-service", source,
 			"--source-database", sourceDatabase,
 			"--source-role", sourceRole,
@@ -738,6 +912,30 @@ func executionPlan(manifest Manifest, request ExecutionRequest) ([]Command, Requ
 	default:
 		return nil, Request{}, nil, "", fmt.Errorf("operation %q has no executable plan", request.Operation)
 	}
+}
+
+func validateBackfillPromotionProof(manifest Manifest, proof operationProof) error {
+	if proof.PromotionRequest == nil {
+		return fmt.Errorf("promotion request is missing")
+	}
+	request := proof.PromotionRequest
+	if request.MigrationID != manifest.MigrationID || request.FenceSHA256 != latestOperationProofSHA(manifest, Fence) {
+		return fmt.Errorf("promotion request binding mismatch")
+	}
+	digest, err := request.OperationSetSHA256()
+	if err != nil || digest != proof.PromotionOperationSetSHA256 {
+		return fmt.Errorf("promotion request digest mismatch")
+	}
+	return nil
+}
+
+func latestOperationProofSHA(manifest Manifest, operation Operation) string {
+	for index := len(manifest.Workflow.Events) - 1; index >= 0; index-- {
+		if manifest.Workflow.Events[index].Operation == operation {
+			return manifest.Workflow.Events[index].ProofSHA
+		}
+	}
+	return ""
 }
 
 func replaceCommandArg(args []string, flag, value string) {
@@ -1073,6 +1271,17 @@ func writeExecutionEvidence(dir string, sequence int, operation Operation, proof
 	}
 	if err := os.Rename(tempPath, path); err != nil {
 		return "", fmt.Errorf("commit operation evidence: %w", err)
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return "", fmt.Errorf("open operation evidence directory: %w", err)
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return "", fmt.Errorf("sync operation evidence directory: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return "", fmt.Errorf("close operation evidence directory: %w", err)
 	}
 	return path, nil
 }

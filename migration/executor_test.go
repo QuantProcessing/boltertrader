@@ -8,10 +8,52 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	storepkg "github.com/QuantProcessing/boltertrader/gateway/store"
 )
+
+func TestCanonicalActivationPathsRejectSymlinkedComponents(t *testing.T) {
+	repositoryRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		linkPath func(string) string
+	}{
+		{name: "migration parent", linkPath: func(root string) string { return filepath.Join(root, "migration") }},
+		{name: "test parent", linkPath: func(root string) string { return filepath.Join(root, "migration", "test") }},
+		{name: "evidence directory", linkPath: func(root string) string { return filepath.Join(root, "migration", "test", "evidence") }},
+		{name: "state parent", linkPath: func(root string) string { return filepath.Join(root, "state") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtimeRoot := t.TempDir()
+			external := t.TempDir()
+			link := tc.linkPath(runtimeRoot)
+			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, link); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("FT_LOCAL_RUNTIME_DIR", runtimeRoot)
+			request := ExecutionRequest{
+				ManifestPath: filepath.Join(repositoryRoot, "migration", "manifest.json"),
+				StateDir:     filepath.Join(runtimeRoot, "state", "test"), EvidenceDir: filepath.Join(runtimeRoot, "migration", "test", "evidence"),
+				JournalPath:        filepath.Join(runtimeRoot, "migration", "test", "evidence", "activation-attempt.json"),
+				BackupArtifactPath: filepath.Join(runtimeRoot, "migration", "test", "backup.dump"), FinalDeltaArtifactPath: filepath.Join(runtimeRoot, "migration", "test", "final-delta.dump"),
+				BackfillPath: filepath.Join(repositoryRoot, "migration", "backfills", "account-route-v1.json"), BackupID: "g010-test-backup", Verifier: "g010-cutover",
+			}
+			if err := validateCanonicalActivationPaths(request); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("symlinked canonical path was accepted: %v", err)
+			}
+		})
+	}
+}
 
 func TestExecuteBackupRunsCanonicalCommandAndGeneratesEvidence(t *testing.T) {
 	manifestPath := executorManifest(t)
@@ -173,6 +215,8 @@ func TestApplyRejectsCallerProofForExecutableOperations(t *testing.T) {
 
 func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
+	manifestBefore := readWorkflowManifest(t, manifestPath)
+	promotionOutput := validBackfillPromotionOutput(t, manifestBefore)
 	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	expectedSHA, err := digestFile(scriptPath, true)
 	if err != nil {
@@ -196,7 +240,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 			t.Fatalf("command = %+v", command)
 		}
 		joined := strings.Join(command.Args, " ")
-		for _, want := range []string{"--mapping-sha256", expectedSHA, "--source-service", "funding-source", "--source-database", "funding_source_test", "--source-role", "funding_source_test_migrator", "--platform-service", "bolter-platform", "--platform-database", "bolter_platform_test", "--platform-role", "bolter_platform_test_migrator", "--gateway-service", "bolter-gateway", "--gateway-database", "bolter_gateway_test", "--gateway-role", "bolter_gateway_test_migrator"} {
+		for _, want := range []string{"--mapping-sha256", expectedSHA, "--migration-id", manifestBefore.MigrationID, "--fence-sha256", latestOperationProofSHA(manifestBefore, Fence), "--source-service", "funding-source", "--source-database", "funding_source_test", "--source-role", "funding_source_test_migrator", "--platform-service", "bolter-platform", "--platform-database", "bolter_platform_test", "--platform-role", "bolter_platform_test_migrator", "--gateway-service", "bolter-gateway", "--gateway-database", "bolter_gateway_test", "--gateway-role", "bolter_gateway_test_migrator"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("backfill command missing %q: %+v", want, command)
 			}
@@ -209,7 +253,7 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 		if len(command.Stdin) != 0 {
 			t.Fatal("mapping artifact was sent through command stdin")
 		}
-		return CommandResult{Output: []byte("backfill complete")}, nil
+		return CommandResult{Output: promotionOutput}, nil
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +262,17 @@ func TestExecuteBackfillBindsScriptContent(t *testing.T) {
 	event := manifest.Workflow.Events[len(manifest.Workflow.Events)-1]
 	if event.ArtifactSHA == "" || event.ArtifactSHA != result.InputSHA256 {
 		t.Fatalf("backfill event is not bound to script: event=%+v result=%+v", event, result)
+	}
+	proofData, err := os.ReadFile(result.EvidencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof operationProof
+	if err := json.Unmarshal(proofData, &proof); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBackfillPromotionProof(manifestBefore, proof); err != nil {
+		t.Fatalf("generated promotion proof: %v", err)
 	}
 	if err := os.WriteFile(scriptPath, []byte("select 2;"), 0o600); err != nil {
 		t.Fatal(err)
@@ -292,6 +347,7 @@ func TestBackfillPlanBindsExpectedConnectedRoles(t *testing.T) {
 
 func TestExecuteBackfillUsesAcceptedSnapshotWhenOriginalChangesDuringCommand(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
+	promotionOutput := validBackfillPromotionOutput(t, readWorkflowManifest(t, manifestPath))
 	repoRoot, scriptPath := canonicalBackfillFixture(t, "select 1;")
 	expectedSHA, err := digestFile(scriptPath, true)
 	if err != nil {
@@ -314,7 +370,7 @@ func TestExecuteBackfillUsesAcceptedSnapshotWhenOriginalChangesDuringCommand(t *
 			if err := os.WriteFile(scriptPath, []byte("select 2;"), 0o600); err != nil {
 				return CommandResult{}, err
 			}
-			return CommandResult{Output: []byte("backfill complete")}, nil
+			return CommandResult{Output: promotionOutput}, nil
 		}
 		if command.ExpectedOutput != "" {
 			return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
@@ -1095,6 +1151,99 @@ func TestValidateReplayRerunsCurrentPostconditions(t *testing.T) {
 	}
 }
 
+func TestActivationExecutionRolesRequireExplicitTestRuntimeRoles(t *testing.T) {
+	base := ExecutionRequest{
+		SourceService: "funding_source_test", TargetService: "platform_target_test", GatewayService: "gateway_test", MaintenanceService: "platform_maintenance_test",
+		SourceDatabase: "bolter_funding_test", TargetDatabase: "bolter_platform_test", GatewayDatabase: "bolter_gateway_test", MaintenanceDatabase: "bolter_maintenance_test",
+		SourceRole: "bolter_funding_test_migrator", TargetRole: "bolter_platform_test_migrator", GatewayRole: "bolter_gateway_test_migrator", MaintenanceRole: "bolter_platform_test_admin",
+		TargetRuntimeRole: "bolter_platform_test", GatewayRuntimeRole: "bolter_gateway_test",
+		SourceWriterRole: "bolter_funding_test_writer", TargetWriterRole: "bolter_platform_test_writer", GatewayWriterRole: "bolter_gateway_test_writer",
+	}
+	if err := validateActivationExecutionRoles(base); err != nil {
+		t.Fatalf("valid split roles: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*ExecutionRequest)
+		want string
+	}{
+		{name: "missing platform runtime", edit: func(request *ExecutionRequest) { request.TargetRuntimeRole = "" }, want: "target runtime role"},
+		{name: "missing Gateway runtime", edit: func(request *ExecutionRequest) { request.GatewayRuntimeRole = "" }, want: "Gateway runtime role"},
+		{name: "Live platform runtime", edit: func(request *ExecutionRequest) { request.TargetRuntimeRole = "platform_live" }, want: "Test-scoped"},
+		{name: "Live Gateway runtime", edit: func(request *ExecutionRequest) { request.GatewayRuntimeRole = "gateway_live" }, want: "Test-scoped"},
+		{name: "platform migrator reused as runtime", edit: func(request *ExecutionRequest) { request.TargetRuntimeRole = request.TargetRole }, want: "must differ"},
+		{name: "Gateway migrator reused as runtime", edit: func(request *ExecutionRequest) { request.GatewayRuntimeRole = request.GatewayRole }, want: "must differ"},
+		{name: "deceptive source service", edit: func(request *ExecutionRequest) { request.SourceService = "funding_source_test_shadow" }, want: "canonical"},
+		{name: "deceptive target database", edit: func(request *ExecutionRequest) { request.TargetDatabase = "bolter_platform_test_copy" }, want: "canonical"},
+		{name: "deceptive maintenance role", edit: func(request *ExecutionRequest) { request.MaintenanceRole = "bolter_platform_test_admin_copy" }, want: "canonical"},
+		{name: "deceptive writer role", edit: func(request *ExecutionRequest) { request.GatewayWriterRole = "bolter_gateway_test_writer_copy" }, want: "canonical"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := base
+			tc.edit(&request)
+			if err := validateActivationExecutionRoles(request); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestActivationExecutionRequestCarriesExplicitPriorReplayArtifacts(t *testing.T) {
+	typeOfRequest := reflect.TypeOf(ExecutionRequest{})
+	for _, name := range []string{"BackupID", "BackupArtifactPath", "FinalDeltaArtifactPath"} {
+		if _, ok := typeOfRequest.FieldByName(name); !ok {
+			t.Fatalf("ExecutionRequest is missing %s", name)
+		}
+	}
+}
+
+func TestOperationProofCarriesTypedPromotionContract(t *testing.T) {
+	request := &storepkg.MigrationPromotionRequest{MigrationID: "G010", FenceSHA256: strings.Repeat("f", 64)}
+	proof := operationProof{PromotionRequest: request, PromotionOperationSetSHA256: strings.Repeat("a", 64)}
+	data, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded operationProof
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.PromotionRequest == nil || decoded.PromotionRequest.MigrationID != "G010" || decoded.PromotionOperationSetSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("promotion contract=%+v", decoded)
+	}
+}
+
+func TestDecodeBackfillPromotionOutputRequiresExactManifestBoundRequest(t *testing.T) {
+	fenceSHA := strings.Repeat("f", 64)
+	request := storepkg.MigrationPromotionRequest{MigrationID: "G010", FenceSHA256: fenceSHA}
+	digest, err := request.OperationSetSHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := fmt.Sprintf(`{"schemaVersion":1,"accounts":0,"routes":0,"accountIds":[],"promotionRequest":{"migrationId":"G010","fenceSha256":"%s","items":[]},"promotionOperationSetSha256":"%s"}`, fenceSHA, digest)
+	decoded, err := decodeBackfillPromotionOutput([]byte(valid), "G010", fenceSHA)
+	if err != nil || decoded.MigrationID != "G010" {
+		t.Fatalf("decoded=%+v err=%v", decoded, err)
+	}
+	for _, tc := range []struct {
+		name        string
+		data        string
+		migrationID string
+		want        string
+	}{
+		{name: "unknown field", data: strings.Replace(valid, `"accounts":0`, `"unknown":true,"accounts":0`, 1), migrationID: "G010", want: "decode"},
+		{name: "trailing value", data: valid + `{}`, migrationID: "G010", want: "trailing"},
+		{name: "migration mismatch", data: valid, migrationID: "G011", want: "migration"},
+		{name: "digest mismatch", data: strings.Replace(valid, digest, strings.Repeat("a", 64), 1), migrationID: "G010", want: "digest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := decodeBackfillPromotionOutput([]byte(tc.data), tc.migrationID, fenceSHA); err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.want) {
+				t.Fatalf("error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestBackfillHighWaterMismatchRestoresSourceAndInvalidatesDelta(t *testing.T) {
 	manifestPath := preparedThroughFence(t)
 	repoRoot, artifactPath := canonicalBackfillFixture(t, `{"schemaVersion":1,"mappings":[]}`)
@@ -1212,6 +1361,16 @@ func TestExecuteFinalSnapshotAppliesVerifiedArchiveAndReplaysWithoutCommands(t *
 }
 
 func containsArg(values []string, want string) bool { return containsString(values, want) }
+
+func validBackfillPromotionOutput(t *testing.T, manifest Manifest) []byte {
+	t.Helper()
+	request := storepkg.MigrationPromotionRequest{MigrationID: manifest.MigrationID, FenceSHA256: latestOperationProofSHA(manifest, Fence)}
+	digest, err := request.OperationSetSHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []byte(fmt.Sprintf(`{"schemaVersion":1,"accounts":0,"routes":0,"accountIds":[],"promotionRequest":{"migrationId":%q,"fenceSha256":%q,"items":[]},"promotionOperationSetSha256":%q}`, request.MigrationID, request.FenceSHA256, digest))
+}
 
 func containsString(values []string, want string) bool {
 	for _, value := range values {

@@ -49,10 +49,13 @@ func (postgresStore *Store) promoteMigrationPendingSet(ctx context.Context, requ
 	matched := make(map[domain.AccountID]struct{}, len(request.Items))
 	pendingCount, replayCount := 0, 0
 	for _, head := range heads {
+		item, requested := expected[head.accountID]
 		if head.active != nil {
+			if !requested {
+				return storepkg.MigrationPromotionResult{}, storepkg.ErrMigrationPromotionConflict
+			}
 			beforeActive = append(beforeActive, *head.active)
 		}
-		item, requested := expected[head.accountID]
 		if head.pending != nil {
 			if head.active != nil || !requested || !sameMigrationPromotionItem(*head.pending, item) {
 				return storepkg.MigrationPromotionResult{}, storepkg.ErrMigrationPromotionConflict

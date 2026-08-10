@@ -45,11 +45,26 @@ func TestG010Cutover(t *testing.T) {
 			{"BT_G010_SOURCE_SERVICE", "FUNDING_LIVE_test"},
 			{"BT_G010_TARGET_DATABASE", "test_live"},
 			{"BT_G010_GATEWAY_ROLE", "gateway-live-test"},
+			{"BT_G010_TARGET_RUNTIME_ROLE", "platform_live_test"},
+			{"BT_G010_GATEWAY_RUNTIME_ROLE", "gateway_live_test"},
 			{"BT_G010_TARGET_WRITER_ROLE", "contest_writer"},
 		} {
 			h = newG010Harness(t, repo, "baseline")
 			h.set(tc.key, tc.value)
-			h.rejects(driver, "mode-scoped Test identity")
+			h.rejects(driver, "canonical Test identity")
+		}
+	})
+
+	t.Run("rejects deceptive alternatives to the canonical Test tuple", func(t *testing.T) {
+		for _, tc := range []struct{ key, value string }{
+			{"BT_G010_SOURCE_SERVICE", "funding_source_test_shadow"},
+			{"BT_G010_TARGET_DATABASE", "bolter_platform_test_copy"},
+			{"BT_G010_MAINTENANCE_ROLE", "bolter_platform_test_admin_copy"},
+			{"BT_G010_GATEWAY_WRITER_ROLE", "bolter_gateway_test_writer_copy"},
+		} {
+			h := newG010Harness(t, repo, "baseline")
+			h.set(tc.key, tc.value)
+			h.rejects(driver, "canonical Test identity")
 		}
 	})
 
@@ -98,7 +113,9 @@ func TestG010Cutover(t *testing.T) {
 		if err := os.WriteFile(proof, []byte("{\"status\":\"pass\",\"tampered\":true}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		h.rejects(driver, "activate evidence changed")
+		h.rejects(driver, "activate replay conflict: evidence changed")
+		h.assertActivationArgvCount(1)
+		h.assertNoUpstreamReplaySideEffects()
 	})
 
 	t.Run("rejects post fence writers and failed browser verification", func(t *testing.T) {
@@ -140,7 +157,28 @@ func TestG010Cutover(t *testing.T) {
 			"record-import", "backup", "restore", "final-delta", "fence", "backfill", "validate", "prepare-activation", "activate",
 		)
 		h.assertValidationGateAfter("backfill")
+		h.assertActivationRoles("bolter_platform_test_migrator", "bolter_platform_test", "bolter_gateway_test_migrator", "bolter_gateway_test")
+		h.assertActivationArgv()
 		h.assertNoPrivateWriteCommand()
+	})
+
+	t.Run("activation preserves completed operation replay invocations", func(t *testing.T) {
+		h := newG010Harness(t, repo, "activation-ready")
+		h.accepts(driver)
+		h.assertMigrationReplays(
+			"backup", "restore", "final-delta", "fence", "backfill", "validate",
+			"activate",
+		)
+		h.assertActivationArgv()
+	})
+
+	t.Run("activated restart replays activation under its authority fence only", func(t *testing.T) {
+		h := newG010Harness(t, repo, "activated")
+		h.set("FAKE_GIT_PROVENANCE_FAIL", "1")
+		h.accepts(driver)
+		h.assertActivationArgvCount(1)
+		h.assertMigrationReplays("activate")
+		h.assertNoUpstreamReplaySideEffects()
 	})
 
 	t.Run("resumes after an interrupted durable mutation", func(t *testing.T) {
@@ -371,6 +409,20 @@ func (h *g010Harness) assertMigrationAdvances(want ...string) {
 	}
 }
 
+func (h *g010Harness) assertMigrationReplays(want ...string) {
+	h.t.Helper()
+	var got []string
+	for _, line := range strings.Split(h.commands(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "migration-tool" && fields[2] == "replay" {
+			got = append(got, fields[1])
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		h.t.Fatalf("migration replays=%v, want %v; log:\n%s", got, want, h.commands())
+	}
+}
+
 func (h *g010Harness) assertValidationGateAfter(operation string) {
 	h.t.Helper()
 	commands := h.commands()
@@ -394,6 +446,70 @@ func (h *g010Harness) assertNoPrivateWriteCommand() {
 	}
 }
 
+func (h *g010Harness) assertNoUpstreamReplaySideEffects() {
+	h.t.Helper()
+	commands := h.commands()
+	for _, forbidden := range []string{
+		"migration-tool verify-evidence ",
+		"migration-tool backup ", "migration-tool restore ", "migration-tool final-delta ",
+		"migration-tool fence ", "migration-tool backfill ", "migration-tool validate ",
+		"psql ", "make ", "npm ", "dev-platform ",
+	} {
+		if strings.Contains(commands, forbidden) {
+			h.t.Fatalf("activated replay invoked forbidden side effect %q:\n%s", forbidden, commands)
+		}
+	}
+}
+
+func (h *g010Harness) assertActivationRoles(targetMigrator, targetRuntime, gatewayMigrator, gatewayRuntime string) {
+	h.t.Helper()
+	want := strings.Join([]string{"migration-tool activate roles", targetMigrator, targetRuntime, gatewayMigrator, gatewayRuntime}, " ")
+	if !strings.Contains(h.commands(), want) {
+		h.t.Fatalf("activation roles missing %q:\n%s", want, h.commands())
+	}
+}
+
+func (h *g010Harness) assertActivationArgv() {
+	h.t.Helper()
+	if count := h.activationArgvCount(); count == 0 {
+		h.t.Fatalf("activation argv did not match exact contract; log:\n%s", h.commands())
+	}
+}
+
+func (h *g010Harness) assertActivationArgvCount(want int) {
+	h.t.Helper()
+	if got := h.activationArgvCount(); got != want {
+		h.t.Fatalf("exact activation argv count=%d, want %d; log:\n%s", got, want, h.commands())
+	}
+}
+
+func (h *g010Harness) activationArgvCount() int {
+	h.t.Helper()
+	args := []string{
+		"--manifest", h.env["BT_G010_MANIFEST_PATH"],
+		"--evidence-dir", h.evidenceDir,
+		"--journal", filepath.Join(h.evidenceDir, "activation-attempt.json"),
+		"--state-dir", filepath.Join(h.runtimeDir, "state", "test"),
+		"--backup-id", "g010-test-backup",
+		"--backup-artifact", h.backupArtifact,
+		"--final-delta-artifact", h.deltaArtifact,
+		"--backfill-mapping", h.env["BT_G010_BACKFILL_MAPPING"],
+		"--verifier", "g010-cutover",
+		"--source-service", "funding_source_test", "--source-database", "bolter_funding_test", "--source-role", "bolter_funding_test_migrator", "--source-writer-role", "bolter_funding_test_writer",
+		"--target-service", "platform_target_test", "--target-database", "bolter_platform_test", "--target-role", "bolter_platform_test_migrator", "--target-runtime-role", "bolter_platform_test", "--target-writer-role", "bolter_platform_test_writer",
+		"--gateway-service", "gateway_test", "--gateway-database", "bolter_gateway_test", "--gateway-role", "bolter_gateway_test_migrator", "--gateway-runtime-role", "bolter_gateway_test", "--gateway-writer-role", "bolter_gateway_test_writer",
+		"--maintenance-service", "platform_maintenance_test", "--maintenance-database", "bolter_maintenance_test", "--maintenance-role", "bolter_platform_test_admin",
+	}
+	want := strings.Join(append([]string{"migration-tool activate argv"}, args...), "\t")
+	count := 0
+	for _, line := range strings.Split(h.commands(), "\n") {
+		if line == want {
+			count++
+		}
+	}
+	return count
+}
+
 const fakeMigrationTool = `#!/bin/sh
 set -eu
 
@@ -410,6 +526,15 @@ arg_value() {
 phase=$(sed -n '1p' "$FAKE_PHASE_FILE")
 operation=${1:-}
 shift || true
+
+if [ "$operation" = activate ]; then
+	printf 'migration-tool activate argv' >>"$FAKE_COMMAND_LOG"
+	for argument in "$@"; do printf '\t%s' "$argument" >>"$FAKE_COMMAND_LOG"; done
+	printf '\n' >>"$FAKE_COMMAND_LOG"
+	printf 'migration-tool activate roles %s %s %s %s\n' \
+		"$(arg_value --target-role "$@")" "$(arg_value --target-runtime-role "$@")" \
+		"$(arg_value --gateway-role "$@")" "$(arg_value --gateway-runtime-role "$@")" >>"$FAKE_COMMAND_LOG"
+fi
 
 if [ "$operation" = status ]; then
 	expected_sequence=1

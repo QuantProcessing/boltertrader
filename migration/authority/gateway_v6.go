@@ -1,8 +1,8 @@
 package authority
 
 const (
-	GatewayV6MigrationDigest = "9eccd015e687316f44726e282ee3b76289bf8f28c4e61cb90f0fb168d0bf1df0"
-	GatewayV6Digest          = "b1f7b0fe0ff2961ae7806b12999b1b1be485057b8d2e1fe61e4a37f80e31aa65"
+	GatewayV6MigrationDigest = "123eba978969da58a9080a058a4cf2765f9d259d4cd45bf01d930b708a515721"
+	GatewayV6Digest          = "76b00f5441ac046981069b5d825743c2e80b8553acd02926365ad9d2db617d97"
 )
 
 func GatewayV6() Matrix {

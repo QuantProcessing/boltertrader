@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	storepkg "github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/internal/verifiedartifact"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/google/uuid"
@@ -81,9 +83,59 @@ type accountPlan struct {
 }
 
 type backfillResult struct {
-	Accounts   int      `json:"accounts"`
-	Routes     int      `json:"routes"`
-	AccountIDs []string `json:"accountIds"`
+	Accounts       int
+	Routes         int
+	AccountIDs     []string
+	PromotionItems []storepkg.MigrationPromotionItem
+}
+
+type migrationPromotionItemOutput struct {
+	AccountID            string `json:"accountId"`
+	OperationID          string `json:"operationId"`
+	DesiredStateRevision int64  `json:"desiredStateRevision"`
+	RuntimeGeneration    int64  `json:"runtimeGeneration"`
+	CredentialVersion    int64  `json:"credentialVersion"`
+	RouteSetSHA256       string `json:"routeSetSha256"`
+	InputSHA256          string `json:"inputSha256"`
+}
+
+type migrationPromotionRequestOutput struct {
+	MigrationID string                         `json:"migrationId"`
+	FenceSHA256 string                         `json:"fenceSha256"`
+	Items       []migrationPromotionItemOutput `json:"items"`
+}
+
+func migrationPromotionRequestOutputFrom(request storepkg.MigrationPromotionRequest) migrationPromotionRequestOutput {
+	output := migrationPromotionRequestOutput{MigrationID: request.MigrationID, FenceSHA256: request.FenceSHA256, Items: make([]migrationPromotionItemOutput, len(request.Items))}
+	for index, item := range request.Items {
+		output.Items[index] = migrationPromotionItemOutput{
+			AccountID: string(item.AccountID), OperationID: item.OperationID,
+			DesiredStateRevision: item.DesiredStateRevision, RuntimeGeneration: item.RuntimeGeneration, CredentialVersion: item.CredentialVersion,
+			RouteSetSHA256: item.RouteSetSHA256, InputSHA256: item.InputSHA256,
+		}
+	}
+	return output
+}
+
+func (output migrationPromotionRequestOutput) storeRequest() storepkg.MigrationPromotionRequest {
+	request := storepkg.MigrationPromotionRequest{MigrationID: output.MigrationID, FenceSHA256: output.FenceSHA256, Items: make([]storepkg.MigrationPromotionItem, len(output.Items))}
+	for index, item := range output.Items {
+		request.Items[index] = storepkg.MigrationPromotionItem{
+			AccountID: domain.AccountID(item.AccountID), OperationID: item.OperationID,
+			DesiredStateRevision: item.DesiredStateRevision, RuntimeGeneration: item.RuntimeGeneration, CredentialVersion: item.CredentialVersion,
+			RouteSetSHA256: item.RouteSetSHA256, InputSHA256: item.InputSHA256,
+		}
+	}
+	return request
+}
+
+type backfillOutput struct {
+	SchemaVersion               int                             `json:"schemaVersion"`
+	Accounts                    int                             `json:"accounts"`
+	Routes                      int                             `json:"routes"`
+	AccountIDs                  []string                        `json:"accountIds"`
+	PromotionRequest            migrationPromotionRequestOutput `json:"promotionRequest"`
+	PromotionOperationSetSHA256 string                          `json:"promotionOperationSetSha256"`
 }
 
 type connectedIdentity struct {
@@ -106,6 +158,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	mappingPath := flags.String("mapping", "", "checksum-verified route mapping artifact")
 	mappingSHA := flags.String("mapping-sha256", "", "expected SHA-256 of the route mapping snapshot")
 	mode := flags.String("mode", "test", "process mode")
+	migrationID := flags.String("migration-id", "", "verified migration identity")
+	fenceSHA := flags.String("fence-sha256", "", "verified one-writer fence evidence digest")
 	sourceService := flags.String("source-service", "", "non-secret legacy PostgreSQL service name")
 	sourceDatabase := flags.String("source-database", "", "non-secret legacy PostgreSQL database name")
 	sourceRole := flags.String("source-role", "", "expected legacy PostgreSQL connection role")
@@ -123,6 +177,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if *mode != "test" {
 		return fmt.Errorf("LIVE_PROVISIONING_DISABLED")
+	}
+	if _, err := (storepkg.MigrationPromotionRequest{MigrationID: *migrationID, FenceSHA256: *fenceSHA}).OperationSetSHA256(); err != nil {
+		return fmt.Errorf("PROMOTION_EVIDENCE_INVALID")
 	}
 	if err := validateIdentifier("source service", *sourceService, 64, true); err != nil {
 		return err
@@ -183,7 +240,20 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	sort.Strings(result.AccountIDs)
-	return json.NewEncoder(stdout).Encode(result)
+	promotionRequest := storepkg.MigrationPromotionRequest{MigrationID: *migrationID, FenceSHA256: *fenceSHA, Items: result.PromotionItems}
+	promotionDigest, err := promotionRequest.OperationSetSHA256()
+	if err != nil || result.Accounts < 0 || result.Routes < result.Accounts || len(result.AccountIDs) != result.Accounts || len(result.PromotionItems) != result.Accounts {
+		return fmt.Errorf("PROMOTION_EVIDENCE_INVALID")
+	}
+	for index := range result.AccountIDs {
+		if result.AccountIDs[index] != string(result.PromotionItems[index].AccountID) {
+			return fmt.Errorf("PROMOTION_EVIDENCE_INVALID")
+		}
+	}
+	return json.NewEncoder(stdout).Encode(backfillOutput{
+		SchemaVersion: 1, Accounts: result.Accounts, Routes: result.Routes, AccountIDs: result.AccountIDs,
+		PromotionRequest: migrationPromotionRequestOutputFrom(promotionRequest), PromotionOperationSetSHA256: promotionDigest,
+	})
 }
 
 func readMappingSnapshot(path, expectedSHA string) ([]byte, error) {
@@ -253,6 +323,19 @@ func executeProductionBackfill(ctx context.Context, request backfillRequest) (ba
 	for _, plan := range plans {
 		result.AccountIDs = append(result.AccountIDs, plan.AccountID)
 		result.Routes += len(plan.Routes)
+		routes := make([]storepkg.RouteDefinition, len(plan.Routes))
+		for index, route := range plan.Routes {
+			routes[index] = storepkg.RouteDefinition{RouteID: domain.RouteID(route.RouteID), Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: storepkg.RouteState(route.RequestedState)}
+		}
+		routeSetSHA, err := storepkg.MigrationRouteSetSHA256(routes)
+		if err != nil {
+			return backfillResult{}, fmt.Errorf("PROMOTION_EVIDENCE_INVALID")
+		}
+		result.PromotionItems = append(result.PromotionItems, storepkg.MigrationPromotionItem{
+			AccountID: domain.AccountID(plan.AccountID), OperationID: plan.OperationID.String(),
+			DesiredStateRevision: plan.DesiredRevision, RuntimeGeneration: plan.RuntimeGeneration, CredentialVersion: plan.CredentialVersion,
+			RouteSetSHA256: routeSetSHA, InputSHA256: plan.RequestDigest,
+		})
 	}
 	return result, nil
 }

@@ -94,6 +94,32 @@ func TestMigrationPromotionRejectsUnexpectedPendingHead(t *testing.T) {
 	}
 }
 
+func TestMigrationPromotionRejectsUnexpectedActiveHead(t *testing.T) {
+	ctx := context.Background()
+	postgresStore := newRuntimeSnapshotTestStore(t, ctx)
+	first := runtimeSnapshotFixtureWithRef(t, "018f47a8-2578-7d3c-9d7d-5e4f4a445d41", "018f47a8-2578-7d3c-9d7d-5e4f4a445d42", domain.AccountID("account-a"), 1, migrationPromotionRef(t, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
+	firstPending, err := postgresStore.PreparePending(ctx, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresStore.PromoteMigrationPendingSet(ctx, migrationPromotionRequest(t, firstPending.DesiredSnapshot)); err != nil {
+		t.Fatal(err)
+	}
+	empty := storepkg.MigrationPromotionRequest{MigrationID: "G010", FenceSHA256: strings.Repeat("f", 64), Items: []storepkg.MigrationPromotionItem{}}
+	if _, err := postgresStore.PromoteMigrationPendingSet(ctx, empty); !errors.Is(err, storepkg.ErrMigrationPromotionConflict) {
+		t.Fatalf("empty request accepted unexpected active head: %v", err)
+	}
+
+	second := runtimeSnapshotFixtureWithRef(t, "018f47a8-2578-7d3c-9d7d-5e4f4a445d43", "018f47a8-2578-7d3c-9d7d-5e4f4a445d44", domain.AccountID("account-b"), 1, migrationPromotionRef(t, "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"))
+	secondPending, err := postgresStore.PreparePending(ctx, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postgresStore.PromoteMigrationPendingSet(ctx, migrationPromotionRequest(t, secondPending.DesiredSnapshot)); !errors.Is(err, storepkg.ErrMigrationPromotionConflict) {
+		t.Fatalf("nonempty request accepted extra active head: %v", err)
+	}
+}
+
 func migrationPromotionRequest(t *testing.T, snapshot storepkg.DesiredSnapshot) storepkg.MigrationPromotionRequest {
 	t.Helper()
 	routeSHA, err := storepkg.MigrationRouteSetSHA256(snapshot.Routes)

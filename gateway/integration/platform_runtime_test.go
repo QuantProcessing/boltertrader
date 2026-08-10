@@ -33,6 +33,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	storepostgres "github.com/QuantProcessing/boltertrader/gateway/store/postgres"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/google/uuid"
@@ -73,8 +74,10 @@ func TestPlatformRuntimeZeroAccountProcessIsReady(t *testing.T) {
 		},
 		ConnectPostgres:          func(context.Context, string) (process.PostgresPool, error) { return pool, nil },
 		ValidateDatabaseIdentity: func(context.Context, process.PostgresPool) error { return nil },
-		Migrate:                  func(context.Context, process.PostgresPool) error { return nil },
-		BuildAccountManager:      func(context.Context) (process.AccountManager, error) { return harness.manager, nil },
+		VerifyDatabaseAuthority: func(context.Context, process.PostgresPool) (storepostgres.AuthorityResult, error) {
+			return storepostgres.AuthorityResult{WriterMembership: true}, nil
+		},
+		BuildAccountManager: func(context.Context) (process.AccountManager, error) { return harness.manager, nil },
 		RestoreAccountManager: func(ctx context.Context, _ process.PostgresPool, manager process.AccountManager) error {
 			return manager.(*account.Manager).RestoreRuntimeState(ctx)
 		},

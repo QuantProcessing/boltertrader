@@ -25,7 +25,7 @@ func TestPlatformV15IsExhaustiveAndStable(t *testing.T) {
 	if got := matrix.Digest(); got != authority.PlatformV15Digest {
 		t.Fatalf("digest=%s", got)
 	}
-	assertInventory(t, matrix, 25, 2, 1)
+	assertInventory(t, matrix, 25, 3, 1)
 }
 
 func TestGatewayV6IsExhaustiveAndStable(t *testing.T) {

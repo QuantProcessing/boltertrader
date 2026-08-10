@@ -5,13 +5,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	storepkg "github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -97,6 +100,28 @@ func TestRunRejectsLiveBeforeExecution(t *testing.T) {
 	t.Cleanup(func() { executeBackfill = prior })
 	err := run(backfillArgs(path, "live"), &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "LIVE_PROVISIONING_DISABLED") || called {
+		t.Fatalf("error=%v called=%t", err, called)
+	}
+}
+
+func TestRunRejectsMissingPromotionBindingBeforeExecution(t *testing.T) {
+	path := writeMapping(t)
+	prior := executeBackfill
+	called := false
+	executeBackfill = func(context.Context, backfillRequest) (backfillResult, error) {
+		called = true
+		return backfillResult{}, nil
+	}
+	t.Cleanup(func() { executeBackfill = prior })
+	args := backfillArgs(path, "test")
+	for index := 0; index < len(args); index++ {
+		if args[index] == "--fence-sha256" {
+			args = append(args[:index], args[index+2:]...)
+			break
+		}
+	}
+	err := run(args, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "PROMOTION_EVIDENCE_INVALID") || called {
 		t.Fatalf("error=%v called=%t", err, called)
 	}
 }
@@ -283,29 +308,44 @@ func (row legacyCatalogRow) Scan(destinations ...any) error {
 	return nil
 }
 
-func TestRunEmitsOnlyCountsAndAccountIDs(t *testing.T) {
+func TestRunEmitsExactNonSecretMigrationPromotionRequest(t *testing.T) {
 	path := writeMapping(t)
+	item := storepkg.MigrationPromotionItem{
+		AccountID: "acct_1", OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445d11",
+		DesiredStateRevision: 2, RuntimeGeneration: 3, CredentialVersion: 4,
+		RouteSetSHA256: strings.Repeat("a", 64), InputSHA256: strings.Repeat("b", 64),
+	}
 	prior := executeBackfill
 	executeBackfill = func(_ context.Context, request backfillRequest) (backfillResult, error) {
 		if request.SourceService != "source" || request.SourceDatabase != "source_test" || request.SourceRole != "source_test_migrator" || request.PlatformService != "platform" || request.PlatformDatabase != "platform_test" || request.PlatformRole != "platform_test_migrator" || request.GatewayService != "gateway" || request.GatewayDatabase != "gateway_test" || request.GatewayRole != "gateway_test_migrator" || request.Mode != "test" {
 			t.Fatalf("request=%+v", request)
 		}
-		return backfillResult{Accounts: 1, Routes: 2, AccountIDs: []string{"acct_1"}}, nil
+		return backfillResult{Accounts: 1, Routes: 2, AccountIDs: []string{"acct_1"}, PromotionItems: []storepkg.MigrationPromotionItem{item}}, nil
 	}
 	t.Cleanup(func() { executeBackfill = prior })
 	var stdout bytes.Buffer
 	if err := run(backfillArgs(path, "test"), &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	output := stdout.String()
-	for _, want := range []string{`"accounts":1`, `"routes":2`, `"accountIds":["acct_1"]`} {
-		if !strings.Contains(output, want) {
-			t.Errorf("output missing %s: %s", want, output)
-		}
+	var output backfillOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"secretRef", "credential", "provider", "postgres://"} {
-		if strings.Contains(output, forbidden) {
-			t.Errorf("output exposes %q: %s", forbidden, output)
+	if output.Accounts != 1 || output.Routes != 2 || !reflect.DeepEqual(output.AccountIDs, []string{"acct_1"}) {
+		t.Fatalf("output=%+v", output)
+	}
+	wantRequest := storepkg.MigrationPromotionRequest{MigrationID: "G010", FenceSHA256: strings.Repeat("f", 64), Items: []storepkg.MigrationPromotionItem{item}}
+	wantDigest, err := wantRequest.OperationSetSHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(output.PromotionRequest.storeRequest(), wantRequest) || output.PromotionOperationSetSHA256 != wantDigest {
+		t.Fatalf("promotion output=%+v want=%+v digest=%q", output.PromotionRequest, wantRequest, output.PromotionOperationSetSHA256)
+	}
+	raw := stdout.String()
+	for _, forbidden := range []string{"secretRef", "credentialBundle", "opaqueReference", "provider", "postgres://"} {
+		if strings.Contains(raw, forbidden) {
+			t.Errorf("output exposes %q: %s", forbidden, raw)
 		}
 	}
 }
@@ -317,6 +357,7 @@ func backfillArgs(path, mode string) []string {
 	}
 	digest := sha256.Sum256(data)
 	return []string{"--mapping", path, "--mapping-sha256", hex.EncodeToString(digest[:]), "--mode", mode,
+		"--migration-id", "G010", "--fence-sha256", strings.Repeat("f", 64),
 		"--source-service", "source", "--source-database", "source_test", "--source-role", "source_test_migrator",
 		"--platform-service", "platform", "--platform-database", "platform_test", "--platform-role", "platform_test_migrator",
 		"--gateway-service", "gateway", "--gateway-database", "gateway_test", "--gateway-role", "gateway_test_migrator"}

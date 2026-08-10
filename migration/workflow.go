@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	storepkg "github.com/QuantProcessing/boltertrader/gateway/store"
 )
 
 type Operation string
@@ -283,16 +285,19 @@ func requestDigests(manifest Manifest, request Request) (string, string, error) 
 }
 
 type operationProof struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Operation     Operation         `json:"operation"`
-	Status        string            `json:"status"`
-	MigrationID   string            `json:"migrationId"`
-	Subject       string            `json:"subject"`
-	Checks        []string          `json:"checks"`
-	GeneratedBy   string            `json:"generatedBy,omitempty"`
-	PreStateSHA   string            `json:"preStateSha256,omitempty"`
-	InputSHA      string            `json:"inputSha256,omitempty"`
-	Commands      []commandEvidence `json:"commands,omitempty"`
+	SchemaVersion               int                                 `json:"schemaVersion"`
+	Operation                   Operation                           `json:"operation"`
+	Status                      string                              `json:"status"`
+	MigrationID                 string                              `json:"migrationId"`
+	Subject                     string                              `json:"subject"`
+	Checks                      []string                            `json:"checks"`
+	GeneratedBy                 string                              `json:"generatedBy,omitempty"`
+	PreStateSHA                 string                              `json:"preStateSha256,omitempty"`
+	InputSHA                    string                              `json:"inputSha256,omitempty"`
+	Commands                    []commandEvidence                   `json:"commands,omitempty"`
+	PromotionRequest            *storepkg.MigrationPromotionRequest `json:"promotionRequest,omitempty"`
+	PromotionOperationSetSHA256 string                              `json:"promotionOperationSetSha256,omitempty"`
+	ActivationObservations      *ActivationObservations             `json:"activationObservations,omitempty"`
 }
 
 func validateTypedProof(data []byte, manifest Manifest, request Request, artifactSHA string) error {
@@ -351,6 +356,11 @@ func validateTypedProof(data []byte, manifest Manifest, request Request, artifac
 	case Activate:
 		subject = proofStateDigest(manifest)
 		required = []string{"source-fenced", "gateway-promoted", "writers-granted", "connect-restored", "services-started", "activation-verified"}
+		if manifest.ActivationAttempt == nil || manifest.ActivationAttempt.Observations == nil || proof.ActivationObservations == nil || !reflect.DeepEqual(proof.ActivationObservations, manifest.ActivationAttempt.Observations) ||
+			!completeActivationAuthorityObservation(proof.ActivationObservations.PlatformAuthority) || !completeActivationAuthorityObservation(proof.ActivationObservations.GatewayAuthority) ||
+			!proof.ActivationObservations.SourceFenceVerified || !proof.ActivationObservations.TargetSessionsFenced || !proof.ActivationObservations.TestModeVerified || !proof.ActivationObservations.LivePrivateWritesDisabled || !proof.ActivationObservations.VenueWritesDisabled {
+			return fmt.Errorf("activation proof observations do not match the verified attempt")
+		}
 	case RecordActivation:
 		subject = proofStateDigest(manifest) + "/" + request.ActivationAt + "/" + request.CutoverAt
 		required = []string{"one-writer-target", "target-activated"}

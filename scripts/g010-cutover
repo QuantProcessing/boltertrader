@@ -86,33 +86,35 @@ TARGET_DATABASE=${BT_G010_TARGET_DATABASE:-${BT_PLATFORM_DATABASE:-bolter_platfo
 GATEWAY_DATABASE=${BT_G010_GATEWAY_DATABASE:-bolter_gateway_test}
 MAINTENANCE_DATABASE=${BT_G010_MAINTENANCE_DATABASE:-bolter_maintenance_test}
 SOURCE_ROLE=${BT_G010_SOURCE_ROLE:-bolter_funding_test_migrator}
-TARGET_ROLE=${BT_G010_TARGET_ROLE:-${BT_PLATFORM_DATABASE_ROLE:-bolter_platform_test}}
+TARGET_ROLE=${BT_G010_TARGET_ROLE:-bolter_platform_test_migrator}
 GATEWAY_ROLE=${BT_G010_GATEWAY_ROLE:-bolter_gateway_test_migrator}
+TARGET_RUNTIME_ROLE=${BT_G010_TARGET_RUNTIME_ROLE:-${BT_PLATFORM_DATABASE_ROLE:-bolter_platform_test}}
+GATEWAY_RUNTIME_ROLE=${BT_G010_GATEWAY_RUNTIME_ROLE:-bolter_gateway_test}
 MAINTENANCE_ROLE=${BT_G010_MAINTENANCE_ROLE:-bolter_platform_test_admin}
 SOURCE_WRITER_ROLE=${BT_G010_SOURCE_WRITER_ROLE:-bolter_funding_test_writer}
 TARGET_WRITER_ROLE=${BT_G010_TARGET_WRITER_ROLE:-bolter_platform_test_writer}
 GATEWAY_WRITER_ROLE=${BT_G010_GATEWAY_WRITER_ROLE:-bolter_gateway_test_writer}
 
 require_test_identity() {
-	identity=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]' | tr '.:-' '___')
-	case "$identity" in live|live_*|*_live|*_live_*) fail "$1 must be a mode-scoped Test identity without a Live token" ;; esac
-	case "$identity" in test|test_*|*_test|*_test_*) ;; *) fail "$1 must be a mode-scoped Test identity" ;; esac
+	[ "$2" = "$3" ] || fail "$1 must be the canonical Test identity $3"
 }
-require_test_identity BT_G010_SOURCE_SERVICE "$SOURCE_SERVICE"
-require_test_identity BT_G010_TARGET_SERVICE "$TARGET_SERVICE"
-require_test_identity BT_G010_GATEWAY_SERVICE "$GATEWAY_SERVICE"
-require_test_identity BT_G010_MAINTENANCE_SERVICE "$MAINTENANCE_SERVICE"
-require_test_identity BT_G010_SOURCE_DATABASE "$SOURCE_DATABASE"
-require_test_identity BT_G010_TARGET_DATABASE "$TARGET_DATABASE"
-require_test_identity BT_G010_GATEWAY_DATABASE "$GATEWAY_DATABASE"
-require_test_identity BT_G010_MAINTENANCE_DATABASE "$MAINTENANCE_DATABASE"
-require_test_identity BT_G010_SOURCE_ROLE "$SOURCE_ROLE"
-require_test_identity BT_G010_TARGET_ROLE "$TARGET_ROLE"
-require_test_identity BT_G010_GATEWAY_ROLE "$GATEWAY_ROLE"
-require_test_identity BT_G010_MAINTENANCE_ROLE "$MAINTENANCE_ROLE"
-require_test_identity BT_G010_SOURCE_WRITER_ROLE "$SOURCE_WRITER_ROLE"
-require_test_identity BT_G010_TARGET_WRITER_ROLE "$TARGET_WRITER_ROLE"
-require_test_identity BT_G010_GATEWAY_WRITER_ROLE "$GATEWAY_WRITER_ROLE"
+require_test_identity BT_G010_SOURCE_SERVICE "$SOURCE_SERVICE" funding_source_test
+require_test_identity BT_G010_TARGET_SERVICE "$TARGET_SERVICE" platform_target_test
+require_test_identity BT_G010_GATEWAY_SERVICE "$GATEWAY_SERVICE" gateway_test
+require_test_identity BT_G010_MAINTENANCE_SERVICE "$MAINTENANCE_SERVICE" platform_maintenance_test
+require_test_identity BT_G010_SOURCE_DATABASE "$SOURCE_DATABASE" bolter_funding_test
+require_test_identity BT_G010_TARGET_DATABASE "$TARGET_DATABASE" bolter_platform_test
+require_test_identity BT_G010_GATEWAY_DATABASE "$GATEWAY_DATABASE" bolter_gateway_test
+require_test_identity BT_G010_MAINTENANCE_DATABASE "$MAINTENANCE_DATABASE" bolter_maintenance_test
+require_test_identity BT_G010_SOURCE_ROLE "$SOURCE_ROLE" bolter_funding_test_migrator
+require_test_identity BT_G010_TARGET_ROLE "$TARGET_ROLE" bolter_platform_test_migrator
+require_test_identity BT_G010_GATEWAY_ROLE "$GATEWAY_ROLE" bolter_gateway_test_migrator
+require_test_identity BT_G010_TARGET_RUNTIME_ROLE "$TARGET_RUNTIME_ROLE" bolter_platform_test
+require_test_identity BT_G010_GATEWAY_RUNTIME_ROLE "$GATEWAY_RUNTIME_ROLE" bolter_gateway_test
+require_test_identity BT_G010_MAINTENANCE_ROLE "$MAINTENANCE_ROLE" bolter_platform_test_admin
+require_test_identity BT_G010_SOURCE_WRITER_ROLE "$SOURCE_WRITER_ROLE" bolter_funding_test_writer
+require_test_identity BT_G010_TARGET_WRITER_ROLE "$TARGET_WRITER_ROLE" bolter_platform_test_writer
+require_test_identity BT_G010_GATEWAY_WRITER_ROLE "$GATEWAY_WRITER_ROLE" bolter_gateway_test_writer
 
 SECRET_STORE_DIR=${BT_SECRET_STORE_DIR:-$RUNTIME_DIR/secret-store}
 SECRET_STORE_NAMESPACE=${BT_SECRET_STORE_NAMESPACE:-boltertrader/test}
@@ -196,6 +198,10 @@ run_validate() {
 	migration_tool validate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --verifier g010-cutover
 }
 
+run_activate() {
+	migration_tool activate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --journal "$EVIDENCE_DIR/activation-attempt.json" --state-dir "$STATE_DIR" --backup-id g010-test-backup --backup-artifact "$BACKUP_ARTIFACT" --final-delta-artifact "$DELTA_ARTIFACT" --backfill-mapping "$BACKFILL_MAPPING" --verifier g010-cutover --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-runtime-role "$TARGET_RUNTIME_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE" --gateway-runtime-role "$GATEWAY_RUNTIME_ROLE" --gateway-writer-role "$GATEWAY_WRITER_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE"
+}
+
 revalidate_completed() {
 	if phase_at_least backed-up; then
 		run_backup || fail "migration-tool backup failed"
@@ -235,6 +241,11 @@ while :; do
 		retirement-ready) fail "G010 must stop before source retirement" ;;
 		*) fail "migration-tool status returned an unsupported phase" ;;
 	esac
+	if [ "$phase" = activated ]; then
+		run_activate || fail "migration-tool activate replay failed"
+		printf 'g010-cutover: activated; source retirement remains outside G010\n'
+		exit 0
+	fi
 	verify_structured_evidence
 	revalidate_completed
 	if phase_at_least validated; then
@@ -268,11 +279,10 @@ while :; do
 			migration_tool prepare-activation --manifest "$MANIFEST" || fail "migration-tool prepare-activation failed"
 			;;
 		activation-ready)
-			migration_tool activate --manifest "$MANIFEST" --evidence-dir "$EVIDENCE_DIR" --journal "$EVIDENCE_DIR/activation-attempt.json" --state-dir "$STATE_DIR" --source-service "$SOURCE_SERVICE" --source-database "$SOURCE_DATABASE" --source-role "$SOURCE_ROLE" --source-writer-role "$SOURCE_WRITER_ROLE" --target-service "$TARGET_SERVICE" --target-database "$TARGET_DATABASE" --target-role "$TARGET_ROLE" --target-writer-role "$TARGET_WRITER_ROLE" --gateway-service "$GATEWAY_SERVICE" --gateway-database "$GATEWAY_DATABASE" --gateway-role "$GATEWAY_ROLE" --gateway-writer-role "$GATEWAY_WRITER_ROLE" --maintenance-service "$MAINTENANCE_SERVICE" --maintenance-database "$MAINTENANCE_DATABASE" --maintenance-role "$MAINTENANCE_ROLE" || fail "migration-tool activate failed"
+			run_activate || fail "migration-tool activate failed"
 			;;
 		activated)
-			printf 'g010-cutover: activated; source retirement remains outside G010\n'
-			exit 0
+			fail "activated replay dispatch was bypassed"
 			;;
 	esac
 done

@@ -1,8 +1,8 @@
 package authority
 
 const (
-	PlatformV15MigrationDigest = "0584d556fe4344e02f940605aae39c29d8be609b72d481d2bb41b2b03b9c6ae8"
-	PlatformV15Digest          = "037b7ab18641b4e6019369d39a4c8d991af8855e141d84668bc3011a3fc4d2be"
+	PlatformV15MigrationDigest = "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9"
+	PlatformV15Digest          = "1a67c896f4560b1f16f34c11ccf569b18bec396b074036a08102fe6c7d17073c"
 )
 
 func PlatformV15() Matrix {
@@ -37,6 +37,7 @@ func PlatformV15() Matrix {
 		objects = append(objects, table(name, Canonical, []string{"SELECT"}, []string{"INSERT", "UPDATE", "DELETE"}))
 	}
 	objects = append(objects,
+		sequence("platform_funding_execution_transitions_id_seq"),
 		sequence("platform_realtime_events_sequence_seq"),
 		sequence("platform_work_lease_seq"),
 		Object{Schema: "public", Name: "platform_valid_funding_account_fences(jsonb)", Kind: Routine, Class: MigrationOnly, Writer: []string{"EXECUTE"}, Probe: "SELECT has_function_privilege(current_user, 'public.platform_valid_funding_account_fences(jsonb)', 'EXECUTE')"},

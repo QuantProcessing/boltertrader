@@ -22,6 +22,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
 	"github.com/QuantProcessing/boltertrader/gateway/process"
+	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
 )
 
 func TestOperationalHTTPExposesMetricsAndObservesGatewayCommands(t *testing.T) {
@@ -204,7 +205,9 @@ func TestRunRequiresConfigFlagAndLoadsStrictConfigBeforeStart(t *testing.T) {
 		},
 		validateDatabaseIdentity: testValidateDatabaseIdentity,
 		restoreAccountManager:    testRestoreAccountManager,
-		migrate:                  func(ctx context.Context, pool process.PostgresPool) error { return nil },
+		verifyDatabaseAuthority: func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+			return postgres.AuthorityResult{WriterMembership: true}, nil
+		},
 		buildAccountManager: func(context.Context) (process.AccountManager, error) {
 			return noopAccountManager{}, nil
 		},
@@ -215,7 +218,7 @@ func TestRunRequiresConfigFlagAndLoadsStrictConfigBeforeStart(t *testing.T) {
 			if address != "127.0.0.1:0" {
 				t.Fatalf("listen address = %q, want config value", address)
 			}
-			return fakeListener{}, nil
+			return net.Listen(network, "127.0.0.1:0")
 		},
 		wait: func(ctx context.Context, service *process.Service) error {
 			return service.Shutdown(ctx)
@@ -247,7 +250,9 @@ func TestRunStartsSeparateAuthenticatedInternalAuthorityListener(t *testing.T) {
 		connectPostgres:          func(context.Context, string) (process.PostgresPool, error) { return fakePool{}, nil },
 		validateDatabaseIdentity: testValidateDatabaseIdentity,
 		restoreAccountManager:    testRestoreAccountManager,
-		migrate:                  func(context.Context, process.PostgresPool) error { return nil },
+		verifyDatabaseAuthority: func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+			return postgres.AuthorityResult{WriterMembership: true}, nil
+		},
 		buildAccountManager: func(context.Context) (process.AccountManager, error) {
 			return noopAccountManager{}, nil
 		},
@@ -420,9 +425,10 @@ func TestMigrationValidationSkipsPrivateRuntimeConstruction(t *testing.T) {
 		checkCredentialResolver:  func(context.Context) error { privateCall("credential resolver"); return nil },
 		connectPostgres:          func(context.Context, string) (process.PostgresPool, error) { return fakePool{}, nil },
 		validateDatabaseIdentity: testValidateDatabaseIdentity,
-		verifyCanonicalWrites:    func(context.Context, process.PostgresPool) (bool, error) { return false, nil },
-		migrate:                  func(context.Context, process.PostgresPool) error { privateCall("migration"); return nil },
-		buildAccountManager:      func(context.Context) (process.AccountManager, error) { privateCall("account manager"); return nil, nil },
+		verifyDatabaseAuthority: func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+			return postgres.AuthorityResult{}, nil
+		},
+		buildAccountManager: func(context.Context) (process.AccountManager, error) { privateCall("account manager"); return nil, nil },
 		buildOrderCoordinator: func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error) {
 			privateCall("order coordinator")
 			return nil, nil
@@ -488,7 +494,9 @@ func TestRunExitsOnServeFailureWithSafeErrorAndExactCleanup(t *testing.T) {
 			connectPostgres: func(ctx context.Context, dsn string) (process.PostgresPool, error) {
 				return recordingPool{recorder: recorder}, nil
 			},
-			migrate:                  func(ctx context.Context, pool process.PostgresPool) error { return nil },
+			verifyDatabaseAuthority: func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+				return postgres.AuthorityResult{WriterMembership: true}, nil
+			},
 			validateDatabaseIdentity: testValidateDatabaseIdentity,
 			restoreAccountManager:    testRestoreAccountManager,
 			buildAccountManager: func(context.Context) (process.AccountManager, error) {
@@ -540,7 +548,9 @@ func TestRunAlwaysPerformsBoundedIdempotentShutdownAfterInjectedWaitReturns(t *t
 				connectPostgres: func(ctx context.Context, dsn string) (process.PostgresPool, error) {
 					return recordingPool{recorder: recorder}, nil
 				},
-				migrate:                  func(ctx context.Context, pool process.PostgresPool) error { return nil },
+				verifyDatabaseAuthority: func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
+					return postgres.AuthorityResult{WriterMembership: true}, nil
+				},
 				validateDatabaseIdentity: testValidateDatabaseIdentity,
 				restoreAccountManager:    testRestoreAccountManager,
 				buildAccountManager: func(context.Context) (process.AccountManager, error) {
@@ -613,10 +623,6 @@ func testRestoreAccountManager(context.Context, process.PostgresPool, process.Ac
 func testBuildHandler(monitor *health.Monitor, _ process.PostgresPool, _ process.AccountManager, _ process.OrderCoordinator) (http.Handler, error) {
 	return health.NewHandler(monitor), nil
 }
-
-type fakeListener struct{ net.Listener }
-
-func (fakeListener) Close() error { return nil }
 
 type cleanupRecorder struct {
 	mu    sync.Mutex

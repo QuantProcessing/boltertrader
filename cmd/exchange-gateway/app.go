@@ -32,6 +32,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
+	migrationauthority "github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,8 +42,7 @@ type runtimeDeps struct {
 	checkCredentialResolver  func(context.Context) error
 	connectPostgres          func(context.Context, string) (process.PostgresPool, error)
 	validateDatabaseIdentity func(context.Context, process.PostgresPool) error
-	verifyCanonicalWrites    func(context.Context, process.PostgresPool) (bool, error)
-	migrate                  func(context.Context, process.PostgresPool) error
+	verifyDatabaseAuthority  func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error)
 	buildAccountManager      func(context.Context) (process.AccountManager, error)
 	restoreAccountManager    func(context.Context, process.PostgresPool, process.AccountManager) error
 	buildOrderCoordinator    func(context.Context, process.PostgresPool, process.AccountManager) (process.OrderCoordinator, error)
@@ -90,7 +90,6 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		metrics = observability.NewMetrics()
 	}
 	connectPostgres := defaultConnectPostgres(deps.connectPostgres)
-	migrate := defaultMigrate(deps.migrate)
 	runtimeMode := deps.runtimeMode
 	if runtimeMode == "" {
 		runtimeMode = account.RuntimeMode(file.Server.Mode)
@@ -145,8 +144,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		ResolveSecret:            provider.Resolve,
 		ConnectPostgres:          observedConnectPostgres(metrics, connectPostgres),
 		ValidateDatabaseIdentity: validateDatabaseIdentity,
-		VerifyCanonicalWrites:    defaultVerifyCanonicalWrites(deps.verifyCanonicalWrites, runtimeMode),
-		Migrate:                  observedMigrate(metrics, migrate),
+		VerifyDatabaseAuthority:  defaultVerifyDatabaseAuthority(deps.verifyDatabaseAuthority, runtimeMode),
 		BuildAccountManager:      defaultBuildAccountManager(deps.buildAccountManager, runtimeLifecycle, credentialResolver, runtimeMode),
 		RestoreAccountManager: func(restoreCtx context.Context, pool process.PostgresPool, manager process.AccountManager) error {
 			if deps.restoreAccountManager != nil {
@@ -491,18 +489,6 @@ func observedConnectPostgres(
 	}
 }
 
-func observedMigrate(
-	metrics *observability.Metrics,
-	migrate func(context.Context, process.PostgresPool) error,
-) func(context.Context, process.PostgresPool) error {
-	return func(ctx context.Context, pool process.PostgresPool) error {
-		start := time.Now()
-		err := migrate(ctx, pool)
-		metrics.ObservePostgres(observability.PostgresMigrate, postgresErrorClass(err), time.Since(start))
-		return err
-	}
-}
-
 func postgresErrorClass(err error) observability.PostgresErrorClass {
 	switch {
 	case err == nil:
@@ -703,34 +689,19 @@ func validateConnectedDatabaseIdentity(database, role, expectedIdentity string) 
 	return nil
 }
 
-func defaultVerifyCanonicalWrites(override func(context.Context, process.PostgresPool) (bool, error), mode account.RuntimeMode) func(context.Context, process.PostgresPool) (bool, error) {
+func defaultVerifyDatabaseAuthority(override func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error), mode account.RuntimeMode) func(context.Context, process.PostgresPool) (postgres.AuthorityResult, error) {
 	if override != nil {
 		return override
 	}
-	return func(ctx context.Context, pool process.PostgresPool) (bool, error) {
+	return func(ctx context.Context, pool process.PostgresPool) (postgres.AuthorityResult, error) {
+		if mode != account.RuntimeModeTest {
+			return postgres.AuthorityResult{}, fmt.Errorf("Gateway authority matrix is unavailable for mode")
+		}
 		realPool, ok := pool.(*pgxpool.Pool)
 		if !ok {
-			return false, fmt.Errorf("postgres pool type")
+			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		writerRole := "bolter_gateway_" + string(mode) + "_writer"
-		var ready bool
-		if err := realPool.QueryRow(ctx, `SELECT pg_has_role(current_user, $1, 'USAGE')`, writerRole).Scan(&ready); err != nil {
-			return false, fmt.Errorf("verify gateway writer authority")
-		}
-		return ready, nil
-	}
-}
-
-func defaultMigrate(override func(context.Context, process.PostgresPool) error) func(context.Context, process.PostgresPool) error {
-	if override != nil {
-		return override
-	}
-	return func(ctx context.Context, pool process.PostgresPool) error {
-		realPool, ok := pool.(*pgxpool.Pool)
-		if !ok {
-			return fmt.Errorf("postgres pool type")
-		}
-		return postgres.Migrate(ctx, realPool)
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, migrationauthority.GatewayV6())
 	}
 }
 

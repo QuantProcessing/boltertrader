@@ -14,6 +14,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
+	storepostgres "github.com/QuantProcessing/boltertrader/gateway/store/postgres"
 )
 
 type PostgresPool interface {
@@ -37,8 +38,7 @@ type Dependencies struct {
 	ResolveSecret            func(context.Context, secret.Ref) (string, error)
 	ConnectPostgres          func(context.Context, string) (PostgresPool, error)
 	ValidateDatabaseIdentity func(context.Context, PostgresPool) error
-	VerifyCanonicalWrites    func(context.Context, PostgresPool) (bool, error)
-	Migrate                  func(context.Context, PostgresPool) error
+	VerifyDatabaseAuthority  func(context.Context, PostgresPool) (storepostgres.AuthorityResult, error)
 	BuildAccountManager      func(context.Context) (AccountManager, error)
 	RestoreAccountManager    func(context.Context, PostgresPool, AccountManager) error
 	BuildOrderCoordinator    func(context.Context, PostgresPool, AccountManager) (OrderCoordinator, error)
@@ -79,7 +79,7 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 		if deps.ValidationHandlerFactory == nil {
 			return nil, fmt.Errorf("process validation dependencies are incomplete")
 		}
-	} else if deps.Migrate == nil || deps.BuildAccountManager == nil || deps.RestoreAccountManager == nil || deps.BuildOrderCoordinator == nil {
+	} else if deps.BuildAccountManager == nil || deps.RestoreAccountManager == nil || deps.BuildOrderCoordinator == nil {
 		return nil, fmt.Errorf("process dependencies are incomplete")
 	}
 	if !validation && deps.CheckCredentialResolver != nil {
@@ -110,27 +110,23 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 		return nil, safeErr("validate postgres identity", err)
 	}
 	service.monitor.SetPostgresDependency(poolDependency{pool: pool})
-	writesReady := false
-	writeReason := "database_authority_not_ready"
-	if deps.VerifyCanonicalWrites != nil {
-		var verifyErr error
-		writesReady, verifyErr = deps.VerifyCanonicalWrites(ctx, pool)
-		if verifyErr != nil {
-			writesReady = false
-			writeReason = "database_authority_verification_failed"
-			if validation {
-				return nil, safeErr("verify canonical writes", verifyErr)
-			}
-		}
+	authorityResult, verifyErr := deps.VerifyDatabaseAuthority(ctx, pool)
+	if verifyErr != nil {
+		return nil, safeErr("verify database authority", verifyErr)
+	}
+	writesReady := authorityResult.WriterMembership
+	writeReason := ""
+	if !writesReady {
+		writeReason = "writer_role_unavailable"
 	}
 	service.monitor.SetComponent("canonicalWrites", writesReady, writeReason)
 	if validation && writesReady {
 		return nil, safeErr("validate migration profile authority", fmt.Errorf("canonical writes are enabled"))
 	}
-	if !validation {
-		service.monitor.SetComponent("canonicalWrites", writesReady, map[bool]string{true: "", false: writeReason}[writesReady])
-	}
-	if validation {
+	if validation || !writesReady {
+		if deps.ValidationHandlerFactory == nil {
+			return nil, fmt.Errorf("process read-only dependencies are incomplete")
+		}
 		var handler http.Handler
 		handler, err = deps.ValidationHandlerFactory(service.monitor, service.pool)
 		if err != nil || handler == nil {
@@ -144,9 +140,6 @@ func Start(ctx context.Context, file config.File, deps Dependencies) (*Service, 
 			err = startErr
 		}
 		return started, startErr
-	}
-	if err = deps.Migrate(ctx, pool); err != nil {
-		return nil, safeErr("migrate postgres", err)
 	}
 	accountManager, buildErr := deps.BuildAccountManager(ctx)
 	if buildErr != nil || accountManager == nil {
@@ -298,7 +291,7 @@ func (service *Service) readyToClosePool() bool {
 }
 
 func validateDeps(deps Dependencies) error {
-	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.ValidateDatabaseIdentity == nil || deps.Listen == nil {
+	if deps.ResolveSecret == nil || deps.ConnectPostgres == nil || deps.ValidateDatabaseIdentity == nil || deps.VerifyDatabaseAuthority == nil || deps.Listen == nil {
 		return fmt.Errorf("process dependencies are incomplete")
 	}
 	return nil

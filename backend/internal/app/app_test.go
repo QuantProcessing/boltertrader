@@ -180,14 +180,14 @@ func TestMigrationValidationRequiresWriterUsageAbsent(t *testing.T) {
 	}
 }
 
-func TestAppSourceWiresPostgresWorkStoreWhenDatabaseExists(t *testing.T) {
+func TestAppSourceVerifiesAuthorityAndWiresPostgresWorkStoreWhenDatabaseExists(t *testing.T) {
 	source, err := os.ReadFile("app.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
 	for _, required := range []string{
-		"postgres.Migrate(ctx, database)",
+		"postgres.VerifyRuntimeAuthority(ctx, database, authority.PlatformV15())",
 		"postgres.NewWorkStore(dependencies.Database)",
 		"postgres.NewFundingPlanStore(dependencies.Database)",
 		"postgres.NewFundingExecutionStore(dependencies.Database)",
@@ -199,6 +199,9 @@ func TestAppSourceWiresPostgresWorkStoreWhenDatabaseExists(t *testing.T) {
 		if !strings.Contains(text, required) {
 			t.Fatalf("app.go missing durable work wiring %q", required)
 		}
+	}
+	if strings.Contains(text, "postgres.Migrate(ctx, database)") {
+		t.Fatal("Platform runtime still executes migrations")
 	}
 }
 

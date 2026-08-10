@@ -10,23 +10,14 @@ import (
 	"github.com/QuantProcessing/boltertrader/migration/authority"
 )
 
-type AuthorityResult struct {
-	SchemaVersion       int
-	MigrationDigest     string
-	MatrixDigest        string
-	RuntimeRole         string
-	RuntimeInherits     bool
-	WriterMembership    bool
-	OwnershipViolations []string
-	PrivilegeViolations []string
-}
+type AuthorityResult = authority.RuntimeAuthorityResult
 
 func ApplyAuthority(ctx context.Context, database *sql.DB, matrix authority.Matrix) error {
 	if err := matrix.Validate(); err != nil {
 		return err
 	}
-	var currentRole string
-	if err := database.QueryRowContext(ctx, `SELECT current_user`).Scan(&currentRole); err != nil {
+	var currentRole, currentDatabase string
+	if err := database.QueryRowContext(ctx, `SELECT current_user, current_database()`).Scan(&currentRole, &currentDatabase); err != nil {
 		return fmt.Errorf("read migration identity: %w", err)
 	}
 	if currentRole != matrix.Roles.Migrator {
@@ -37,16 +28,29 @@ func ApplyAuthority(ctx context.Context, database *sql.DB, matrix authority.Matr
 		return fmt.Errorf("begin authority transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	runtimeRole := quoteIdentifier(matrix.Roles.Runtime)
+	writerRole := quoteIdentifier(matrix.Roles.Writer)
+	databaseName := quoteIdentifier(currentDatabase)
 	statements := []string{
+		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM PUBLIC`,
+		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM ` + writerRole,
+		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + runtimeRole,
 		`REVOKE ALL ON SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
 		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
 		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
 		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
 		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ` + runtimeRole + `, ` + writerRole,
 		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ` + runtimeRole + `, ` + writerRole,
 		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
-		`GRANT USAGE ON SCHEMA public TO ` + quoteIdentifier(matrix.Roles.Runtime),
-		`GRANT USAGE ON SCHEMA public TO ` + quoteIdentifier(matrix.Roles.Writer),
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM ` + runtimeRole + `, ` + writerRole,
+		`GRANT USAGE ON SCHEMA public TO ` + runtimeRole,
+		`GRANT USAGE ON SCHEMA public TO ` + writerRole,
 	}
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -62,47 +66,68 @@ func ApplyAuthority(ctx context.Context, database *sql.DB, matrix authority.Matr
 }
 
 func VerifyRuntimeAuthority(ctx context.Context, database *sql.DB, matrix authority.Matrix) (AuthorityResult, error) {
-	result := AuthorityResult{MatrixDigest: matrix.Digest()}
 	if err := matrix.Validate(); err != nil {
-		return result, err
+		return AuthorityResult{}, err
 	}
-	if err := database.QueryRowContext(ctx, `SELECT current_user, rolinherit FROM pg_roles WHERE rolname = current_user`).Scan(&result.RuntimeRole, &result.RuntimeInherits); err != nil {
-		return result, fmt.Errorf("verify runtime identity: %w", err)
-	}
-	if result.RuntimeRole != matrix.Roles.Runtime || !result.RuntimeInherits {
-		return result, fmt.Errorf("RUNTIME_IDENTITY_MISMATCH")
-	}
-	if err := database.QueryRowContext(ctx, `SELECT pg_has_role(current_user, $1, 'MEMBER')`, matrix.Roles.Writer).Scan(&result.WriterMembership); err != nil {
-		return result, fmt.Errorf("verify writer membership: %w", err)
-	}
-	if err := database.QueryRowContext(ctx, `SELECT COALESCE(max(version), 0) FROM platform_schema_migrations`).Scan(&result.SchemaVersion); err != nil {
-		return result, fmt.Errorf("verify schema version: %w", err)
-	}
-	if result.SchemaVersion != matrix.SchemaVersion {
-		return result, fmt.Errorf("SCHEMA_VERSION_MISMATCH")
-	}
-	rows, err := database.QueryContext(ctx, `
-		SELECT c.relname
-		FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-		WHERE n.nspname='public' AND c.relkind IN ('r','S') AND pg_get_userbyid(c.relowner)=current_user
-		ORDER BY c.relname`)
+	migrationDigest, err := verifyPlatformMigrationLedger(ctx, database, matrix)
 	if err != nil {
-		return result, fmt.Errorf("verify object ownership: %w", err)
+		return AuthorityResult{}, err
+	}
+	snapshot, err := authority.CollectPostgresRuntimeCatalog(ctx, sqlCatalogQuerier{database: database}, matrix,
+		`SELECT COALESCE(max(version), 0) FROM platform_schema_migrations`, migrationDigest)
+	if err != nil {
+		return AuthorityResult{}, err
+	}
+	return authority.VerifyRuntimeCatalog(matrix, snapshot)
+}
+
+func verifyPlatformMigrationLedger(ctx context.Context, database *sql.DB, matrix authority.Matrix) (string, error) {
+	migrations, err := embeddedPlatformMigrations()
+	if err != nil || len(migrations) != matrix.SchemaVersion {
+		return "", fmt.Errorf("MIGRATION_DIGEST_MISMATCH")
+	}
+	rows, err := database.QueryContext(ctx, `SELECT version, checksum FROM platform_schema_migrations ORDER BY version`)
+	if err != nil {
+		return "", fmt.Errorf("AUTHORITY_CATALOG_QUERY_FAILED: migration-ledger")
 	}
 	defer rows.Close()
+	index := 0
+	ledger := make([]authority.MigrationLedgerEntry, 0, len(migrations))
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return result, err
+		var version int
+		var checksum string
+		if rows.Scan(&version, &checksum) != nil || index >= len(migrations) || migrations[index].version != version || migrations[index].checksum != checksum {
+			return "", fmt.Errorf("MIGRATION_DIGEST_MISMATCH")
 		}
-		result.OwnershipViolations = append(result.OwnershipViolations, name)
+		ledger = append(ledger, authority.MigrationLedgerEntry{Version: version, Checksum: checksum})
+		index++
 	}
-	if len(result.OwnershipViolations) != 0 {
-		return result, fmt.Errorf("RUNTIME_OWNS_CANONICAL_OBJECT")
+	if rows.Err() != nil {
+		return "", fmt.Errorf("AUTHORITY_CATALOG_QUERY_FAILED: migration-ledger")
 	}
-	result.MigrationDigest = matrix.MigrationDigest
-	return result, nil
+	if index != len(migrations) {
+		return "", fmt.Errorf("MIGRATION_DIGEST_MISMATCH")
+	}
+	return authority.VerifyMigrationLedger(matrix, ledger)
 }
+
+type sqlCatalogQuerier struct{ database *sql.DB }
+
+func (querier sqlCatalogQuerier) QueryRow(ctx context.Context, query string, args ...any) authority.CatalogRow {
+	return querier.database.QueryRowContext(ctx, query, args...)
+}
+
+func (querier sqlCatalogQuerier) Query(ctx context.Context, query string, args ...any) (authority.CatalogRows, error) {
+	rows, err := querier.database.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return sqlCatalogRows{Rows: rows}, nil
+}
+
+type sqlCatalogRows struct{ *sql.Rows }
+
+func (rows sqlCatalogRows) Close() { _ = rows.Rows.Close() }
 
 func grantObject(ctx context.Context, tx *sql.Tx, matrix authority.Matrix, object authority.Object) error {
 	kind := map[authority.ObjectKind]string{authority.Table: "TABLE", authority.Sequence: "SEQUENCE", authority.Routine: "FUNCTION"}[object.Kind]

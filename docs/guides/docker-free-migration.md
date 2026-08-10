@@ -41,6 +41,8 @@ export BT_MIGRATION_MAINTENANCE_DATABASE=postgres_test
 export BT_MIGRATION_SOURCE_ROLE=funding_source_test_migrator
 export BT_MIGRATION_TARGET_ROLE=bolter_platform_test_migrator
 export BT_MIGRATION_GATEWAY_ROLE=bolter_gateway_test_migrator
+export BT_MIGRATION_TARGET_RUNTIME_ROLE=bolter_platform_test
+export BT_MIGRATION_GATEWAY_RUNTIME_ROLE=bolter_gateway_test
 export BT_MIGRATION_MAINTENANCE_ROLE=bolter_platform_test_admin
 export BT_MIGRATION_SOURCE_WRITER_ROLE=funding_test_writer
 export BT_MIGRATION_TARGET_WRITER_ROLE=bolter_test_writer
@@ -266,10 +268,12 @@ BT_DEV_REAL_STACK_ACCEPTANCE=1 .local/bin/migration-tool validate \
   --target-service "$BT_MIGRATION_TARGET_SERVICE" \
   --target-database "$BT_MIGRATION_TARGET_DATABASE" \
   --target-role "$BT_MIGRATION_TARGET_ROLE" \
+  --target-runtime-role "$BT_MIGRATION_TARGET_RUNTIME_ROLE" \
   --target-writer-role "$BT_MIGRATION_TARGET_WRITER_ROLE" \
   --gateway-service "$BT_MIGRATION_GATEWAY_SERVICE" \
   --gateway-database "$BT_MIGRATION_GATEWAY_DATABASE" \
   --gateway-role "$BT_MIGRATION_GATEWAY_ROLE" \
+  --gateway-runtime-role "$BT_MIGRATION_GATEWAY_RUNTIME_ROLE" \
   --gateway-writer-role "$BT_MIGRATION_GATEWAY_WRITER_ROLE" \
   --maintenance-service "$BT_MIGRATION_MAINTENANCE_SERVICE" \
   --maintenance-database "$BT_MIGRATION_MAINTENANCE_DATABASE" \
@@ -277,11 +281,12 @@ BT_DEV_REAL_STACK_ACCEPTANCE=1 .local/bin/migration-tool validate \
 ```
 
 `prepare-activation` stops at `activation-ready`. `activate` creates or resumes
-the manifest-bound attempt, promotes the exact pending Gateway set, grants the
-two Test writer memberships atomically, restarts the owned Test services, and
-generates the activation evidence. It rejects caller-authored proof and
-timestamp flags. `retire` remains unsupported, and G010 never authorizes Live
-private writes or venue orders.
+the manifest-bound attempt, uses the target and Gateway roles for migration
+connections, promotes the exact pending Gateway set, grants the two Test writer
+memberships to the explicit runtime roles atomically, restarts the owned Test
+services, and generates the activation evidence. It rejects caller-authored
+proof and timestamp flags. `retire` remains unsupported, and G010 never
+authorizes Live private writes or venue orders.
 
 ## Retry And Recovery
 

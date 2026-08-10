@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -58,8 +59,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	manifestPath := flags.String("manifest", "", "migration manifest path")
 	id := flags.String("id", "", "non-secret backup identifier")
+	backupID := flags.String("backup-id", "", "prior backup identifier required for activation replay")
 	name := flags.String("name", "", "backfill step name")
 	artifact := flags.String("artifact", "", "backup or delta artifact path")
+	backupArtifact := flags.String("backup-artifact", "", "prior backup artifact path required for activation replay")
+	finalDeltaArtifact := flags.String("final-delta-artifact", "", "prior final delta artifact path required for activation replay")
 	proof := flags.String("proof", "", "verification proof artifact path")
 	evidenceDir := flags.String("evidence-dir", "", "generated evidence directory")
 	backfillMapping := flags.String("backfill-mapping", "", "repository-owned route mapping artifact")
@@ -74,6 +78,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	sourceRole := flags.String("source-role", "", "expected source PostgreSQL connection role")
 	targetRole := flags.String("target-role", "", "expected target PostgreSQL connection role")
 	gatewayRole := flags.String("gateway-role", "", "expected Gateway PostgreSQL connection role")
+	targetRuntimeRole := flags.String("target-runtime-role", "", "target Platform runtime PostgreSQL role activated after migration")
+	gatewayRuntimeRole := flags.String("gateway-runtime-role", "", "Gateway runtime PostgreSQL role activated after migration")
 	maintenanceRole := flags.String("maintenance-role", "", "expected maintenance PostgreSQL connection role")
 	sourceWriterRole := flags.String("source-writer-role", "", "non-secret source canonical writer role")
 	targetWriterRole := flags.String("target-writer-role", "", "non-secret target canonical writer role")
@@ -99,15 +105,34 @@ func run(args []string, stdout, stderr io.Writer) error {
 		if operation == migration.Activate && (strings.TrimSpace(*activationAt) != "" || strings.TrimSpace(*cutoverAt) != "") {
 			return fmt.Errorf("--activation-at and --cutover-at are not accepted for activation; evidence is generated after command success")
 		}
+		if operation == migration.Activate {
+			for _, required := range []struct {
+				name  string
+				value string
+			}{
+				{name: "--backup-id", value: *backupID},
+				{name: "--backup-artifact", value: *backupArtifact},
+				{name: "--final-delta-artifact", value: *finalDeltaArtifact},
+				{name: "--backfill-mapping", value: *backfillMapping},
+				{name: "--verifier", value: *verifier},
+			} {
+				if strings.TrimSpace(required.value) == "" {
+					return fmt.Errorf("%s is required for activation", required.name)
+				}
+			}
+		}
 		executed, executeErr := executeMigration(context.Background(), migration.ExecutionRequest{
 			Operation: operation, ManifestPath: *manifestPath, EvidenceDir: *evidenceDir,
 			ArtifactPath: *artifact, BackfillPath: *backfillMapping, ID: *id,
+			BackupID: *backupID, BackupArtifactPath: *backupArtifact, FinalDeltaArtifactPath: *finalDeltaArtifact,
 			Verifier: *verifier, Reason: *reason, SourceService: *sourceService, TargetService: *targetService, GatewayService: *gatewayService, MaintenanceService: *maintenanceService,
 			SourceDatabase: *sourceDatabase, TargetDatabase: *targetDatabase, GatewayDatabase: *gatewayDatabase,
 			MaintenanceDatabase: *maintenanceDatabase,
 			SourceRole:          *sourceRole,
 			TargetRole:          *targetRole,
 			GatewayRole:         *gatewayRole,
+			TargetRuntimeRole:   *targetRuntimeRole,
+			GatewayRuntimeRole:  *gatewayRuntimeRole,
 			MaintenanceRole:     *maintenanceRole,
 			SourceWriterRole:    *sourceWriterRole, TargetWriterRole: *targetWriterRole,
 			GatewayWriterRole: *gatewayWriterRole, JournalPath: *journalPath, StateDir: *stateDir,
@@ -239,10 +264,75 @@ func readPrivateJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	if err := rejectPrivateJSONDuplicateKeys(data); err != nil {
+		return fmt.Errorf("decode snapshot artifact: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return fmt.Errorf("decode snapshot artifact: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("decode snapshot artifact: must contain one JSON value")
+	}
+	return nil
+}
+
+func rejectPrivateJSONDuplicateKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := scanPrivateJSONValue(decoder); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("must contain one JSON value")
+	}
+	return nil
+}
+
+func scanPrivateJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("invalid JSON")
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("invalid JSON")
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid JSON")
+			}
+			if _, exists := keys[key]; exists {
+				return fmt.Errorf("contains duplicate key")
+			}
+			keys[key] = struct{}{}
+			if err := scanPrivateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+			return fmt.Errorf("invalid JSON")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanPrivateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		if token, err = decoder.Token(); err != nil || token != json.Delim(']') {
+			return fmt.Errorf("invalid JSON")
+		}
+	default:
+		return fmt.Errorf("invalid JSON")
 	}
 	return nil
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
 	"github.com/QuantProcessing/boltertrader/backend/internal/workapi"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
+	"github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/shopspring/decimal"
@@ -552,9 +553,17 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err := database.PingContext(ctx); err != nil {
 		return fmt.Errorf("ping Platform database: %w", err)
 	}
-	if err := postgres.Migrate(ctx, database); err != nil {
-		return fmt.Errorf("migrate Platform database: %w", err)
+	authorityResult, err := postgres.VerifyRuntimeAuthority(ctx, database, authority.PlatformV15())
+	if err != nil {
+		return fmt.Errorf("verify Platform database authority: %w", err)
 	}
+	writeAuthority := NewWriteAuthority(WriteAuthorityFacts{
+		RuntimeInherits: authorityResult.RuntimeInherits, WriterUsage: authorityResult.WriterMembership,
+		FullCapabilityGrants:         authorityResult.FullCapabilityGrants,
+		EffectiveTablePrivileges:     authorityResult.EffectiveTablePrivileges,
+		EffectiveSequencePrivileges:  authorityResult.EffectiveSequencePrivileges,
+		CanonicalOwnershipViolations: len(authorityResult.OwnershipViolations),
+	})
 	adapter, err := newGatewayAdapterForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
 	if err != nil {
 		return err
@@ -564,7 +573,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer credentialProvider.Close()
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter, WriteAuthority: writeAuthority})
 	if err != nil {
 		return err
 	}
