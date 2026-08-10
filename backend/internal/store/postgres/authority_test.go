@@ -1,10 +1,25 @@
 package postgres
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/migration/authority"
 )
+
+func TestPlatformAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing.T) {
+	matrix := authority.PlatformV15()
+	statements := strings.Join(databaseAuthorityStatements(matrix, "bolter_platform_test"), "\n")
+	for _, want := range []string{
+		`REVOKE CONNECT ON DATABASE "bolter_platform_test" FROM PUBLIC`,
+		`REVOKE CONNECT ON DATABASE "bolter_platform_test" FROM "bolter_platform_test_writer"`,
+		`GRANT CONNECT ON DATABASE "bolter_platform_test" TO "bolter_platform_test_migrator", "bolter_platform_test", "bolter_platform_test_admin"`,
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("authority statements missing %q: %s", want, statements)
+		}
+	}
+}
 
 func TestPlatformAuthorityMatrixIsValid(t *testing.T) {
 	matrix := authority.PlatformV15()

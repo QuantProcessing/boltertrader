@@ -28,13 +28,29 @@ func ApplyAuthority(ctx context.Context, database *sql.DB, matrix authority.Matr
 		return fmt.Errorf("begin authority transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	for _, statement := range databaseAuthorityStatements(matrix, currentDatabase) {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("apply authority grants: %w", err)
+		}
+	}
+	for _, object := range matrix.Objects {
+		if err := grantObject(ctx, tx, matrix, object); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func databaseAuthorityStatements(matrix authority.Matrix, currentDatabase string) []string {
+	migratorRole := quoteIdentifier(matrix.Roles.Migrator)
 	runtimeRole := quoteIdentifier(matrix.Roles.Runtime)
+	maintenanceRole := quoteIdentifier(matrix.Roles.Maintenance)
 	writerRole := quoteIdentifier(matrix.Roles.Writer)
 	databaseName := quoteIdentifier(currentDatabase)
-	statements := []string{
+	return []string{
 		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM PUBLIC`,
 		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM ` + writerRole,
-		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + runtimeRole,
+		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + migratorRole + `, ` + runtimeRole + `, ` + maintenanceRole,
 		`REVOKE ALL ON SCHEMA public FROM PUBLIC`,
 		`REVOKE ALL ON SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
 		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`,
@@ -52,17 +68,6 @@ func ApplyAuthority(ctx context.Context, database *sql.DB, matrix authority.Matr
 		`GRANT USAGE ON SCHEMA public TO ` + runtimeRole,
 		`GRANT USAGE ON SCHEMA public TO ` + writerRole,
 	}
-	for _, statement := range statements {
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply authority grants: %w", err)
-		}
-	}
-	for _, object := range matrix.Objects {
-		if err := grantObject(ctx, tx, matrix, object); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
 }
 
 func VerifyRuntimeAuthority(ctx context.Context, database *sql.DB, matrix authority.Matrix) (AuthorityResult, error) {

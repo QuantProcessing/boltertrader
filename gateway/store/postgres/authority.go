@@ -28,31 +28,7 @@ func ApplyAuthority(ctx context.Context, pool *pgxpool.Pool, matrix authority.Ma
 		return redactErr("begin authority transaction", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	runtimeRole := gatewayQuoteIdentifier(matrix.Roles.Runtime)
-	writerRole := gatewayQuoteIdentifier(matrix.Roles.Writer)
-	databaseName := gatewayQuoteIdentifier(currentDatabase)
-	statements := []string{
-		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM PUBLIC`,
-		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM ` + writerRole,
-		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + runtimeRole,
-		`REVOKE ALL ON SCHEMA public FROM PUBLIC`,
-		`REVOKE ALL ON SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
-		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`,
-		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
-		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC`,
-		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
-		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC`,
-		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC`,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ` + runtimeRole + `, ` + writerRole,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC`,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ` + runtimeRole + `, ` + writerRole,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
-		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM ` + runtimeRole + `, ` + writerRole,
-		`GRANT USAGE ON SCHEMA public TO ` + runtimeRole,
-		`GRANT USAGE ON SCHEMA public TO ` + writerRole,
-	}
-	for _, statement := range statements {
+	for _, statement := range databaseAuthorityStatements(matrix, currentDatabase) {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			return redactErr("apply authority grants", err)
 		}
@@ -75,6 +51,35 @@ func ApplyAuthority(ctx context.Context, pool *pgxpool.Pool, matrix authority.Ma
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func databaseAuthorityStatements(matrix authority.Matrix, currentDatabase string) []string {
+	migratorRole := gatewayQuoteIdentifier(matrix.Roles.Migrator)
+	runtimeRole := gatewayQuoteIdentifier(matrix.Roles.Runtime)
+	maintenanceRole := gatewayQuoteIdentifier(matrix.Roles.Maintenance)
+	writerRole := gatewayQuoteIdentifier(matrix.Roles.Writer)
+	databaseName := gatewayQuoteIdentifier(currentDatabase)
+	return []string{
+		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM PUBLIC`,
+		`REVOKE CONNECT ON DATABASE ` + databaseName + ` FROM ` + writerRole,
+		`GRANT CONNECT ON DATABASE ` + databaseName + ` TO ` + migratorRole + `, ` + runtimeRole + `, ` + maintenanceRole,
+		`REVOKE ALL ON SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
+		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
+		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
+		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC`,
+		`REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM ` + runtimeRole + `, ` + writerRole,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM ` + runtimeRole + `, ` + writerRole,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM ` + runtimeRole + `, ` + writerRole,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM ` + runtimeRole + `, ` + writerRole,
+		`GRANT USAGE ON SCHEMA public TO ` + runtimeRole,
+		`GRANT USAGE ON SCHEMA public TO ` + writerRole,
+	}
 }
 
 func VerifyRuntimeAuthority(ctx context.Context, pool *pgxpool.Pool, matrix authority.Matrix) (AuthorityResult, error) {
