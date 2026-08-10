@@ -160,7 +160,9 @@ writer_state() {
 	service=$1 database=$2 writer_role=$3
 	"$PSQL" "service=$service dbname=$database" --no-psqlrc --tuples-only --no-align \
 		--set "writer_role=$writer_role" \
-		--command "SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin" |
+		--file - <<'SQL' |
+SELECT r.rolcanlogin::text || '|' || count(a.pid)::text FROM pg_roles r LEFT JOIN pg_stat_activity a ON a.usename=r.rolname AND a.pid<>pg_backend_pid() WHERE r.rolname=:'writer_role' GROUP BY r.rolcanlogin;
+SQL
 		tr -d '[:space:]'
 }
 

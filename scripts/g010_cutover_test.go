@@ -136,6 +136,26 @@ func TestG010Cutover(t *testing.T) {
 		h.rejects(driver, "real browser verification failed")
 	})
 
+	t.Run("binds writer state variables through psql stdin", func(t *testing.T) {
+		data, err := os.ReadFile(driver)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(data)
+		start := strings.Index(source, "writer_state() {")
+		if start < 0 {
+			t.Fatal("writer_state function is missing")
+		}
+		end := strings.Index(source[start:], "\n}\n")
+		if end < 0 {
+			t.Fatal("writer_state function is incomplete")
+		}
+		block := source[start : start+end]
+		if !strings.Contains(block, "--file -") || strings.Contains(block, "--command") {
+			t.Fatalf("writer_state must bind psql variables through stdin: %s", block)
+		}
+	})
+
 	t.Run("rejects private venue write route commands", func(t *testing.T) {
 		h := newG010Harness(t, repo, "baseline")
 		privateCommand := filepath.Join(h.root, "api", "v1", "private", "orders")
