@@ -42,15 +42,28 @@ describe("real browser acceptance contract", () => {
     expect(source).toContain("assertNoAuthoritativeAccountWrites");
   });
 
-  it("allows login and non-writing validation but rejects account mutation requests", () => {
+  it("allows only authentication-session writes and rejects account validation", () => {
     expect(() => assertNoAuthoritativeAccountWrites([
       { method: "POST", path: "/api/v1/auth/login" },
-      { method: "POST", path: "/api/v1/accounts/account-1/validate" },
+      { method: "DELETE", path: "/api/v1/auth/session" },
       { method: "GET", path: "/api/v1/accounts" },
     ])).not.toThrow();
     expect(() => assertNoAuthoritativeAccountWrites([
-      { method: "POST", path: "/api/v1/accounts" },
+      { method: "POST", path: "/api/v1/accounts/account-1/validate" },
     ])).toThrow("authoritative private or account mutation");
+  });
+
+  it("visits every authenticated product and system surface without invoking account validation", async () => {
+    const source = await acceptanceSource();
+
+    for (const navigation of ["Overview", "Funding", "Manual", "Accounts", "Activity", "Settings"]) {
+      expect(source).toContain(`name: "${navigation}"`);
+    }
+    for (const heading of ["Trading overview", "Funding Trading", "Manual Trading", "Accounts & Security", "Activity & Audit", "Settings"]) {
+      expect(source).toContain(`name: "${heading}"`);
+    }
+    expect(source).not.toContain("Retry validation for");
+    expect(source).not.toContain("/validate$");
   });
 
   it("records listener and generic onmessage delivery without replacing handlers", () => {
@@ -134,6 +147,20 @@ describe("real browser acceptance contract", () => {
     expect(harness).toBeGreaterThan(waits);
     expect(source).toContain('"/api/v1/accounts"');
     expect(source).toContain('"/api/v1/catalog/venues"');
+    expect(source).toContain("triggerCount");
+    expect(source).toContain("canonicalMutationCount");
+    expect(source).toContain("activeHeadMutationCount");
+  });
+
+  it("requires one successful recovery and zero authoritative harness effects", async () => {
+    const source = await acceptanceSource();
+
+    expect(source).toContain("markers.triggerCount");
+    expect(source).toContain("markers.canonicalMutationCount");
+    expect(source).toContain("markers.activeHeadMutationCount");
+    expect(source).toContain("resnapshot trigger must execute exactly once");
+    expect(source).toContain("resnapshot harness must not mutate canonical state");
+    expect(source).toContain("resnapshot harness must not promote Gateway heads");
   });
 
   it("decodes stable full-page before, with, and after screenshots", async () => {

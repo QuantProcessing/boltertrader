@@ -89,6 +89,19 @@ test("real Test platform exposes only redacted account validation and recovery s
   await page.getByLabel("Password").fill(password);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Trading overview" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Overview" }).click();
+  await expect(page.getByRole("heading", { name: "Trading overview" })).toBeVisible();
+  await page.getByRole("button", { name: "Funding" }).click();
+  await expect(page.getByRole("heading", { name: "Funding Trading" })).toBeVisible();
+  await page.getByRole("button", { name: "Manual" }).click();
+  await expect(page.getByRole("heading", { name: "Manual Trading" })).toBeVisible();
+  await page.getByRole("button", { name: "Accounts" }).click();
+  await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
+  await page.getByRole("button", { name: "Activity" }).click();
+  await expect(page.getByRole("heading", { name: "Activity & Audit" })).toBeVisible();
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByRole("heading", { name: "Accounts & Security" })).toBeVisible();
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
@@ -116,17 +129,9 @@ test("real Test platform exposes only redacted account validation and recovery s
   const afterPixels = await captureStableFullPage(page, { fullPage: true, path: testInfo.outputPath("real-accounts-redaction.png") });
   assertCanaryPixelIsolation(beforePixels, withCanaryPixels, afterPixels, allowedRects);
 
-  const validations = page.getByRole("button", { name: /^Retry validation for / });
-  if (await validations.count()) {
-    const validationResponse = page.waitForResponse((response) => response.request().method() === "POST" && /^\/api\/v1\/accounts\/[^/]+\/validate$/.test(new URL(response.url()).pathname));
-    await validations.first().click();
-    await validationResponse;
-  } else {
-    const accountRead = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/v1/accounts");
-    await page.getByRole("button", { name: "Refresh accounts" }).click();
-    await accountRead;
-    await expect(page.getByText("No accounts configured")).toBeVisible();
-  }
+  const accountRead = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/api/v1/accounts");
+  await page.getByRole("button", { name: "Refresh accounts" }).click();
+  await accountRead;
 
   const authoritativeFacts = page.locator(".account-table");
   const beforeFacts = await authoritativeFacts.innerText();
@@ -140,7 +145,17 @@ test("real Test platform exposes only redacted account validation and recovery s
   }));
   const harnessResponse = await request.post(harnessURL);
   expect(harnessResponse.ok(), "The resnapshot harness request failed.").toBe(true);
-  const markers = await harnessResponse.json() as { beforeMarker?: unknown; afterMarker?: unknown; accountFactsChanged?: unknown };
+  const markers = await harnessResponse.json() as {
+    beforeMarker?: unknown;
+    afterMarker?: unknown;
+    accountFactsChanged?: unknown;
+    triggerCount?: unknown;
+    canonicalMutationCount?: unknown;
+    activeHeadMutationCount?: unknown;
+  };
+  expect(markers.triggerCount, "resnapshot trigger must execute exactly once").toBe(1);
+  expect(markers.canonicalMutationCount, "resnapshot harness must not mutate canonical state").toBe(0);
+  expect(markers.activeHeadMutationCount, "resnapshot harness must not promote Gateway heads").toBe(0);
   expect(typeof markers.beforeMarker === "string" && typeof markers.afterMarker === "string" && markers.beforeMarker !== markers.afterMarker, "The resnapshot harness must report distinct authoritative before/after markers.").toBe(true);
   const refreshedResponses = await Promise.all(postHarnessResponses);
   const refreshedBodies = await Promise.all(refreshedResponses.map((response) => response.text()));

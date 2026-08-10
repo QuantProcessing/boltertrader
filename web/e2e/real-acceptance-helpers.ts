@@ -45,8 +45,8 @@ export function assertTestSessionMode(value: unknown): void {
 }
 
 export function assertNoAuthoritativeAccountWrites(requests: BrowserRequestFact[]): void {
-  const allowedWrite = (request: BrowserRequestFact) => request.method === "POST"
-    && (/^\/api\/v1\/auth\/login$/.test(request.path) || /^\/api\/v1\/accounts\/[^/]+\/validate$/.test(request.path));
+  const allowedWrite = (request: BrowserRequestFact) => (request.method === "POST" && request.path === "/api/v1/auth/login")
+    || (request.method === "DELETE" && request.path === "/api/v1/auth/session");
   const forbidden = requests.some((request) => !["GET", "HEAD", "OPTIONS"].includes(request.method) && !allowedWrite(request));
   if (forbidden) throw new Error("Real-browser acceptance emitted an authoritative private or account mutation.");
 }
