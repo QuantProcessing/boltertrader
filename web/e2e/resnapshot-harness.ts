@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ export interface ResnapshotHarnessConfiguration {
 
 export interface ResnapshotHarnessSnapshot {
   marker: string;
+  browserSessionDigest: string;
   triggerCount: number;
   canonicalMutationCount: number;
   activeHeadMutationCount: number;
@@ -109,6 +110,15 @@ function markerResponse(body: Buffer, marker: string): Buffer {
   }
 }
 
+function sessionDigest(setCookies: string[] | undefined): string {
+  for (const cookie of setCookies ?? []) {
+    const match = /^bt_session=([^;]+)/.exec(cookie);
+    if (!match?.[1]) continue;
+    return createHash("sha256").update(match[1]).digest("base64url");
+  }
+  return "";
+}
+
 export function createResnapshotHarness(options: HarnessOptions) {
   const upstream = exactLoopbackRoot(options.upstream.toString(), "loopback upstream");
   const now = options.now ?? (() => new Date());
@@ -116,12 +126,14 @@ export function createResnapshotHarness(options: HarnessOptions) {
   const streams = new Set<ServerResponse>();
   const replays = new Map<string, ResnapshotHarnessResult>();
   let marker = makeMarker();
+  let browserSessionDigest = "";
   let triggerCount = 0;
   let canonicalMutationCount = 0;
   let activeHeadMutationCount = 0;
 
   const snapshot = (): ResnapshotHarnessSnapshot => ({
     marker,
+    browserSessionDigest,
     triggerCount,
     canonicalMutationCount,
     activeHeadMutationCount,
@@ -159,6 +171,9 @@ export function createResnapshotHarness(options: HarnessOptions) {
     const headers = { ...request.headers, host: upstream.host };
     delete headers.connection;
     const outgoing = httpRequest(target, { method: request.method, headers }, (incoming) => {
+      if (pathname === "/api/v1/auth/login") {
+        browserSessionDigest = sessionDigest(incoming.headers["set-cookie"]);
+      }
       const contentType = incoming.headers["content-type"] ?? "";
       const stream = pathname === "/api/v1/realtime/stream" && incoming.statusCode === 200 && contentType.includes("text/event-stream");
       const decorate = triggerCount > 0 && markerPaths.has(pathname) && contentType.includes("json");
@@ -215,6 +230,10 @@ export function createResnapshotHarness(options: HarnessOptions) {
       const idempotencyKey = String(request.headers["idempotency-key"] ?? "").trim();
       if (idempotencyKey === "" || idempotencyKey.length > 128) {
         writeJSON(response, 400, { error: { code: "HARNESS_IDEMPOTENCY_KEY_REQUIRED" } });
+        return;
+      }
+      if (browserSessionDigest === "") {
+        writeJSON(response, 409, { error: { code: "HARNESS_SESSION_NOT_OBSERVED" }, ...snapshot() });
         return;
       }
       const result = trigger(idempotencyKey);

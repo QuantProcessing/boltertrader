@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,7 +22,10 @@ async function listen(server: Server): Promise<URL> {
 }
 
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  })));
 });
 
 describe("real-browser resnapshot harness", () => {
@@ -42,6 +46,11 @@ describe("real-browser resnapshot harness", () => {
 
   it("injects one idempotent resnapshot while forbidding canonical writes", async () => {
     const upstream = await listen(createServer((request, response) => {
+      if (request.url === "/api/v1/auth/login") {
+        response.writeHead(200, { "content-type": "application/json", "set-cookie": "bt_session=browser-token; Path=/; HttpOnly; SameSite=Strict" });
+        response.end(JSON.stringify({ data: { principal: { mode: "test" } } }));
+        return;
+      }
       if (request.url === "/api/v1/realtime/stream") {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
         response.write(": connected\n\n");
@@ -57,6 +66,9 @@ describe("real-browser resnapshot harness", () => {
       marker: () => `marker-${marker += 1}`,
     });
     const harnessURL = await listen(harness.server);
+
+    const login = await fetch(new URL("api/v1/auth/login", harnessURL), { method: "POST", body: "{}" });
+    expect(login.ok).toBe(true);
 
     const streamResponse = await fetch(new URL("api/v1/realtime/stream", harnessURL));
     const reader = streamResponse.body!.getReader();
@@ -74,6 +86,7 @@ describe("real-browser resnapshot harness", () => {
       triggerCount: 1,
       canonicalMutationCount: 0,
       activeHeadMutationCount: 0,
+      browserSessionDigest: createHash("sha256").update("browser-token").digest("base64url"),
     });
     const injected = new TextDecoder().decode((await reader.read()).value);
     expect(injected).toContain("event: realtime.resnapshot_required");
@@ -97,12 +110,27 @@ describe("real-browser resnapshot harness", () => {
   });
 
   it("rejects a second non-idempotent trigger", async () => {
+    const upstream = await listen(createServer((request, response) => {
+      if (request.url === "/api/v1/auth/login") response.setHeader("set-cookie", "bt_session=browser-token; Path=/; HttpOnly");
+      response.end("ok");
+    }));
+    const harness = createResnapshotHarness({ upstream });
+    const harnessURL = await listen(harness.server);
+
+    await fetch(new URL("api/v1/auth/login", harnessURL), { method: "POST", body: "{}" });
+    expect((await fetch(new URL("__bt/resnapshot", harnessURL), { method: "POST", headers: { "Idempotency-Key": "first" } })).status).toBe(200);
+    expect((await fetch(new URL("__bt/resnapshot", harnessURL), { method: "POST", headers: { "Idempotency-Key": "second" } })).status).toBe(409);
+    expect(harness.snapshot().triggerCount).toBe(1);
+  });
+
+  it("fails closed when no authenticated browser session was observed", async () => {
     const upstream = await listen(createServer((_request, response) => response.end("ok")));
     const harness = createResnapshotHarness({ upstream });
     const harnessURL = await listen(harness.server);
 
-    expect((await fetch(new URL("__bt/resnapshot", harnessURL), { method: "POST", headers: { "Idempotency-Key": "first" } })).status).toBe(200);
-    expect((await fetch(new URL("__bt/resnapshot", harnessURL), { method: "POST", headers: { "Idempotency-Key": "second" } })).status).toBe(409);
-    expect(harness.snapshot().triggerCount).toBe(1);
+    const response = await fetch(new URL("__bt/resnapshot", harnessURL), { method: "POST", headers: { "Idempotency-Key": "missing-session" } });
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("HARNESS_SESSION_NOT_OBSERVED");
+    expect(harness.snapshot().triggerCount).toBe(0);
   });
 });
