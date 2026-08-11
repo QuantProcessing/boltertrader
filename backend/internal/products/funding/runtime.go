@@ -195,6 +195,9 @@ func (runtime *Runtime) Run(ctx context.Context) error {
 		}
 		claim, ok := page.Claim()
 		if !ok {
+			if !wait(runCtx, runtime.retryInterval) {
+				break
+			}
 			continue
 		}
 		if err := runtime.processClaim(runCtx, generation, claim); err != nil {

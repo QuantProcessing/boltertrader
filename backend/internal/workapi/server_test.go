@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,16 @@ import (
 )
 
 type testWriteAuthority struct{ ready bool }
+
+type emptyClaimStore struct {
+	*work.MemoryStore
+	calls atomic.Int64
+}
+
+func (store *emptyClaimStore) ClaimWork(context.Context, work.ClaimRequest, time.Time, time.Duration) (work.ClaimPage, error) {
+	store.calls.Add(1)
+	return work.ClaimPage{}, nil
+}
 
 func (authority testWriteAuthority) Ready(context.Context) (bool, string) {
 	if authority.ready {
@@ -51,6 +62,47 @@ func TestWorkAuthAndStrictValidation(t *testing.T) {
 	srv.ServeHTTP(regRec, reg)
 	if regRec.Code != http.StatusCreated {
 		t.Fatalf("code=%d want 201", regRec.Code)
+	}
+}
+
+func TestClaimLongPollStopsWithRequestContext(t *testing.T) {
+	store := &emptyClaimStore{MemoryStore: work.NewMemoryStoreWithSnapshot(nil, nil)}
+	service := work.NewWithStore(ContractVersion, time.Minute, store)
+	registration, err := service.RegisterResult(work.RegistrationRequest{
+		WorkerID: "test:worker-a", InstanceID: "instance-a", ProductID: "funding", Mode: "test",
+		ContractVersion: ContractVersion, IdempotencyKey: "register-context",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Heartbeat(registration.WorkerID, work.HeartbeatRequest{WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(Options{TokenDigest: sha256.Sum256([]byte("test-worker-token")), Mode: "test", ContractVersion: ContractVersion, Service: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/funding-work/claims", strings.NewReader(`{"workerId":"worker-a","workerGeneration":1,"instanceId":"instance-a","idempotencyKey":"claim-context","afterCursor":"","waitSeconds":1,"maxItems":1}`))
+	setWorkerHeaders(request, "claim-context")
+	ctx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(ctx)
+	timer := time.AfterFunc(350*time.Millisecond, cancel)
+	defer timer.Stop()
+	defer cancel()
+
+	started := time.Now()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	elapsed := time.Since(started)
+	if elapsed < 250*time.Millisecond || elapsed >= 750*time.Millisecond {
+		t.Fatalf("claim request elapsed=%s, want cancellation to bound the long poll", elapsed)
+	}
+	if calls := store.calls.Load(); calls < 2 {
+		t.Fatalf("claim store calls=%d want at least 2 before cancellation", calls)
+	}
+	if response.Code == http.StatusOK {
+		t.Fatalf("canceled claim returned a successful empty page: %s", response.Body.String())
 	}
 }
 

@@ -302,9 +302,10 @@ func (store *WorkStore) ClaimWork(ctx context.Context, req work.ClaimRequest, no
 	}
 	if page.WorkItem == nil {
 		page.NextCursor = req.AfterCursor
-	}
-	if err := saveWorkOperationValue(ctx, tx, "claim", req.IdempotencyKey, hash, page, now); err != nil {
-		return work.ClaimPage{}, err
+	} else {
+		if err := saveWorkOperationValue(ctx, tx, "claim", req.IdempotencyKey, hash, page, now); err != nil {
+			return work.ClaimPage{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return work.ClaimPage{}, fmt.Errorf("commit work claim")

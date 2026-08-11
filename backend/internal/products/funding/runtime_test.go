@@ -711,6 +711,34 @@ func TestRuntimeReplaysAmbiguousClaimWithSameIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeBacksOffAfterImmediateEmptyClaim(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &emptyClaimClient{fakeProtocolClient: &fakeProtocolClient{}, cancel: cancel}
+	identities, err := NewFileIdentityStore(t.TempDir()+"/identities.json", "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(RuntimeOptions{
+		Client: client, Processor: processorFunc(func(context.Context, Work) (Outcome, error) { return Outcome{}, nil }), Identities: identities,
+		HeartbeatInterval: time.Hour, RetryInterval: 50 * time.Millisecond, ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	client.mu.Lock()
+	callTimes := append([]time.Time(nil), client.callTimes...)
+	client.mu.Unlock()
+	if len(callTimes) != 2 {
+		t.Fatalf("claim calls=%d want 2", len(callTimes))
+	}
+	if delay := callTimes[1].Sub(callTimes[0]); delay < 40*time.Millisecond {
+		t.Fatalf("empty claim retry delay=%s, want bounded backoff", delay)
+	}
+}
+
 func TestRuntimeStopsOnStaleWorkerGeneration(t *testing.T) {
 	client := &fakeProtocolClient{claim: testRuntimeClaim()}
 	stale := &staleHeartbeatClient{fakeProtocolClient: client}
@@ -766,6 +794,13 @@ type ambiguousClaimClient struct {
 	keys   []string
 }
 
+type emptyClaimClient struct {
+	*fakeProtocolClient
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	callTimes []time.Time
+}
+
 type repeatedCursorClient struct {
 	*fakeProtocolClient
 	factsCalls int
@@ -799,6 +834,17 @@ func (client *ambiguousClaimClient) ClaimPage(_ context.Context, options ClaimOp
 		return ClaimPage{}, errors.New("response lost after server commit")
 	}
 	client.cancel()
+	return ClaimPage{}, nil
+}
+
+func (client *emptyClaimClient) ClaimPage(context.Context, ClaimOptions) (ClaimPage, error) {
+	client.mu.Lock()
+	client.callTimes = append(client.callTimes, time.Now())
+	calls := len(client.callTimes)
+	client.mu.Unlock()
+	if calls == 2 {
+		client.cancel()
+	}
 	return ClaimPage{}, nil
 }
 

@@ -209,7 +209,7 @@ func (h *handler) route(w http.ResponseWriter, r *http.Request, route string) {
 			return
 		}
 		req.WorkerID = h.workerKey(req.WorkerID)
-		page, err := h.service.ClaimPage(work.ClaimRequest(req))
+		page, err := h.service.ClaimPageContext(r.Context(), work.ClaimRequest(req))
 		if err != nil {
 			writeWorkError(w, r, err, nil)
 			return

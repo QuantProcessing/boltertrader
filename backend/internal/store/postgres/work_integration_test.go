@@ -191,6 +191,49 @@ func TestWorkClaimPaginationDoesNotStarveLexicallyLowerCursors(t *testing.T) {
 	}
 }
 
+func TestEmptyClaimDoesNotPersistOperationAndCanLaterClaimWithSameKey(t *testing.T) {
+	database, _ := openIntegrationDatabaseWithMigrations(t, true)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 6, 5, 15, 0, 0, time.UTC)
+	store := NewWorkStore(database)
+	registration, err := store.RegisterWorker(ctx, work.RegistrationRequest{
+		WorkerID: "worker-empty", InstanceID: "instance-empty", ProductID: "funding", Mode: "test",
+		ContractVersion: "contract-v1", IdempotencyKey: "register-empty",
+	}, now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.HeartbeatWorker(ctx, registration.WorkerID, work.HeartbeatRequest{WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, State: "ready"}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	request := work.ClaimRequest{WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, IdempotencyKey: "claim-empty", MaxItems: 1}
+	empty, err := store.ClaimWork(ctx, request, now, time.Minute)
+	if err != nil || empty.WorkItem != nil || empty.Lease != nil {
+		t.Fatalf("empty claim=%+v err=%v", empty, err)
+	}
+	var operations int
+	if err := database.QueryRowContext(ctx, `SELECT count(*) FROM platform_work_operations WHERE operation_kind='claim' AND idempotency_key=$1`, request.IdempotencyKey).Scan(&operations); err != nil {
+		t.Fatal(err)
+	}
+	if operations != 0 {
+		t.Fatalf("empty claim operations=%d want 0", operations)
+	}
+
+	fences := json.RawMessage(`[{"accountId":"account-long","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1},{"accountId":"account-short","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}]`)
+	if _, err := database.ExecContext(ctx, `INSERT INTO platform_work_items(work_item_id,principal_id,work_kind,lineage_id,work_revision,product_id,mode,status,facts_cursor,account_fences,payload,not_before,created_at,updated_at) VALUES ('work-after-empty','browser-a','open','lineage-after-empty',1,'funding','test','open','cursor-after-empty',$1,'{}',$2,$2,$2)`, fences, now); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimWork(ctx, request, now.Add(time.Second), time.Minute)
+	if err != nil || claimed.WorkItem == nil || claimed.Lease == nil || claimed.WorkItem.WorkItemID != "work-after-empty" {
+		t.Fatalf("claim after empty=%+v err=%v", claimed, err)
+	}
+	replayed, err := store.ClaimWork(ctx, request, now.Add(2*time.Second), time.Minute)
+	if err != nil || replayed.Lease == nil || replayed.Lease.LeaseID != claimed.Lease.LeaseID {
+		t.Fatalf("non-empty replay=%+v first=%+v err=%v", replayed, claimed, err)
+	}
+}
+
 func TestClaimWorkTreatsAfterCursorAsOpaqueAndDoesNotStarveLaterWork(t *testing.T) {
 	database, _ := openIntegrationDatabaseWithMigrations(t, true)
 	ctx := context.Background()

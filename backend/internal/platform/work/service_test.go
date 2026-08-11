@@ -27,7 +27,43 @@ type planProducerFixture struct{ err error }
 
 type dependencyReadinessFixture struct{ err error }
 
+type blockingDependencyReadiness struct{}
+
+type blockingWorkerReadinessStore struct{ *MemoryStore }
+
+type blockingClaimStore struct{ *MemoryStore }
+
+type ambiguousDeadlineClaimStore struct{ *MemoryStore }
+
+var errAmbiguousClaimCommit = errors.New("ambiguous claim commit at deadline")
+
 func (fixture dependencyReadinessFixture) Check(context.Context) error { return fixture.err }
+
+func (blockingDependencyReadiness) Check(ctx context.Context) error {
+	return waitForClaimContext(ctx)
+}
+
+func (store *blockingWorkerReadinessStore) GetWorker(ctx context.Context, _ string) (Registration, error) {
+	return Registration{}, waitForClaimContext(ctx)
+}
+
+func (store *blockingClaimStore) ClaimWork(ctx context.Context, _ ClaimRequest, _ time.Time, _ time.Duration) (ClaimPage, error) {
+	return ClaimPage{}, waitForClaimContext(ctx)
+}
+
+func (store *ambiguousDeadlineClaimStore) ClaimWork(ctx context.Context, _ ClaimRequest, _ time.Time, _ time.Duration) (ClaimPage, error) {
+	<-ctx.Done()
+	return ClaimPage{}, errAmbiguousClaimCommit
+}
+
+func waitForClaimContext(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(1500 * time.Millisecond):
+		return errors.New("claim context was not canceled")
+	}
+}
 
 type completionValidatorStore struct {
 	*MemoryStore
@@ -515,6 +551,165 @@ func TestServiceReadinessAndClaimsFailClosedWhenDependenciesAreUnavailable(t *te
 	_, err := service.Claim(ClaimRequest{WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, IdempotencyKey: "claim-1", MaxItems: 1})
 	if !errors.Is(err, ErrDependencyUnavailable) {
 		t.Fatalf("Claim() error=%v, want %v", err, ErrDependencyUnavailable)
+	}
+}
+
+func TestEmptyClaimDoesNotReserveIdempotencyKey(t *testing.T) {
+	store := NewMemoryStoreWithSnapshot(nil, nil)
+	service := NewWithStore("contract-v1", time.Minute, store)
+	registration, err := service.RegisterResult(RegistrationRequest{
+		WorkerID: "worker-empty", InstanceID: "instance-empty", ProductID: "funding", Mode: "test",
+		ContractVersion: "contract-v1", IdempotencyKey: "register-empty",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Heartbeat(registration.WorkerID, HeartbeatRequest{WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := ClaimRequest{WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, IdempotencyKey: "claim-empty", MaxItems: 1}
+	page, err := service.ClaimPage(request)
+	if err != nil || page.WorkItem != nil || page.Lease != nil {
+		t.Fatalf("empty claim=%+v err=%v", page, err)
+	}
+	store.mu.Lock()
+	_, remembered := store.operations["claim\x00"+request.IdempotencyKey]
+	store.mu.Unlock()
+	if remembered {
+		t.Fatal("empty claim reserved a canonical idempotency operation")
+	}
+}
+
+func TestClaimPageWaitsForWorkThatBecomesAvailable(t *testing.T) {
+	store := NewMemoryStoreWithSnapshot(nil, nil)
+	service := NewWithStore("contract-v1", time.Minute, store)
+	registration, err := service.RegisterResult(RegistrationRequest{
+		WorkerID: "worker-wait", InstanceID: "instance-wait", ProductID: "funding", Mode: "test",
+		ContractVersion: "contract-v1", IdempotencyKey: "register-wait",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Heartbeat(registration.WorkerID, HeartbeatRequest{WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		now := time.Now().UTC()
+		store.mu.Lock()
+		store.workItems["work-later"] = WorkItem{
+			WorkItemID: "work-later", WorkKind: "open", LineageID: "lineage-later", WorkRevision: 1,
+			ProductID: "funding", Mode: "test", Status: "open", FactsCursor: "cursor-later",
+			AccountFences: json.RawMessage(`[{"accountId":"account-long","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1},{"accountId":"account-short","desiredStateRevision":1,"runtimeGeneration":1,"credentialVersion":1}]`),
+			Payload:       json.RawMessage(`{}`), MaxAttempts: 5, NotBefore: now, CreatedAt: now, UpdatedAt: now,
+		}
+		store.mu.Unlock()
+	}()
+
+	started := time.Now()
+	page, err := service.ClaimPage(ClaimRequest{
+		WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID,
+		IdempotencyKey: "claim-wait", WaitSeconds: 1, MaxItems: 1,
+	})
+	elapsed := time.Since(started)
+	if err != nil || page.WorkItem == nil || page.Lease == nil || page.WorkItem.WorkItemID != "work-later" {
+		t.Fatalf("long-poll claim=%+v elapsed=%s err=%v", page, elapsed, err)
+	}
+	if elapsed < 100*time.Millisecond || elapsed >= time.Second {
+		t.Fatalf("long-poll elapsed=%s, want work before the one-second deadline", elapsed)
+	}
+}
+
+func TestClaimPageWaitDeadlineBoundsDependencyReadiness(t *testing.T) {
+	store, registration := readyEmptyStore(t)
+	service := NewWithStore("contract-v1", time.Minute, store)
+	service.SetDependencyReadinessEvaluator(blockingDependencyReadiness{})
+	assertClaimWaitDeadline(t, service, registration, "claim-blocked-dependency")
+}
+
+func TestClaimPageWaitDeadlineBoundsWorkerReadiness(t *testing.T) {
+	store, registration := readyEmptyStore(t)
+	service := NewWithStore("contract-v1", time.Minute, &blockingWorkerReadinessStore{MemoryStore: store})
+	assertClaimWaitDeadline(t, service, registration, "claim-blocked-readiness")
+}
+
+func TestClaimPageWaitDeadlineBoundsStoreCall(t *testing.T) {
+	store, registration := readyEmptyStore(t)
+	service := NewWithStore("contract-v1", time.Minute, &blockingClaimStore{MemoryStore: store})
+	assertClaimWaitDeadline(t, service, registration, "claim-blocked-store")
+}
+
+func TestClaimPageWaitDeadlineReturnsEmptyOnlyWhileIdle(t *testing.T) {
+	store, registration := readyEmptyStore(t)
+	service := NewWithStore("contract-v1", time.Minute, store)
+	started := time.Now()
+	page, err := service.ClaimPage(ClaimRequest{
+		WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID,
+		IdempotencyKey: "claim-idle-deadline", AfterCursor: "cursor-before-wait", WaitSeconds: 1, MaxItems: 1,
+	})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("idle claim error=%v elapsed=%s", err, elapsed)
+	}
+	if page.WorkItem != nil || page.Lease != nil || page.NextCursor != "cursor-before-wait" {
+		t.Fatalf("idle claim page=%+v", page)
+	}
+	if elapsed < 900*time.Millisecond || elapsed >= 1250*time.Millisecond {
+		t.Fatalf("idle claim elapsed=%s, want the one-second wait deadline", elapsed)
+	}
+}
+
+func TestClaimPagePropagatesAmbiguousStoreErrorAtWaitDeadline(t *testing.T) {
+	store, registration := readyEmptyStore(t)
+	service := NewWithStore("contract-v1", time.Minute, &ambiguousDeadlineClaimStore{MemoryStore: store})
+	started := time.Now()
+	_, err := service.ClaimPage(ClaimRequest{
+		WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID,
+		IdempotencyKey: "claim-ambiguous-deadline", WaitSeconds: 1, MaxItems: 1,
+	})
+	elapsed := time.Since(started)
+	if !errors.Is(err, errAmbiguousClaimCommit) {
+		t.Fatalf("ambiguous claim error=%v elapsed=%s", err, elapsed)
+	}
+	if elapsed < 900*time.Millisecond || elapsed >= 1250*time.Millisecond {
+		t.Fatalf("ambiguous claim elapsed=%s, want the one-second wait deadline", elapsed)
+	}
+}
+
+func readyEmptyStore(t *testing.T) (*MemoryStore, Registration) {
+	t.Helper()
+	store := NewMemoryStoreWithSnapshot(nil, nil)
+	service := NewWithStore("contract-v1", time.Minute, store)
+	registration, err := service.RegisterResult(RegistrationRequest{
+		WorkerID: "worker-blocked", InstanceID: "instance-blocked", ProductID: "funding", Mode: "test",
+		ContractVersion: "contract-v1", IdempotencyKey: "register-blocked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Heartbeat(registration.WorkerID, HeartbeatRequest{WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID, State: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	return store, registration
+}
+
+func assertClaimWaitDeadline(t *testing.T, service *Service, registration Registration, idempotencyKey string) {
+	t.Helper()
+	parent, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	page, err := service.ClaimPageContext(parent, ClaimRequest{
+		WorkerID: registration.WorkerID, WorkerGeneration: registration.Generation, InstanceID: registration.InstanceID,
+		IdempotencyKey: idempotencyKey, AfterCursor: "cursor-before-wait", WaitSeconds: 1, MaxItems: 1,
+	})
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded claim error=%v page=%+v elapsed=%s", err, page, elapsed)
+	}
+	if elapsed < 900*time.Millisecond || elapsed >= 1250*time.Millisecond {
+		t.Fatalf("bounded claim elapsed=%s, want the one-second wait deadline", elapsed)
 	}
 }
 

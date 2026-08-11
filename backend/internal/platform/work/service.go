@@ -36,6 +36,8 @@ var (
 	ErrLiveWriteDisabled     = errors.New("live private write disabled")
 )
 
+const claimPollInterval = 250 * time.Millisecond
+
 type RegistrationRequest struct {
 	WorkerID        string `json:"workerId"`
 	InstanceID      string `json:"instanceId"`
@@ -499,15 +501,22 @@ func (s *Service) ValidateWorker(workerID string, generation int, instanceID str
 }
 
 func (s *Service) Readiness(workerID string) Readiness {
+	return s.readiness(context.Background(), workerID)
+}
+
+func (s *Service) readiness(ctx context.Context, workerID string) Readiness {
 	observed := s.now().UTC()
-	dependenciesReady := s.dependencyReadinessError() == nil
-	reg, err := s.store.GetWorker(context.Background(), workerID)
+	dependenciesReady := s.dependencyReadinessErrorContext(ctx) == nil
+	if ctx.Err() != nil {
+		return Readiness{WorkerID: workerID, CanClaim: false, State: "not_registered", ObservedAt: observed, DependenciesReady: dependenciesReady}
+	}
+	reg, err := s.store.GetWorker(ctx, workerID)
 	if err != nil {
 		return Readiness{WorkerID: workerID, CanClaim: false, State: "not_registered", ObservedAt: observed, DependenciesReady: dependenciesReady}
 	}
 	fresh := reg.State == "ready" && !reg.LastHeartbeat.IsZero() && observed.Sub(reg.LastHeartbeat) <= s.heartbeatTTL
 	canClaim := fresh && !reg.Draining && reg.ContractVersion == s.contractVersion && dependenciesReady
-	activeLeases, countErr := s.store.CountActiveLeases(context.Background(), workerID, reg.Generation, observed)
+	activeLeases, countErr := s.store.CountActiveLeases(ctx, workerID, reg.Generation, observed)
 	if countErr != nil {
 		canClaim = false
 	}
@@ -515,10 +524,14 @@ func (s *Service) Readiness(workerID string) Readiness {
 }
 
 func (s *Service) dependencyReadinessError() error {
+	return s.dependencyReadinessErrorContext(context.Background())
+}
+
+func (s *Service) dependencyReadinessErrorContext(ctx context.Context) error {
 	if s.dependencies == nil {
 		return nil
 	}
-	if err := s.dependencies.Check(context.Background()); err != nil {
+	if err := s.dependencies.Check(ctx); err != nil {
 		return fmt.Errorf("%w: %v", ErrDependencyUnavailable, err)
 	}
 	return nil
@@ -551,7 +564,56 @@ func (s *Service) Claim(req ClaimRequest) ([]Claim, error) {
 }
 
 func (s *Service) ClaimPage(req ClaimRequest) (ClaimPage, error) {
-	if ready := s.Readiness(req.WorkerID); !ready.CanClaim || ready.WorkerGeneration != req.WorkerGeneration {
+	return s.ClaimPageContext(context.Background(), req)
+}
+
+func (s *Service) ClaimPageContext(ctx context.Context, req ClaimRequest) (ClaimPage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return ClaimPage{}, err
+	}
+	waitDuration := time.Duration(req.WaitSeconds) * time.Second
+	if waitDuration <= 0 {
+		return s.claimPage(ctx, req)
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, waitDuration)
+	defer cancel()
+	poll := time.NewTicker(claimPollInterval)
+	defer poll.Stop()
+	page := ClaimPage{NextCursor: req.AfterCursor}
+	for {
+		claimed, err := s.claimPage(waitCtx, req)
+		if err != nil {
+			return claimed, err
+		}
+		page = claimed
+		if page.WorkItem != nil {
+			return page, nil
+		}
+		select {
+		case <-ctx.Done():
+			return ClaimPage{}, ctx.Err()
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return ClaimPage{}, ctx.Err()
+			}
+			return page, nil
+		case <-poll.C:
+		}
+	}
+}
+
+func (s *Service) claimPage(ctx context.Context, req ClaimRequest) (ClaimPage, error) {
+	if err := ctx.Err(); err != nil {
+		return ClaimPage{}, err
+	}
+	if ready := s.readiness(ctx, req.WorkerID); !ready.CanClaim || ready.WorkerGeneration != req.WorkerGeneration {
+		if err := ctx.Err(); err != nil {
+			return ClaimPage{}, err
+		}
 		if !ready.DependenciesReady {
 			return ClaimPage{}, ErrDependencyUnavailable
 		}
@@ -563,7 +625,7 @@ func (s *Service) ClaimPage(req ClaimRequest) (ClaimPage, error) {
 		}
 		return ClaimPage{}, ErrWorkerNotReady
 	}
-	return s.store.ClaimWork(context.Background(), req, s.now().UTC(), s.leaseTTL)
+	return s.store.ClaimWork(ctx, req, s.now().UTC(), s.leaseTTL)
 }
 
 func (s *Service) Facts() map[string]any {
@@ -1004,7 +1066,6 @@ func (store *MemoryStore) ClaimWork(_ context.Context, req ClaimRequest, now tim
 		return page, nil
 	}
 	page := ClaimPage{NextCursor: req.AfterCursor}
-	store.rememberValue("claim", req.IdempotencyKey, hash, page)
 	return page, nil
 }
 
