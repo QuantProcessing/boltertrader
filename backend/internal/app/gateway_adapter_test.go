@@ -712,6 +712,72 @@ func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(
 	}
 }
 
+func TestGatewayAdapterMarketDataProbeAcceptsAuthoritativeEmptyCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err != nil {
+		t.Fatalf("authoritative empty catalog was not accepted as idle-ready: %v", err)
+	}
+}
+
+func TestGatewayAdapterMarketDataProbeRejectsMissingEmptyCatalogInventory(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		instruments string
+	}{
+		{name: "omitted"},
+		{name: "null", instruments: `,"instruments":null`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprintf(w, `{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z"%s}}`, test.instruments)
+			}))
+			defer server.Close()
+			adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
+				t.Fatalf("%s instruments inventory was accepted", test.name)
+			}
+		})
+	}
+}
+
+func TestGatewayAdapterMarketDataProbeRejectsWhitespaceEmptyCatalogRevision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"revision":" ","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
+		t.Fatal("empty catalog with a whitespace revision was accepted")
+	}
+}
+
+func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrument(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-unready","observedAt":"2026-08-11T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":false}]}}`))
+	}))
+	defer server.Close()
+	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
+		t.Fatal("non-empty catalog without a ready instrument was accepted")
+	}
+}
+
 func TestConfiguredGatewayAdapterFetchesAuthoritativeAccountingFacts(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	start := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)

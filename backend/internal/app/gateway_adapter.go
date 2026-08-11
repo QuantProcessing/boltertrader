@@ -994,7 +994,7 @@ func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
 			break
 		}
 	}
-	if result.Data.Revision == "" || result.Data.ObservedAt.IsZero() || !readyInstrument {
+	if strings.TrimSpace(result.Data.Revision) == "" || result.Data.ObservedAt.IsZero() || result.Data.Instruments == nil || (len(result.Data.Instruments) > 0 && !readyInstrument) {
 		return fmt.Errorf("Gateway market-data route is unavailable")
 	}
 	return nil
