@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/workapi"
 	"github.com/shopspring/decimal"
@@ -72,6 +73,98 @@ func TestClientRegistersClaimsAndDrainsWithScopedBearer(t *testing.T) {
 	if strings.Join(seen, ",") != "POST /internal/v1/funding-work/workers/registrations,POST /internal/v1/funding-work/claims,POST /internal/v1/funding-work/workers/worker-a/drain" {
 		t.Fatalf("routes = %v", seen)
 	}
+}
+
+func TestClientDefaultTimeoutCoversMaximumClaimWait(t *testing.T) {
+	client, err := NewClient(Config{
+		BaseURL: "http://127.0.0.1:18092", Token: "test-worker-token", WorkerID: "worker-a", InstanceID: "instance-a",
+		Mode: "test", ContractVersion: workContractVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.httpClient.Timeout <= 20*time.Second {
+		t.Fatalf("default HTTP timeout=%s must exceed the maximum claim wait", client.httpClient.Timeout)
+	}
+}
+
+func TestClientRejectsHTTPTimeoutThatCannotCoverMaximumClaimWait(t *testing.T) {
+	_, err := NewClient(Config{
+		BaseURL: "http://127.0.0.1:18092", Token: "test-worker-token", WorkerID: "worker-a", InstanceID: "instance-a",
+		Mode: "test", ContractVersion: workContractVersion, HTTPClient: &http.Client{Timeout: 20 * time.Second},
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP client timeout") {
+		t.Fatalf("short HTTP timeout error=%v", err)
+	}
+}
+
+func TestClientUsesRegularRequestBudget(t *testing.T) {
+	remaining := requestDeadlineRemaining(t, func(client *Client) error {
+		return client.PassiveStatus(context.Background())
+	})
+	if remaining <= 9*time.Second || remaining > 10*time.Second {
+		t.Fatalf("regular request budget=%s want about 10s", remaining)
+	}
+}
+
+func TestClientBoundsHeartbeatAndRenewalRequestBudgets(t *testing.T) {
+	lease := LeaseRef{WorkerGeneration: 2, WorkItemID: "work-1", WorkRevision: 1, LeaseID: "lease-1", LeaseGeneration: 1}
+	for _, test := range []struct {
+		name string
+		call func(*Client) error
+	}{
+		{name: "heartbeat", call: func(client *Client) error {
+			_, err := client.Heartbeat(context.Background(), HeartbeatOptions{WorkerGeneration: 2, State: "ready"})
+			return err
+		}},
+		{name: "renewal", call: func(client *Client) error {
+			_, err := client.Renew(context.Background(), lease, "renew-1")
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			remaining := requestDeadlineRemaining(t, test.call)
+			if remaining <= 4*time.Second || remaining > 5*time.Second {
+				t.Fatalf("%s request budget=%s want about 5s", test.name, remaining)
+			}
+		})
+	}
+}
+
+func TestClientClaimBudgetCoversLongPollWithResponseMargin(t *testing.T) {
+	remaining := requestDeadlineRemaining(t, func(client *Client) error {
+		_, err := client.ClaimPage(context.Background(), ClaimOptions{
+			WorkerGeneration: 2, IdempotencyKey: "claim-1", WaitSeconds: maxClaimWaitSeconds, MaxItems: 1,
+		})
+		return err
+	})
+	if remaining <= 24*time.Second || remaining > 25*time.Second {
+		t.Fatalf("claim request budget=%s want about 25s", remaining)
+	}
+}
+
+func requestDeadlineRemaining(t *testing.T, call func(*Client) error) time.Duration {
+	t.Helper()
+	var remaining time.Duration
+	client, err := NewClient(Config{
+		BaseURL: "http://127.0.0.1:18092", Token: "test-worker-token", WorkerID: "worker-a", InstanceID: "instance-a",
+		Mode: "test", ContractVersion: workContractVersion,
+		HTTPClient: &http.Client{Timeout: defaultHTTPTimeout, Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			deadline, ok := request.Context().Deadline()
+			if !ok {
+				return nil, errors.New("request context has no deadline")
+			}
+			remaining = time.Until(deadline)
+			return nil, errors.New("stop after capturing request deadline")
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := call(client); err == nil {
+		t.Fatal("request unexpectedly succeeded")
+	}
+	return remaining
 }
 
 func TestPassiveStatusUsesOnlyGET(t *testing.T) {

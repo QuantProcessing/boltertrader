@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval = 5 * time.Second
-	defaultRetryInterval     = time.Second
+	defaultHeartbeatInterval     = 5 * time.Second
+	defaultRetryInterval         = time.Second
+	maxRenewalExpirySafetyMargin = time.Second
 )
 
 type ProtocolClient interface {
@@ -99,8 +100,8 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	if options.Client == nil || options.Processor == nil || options.Identities == nil {
 		return nil, fmt.Errorf("client, processor, and identity store are required")
 	}
-	if options.ClaimWaitSeconds < 0 || options.ClaimWaitSeconds > 20 {
-		return nil, fmt.Errorf("claim wait seconds must be between 0 and 20")
+	if options.ClaimWaitSeconds < 0 || options.ClaimWaitSeconds > maxClaimWaitSeconds {
+		return nil, fmt.Errorf("claim wait seconds must be between 0 and %d", maxClaimWaitSeconds)
 	}
 	if options.HeartbeatInterval <= 0 {
 		options.HeartbeatInterval = defaultHeartbeatInterval
@@ -392,8 +393,14 @@ func (runtime *Runtime) renewLease(ctx context.Context, lease *LeaseRef, expires
 		return time.Time{}, err
 	}
 	for {
+		remaining := expiresAt.Sub(time.Now())
+		attemptDeadline := expiresAt.Add(-renewalSafetyMargin(remaining))
+		if !attemptDeadline.After(time.Now()) {
+			return time.Time{}, fmt.Errorf("lease renewal safety deadline reached")
+		}
+		attemptCtx, cancelAttempt := context.WithDeadline(ctx, attemptDeadline)
 		runtime.mu.Lock()
-		result, renewErr := runtime.client.Renew(ctx, *lease, key)
+		result, renewErr := runtime.client.Renew(attemptCtx, *lease, key)
 		if renewErr == nil && result.LeaseGeneration > lease.LeaseGeneration {
 			lease.LeaseGeneration = result.LeaseGeneration
 			if runtime.activeLease != nil {
@@ -401,6 +408,7 @@ func (runtime *Runtime) renewLease(ctx context.Context, lease *LeaseRef, expires
 			}
 		}
 		runtime.mu.Unlock()
+		cancelAttempt()
 		if renewErr != nil {
 			if shouldRetry(renewErr) {
 				retryDelay, delayErr := renewalRetryDelay(time.Now(), expiresAt, runtime.retryInterval)
@@ -434,14 +442,27 @@ func renewalDelay(now, expiresAt time.Time) (time.Duration, error) {
 
 func renewalRetryDelay(now, expiresAt time.Time, retryInterval time.Duration) (time.Duration, error) {
 	remaining := expiresAt.Sub(now)
+	remaining -= renewalSafetyMargin(remaining)
 	if expiresAt.IsZero() || remaining <= 0 {
-		return 0, fmt.Errorf("lease expired before renewal retry")
+		return 0, fmt.Errorf("lease renewal safety deadline reached before retry")
 	}
 	limit := remaining / 3
+	delay := retryInterval
 	if retryInterval <= 0 || retryInterval > limit {
-		return limit, nil
+		delay = limit
 	}
-	return retryInterval, nil
+	if delay+controlRequestTimeout > remaining {
+		return 0, fmt.Errorf("lease renewal retry budget exceeds safety deadline")
+	}
+	return delay, nil
+}
+
+func renewalSafetyMargin(remaining time.Duration) time.Duration {
+	margin := remaining / 5
+	if margin > maxRenewalExpirySafetyMargin {
+		return maxRenewalExpirySafetyMargin
+	}
+	return margin
 }
 
 func (runtime *Runtime) finishLease(ctx context.Context, lease *LeaseRef, accountFences json.RawMessage, factsCursor string, outcome Outcome) error {
@@ -553,7 +574,7 @@ func (runtime *Runtime) setCursor(cursor string) {
 }
 
 func shouldRetry(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	var httpErr *HTTPError

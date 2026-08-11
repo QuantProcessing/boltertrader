@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -492,12 +493,37 @@ func TestRenewLoopReplaysAmbiguousRenewalBeforeExpiry(t *testing.T) {
 	}
 	runtime := &Runtime{client: client, identities: identities, retryInterval: time.Millisecond}
 	lease := LeaseRef{WorkerGeneration: 1, WorkItemID: "work-1", WorkRevision: 1, LeaseID: "lease-1", LeaseGeneration: 1}
-	_, err = runtime.renewLease(context.Background(), &lease, time.Now().Add(time.Second))
+	_, err = runtime.renewLease(context.Background(), &lease, time.Now().Add(10*time.Second))
 	if err != nil {
 		t.Fatalf("renewLoop error=%v", err)
 	}
 	if len(client.keys) != 2 || client.keys[0] != client.keys[1] {
 		t.Fatalf("renew keys=%v", client.keys)
+	}
+}
+
+func TestRenewLeaseFailsClosedWhenRetryBudgetWouldCrossExpiry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &expiringRenewClient{cancel: cancel}
+	identities, err := NewFileIdentityStore(t.TempDir()+"/identities.json", "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{client: client, identities: identities, retryInterval: time.Millisecond}
+	lease := LeaseRef{WorkerGeneration: 1, WorkItemID: "work-1", WorkRevision: 1, LeaseID: "lease-1", LeaseGeneration: 1}
+	expiresAt := time.Now().Add(6 * time.Second)
+	if _, err := runtime.renewLease(ctx, &lease, expiresAt); err == nil {
+		t.Fatal("renewLease unexpectedly succeeded")
+	}
+	if len(client.keys) != 1 {
+		t.Fatalf("renew calls=%d keys=%v want one fail-closed attempt", len(client.keys), client.keys)
+	}
+	if len(client.deadlines) != 1 || client.deadlines[0].IsZero() {
+		t.Fatalf("renew request deadlines=%v want one bounded deadline", client.deadlines)
+	}
+	if safety := expiresAt.Sub(client.deadlines[0]); safety < 900*time.Millisecond || safety > 1100*time.Millisecond {
+		t.Fatalf("renew request expiry safety=%s want about 1s", safety)
 	}
 }
 
@@ -711,6 +737,28 @@ func TestRuntimeReplaysAmbiguousClaimWithSameIdentity(t *testing.T) {
 	}
 }
 
+func TestRuntimeReplaysTimedOutClaimWithSameIdentity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &timedOutClaimClient{fakeProtocolClient: &fakeProtocolClient{}, cancel: cancel}
+	identities, err := NewFileIdentityStore(t.TempDir()+"/identities.json", "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRuntime(RuntimeOptions{
+		Client: client, Processor: processorFunc(func(context.Context, Work) (Outcome, error) { return Outcome{}, nil }), Identities: identities,
+		HeartbeatInterval: time.Hour, RetryInterval: time.Millisecond, ShutdownTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(client.keys) != 2 || client.keys[0] != client.keys[1] {
+		t.Fatalf("claim keys=%v", client.keys)
+	}
+}
+
 func TestRuntimeBacksOffAfterImmediateEmptyClaim(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	client := &emptyClaimClient{fakeProtocolClient: &fakeProtocolClient{}, cancel: cancel}
@@ -794,6 +842,12 @@ type ambiguousClaimClient struct {
 	keys   []string
 }
 
+type timedOutClaimClient struct {
+	*fakeProtocolClient
+	cancel context.CancelFunc
+	keys   []string
+}
+
 type emptyClaimClient struct {
 	*fakeProtocolClient
 	cancel    context.CancelFunc
@@ -811,12 +865,29 @@ type ambiguousRenewClient struct {
 	keys []string
 }
 
+type expiringRenewClient struct {
+	fakeProtocolClient
+	cancel    context.CancelFunc
+	keys      []string
+	deadlines []time.Time
+}
+
 func (client *ambiguousRenewClient) Renew(_ context.Context, lease LeaseRef, key string) (LeaseResult, error) {
 	client.keys = append(client.keys, key)
 	if len(client.keys) == 1 {
 		return LeaseResult{}, &HTTPError{StatusCode: 503, Code: "UNAVAILABLE", Retryable: true}
 	}
 	return LeaseResult{LeaseID: lease.LeaseID, WorkItemID: lease.WorkItemID, LeaseGeneration: lease.LeaseGeneration, ExpiresAt: time.Now().Add(30 * time.Second)}, nil
+}
+
+func (client *expiringRenewClient) Renew(ctx context.Context, _ LeaseRef, key string) (LeaseResult, error) {
+	client.keys = append(client.keys, key)
+	deadline, _ := ctx.Deadline()
+	client.deadlines = append(client.deadlines, deadline)
+	if len(client.keys) > 1 {
+		client.cancel()
+	}
+	return LeaseResult{}, fmt.Errorf("renew timeout: %w", context.DeadlineExceeded)
 }
 
 func (client *repeatedCursorClient) Snapshot(context.Context, LeaseRef) (FactsPage, error) {
@@ -832,6 +903,15 @@ func (client *ambiguousClaimClient) ClaimPage(_ context.Context, options ClaimOp
 	client.keys = append(client.keys, options.IdempotencyKey)
 	if len(client.keys) == 1 {
 		return ClaimPage{}, errors.New("response lost after server commit")
+	}
+	client.cancel()
+	return ClaimPage{}, nil
+}
+
+func (client *timedOutClaimClient) ClaimPage(_ context.Context, options ClaimOptions) (ClaimPage, error) {
+	client.keys = append(client.keys, options.IdempotencyKey)
+	if len(client.keys) == 1 {
+		return ClaimPage{}, fmt.Errorf("client timeout: %w", context.DeadlineExceeded)
 	}
 	client.cancel()
 	return ClaimPage{}, nil

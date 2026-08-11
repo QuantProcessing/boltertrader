@@ -335,7 +335,10 @@ func NewClient(config Config) (*Client, error) {
 	}
 	hc := config.HTTPClient
 	if hc == nil {
-		hc = &http.Client{Timeout: 10 * time.Second}
+		hc = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+	if hc.Timeout > 0 && hc.Timeout <= claimRequestTimeout(maxClaimWaitSeconds) {
+		return nil, fmt.Errorf("HTTP client timeout must exceed the maximum claim request budget of %s", claimRequestTimeout(maxClaimWaitSeconds))
 	}
 	return &Client{baseURL: strings.TrimRight(base.String(), "/"), token: config.Token, workerID: config.WorkerID, instanceID: config.InstanceID, mode: config.Mode, contractVersion: config.ContractVersion, httpClient: hc}, nil
 }
@@ -373,7 +376,7 @@ func (client *Client) Heartbeat(ctx context.Context, options HeartbeatOptions) (
 	err := client.requestJSON(ctx, http.MethodPut, "/internal/v1/funding-work/workers/"+url.PathEscape(client.workerID)+"/heartbeat", map[string]any{
 		"workerGeneration": options.WorkerGeneration, "instanceId": client.instanceID, "state": options.State,
 		"activeLeaseIds": options.ActiveLeaseIDs, "lastAppliedFactsCursor": options.LastAppliedFactsCursor,
-	}, http.StatusOK, &response, requestOptions{workerGeneration: options.WorkerGeneration})
+	}, http.StatusOK, &response, requestOptions{workerGeneration: options.WorkerGeneration, timeout: controlRequestTimeout})
 	return response.Data, err
 }
 
@@ -410,8 +413,8 @@ func (client *Client) ClaimPage(ctx context.Context, options ClaimOptions) (Clai
 	if options.MaxItems != 1 {
 		return ClaimPage{}, fmt.Errorf("max items must equal 1")
 	}
-	if options.WaitSeconds < 0 || options.WaitSeconds > 20 {
-		return ClaimPage{}, fmt.Errorf("wait seconds must be between 0 and 20")
+	if options.WaitSeconds < 0 || options.WaitSeconds > maxClaimWaitSeconds {
+		return ClaimPage{}, fmt.Errorf("wait seconds must be between 0 and %d", maxClaimWaitSeconds)
 	}
 	var response struct {
 		Data ClaimPage `json:"data"`
@@ -419,7 +422,10 @@ func (client *Client) ClaimPage(ctx context.Context, options ClaimOptions) (Clai
 	err := client.post(ctx, "/internal/v1/funding-work/claims", map[string]any{
 		"workerId": client.workerID, "workerGeneration": options.WorkerGeneration, "instanceId": client.instanceID,
 		"idempotencyKey": options.IdempotencyKey, "afterCursor": options.AfterCursor, "waitSeconds": options.WaitSeconds, "maxItems": options.MaxItems,
-	}, http.StatusOK, &response, requestOptions{idempotencyKey: options.IdempotencyKey, workerGeneration: options.WorkerGeneration})
+	}, http.StatusOK, &response, requestOptions{
+		idempotencyKey: options.IdempotencyKey, workerGeneration: options.WorkerGeneration,
+		timeout: claimRequestTimeout(options.WaitSeconds),
+	})
 	if err == nil && (response.Data.WorkItem == nil) != (response.Data.Lease == nil) {
 		return ClaimPage{}, fmt.Errorf("platform work returned an incomplete claim page")
 	}
@@ -509,7 +515,13 @@ func (client *Client) leasePost(ctx context.Context, lease LeaseRef, action, ide
 	var response struct {
 		Data LeaseResult `json:"data"`
 	}
-	err := client.post(ctx, "/internal/v1/funding-work/leases/"+url.PathEscape(lease.LeaseID)+"/"+action, payload, http.StatusOK, &response, requestOptions{idempotencyKey: idempotencyKey, workerGeneration: lease.WorkerGeneration})
+	timeout := time.Duration(0)
+	if action == "renew" {
+		timeout = controlRequestTimeout
+	}
+	err := client.post(ctx, "/internal/v1/funding-work/leases/"+url.PathEscape(lease.LeaseID)+"/"+action, payload, http.StatusOK, &response, requestOptions{
+		idempotencyKey: idempotencyKey, workerGeneration: lease.WorkerGeneration, timeout: timeout,
+	})
 	return response.Data, err
 }
 
@@ -529,12 +541,28 @@ func leaseQuery(lease LeaseRef) url.Values {
 	return query
 }
 
-const workContractVersion = "boltertrader-product-platform-upgrade/v4"
-const frozenWorkBasePath = "/internal/v1/funding-work"
+const (
+	workContractVersion   = "boltertrader-product-platform-upgrade/v4"
+	frozenWorkBasePath    = "/internal/v1/funding-work"
+	maxClaimWaitSeconds   = 20
+	defaultHTTPTimeout    = 30 * time.Second
+	defaultRequestTimeout = 10 * time.Second
+	controlRequestTimeout = 5 * time.Second
+	claimResponseMargin   = 5 * time.Second
+)
 
 type requestOptions struct {
 	idempotencyKey   string
 	workerGeneration int
+	timeout          time.Duration
+}
+
+func claimRequestTimeout(waitSeconds int) time.Duration {
+	timeout := time.Duration(waitSeconds)*time.Second + claimResponseMargin
+	if timeout < defaultRequestTimeout {
+		return defaultRequestTimeout
+	}
+	return timeout
 }
 
 func (client *Client) post(ctx context.Context, path string, payload any, want int, target any, options requestOptions) error {
@@ -550,7 +578,13 @@ func (client *Client) requestJSON(ctx context.Context, method, path string, payl
 			return err
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, method, client.baseURL+path, bytes.NewReader(body))
+	timeout := options.timeout
+	if timeout <= 0 {
+		timeout = defaultRequestTimeout
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, method, client.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
