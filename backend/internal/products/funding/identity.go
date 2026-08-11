@@ -10,8 +10,10 @@ import (
 )
 
 type identityState struct {
-	Next    uint64            `json:"next"`
-	Pending map[string]string `json:"pending"`
+	WorkerID   string            `json:"workerId,omitempty"`
+	InstanceID string            `json:"instanceId,omitempty"`
+	Next       uint64            `json:"next"`
+	Pending    map[string]string `json:"pending"`
 }
 
 type FileIdentityStore struct {
@@ -30,6 +32,27 @@ func NewFileIdentityStore(path, workerID, instanceID string) (*FileIdentityStore
 	state, err := store.load()
 	if err != nil {
 		return nil, err
+	}
+	ownerMissing := state.WorkerID == "" && state.InstanceID == ""
+	if (state.WorkerID == "") != (state.InstanceID == "") {
+		return nil, fmt.Errorf("identity state owner is incomplete")
+	}
+	ownerChanged := ownerMissing || state.WorkerID != workerID || state.InstanceID != instanceID
+	if ownerChanged {
+		for operation := range state.Pending {
+			if operation != "claim" {
+				return nil, fmt.Errorf("pending %s operation cannot move to another worker instance", operation)
+			}
+			delete(state.Pending, operation)
+		}
+		state.WorkerID, state.InstanceID = workerID, instanceID
+	} else {
+		for operation, key := range state.Pending {
+			expectedPrefix := store.prefix + ":" + sanitizeIdentity(operation) + ":"
+			if !strings.HasPrefix(key, expectedPrefix) {
+				return nil, fmt.Errorf("pending %s operation does not match the worker identity", operation)
+			}
+		}
 	}
 	return store, store.save(state)
 }

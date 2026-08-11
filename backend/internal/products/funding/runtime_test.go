@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -596,6 +598,94 @@ func TestFileIdentityStoreReplaysAmbiguousOperationAcrossRestart(t *testing.T) {
 	next, err := restarted.Begin("claim")
 	if err != nil || next == key {
 		t.Fatalf("next=%q key=%q err=%v", next, key, err)
+	}
+}
+
+func TestFileIdentityStoreRotatesStaleClaimForNewInstance(t *testing.T) {
+	path := t.TempDir() + "/identities.json"
+	first, err := NewFileIdentityStore(path, "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := first.Begin("claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFileIdentityStore(path, "worker-a", "instance-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := restarted.Begin("claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated == stale || !strings.HasPrefix(rotated, "worker-a:instance-b:claim:") {
+		t.Fatalf("rotated=%q stale=%q", rotated, stale)
+	}
+}
+
+func TestFileIdentityStoreRotatesStaleClaimWhenSanitizedInstancesCollide(t *testing.T) {
+	path := t.TempDir() + "/identities.json"
+	first, err := NewFileIdentityStore(path, "worker-a", "instance/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale, err := first.Begin("claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFileIdentityStore(path, "worker-a", "instance:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := restarted.Begin("claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated == stale {
+		t.Fatalf("sanitized identity collision replayed stale key %q", stale)
+	}
+}
+
+func TestFileIdentityStoreRejectsStaleWriteOperationForNewInstance(t *testing.T) {
+	path := t.TempDir() + "/identities.json"
+	first, err := NewFileIdentityStore(path, "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Begin("intent:lease-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileIdentityStore(path, "worker-a", "instance-b"); err == nil {
+		t.Fatal("new instance accepted a stale pending write operation")
+	}
+}
+
+func TestFileIdentityStoreRotatesLegacyPendingClaim(t *testing.T) {
+	path := t.TempDir() + "/identities.json"
+	if err := os.WriteFile(path, []byte(`{"next":4,"pending":{"claim":"worker-a:instance-a:claim:4"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileIdentityStore(path, "worker-a", "instance-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := store.Begin("claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key == "worker-a:instance-a:claim:4" {
+		t.Fatalf("legacy pending claim was replayed: %q", key)
+	}
+}
+
+func TestFileIdentityStoreRejectsLegacyPendingWriteOperation(t *testing.T) {
+	path := t.TempDir() + "/identities.json"
+	if err := os.WriteFile(path, []byte(`{"next":4,"pending":{"intent:lease-a":"worker-a:instance-a:intent_lease-a:4"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileIdentityStore(path, "worker-a", "instance-a"); err == nil {
+		t.Fatal("legacy pending write operation was accepted without raw owner identity")
 	}
 }
 
