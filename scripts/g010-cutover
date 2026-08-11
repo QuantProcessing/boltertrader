@@ -247,10 +247,15 @@ case "$IMPORT_COMMIT" in *[!0-9a-f]*) fail "BT_G010_IMPORT_COMMIT must be a lowe
 while :; do
 	status=$(migration_tool status --manifest "$MANIFEST") || fail "migration-tool status failed"
 	phase=$(printf '%s\n' "$status" | sed -n 's/.*"phase"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+	attempt_boundary=$(printf '%s\n' "$status" | sed -n 's/.*"activationAttemptBoundary"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 	case "$phase" in
 		baseline|provenance-ready|backed-up|restored|delta-captured|fenced|backfilled|validated|activation-ready|activated) ;;
 		retirement-ready) fail "G010 must stop before source retirement" ;;
 		*) fail "migration-tool status returned an unsupported phase" ;;
+	esac
+	case "$attempt_boundary" in
+		''|begun|gateway-promoted|writers-granted|connect-restored|services-started|verified) ;;
+		*) fail "migration-tool status returned an unsupported activation attempt boundary" ;;
 	esac
 	if [ "$phase" = activated ]; then
 		run_activate || fail "migration-tool activate replay failed"
@@ -258,6 +263,12 @@ while :; do
 		exit 0
 	fi
 	verify_structured_evidence
+	case "$phase:$attempt_boundary" in
+		activation-ready:gateway-promoted|activation-ready:writers-granted|activation-ready:connect-restored|activation-ready:services-started|activation-ready:verified)
+			run_activate || fail "migration-tool activate recovery failed"
+			continue
+			;;
+	esac
 	case "$phase" in
 		validated|activation-ready) validation_supervisor start-app || fail "validation services failed to start" ;;
 	esac

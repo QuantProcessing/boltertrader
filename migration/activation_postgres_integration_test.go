@@ -543,6 +543,14 @@ func newActivationPostgresCrashHarness(t *testing.T, cluster *activationPostgres
 			}
 			return ActivationPriorVerificationObservation{AttemptID: attempt.ID, PlanSHA256: planSHA, ArtifactSetSHA256: strings.Repeat("5", 64), CurrentPostconditionsSHA256: strings.Repeat("6", 64)}, nil
 		},
+		RecoverPriorState: func(_ context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+			harness.priorChecks++
+			planSHA, err := activationPriorPlanSHA(plan)
+			if err != nil {
+				return ActivationPriorVerificationObservation{}, err
+			}
+			return ActivationPriorVerificationObservation{AttemptID: attempt.ID, PlanSHA256: planSHA, ArtifactSetSHA256: strings.Repeat("5", 64), CurrentPostconditionsSHA256: strings.Repeat("6", 64)}, nil
+		},
 		VerifySourceFence: func(ctx context.Context) error {
 			harness.sourceFenceChecks++
 			return realDependencies.VerifySourceFence(ctx)

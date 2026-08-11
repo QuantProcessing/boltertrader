@@ -16,10 +16,11 @@ import (
 var executeMigration = migration.Execute
 
 type output struct {
-	Phase              migration.Phase `json:"phase"`
-	Replayed           bool            `json:"replayed,omitempty"`
-	ActivationPrepared bool            `json:"activationPrepared"`
-	RetirementPrepared bool            `json:"retirementPrepared"`
+	Phase                     migration.Phase              `json:"phase"`
+	Replayed                  bool                         `json:"replayed,omitempty"`
+	ActivationPrepared        bool                         `json:"activationPrepared"`
+	RetirementPrepared        bool                         `json:"retirementPrepared"`
+	ActivationAttemptBoundary migration.ActivationBoundary `json:"activationAttemptBoundary,omitempty"`
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
@@ -380,12 +381,20 @@ func runStatus(args []string, stdout, stderr io.Writer) error {
 	if err := migration.ValidateWorkflow(data); err != nil {
 		return err
 	}
+	return json.NewEncoder(stdout).Encode(statusOutput(manifest))
+}
+
+func statusOutput(manifest migration.Manifest) output {
 	phase := manifest.Workflow.Phase
 	if phase == "" {
 		phase = migration.PhaseBaseline
 	}
-	return json.NewEncoder(stdout).Encode(output{
+	result := output{
 		Phase: phase, ActivationPrepared: phase == migration.PhaseActivationReady,
 		RetirementPrepared: phase == migration.PhaseRetirementReady,
-	})
+	}
+	if manifest.ActivationAttempt != nil {
+		result.ActivationAttemptBoundary = manifest.ActivationAttempt.Boundary
+	}
+	return result
 }

@@ -35,21 +35,22 @@ const (
 )
 
 type ActivationAttempt struct {
-	ID                      string                                 `json:"id"`
-	InputSHA256             string                                 `json:"inputSha256"`
-	ExpectedPromotionSHA256 string                                 `json:"expectedPromotionSha256"`
-	Boundary                ActivationBoundary                     `json:"boundary"`
-	StartedAt               time.Time                              `json:"startedAt"`
-	UpdatedAt               time.Time                              `json:"updatedAt"`
-	GatewayBeforeSHA256     string                                 `json:"gatewayBeforeSha256,omitempty"`
-	GatewayAfterSHA256      string                                 `json:"gatewayAfterSha256,omitempty"`
-	JournalSHA256           string                                 `json:"journalSha256,omitempty"`
-	EvidencePath            string                                 `json:"evidencePath,omitempty"`
-	ProofSHA256             string                                 `json:"proofSha256,omitempty"`
-	PreGrantObservation     *ActivationPreGrantObservation         `json:"preGrantObservation,omitempty"`
-	GatewayBeforeHead       *ActivationGatewayHeadObservation      `json:"gatewayBeforeHead,omitempty"`
-	GatewayPromotion        *ActivationGatewayPromotionObservation `json:"gatewayPromotion,omitempty"`
-	Observations            *ActivationObservations                `json:"observations,omitempty"`
+	ID                      string                                  `json:"id"`
+	InputSHA256             string                                  `json:"inputSha256"`
+	ExpectedPromotionSHA256 string                                  `json:"expectedPromotionSha256"`
+	Boundary                ActivationBoundary                      `json:"boundary"`
+	StartedAt               time.Time                               `json:"startedAt"`
+	UpdatedAt               time.Time                               `json:"updatedAt"`
+	GatewayBeforeSHA256     string                                  `json:"gatewayBeforeSha256,omitempty"`
+	GatewayAfterSHA256      string                                  `json:"gatewayAfterSha256,omitempty"`
+	JournalSHA256           string                                  `json:"journalSha256,omitempty"`
+	EvidencePath            string                                  `json:"evidencePath,omitempty"`
+	ProofSHA256             string                                  `json:"proofSha256,omitempty"`
+	PriorVerification       *ActivationPriorVerificationObservation `json:"priorVerification,omitempty"`
+	PreGrantObservation     *ActivationPreGrantObservation          `json:"preGrantObservation,omitempty"`
+	GatewayBeforeHead       *ActivationGatewayHeadObservation       `json:"gatewayBeforeHead,omitempty"`
+	GatewayPromotion        *ActivationGatewayPromotionObservation  `json:"gatewayPromotion,omitempty"`
+	Observations            *ActivationObservations                 `json:"observations,omitempty"`
 }
 
 type ActivationAuthorityObservation struct {
@@ -202,6 +203,7 @@ type ActivationDependencies struct {
 	SaveAttempt                  func(context.Context, ActivationAttempt) error
 	ExpectedPromotion            func(context.Context) (string, string, error)
 	VerifyPriorState             func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error)
+	RecoverPriorState            func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error)
 	VerifySourceFence            func(context.Context) error
 	VerifyPreGrantAuthority      func(context.Context, bool) (ActivationPreGrantObservation, error)
 	StopServices                 func(context.Context) error
@@ -554,7 +556,7 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 		return fail("input validation", err)
 	}
 	if dependencies.LoadAttempt == nil || dependencies.SaveAttempt == nil || dependencies.ExpectedPromotion == nil ||
-		dependencies.VerifyPriorState == nil || dependencies.VerifySourceFence == nil || dependencies.VerifyPreGrantAuthority == nil || dependencies.StopServices == nil || dependencies.PromoteGateway == nil ||
+		dependencies.VerifyPriorState == nil || dependencies.RecoverPriorState == nil || dependencies.VerifySourceFence == nil || dependencies.VerifyPreGrantAuthority == nil || dependencies.StopServices == nil || dependencies.PromoteGateway == nil ||
 		dependencies.ObserveGatewayPromotionHead == nil || dependencies.VerifyGatewayPromotion == nil || dependencies.FenceTargetConnect == nil || dependencies.GrantWriters == nil || dependencies.VerifyPostGrantAuthority == nil ||
 		dependencies.RestoreConnect == nil || dependencies.VerifyRestoredTargetSessions == nil || dependencies.StartServices == nil || dependencies.VerifyRunningPostGrantDML == nil || dependencies.VerifyActivation == nil || dependencies.ContainPostGrantFailure == nil || dependencies.ObserveActivation == nil || dependencies.CompleteVerifiedAttempt == nil {
 		return fail("dependency validation", fmt.Errorf("activation dependencies are incomplete"))
@@ -566,6 +568,10 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 	inputSHA, err := activationInputSHA(input)
 	if err != nil {
 		return fail("input digest", err)
+	}
+	planSHA, err := activationPriorPlanSHA(input.PriorVerification)
+	if err != nil {
+		return fail("prior state verification", err)
 	}
 	attempt, err := dependencies.LoadAttempt(ctx)
 	if err != nil {
@@ -583,25 +589,159 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 	}
 	newAttempt := attempt == nil
 	if attempt == nil {
-		stamp := now().UTC()
-		idSeed := sha256.Sum256([]byte(inputSHA + "\x00" + stamp.Format(time.RFC3339Nano)))
-		attempt = &ActivationAttempt{ID: hex.EncodeToString(idSeed[:16]), InputSHA256: inputSHA, ExpectedPromotionSHA256: expectedSHA, Boundary: ActivationBegun, StartedAt: stamp, UpdatedAt: stamp}
+		orphan, orphanErr := recoverOrphanInitialActivationJournal(input.JournalPath, inputSHA, expectedSHA, planSHA)
+		if orphanErr != nil {
+			return fail("journal verification", orphanErr)
+		}
+		if orphan != nil {
+			attempt = orphan
+			newAttempt = false
+		} else {
+			stamp := now().UTC()
+			idSeed := sha256.Sum256([]byte(inputSHA + "\x00" + stamp.Format(time.RFC3339Nano)))
+			attempt = &ActivationAttempt{ID: hex.EncodeToString(idSeed[:16]), InputSHA256: inputSHA, ExpectedPromotionSHA256: expectedSHA, Boundary: ActivationBegun, StartedAt: stamp, UpdatedAt: stamp}
+		}
 	}
 	if !newAttempt {
 		if attempt.InputSHA256 != inputSHA || attempt.ExpectedPromotionSHA256 != expectedSHA {
 			return fail("attempt input verification", fmt.Errorf("activation attempt input changed"))
 		}
-		if err := verifyActivationJournal(input.JournalPath, attempt.JournalSHA256, *attempt); err != nil {
-			return fail("journal verification", err)
+		journalAhead, journalErr := verifyActivationJournal(input.JournalPath, attempt.JournalSHA256, *attempt, planSHA)
+		if journalErr != nil {
+			return fail("journal verification", journalErr)
+		}
+		if journalAhead != nil && (attempt.PriorVerification == nil || journalAhead.Boundary == attempt.Boundary) {
+			*attempt = *journalAhead
 		}
 	}
-	priorObservation, err := dependencies.VerifyPriorState(ctx, input.PriorVerification, *attempt)
-	if err != nil {
-		return fail("prior state verification", err)
+	var priorObservation ActivationPriorVerificationObservation
+	legacyPriorRecovery := !newAttempt && attempt.PriorVerification == nil
+	if newAttempt {
+		priorObservation, err = dependencies.VerifyPriorState(ctx, input.PriorVerification, *attempt)
+		if err != nil {
+			return fail("prior state verification", err)
+		}
+	} else if attempt.PriorVerification != nil {
+		priorObservation = *attempt.PriorVerification
+		rebuilt, rebuildErr := dependencies.RecoverPriorState(ctx, input.PriorVerification, *attempt)
+		if rebuildErr != nil || !reflect.DeepEqual(rebuilt, priorObservation) {
+			if rebuildErr == nil {
+				rebuildErr = fmt.Errorf("persisted prior verification changed")
+			}
+			return fail("prior state verification", rebuildErr)
+		}
 	}
-	planSHA, err := activationPriorPlanSHA(input.PriorVerification)
-	if err != nil || priorObservation.AttemptID != attempt.ID || priorObservation.PlanSHA256 != planSHA || !validSHA256(priorObservation.ArtifactSetSHA256) || !validSHA256(priorObservation.CurrentPostconditionsSHA256) {
+	if !legacyPriorRecovery && !validActivationPriorVerificationObservation(priorObservation, *attempt, planSHA) {
 		return fail("prior state verification", fmt.Errorf("returned invalid observations"))
+	}
+	var (
+		legacySourceVerified  bool
+		legacyServicesStopped bool
+		legacyTargetFenced    bool
+		legacyGatewayVerified bool
+		legacyCurrentPreGrant ActivationPreGrantObservation
+		legacyFence           ActivationTargetFenceObservation
+		legacyPostGrant       ActivationPostGrantObservation
+		legacyPostVerified    bool
+		legacyPromotionSeen   bool
+	)
+	if legacyPriorRecovery {
+		postGrant = true
+		validWitness := attempt.Boundary != ActivationVerified && attempt.PreGrantObservation != nil && validActivationPreGrantObservation(*attempt.PreGrantObservation, false)
+		if validWitness && boundaryAtLeast(attempt.Boundary, ActivationGatewayPromoted) {
+			validWitness = attempt.GatewayBeforeHead != nil && attempt.GatewayPromotion != nil &&
+				validActivationGatewayPromotionObservation(*attempt.GatewayPromotion, expectedSHA) && reflect.DeepEqual(*attempt.GatewayBeforeHead, attempt.GatewayPromotion.Before) &&
+				attempt.GatewayBeforeSHA256 == attempt.GatewayPromotion.Before.HeadSHA256 && attempt.GatewayAfterSHA256 == attempt.GatewayPromotion.After.HeadSHA256
+		} else if validWitness && attempt.Boundary == ActivationBegun {
+			validWitness = attempt.GatewayBeforeHead != nil && validActivationGatewayBeforeHeadObservation(*attempt.GatewayBeforeHead, expectedSHA) && attempt.GatewayBeforeSHA256 == attempt.GatewayBeforeHead.HeadSHA256
+		} else {
+			validWitness = false
+		}
+		if !validWitness {
+			return fail("legacy prior recovery witness", fmt.Errorf("legacy activation attempt witness is missing or invalid"))
+		}
+		if err := dependencies.StopServices(ctx); err != nil {
+			return fail("legacy prior recovery service stop", err)
+		}
+		legacyServicesStopped = true
+		legacyFence, err = dependencies.FenceTargetConnect(ctx)
+		if err != nil || !validActivationTargetFenceObservation(legacyFence) {
+			if err == nil {
+				err = fmt.Errorf("typed observation is incomplete")
+			}
+			return fail("legacy prior recovery target CONNECT fence", err)
+		}
+		legacyTargetFenced = true
+		if err := dependencies.VerifySourceFence(ctx); err != nil {
+			return fail("legacy prior recovery source fence", err)
+		}
+		legacySourceVerified = true
+		if boundaryAtLeast(attempt.Boundary, ActivationGatewayPromoted) {
+			currentGatewayHead, headErr := dependencies.VerifyGatewayPromotion(ctx)
+			if headErr != nil || !validActivationGatewayHeadObservation(currentGatewayHead, expectedSHA) || !reflect.DeepEqual(currentGatewayHead, attempt.GatewayPromotion.After) {
+				if headErr == nil {
+					headErr = fmt.Errorf("durable Gateway head changed")
+				}
+				return fail("legacy prior recovery Gateway head", headErr)
+			}
+			legacyGatewayVerified = true
+			legacyPromotionSeen = true
+		} else {
+			currentGatewayHead, headErr := dependencies.ObserveGatewayPromotionHead(ctx)
+			if headErr != nil || !validActivationGatewayHeadObservation(currentGatewayHead, expectedSHA) {
+				return fail("legacy prior recovery Gateway head", headErr)
+			}
+			if !reflect.DeepEqual(currentGatewayHead, *attempt.GatewayBeforeHead) {
+				verifiedAfter, verifyErr := dependencies.VerifyGatewayPromotion(ctx)
+				if verifyErr != nil || !reflect.DeepEqual(verifiedAfter, currentGatewayHead) || !validActivationGatewayHeadObservation(verifiedAfter, expectedSHA) {
+					return fail("legacy prior recovery Gateway head", verifyErr)
+				}
+				replayed, replayErr := dependencies.PromoteGateway(ctx)
+				if replayErr != nil || !validActivationGatewayPromotionObservation(replayed, expectedSHA) || !reflect.DeepEqual(replayed.Before, verifiedAfter) || !reflect.DeepEqual(replayed.After, verifiedAfter) {
+					return fail("legacy prior recovery Gateway promotion replay", replayErr)
+				}
+				promotion := ActivationGatewayPromotionObservation{Before: *attempt.GatewayBeforeHead, After: verifiedAfter}
+				attempt.GatewayPromotion = &promotion
+				attempt.GatewayAfterSHA256 = verifiedAfter.HeadSHA256
+				attempt.Boundary = ActivationGatewayPromoted
+				legacyGatewayVerified = true
+				legacyPromotionSeen = true
+			}
+		}
+		legacyCurrentPreGrant, err = dependencies.VerifyPreGrantAuthority(ctx, true)
+		if err != nil || !validActivationPreGrantObservation(legacyCurrentPreGrant, true) {
+			if err == nil {
+				err = fmt.Errorf("typed observations are incomplete")
+			}
+			return fail("legacy prior recovery authority", err)
+		}
+		if !legacyPromotionSeen && legacyCurrentPreGrant.Platform.WriterMembership {
+			return fail("legacy prior recovery authority", fmt.Errorf("writer membership is present before Gateway promotion"))
+		}
+		if boundaryAtLeast(attempt.Boundary, ActivationWritersGranted) || legacyCurrentPreGrant.Platform.WriterMembership {
+			if !legacyCurrentPreGrant.Platform.WriterMembership {
+				return fail("legacy prior recovery authority", fmt.Errorf("writer membership does not match the persisted boundary"))
+			}
+			legacyPostGrant, err = dependencies.VerifyPostGrantAuthority(ctx)
+			if err != nil || !validActivationPostGrantObservation(legacyPostGrant) {
+				if err == nil {
+					err = fmt.Errorf("typed observations are incomplete")
+				}
+				return fail("legacy prior recovery sessions", err)
+			}
+			legacyPostVerified = true
+		}
+		priorObservation, err = dependencies.RecoverPriorState(ctx, input.PriorVerification, *attempt)
+		if err != nil || !validActivationPriorVerificationObservation(priorObservation, *attempt, planSHA) {
+			if err == nil {
+				err = fmt.Errorf("returned invalid observations")
+			}
+			return fail("legacy prior recovery reconstruction", err)
+		}
+		attempt.PriorVerification = &priorObservation
+		if err := persistActivationBoundary(ctx, input.JournalPath, dependencies.SaveAttempt, attempt); err != nil {
+			return fail("legacy prior recovery persistence", err)
+		}
 	}
 	if attempt.Boundary == ActivationVerified {
 		if err := verifyCompletedActivationAttempt(input, *attempt); err != nil {
@@ -645,22 +785,28 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 		return ExecutionResult{Result: Result{Phase: PhaseActivated, Replayed: true}, EvidencePath: attempt.EvidencePath, InputSHA256: inputSHA}, nil
 	}
 
-	if err := dependencies.VerifySourceFence(ctx); err != nil {
-		return fail("source fence verification", err)
+	if !legacySourceVerified {
+		if err := dependencies.VerifySourceFence(ctx); err != nil {
+			return fail("source fence verification", err)
+		}
 	}
 	if !newAttempt && (attempt.PreGrantObservation == nil || !validActivationPreGrantObservation(*attempt.PreGrantObservation, false)) {
 		return fail("pre-grant authority verification", fmt.Errorf("persisted historical observation is missing or invalid"))
 	}
 	allowCurrentWriterMembership := boundaryAtLeast(attempt.Boundary, ActivationWritersGranted) || attempt.Boundary == ActivationGatewayPromoted
-	currentPreGrantObservation, err := dependencies.VerifyPreGrantAuthority(ctx, allowCurrentWriterMembership)
-	if err != nil {
-		return fail("pre-grant authority verification", err)
-	}
-	if !validActivationPreGrantObservation(currentPreGrantObservation, allowCurrentWriterMembership) {
-		return fail("pre-grant authority verification", fmt.Errorf("typed observations are incomplete"))
+	currentPreGrantObservation := legacyCurrentPreGrant
+	if !legacyPriorRecovery {
+		currentPreGrantObservation, err = dependencies.VerifyPreGrantAuthority(ctx, allowCurrentWriterMembership)
+		if err != nil {
+			return fail("pre-grant authority verification", err)
+		}
+		if !validActivationPreGrantObservation(currentPreGrantObservation, allowCurrentWriterMembership) {
+			return fail("pre-grant authority verification", fmt.Errorf("typed observations are incomplete"))
+		}
 	}
 	preGrantObservation := currentPreGrantObservation
 	if newAttempt {
+		attempt.PriorVerification = &priorObservation
 		attempt.PreGrantObservation = &preGrantObservation
 		if err := persistActivationBoundary(ctx, input.JournalPath, dependencies.SaveAttempt, attempt); err != nil {
 			return ExecutionResult{}, err
@@ -680,18 +826,22 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 	if grantCrashCandidate {
 		postGrant = true
 	}
-	var fenceObservation ActivationTargetFenceObservation
-	if err := dependencies.StopServices(ctx); err != nil {
-		return fail("service stop", err)
+	fenceObservation := legacyFence
+	if !legacyServicesStopped {
+		if err := dependencies.StopServices(ctx); err != nil {
+			return fail("service stop", err)
+		}
 	}
-	fenceObservation, err = dependencies.FenceTargetConnect(ctx)
-	if err != nil {
-		return fail("target CONNECT fence", err)
+	if !legacyTargetFenced {
+		fenceObservation, err = dependencies.FenceTargetConnect(ctx)
+		if err != nil {
+			return fail("target CONNECT fence", err)
+		}
+		if !validActivationTargetFenceObservation(fenceObservation) {
+			return fail("target CONNECT fence", fmt.Errorf("typed observation is incomplete"))
+		}
 	}
-	if !validActivationTargetFenceObservation(fenceObservation) {
-		return fail("target CONNECT fence", fmt.Errorf("typed observation is incomplete"))
-	}
-	if boundaryAtLeast(attempt.Boundary, ActivationGatewayPromoted) {
+	if boundaryAtLeast(attempt.Boundary, ActivationGatewayPromoted) && !legacyGatewayVerified {
 		currentGatewayHead, err := dependencies.VerifyGatewayPromotion(ctx)
 		if err != nil {
 			return fail("Gateway promotion verification", err)
@@ -766,8 +916,8 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 			return ExecutionResult{}, err
 		}
 	}
-	var postGrantObservation ActivationPostGrantObservation
-	postGrantVerified := false
+	postGrantObservation := legacyPostGrant
+	postGrantVerified := legacyPostVerified
 	if grantCrashCandidate {
 		recoveredPostGrant, err := dependencies.VerifyPostGrantAuthority(ctx)
 		if err != nil {
@@ -882,6 +1032,11 @@ func activationPriorPlanSHA(plan ActivationPriorVerificationPlan) (string, error
 		return "", fmt.Errorf("encode activation prior verification plan: %w", err)
 	}
 	return sha256Hex(data), nil
+}
+
+func validActivationPriorVerificationObservation(observation ActivationPriorVerificationObservation, attempt ActivationAttempt, planSHA string) bool {
+	return observation.AttemptID == attempt.ID && observation.PlanSHA256 == planSHA && validSHA256(planSHA) &&
+		validSHA256(observation.ArtifactSetSHA256) && validSHA256(observation.CurrentPostconditionsSHA256)
 }
 
 func verifyCompletedActivationAttempt(input ActivationInput, attempt ActivationAttempt) error {
@@ -1071,41 +1226,140 @@ func verifyActivationEnvironment() error {
 	return nil
 }
 
-func verifyActivationJournal(path, expectedSHA string, authoritative ActivationAttempt) error {
+func readActivationJournal(path string) (ActivationAttempt, string, error) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("activation journal is unavailable or unsafe")
+		return ActivationAttempt{}, "", fmt.Errorf("activation journal is unavailable or unsafe")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read activation journal: %w", err)
+		return ActivationAttempt{}, "", fmt.Errorf("read activation journal: %w", err)
 	}
 	journalSHA := sha256Hex(data)
 	if err := rejectDuplicateKeys(data); err != nil {
-		return fmt.Errorf("activation journal changed")
+		return ActivationAttempt{}, "", fmt.Errorf("activation journal changed")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var journal ActivationAttempt
 	if err := decoder.Decode(&journal); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return fmt.Errorf("activation journal changed")
+		return ActivationAttempt{}, "", fmt.Errorf("activation journal changed")
+	}
+	return journal, journalSHA, nil
+}
+
+func recoverOrphanInitialActivationJournal(path, inputSHA, expectedPromotionSHA, priorPlanSHA string) (*ActivationAttempt, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("activation journal is unavailable or unsafe")
+	}
+	journal, journalSHA, err := readActivationJournal(path)
+	if err != nil {
+		return nil, err
+	}
+	idSeed := sha256.Sum256([]byte(inputSHA + "\x00" + journal.StartedAt.UTC().Format(time.RFC3339Nano)))
+	expectedID := hex.EncodeToString(idSeed[:16])
+	if journal.ID != expectedID || journal.InputSHA256 != inputSHA || journal.ExpectedPromotionSHA256 != expectedPromotionSHA || journal.Boundary != ActivationBegun ||
+		journal.StartedAt.IsZero() || journal.StartedAt.Location() != time.UTC || !journal.UpdatedAt.Equal(journal.StartedAt) || journal.JournalSHA256 != "" ||
+		journal.PriorVerification == nil || !validActivationPriorVerificationObservation(*journal.PriorVerification, journal, priorPlanSHA) ||
+		journal.PreGrantObservation == nil || !validActivationPreGrantObservation(*journal.PreGrantObservation, false) ||
+		journal.GatewayBeforeHead != nil || journal.GatewayBeforeSHA256 != "" || journal.GatewayPromotion != nil || journal.GatewayAfterSHA256 != "" ||
+		journal.EvidencePath != "" || journal.ProofSHA256 != "" || journal.Observations != nil {
+		return nil, fmt.Errorf("activation journal changed")
+	}
+	journal.JournalSHA256 = journalSHA
+	return &journal, nil
+}
+
+func validPersistedActivationWitnesses(attempt ActivationAttempt, priorPlanSHA string) bool {
+	if attempt.PriorVerification != nil && !validActivationPriorVerificationObservation(*attempt.PriorVerification, attempt, priorPlanSHA) {
+		return false
+	}
+	if attempt.PreGrantObservation == nil || !validActivationPreGrantObservation(*attempt.PreGrantObservation, false) {
+		return false
+	}
+	if attempt.GatewayBeforeHead == nil {
+		if attempt.GatewayBeforeSHA256 != "" {
+			return false
+		}
+	} else if !validActivationGatewayBeforeHeadObservation(*attempt.GatewayBeforeHead, attempt.ExpectedPromotionSHA256) || attempt.GatewayBeforeSHA256 != attempt.GatewayBeforeHead.HeadSHA256 {
+		return false
+	}
+	if boundaryAtLeast(attempt.Boundary, ActivationGatewayPromoted) {
+		if attempt.GatewayBeforeHead == nil || attempt.GatewayPromotion == nil || !validActivationGatewayPromotionObservation(*attempt.GatewayPromotion, attempt.ExpectedPromotionSHA256) ||
+			!reflect.DeepEqual(*attempt.GatewayBeforeHead, attempt.GatewayPromotion.Before) || attempt.GatewayAfterSHA256 != attempt.GatewayPromotion.After.HeadSHA256 {
+			return false
+		}
+	} else if attempt.GatewayPromotion != nil || attempt.GatewayAfterSHA256 != "" {
+		return false
+	}
+	return attempt.Boundary != ActivationVerified && attempt.EvidencePath == "" && attempt.ProofSHA256 == "" && attempt.Observations == nil
+}
+
+func validActivationJournalAdvance(journal, authoritative ActivationAttempt, priorPlanSHA string) bool {
+	order := map[ActivationBoundary]int{ActivationBegun: 1, ActivationGatewayPromoted: 2, ActivationWritersGranted: 3, ActivationConnectRestored: 4, ActivationServicesStarted: 5}
+	if order[journal.Boundary] != order[authoritative.Boundary]+1 || journal.UpdatedAt.Before(authoritative.UpdatedAt) ||
+		!validPersistedActivationWitnesses(authoritative, priorPlanSHA) || !validPersistedActivationWitnesses(journal, priorPlanSHA) {
+		return false
+	}
+	normalized := journal
+	normalized.Boundary = authoritative.Boundary
+	normalized.UpdatedAt = authoritative.UpdatedAt
+	if journal.Boundary == ActivationGatewayPromoted {
+		if authoritative.GatewayBeforeHead == nil || authoritative.GatewayPromotion != nil || authoritative.GatewayAfterSHA256 != "" {
+			return false
+		}
+		normalized.GatewayPromotion = nil
+		normalized.GatewayAfterSHA256 = ""
+	}
+	return reflect.DeepEqual(normalized, authoritative)
+}
+
+func verifyActivationJournal(path, expectedSHA string, authoritative ActivationAttempt, priorPlanSHA string) (*ActivationAttempt, error) {
+	journal, journalSHA, err := readActivationJournal(path)
+	if err != nil {
+		return nil, err
 	}
 	if journalSHA == expectedSHA {
 		if journal.ID != authoritative.ID || journal.InputSHA256 != authoritative.InputSHA256 || journal.ExpectedPromotionSHA256 != authoritative.ExpectedPromotionSHA256 ||
 			!journal.StartedAt.Equal(authoritative.StartedAt) || !boundaryAtLeast(authoritative.Boundary, journal.Boundary) ||
-			!reflect.DeepEqual(journal.PreGrantObservation, authoritative.PreGrantObservation) || !reflect.DeepEqual(journal.GatewayBeforeHead, authoritative.GatewayBeforeHead) || !reflect.DeepEqual(journal.GatewayPromotion, authoritative.GatewayPromotion) ||
+			!reflect.DeepEqual(journal.PriorVerification, authoritative.PriorVerification) || !reflect.DeepEqual(journal.PreGrantObservation, authoritative.PreGrantObservation) || !reflect.DeepEqual(journal.GatewayBeforeHead, authoritative.GatewayBeforeHead) || !reflect.DeepEqual(journal.GatewayPromotion, authoritative.GatewayPromotion) ||
 			journal.GatewayBeforeSHA256 != authoritative.GatewayBeforeSHA256 || journal.GatewayAfterSHA256 != authoritative.GatewayAfterSHA256 {
-			return fmt.Errorf("activation journal changed")
+			return nil, fmt.Errorf("activation journal changed")
 		}
-		return nil
+		return nil, nil
 	}
-	if journal.ID != authoritative.ID || journal.InputSHA256 != authoritative.InputSHA256 || journal.ExpectedPromotionSHA256 != authoritative.ExpectedPromotionSHA256 ||
-		!journal.StartedAt.Equal(authoritative.StartedAt) || journal.JournalSHA256 != authoritative.JournalSHA256 ||
-		!boundaryAtLeast(journal.Boundary, authoritative.Boundary) || journal.Boundary == authoritative.Boundary ||
-		(boundaryAtLeast(journal.Boundary, ActivationGatewayPromoted) && (journal.GatewayBeforeHead == nil || journal.GatewayPromotion == nil || !validActivationGatewayPromotionObservation(*journal.GatewayPromotion, authoritative.ExpectedPromotionSHA256) || !reflect.DeepEqual(*journal.GatewayBeforeHead, journal.GatewayPromotion.Before) || journal.GatewayBeforeSHA256 != journal.GatewayPromotion.Before.HeadSHA256 || journal.GatewayAfterSHA256 != journal.GatewayPromotion.After.HeadSHA256)) {
-		return fmt.Errorf("activation journal changed")
+	sameBoundaryPriorEnrichment := false
+	if journal.Boundary == authoritative.Boundary && authoritative.PriorVerification == nil && journal.PriorVerification != nil &&
+		validActivationPriorVerificationObservation(*journal.PriorVerification, authoritative, priorPlanSHA) {
+		withoutPrior := journal
+		withoutPrior.PriorVerification = nil
+		sameBoundaryPriorEnrichment = reflect.DeepEqual(withoutPrior, authoritative)
 	}
-	return nil
+	if sameBoundaryPriorEnrichment {
+		journal.JournalSHA256 = journalSHA
+		return &journal, nil
+	}
+	sameBoundaryGatewayBeforeHeadEnrichment := false
+	if journal.Boundary == ActivationBegun && authoritative.Boundary == ActivationBegun && authoritative.GatewayBeforeHead == nil && journal.GatewayBeforeHead != nil &&
+		!journal.UpdatedAt.Before(authoritative.UpdatedAt) && validPersistedActivationWitnesses(authoritative, priorPlanSHA) && validPersistedActivationWitnesses(journal, priorPlanSHA) {
+		withoutBeforeHead := journal
+		withoutBeforeHead.GatewayBeforeHead = nil
+		withoutBeforeHead.GatewayBeforeSHA256 = ""
+		withoutBeforeHead.UpdatedAt = authoritative.UpdatedAt
+		sameBoundaryGatewayBeforeHeadEnrichment = reflect.DeepEqual(withoutBeforeHead, authoritative)
+	}
+	if sameBoundaryGatewayBeforeHeadEnrichment {
+		journal.JournalSHA256 = journalSHA
+		return &journal, nil
+	}
+	if !validActivationJournalAdvance(journal, authoritative, priorPlanSHA) {
+		return nil, fmt.Errorf("activation journal changed")
+	}
+	journal.JournalSHA256 = journalSHA
+	return &journal, nil
 }
 
 func validateActivationInput(input ActivationInput) error {
@@ -1327,6 +1581,9 @@ func executeActivationLocked(ctx context.Context, request ExecutionRequest, opti
 		dependencies.VerifyPriorState = func(ctx context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
 			return verifyActivationPriorState(ctx, manifest, request, plan, attempt, options)
 		}
+		dependencies.RecoverPriorState = func(ctx context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+			return recoverActivationPriorState(ctx, manifest, request, plan, attempt, options)
+		}
 	} else {
 		dependencies = *options.Activation
 	}
@@ -1354,6 +1611,14 @@ func executeActivationLocked(ctx context.Context, request ExecutionRequest, opti
 }
 
 func verifyActivationPriorState(ctx context.Context, manifest Manifest, request ExecutionRequest, plan ActivationPriorVerificationPlan, attempt ActivationAttempt, options ExecuteOptions) (ActivationPriorVerificationObservation, error) {
+	return activationPriorStateObservation(ctx, manifest, request, plan, attempt, options, true)
+}
+
+func recoverActivationPriorState(ctx context.Context, manifest Manifest, request ExecutionRequest, plan ActivationPriorVerificationPlan, attempt ActivationAttempt, options ExecuteOptions) (ActivationPriorVerificationObservation, error) {
+	return activationPriorStateObservation(ctx, manifest, request, plan, attempt, options, false)
+}
+
+func activationPriorStateObservation(ctx context.Context, manifest Manifest, request ExecutionRequest, plan ActivationPriorVerificationPlan, attempt ActivationAttempt, options ExecuteOptions, runCurrentProbes bool) (ActivationPriorVerificationObservation, error) {
 	expectedPlan, err := buildActivationPriorVerificationPlan(manifest, request)
 	if err != nil || !reflect.DeepEqual(plan, expectedPlan) {
 		return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior replay plan changed")
@@ -1451,9 +1716,11 @@ func verifyActivationPriorState(ctx context.Context, manifest Manifest, request 
 			return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate replay does not contain %d current probes", validateCommandCount)
 		}
 		for index, command := range commands {
-			result, runErr := run(ctx, command)
-			if runErr != nil || verifyCommandPostcondition(Validate, index, command, result) != nil {
-				return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate current postcondition %d failed", index+1)
+			if runCurrentProbes {
+				result, runErr := run(ctx, command)
+				if runErr != nil || verifyCommandPostcondition(Validate, index, command, result) != nil {
+					return ActivationPriorVerificationObservation{}, fmt.Errorf("activation prior validate current postcondition %d failed", index+1)
+				}
 			}
 			identity := commandDigest(command, nil)
 			currentProofs = append(currentProofs, currentPostconditionFact{

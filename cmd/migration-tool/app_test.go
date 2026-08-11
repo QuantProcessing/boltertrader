@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,27 @@ func TestRunBackupAndStatus(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("status %q missing %s", stdout.String(), want)
 		}
+	}
+}
+
+func TestStatusOutputExposesOnlyActivationAttemptBoundary(t *testing.T) {
+	manifest := migration.Manifest{
+		Workflow: migration.Workflow{Phase: migration.PhaseActivationReady},
+		ActivationAttempt: &migration.ActivationAttempt{
+			ID:       "private-attempt-id",
+			Boundary: migration.ActivationConnectRestored,
+		},
+	}
+	data, err := json.Marshal(statusOutput(manifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"activationAttemptBoundary":"connect-restored"`) {
+		t.Fatalf("status output = %s", got)
+	}
+	if strings.Contains(got, "private-attempt-id") {
+		t.Fatalf("status output leaked activation attempt details: %s", got)
 	}
 }
 

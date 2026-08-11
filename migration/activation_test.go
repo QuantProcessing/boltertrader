@@ -318,7 +318,7 @@ func TestExecuteActivationOrdersBoundariesAndReplaysVerifiedAttempt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !replay.Replayed || !reflect.DeepEqual(calls, []string{"promotion-state", "prior-state", "source-fence", "verify-gateway-promotion", "verify-running-post-grant-dml", "verify"}) {
+	if !replay.Replayed || !reflect.DeepEqual(calls, []string{"promotion-state", "recover-prior-state", "source-fence", "verify-gateway-promotion", "verify-running-post-grant-dml", "verify"}) {
 		t.Fatalf("replay=%+v calls=%v", replay, calls)
 	}
 }
@@ -662,8 +662,11 @@ func TestActivationMeasurementDependenciesReturnTypedFacts(t *testing.T) {
 	if _, ok := reflect.TypeOf(ActivationAttempt{}).FieldByName("PreGrantObservation"); !ok {
 		t.Fatal("ActivationAttempt is missing the durable pre-grant observation")
 	}
+	if _, ok := reflect.TypeOf(ActivationAttempt{}).FieldByName("PriorVerification"); !ok {
+		t.Fatal("ActivationAttempt is missing the durable prior verification observation")
+	}
 	dependencyType := reflect.TypeOf(ActivationDependencies{})
-	for _, fieldName := range []string{"VerifyPreGrantAuthority", "FenceTargetConnect", "ObserveGatewayPromotionHead", "VerifyGatewayPromotion", "VerifyPostGrantAuthority", "VerifyRestoredTargetSessions", "VerifyRunningPostGrantDML"} {
+	for _, fieldName := range []string{"RecoverPriorState", "VerifyPreGrantAuthority", "FenceTargetConnect", "ObserveGatewayPromotionHead", "VerifyGatewayPromotion", "VerifyPostGrantAuthority", "VerifyRestoredTargetSessions", "VerifyRunningPostGrantDML"} {
 		field, ok := dependencyType.FieldByName(fieldName)
 		if !ok || field.Type.Kind() != reflect.Func || field.Type.NumOut() != 2 {
 			t.Fatalf("%s must return a typed observation and error", fieldName)
@@ -709,6 +712,274 @@ func TestExecuteActivationRejectsPriorArtifactDriftBeforeAttemptPersistence(t *t
 	}
 	if saves != 0 || containsString(calls, "stop") || containsString(calls, "promote") || containsString(calls, "grant") {
 		t.Fatalf("prior drift allowed side effects: saves=%d calls=%v", saves, calls)
+	}
+}
+
+func TestExecuteActivationPersistsPriorVerificationBeforeFirstSideEffect(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	persistedBeforeStop := false
+	baseSave := deps.SaveAttempt
+	deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+		if value.Boundary == ActivationBegun {
+			if value.PriorVerification == nil || value.PreGrantObservation == nil {
+				t.Fatalf("begun attempt persisted without prior facts: %+v", value)
+			}
+			persistedBeforeStop = true
+		}
+		return baseSave(ctx, value)
+	}
+	deps.StopServices = func(context.Context) error {
+		if !persistedBeforeStop {
+			t.Fatal("service stop ran before prior verification persistence")
+		}
+		calls = append(calls, "stop")
+		return errors.New("stop failed")
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "service stop") {
+		t.Fatalf("service stop error=%v", err)
+	}
+	if attempt == nil || attempt.PriorVerification == nil || attempt.PriorVerification.AttemptID != attempt.ID {
+		t.Fatalf("durable prior verification=%+v attempt=%+v", attempt.PriorVerification, attempt)
+	}
+}
+
+func TestExecuteActivationResumeReusesPersistedPriorVerification(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	stopCalls := 0
+	deps.StopServices = func(context.Context) error {
+		calls = append(calls, "stop")
+		stopCalls++
+		if stopCalls == 1 {
+			return errors.New("pause after durable prior verification")
+		}
+		return nil
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "service stop") {
+		t.Fatalf("first activation error=%v", err)
+	}
+	if attempt == nil || attempt.PriorVerification == nil {
+		t.Fatalf("first activation did not persist prior verification: %+v", attempt)
+	}
+	priorCalls := 0
+	deps.VerifyPriorState = func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		priorCalls++
+		return ActivationPriorVerificationObservation{}, errors.New("persisted prior verification was rerun")
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	if priorCalls != 0 {
+		t.Fatalf("resume reran prior probes %d times", priorCalls)
+	}
+}
+
+func TestExecuteActivationRecoversOrphanInitialBegunJournal(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	baseSave := deps.SaveAttempt
+	saveCalls := 0
+	deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+		saveCalls++
+		if saveCalls == 1 {
+			return errors.New("injected initial attempt save failure")
+		}
+		return baseSave(ctx, value)
+	}
+	priorCalls := 0
+	baseVerifyPrior := deps.VerifyPriorState
+	deps.VerifyPriorState = func(ctx context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		priorCalls++
+		if priorCalls > 1 {
+			return ActivationPriorVerificationObservation{}, errors.New("orphan recovery reran current probes")
+		}
+		return baseVerifyPrior(ctx, plan, attempt)
+	}
+	recoverCalls := 0
+	baseRecover := deps.RecoverPriorState
+	deps.RecoverPriorState = func(ctx context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		recoverCalls++
+		return baseRecover(ctx, plan, attempt)
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "initial attempt save failure") {
+		t.Fatalf("injected persistence error=%v", err)
+	}
+	if attempt != nil {
+		t.Fatalf("authoritative attempt exists despite failed first save: %+v", attempt)
+	}
+	data, err := os.ReadFile(input.JournalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orphan ActivationAttempt
+	if err := json.Unmarshal(data, &orphan); err != nil {
+		t.Fatal(err)
+	}
+	if orphan.Boundary != ActivationBegun || orphan.PriorVerification == nil || orphan.PreGrantObservation == nil || orphan.JournalSHA256 != "" {
+		t.Fatalf("orphan initial journal=%+v", orphan)
+	}
+	result, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("retry after orphan initial journal: %v", err)
+	}
+	if result.Phase != PhaseActivated || attempt == nil || attempt.ID != orphan.ID || priorCalls != 1 || recoverCalls != 1 {
+		t.Fatalf("result=%+v attempt=%+v orphan=%+v prior calls=%d recover calls=%d", result, attempt, orphan, priorCalls, recoverCalls)
+	}
+}
+
+func TestExecuteActivationRecoversBegunGatewayBeforeHeadJournalEnrichment(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	baseSave := deps.SaveAttempt
+	injected := false
+	var retrySaves []ActivationAttempt
+	deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+		if value.Boundary == ActivationBegun && value.GatewayBeforeHead != nil && !injected {
+			injected = true
+			return errors.New("injected before-head attempt save failure")
+		}
+		if injected {
+			retrySaves = append(retrySaves, value)
+		}
+		return baseSave(ctx, value)
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "before-head attempt save failure") {
+		t.Fatalf("injected persistence error=%v", err)
+	}
+	if attempt == nil || attempt.Boundary != ActivationBegun || attempt.GatewayBeforeHead != nil || attempt.GatewayBeforeSHA256 != "" {
+		t.Fatalf("authoritative attempt contains failed before-head save: %+v", attempt)
+	}
+	retrySaves = nil
+	result, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("retry after before-head journal enrichment: %v", err)
+	}
+	if result.Phase != PhaseActivated || len(retrySaves) == 0 || retrySaves[0].Boundary != ActivationGatewayPromoted || retrySaves[0].GatewayBeforeHead == nil {
+		t.Fatalf("result=%+v retry saves=%+v", result, retrySaves)
+	}
+}
+
+func TestExecuteActivationRejectsTamperedPersistedPriorVerification(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	deps.StopServices = func(context.Context) error {
+		calls = append(calls, "stop")
+		return errors.New("pause after durable prior verification")
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil {
+		t.Fatal("first activation unexpectedly succeeded")
+	}
+	if attempt == nil || attempt.PriorVerification == nil {
+		t.Fatalf("attempt=%+v", attempt)
+	}
+	attempt.PriorVerification.ArtifactSetSHA256 = strings.Repeat("f", 64)
+	calls = nil
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "journal verification") {
+		t.Fatalf("tampered prior verification error=%v", err)
+	}
+	if len(calls) != 1 || calls[0] != "promotion-state" {
+		t.Fatalf("tampered prior verification caused side effects: %v", calls)
+	}
+}
+
+func TestExecuteActivationLegacyResumeRebuildsPriorAfterCurrentStateWitnesses(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	deps.VerifyActivation = func(context.Context) error {
+		calls = append(calls, "verify")
+		return errors.New("pause after services started")
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("prepare legacy attempt error=%v", err)
+	}
+	if attempt == nil || attempt.Boundary != ActivationServicesStarted || attempt.PriorVerification == nil {
+		t.Fatalf("prepared attempt=%+v", attempt)
+	}
+	attempt.PriorVerification = nil
+	if err := persistActivationBoundary(context.Background(), input.JournalPath, deps.SaveAttempt, attempt); err != nil {
+		t.Fatal(err)
+	}
+	deps.VerifyPriorState = func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		return ActivationPriorVerificationObservation{}, errors.New("legacy recovery reran current probes")
+	}
+	deps.VerifyActivation = func(context.Context) error { calls = append(calls, "verify"); return nil }
+	calls = nil
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("legacy recovery failed: %v", err)
+	}
+	if attempt.PriorVerification == nil {
+		t.Fatalf("legacy recovery did not persist prior verification: %+v", attempt)
+	}
+	wantOrder := []string{"promotion-state", "stop", "fence-target-connect", "source-fence", "verify-gateway-promotion", "pre-grant-authority", "verify-authority", "recover-prior-state"}
+	if len(calls) < len(wantOrder) || !reflect.DeepEqual(calls[:len(wantOrder)], wantOrder) {
+		t.Fatalf("legacy recovery calls=%v, want prefix %v", calls, wantOrder)
+	}
+}
+
+func TestExecuteActivationRecoversLegacyPriorJournalWriteBeforeAttemptSave(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	deps.VerifyActivation = func(context.Context) error {
+		calls = append(calls, "verify")
+		return errors.New("pause after services started")
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("prepare legacy attempt error=%v", err)
+	}
+	if attempt == nil || attempt.Boundary != ActivationServicesStarted || attempt.PriorVerification == nil {
+		t.Fatalf("prepared attempt=%+v", attempt)
+	}
+	attempt.PriorVerification = nil
+	if err := persistActivationBoundary(context.Background(), input.JournalPath, deps.SaveAttempt, attempt); err != nil {
+		t.Fatal(err)
+	}
+
+	baseSave := deps.SaveAttempt
+	injected := false
+	deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+		if value.Boundary == ActivationServicesStarted && value.PriorVerification != nil && !injected {
+			injected = true
+			return errors.New("injected legacy prior attempt save failure")
+		}
+		return baseSave(ctx, value)
+	}
+	deps.VerifyPriorState = func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		return ActivationPriorVerificationObservation{}, errors.New("legacy recovery reran current probes")
+	}
+	recoverCalls := 0
+	baseRecover := deps.RecoverPriorState
+	deps.RecoverPriorState = func(ctx context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		recoverCalls++
+		return baseRecover(ctx, plan, attempt)
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "legacy prior attempt save failure") {
+		t.Fatalf("injected persistence error=%v", err)
+	}
+	if attempt.PriorVerification != nil || attempt.Boundary != ActivationServicesStarted {
+		t.Fatalf("authoritative attempt advanced despite failed save: %+v", attempt)
+	}
+	deps.VerifyActivation = func(context.Context) error { calls = append(calls, "verify"); return nil }
+	result, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("retry after same-boundary journal write: %v", err)
+	}
+	if result.Phase != PhaseActivated || attempt.PriorVerification == nil || recoverCalls != 2 {
+		t.Fatalf("result=%+v attempt=%+v recover calls=%d", result, attempt, recoverCalls)
 	}
 }
 
@@ -759,6 +1030,133 @@ func TestExecuteActivationRecoversWhenJournalRenamePrecedesManifestSave(t *testi
 	}
 	if result.Phase != PhaseActivated || attempt == nil || attempt.Boundary != ActivationVerified {
 		t.Fatalf("retry result=%+v attempt=%+v", result, attempt)
+	}
+}
+
+func TestExecuteActivationRejectsJournalAheadHistoricalWitnessChanges(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*ActivationAttempt)
+	}{
+		{
+			name: "pre-grant observation",
+			mutate: func(journal *ActivationAttempt) {
+				journal.PreGrantObservation.DMLProbeSHA256 = strings.Repeat("f", 64)
+			},
+		},
+		{
+			name: "Gateway before-head",
+			mutate: func(journal *ActivationAttempt) {
+				changed := journal.GatewayPromotion.Before
+				changed.PendingSHA256 = strings.Repeat("f", 64)
+				changed.HeadSHA256 = activationGatewayHeadSHA256(changed)
+				journal.GatewayBeforeHead = &changed
+				journal.GatewayBeforeSHA256 = changed.HeadSHA256
+				journal.GatewayPromotion.Before = changed
+			},
+		},
+		{
+			name: "non-boundary evidence",
+			mutate: func(journal *ActivationAttempt) {
+				journal.EvidencePath = filepath.Join(filepath.Dir(journal.EvidencePath), "unexpected-evidence.json")
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := testActivationInput(t)
+			var attempt *ActivationAttempt
+			var calls []string
+			deps := testActivationDependencies(&attempt, &calls)
+			baseSave := deps.SaveAttempt
+			injected := false
+			deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+				if value.Boundary == ActivationGatewayPromoted && !injected {
+					injected = true
+					return errors.New("injected promoted attempt save failure")
+				}
+				return baseSave(ctx, value)
+			}
+			if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "promoted attempt save failure") {
+				t.Fatalf("injected persistence error=%v", err)
+			}
+			data, err := os.ReadFile(input.JournalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var journal ActivationAttempt
+			if err := json.Unmarshal(data, &journal); err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(&journal)
+			data, err = json.MarshalIndent(journal, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(input.JournalPath, append(data, '\n'), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			calls = nil
+			if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "journal verification") {
+				t.Fatalf("tampered journal-ahead error=%v", err)
+			}
+			if len(calls) != 1 || calls[0] != "promotion-state" {
+				t.Fatalf("tampered journal caused side effects: %v", calls)
+			}
+		})
+	}
+}
+
+func TestExecuteActivationLegacyBegunRecoversFromGatewayPromotedJournalAhead(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	baseSave := deps.SaveAttempt
+	injected := false
+	deps.SaveAttempt = func(ctx context.Context, value ActivationAttempt) error {
+		if value.Boundary == ActivationGatewayPromoted && !injected {
+			injected = true
+			return errors.New("injected promoted manifest save failure")
+		}
+		return baseSave(ctx, value)
+	}
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "manifest save failure") {
+		t.Fatalf("first activation error=%v", err)
+	}
+	if attempt == nil || attempt.Boundary != ActivationBegun || attempt.GatewayBeforeHead == nil {
+		t.Fatalf("manifest attempt=%+v", attempt)
+	}
+	journalData, err := os.ReadFile(input.JournalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ahead ActivationAttempt
+	if err := json.Unmarshal(journalData, &ahead); err != nil {
+		t.Fatal(err)
+	}
+	if ahead.Boundary != ActivationGatewayPromoted || ahead.GatewayPromotion == nil {
+		t.Fatalf("journal-ahead attempt=%+v", ahead)
+	}
+	ahead.PriorVerification = nil
+	legacyJournal, err := json.MarshalIndent(ahead, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input.JournalPath, append(legacyJournal, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempt.PriorVerification = nil
+	deps.VerifyPriorState = func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		return ActivationPriorVerificationObservation{}, errors.New("legacy journal-ahead recovery reran current probes")
+	}
+	calls = nil
+	result, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("legacy journal-ahead recovery: %v", err)
+	}
+	if result.Phase != PhaseActivated || attempt.PriorVerification == nil || !containsString(calls, "recover-prior-state") || containsString(calls, "prior-state") {
+		t.Fatalf("result=%+v attempt=%+v calls=%v", result, attempt, calls)
 	}
 }
 
@@ -840,7 +1238,7 @@ func TestExecuteActivationRecoversExternalStateAfterContainedServicesStartedFail
 	if !reflect.DeepEqual(*attempt.PreGrantObservation, recordedPreGrant) {
 		t.Fatalf("final evidence changed the historical pre-grant facts: stored=%+v recorded=%+v", attempt.PreGrantObservation, recordedPreGrant)
 	}
-	want := []string{"promotion-state", "prior-state", "source-fence", "pre-grant-authority", "stop", "fence-target-connect", "verify-gateway-promotion", "verify-authority", "connect", "verify-restored-sessions", "start", "verify", "verify-running-post-grant-dml"}
+	want := []string{"promotion-state", "recover-prior-state", "source-fence", "pre-grant-authority", "stop", "fence-target-connect", "verify-gateway-promotion", "verify-authority", "connect", "verify-restored-sessions", "start", "verify", "verify-running-post-grant-dml"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("retry calls=%v, want %v", calls, want)
 	}
@@ -937,6 +1335,49 @@ func TestExecuteActivationPreservesOriginalGatewayBeforeHeadAcrossPromotionCommi
 	wantPromotion := ActivationGatewayPromotionObservation{Before: before, After: after}
 	if !reflect.DeepEqual(*attempt.GatewayPromotion, wantPromotion) || attempt.GatewayBeforeSHA256 != before.HeadSHA256 || attempt.GatewayAfterSHA256 != after.HeadSHA256 {
 		t.Fatalf("promotion evidence=%+v want=%+v beforeSHA=%s afterSHA=%s", attempt.GatewayPromotion, wantPromotion, attempt.GatewayBeforeSHA256, attempt.GatewayAfterSHA256)
+	}
+}
+
+func TestExecuteActivationLegacyBegunRecoversCommittedPromotionBeforeJournal(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	operationSet := strings.Repeat("a", 64)
+	before := activationGatewayHeadObservation(storepkg.MigrationPromotionDigest{PendingSHA256: strings.Repeat("b", 64), ActiveSHA256: strings.Repeat("c", 64), OperationSetSHA256: operationSet})
+	after := activationGatewayHeadObservation(storepkg.MigrationPromotionDigest{PendingSHA256: activationMigrationStateSHA256("pending", nil), ActiveSHA256: strings.Repeat("e", 64), OperationSetSHA256: operationSet})
+	current := before
+	promotionCalls := 0
+	deps.ObserveGatewayPromotionHead = func(context.Context) (ActivationGatewayHeadObservation, error) { return current, nil }
+	deps.PromoteGateway = func(context.Context) (ActivationGatewayPromotionObservation, error) {
+		promotionCalls++
+		if promotionCalls == 1 {
+			current = after
+			return ActivationGatewayPromotionObservation{}, errors.New("promotion response lost after commit")
+		}
+		return ActivationGatewayPromotionObservation{Before: current, After: current}, nil
+	}
+	deps.VerifyGatewayPromotion = func(context.Context) (ActivationGatewayHeadObservation, error) { return current, nil }
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "promotion response lost") {
+		t.Fatalf("first activation error=%v", err)
+	}
+	if attempt == nil || attempt.Boundary != ActivationBegun || attempt.GatewayBeforeHead == nil || attempt.GatewayPromotion != nil || !reflect.DeepEqual(current, after) {
+		t.Fatalf("attempt=%+v current=%+v", attempt, current)
+	}
+	attempt.PriorVerification = nil
+	if err := persistActivationBoundary(context.Background(), input.JournalPath, deps.SaveAttempt, attempt); err != nil {
+		t.Fatal(err)
+	}
+	deps.VerifyPriorState = func(context.Context, ActivationPriorVerificationPlan, ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		return ActivationPriorVerificationObservation{}, errors.New("legacy committed-promotion recovery reran current probes")
+	}
+	calls = nil
+	result, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("legacy committed-promotion recovery: %v", err)
+	}
+	if result.Phase != PhaseActivated || promotionCalls != 2 || attempt.PriorVerification == nil || attempt.GatewayPromotion == nil || !containsString(calls, "recover-prior-state") {
+		t.Fatalf("result=%+v promotionCalls=%d attempt=%+v calls=%v", result, promotionCalls, attempt, calls)
 	}
 }
 
@@ -1090,7 +1531,7 @@ func TestExecuteActivationRecoversCommittedWriterGrantBeforeBoundarySave(t *test
 	if result.Phase != PhaseActivated || grantCalls != 1 || writersGrantedSaves != 1 || containsString(calls, "grant") {
 		t.Fatalf("result=%+v grantCalls=%d writersGrantedSaves=%d calls=%v", result, grantCalls, writersGrantedSaves, calls)
 	}
-	wantPrefix := "promotion-state,prior-state,source-fence,pre-grant-authority,stop,fence-target-connect,verify-gateway-promotion,verify-authority"
+	wantPrefix := "promotion-state,recover-prior-state,source-fence,pre-grant-authority,stop,fence-target-connect,verify-gateway-promotion,verify-authority"
 	if !strings.HasPrefix(strings.Join(calls, ","), wantPrefix) {
 		t.Fatalf("recovery did not stop, fence, and verify durable state before ratchet: %v", calls)
 	}
@@ -2249,6 +2690,7 @@ func TestDefaultActivationStoreConflictStopsBeforeWriterGrant(t *testing.T) {
 		planSHA, _ := activationPriorPlanSHA(input.PriorVerification)
 		return ActivationPriorVerificationObservation{AttemptID: attempt.ID, PlanSHA256: planSHA, ArtifactSetSHA256: strings.Repeat("1", 64), CurrentPostconditionsSHA256: strings.Repeat("2", 64)}, nil
 	}
+	deps.RecoverPriorState = deps.VerifyPriorState
 	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "Gateway before-head verification failed") {
 		t.Fatalf("error=%v", err)
 	}
@@ -2410,7 +2852,32 @@ func TestVerifyActivationPriorStateRerunsOnlySixValidateCurrentProbes(t *testing
 	}
 }
 
-func TestExecuteActivationReplayAcceptsDifferentSuccessfulValidateStdout(t *testing.T) {
+func TestRecoverActivationPriorStateRebuildsWithoutRunningCurrentProbes(t *testing.T) {
+	manifest, request, plan := generatedActivationPriorFixture(t)
+	attempt := ActivationAttempt{ID: "attempt-1"}
+	expected, err := verifyActivationPriorState(context.Background(), manifest, request, plan, attempt, ExecuteOptions{Run: func(_ context.Context, command Command) (CommandResult, error) {
+		if command.ExpectedOutput != "" {
+			return CommandResult{Output: []byte(command.ExpectedOutput)}, nil
+		}
+		return CommandResult{Output: []byte("current validation passed")}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeCalls := 0
+	rebuilt, err := recoverActivationPriorState(context.Background(), manifest, request, plan, attempt, ExecuteOptions{Run: func(context.Context, Command) (CommandResult, error) {
+		probeCalls++
+		return CommandResult{}, errors.New("current probes must not run during recovery")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probeCalls != 0 || !reflect.DeepEqual(rebuilt, expected) {
+		t.Fatalf("probe calls=%d rebuilt=%+v expected=%+v", probeCalls, rebuilt, expected)
+	}
+}
+
+func TestExecuteActivationReplayRevalidatesPriorEvidenceWithoutCurrentProbes(t *testing.T) {
 	manifest, request, plan := generatedActivationPriorFixture(t)
 	input := testActivationInput(t)
 	input.MigrationID = plan.MigrationID
@@ -2428,6 +2895,9 @@ func TestExecuteActivationReplayAcceptsDifferentSuccessfulValidateStdout(t *test
 			return CommandResult{Output: []byte(fmt.Sprintf("pass; run=%d; probe=%d; duration=%dms", currentRun, probeCalls, currentRun*probeCalls))}, nil
 		}})
 	}
+	deps.RecoverPriorState = func(ctx context.Context, _ ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+		return recoverActivationPriorState(ctx, manifest, request, plan, attempt, ExecuteOptions{})
+	}
 	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
 		t.Fatalf("first activation: %v", err)
 	}
@@ -2435,7 +2905,7 @@ func TestExecuteActivationReplayAcceptsDifferentSuccessfulValidateStdout(t *test
 	if err != nil {
 		t.Fatalf("activated replay with different successful stdout: %v", err)
 	}
-	if !replayed.Replayed || verificationRun != 2 || probeCalls != 12 {
+	if !replayed.Replayed || verificationRun != 1 || probeCalls != 6 {
 		t.Fatalf("replay=%+v verification runs=%d probe calls=%d", replayed, verificationRun, probeCalls)
 	}
 }
@@ -2646,6 +3116,14 @@ func testActivationDependencies(attempt **ActivationAttempt, calls *[]string) Ac
 		},
 		VerifyPriorState: func(_ context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
 			*calls = append(*calls, "prior-state")
+			data, err := json.Marshal(plan)
+			if err != nil {
+				return ActivationPriorVerificationObservation{}, err
+			}
+			return ActivationPriorVerificationObservation{AttemptID: attempt.ID, PlanSHA256: sha256Hex(data), ArtifactSetSHA256: strings.Repeat("1", 64), CurrentPostconditionsSHA256: strings.Repeat("2", 64)}, nil
+		},
+		RecoverPriorState: func(_ context.Context, plan ActivationPriorVerificationPlan, attempt ActivationAttempt) (ActivationPriorVerificationObservation, error) {
+			*calls = append(*calls, "recover-prior-state")
 			data, err := json.Marshal(plan)
 			if err != nil {
 				return ActivationPriorVerificationObservation{}, err

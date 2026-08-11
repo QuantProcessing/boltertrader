@@ -193,6 +193,41 @@ func TestG010Cutover(t *testing.T) {
 		h.assertActivationArgv()
 	})
 
+	t.Run("resumes a durable activation attempt before validation stack startup", func(t *testing.T) {
+		h := newG010Harness(t, repo, "activation-ready")
+		h.set("FAKE_ACTIVATION_ATTEMPT_BOUNDARY", "connect-restored")
+		h.set("FAKE_REAL_STACK_FAIL", "1")
+		h.accepts(driver)
+		if phase := h.phase(); phase != "activated" {
+			t.Fatalf("durable phase=%q, want activated", phase)
+		}
+		commands := h.commands()
+		if strings.Contains(commands, "dev-platform start-app") || strings.Contains(commands, "make test-real") {
+			t.Fatalf("durable activation resume escaped to the outer validation stack:\n%s", commands)
+		}
+		h.assertMigrationAdvances("activate")
+		h.assertMigrationReplays("activate")
+	})
+
+	t.Run("resumes a durable Gateway promotion before validation stack startup", func(t *testing.T) {
+		h := newG010Harness(t, repo, "activation-ready")
+		h.set("FAKE_ACTIVATION_ATTEMPT_BOUNDARY", "gateway-promoted")
+		h.set("FAKE_REAL_STACK_FAIL", "1")
+		h.accepts(driver)
+		commands := h.commands()
+		if strings.Contains(commands, "dev-platform start-app") || strings.Contains(commands, "make test-real") {
+			t.Fatalf("durable Gateway promotion escaped to the outer validation stack:\n%s", commands)
+		}
+		h.assertMigrationAdvances("activate")
+		h.assertMigrationReplays("activate")
+	})
+
+	t.Run("rejects an unknown activation attempt boundary", func(t *testing.T) {
+		h := newG010Harness(t, repo, "activation-ready")
+		h.set("FAKE_ACTIVATION_ATTEMPT_BOUNDARY", "unknown-boundary")
+		h.rejects(driver, "unsupported activation attempt boundary")
+	})
+
 	t.Run("activated restart replays activation under its authority fence only", func(t *testing.T) {
 		h := newG010Harness(t, repo, "activated")
 		h.set("FAKE_GIT_PROVENANCE_FAIL", "1")
@@ -584,7 +619,7 @@ if [ "$operation" = status ]; then
 		expected_sequence=$((expected_sequence + 1))
 	done <"$FAKE_LEDGER_FILE"
 	printf 'migration-tool status inspect\n' >>"$FAKE_COMMAND_LOG"
-	printf '{"phase":"%s","activationPrepared":false,"retirementPrepared":false}\n' "$phase"
+	printf '{"phase":"%s","activationPrepared":false,"retirementPrepared":false,"activationAttemptBoundary":"%s"}\n' "$phase" "${FAKE_ACTIVATION_ATTEMPT_BOUNDARY:-}"
 	exit 0
 fi
 
