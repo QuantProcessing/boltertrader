@@ -640,7 +640,7 @@ func newActivationPostgresCrashHarness(t *testing.T, cluster *activationPostgres
 				PlatformAuthority: facts.PostGrant.Platform, GatewayAuthority: facts.PostGrant.Gateway, PostGrantDMLProbeSHA256: facts.RunningPostGrantDML.ProbeSHA256,
 				SourceFenceVerified: true, TargetSessionsFenced: facts.Fence.SessionsZero && facts.PostGrant.TargetSessionsZero, TargetSessionFenceSHA256: facts.Fence.ProbeSHA256,
 				RestoredTargetSessionsZero: facts.RestoredSessions.SessionsZero, RestoredTargetSessionSHA256: facts.RestoredSessions.ProbeSHA256,
-				PostgresIdentitySHA256: strings.Repeat("7", 64), SupervisorStatusSHA256: strings.Repeat("8", 64),
+				PostgresIdentitySHA256: strings.Repeat("7", 64), SupervisorStatusSHA256: strings.Repeat("8", 64), SupervisorTopologySHA256: strings.Repeat("9", 64),
 				TestModeVerified: true, LivePrivateWritesDisabled: true, VenueWritesDisabled: true,
 			}, nil
 		},

@@ -18,6 +18,45 @@ import (
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
+func TestActivationSupervisorTopologySHA256NormalizesOwnedProcessIDs(t *testing.T) {
+	readiness := "postgres ready\ngateway ready\nplatform ready\nfunding-worker ready\nweb ready"
+	before := "postgres running pid=101\ngateway running pid=102\nplatform running pid=103\nfunding-worker running pid=104\nweb running pid=105"
+	after := "postgres running pid=201\ngateway running pid=202\nplatform running pid=203\nfunding-worker running pid=204\nweb running pid=205"
+
+	beforeSHA, err := activationSupervisorTopologySHA256(before, readiness)
+	if err != nil {
+		t.Fatalf("before topology: %v", err)
+	}
+	afterSHA, err := activationSupervisorTopologySHA256(after, readiness)
+	if err != nil {
+		t.Fatalf("after topology: %v", err)
+	}
+	if beforeSHA != afterSHA {
+		t.Fatalf("owned PID restart changed supervisor topology: before=%s after=%s", beforeSHA, afterSHA)
+	}
+}
+
+func TestActivationSupervisorTopologySHA256RejectsSemanticDrift(t *testing.T) {
+	readiness := "postgres ready\ngateway ready\nplatform ready\nfunding-worker ready\nweb ready"
+	status := "postgres running pid=101\ngateway running pid=102\nplatform running pid=103\nfunding-worker running pid=104\nweb running pid=105"
+	for name, changed := range map[string][2]string{
+		"service state":   {strings.Replace(status, "gateway running", "gateway stopped", 1), readiness},
+		"service order":   {strings.Replace(status, "postgres running pid=101\ngateway running pid=102", "gateway running pid=102\npostgres running pid=101", 1), readiness},
+		"missing service": {strings.Replace(status, "\nweb running pid=105", "", 1), readiness},
+		"extra service":   {status + "\nother running pid=106", readiness},
+		"readiness state": {status, strings.Replace(readiness, "gateway ready", "gateway degraded", 1)},
+		"readiness order": {status, strings.Replace(readiness, "postgres ready\ngateway ready", "gateway ready\npostgres ready", 1)},
+		"invalid pid":     {strings.Replace(status, "pid=102", "pid=not-a-pid", 1), readiness},
+		"zero pid":        {strings.Replace(status, "pid=102", "pid=0", 1), readiness},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := activationSupervisorTopologySHA256(changed[0], changed[1]); err == nil {
+				t.Fatal("semantic supervisor drift was accepted")
+			}
+		})
+	}
+}
+
 func TestActivationAuthorityRejectsTamperedDatabaseMigrationLedger(t *testing.T) {
 	matrix := authority.PlatformV15()
 	entries := make([]authority.MigrationLedgerEntry, matrix.SchemaVersion)
@@ -323,6 +362,172 @@ func TestExecuteActivationOrdersBoundariesAndReplaysVerifiedAttempt(t *testing.T
 	}
 }
 
+func TestExecuteActivationVerifiedReplayAllowsOwnedSupervisorRestart(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("first activation: %v", err)
+	}
+	sealedSupervisorSHA := attempt.Observations.SupervisorStatusSHA256
+	sealedProofSHA := attempt.ProofSHA256
+	sealedEvidencePath := attempt.EvidencePath
+	originalObserve := deps.ObserveActivation
+	deps.ObserveActivation = func(ctx context.Context, input ActivationInput, value ActivationAttempt, inputSHA string, facts ActivationVerificationFacts) (ActivationObservations, error) {
+		observed, err := originalObserve(ctx, input, value, inputSHA, facts)
+		observed.SupervisorStatusSHA256 = strings.Repeat("7", 64)
+		return observed, err
+	}
+
+	calls = nil
+	replay, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("replay after owned supervisor restart: %v", err)
+	}
+	if !replay.Replayed {
+		t.Fatalf("replay=%+v", replay)
+	}
+	if attempt.Observations.SupervisorStatusSHA256 != sealedSupervisorSHA {
+		t.Fatal("verified replay replaced sealed supervisor evidence")
+	}
+	if attempt.ProofSHA256 != sealedProofSHA || attempt.EvidencePath != sealedEvidencePath {
+		t.Fatal("verified replay replaced sealed proof evidence")
+	}
+	wantCalls := []string{"promotion-state", "recover-prior-state", "source-fence", "verify-gateway-promotion", "verify-running-post-grant-dml", "verify"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("replay calls=%v want=%v", calls, wantCalls)
+	}
+}
+
+func TestExecuteActivationVerifiedReplayRejectsSupervisorTopologyDrift(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("first activation: %v", err)
+	}
+	originalObserve := deps.ObserveActivation
+	deps.ObserveActivation = func(ctx context.Context, input ActivationInput, value ActivationAttempt, inputSHA string, facts ActivationVerificationFacts) (ActivationObservations, error) {
+		observed, err := originalObserve(ctx, input, value, inputSHA, facts)
+		observed.SupervisorStatusSHA256 = strings.Repeat("8", 64)
+		observed.SupervisorTopologySHA256 = strings.Repeat("9", 64)
+		return observed, err
+	}
+	calls = nil
+
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "measured observations changed") {
+		t.Fatalf("supervisor topology drift error=%v", err)
+	}
+	if !containsString(calls, "contain") {
+		t.Fatalf("supervisor topology drift was not contained: calls=%v", calls)
+	}
+}
+
+func TestExecuteActivationVerifiedReplayAllowsLegacySupervisorEvidenceAfterOwnedRestart(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("first activation: %v", err)
+	}
+
+	data, err := os.ReadFile(attempt.EvidencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof operationProof
+	if err := json.Unmarshal(data, &proof); err != nil {
+		t.Fatal(err)
+	}
+	attempt.Observations.SupervisorTopologySHA256 = ""
+	proof.ActivationObservations.SupervisorTopologySHA256 = ""
+	data, err = json.MarshalIndent(proof, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(attempt.EvidencePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attempt.ProofSHA256 = sha256Hex(data)
+	legacySupervisorSHA := attempt.Observations.SupervisorStatusSHA256
+	legacyProofSHA := attempt.ProofSHA256
+	legacyEvidencePath := attempt.EvidencePath
+
+	originalObserve := deps.ObserveActivation
+	deps.ObserveActivation = func(ctx context.Context, input ActivationInput, value ActivationAttempt, inputSHA string, facts ActivationVerificationFacts) (ActivationObservations, error) {
+		observed, err := originalObserve(ctx, input, value, inputSHA, facts)
+		observed.SupervisorStatusSHA256 = strings.Repeat("8", 64)
+		return observed, err
+	}
+	calls = nil
+
+	replay, err := ExecuteActivation(context.Background(), input, deps)
+	if err != nil {
+		t.Fatalf("legacy replay after owned supervisor restart: %v", err)
+	}
+	if !replay.Replayed {
+		t.Fatalf("replay=%+v", replay)
+	}
+	if attempt.Observations.SupervisorStatusSHA256 != legacySupervisorSHA || attempt.Observations.SupervisorTopologySHA256 != "" {
+		t.Fatal("legacy replay replaced sealed supervisor evidence")
+	}
+	if attempt.ProofSHA256 != legacyProofSHA || attempt.EvidencePath != legacyEvidencePath {
+		t.Fatal("legacy replay replaced sealed proof evidence")
+	}
+}
+
+func TestExecuteActivationVerifiedReplayRejectsInvalidCurrentSupervisorEvidence(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("first activation: %v", err)
+	}
+	originalObserve := deps.ObserveActivation
+	deps.ObserveActivation = func(ctx context.Context, input ActivationInput, value ActivationAttempt, inputSHA string, facts ActivationVerificationFacts) (ActivationObservations, error) {
+		observed, err := originalObserve(ctx, input, value, inputSHA, facts)
+		observed.SupervisorTopologySHA256 = ""
+		return observed, err
+	}
+	calls = nil
+
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "replay observations") {
+		t.Fatalf("invalid current supervisor observation error=%v", err)
+	}
+	if !containsString(calls, "contain") {
+		t.Fatalf("invalid current supervisor observation was not contained: calls=%v", calls)
+	}
+}
+
+func TestExecuteActivationVerifiedReplayRejectsOtherObservationDrift(t *testing.T) {
+	input := testActivationInput(t)
+	var attempt *ActivationAttempt
+	var calls []string
+	deps := testActivationDependencies(&attempt, &calls)
+	if _, err := ExecuteActivation(context.Background(), input, deps); err != nil {
+		t.Fatalf("first activation: %v", err)
+	}
+	originalObserve := deps.ObserveActivation
+	deps.ObserveActivation = func(ctx context.Context, input ActivationInput, value ActivationAttempt, inputSHA string, facts ActivationVerificationFacts) (ActivationObservations, error) {
+		observed, err := originalObserve(ctx, input, value, inputSHA, facts)
+		observed.PostgresIdentitySHA256 = strings.Repeat("7", 64)
+		return observed, err
+	}
+	calls = nil
+
+	if _, err := ExecuteActivation(context.Background(), input, deps); err == nil || !strings.Contains(err.Error(), "measured observations changed") {
+		t.Fatalf("PostgreSQL identity drift error=%v", err)
+	}
+	if !containsString(calls, "contain") {
+		t.Fatalf("PostgreSQL identity drift was not contained: calls=%v", calls)
+	}
+}
+
 func TestExecuteActivationAllowsCanonicalEmptyGatewayPromotion(t *testing.T) {
 	input := testActivationInput(t)
 	var attempt *ActivationAttempt
@@ -460,6 +665,9 @@ func TestExecuteActivationVerifiedReplayContainsCurrentFailures(t *testing.T) {
 			deps.VerifyRunningPostGrantDML = func(context.Context) (ActivationRunningPostGrantDMLObservation, error) {
 				return ActivationRunningPostGrantDMLObservation{}, errors.New("running DML drift")
 			}
+		}},
+		{name: "running stack", want: "replay verification", edit: func(deps *ActivationDependencies) {
+			deps.VerifyActivation = func(context.Context) error { return errors.New("supervisor status or readiness failed") }
 		}},
 		{name: "observation", want: "replay observations", edit: func(deps *ActivationDependencies) {
 			deps.ObserveActivation = func(context.Context, ActivationInput, ActivationAttempt, string, ActivationVerificationFacts) (ActivationObservations, error) {
@@ -3191,7 +3399,7 @@ func testActivationDependencies(attempt **ActivationAttempt, calls *[]string) Ac
 				PlatformAuthority: facts.PostGrant.Platform, GatewayAuthority: facts.PostGrant.Gateway, PostGrantDMLProbeSHA256: facts.RunningPostGrantDML.ProbeSHA256,
 				SourceFenceVerified: true, TargetSessionsFenced: facts.Fence.SessionsZero && facts.PostGrant.TargetSessionsZero, TargetSessionFenceSHA256: facts.Fence.ProbeSHA256,
 				RestoredTargetSessionsZero: facts.RestoredSessions.SessionsZero, RestoredTargetSessionSHA256: facts.RestoredSessions.ProbeSHA256,
-				PostgresIdentitySHA256: strings.Repeat("5", 64), SupervisorStatusSHA256: strings.Repeat("6", 64), TestModeVerified: true, LivePrivateWritesDisabled: true, VenueWritesDisabled: true,
+				PostgresIdentitySHA256: strings.Repeat("5", 64), SupervisorStatusSHA256: strings.Repeat("6", 64), SupervisorTopologySHA256: strings.Repeat("7", 64), TestModeVerified: true, LivePrivateWritesDisabled: true, VenueWritesDisabled: true,
 			}, nil
 		},
 		CompleteVerifiedAttempt: func(_ context.Context, input ActivationInput, value ActivationAttempt, inputSHA string) (ExecutionResult, error) {

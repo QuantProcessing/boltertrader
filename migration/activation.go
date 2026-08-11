@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,6 +99,7 @@ type ActivationObservations struct {
 	RestoredTargetSessionSHA256 string                                 `json:"restoredTargetSessionSha256"`
 	PostgresIdentitySHA256      string                                 `json:"postgresIdentitySha256"`
 	SupervisorStatusSHA256      string                                 `json:"supervisorStatusSha256"`
+	SupervisorTopologySHA256    string                                 `json:"supervisorTopologySha256,omitempty"`
 	TestModeVerified            bool                                   `json:"testModeVerified"`
 	LivePrivateWritesDisabled   bool                                   `json:"livePrivateWritesDisabled"`
 	VenueWritesDisabled         bool                                   `json:"venueWritesDisabled"`
@@ -779,7 +781,10 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 		if err != nil {
 			return fail("replay observations", err)
 		}
-		if attempt.Observations == nil || !reflect.DeepEqual(observed, *attempt.Observations) {
+		if err := validateCurrentActivationObservations(input, *attempt, inputSHA, observed); err != nil {
+			return fail("replay observations", err)
+		}
+		if attempt.Observations == nil || !equalActivationReplayObservations(observed, *attempt.Observations) {
 			return fail("replay observations", fmt.Errorf("measured observations changed"))
 		}
 		return ExecutionResult{Result: Result{Phase: PhaseActivated, Replayed: true}, EvidencePath: attempt.EvidencePath, InputSHA256: inputSHA}, nil
@@ -995,7 +1000,7 @@ func ExecuteActivation(ctx context.Context, input ActivationInput, dependencies 
 	if !activationObservationsMatchFacts(observations, facts) {
 		return fail("observation", fmt.Errorf("measured facts changed"))
 	}
-	if err := validateActivationObservations(input, *attempt, inputSHA, observations); err != nil {
+	if err := validateCurrentActivationObservations(input, *attempt, inputSHA, observations); err != nil {
 		return fail("observation", err)
 	}
 	verifiedAt := now().UTC()
@@ -1024,6 +1029,59 @@ func activationObservationsMatchFacts(observations ActivationObservations, facts
 		observations.TargetSessionFenceSHA256 == facts.Fence.ProbeSHA256 &&
 		observations.RestoredTargetSessionsZero == facts.RestoredSessions.SessionsZero &&
 		observations.RestoredTargetSessionSHA256 == facts.RestoredSessions.ProbeSHA256
+}
+
+func equalActivationReplayObservations(current, sealed ActivationObservations) bool {
+	if !validSHA256(current.SupervisorTopologySHA256) {
+		return false
+	}
+	if sealed.SupervisorTopologySHA256 == "" {
+		current.SupervisorTopologySHA256 = ""
+	} else if current.SupervisorTopologySHA256 != sealed.SupervisorTopologySHA256 {
+		return false
+	}
+	// The raw digest remains sealed evidence, but owned process PIDs make it volatile across restarts.
+	current.SupervisorStatusSHA256 = ""
+	sealed.SupervisorStatusSHA256 = ""
+	return reflect.DeepEqual(current, sealed)
+}
+
+func activationSupervisorTopologySHA256(status, readiness string) (string, error) {
+	services := [...]string{"postgres", "gateway", "platform", "funding-worker", "web"}
+	statusLines := strings.Split(status, "\n")
+	readinessLines := strings.Split(readiness, "\n")
+	if len(statusLines) != len(services) || len(readinessLines) != len(services) {
+		return "", fmt.Errorf("supervisor topology must contain exactly %d status and readiness lines", len(services))
+	}
+
+	normalized := make([]string, 0, len(services)*2)
+	for index, service := range services {
+		prefix := service + " running pid="
+		if !strings.HasPrefix(statusLines[index], prefix) {
+			return "", fmt.Errorf("supervisor status for %s is invalid", service)
+		}
+		pid := strings.TrimPrefix(statusLines[index], prefix)
+		if pid == "" || pid[0] == '0' {
+			return "", fmt.Errorf("supervisor pid for %s is invalid", service)
+		}
+		for _, digit := range pid {
+			if digit < '0' || digit > '9' {
+				return "", fmt.Errorf("supervisor pid for %s is invalid", service)
+			}
+		}
+		if _, err := strconv.ParseUint(pid, 10, 64); err != nil {
+			return "", fmt.Errorf("supervisor pid for %s is invalid", service)
+		}
+		normalized = append(normalized, service+" running")
+	}
+	for index, service := range services {
+		want := service + " ready"
+		if readinessLines[index] != want {
+			return "", fmt.Errorf("supervisor readiness for %s is invalid", service)
+		}
+		normalized = append(normalized, want)
+	}
+	return sha256Hex([]byte(strings.Join(normalized, "\n"))), nil
 }
 
 func activationPriorPlanSHA(plan ActivationPriorVerificationPlan) (string, error) {
@@ -1104,8 +1162,19 @@ func validateActivationObservations(input ActivationInput, attempt ActivationAtt
 		observations.GatewayAuthority.MatrixSHA256 != gatewayMatrix.Digest() || observations.GatewayAuthority.MigrationSHA256 != gatewayMatrix.MigrationDigest || observations.GatewayAuthority.RuntimeRole != gatewayMatrix.Roles.Runtime || observations.GatewayAuthority.RuntimeRole != input.GatewayRuntimeRole ||
 		!completeActivationAuthorityObservation(observations.PlatformAuthority) || !completeActivationAuthorityObservation(observations.GatewayAuthority) ||
 		!validSHA256(observations.PostGrantDMLProbeSHA256) || !observations.SourceFenceVerified || !observations.TargetSessionsFenced || !validSHA256(observations.TargetSessionFenceSHA256) || !observations.RestoredTargetSessionsZero || !validSHA256(observations.RestoredTargetSessionSHA256) || !validSHA256(observations.PostgresIdentitySHA256) || !validSHA256(observations.SupervisorStatusSHA256) ||
+		(observations.SupervisorTopologySHA256 != "" && !validSHA256(observations.SupervisorTopologySHA256)) ||
 		!observations.TestModeVerified || !observations.LivePrivateWritesDisabled || !observations.VenueWritesDisabled {
 		return fmt.Errorf("activation observations do not satisfy the canonical Test contract")
+	}
+	return nil
+}
+
+func validateCurrentActivationObservations(input ActivationInput, attempt ActivationAttempt, inputSHA string, observations ActivationObservations) error {
+	if err := validateActivationObservations(input, attempt, inputSHA, observations); err != nil {
+		return err
+	}
+	if !validSHA256(observations.SupervisorTopologySHA256) {
+		return fmt.Errorf("current supervisor topology observation is invalid")
 	}
 	return nil
 }
@@ -2690,6 +2759,10 @@ SELECT (NOT EXISTS (
 			if err != nil {
 				return ActivationObservations{}, err
 			}
+			supervisorTopologySHA256, err := activationSupervisorTopologySHA256(supervisorStatus, supervisorReadiness)
+			if err != nil {
+				return ActivationObservations{}, err
+			}
 			if err := verifyPostgresIdentity(ctx); err != nil {
 				return ActivationObservations{}, err
 			}
@@ -2704,7 +2777,7 @@ SELECT (NOT EXISTS (
 				PlatformAuthority: facts.PostGrant.Platform, GatewayAuthority: facts.PostGrant.Gateway, PostGrantDMLProbeSHA256: facts.RunningPostGrantDML.ProbeSHA256,
 				SourceFenceVerified: true, TargetSessionsFenced: facts.Fence.SessionsZero && facts.PostGrant.TargetSessionsZero, TargetSessionFenceSHA256: facts.Fence.ProbeSHA256,
 				RestoredTargetSessionsZero: facts.RestoredSessions.SessionsZero, RestoredTargetSessionSHA256: facts.RestoredSessions.ProbeSHA256,
-				PostgresIdentitySHA256: sha256Hex([]byte(postgresIdentity)), SupervisorStatusSHA256: sha256Hex([]byte(supervisorStatus + "\n" + supervisorReadiness)),
+				PostgresIdentitySHA256: sha256Hex([]byte(postgresIdentity)), SupervisorStatusSHA256: sha256Hex([]byte(supervisorStatus + "\n" + supervisorReadiness)), SupervisorTopologySHA256: supervisorTopologySHA256,
 				TestModeVerified: true, LivePrivateWritesDisabled: true, VenueWritesDisabled: true,
 			}, nil
 		},
