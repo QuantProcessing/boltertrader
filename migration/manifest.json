@@ -17,17 +17,192 @@
   "targetCommit": "9811190344a631f4bd6906c5f8830b07643a82cd",
   "targetTreeHash": "ea4e6ac8dd3b3cf2428efcd3879b7a97ab46b761",
   "subtreePrefix": "legacy/funding-trader",
-  "importCommit": null,
-  "backfillScripts": [],
-  "backupId": null,
-  "backupSha256": null,
-  "restoreVerifiedAt": null,
-  "finalDeltaAt": null,
-  "finalDeltaSha256": null,
-  "oneWriterFenceAt": null,
-  "validationAt": null,
-  "targetActivationAt": null,
-  "cutoverAt": null,
+  "importCommit": "88545cdac590992d7ca681451f86afe3ef70b6f3",
+  "backfillScripts": [
+    "account-route-v1.json"
+  ],
+  "backupId": "g010-test-backup",
+  "backupSha256": "ca25d31def153687f60e0a68c92448f3714780c7eaaa00a1e0c70d67ce79f374",
+  "restoreVerifiedAt": "2026-08-10T17:13:51.866146Z",
+  "finalDeltaAt": "2026-08-10T17:26:50.685532Z",
+  "finalDeltaSha256": "41485a5a5c049c2042b873d61b15875c9df6075d086013e585646169afd4cff4",
+  "oneWriterFenceAt": "2026-08-10T17:37:52.517814Z",
+  "validationAt": "2026-08-10T21:30:07.613597Z",
+  "activationAttempt": {
+    "id": "451dc06ab2ac4f354f92c36f334c424b",
+    "inputSha256": "925283c6899b43eb46c0cdc059b125f002fd6863ab8d19d77a8188ad8d9de3ae",
+    "expectedPromotionSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+    "boundary": "verified",
+    "startedAt": "2026-08-10T22:18:13.191025Z",
+    "updatedAt": "2026-08-11T01:34:52.430016Z",
+    "gatewayBeforeSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8",
+    "gatewayAfterSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8",
+    "journalSha256": "fcef355bb8f7d53f47c3dbd2e6b1fd4db017e97737119b9b68525667f0bd6648",
+    "evidencePath": "/tmp/boltertrader-local/migration/test/evidence/009-activate.json",
+    "proofSha256": "2297ccce56f3f928e834c30718b0bff237532d6094f281b0e934aa4555a3e445",
+    "priorVerification": {
+      "attemptId": "451dc06ab2ac4f354f92c36f334c424b",
+      "planSha256": "1ec68ad50f5cb328bfa69eabe6ef7c2f84a224e9f392e9249db8063ce4a7ecc8",
+      "artifactSetSha256": "f3f1bca7df936849f7aea448fc6edb5c081712c5aac3608be633d37520cea100",
+      "currentPostconditionsSha256": "11d7fa3f18e52a9bb10f2eb55e304dbb7accc573b26f170741793b1d622eb7fc"
+    },
+    "preGrantObservation": {
+      "platform": {
+        "matrixSha256": "8b97ccb94b33e20eb76ddea364b43fa982825a729b90d4acae63b098fb268c28",
+        "migrationSha256": "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9",
+        "runtimeRole": "bolter_platform_test",
+        "runtimeInherits": true,
+        "writerMembership": false,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "gateway": {
+        "matrixSha256": "76b00f5441ac046981069b5d825743c2e80b8553acd02926365ad9d2db617d97",
+        "migrationSha256": "123eba978969da58a9080a058a4cf2765f9d259d4cd45bf01d930b708a515721",
+        "runtimeRole": "bolter_gateway_test",
+        "runtimeInherits": true,
+        "writerMembership": false,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "dmlProbeSha256": "935ba929d0bd276bb765c684c683bcd321bd5a0bb2ecb2d9cda79c93d2a9dfe9"
+    },
+    "gatewayBeforeHead": {
+      "pendingSha256": "0c3178dcd443f03fe7c8bb14f381430bd1098a96fdd0382138eb844c42e0fe85",
+      "activeSha256": "6012d7d1121152fe8bae8df98e60dbc99e40d7720a0286bf13163fe5a3040219",
+      "operationSetSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+      "headSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8"
+    },
+    "gatewayPromotion": {
+      "before": {
+        "pendingSha256": "0c3178dcd443f03fe7c8bb14f381430bd1098a96fdd0382138eb844c42e0fe85",
+        "activeSha256": "6012d7d1121152fe8bae8df98e60dbc99e40d7720a0286bf13163fe5a3040219",
+        "operationSetSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+        "headSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8"
+      },
+      "after": {
+        "pendingSha256": "0c3178dcd443f03fe7c8bb14f381430bd1098a96fdd0382138eb844c42e0fe85",
+        "activeSha256": "6012d7d1121152fe8bae8df98e60dbc99e40d7720a0286bf13163fe5a3040219",
+        "operationSetSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+        "headSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8"
+      }
+    },
+    "observations": {
+      "schemaVersion": 1,
+      "inputSha256": "925283c6899b43eb46c0cdc059b125f002fd6863ab8d19d77a8188ad8d9de3ae",
+      "source": {
+        "service": "funding_source_test",
+        "database": "bolter_funding_test",
+        "role": "bolter_funding_test_migrator"
+      },
+      "platform": {
+        "service": "platform_target_test",
+        "database": "bolter_platform_test",
+        "role": "bolter_platform_test_migrator"
+      },
+      "gateway": {
+        "service": "gateway_test",
+        "database": "bolter_gateway_test",
+        "role": "bolter_gateway_test_migrator"
+      },
+      "maintenance": {
+        "service": "platform_maintenance_test",
+        "database": "bolter_maintenance_test",
+        "role": "bolter_platform_test_admin"
+      },
+      "platformWriterRole": "bolter_platform_test_writer",
+      "platformRuntimeRole": "bolter_platform_test",
+      "gatewayWriterRole": "bolter_gateway_test_writer",
+      "gatewayRuntimeRole": "bolter_gateway_test",
+      "sourceWriterRole": "bolter_funding_test_writer",
+      "platformMigratorRole": "bolter_platform_test_migrator",
+      "gatewayMigratorRole": "bolter_gateway_test_migrator",
+      "gatewayBeforeSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8",
+      "gatewayAfterSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8",
+      "gatewayPromotion": {
+        "before": {
+          "pendingSha256": "0c3178dcd443f03fe7c8bb14f381430bd1098a96fdd0382138eb844c42e0fe85",
+          "activeSha256": "6012d7d1121152fe8bae8df98e60dbc99e40d7720a0286bf13163fe5a3040219",
+          "operationSetSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+          "headSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8"
+        },
+        "after": {
+          "pendingSha256": "0c3178dcd443f03fe7c8bb14f381430bd1098a96fdd0382138eb844c42e0fe85",
+          "activeSha256": "6012d7d1121152fe8bae8df98e60dbc99e40d7720a0286bf13163fe5a3040219",
+          "operationSetSha256": "74c97aaedce0edce34a03672bdd23c447caff7c04ef09234d683e3e378f37718",
+          "headSha256": "3ee9c676f3dbbb5220049945e0039fa8d46132d3d23b18919f86ba645563e7c8"
+        }
+      },
+      "priorVerification": {
+        "attemptId": "451dc06ab2ac4f354f92c36f334c424b",
+        "planSha256": "1ec68ad50f5cb328bfa69eabe6ef7c2f84a224e9f392e9249db8063ce4a7ecc8",
+        "artifactSetSha256": "f3f1bca7df936849f7aea448fc6edb5c081712c5aac3608be633d37520cea100",
+        "currentPostconditionsSha256": "11d7fa3f18e52a9bb10f2eb55e304dbb7accc573b26f170741793b1d622eb7fc"
+      },
+      "preGrantPlatformAuthority": {
+        "matrixSha256": "8b97ccb94b33e20eb76ddea364b43fa982825a729b90d4acae63b098fb268c28",
+        "migrationSha256": "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9",
+        "runtimeRole": "bolter_platform_test",
+        "runtimeInherits": true,
+        "writerMembership": false,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "preGrantGatewayAuthority": {
+        "matrixSha256": "76b00f5441ac046981069b5d825743c2e80b8553acd02926365ad9d2db617d97",
+        "migrationSha256": "123eba978969da58a9080a058a4cf2765f9d259d4cd45bf01d930b708a515721",
+        "runtimeRole": "bolter_gateway_test",
+        "runtimeInherits": true,
+        "writerMembership": false,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "preGrantDmlProbeSha256": "935ba929d0bd276bb765c684c683bcd321bd5a0bb2ecb2d9cda79c93d2a9dfe9",
+      "platformAuthority": {
+        "matrixSha256": "8b97ccb94b33e20eb76ddea364b43fa982825a729b90d4acae63b098fb268c28",
+        "migrationSha256": "04c83b6dbf84ec1aaef90786893d82cb20b7e0a3fd3bb52947e5d8a735364da9",
+        "runtimeRole": "bolter_platform_test",
+        "runtimeInherits": true,
+        "writerMembership": true,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "gatewayAuthority": {
+        "matrixSha256": "76b00f5441ac046981069b5d825743c2e80b8553acd02926365ad9d2db617d97",
+        "migrationSha256": "123eba978969da58a9080a058a4cf2765f9d259d4cd45bf01d930b708a515721",
+        "runtimeRole": "bolter_gateway_test",
+        "runtimeInherits": true,
+        "writerMembership": true,
+        "fullCapabilities": true,
+        "effectiveTablePrivileges": true,
+        "effectiveSequencePrivileges": true,
+        "effectiveRoutinePrivileges": true
+      },
+      "postGrantDmlProbeSha256": "5bb9bf88577d62baf78b5f7456be0081077070edda9a72ece1e9c278881e9948",
+      "sourceFenceVerified": true,
+      "targetSessionsFenced": true,
+      "targetSessionFenceSha256": "b879266e1e14b1bdb6c8f313a2c1c9813cce7f42a5e36ca6f9f9349ecc8d13f7",
+      "restoredTargetSessionsZero": true,
+      "restoredTargetSessionSha256": "99e0f4c28204d34fba1e42556ec23d1a941750c3897572832773700d458b91d3",
+      "postgresIdentitySha256": "d56fc7bd71c3dc8ab15847eed261208ce8461f448018a658e35d414da71ca488",
+      "supervisorStatusSha256": "82f5f4dfc599c66f141ee1f00f35dad91461298aaa4b21a03b71f9e830008f8e",
+      "testModeVerified": true,
+      "livePrivateWritesDisabled": true,
+      "venueWritesDisabled": true
+    }
+  },
+  "targetActivationAt": "2026-08-10T22:18:13.191025Z",
+  "cutoverAt": "2026-08-11T01:34:52.430016Z",
   "rollbackBoundary": "Allowed until the first irreversible target-side canonical write or authoritative backfill.",
   "forwardRecoveryBoundary": "Required after the first irreversible target-side canonical write or authoritative backfill.",
   "sourceRetirementAt": null,
@@ -39,9 +214,9 @@
     "allowedChanges": "retirement documentation or repository-administration metadata only"
   },
   "oneWriter": {
-    "owner": "funding-trader",
-    "fenceRaised": false,
-    "targetCanonicalWritesEnabled": false,
+    "owner": "BolterTrader",
+    "fenceRaised": true,
+    "targetCanonicalWritesEnabled": true,
     "nextOwner": "BolterTrader",
     "transitionRequires": [
       "verified clean backup restore",
@@ -50,12 +225,106 @@
     ]
   },
   "approvedContractHashes": {
-    "prd-boltertrader-product-platform-upgrade.md": "6764daaae53516d46d74fb83c79c7d273ed369ee38231ec01397e5b409e7c757",
-    "architecture-boltertrader-product-platform-upgrade.md": "9222006854fe67590e1b8bd145827839485cd7974bf48a07a57c8a350d4f4260",
-    "plan-boltertrader-product-platform-upgrade.md": "4e6dc69dd82f9e814e15aff54ff6900358d549bee5d015cc4d27501a0d215b78",
-    "test-spec-boltertrader-product-platform-upgrade.md": "cfebecc00705adb129623f1f4e1f4b84c7c5fa2d62aa537d6d6d46a020c7e48f",
     "api-contract-boltertrader-product-platform-upgrade.md": "04f5272686fff30d96061896e05032ff96b570036a729dca869e800408567a5f",
+    "architecture-boltertrader-product-platform-upgrade.md": "9222006854fe67590e1b8bd145827839485cd7974bf48a07a57c8a350d4f4260",
     "local-runtime-contract-boltertrader-product-platform-upgrade.md": "f60934e72abd4b95a605c6bd4e9452ed8ae6c9f1bb73a266dbbc8cf6776395c7",
-    "migration-contract-boltertrader-product-platform-upgrade.md": "52be2f1ff3e9034749864620863b622bc2e8843ce13679922275a08c739fb600"
+    "migration-contract-boltertrader-product-platform-upgrade.md": "52be2f1ff3e9034749864620863b622bc2e8843ce13679922275a08c739fb600",
+    "plan-boltertrader-product-platform-upgrade.md": "4e6dc69dd82f9e814e15aff54ff6900358d549bee5d015cc4d27501a0d215b78",
+    "prd-boltertrader-product-platform-upgrade.md": "6764daaae53516d46d74fb83c79c7d273ed369ee38231ec01397e5b409e7c757",
+    "test-spec-boltertrader-product-platform-upgrade.md": "cfebecc00705adb129623f1f4e1f4b84c7c5fa2d62aa537d6d6d46a020c7e48f"
+  },
+  "workflow": {
+    "epoch": 1,
+    "phase": "activated",
+    "irreversibleAt": "2026-08-10T17:58:07.374221Z",
+    "irreversibleStep": "account-route-v1.json",
+    "events": [
+      {
+        "sequence": 1,
+        "epoch": 1,
+        "operation": "record-import",
+        "at": "2026-08-10T17:13:44.420846Z",
+        "fingerprint": "e647896a94b4da76f280b0f5ddd48d36373045adb731399ebe8df8e86e45c178",
+        "inputSha256": "23a626780794f6edd5051a3ff1c618ab93ce1e5516ac81143890f39aeff392dd",
+        "proofSha256": "beff12205546c389a7750984896223ba56e90fd63a0b71b1008651aaf39a00f2",
+        "name": "88545cdac590992d7ca681451f86afe3ef70b6f3"
+      },
+      {
+        "sequence": 2,
+        "epoch": 1,
+        "operation": "backup",
+        "at": "2026-08-10T17:13:47.871903Z",
+        "fingerprint": "e57df7931dafcee1b24ee8198eaf65a918559c87f36f0dab7643a6eea631586e",
+        "artifactSha256": "ca25d31def153687f60e0a68c92448f3714780c7eaaa00a1e0c70d67ce79f374",
+        "proofSha256": "1ef95bab55afa773747a5506a26775ddb749afb75400870ade00201bab113038",
+        "name": "g010-test-backup"
+      },
+      {
+        "sequence": 3,
+        "epoch": 1,
+        "operation": "restore",
+        "at": "2026-08-10T17:13:51.866146Z",
+        "fingerprint": "6ceef6f4f29d651dca10695616601b3684879918835b80188a0f7af809aa5857",
+        "artifactSha256": "ca25d31def153687f60e0a68c92448f3714780c7eaaa00a1e0c70d67ce79f374",
+        "proofSha256": "a9f59ff50ecf411c2cb9725d680f0dfc9142d5b50c88a4742caf755f0875292e",
+        "verifier": "g010-cutover"
+      },
+      {
+        "sequence": 4,
+        "epoch": 1,
+        "operation": "final-delta",
+        "at": "2026-08-10T17:26:50.685532Z",
+        "fingerprint": "91bdd0e7d35728c4f03eee3ec9224c3e580f033c05b29ebd69ce216ef3ce66fa",
+        "artifactSha256": "41485a5a5c049c2042b873d61b15875c9df6075d086013e585646169afd4cff4",
+        "inputSha256": "882740b8e2da7ee972dc1e30d8313e1a2a1ab33042288a53230d19193f9b5858",
+        "proofSha256": "87dbd5c459d5f2f1dfe9de0d8e1c7f3852e4cabad428c4ca8669c4ef7e4f7776"
+      },
+      {
+        "sequence": 5,
+        "epoch": 1,
+        "operation": "fence",
+        "at": "2026-08-10T17:37:52.517814Z",
+        "fingerprint": "55bab2c3672fadf86ba579f5f8ad58fca859d21aefe0c24efaa7acef1d39da5e",
+        "proofSha256": "3af2e4b4d9d9f39a32e13b431fc6db53ee11ac2bd362d8682fcef74c260681b1"
+      },
+      {
+        "sequence": 6,
+        "epoch": 1,
+        "operation": "backfill",
+        "at": "2026-08-10T17:58:07.374221Z",
+        "fingerprint": "56ac5364b33eb07f5d59572435dff644ae1fad661781461a30e0032d4b7d245b",
+        "artifactSha256": "012a8fa16c9a252a59b2e5a7d420bf9a973a55da9e71c33c1826e9ce26d6fead",
+        "inputSha256": "012a8fa16c9a252a59b2e5a7d420bf9a973a55da9e71c33c1826e9ce26d6fead",
+        "proofSha256": "65cbc5c02dd1fc5346e217babf1cc054c8bcf3b97dce79080ccb7090b86d6bbf",
+        "name": "account-route-v1.json"
+      },
+      {
+        "sequence": 7,
+        "epoch": 1,
+        "operation": "validate",
+        "at": "2026-08-10T21:30:07.613597Z",
+        "fingerprint": "e91912dbf06678b63104c6a14ed538bfdb217ac2b34d62d4c6b1fff097fa8183",
+        "proofSha256": "8d692aade79558663154e46808f0e4b323e1226c78135db188531b847352e06e",
+        "verifier": "g010-cutover"
+      },
+      {
+        "sequence": 8,
+        "epoch": 1,
+        "operation": "prepare-activation",
+        "at": "2026-08-10T22:16:43.296717Z",
+        "fingerprint": "53b635008325e03c7620cf334c8d33f7ed2bf3990e436079a3260c99eb1ddd76"
+      },
+      {
+        "sequence": 9,
+        "epoch": 1,
+        "operation": "activate",
+        "at": "2026-08-11T01:34:52.430016Z",
+        "fingerprint": "4b4f6b933240e42a3cabe958e39f3ccdcb07831eab569dfd194cae0fd30ce765",
+        "inputSha256": "925283c6899b43eb46c0cdc059b125f002fd6863ab8d19d77a8188ad8d9de3ae",
+        "proofSha256": "2297ccce56f3f928e834c30718b0bff237532d6094f281b0e934aa4555a3e445",
+        "activationAt": "2026-08-10T22:18:13.191025Z",
+        "cutoverAt": "2026-08-11T01:34:52.430016Z"
+      }
+    ]
   }
 }
