@@ -276,6 +276,31 @@ authenticated_get() {
 	} | curl --fail --silent --show-error --config - "$url" >/dev/null
 }
 
+parse_worker_generation() {
+	node -e '
+const fs = require("node:fs");
+
+try {
+  const envelope = JSON.parse(fs.readFileSync(0, "utf8"));
+  const data = envelope && envelope.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error();
+
+  const hasGeneration = Object.prototype.hasOwnProperty.call(data, "generation");
+  const hasLegacyGeneration = Object.prototype.hasOwnProperty.call(data, "workerGeneration");
+  if (!hasGeneration && !hasLegacyGeneration) throw new Error();
+
+  const generation = hasGeneration ? data.generation : data.workerGeneration;
+  if (!Number.isSafeInteger(generation) || generation <= 0) throw new Error();
+  if (hasLegacyGeneration && (!Number.isSafeInteger(data.workerGeneration) || data.workerGeneration <= 0)) throw new Error();
+  if (hasGeneration && hasLegacyGeneration && generation !== data.workerGeneration) throw new Error();
+
+  process.stdout.write(String(generation) + "\n");
+} catch {
+  process.exitCode = 1;
+}
+'
+}
+
 funding_worker_generation() {
 	[ -f "$OWNERSHIP_DIR/funding-worker.instance" ] || return 1
 	instance_id=$(sed -n '1p' "$OWNERSHIP_DIR/funding-worker.instance")
@@ -290,7 +315,7 @@ funding_worker_generation() {
 		--header "Idempotency-Key: register:$WORKER_ID:$instance_id" \
 		--data "$body" \
 		http://127.0.0.1:18092/internal/v1/funding-work/workers/registrations) || return 1
-	generation=$(printf '%s\n' "$response" | sed -n 's/.*"workerGeneration"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+	generation=$(printf '%s\n' "$response" | parse_worker_generation) || return 1
 	case "$generation" in ''|*[!0-9]*|0) return 1 ;; esac
 	printf '%s\n' "$generation"
 }
@@ -602,7 +627,7 @@ doctor() {
 	validate_mode; prepare_directories
 	for tool in ps sed date sh; do command -v "$tool" >/dev/null 2>&1 || fail "required tool is missing: $tool"; done
 	if [ "${BT_DEV_TEST_HOOKS:-0}" != "1" ]; then
-		for tool in curl lsof pg_isready; do command -v "$tool" >/dev/null 2>&1 || fail "required runtime tool is missing: $tool"; done
+		for tool in curl lsof node pg_isready; do command -v "$tool" >/dev/null 2>&1 || fail "required runtime tool is missing: $tool"; done
 		command -v openssl >/dev/null 2>&1 || command -v od >/dev/null 2>&1 || fail "openssl or od is required for token generation"
 		[ -x ./backend/scripts/db-bootstrap.sh ] || fail "Lane 2 database bootstrap is missing or not executable"
 		[ -x ./backend/scripts/secret-bootstrap.sh ] || fail "Lane 2 Secret Store bootstrap is missing or not executable"

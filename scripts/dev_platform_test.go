@@ -546,7 +546,7 @@ case "$*" in
   *) exit 22 ;;
 esac
 case "$*" in
-  *'/internal/v1/funding-work/workers/registrations'*) printf '{"data":{"workerGeneration":7}}\n' ;;
+  *'/internal/v1/funding-work/workers/registrations'*) printf '{"data":{"generation":7}}\n' ;;
 esac
 `)
 	writeExecutable(t, filepath.Join(binDir, "pg_isready"), "#!/bin/sh\nexit 0\n")
@@ -1004,6 +1004,55 @@ esac
 		if !strings.Contains(text, required) {
 			t.Errorf("drain request is missing %q:\n%s", required, text)
 		}
+	}
+}
+
+func TestCanonicalDrainRejectsInvalidWorkerGenerationResponse(t *testing.T) {
+	tests := map[string]string{
+		"missing fields":        `{"data":{}}`,
+		"string generation":     `{"data":{"generation":"9"}}`,
+		"zero generation":       `{"data":{"generation":0}}`,
+		"fractional generation": `{"data":{"generation":1.5}}`,
+		"conflicting fields":    `{"data":{"generation":9,"workerGeneration":8}}`,
+		"invalid current field": `{"data":{"generation":"9","workerGeneration":9}}`,
+	}
+
+	for name, registrationResponse := range tests {
+		t.Run(name, func(t *testing.T) {
+			repo := repoRoot(t)
+			runtimeDir := t.TempDir()
+			credentialDir := filepath.Join(runtimeDir, "credentials", "test")
+			ownershipDir := filepath.Join(runtimeDir, "state", "test", "ownership")
+			binDir := filepath.Join(runtimeDir, "bin")
+			for _, dir := range []string{credentialDir, ownershipDir, binDir} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(credentialDir, "funding-worker.token"), []byte("synthetic-drain-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(ownershipDir, "funding-worker.instance"), []byte("instance-drain\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeExecutable(t, filepath.Join(binDir, "curl"), `#!/bin/sh
+set -eu
+case "$*" in
+  *'/workers/registrations'*) printf '%s\n' "$BT_TEST_REGISTRATION_RESPONSE" ;;
+  *'/drain'*) exit 0 ;;
+  *) exit 22 ;;
+esac
+`)
+			env := append(launcherEnv(runtimeDir),
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"BT_TEST_REGISTRATION_RESPONSE="+registrationResponse,
+			)
+			cmd := exec.Command(filepath.Join(repo, "scripts", "dev-platform"), "drain-funding-worker")
+			cmd.Dir, cmd.Env = repo, env
+			if output, err := cmd.CombinedOutput(); err == nil {
+				t.Fatalf("drain accepted invalid registration response %s:\n%s", registrationResponse, output)
+			}
+		})
 	}
 }
 
