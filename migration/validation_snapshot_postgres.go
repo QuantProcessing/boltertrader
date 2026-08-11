@@ -38,15 +38,23 @@ func (source *postgresValidationSnapshotSource) AuthorityRows(ctx context.Contex
 	if matrix.Name == authority.GatewayV6().Name {
 		pool = source.gateway
 	}
+	query, args := validationAuthorityQuery(matrix, object)
+	return querySnapshotRows(ctx, pool, query, args...)
+}
+
+func validationAuthorityQuery(matrix authority.Matrix, object authority.Object) (string, []any) {
 	identifier := pgx.Identifier{object.Schema, object.Name}.Sanitize()
 	query, args := "SELECT * FROM "+identifier, []any(nil)
+	if matrix.Name == authority.PlatformV15().Name && object.Kind == authority.Table && object.Schema == "public" && object.Name == "platform_work_workers" {
+		query = "SELECT worker_id,instance_id,product_id,mode,contract_version,generation,state,draining,registered_at,last_applied_facts_cursor FROM " + identifier
+	}
 	switch object.Kind {
 	case authority.Sequence:
 		query = "SELECT last_value,is_called FROM " + identifier
 	case authority.Routine:
 		query, args = "SELECT pg_get_functiondef($1::regprocedure)", []any{object.Schema + "." + object.Name}
 	}
-	return querySnapshotRows(ctx, pool, query, args...)
+	return query, args
 }
 
 func (source *postgresValidationSnapshotSource) GatewayActiveRows(ctx context.Context) ([]SnapshotRow, error) {
