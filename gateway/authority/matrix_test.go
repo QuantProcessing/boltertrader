@@ -31,18 +31,18 @@ func TestPlatformV15IsExhaustiveAndStable(t *testing.T) {
 	assertInventory(t, matrix, 41, 6, 1)
 }
 
-func TestGatewayV6IsExhaustiveAndStable(t *testing.T) {
-	matrix := authority.GatewayV6()
+func TestGatewayV7IsExhaustiveAndStable(t *testing.T) {
+	matrix := authority.GatewayV7()
 	if err := matrix.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if matrix.SchemaVersion != 6 || matrix.MigrationDigest != authority.GatewayV6MigrationDigest {
+	if matrix.SchemaVersion != 7 || matrix.MigrationDigest != authority.GatewayV7MigrationDigest {
 		t.Fatalf("identity=%+v", matrix)
 	}
-	if got := matrix.Digest(); got != authority.GatewayV6Digest {
+	if got := matrix.Digest(); got != authority.GatewayV7Digest {
 		t.Fatalf("digest=%s", got)
 	}
-	assertInventory(t, matrix, 22, 0, 1)
+	assertInventory(t, matrix, 24, 0, 1)
 }
 
 func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
@@ -58,7 +58,7 @@ func TestMatricesRejectUnknownDuplicateOrUnsafeObjects(t *testing.T) {
 		t.Fatalf("duplicate err=%v", err)
 	}
 
-	for _, matrix := range []authority.Matrix{authority.PlatformV15(), authority.GatewayV6()} {
+	for _, matrix := range []authority.Matrix{authority.PlatformV15(), authority.GatewayV7()} {
 		for _, object := range matrix.Objects {
 			probe := strings.ToLower(object.Probe)
 			for _, unsafe := range []string{"nextval", "setval", "insert ", "update ", "delete ", ";"} {
@@ -75,7 +75,7 @@ func TestMatricesFreezeExactTestRoleTopology(t *testing.T) {
 	if platform.Maintenance != "bolter_platform_test_admin" || platform.Migrator != "bolter_platform_test_migrator" || platform.Runtime != "bolter_platform_test" || platform.Writer != "bolter_platform_test_writer" {
 		t.Fatalf("platform roles=%+v", platform)
 	}
-	gateway := authority.GatewayV6().Roles
+	gateway := authority.GatewayV7().Roles
 	if gateway.Maintenance != "bolter_platform_test_admin" || gateway.Migrator != "bolter_gateway_test_migrator" || gateway.Runtime != "bolter_gateway_test" || gateway.Writer != "bolter_gateway_test_writer" {
 		t.Fatalf("gateway roles=%+v", gateway)
 	}

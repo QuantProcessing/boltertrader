@@ -241,12 +241,19 @@ func TestMigrateRealPostgresConcurrentStartersSerialize(t *testing.T) {
 			t.Fatalf("concurrent Migrate: %v", err)
 		}
 	}
+	// The claim is that concurrent starters apply each migration exactly once,
+	// so the expectation tracks the embedded set rather than a literal that has
+	// to be bumped by hand on every migration.
+	expected, err := embeddedMigrations()
+	if err != nil {
+		t.Fatalf("embeddedMigrations: %v", err)
+	}
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 6 {
-		t.Fatalf("schema_migrations rows = %d, want 6", rows)
+	if rows != len(expected) {
+		t.Fatalf("schema_migrations rows = %d, want %d", rows, len(expected))
 	}
 }
 

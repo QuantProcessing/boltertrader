@@ -194,3 +194,49 @@ func TestRotationFinalizationMigrationFreezesExactReplayProof(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountConsolidationMigrationFreezesTheSingleAccountAuthority(t *testing.T) {
+	sql := strings.ToLower(AccountConsolidationMigrationSQL())
+	for _, required := range []string{
+		// The control-plane columns move onto the data-plane row rather than
+		// living in a second account table.
+		"alter table gateway_desired_accounts",
+		"add column display_name text not null",
+		"add column mode text not null",
+		"add column product_ids jsonb not null",
+		"add column last_validated_at timestamptz",
+		"check (mode in ('test', 'live'))",
+		"check ((mode = 'live') = (venue_environment = 'live'))",
+		"check (jsonb_typeof(product_ids) = 'array')",
+		// A credential-free row is only legitimate mid-create.
+		"alter column secret_ref drop not null",
+		"check (secret_ref is not null or requested_state = 'creating')",
+		"gateway_account_routes",
+		"references gateway_desired_accounts(account_id) on delete cascade",
+		"check (product in ('spot', 'perp'))",
+		"check (requested_state in ('active', 'disabled'))",
+		"primary key (account_id, route_id)",
+		"gateway_credential_operations",
+		"check (kind in ('create', 'rotate', 'retire'))",
+		"check (state in ('awaiting_material', 'stored', 'applying', 'active', 'cleanup_pending', 'abandoned', 'failed'))",
+		"unique (mode, principal_id, kind, idempotency_key_digest)",
+		"check (target_desired_state_revision > 0)",
+		"check (target_runtime_generation > 0)",
+		"check (target_credential_version > 0)",
+		// Rotation cleanup proof must name the exact revision it tombstoned.
+		"rotation_cleanup_tombstone_revision = target_desired_state_revision",
+		"kind = 'rotate'",
+		"gateway_credential_operations_recovery",
+		"where state in ('awaiting_material', 'stored', 'applying', 'cleanup_pending')",
+		"create unique index gateway_credential_operations_one_recoverable_per_account",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("account consolidation migration missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"api_secret", "secret_value", "secret_material", "private_key", "raw_credential"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("account consolidation migration contains forbidden credential field %q", forbidden)
+		}
+	}
+}
