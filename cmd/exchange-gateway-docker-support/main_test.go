@@ -16,23 +16,17 @@ func TestRunLoadsDistinctEnvRefsOnceAndExecsGatewayWithChildOnlyEnvironment(t *t
 	secretRoot := t.TempDir()
 	writeSecret(t, secretRoot, "TOKEN", "docker-token\n")
 	writeSecret(t, secretRoot, "POSTGRES_DSN", "postgres://docker\n")
-	writeSecret(t, secretRoot, "SHARED", "shared-secret\n")
+	writeSecret(t, secretRoot, "INTERNAL_TOKEN", "docker-internal-token\n")
 
 	configPath := writeConfig(t, `
 server:
   listen: 0.0.0.0:18080
   allow_non_loopback_listen: true
   auth_token_ref: env://TOKEN
+  internal_listen: 127.0.0.1:18081
+  internal_auth_token_ref: env://INTERNAL_TOKEN
 postgres:
   dsn_ref: env://POSTGRES_DSN
-accounts:
-  - account_id: binance-spot
-    venue: binance
-    product: spot
-    environment: demo
-    credentials:
-      api_key_ref: env://SHARED
-      api_secret_ref: env://SHARED
 `)
 
 	t.Setenv("TOKEN", "parent-token")
@@ -62,7 +56,7 @@ accounts:
 	if gotPath != "/opt/gateway" || !slices.Equal(gotArgs, []string{"/opt/gateway", "-config", configPath}) {
 		t.Fatalf("exec path/args = %q %v", gotPath, gotArgs)
 	}
-	for _, name := range []string{"TOKEN", "POSTGRES_DSN", "SHARED"} {
+	for _, name := range []string{"TOKEN", "POSTGRES_DSN", "INTERNAL_TOKEN"} {
 		if readCount[name] != 1 {
 			t.Fatalf("secret %s read %d times, want once", name, readCount[name])
 		}
@@ -73,11 +67,52 @@ accounts:
 	if got := envValue(gotEnv, "POSTGRES_DSN"); got != "postgres://docker" {
 		t.Fatalf("child POSTGRES_DSN = %q", got)
 	}
-	if got := envValue(gotEnv, "SHARED"); got != "shared-secret" {
-		t.Fatalf("child SHARED = %q", got)
+	if got := envValue(gotEnv, "INTERNAL_TOKEN"); got != "docker-internal-token" {
+		t.Fatalf("child INTERNAL_TOKEN = %q", got)
 	}
 	if got := os.Getenv("TOKEN"); got != "parent-token" {
 		t.Fatalf("parent TOKEN mutated to %q", got)
+	}
+}
+
+func TestRunReadsRepeatedSecretReferenceOnce(t *testing.T) {
+	secretRoot := t.TempDir()
+	writeSecret(t, secretRoot, "TOKEN", "shared-token\n")
+	writeSecret(t, secretRoot, "POSTGRES_DSN", "postgres://docker\n")
+
+	configPath := writeConfig(t, `
+server:
+  listen: 127.0.0.1:18080
+  auth_token_ref: env://TOKEN
+  internal_listen: 127.0.0.1:18081
+  internal_auth_token_ref: env://TOKEN
+postgres:
+  dsn_ref: env://POSTGRES_DSN
+`)
+
+	readCount := map[string]int{}
+	var gotEnv []string
+	execSentinel := errors.New("exec intercepted")
+	err := runDockerSupport(context.Background(), []string{"run", "-config", configPath}, dockerSupportDeps{
+		secretRoot: secretRoot,
+		readFile: func(path string) ([]byte, error) {
+			readCount[filepath.Base(path)]++
+			return os.ReadFile(path)
+		},
+		exec: func(_ string, _, env []string) error {
+			gotEnv = slices.Clone(env)
+			return execSentinel
+		},
+		environ: os.Environ,
+	})
+	if !errors.Is(err, execSentinel) {
+		t.Fatalf("runDockerSupport error = %v, want intercepted exec", err)
+	}
+	if readCount["TOKEN"] != 1 {
+		t.Fatalf("repeated secret reference read %d times, want once", readCount["TOKEN"])
+	}
+	if got := envValue(gotEnv, "TOKEN"); got != "shared-token" {
+		t.Fatalf("child TOKEN = %q", got)
 	}
 }
 
@@ -101,7 +136,6 @@ server:
   auth_token_ref: `+test.authRef+`
 postgres:
   dsn_ref: env://POSTGRES_DSN
-accounts: []
 `)
 			called := false
 			err := runDockerSupport(context.Background(), []string{"run", "-config", configPath}, dockerSupportDeps{
@@ -147,7 +181,6 @@ server:
   auth_token_ref: env://TOKEN
 postgres:
   dsn_ref: env://POSTGRES_DSN
-accounts: []
 `)
 
 	err := runDockerSupport(context.Background(), []string{
@@ -185,7 +218,6 @@ server:
   auth_token_ref: env://TOKEN
 postgres:
   dsn_ref: env://POSTGRES_DSN
-accounts: []
 `)
 	err := runDockerSupport(context.Background(), []string{
 		"health", "-config", configPath, "-kind", "live", "-timeout", "2s",

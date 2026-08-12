@@ -5,5 +5,3 @@ server:
 
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN
-
-accounts: []

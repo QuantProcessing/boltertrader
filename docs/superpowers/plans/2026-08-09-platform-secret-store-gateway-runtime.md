@@ -51,7 +51,7 @@ Relevant available agent roles are `executor`, `test-engineer`, `code-reviewer`,
 | Worker 2 | executor | `gateway/store/`, `gateway/account/`, `gateway/order/`, `gateway/publicconn/`, `gateway/ratelimit/`, `gateway/process/`, `cmd/exchange-gateway/` | high | Snapshot/promotion/handoff crash tests, race tests, restart/readiness, shared connector counters. |
 | Worker 3 | test-engineer | `api/`, `internal/productplatformcontract/`, `gateway/contracts/`, `web/`, `migration/`, `scripts/`, verification docs | medium | Frozen contracts, browser unit/E2E, migration adversarial tests, real-stack evidence and cleanup gates. |
 
-The leader sends ACK-readback handoffs at every shared contract change. Workers do not edit `.omx/ultragoal`, do not access credential values, and do not issue venue writes. G010/G011/G012 remain leader-run sequential gates. Suggested launch after Task 1: `omx team 3:executor "Execute Tasks 2-14 from docs/superpowers/plans/2026-08-09-platform-secret-store-gateway-runtime.md with strict file ownership, TDD, and no venue writes"`. The third worker receives the test-engineer ownership in its inbox even though the runtime role prompt is `executor`.
+The leader sends ACK-readback handoffs at every shared contract change. Workers do not edit `<omx-state>/ultragoal`, do not access credential values, and do not issue venue writes. G010/G011/G012 remain leader-run sequential gates. Suggested launch after Task 1: `omx team 3:executor "Execute Tasks 2-14 from docs/superpowers/plans/2026-08-09-platform-secret-store-gateway-runtime.md with strict file ownership, TDD, and no venue writes"`. The third worker receives the test-engineer ownership in its inbox even though the runtime role prompt is `executor`.
 
 ### Task 1: Freeze Shared Credential, Secret, Route, and Fence Types
 
@@ -1522,7 +1522,7 @@ git commit -m "test: prove dynamic platform runtime offline" -m "Constraint: def
 - Create: `scripts/g010-cutover`
 - Create: `scripts/g010_cutover_test.go`
 - Modify through command-generated evidence only: `migration/manifest.json`
-- Modify through Ultragoal leader checkpoint only: `.omx/ultragoal/ledger.jsonl`
+- Modify through Ultragoal leader checkpoint only: `<omx-state>/ultragoal/ledger.jsonl`
 
 - [ ] **Step 1: Write a failing shell contract test for the G010 guardrails**
 
@@ -1611,7 +1611,7 @@ The Ultragoal leader calls `get_goal`, then checkpoints G010 with the fresh acti
 - Create: `scripts/g011_test_acceptance_test.go`
 - Create: `web/e2e/trading-real.spec.ts`
 - Create: `docs/verification/2026-08-09-test-trading-acceptance.md`
-- Modify through Ultragoal leader checkpoint only: `.omx/ultragoal/ledger.jsonl`
+- Modify through Ultragoal leader checkpoint only: `<omx-state>/ultragoal/ledger.jsonl`
 
 - [ ] **Step 1: Write failing safety tests for the trading acceptance driver**
 
@@ -1691,7 +1691,7 @@ The Ultragoal leader calls `get_goal` and checkpoints G011 with the fresh active
 - Modify: `docs/reference/testing.md`
 - Modify: `README.md`
 - Modify only when the clean Test cutover and cleanup evidence authorize it: `migration/manifest.json`
-- Modify through Ultragoal leader checkpoint only: `.omx/ultragoal/ledger.jsonl`
+- Modify through Ultragoal leader checkpoint only: `<omx-state>/ultragoal/ledger.jsonl`
 
 - [ ] **Step 1: Confirm final operational state before cleanup**
 

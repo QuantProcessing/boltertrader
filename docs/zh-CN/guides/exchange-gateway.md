@@ -49,30 +49,28 @@ secret reference 解析，YAML 不得包含 secret 明文。
 
 ## 配置
 
-每个交易所产品账户配置一个 account。V1 为 Binance、OKX、Lighter、
-Hyperliquid、Bybit、Bitget、Gate、Aster、Nado 建模共二十个产品行，其中
-十九行默认 write-ready；Lighter Testnet Spot 在外部环境证明双边流动性和
-exact lookup 之前保持 read-only。
+YAML 文件只配置进程本身：监听地址、bearer token 引用与 PostgreSQL DSN
+引用。账户属于持久化状态而非文件状态，通过内部监听器的
+`PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}`
+声明并存入 PostgreSQL，重启后自动加载，无需改动任何文件。
 
 ```yaml
 server:
   listen: 127.0.0.1:8080
   auth_token_ref: env://GATEWAY_AUTH_TOKEN
+  internal_listen: 127.0.0.1:8081
+  internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN
-accounts:
-  - account_id: binance-demo-spot
-    venue: binance
-    product: spot
-    environment: demo
-    credentials:
-      api_key_ref: env://BINANCE_DEMO_API_KEY
-      api_secret_ref: env://BINANCE_DEMO_API_SECRET
 ```
 
-不同交易所使用严格类型化的 credential 字段。未知字段、重复 account ID、
-无效 venue/product/environment 组合或明文 secret，都会在 listener 打开前
-阻止启动。
+配置文件严格解码。未知字段、未开启 `allow_non_loopback_listen` 的非回环
+监听、非回环的内部监听器或明文 secret，都会在 listener 打开前阻止启动。
+
+V1 为 Binance、OKX、Lighter、Hyperliquid、Bybit、Bitget、Gate、Aster、Nado
+建模共二十个产品行，其中十九行默认 write-ready；Lighter Testnet Spot 在外部
+环境证明双边流动性和 exact lookup 之前保持 read-only。不同交易所使用严格
+类型化的 credential 字段，在账户声明时严格解码。
 
 启动：
 

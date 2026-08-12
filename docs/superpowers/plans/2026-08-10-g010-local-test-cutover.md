@@ -720,11 +720,11 @@ Expected: PASS. If Task 14 required a fix, commit only the scoped files with `te
 **Files:**
 - Modify through command-generated output only: `migration/manifest.json`
 - Create through command-generated output only: configured G010 evidence directory and activation journal
-- Modify through leader-only checkpoint: `/Users/dddd/Documents/GitHub/BolterTrader/.omx/ultragoal/ledger.jsonl`
+- Modify through leader-only checkpoint: `<repo>/<omx-state>/ultragoal/ledger.jsonl`
 
 - [ ] **Step 1: Record the frozen baseline and preflight**
 
-Run: `git status --short && git rev-parse HEAD && git -C /Users/dddd/Documents/GitHub/funding-trader status --short && git -C /Users/dddd/Documents/GitHub/funding-trader rev-parse HEAD^{commit} HEAD^{tree}`
+Run: `git status --short && git rev-parse HEAD && git -C <funding-trader-repo> status --short && git -C <funding-trader-repo> rev-parse HEAD^{commit} HEAD^{tree}`
 
 Expected: implementation worktree clean; source clean at commit `e29f4ccb3f21e53e1424642c10b11e65a1b6a52a`, tree `99821acf574c87741b08ae3dc3a913f12b2835d7`.
 
@@ -777,10 +777,10 @@ git add migration/manifest.json
 git commit -m "ops: complete local test platform cutover"
 ```
 
-Call `get_goal` for a fresh active aggregate snapshot and write that exact JSON result to `/private/tmp/g010-codex-goal.json`, then run from `/Users/dddd/Documents/GitHub/BolterTrader`:
+Call `get_goal` for a fresh active aggregate snapshot and write that exact JSON result to `<tmpdir>/g010-codex-goal.json`, then run from the repository root:
 
 ```bash
-omx ultragoal checkpoint --goal-id G010-execute-fenced-cutover-and-real-stac --status complete --evidence "G010 activated through the canonical Test-only operation; source fenced; authority matrices verified; two pre/post restart browser cycles passed; no Docker, Live write, venue order, credential exposure, or retirement" --codex-goal-json /private/tmp/g010-codex-goal.json
+omx ultragoal checkpoint --goal-id G010-execute-fenced-cutover-and-real-stac --status complete --evidence "G010 activated through the canonical Test-only operation; source fenced; authority matrices verified; two pre/post restart browser cycles passed; no Docker, Live write, venue order, credential exposure, or retirement" --codex-goal-json <tmpdir>/g010-codex-goal.json
 ```
 
 Expected: G010 becomes complete, G011 becomes next, and the aggregate Codex goal remains active. Do not call `update_goal`; G011 and G012 are still pending.

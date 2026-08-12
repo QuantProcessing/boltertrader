@@ -463,7 +463,7 @@ Generated activation evidence contains no caller-authored assertions. It binds:
 - Gateway pending and active head digests before and after promotion;
 - supervisor process identity and readiness results before and after restart;
 - canonical table digest results from pre-activation validation;
-- exact Test mode plus disabled Live/private/venue-write gate results;
+- exact Test mode plus disabled Live, private, and venue-write gate results;
 - operation-generated UTC timestamps and command-result digests;
 - the activation operation fingerprint and final proof SHA-256.
 

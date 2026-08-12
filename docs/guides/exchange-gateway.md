@@ -52,31 +52,31 @@ must not appear in the YAML file.
 
 ## Configuration
 
-Run one statically configured account entry per venue/product account. The
-service models twenty V1 rows across Binance, OKX, Lighter, Hyperliquid, Bybit,
-Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
-Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
-exact lookup in its external environment.
+The YAML file configures the process only: listeners, the bearer token
+reference, and the PostgreSQL DSN reference. Accounts are durable state rather
+than file state. They are declared through the authenticated internal listener
+at `PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}` and
+stored in PostgreSQL, so a restart reloads them without editing any file.
 
 ```yaml
 server:
   listen: 127.0.0.1:8080
   auth_token_ref: env://GATEWAY_AUTH_TOKEN
+  internal_listen: 127.0.0.1:8081
+  internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN
-accounts:
-  - account_id: binance-demo-spot
-    venue: binance
-    product: spot
-    environment: demo
-    credentials:
-      api_key_ref: env://BINANCE_DEMO_API_KEY
-      api_secret_ref: env://BINANCE_DEMO_API_SECRET
 ```
 
-The exact credential fields differ by venue and are strictly decoded. Unknown
-fields, duplicate account IDs, invalid product/environment combinations, or
-literal secret values prevent startup before the listener opens.
+The file is strictly decoded. An unknown field, a non-loopback listener without
+`allow_non_loopback_listen`, a non-loopback internal listener, or a literal
+secret value prevents startup before the listener opens.
+
+V1 models twenty venue/product rows across Binance, OKX, Lighter, Hyperliquid,
+Bybit, Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
+Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
+exact lookup in its external environment. The exact credential fields differ by
+venue and are strictly decoded on the account declaration.
 
 Start the service:
 
