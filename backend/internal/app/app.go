@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,18 +18,13 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
-	"github.com/QuantProcessing/boltertrader/services/trading/audit"
+	tradingapp "github.com/QuantProcessing/boltertrader/services/trading/app"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
 	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
-	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
-	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
-	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
-	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
-	tradingpg "github.com/QuantProcessing/boltertrader/services/trading/store/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -41,21 +35,9 @@ type App struct {
 	browserLn     net.Listener
 	startOnce     sync.Once
 	shutdownOnce  sync.Once
-	reconciler    *orders.Reconciler
+	trading       *tradingapp.Service
 	reconcileStop context.CancelFunc
 	reconcileDone chan struct{}
-}
-
-// The route probes are declared here rather than beside their implementation
-// because the readiness evaluators below are the only thing that asks the
-// question. Naming them on this side keeps the Gateway client free to answer it
-// without knowing that anyone treats the answer as readiness.
-type marketDataRouteProbe interface {
-	CheckMarketDataRoute(context.Context) error
-}
-
-type runtimeRouteProbe interface {
-	CheckRuntimeRoute(context.Context) error
 }
 
 type Dependencies struct {
@@ -69,8 +51,8 @@ type Dependencies struct {
 	TradingDatabase       *sql.DB
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
-	MarketDataProbe       marketDataRouteProbe
-	RuntimeProbe          runtimeRouteProbe
+	MarketDataProbe       tradingapp.MarketDataRouteProbe
+	RuntimeProbe          tradingapp.RuntimeRouteProbe
 	RuntimeProjection     tradinghttp.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
 	ManualAccounts        tradinghttp.ManualAccountAuthority
@@ -78,12 +60,48 @@ type Dependencies struct {
 	WriteAuthority        WriteAuthority
 }
 
+// tradingDependencies restates the Gateway-facing dependencies in the trading
+// service's own vocabulary. The two structs stay separate because they answer
+// different questions: this one is what a host can supply, that one is what
+// trading requires, and the day they stop matching is the day trading gained a
+// dependency the auth edge has no business knowing about.
+func (dependencies Dependencies) tradingDependencies() tradingapp.Dependencies {
+	return tradingapp.Dependencies{
+		Database:              dependencies.TradingDatabase,
+		CatalogSource:         dependencies.CatalogSource,
+		MarketDataSource:      dependencies.MarketDataSource,
+		MarketDataProbe:       dependencies.MarketDataProbe,
+		RuntimeProbe:          dependencies.RuntimeProbe,
+		RuntimeProjection:     dependencies.RuntimeProjection,
+		ManualGateway:         dependencies.ManualGateway,
+		ManualAccounts:        dependencies.ManualAccounts,
+		ReconciliationGateway: dependencies.ReconciliationGateway,
+	}
+}
+
 func New(cfg config.Config) (*App, error) {
 	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: gatewayClient, MarketDataSource: gatewayClient.MarketData(), MarketDataProbe: gatewayClient, RuntimeProbe: gatewayClient, RuntimeProjection: gatewayClient, ManualGateway: gatewayClient, ManualAccounts: gatewayClient.Accounts(), ReconciliationGateway: gatewayClient})
+	return NewWithDependencies(cfg, gatewayDependencies(gatewayClient))
+}
+
+// gatewayDependencies fills every Gateway-facing field from one client. They
+// stay separate fields rather than one because tests substitute a different fake
+// per capability; that one client answers all of them is a fact about the
+// client, not a shape the assembly should assume.
+func gatewayDependencies(client *tradinggateway.Client) Dependencies {
+	return Dependencies{
+		CatalogSource:         client,
+		MarketDataSource:      client.MarketData(),
+		MarketDataProbe:       client,
+		RuntimeProbe:          client,
+		RuntimeProjection:     client,
+		ManualGateway:         client,
+		ManualAccounts:        client.Accounts(),
+		ReconciliationGateway: client,
+	}
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -99,20 +117,13 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return nil, fmt.Errorf("migration-validation requires verified absent runtime writer USAGE")
 	}
 	validationProfile := cfg.StartupProfile == config.StartupMigrationValidation
-	if dependencies.ManualGateway == nil {
-		return nil, fmt.Errorf("Manual Gateway dependency is required")
-	}
 	contract, err := loadContract()
 	if err != nil {
 		return nil, err
 	}
+
 	var sessionStore session.Store = session.NewMemoryStore()
 	var identityStore session.IdentityStore
-	var auditStore audit.Store = audit.NewMemoryStore()
-	var reservationStore reservations.Store = reservations.NewMemoryStore()
-	var commandStore orders.Store = orders.NewMemoryStore()
-	var ledgerStore ledger.Store = ledger.NewMemoryStore()
-	portfolioProjection := portfolio.NewProjection()
 	if dependencies.Database != nil {
 		sessionStore = postgres.NewSessionStore(dependencies.Database)
 		persistentIdentities := postgres.NewIdentityStore(dependencies.Database)
@@ -122,13 +133,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 			}
 		}
 		identityStore = persistentIdentities
-	}
-	if dependencies.TradingDatabase != nil {
-		auditStore = tradingpg.NewAuditStore(dependencies.TradingDatabase)
-		reservationStore = tradingpg.NewReservationStore(dependencies.TradingDatabase)
-		commandStore = tradingpg.NewCommandStore(dependencies.TradingDatabase)
-		ledgerStore = tradingpg.NewLedgerStore(dependencies.TradingDatabase)
-		portfolioProjection = portfolio.NewPersistentProjection(tradingpg.NewPortfolioStore(dependencies.TradingDatabase))
 	}
 	sessionService, err := session.New(session.Options{
 		Username:     cfg.BootstrapUsername,
@@ -142,89 +146,15 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	auditService, err := audit.New(auditStore, nil, randomID("audit"))
-	if err != nil {
-		return nil, err
-	}
 
-	now := func() time.Time { return time.Now().UTC() }
-	catalogSource := dependencies.CatalogSource
-	if catalogSource == nil {
-		catalogSource = unavailableCatalogSource{}
-	}
-	marketSource := dependencies.MarketDataSource
-	if marketSource == nil {
-		marketSource = unavailableMarketDataSource{}
-	}
-	catalogProjection, err := catalog.NewProjection(catalogSource, 30*time.Second, now)
-	if err != nil {
-		return nil, err
-	}
-	budget, err := marketdata.NewCoordinator(30, time.Minute, now)
-	if err != nil {
-		return nil, err
-	}
-	marketService, err := marketdata.NewService(marketSource, budget, 5*time.Second, now)
-	if err != nil {
-		return nil, err
-	}
-	hub, err := realtime.NewHub(1024, now)
-	if err != nil {
-		return nil, err
-	}
-	activityLog, err := tradinghttp.NewActivityLog(1024, now, hub)
-	if err != nil {
-		return nil, err
-	}
-	runtimeProjection := dependencies.RuntimeProjection
-	if runtimeProjection == nil {
-		runtimeProjection = tradinghttp.FailClosedAccountRuntimeProjectionReader{}
-	}
-	var manualAccounts tradinghttp.ManualAccountAuthority = unavailableManualAccounts{}
-	if dependencies.ManualAccounts != nil {
-		manualAccounts = dependencies.ManualAccounts
-	}
-	readiness := platformsystem.NewReadiness()
-	databaseReady := dependencies.Database != nil
-	readiness.Update("process", readinessComponent(true, ""))
-	readiness.Update("database", readinessComponent(databaseReady, "database_dependency_missing"))
-	projectionReadiness := func() platformsystem.Component {
-		status := catalogProjection.Status()
-		return platformsystem.Component{Ready: status.Ready, Reason: status.Reason, ObservedAt: status.ObservedAt}
-	}
-	readiness.SetEvaluator("gateway", projectionReadiness)
-	readiness.SetEvaluator("publicData", func() platformsystem.Component {
-		if dependencies.MarketDataProbe == nil {
-			return readinessComponent(false, "market_data_route_probe_missing")
-		}
-		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := dependencies.MarketDataProbe.CheckMarketDataRoute(probeCtx); err != nil {
-			return readinessComponent(false, "market_data_route_unavailable")
-		}
-		return readinessComponent(true, "")
-	})
-	// Accounts are the gateway's record now, not this service's. Readiness for
-	// them therefore means one thing here: can we reach the authority that owns
-	// them. A probe of the gateway's private plane answers exactly that, and
-	// answering it any other way would be asserting a fact we no longer hold.
-	readiness.SetEvaluator("accounts", func() platformsystem.Component {
-		if dependencies.RuntimeProbe == nil {
-			return readinessComponent(false, "account_authority_probe_missing")
-		}
-		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := dependencies.RuntimeProbe.CheckRuntimeRoute(probeCtx); err != nil {
-			return readinessComponent(false, "account_authority_unavailable")
-		}
-		return readinessComponent(true, "")
-	})
-	readiness.SetEvaluator("canonicalWrites", func() platformsystem.Component {
-		ready, reason := writeAuthority.Ready(context.Background())
-		return readinessComponent(ready, reason)
-	})
-	authenticate := httpapi.SessionAuthenticator(sessionService)
-	principal := func(r *http.Request) (string, string, error) {
+	// Identity is resolved here and handed down. The trading service asks who is
+	// calling without knowing that the answer comes from a session cookie, which
+	// is what lets the same assembly serve a service token when trading moves
+	// out of this process.
+	tradingDependencies := dependencies.tradingDependencies()
+	tradingDependencies.Authenticate = httpapi.SessionAuthenticator(sessionService)
+	tradingDependencies.AuthorizeMutation = httpapi.SessionMutationAuthorizer(sessionService)
+	tradingDependencies.Principal = func(r *http.Request) (string, string, error) {
 		cookie, cookieErr := r.Cookie(httpapi.SessionCookieName)
 		if cookieErr != nil {
 			return "", "", cookieErr
@@ -232,31 +162,29 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		result, currentErr := sessionService.Current(r.Context(), cookie.Value)
 		return result.Principal.ID, result.Principal.Mode, currentErr
 	}
-	publicAPI, err := tradinghttp.NewPublicDataAPI(tradinghttp.PublicDataDependencies{Catalog: catalogProjection, MarketData: marketService, Readiness: readiness, Realtime: hub, Principal: principal})
+	trading, err := tradingapp.New(tradingapp.Config{
+		Mode:                     cfg.Mode,
+		LivePrivateWritesEnabled: cfg.LivePrivateWritesEnabled,
+		ManualPreviewSigningKey:  cfg.ManualPreviewSigningKey,
+		// A migration-validation startup must not issue Gateway writes, and the
+		// reconciler is the one component that would do so unprompted.
+		ReconcilerDisabled: validationProfile,
+	}, tradingDependencies)
 	if err != nil {
 		return nil, err
 	}
-
-	reservationService := reservations.NewService(reservationStore, now)
-	commandService := orders.NewService(commandStore, reservationGate{service: reservationService}, now)
-	commandService.SetLiveWritesEnabled(cfg.LivePrivateWritesEnabled)
-	ledgerService := ledger.NewService(ledgerStore, now)
-	manualService := manual.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
-	if err := manualService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled); err != nil {
-		return nil, err
-	}
-	for index := range cfg.ManualPreviewSigningKey {
-		cfg.ManualPreviewSigningKey[index] = 0
-	}
 	cfg.ManualPreviewSigningKey = nil
-	reconciliationGateway := dependencies.ReconciliationGateway
-	var reconciliationRunner *orders.Reconciler
-	if !validationProfile && reconciliationGateway != nil {
-		reconciliationRunner, err = orders.NewReconciler(commandService, reconciliationGateway, reconciliationDispatcher{manual: manualService}, orders.Mode(cfg.Mode), now)
-		if err != nil {
-			return nil, err
-		}
-	}
+
+	// The two components trading cannot see: whether the database this edge
+	// authenticates against is up, and whether it may be written to. Both are
+	// facts about the platform database, which trading does not hold.
+	readiness := trading.Readiness()
+	readiness.Update("database", readinessComponent(dependencies.Database != nil, "database_dependency_missing"))
+	readiness.SetEvaluator("canonicalWrites", func() platformsystem.Component {
+		ready, reason := writeAuthority.Ready(context.Background())
+		return readinessComponent(ready, reason)
+	})
+
 	// The trading surface is mounted through the auth edge's downstream hook
 	// rather than being wired into it field by field. This is the only place
 	// that knows both packages, so when trading moves to its own process only
@@ -265,59 +193,17 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
 		WriteAuthority: writeAuthority,
-		Downstream: func(mux *http.ServeMux) ([]string, error) {
-			return tradinghttp.Register(mux, tradinghttp.Options{
-				Audit:       &tradinghttp.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
-				PublicData:  publicAPI,
-				Trading:     &tradinghttp.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: manualAccounts, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
-				Projections: &tradinghttp.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
-			})
-		},
+		Downstream:     trading.Register,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &App{
-		cfg:        cfg,
-		contract:   contract,
-		browser:    &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		reconciler: reconciliationRunner,
+		cfg:      cfg,
+		contract: contract,
+		browser:  &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
+		trading:  trading,
 	}, nil
-}
-
-// unavailableManualAccounts stands in when no account authority was wired. It
-// refuses rather than returning a zero account, because a zero account reads as
-// "not active, not live" — a shape the manual product would reject for the
-// wrong reason, blaming the account instead of the missing wiring.
-type unavailableManualAccounts struct{}
-
-func (unavailableManualAccounts) Get(context.Context, string, string) (tradinghttp.ManualAccount, error) {
-	return tradinghttp.ManualAccount{}, errors.New("account authority unavailable")
-}
-
-type unavailableCatalogSource struct{}
-
-func (unavailableCatalogSource) Fetch(context.Context) (catalog.Snapshot, error) {
-	return catalog.Snapshot{}, catalog.ErrUnavailable
-}
-
-type unavailableMarketDataSource struct{}
-
-func (unavailableMarketDataSource) Fetch(context.Context, marketdata.Query) (marketdata.Fact, error) {
-	return marketdata.Fact{}, errors.New("gateway projection unavailable")
-}
-
-type reservationGate struct{ service *reservations.Service }
-
-func (gate reservationGate) Consume(ctx context.Context, claim orders.ReservationClaim) error {
-	_, err := gate.service.Consume(ctx, reservations.ConsumeRequest{ReservationID: claim.ReservationID, PrincipalID: claim.PrincipalID, ProductID: claim.ProductID, Mode: reservations.Mode(claim.Mode)})
-	return err
-}
-
-func randomID(prefix string) func() string {
-	var mu sync.Mutex
-	var next uint64
-	return func() string { mu.Lock(); defer mu.Unlock(); next++; return fmt.Sprintf("%s_%016x", prefix, next) }
 }
 
 type identitySeeder interface {
@@ -343,13 +229,13 @@ func (a *App) Start(ctx context.Context) error {
 			return
 		}
 		go func() { _ = a.browser.Serve(a.browserLn) }()
-		if a.reconciler != nil {
+		if a.trading.HasReconciler() {
 			reconcileCtx, cancel := context.WithCancel(ctx)
 			a.reconcileStop = cancel
 			a.reconcileDone = make(chan struct{})
 			go func() {
 				defer close(a.reconcileDone)
-				a.reconciler.Run(reconcileCtx)
+				a.trading.Run(reconcileCtx)
 			}()
 		}
 	})
@@ -413,7 +299,10 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: gatewayClient, MarketDataSource: gatewayClient.MarketData(), MarketDataProbe: gatewayClient, RuntimeProbe: gatewayClient, RuntimeProjection: gatewayClient, ManualGateway: gatewayClient, ManualAccounts: gatewayClient.Accounts(), ReconciliationGateway: gatewayClient, WriteAuthority: writeAuthority})
+	dependencies := gatewayDependencies(gatewayClient)
+	dependencies.Database = database
+	dependencies.WriteAuthority = writeAuthority
+	app, err := NewWithDependencies(cfg, dependencies)
 	if err != nil {
 		return err
 	}
@@ -421,9 +310,5 @@ func Run(ctx context.Context, cfg config.Config) error {
 }
 
 func loadContract() (backendcontract.Contract, error) {
-	contract, err := frozencontract.Load()
-	if err != nil {
-		return backendcontract.Contract{}, fmt.Errorf("load frozen contract: %w", err)
-	}
-	return contract, nil
+	return frozencontract.Load()
 }

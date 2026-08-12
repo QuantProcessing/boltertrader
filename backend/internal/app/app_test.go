@@ -134,7 +134,7 @@ func TestMigrationValidationRequiresWriterUsageAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app.reconciler != nil {
+	if app.trading.HasReconciler() {
 		t.Fatal("migration validation constructed a background reconciler")
 	}
 	cookie, csrf := appLogin(t, app)
