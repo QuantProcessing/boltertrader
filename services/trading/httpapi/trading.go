@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
@@ -104,7 +105,7 @@ func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.
 		tradingError(w, statusForTradingError(err), codeForTradingError(err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"meta": meta(r), "data": created})
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"meta": httpx.Meta(r), "data": created})
 }
 
 func (handler *tradingHandler) listReservations(w http.ResponseWriter, r *http.Request) {
@@ -117,7 +118,7 @@ func (handler *tradingHandler) listReservations(w http.ResponseWriter, r *http.R
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +134,7 @@ func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http
 		tradingError(w, statusForTradingError(err), codeForTradingError(err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": item})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": item})
 }
 
 type commandRequest struct {
@@ -179,7 +180,7 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 	} else {
 		publishCommandActivity(handler.options.Activity, command)
 	}
-	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
+	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
 }
 
 func resumableManualState(state orders.State) bool {
@@ -196,7 +197,7 @@ func (handler *tradingHandler) getCommand(w http.ResponseWriter, r *http.Request
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": commandProjection(command)})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": commandProjection(command)})
 }
 
 func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +210,7 @@ func (handler *tradingHandler) positions(w http.ResponseWriter, r *http.Request)
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Request) {
@@ -222,7 +223,7 @@ func (handler *tradingHandler) ledgerEntries(w http.ResponseWriter, r *http.Requ
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *tradingHandler) pnl(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +237,7 @@ func (handler *tradingHandler) pnl(w http.ResponseWriter, r *http.Request) {
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": item})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": item})
 }
 
 func (handler *tradingHandler) identity(w http.ResponseWriter, r *http.Request) (string, string, bool) {
@@ -271,7 +272,7 @@ func decodeTrading(w http.ResponseWriter, r *http.Request, target any) bool {
 }
 
 func tradingError(w http.ResponseWriter, status int, code string) {
-	writeError(w, status, code, "request rejected", nil, false, "")
+	httpx.WriteError(w, status, code, "request rejected", nil, false, "")
 }
 func statusForTradingError(err error) int {
 	if err == reservations.ErrIdempotencyConflict || err == reservations.ErrScopeOwned || err == orders.ErrIdempotencyConflict {

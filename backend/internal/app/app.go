@@ -21,6 +21,7 @@ import (
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
@@ -49,9 +50,9 @@ type Dependencies struct {
 	MarketDataSource      marketdata.Source
 	MarketDataProbe       marketDataRouteProbe
 	RuntimeProbe          runtimeRouteProbe
-	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
+	RuntimeProjection     tradinghttp.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
-	ManualAccounts        httpapi.ManualAccountAuthority
+	ManualAccounts        tradinghttp.ManualAccountAuthority
 	ReconciliationGateway orders.ReconciliationGateway
 	WriteAuthority        WriteAuthority
 }
@@ -148,15 +149,15 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	activityLog, err := httpapi.NewActivityLog(1024, now, hub)
+	activityLog, err := tradinghttp.NewActivityLog(1024, now, hub)
 	if err != nil {
 		return nil, err
 	}
 	runtimeProjection := dependencies.RuntimeProjection
 	if runtimeProjection == nil {
-		runtimeProjection = httpapi.FailClosedAccountRuntimeProjectionReader{}
+		runtimeProjection = tradinghttp.FailClosedAccountRuntimeProjectionReader{}
 	}
-	var manualAccounts httpapi.ManualAccountAuthority = unavailableManualAccounts{}
+	var manualAccounts tradinghttp.ManualAccountAuthority = unavailableManualAccounts{}
 	if dependencies.ManualAccounts != nil {
 		manualAccounts = dependencies.ManualAccounts
 	}
@@ -208,7 +209,7 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		result, currentErr := sessionService.Current(r.Context(), cookie.Value)
 		return result.Principal.ID, result.Principal.Mode, currentErr
 	}
-	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{Catalog: catalogProjection, MarketData: marketService, Readiness: readiness, Realtime: hub, Principal: principal})
+	publicAPI, err := tradinghttp.NewPublicDataAPI(tradinghttp.PublicDataDependencies{Catalog: catalogProjection, MarketData: marketService, Readiness: readiness, Realtime: hub, Principal: principal})
 	if err != nil {
 		return nil, err
 	}
@@ -233,13 +234,22 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 			return nil, err
 		}
 	}
+	// The trading surface is mounted through the auth edge's downstream hook
+	// rather than being wired into it field by field. This is the only place
+	// that knows both packages, so when trading moves to its own process only
+	// this closure changes: it becomes a proxy registration, and neither the
+	// auth edge nor any trading handler is touched.
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
 		WriteAuthority: writeAuthority,
-		Audit:          &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
-		PublicData:     publicAPI,
-		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: manualAccounts, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
-		Projections:    &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
+		Downstream: func(mux *http.ServeMux) ([]string, error) {
+			return tradinghttp.Register(mux, tradinghttp.Options{
+				Audit:       &tradinghttp.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
+				PublicData:  publicAPI,
+				Trading:     &tradinghttp.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: manualAccounts, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+				Projections: &tradinghttp.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
+			})
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -258,8 +268,8 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 // wrong reason, blaming the account instead of the missing wiring.
 type unavailableManualAccounts struct{}
 
-func (unavailableManualAccounts) Get(context.Context, string, string) (httpapi.ManualAccount, error) {
-	return httpapi.ManualAccount{}, errors.New("account authority unavailable")
+func (unavailableManualAccounts) Get(context.Context, string, string) (tradinghttp.ManualAccount, error) {
+	return tradinghttp.ManualAccount{}, errors.New("account authority unavailable")
 }
 
 type unavailableCatalogSource struct{}

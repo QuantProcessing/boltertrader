@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
@@ -46,7 +45,7 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := activity.Publish(ActivityRecord{PrincipalID: session.DefaultPrincipalID, Mode: "test", Kind: "account.runtime.updated", AccountID: "account-a", ResourceID: "account-a", Payload: map[string]any{"ready": true}}); err != nil {
+	if _, err := activity.Publish(ActivityRecord{PrincipalID: testPrincipalID, Mode: "test", Kind: "account.runtime.updated", AccountID: "account-a", ResourceID: "account-a", Payload: map[string]any{"ready": true}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := activity.Publish(ActivityRecord{PrincipalID: "other-principal", Mode: "test", Kind: "command.accepted", ProductID: "manual", ResourceID: "other-command"}); err != nil {
@@ -59,28 +58,15 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	}}}
 	commands := &commandProjectionFixture{commands: map[string][]orders.Command{
 		"manual": {
-			{CommandID: "manual-command", PrincipalID: session.DefaultPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
-			{CommandID: "submitted-command", PrincipalID: session.DefaultPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
+			{CommandID: "manual-command", PrincipalID: testPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
+			{CommandID: "submitted-command", PrincipalID: testPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
 		},
 	}}
-	passwordHash, _ := session.HashPassword("correct horse battery staple")
-	sessions, err := session.New(session.Options{Username: "owner", PasswordHash: passwordHash, Mode: "test", TTL: time.Hour})
-	if err != nil {
+	principal := func(*http.Request) (string, string, error) { return testPrincipalID, "test", nil }
+	mux := http.NewServeMux()
+	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: runtimes, Commands: commands, Activity: activity, Principal: principal}); err != nil {
 		t.Fatal(err)
 	}
-	principal := func(r *http.Request) (string, string, error) {
-		cookie, cookieErr := r.Cookie(SessionCookieName)
-		if cookieErr != nil {
-			return "", "", cookieErr
-		}
-		result, currentErr := sessions.Current(r.Context(), cookie.Value)
-		return result.Principal.ID, result.Principal.Mode, currentErr
-	}
-	handler, err := New(Options{Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, Projections: &BrowserProjectionRoutesOptions{Runtimes: runtimes, Commands: commands, Activity: activity, Principal: principal}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, cookie, _ := login(t, handler)
 
 	tests := []struct {
 		path       string
@@ -94,9 +80,8 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
-		request.AddCookie(cookie)
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
+		mux.ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("GET %s status=%d body=%s", test.path, response.Code, response.Body.String())
 		}
@@ -111,18 +96,18 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 			}
 		}
 	}
-	if runtimes.principal != session.DefaultPrincipalID || runtimes.mode != "test" || runtimes.accountID != "account-a" {
+	if runtimes.principal != testPrincipalID || runtimes.mode != "test" || runtimes.accountID != "account-a" {
 		t.Fatalf("runtime scope=%q/%q/%q", runtimes.principal, runtimes.mode, runtimes.accountID)
 	}
 	if len(commands.calls) != 2 {
 		t.Fatalf("command projection calls=%+v", commands.calls)
 	}
 	for _, call := range commands.calls {
-		if call[0] != session.DefaultPrincipalID || call[1] != "test" || call[2] != "manual" {
+		if call[0] != testPrincipalID || call[1] != "test" || call[2] != "manual" {
 			t.Fatalf("unscoped command projection call=%+v", call)
 		}
 	}
-	replayed, err := hub.ReplayScoped("", session.DefaultPrincipalID, "test")
+	replayed, err := hub.ReplayScoped("", testPrincipalID, "test")
 	if err != nil || len(replayed) != 1 {
 		t.Fatalf("SSE replay=%+v err=%v", replayed, err)
 	}
@@ -137,18 +122,14 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 }
 
 func TestBrowserProjectionRoutesRejectUnknownFilters(t *testing.T) {
-	passwordHash, _ := session.HashPassword("correct horse battery staple")
-	sessions, _ := session.New(session.Options{Username: "owner", PasswordHash: passwordHash, Mode: "test", TTL: time.Hour})
-	principal := func(*http.Request) (string, string, error) { return session.DefaultPrincipalID, "test", nil }
-	handler, err := New(Options{Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, Projections: &BrowserProjectionRoutesOptions{Runtimes: &runtimeProjectionFixture{}, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal}})
-	if err != nil {
+	principal := func(*http.Request) (string, string, error) { return testPrincipalID, "test", nil }
+	mux := http.NewServeMux()
+	if err := RegisterBrowserProjectionRoutes(mux, BrowserProjectionRoutesOptions{Runtimes: &runtimeProjectionFixture{}, Commands: &commandProjectionFixture{}, Activity: mustActivityLog(t), Principal: principal}); err != nil {
 		t.Fatal(err)
 	}
-	_, cookie, _ := login(t, handler)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/commands?gatewayUrl=http://gateway", nil)
-	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
 		t.Fatalf("unknown filter response=%d %s", response.Code, response.Body.String())
 	}
@@ -163,3 +144,8 @@ func mustActivityLog(t *testing.T) *ActivityLog {
 	}
 	return log
 }
+
+// testPrincipalID stands for whatever identity the caller resolved before
+// these routes ran. The projections must scope every read to it; how it was
+// authenticated is the auth edge's business, not this service's.
+const testPrincipalID = "browser-session"

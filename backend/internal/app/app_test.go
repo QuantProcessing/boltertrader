@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
-	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
@@ -397,11 +397,11 @@ type appManualAccounts struct{}
 
 const appManualAccountID = "acc_01J0000000000000000000APP"
 
-func (appManualAccounts) Get(_ context.Context, principal, accountID string) (httpapi.ManualAccount, error) {
+func (appManualAccounts) Get(_ context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
 	if principal == "" || accountID != appManualAccountID {
-		return httpapi.ManualAccount{}, fmt.Errorf("account %q is unknown", accountID)
+		return tradinghttp.ManualAccount{}, fmt.Errorf("account %q is unknown", accountID)
 	}
-	return httpapi.ManualAccount{
+	return tradinghttp.ManualAccount{
 		ID: appManualAccountID, Venue: "binance", VenueEnvironment: "demo", State: "active",
 		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 	}, nil

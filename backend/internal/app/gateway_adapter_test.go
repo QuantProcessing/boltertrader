@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
@@ -358,7 +358,7 @@ func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewa
 	if len(requests) != 1 || requests[0] != "/internal/v1/accounts/runtime/account-a" {
 		t.Fatalf("Gateway projection requests=%+v", requests)
 	}
-	var _ httpapi.AccountRuntimeProjectionReader = adapter
+	var _ tradinghttp.AccountRuntimeProjectionReader = adapter
 }
 
 func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T) {

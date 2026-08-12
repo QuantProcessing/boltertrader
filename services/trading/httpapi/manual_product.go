@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
@@ -120,7 +121,7 @@ func (handler *manualProductHandler) venues(w http.ResponseWriter, r *http.Reque
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"revision": snapshot.Revision, "items": snapshot.Venues}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"revision": snapshot.Revision, "items": snapshot.Venues}})
 }
 
 func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +194,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		return
 	}
 	preview := manualPreview{PreviewID: previewID, manualPreviewRequest: request, PrincipalID: principal, Blockers: []string{}, Warnings: []string{}}
-	writeJSON(w, http.StatusCreated, map[string]any{"meta": meta(r), "data": preview})
+	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"meta": httpx.Meta(r), "data": preview})
 }
 
 func validateManualPreview(request manualPreviewRequest) error {
@@ -330,7 +331,7 @@ func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *htt
 		publishCommandActivity(handler.trading.options.Activity, command)
 		status = http.StatusAccepted
 	}
-	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
+	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
 }
 
 func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *http.Request, principal, mode string, request manualCommandRequest) {
@@ -365,7 +366,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 			tradingError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": command})
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": command})
 		return
 	}
 	positions, err := handler.trading.options.Portfolio.ListContext(r.Context(), principal, portfolio.Mode(mode), "", "manual")
@@ -503,7 +504,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 	if replay {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
+	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
 }
 
 func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID, mode string) (manualPreviewAuthority, bool) {
@@ -583,7 +584,7 @@ func (handler *manualProductHandler) listOrders(w http.ResponseWriter, r *http.R
 		tradingError(w, http.StatusInternalServerError, "INTERNAL_ERROR")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *manualProductHandler) getOrder(w http.ResponseWriter, r *http.Request) {
@@ -597,5 +598,5 @@ func (handler *manualProductHandler) getOrder(w http.ResponseWriter, r *http.Req
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": command})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": command})
 }

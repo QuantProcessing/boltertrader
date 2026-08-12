@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
@@ -46,7 +47,7 @@ type PublicDataAPI struct{ dependencies PublicDataDependencies }
 
 func NewPublicDataAPI(dependencies PublicDataDependencies) (*PublicDataAPI, error) {
 	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
-		return nil, configErr("public-data dependencies are incomplete")
+		return nil, httpx.ConfigErr("public-data dependencies are incomplete")
 	}
 	return &PublicDataAPI{dependencies: dependencies}, nil
 }
@@ -94,7 +95,7 @@ func (api *PublicDataAPI) Handle(w http.ResponseWriter, r *http.Request, route s
 
 func (api *PublicDataAPI) system(w http.ResponseWriter, r *http.Request, readiness bool) {
 	if err := validateQuery(r, nil); err != nil {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
 	snapshot := api.dependencies.Readiness.Status()
@@ -105,29 +106,29 @@ func (api *PublicDataAPI) system(w http.ResponseWriter, r *http.Request, readine
 			status = http.StatusServiceUnavailable
 		}
 	}
-	writeJSON(w, status, map[string]any{"meta": meta(r), "data": snapshot})
+	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": snapshot})
 }
 
 func (api *PublicDataAPI) catalog(w http.ResponseWriter, r *http.Request, venues bool) {
 	if err := validateQuery(r, nil); err != nil {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
 	snapshot, err := api.dependencies.Catalog.Snapshot(r.Context())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY", "catalog projection is unavailable", map[string]any{"reason": api.dependencies.Catalog.Status().Reason}, true, requestID(r))
+		httpx.WriteError(w, http.StatusServiceUnavailable, "PUBLIC_DATA_NOT_READY", "catalog projection is unavailable", map[string]any{"reason": api.dependencies.Catalog.Status().Reason}, true, httpx.RequestID(r))
 		return
 	}
 	var data any = snapshot.Instruments
 	if venues {
 		data = snapshot.Venues
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": data, "projection": map[string]any{"revision": snapshot.Revision, "observedAt": snapshot.ObservedAt}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": data, "projection": map[string]any{"revision": snapshot.Revision, "observedAt": snapshot.ObservedAt}})
 }
 
 func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
 	if err := validateQuery(r, []string{"venue", "environment", "product", "instrumentId"}); err != nil {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
 	query := marketdata.Query{Venue: r.URL.Query().Get("venue"), Environment: r.URL.Query().Get("environment"), Product: r.URL.Query().Get("product"), InstrumentID: r.URL.Query().Get("instrumentId")}
@@ -139,17 +140,17 @@ func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 			code = "RATE_LIMITED"
 		}
-		writeError(w, status, code, "market-data projection is unavailable", map[string]any{"venue": query.Venue}, true, requestID(r))
+		httpx.WriteError(w, status, code, "market-data projection is unavailable", map[string]any{"venue": query.Venue}, true, httpx.RequestID(r))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"meta": meta(r), "data": fact, "rateLimit": api.dependencies.MarketData.BudgetStatus(query.Venue),
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"meta": httpx.Meta(r), "data": fact, "rateLimit": api.dependencies.MarketData.BudgetStatus(query.Venue),
 	})
 }
 
 func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 	if err := validateOptionalQuery(r, []string{"cursor"}); err != nil {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, requestID(r))
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
 		return
 	}
 	cursor := strings.TrimSpace(r.URL.Query().Get("cursor"))
@@ -158,16 +159,16 @@ func (api *PublicDataAPI) realtime(w http.ResponseWriter, r *http.Request) {
 	}
 	principal, mode, err := api.dependencies.Principal(r)
 	if err != nil || strings.TrimSpace(principal) == "" || (mode != "test" && mode != "live") {
-		writeError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "authentication required", nil, false, requestID(r))
+		httpx.WriteError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "authentication required", nil, false, httpx.RequestID(r))
 		return
 	}
 	events, err := api.dependencies.Realtime.ReplayScoped(cursor, principal, mode)
 	if errors.Is(err, realtime.ErrResnapshotRequired) {
-		writeError(w, http.StatusConflict, "RESNAPSHOT_REQUIRED", "realtime cursor cannot prove continuity", nil, true, requestID(r))
+		httpx.WriteError(w, http.StatusConflict, "RESNAPSHOT_REQUIRED", "realtime cursor cannot prove continuity", nil, true, httpx.RequestID(r))
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "REALTIME_UNAVAILABLE", "realtime stream is unavailable", nil, true, requestID(r))
+		httpx.WriteError(w, http.StatusServiceUnavailable, "REALTIME_UNAVAILABLE", "realtime stream is unavailable", nil, true, httpx.RequestID(r))
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")

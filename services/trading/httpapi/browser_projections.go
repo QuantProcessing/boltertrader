@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/internal/httpx"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
@@ -150,7 +151,7 @@ type ActivityLog struct {
 
 func NewActivityLog(capacity int, now func() time.Time, hub *realtime.Hub) (*ActivityLog, error) {
 	if capacity <= 0 || now == nil || hub == nil {
-		return nil, configErr("activity projection dependencies are incomplete")
+		return nil, httpx.ConfigErr("activity projection dependencies are incomplete")
 	}
 	return &ActivityLog{capacity: capacity, now: now, hub: hub}, nil
 }
@@ -208,7 +209,7 @@ type BrowserProjectionRoutesOptions struct {
 
 func RegisterBrowserProjectionRoutes(mux *http.ServeMux, options BrowserProjectionRoutesOptions) error {
 	if mux == nil || options.Runtimes == nil || options.Commands == nil || options.Activity == nil || options.Principal == nil {
-		return configErr("browser projection route dependencies are incomplete")
+		return httpx.ConfigErr("browser projection route dependencies are incomplete")
 	}
 	handler := &browserProjectionHandler{options: options}
 	mux.HandleFunc("GET /api/v1/accounts/{accountId}/runtimes", handler.accountRuntimes)
@@ -232,7 +233,7 @@ func (handler *browserProjectionHandler) accountRuntimes(w http.ResponseWriter, 
 		projectionError(w, http.StatusServiceUnavailable, "RUNTIME_PROJECTION_UNAVAILABLE")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *browserProjectionHandler) commands(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +256,7 @@ func (handler *browserProjectionHandler) commands(w http.ResponseWriter, r *http
 		}
 		views = append(views, commandProjection(item))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": views}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": views}})
 }
 
 func (handler *browserProjectionHandler) fills(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +287,7 @@ func (handler *browserProjectionHandler) fills(w http.ResponseWriter, r *http.Re
 		}
 		return result[i].OccurredAt.After(result[j].OccurredAt)
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": result}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": result}})
 }
 
 func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +300,7 @@ func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http
 		projectionError(w, http.StatusServiceUnavailable, "ACTIVITY_PROJECTION_UNAVAILABLE")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"meta": meta(r), "data": map[string]any{"items": items}})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": map[string]any{"items": items}})
 }
 
 func (handler *browserProjectionHandler) listCommands(ctx context.Context, principal, mode, productID string) ([]orders.Command, error) {
@@ -412,7 +413,7 @@ func validOptionalQuery(r *http.Request, allowedFields []string, w http.Response
 }
 
 func projectionError(w http.ResponseWriter, status int, code string) {
-	writeError(w, status, code, "request rejected", nil, false, "")
+	httpx.WriteError(w, status, code, "request rejected", nil, false, "")
 }
 
 func nullableString(value string) any {

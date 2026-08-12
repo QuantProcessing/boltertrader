@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
@@ -203,7 +202,7 @@ func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 		Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
 		AuthorizeMutation: func(*http.Request) error {
 			if !allow {
-				return session.ErrInvalidCSRF
+				return errMissingCSRF
 			}
 			return nil
 		},
@@ -238,7 +237,7 @@ func TestTradingCSRFProtectsCommandsButNotReservationReads(t *testing.T) {
 		Commands:     commandService,
 		Portfolio:    portfolio.NewProjection(), Ledger: ledger.NewService(ledger.NewMemoryStore(), time.Now),
 		Principal:         func(*http.Request) (string, string, error) { return "principal-a", "test", nil },
-		AuthorizeMutation: func(*http.Request) error { return session.ErrInvalidCSRF },
+		AuthorizeMutation: func(*http.Request) error { return errMissingCSRF },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -370,3 +369,9 @@ func (fixture *manualGatewayFixture) Cancel(_ context.Context, request manual.Ga
 		State: manual.GatewayStateCanceled, Handoff: orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence},
 	}, nil
 }
+
+// errMissingCSRF stands in for whatever the caller's authorizer rejects with.
+// These routes deliberately do not inspect the reason: any refusal from the
+// injected authorizer is a refusal, which is what keeps this surface free of
+// the auth edge's session vocabulary.
+var errMissingCSRF = errors.New("missing csrf token")

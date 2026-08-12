@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
 	"github.com/QuantProcessing/boltertrader/services/trading/orders"
@@ -41,22 +41,22 @@ type gatewayReadEnvelope[T any] struct {
 }
 
 type gatewayRuntimeProjection struct {
-	AccountID                       string                       `json:"accountId"`
-	Active                          *gatewayRuntimeSnapshotView  `json:"active,omitempty"`
-	Pending                         *gatewayPendingSnapshotView  `json:"pending,omitempty"`
-	Retiring                        []gatewayRuntimeSnapshotView `json:"retiring"`
-	Tombstoned                      *bool                        `json:"tombstoned"`
-	DesiredStateRevision            *int64                       `json:"desiredStateRevision"`
-	RuntimeGeneration               *int64                       `json:"runtimeGeneration"`
-	CredentialVersion               *int64                       `json:"credentialVersion"`
-	RuntimeVersion                  *int64                       `json:"runtimeVersion"`
-	Readiness                       *httpapi.ProjectionReadiness `json:"readiness"`
-	WriteReadiness                  *httpapi.ProjectionReadiness `json:"writeReadiness"`
-	LastAppliedDesiredStateRevision *int64                       `json:"lastAppliedDesiredStateRevision"`
-	LastAppliedRuntimeGeneration    *int64                       `json:"lastAppliedRuntimeGeneration"`
-	BlockedReason                   *string                      `json:"blockedReason"`
-	Capabilities                    []gatewayRuntimeCapability   `json:"capabilities"`
-	ObservedAt                      *time.Time                   `json:"observedAt"`
+	AccountID                       string                           `json:"accountId"`
+	Active                          *gatewayRuntimeSnapshotView      `json:"active,omitempty"`
+	Pending                         *gatewayPendingSnapshotView      `json:"pending,omitempty"`
+	Retiring                        []gatewayRuntimeSnapshotView     `json:"retiring"`
+	Tombstoned                      *bool                            `json:"tombstoned"`
+	DesiredStateRevision            *int64                           `json:"desiredStateRevision"`
+	RuntimeGeneration               *int64                           `json:"runtimeGeneration"`
+	CredentialVersion               *int64                           `json:"credentialVersion"`
+	RuntimeVersion                  *int64                           `json:"runtimeVersion"`
+	Readiness                       *tradinghttp.ProjectionReadiness `json:"readiness"`
+	WriteReadiness                  *tradinghttp.ProjectionReadiness `json:"writeReadiness"`
+	LastAppliedDesiredStateRevision *int64                           `json:"lastAppliedDesiredStateRevision"`
+	LastAppliedRuntimeGeneration    *int64                           `json:"lastAppliedRuntimeGeneration"`
+	BlockedReason                   *string                          `json:"blockedReason"`
+	Capabilities                    []gatewayRuntimeCapability       `json:"capabilities"`
+	ObservedAt                      *time.Time                       `json:"observedAt"`
 }
 
 type gatewayRuntimeCapability struct {
@@ -139,27 +139,27 @@ type gatewayAccountRecord struct {
 	UpdatedAt            time.Time       `json:"updatedAt"`
 }
 
-func (source gatewayManualAccounts) Get(ctx context.Context, principal, accountID string) (httpapi.ManualAccount, error) {
+func (source gatewayManualAccounts) Get(ctx context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
 	if source.adapter == nil {
-		return httpapi.ManualAccount{}, fmt.Errorf("Gateway account authority is unavailable")
+		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account authority is unavailable")
 	}
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
-		return httpapi.ManualAccount{}, fmt.Errorf("Gateway account read scope is invalid")
+		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account read scope is invalid")
 	}
 	var envelope gatewayReadEnvelope[struct {
 		Account gatewayAccountRecord `json:"account"`
 	}]
 	path := "/internal/v1/accounts/" + url.PathEscape(accountID)
 	if err := source.adapter.readLimit(ctx, principal, path, nil, &envelope, gatewayAuthorityResponseLimit); err != nil {
-		return httpapi.ManualAccount{}, fmt.Errorf("read Gateway account: %w", err)
+		return tradinghttp.ManualAccount{}, fmt.Errorf("read Gateway account: %w", err)
 	}
 	account := envelope.Data.Account
 	if account.ID != accountID {
-		return httpapi.ManualAccount{}, fmt.Errorf("Gateway account response is invalid")
+		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account response is invalid")
 	}
 	// NativeEnvironment is the venue environment. The Gateway derives both from
 	// the same route profile, and the public record carries only this one.
-	return httpapi.ManualAccount{
+	return tradinghttp.ManualAccount{
 		ID:                   account.ID,
 		Venue:                account.Venue,
 		VenueEnvironment:     account.NativeEnvironment,
@@ -405,7 +405,7 @@ func (adapter *gatewayAdapter) Fetch(ctx context.Context) (catalog.Snapshot, err
 	}, nil
 }
 
-func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]httpapi.AccountRuntimeProjection, error) {
+func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || mode != string(adapter.mode) {
 		return nil, fmt.Errorf("Gateway runtime projection scope is invalid")
 	}
@@ -427,30 +427,30 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 	} else if !*projection.Tombstoned && projection.Pending == nil {
 		return nil, fmt.Errorf("Gateway runtime account response is invalid")
 	}
-	projectedCapabilities := make([]httpapi.AccountCapabilityProjection, 0, len(projection.Capabilities))
+	projectedCapabilities := make([]tradinghttp.AccountCapabilityProjection, 0, len(projection.Capabilities))
 	for _, row := range projection.Capabilities {
 		if row.RowID == "" || row.Venue == "" || row.Product == "" {
 			return nil, fmt.Errorf("Gateway account capability response is invalid")
 		}
 		operations := row.Operations
-		projectedCapabilities = append(projectedCapabilities, httpapi.AccountCapabilityProjection{
+		projectedCapabilities = append(projectedCapabilities, tradinghttp.AccountCapabilityProjection{
 			RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: row.WriteReady,
-			Operations: httpapi.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
+			Operations: tradinghttp.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
 		})
 	}
 	active, err := projectRuntimeSnapshot(projection.Active)
 	if err != nil {
 		return nil, err
 	}
-	var pending *httpapi.PendingRuntimeSnapshotProjection
+	var pending *tradinghttp.PendingRuntimeSnapshotProjection
 	if projection.Pending != nil {
 		projected, projectErr := projectRuntimeSnapshot(&projection.Pending.gatewayRuntimeSnapshotView)
 		if projectErr != nil || !validPendingRuntimeState(projection.Pending.State) {
 			return nil, fmt.Errorf("Gateway pending runtime response is invalid")
 		}
-		pending = &httpapi.PendingRuntimeSnapshotProjection{RuntimeSnapshotProjection: *projected, State: projection.Pending.State, Reason: projection.Pending.Reason}
+		pending = &tradinghttp.PendingRuntimeSnapshotProjection{RuntimeSnapshotProjection: *projected, State: projection.Pending.State, Reason: projection.Pending.Reason}
 	}
-	retiring := make([]httpapi.RuntimeSnapshotProjection, 0, len(projection.Retiring))
+	retiring := make([]tradinghttp.RuntimeSnapshotProjection, 0, len(projection.Retiring))
 	for index := range projection.Retiring {
 		projected, projectErr := projectRuntimeSnapshot(&projection.Retiring[index])
 		if projectErr != nil {
@@ -458,7 +458,7 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 		}
 		retiring = append(retiring, *projected)
 	}
-	return []httpapi.AccountRuntimeProjection{{
+	return []tradinghttp.AccountRuntimeProjection{{
 		AccountID: accountID, Active: active, Pending: pending, Retiring: retiring, DesiredStateRevision: int64Value(projection.DesiredStateRevision), RuntimeGeneration: int64Value(projection.RuntimeGeneration),
 		CredentialVersion: int64Value(projection.CredentialVersion), RuntimeVersion: int64Value(projection.RuntimeVersion), Readiness: *projection.Readiness, WriteReadiness: *projection.WriteReadiness,
 		LastAppliedDesiredStateRevision: int64Value(projection.LastAppliedDesiredStateRevision), LastAppliedRuntimeGeneration: int64Value(projection.LastAppliedRuntimeGeneration),
@@ -480,21 +480,21 @@ func timeValue(value *time.Time) time.Time {
 	return value.UTC()
 }
 
-func projectRuntimeSnapshot(snapshot *gatewayRuntimeSnapshotView) (*httpapi.RuntimeSnapshotProjection, error) {
+func projectRuntimeSnapshot(snapshot *gatewayRuntimeSnapshotView) (*tradinghttp.RuntimeSnapshotProjection, error) {
 	if snapshot == nil {
 		return nil, nil
 	}
 	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || snapshot.DesiredStateRevision < 1 || snapshot.RuntimeGeneration < 1 || snapshot.CredentialVersion < 1 || !validGatewayRequestedState(snapshot.RequestedState) {
 		return nil, fmt.Errorf("Gateway runtime snapshot response is invalid")
 	}
-	routes := make([]httpapi.RouteRuntimeProjection, 0, len(snapshot.Routes))
+	routes := make([]tradinghttp.RouteRuntimeProjection, 0, len(snapshot.Routes))
 	for _, route := range snapshot.Routes {
 		if strings.TrimSpace(route.RouteID) == "" || strings.TrimSpace(route.Product) == "" || strings.TrimSpace(route.RouteProfileID) == "" || (route.RequestedState != "active" && route.RequestedState != "disabled") {
 			return nil, fmt.Errorf("Gateway runtime route response is invalid")
 		}
-		routes = append(routes, httpapi.RouteRuntimeProjection{RouteID: route.RouteID, Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: route.RequestedState, Ready: route.Ready, Reason: route.Reason})
+		routes = append(routes, tradinghttp.RouteRuntimeProjection{RouteID: route.RouteID, Product: route.Product, SettlementAsset: route.SettlementAsset, RouteProfileID: route.RouteProfileID, RequestedState: route.RequestedState, Ready: route.Ready, Reason: route.Reason})
 	}
-	return &httpapi.RuntimeSnapshotProjection{DesiredStateRevision: snapshot.DesiredStateRevision, RuntimeGeneration: snapshot.RuntimeGeneration, CredentialVersion: snapshot.CredentialVersion, RequestedState: snapshot.RequestedState, Routes: routes}, nil
+	return &tradinghttp.RuntimeSnapshotProjection{DesiredStateRevision: snapshot.DesiredStateRevision, RuntimeGeneration: snapshot.RuntimeGeneration, CredentialVersion: snapshot.CredentialVersion, RequestedState: snapshot.RequestedState, Routes: routes}, nil
 }
 
 func validPendingRuntimeState(state string) bool {
