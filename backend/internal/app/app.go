@@ -11,11 +11,9 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
-	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
-	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 	authedgepostgres "github.com/QuantProcessing/boltertrader/services/authedge/store/postgres"
@@ -31,7 +29,6 @@ import (
 
 type App struct {
 	cfg           config.Config
-	contract      backendcontract.Contract
 	browser       *http.Server
 	browserLn     net.Listener
 	startOnce     sync.Once
@@ -118,10 +115,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return nil, fmt.Errorf("migration-validation requires verified absent runtime writer USAGE")
 	}
 	validationProfile := cfg.StartupProfile == config.StartupMigrationValidation
-	contract, err := loadContract()
-	if err != nil {
-		return nil, err
-	}
 
 	var sessionStore session.Store = session.NewMemoryStore()
 	var identityStore session.IdentityStore
@@ -200,10 +193,9 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return nil, err
 	}
 	return &App{
-		cfg:      cfg,
-		contract: contract,
-		browser:  &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		trading:  trading,
+		cfg:     cfg,
+		browser: &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
+		trading: trading,
 	}, nil
 }
 
@@ -308,8 +300,4 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	return app.Start(ctx)
-}
-
-func loadContract() (backendcontract.Contract, error) {
-	return frozencontract.Load()
 }

@@ -202,15 +202,14 @@ func TestAppWiresOwnedRoutesAndKeepsLiveWritesDisabled(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Accounts are owned by the Gateway now. The frozen contract still
-			// lists the route, so it stays registered as a scaffold until the
-			// auth edge proxies it — the backend must not answer it with facts
-			// of its own.
+			// Accounts belong to the gateway. This listener forwards to the
+			// trading service and nothing else, so the route is simply absent
+			// here rather than answered with facts of its own.
 			accountsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
 			accountsRequest.AddCookie(cookie)
 			accountsResponse := httptest.NewRecorder()
 			app.browser.Handler.ServeHTTP(accountsResponse, accountsRequest)
-			if accountsResponse.Code != http.StatusOK || !strings.Contains(accountsResponse.Body.String(), `"scaffold":true`) {
+			if accountsResponse.Code != http.StatusNotFound {
 				t.Fatalf("accounts=%d body=%s", accountsResponse.Code, accountsResponse.Body.String())
 			}
 			readinessRequest := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)

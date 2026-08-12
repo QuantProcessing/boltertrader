@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
 	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 )
 
@@ -62,28 +61,6 @@ func TestBrowserAuthAndStrictLoginValidation(t *testing.T) {
 	}
 }
 
-func TestBrowserRoutesMatchFrozenContract(t *testing.T) {
-	contract, err := frozencontract.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var routes []string
-	for _, listener := range contract.Listeners {
-		if listener.ID == "platform-browser" {
-			routes = append(routes, listener.Routes...)
-		}
-	}
-	if len(routes) == 0 {
-		t.Fatal("no browser routes found")
-	}
-	if routes[0] != "POST /api/v1/auth/login" {
-		t.Fatalf("unexpected first route %q", routes[0])
-	}
-	if routes[len(routes)-1] != "GET /api/v1/realtime/stream" {
-		t.Fatalf("unexpected last route %q", routes[len(routes)-1])
-	}
-}
-
 // The canonical write gate is the last line of defence before any mutation
 // reaches storage: while the writer role is unavailable every mutating route is
 // refused, but the two auth routes that let an operator see and end their own
@@ -100,6 +77,15 @@ func TestCanonicalWriteGateBlocksMutationsButLeavesAuthReachable(t *testing.T) {
 	}
 	handler, err := New(Options{
 		Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, WriteAuthority: testWriteAuthority{},
+		// The gate guards routes this listener forwards rather than serves, so
+		// the probe below needs one mounted to have something to be refused.
+		Downstream: func(mux *http.ServeMux) ([]string, error) {
+			mux.HandleFunc("POST /api/v1/accounts", func(w http.ResponseWriter, _ *http.Request) {
+				t.Error("downstream reached while canonical writes were unavailable")
+				w.WriteHeader(http.StatusCreated)
+			})
+			return []string{"POST /api/v1/accounts"}, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

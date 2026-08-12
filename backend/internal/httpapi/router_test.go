@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,11 @@ import (
 
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
+	return newTestHandlerWith(t, nil)
+}
+
+func newTestHandlerWith(t *testing.T, downstream func(*http.ServeMux) ([]string, error)) http.Handler {
+	t.Helper()
 	passwordHash, err := session.HashPassword("correct horse battery staple")
 	if err != nil {
 		t.Fatalf("session.HashPassword() error = %v", err)
@@ -22,7 +26,7 @@ func newTestHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatalf("session.New() error = %v", err)
 	}
-	handler, err := New(Options{Sessions: sessions, Mode: "test", ContractVersion: ContractVersion})
+	handler, err := New(Options{Sessions: sessions, Mode: "test", ContractVersion: ContractVersion, Downstream: downstream})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -111,23 +115,39 @@ func TestBrowserRouterIsStrictAndDoesNotMountWorkRoutes(t *testing.T) {
 	}
 }
 
-func TestSystemReadinessNamesFrozenComponents(t *testing.T) {
-	handler := newTestHandler(t)
-	login, cookie, csrf := login(t, handler)
-	_ = login
-	_ = csrf
+// Everything past the four auth routes is somebody else's to serve, and this
+// listener's only job on those is to decide whether the caller has a session.
+// Nothing downstream sees a request until that decision has been made.
+func TestDownstreamRoutesAreGatedOnTheSession(t *testing.T) {
+	var reached int
+	handler := newTestHandlerWith(t, func(mux *http.ServeMux) ([]string, error) {
+		mux.HandleFunc("GET /api/v1/system/readiness", func(w http.ResponseWriter, _ *http.Request) {
+			reached++
+			w.WriteHeader(http.StatusOK)
+		})
+		return []string{"GET /api/v1/system/readiness"}, nil
+	})
+
+	anonymous := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
+	anonymousResponse := httptest.NewRecorder()
+	handler.ServeHTTP(anonymousResponse, anonymous)
+	if anonymousResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous status = %d want 401 body=%s", anonymousResponse.Code, anonymousResponse.Body.String())
+	}
+	if reached != 0 {
+		t.Fatalf("downstream reached %d times before authentication", reached)
+	}
+
+	_, cookie, _ := login(t, handler)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
-	request = request.WithContext(context.Background())
 	request.AddCookie(cookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("readiness status = %d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated status = %d body=%s", response.Code, response.Body.String())
 	}
-	for _, component := range []string{"process", "database", "gateway", "publicData", "accounts"} {
-		if !strings.Contains(response.Body.String(), `"`+component+`"`) {
-			t.Fatalf("readiness missing %q: %s", component, response.Body.String())
-		}
+	if reached != 1 {
+		t.Fatalf("downstream reached %d times, want 1", reached)
 	}
 }
 
