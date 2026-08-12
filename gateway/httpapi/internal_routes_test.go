@@ -189,6 +189,9 @@ func TestRotationFinalizationValidationRejectsIdentityFenceAndShapeConflicts(t *
 	}
 }
 
+// The desired-state plane is read-only apart from the operation-scoped PUTs.
+// Account writes belong to the lifecycle service on /internal/v1/accounts, so
+// these paths must stay unrouted no matter what else gets mounted alongside.
 func TestInternalAuthorityRejectsLegacyDesiredMutationRoutes(t *testing.T) {
 	authority := new(fakeInternalAuthority)
 	handler, err := NewInternalHandler(InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})

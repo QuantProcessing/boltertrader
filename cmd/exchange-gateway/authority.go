@@ -485,8 +485,6 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		response, err = authority.retireDesired(ctx, request)
 	case httpapi.AuthorityFinalizeRotation:
 		response, err = authority.finalizeRotation(ctx, request)
-	case httpapi.AuthorityCreateDesired:
-		response, err = authority.create(ctx, request.Desired)
 	case httpapi.AuthorityListDesired:
 		response, err = authority.listDesired(ctx)
 	case httpapi.AuthorityGetDesired:
@@ -495,16 +493,6 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		} else {
 			response, err = authority.getDesired(ctx, request.AccountID)
 		}
-	case httpapi.AuthorityValidateDesired:
-		response, err = authority.validate(ctx, request)
-	case httpapi.AuthorityRotateDesired:
-		response, err = authority.rotate(ctx, request)
-	case httpapi.AuthorityUpdateDesired:
-		response, err = authority.update(ctx, request)
-	case httpapi.AuthorityDisableDesired, httpapi.AuthorityDrainDesired:
-		response, err = authority.transition(ctx, request)
-	case httpapi.AuthorityDeleteDesired:
-		err = authority.remove(ctx, request)
 	case httpapi.AuthorityListRuntimeAccounts:
 		response.Body = authorityPublicRuntimes(authority.manager.Runtimes())
 	case httpapi.AuthorityGetRuntimeAccount:
@@ -1227,21 +1215,6 @@ func projectAuthorityLevels(levels []exchange.BookLevel) ([]authorityLevel, erro
 	return result, nil
 }
 
-func (authority *gatewayAuthority) create(ctx context.Context, input *httpapi.DesiredAccount) (httpapi.AuthorityResponse, error) {
-	if input == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired account is required")
-	}
-	desired, err := desiredFromHTTP(*input, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	created, err := authority.store.CreateDesiredAccount(ctx, desired)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(created), nil
-}
-
 func (authority *gatewayAuthority) listDesired(ctx context.Context) (httpapi.AuthorityResponse, error) {
 	items, err := authority.store.ListDesiredAccounts(ctx)
 	if err != nil {
@@ -1261,160 +1234,6 @@ func (authority *gatewayAuthority) getDesired(ctx context.Context, accountID str
 		return httpapi.AuthorityResponse{}, err
 	}
 	return desiredResponse(desired), nil
-}
-
-func (authority *gatewayAuthority) validate(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil || request.Mutation.DesiredStateRevision != current.DesiredStateRevision ||
-		request.Mutation.RuntimeGeneration != current.RuntimeGeneration || request.Mutation.CredentialVersion != current.CredentialVersion {
-		return httpapi.AuthorityResponse{}, store.ErrDesiredStateRevisionConflict
-	}
-	desired, err := authority.runtimeDesired(current, current.SecretRef, account.RuntimeStateActive)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if err := authority.manager.ValidateRuntime(ctx, desired); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return httpapi.AuthorityResponse{Body: map[string]any{"ready": true}, DesiredStateRevision: current.DesiredStateRevision}, nil
-}
-
-func (authority *gatewayAuthority) rotate(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil || request.Mutation.RotationFence == nil {
-		return httpapi.AuthorityResponse{}, errors.New("rotation mutation is incomplete")
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, store.DesiredRotating, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	fence := next.RotationFence
-	candidate := next
-	candidate.RuntimeGeneration = fence.ToRuntimeGeneration
-	candidate.CredentialVersion = fence.ToCredentialVersion
-	candidate.RequestedState = store.DesiredActive
-	desired, err := authority.runtimeDesired(candidate, next.SecretRef, account.RuntimeStateActive)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if err := authority.manager.ValidateRuntime(ctx, desired); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) update(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired mutation is required")
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, store.DesiredAccountState(request.Mutation.RequestedState), authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-
-	switch {
-	case current.RequestedState == store.DesiredCreating && next.RequestedState == store.DesiredActive:
-		runtimeDesired, convertErr := authority.runtimeDesired(next, next.SecretRef, account.RuntimeStateActive)
-		if convertErr != nil {
-			return httpapi.AuthorityResponse{}, convertErr
-		}
-		if _, err := authority.manager.CreateRuntime(ctx, runtimeDesired); err != nil {
-			return httpapi.AuthorityResponse{}, err
-		}
-	case current.RequestedState == store.DesiredRotating && next.RequestedState == store.DesiredActive:
-		runtimeDesired, convertErr := authority.runtimeDesired(next, next.SecretRef, account.RuntimeStateActive)
-		if convertErr != nil {
-			return httpapi.AuthorityResponse{}, convertErr
-		}
-		if _, err := authority.manager.RotateRuntime(ctx, runtimeDesired, uint64(request.ExpectedRevision)); err != nil {
-			return httpapi.AuthorityResponse{}, err
-		}
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) transition(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired mutation is required")
-	}
-	nextState := store.DesiredDisabled
-	runtimeState := account.RuntimeStateDisabled
-	if request.Operation == httpapi.AuthorityDrainDesired {
-		nextState = store.DesiredDraining
-		runtimeState = account.RuntimeStateDraining
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, nextState, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	runtime, err := authority.manager.Runtime(current.AccountID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if runtimeState == account.RuntimeStateDraining {
-		_, err = authority.manager.DrainRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision, uint64(next.DesiredStateRevision))
-	} else {
-		_, err = authority.manager.DisableRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision, uint64(next.DesiredStateRevision))
-	}
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) remove(ctx context.Context, request httpapi.AuthorityRequest) error {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return err
-	}
-	if current.RequestedState != store.DesiredRemoved {
-		return store.ErrInvalidAccountTransition
-	}
-	if runtime, runtimeErr := authority.manager.Runtime(current.AccountID); runtimeErr == nil {
-		if err := authority.manager.RemoveRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision); err != nil {
-			return err
-		}
-	} else if !errors.Is(runtimeErr, account.ErrUnknownAccount) {
-		return runtimeErr
-	}
-	return authority.store.DeleteDesiredAccount(ctx, current.AccountID, request.ExpectedRevision)
-}
-
-func (authority *gatewayAuthority) loadExpected(ctx context.Context, accountID string, revision int64) (store.DesiredAccount, error) {
-	desired, err := authority.store.LoadDesiredAccount(ctx, domain.AccountID(accountID))
-	if err != nil {
-		return store.DesiredAccount{}, err
-	}
-	if revision <= 0 || desired.DesiredStateRevision != revision {
-		return store.DesiredAccount{}, store.ErrDesiredStateRevisionConflict
-	}
-	return desired, nil
 }
 
 func (authority *gatewayAuthority) restore(ctx context.Context) error {
@@ -1461,57 +1280,6 @@ func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, 
 		RuntimeGeneration: uint64(desired.RuntimeGeneration), CredentialVersion: uint64(desired.CredentialVersion),
 		RequestedState: state, RotationFence: rotationFence,
 	}, nil
-}
-
-func desiredFromHTTP(input httpapi.DesiredAccount, now time.Time) (store.DesiredAccount, error) {
-	desired := store.DesiredAccount{
-		AccountID: domain.AccountID(input.AccountID), Venue: input.Venue, VenueEnvironment: input.VenueEnvironment,
-		SecretRef: input.SecretRef, DesiredStateRevision: input.DesiredStateRevision,
-		RuntimeGeneration: input.RuntimeGeneration, CredentialVersion: input.CredentialVersion,
-		RequestedState: store.DesiredAccountState(input.RequestedState), UpdatedAt: now.UTC(),
-	}
-	if input.RotationFence != nil {
-		desired.RotationFence = rotationFenceFromHTTP(*input.RotationFence, now)
-	}
-	if err := desired.Validate(); err != nil {
-		return store.DesiredAccount{}, err
-	}
-	return desired, nil
-}
-
-func desiredFromMutation(current store.DesiredAccount, mutation httpapi.DesiredMutation, state store.DesiredAccountState, now time.Time) (store.DesiredAccount, error) {
-	next := current
-	if mutation.SecretRef != "" {
-		next.SecretRef = mutation.SecretRef
-	}
-	next.DesiredStateRevision = mutation.DesiredStateRevision
-	next.RuntimeGeneration = mutation.RuntimeGeneration
-	next.CredentialVersion = mutation.CredentialVersion
-	next.RequestedState = state
-	next.UpdatedAt = now.UTC()
-	if mutation.RotationFence != nil {
-		next.RotationFence = rotationFenceFromHTTP(*mutation.RotationFence, now)
-	} else {
-		next.RotationFence = nil
-	}
-	if err := next.Validate(); err != nil {
-		return store.DesiredAccount{}, err
-	}
-	return next, nil
-}
-
-func rotationFenceFromHTTP(input httpapi.RotationFence, now time.Time) *store.RotationFence {
-	fence := &store.RotationFence{
-		ID: input.RotationFenceID, State: store.RotationFenceState(input.State),
-		FromCredentialVersion: input.FromCredentialVersion, ToCredentialVersion: input.ToCredentialVersion,
-		FromRuntimeGeneration: input.FromRuntimeGeneration, ToRuntimeGeneration: input.ToRuntimeGeneration,
-		ArmedAt: now.UTC(),
-	}
-	if fence.State == store.RotationReleased {
-		released := now.UTC()
-		fence.ReleasedAt = &released
-	}
-	return fence
 }
 
 func desiredResponse(desired store.DesiredAccount) httpapi.AuthorityResponse {

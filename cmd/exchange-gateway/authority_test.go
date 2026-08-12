@@ -509,7 +509,8 @@ func TestGatewayAuthorityRejectsUnavailableMarketDataProjection(t *testing.T) {
 
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	desiredStore := newMemoryDesiredStore()
+	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +532,7 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 		t.Fatalf("empty readiness=%T %+v", readinessResponse.Body, readinessResponse.Body)
 	}
 
-	seedActiveAuthorityAccount(t, ctx, authority)
+	seedActiveAuthorityAccount(t, ctx, authority, desiredStore)
 	readinessResponse, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityRuntimeReadiness})
 	if err != nil {
 		t.Fatal(err)
@@ -552,11 +553,12 @@ func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 
 func TestGatewayAuthorityRuntimeListAndStatusJSONOmitSecretReference(t *testing.T) {
 	ctx := context.Background()
-	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	desiredStore := newMemoryDesiredStore()
+	authority, err := newGatewayAuthority(ctx, desiredStore, newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedActiveAuthorityAccount(t, ctx, authority)
+	seedActiveAuthorityAccount(t, ctx, authority, desiredStore)
 	handler, err := httpapi.NewInternalHandler(httpapi.InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})
 	if err != nil {
 		t.Fatal(err)
@@ -624,153 +626,6 @@ func (reads staticAuthorityReads) MarketData(context.Context, string, string, st
 
 func (reads staticAuthorityReads) Runtime(string) (authorityRuntimeProjection, error) {
 	return reads.runtime, reads.err
-}
-
-func TestGatewayAuthorityCreateActivateAndReadRedactsOpaqueReference(t *testing.T) {
-	ctx := context.Background()
-	lifecycle := newAuthorityLifecycle()
-	manager := newAuthorityManager(t, account.RuntimeModeTest, lifecycle)
-	desiredStore := newMemoryDesiredStore()
-	authority, err := newGatewayAuthority(ctx, desiredStore, manager, account.RuntimeModeTest)
-	if err != nil {
-		t.Fatalf("newGatewayAuthority: %v", err)
-	}
-
-	created, err := authority.Execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityCreateDesired,
-		Desired: &httpapi.DesiredAccount{
-			AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo",
-			SecretRef: "opaque-secret-canary", DesiredStateRevision: 1,
-			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "creating",
-		},
-	})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	assertRedactedDesiredResponse(t, created, 1)
-	if _, err := manager.Runtime("dynamic"); !errors.Is(err, account.ErrUnknownAccount) {
-		t.Fatalf("creating runtime exists: %v", err)
-	}
-
-	activated, err := authority.Execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityUpdateDesired, AccountID: "dynamic", ExpectedRevision: 1,
-		Mutation: &httpapi.DesiredMutation{
-			SecretRef: "opaque-secret-canary", DesiredStateRevision: 2,
-			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-		},
-	})
-	if err != nil {
-		t.Fatalf("activate: %v", err)
-	}
-	assertRedactedDesiredResponse(t, activated, 2)
-	if runtime, err := manager.Runtime("dynamic"); err != nil || !runtime.Ready {
-		t.Fatalf("runtime=%+v err=%v", runtime, err)
-	}
-	if lifecycle.activations != 1 || lifecycle.lastSecretRef != "opaque-secret-canary" {
-		t.Fatalf("lifecycle=%+v", lifecycle)
-	}
-
-	read, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityGetDesired, AccountID: "dynamic"})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	assertRedactedDesiredResponse(t, read, 2)
-}
-
-func TestGatewayAuthorityRotationAndDrainPreserveFenceSemantics(t *testing.T) {
-	ctx := context.Background()
-	lifecycle := newAuthorityLifecycle()
-	manager := newAuthorityManager(t, account.RuntimeModeTest, lifecycle)
-	desiredStore := newMemoryDesiredStore()
-	authority, err := newGatewayAuthority(ctx, desiredStore, manager, account.RuntimeModeTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedActiveAuthorityAccount(t, ctx, authority)
-
-	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityRotateDesired, AccountID: "dynamic", ExpectedRevision: 2,
-		Mutation: &httpapi.DesiredMutation{
-			SecretRef: "opaque-replacement", DesiredStateRevision: 3,
-			RuntimeGeneration: 1, CredentialVersion: 1,
-			RotationFence: &httpapi.RotationFence{
-				RotationFenceID: "rotate-1", State: "armed",
-				FromRuntimeGeneration: 1, ToRuntimeGeneration: 2,
-				FromCredentialVersion: 1, ToCredentialVersion: 2,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("arm rotation: %v", err)
-	}
-	if lifecycle.validations < 2 || lifecycle.lastSecretRef != "opaque-replacement" {
-		t.Fatalf("replacement was not validated before persistence: %+v", lifecycle)
-	}
-
-	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityUpdateDesired, AccountID: "dynamic", ExpectedRevision: 3,
-		Mutation: &httpapi.DesiredMutation{
-			SecretRef: "opaque-replacement", DesiredStateRevision: 4,
-			RuntimeGeneration: 2, CredentialVersion: 2, RequestedState: "active",
-			RotationFence: &httpapi.RotationFence{
-				RotationFenceID: "rotate-1", State: "released",
-				FromRuntimeGeneration: 1, ToRuntimeGeneration: 2,
-				FromCredentialVersion: 1, ToCredentialVersion: 2,
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("promote rotation: %v", err)
-	}
-	runtime, err := manager.Runtime("dynamic")
-	if err != nil || runtime.Desired.DesiredStateRevision != 4 || runtime.Desired.RuntimeGeneration != 2 {
-		t.Fatalf("promoted runtime=%+v err=%v", runtime, err)
-	}
-
-	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{
-		Operation: httpapi.AuthorityDrainDesired, AccountID: "dynamic", ExpectedRevision: 4,
-		Mutation: &httpapi.DesiredMutation{
-			DesiredStateRevision: 5, RuntimeGeneration: 2, CredentialVersion: 2, RequestedState: "draining",
-		},
-	})
-	if err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	drained, err := manager.Runtime("dynamic")
-	if err != nil || drained.Desired.RuntimeGeneration != 2 || drained.Desired.CredentialVersion != 2 {
-		t.Fatalf("drained runtime=%+v err=%v", drained, err)
-	}
-}
-
-func TestGatewayAuthorityPersistsBeforeActivationSoFailureIsRestartRecoverable(t *testing.T) {
-	ctx := context.Background()
-	lifecycle := newAuthorityLifecycle()
-	manager := newAuthorityManager(t, account.RuntimeModeTest, lifecycle)
-	desiredStore := newMemoryDesiredStore()
-	authority, err := newGatewayAuthority(ctx, desiredStore, manager, account.RuntimeModeTest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityCreateDesired, Desired: &httpapi.DesiredAccount{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", SecretRef: "opaque-initial",
-		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "creating",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	lifecycle.activationErr = errors.New("secret-material-canary")
-	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityUpdateDesired, AccountID: "dynamic", ExpectedRevision: 1, Mutation: &httpapi.DesiredMutation{
-		SecretRef: "opaque-initial", DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-	}})
-	if err == nil || strings.Contains(err.Error(), "secret-material-canary") {
-		t.Fatalf("activation error=%v", err)
-	}
-	persisted, err := desiredStore.LoadDesiredAccount(ctx, "dynamic")
-	if err != nil || persisted.RequestedState != store.DesiredActive || persisted.DesiredStateRevision != 2 {
-		t.Fatalf("persisted=%+v err=%v", persisted, err)
-	}
-	if _, err := manager.Runtime("dynamic"); !errors.Is(err, account.ErrUnknownAccount) {
-		t.Fatalf("failed activation admitted runtime: %v", err)
-	}
 }
 
 func TestGatewayAuthorityRestoresActiveAndRotatingAccounts(t *testing.T) {
@@ -868,28 +723,17 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 	}
 }
 
-func assertRedactedDesiredResponse(t *testing.T, response httpapi.AuthorityResponse, revision int64) {
+// seedActiveAuthorityAccount brings one account to active the way a restart
+// does: the desired record lands in the store and the authority restores it.
+// The account lifecycle service owns the write path now, so the authority has
+// no create/activate operation left for a test to call.
+func seedActiveAuthorityAccount(t *testing.T, ctx context.Context, authority *gatewayAuthority, desiredStore *memoryDesiredStore) {
 	t.Helper()
-	desired, ok := response.Body.(httpapi.DesiredAccount)
-	if !ok {
-		t.Fatalf("body type = %T", response.Body)
-	}
-	if desired.SecretRef != "redacted" || response.DesiredStateRevision != revision {
-		t.Fatalf("response=%+v", response)
-	}
-}
-
-func seedActiveAuthorityAccount(t *testing.T, ctx context.Context, authority *gatewayAuthority) {
-	t.Helper()
-	if _, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityCreateDesired, Desired: &httpapi.DesiredAccount{
+	desiredStore.items["dynamic"] = store.DesiredAccount{
 		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", SecretRef: "opaque-initial",
-		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "creating",
-	}}); err != nil {
-		t.Fatal(err)
+		DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredActive,
 	}
-	if _, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityUpdateDesired, AccountID: "dynamic", ExpectedRevision: 1, Mutation: &httpapi.DesiredMutation{
-		SecretRef: "opaque-initial", DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-	}}); err != nil {
+	if err := authority.restore(ctx); err != nil {
 		t.Fatal(err)
 	}
 }
