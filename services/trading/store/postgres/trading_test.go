@@ -51,7 +51,7 @@ func TestPortfolioStorePersistsFillAndPositionInOneTransaction(t *testing.T) {
 		t.Fatal("portfolio fill transaction boundary missing")
 	}
 	applyFill := implementation[start : start+end]
-	for _, required := range []string{"BeginTx", "platform_portfolio_fills", "ON CONFLICT (principal_id,fill_id) DO NOTHING", "platform_positions", "upsertPortfolioPosition", "tx.Commit"} {
+	for _, required := range []string{"BeginTx", "portfolio_fills", "ON CONFLICT (principal_id,fill_id) DO NOTHING", "positions", "upsertPortfolioPosition", "tx.Commit"} {
 		if !strings.Contains(applyFill, required) {
 			t.Errorf("portfolio fill transaction missing %q", required)
 		}
@@ -90,12 +90,12 @@ func TestLedgerFundingSupersessionIsAtomicAndUnrealizedIsMonotonic(t *testing.T)
 		t.Fatal("ledger funding supersession transaction boundary missing")
 	}
 	supersession := implementation[start : start+end]
-	for _, required := range []string{"BeginTx", "FOR UPDATE", "DELETE FROM platform_ledger_entries", "INSERT INTO platform_ledger_entries", "tx.Commit"} {
+	for _, required := range []string{"BeginTx", "FOR UPDATE", "DELETE FROM ledger_entries", "INSERT INTO ledger_entries", "tx.Commit"} {
 		if !strings.Contains(supersession, required) {
 			t.Errorf("funding supersession transaction missing %q", required)
 		}
 	}
-	if !strings.Contains(implementation, "WHERE platform_unrealized_pnl.as_of < EXCLUDED.as_of") {
+	if !strings.Contains(implementation, "WHERE unrealized_pnl.as_of < EXCLUDED.as_of") {
 		t.Error("unrealized persistence can overwrite a newer observation")
 	}
 }
@@ -112,7 +112,7 @@ func TestCommandStoreAtomicallyConsumesReservationAfterReplayCheck(t *testing.T)
 	}
 	atomicStore := implementation[start:]
 	replay := strings.Index(atomicStore, "if rows == 0")
-	fence := strings.Index(atomicStore, "UPDATE platform_reservations SET status='consumed'")
+	fence := strings.Index(atomicStore, "UPDATE reservations SET status='consumed'")
 	commit := strings.Index(atomicStore, "tx.Commit()")
 	if replay < 0 || fence < 0 || commit < 0 || replay > fence || fence > commit {
 		t.Fatal("reservation command path does not replay, fence, and commit in order")

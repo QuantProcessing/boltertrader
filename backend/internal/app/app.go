@@ -29,6 +29,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
+	tradingpg "github.com/QuantProcessing/boltertrader/services/trading/store/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -45,7 +46,14 @@ type App struct {
 }
 
 type Dependencies struct {
-	Database              *sql.DB
+	Database *sql.DB
+	// TradingDatabase is deliberately separate from Database. The trading
+	// stores now speak their own schema — bare `commands`, `reservations`,
+	// `ledger_entries` — so pointing them at the platform database would send
+	// their statements at tables that are not there. Until trading runs as its
+	// own process it stays unset, and the trading side falls back to the same
+	// in-memory stores it uses when no database is configured at all.
+	TradingDatabase       *sql.DB
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
 	MarketDataProbe       marketDataRouteProbe
@@ -101,11 +109,13 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 			}
 		}
 		identityStore = persistentIdentities
-		auditStore = postgres.NewAuditStore(dependencies.Database)
-		reservationStore = postgres.NewReservationStore(dependencies.Database)
-		commandStore = postgres.NewCommandStore(dependencies.Database)
-		ledgerStore = postgres.NewLedgerStore(dependencies.Database)
-		portfolioProjection = portfolio.NewPersistentProjection(postgres.NewPortfolioStore(dependencies.Database))
+	}
+	if dependencies.TradingDatabase != nil {
+		auditStore = tradingpg.NewAuditStore(dependencies.TradingDatabase)
+		reservationStore = tradingpg.NewReservationStore(dependencies.TradingDatabase)
+		commandStore = tradingpg.NewCommandStore(dependencies.TradingDatabase)
+		ledgerStore = tradingpg.NewLedgerStore(dependencies.TradingDatabase)
+		portfolioProjection = portfolio.NewPersistentProjection(tradingpg.NewPortfolioStore(dependencies.TradingDatabase))
 	}
 	sessionService, err := session.New(session.Options{
 		Username:     cfg.BootstrapUsername,

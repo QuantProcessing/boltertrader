@@ -14,7 +14,7 @@ func NewAuditStore(db *sql.DB) *AuditStore { return &AuditStore{db: db} }
 
 func (store *AuditStore) Append(ctx context.Context, record audit.Record) error {
 	_, err := store.db.ExecContext(ctx, `
-		INSERT INTO platform_audit
+		INSERT INTO audit
 		(audit_id, principal_id, action, resource_type, resource_id, outcome, request_id, occurred_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, record.ID, record.PrincipalID, record.Action,
 		record.ResourceType, record.ResourceID, record.Outcome, record.RequestID, record.OccurredAt)
@@ -22,7 +22,7 @@ func (store *AuditStore) Append(ctx context.Context, record audit.Record) error 
 }
 
 func (store *AuditStore) List(ctx context.Context, filter audit.Filter) ([]audit.Record, error) {
-	query := `SELECT audit_id, principal_id, action, resource_type, resource_id, outcome, request_id, occurred_at FROM platform_audit`
+	query := `SELECT audit_id, principal_id, action, resource_type, resource_id, outcome, request_id, occurred_at FROM audit`
 	args := []any{}
 	if filter.ResourceID != "" {
 		query += ` WHERE resource_id = $1`

@@ -7,13 +7,11 @@ import (
 	"testing"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
-	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 )
 
 func TestStoresImplementPlatformContracts(t *testing.T) {
 	var _ session.Store = (*SessionStore)(nil)
 	var _ session.IdentityStore = (*IdentityStore)(nil)
-	var _ audit.Store = (*AuditStore)(nil)
 }
 
 func TestIdentityAccountAuditMigrationIsFencedAndSecretSafe(t *testing.T) {

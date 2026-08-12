@@ -16,10 +16,6 @@ import (
 
 var integrationSchemaSequence atomic.Uint64
 
-func openIntegrationDatabase(t *testing.T) (*sql.DB, func() *sql.DB) {
-	return openIntegrationDatabaseWithMigrations(t, true)
-}
-
 func openIntegrationDatabaseWithMigrations(t *testing.T, applyMigrations bool) (*sql.DB, func() *sql.DB) {
 	t.Helper()
 	dsn := strings.TrimSpace(os.Getenv("BT_TEST_POSTGRES_DSN"))
