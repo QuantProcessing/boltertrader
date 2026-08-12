@@ -24,7 +24,6 @@ type Options struct {
 	Sessions        *session.Service
 	Mode            string
 	ContractVersion string
-	Accounts        *AccountRoutesOptions
 	Audit           *AuditRouteOptions
 	PublicData      *PublicDataAPI
 	Trading         *TradingOptions
@@ -109,14 +108,6 @@ func (s *Server) register(options Options) error {
 	}
 	if err := RegisterAuthRoutes(s.mux, AuthRoutesOptions{Sessions: s.sessions}); err != nil {
 		return err
-	}
-	if options.Accounts != nil {
-		if err := RegisterAccountRoutes(s.mux, *options.Accounts); err != nil {
-			return err
-		}
-		for _, route := range []string{"GET /api/v1/accounts", "POST /api/v1/accounts", "GET /api/v1/accounts/{accountId}", "PATCH /api/v1/accounts/{accountId}", "POST /api/v1/accounts/{accountId}/validate", "POST /api/v1/accounts/{accountId}/rotate", "POST /api/v1/accounts/{accountId}/disable", "POST /api/v1/accounts/{accountId}/drain", "DELETE /api/v1/accounts/{accountId}"} {
-			owned[route] = true
-		}
 	}
 	if options.Audit != nil {
 		if err := RegisterAuditRoute(s.mux, *options.Audit); err != nil {
@@ -268,13 +259,12 @@ func readinessPayload(ready bool) map[string]any {
 		return map[string]any{"state": "scaffold", "ready": ready, "observedAt": time.Now().UTC().Format(time.RFC3339)}
 	}
 	return map[string]any{
-		"ready":       ready,
-		"process":     component(),
-		"database":    component(),
-		"secretStore": component(),
-		"gateway":     component(),
-		"publicData":  component(),
-		"accounts":    component(),
+		"ready":      ready,
+		"process":    component(),
+		"database":   component(),
+		"gateway":    component(),
+		"publicData": component(),
+		"accounts":   component(),
 	}
 }
 

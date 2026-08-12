@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-var RequiredComponents = []string{"process", "database", "secretStore", "gateway", "publicData", "accounts"}
+var RequiredComponents = []string{"process", "database", "gateway", "publicData", "accounts"}
 
 type Component struct {
 	Ready             bool           `json:"ready"`

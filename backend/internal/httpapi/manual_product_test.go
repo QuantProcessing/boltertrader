@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
@@ -159,7 +158,7 @@ type manualCatalogSource struct {
 }
 
 type staticManualAccounts struct {
-	account platformaccounts.Account
+	account ManualAccount
 }
 
 type manualMarketDataFixture struct{ ask string }
@@ -190,20 +189,20 @@ func TestManualTestNotionalCapUsesAuthoritativeMarketForLimitOrders(t *testing.T
 	}
 }
 
-func (accounts *staticManualAccounts) Get(context.Context, string) (platformaccounts.Account, error) {
+func (accounts *staticManualAccounts) Get(context.Context, string, string) (ManualAccount, error) {
 	return accounts.account, nil
 }
 
-func readyManualAccount() platformaccounts.Account {
-	return platformaccounts.Account{
-		ID: "account-a", Venue: "binance", VenueEnvironment: platformaccounts.EnvironmentDemo,
+func readyManualAccount() ManualAccount {
+	return ManualAccount{
+		ID: "account-a", Venue: "binance", VenueEnvironment: "demo",
 		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1,
-		CredentialVersion: 1, State: platformaccounts.StateActive,
+		CredentialVersion: 1, State: manualAccountActive,
 	}
 }
 
 func TestManualAccountReadyRequiresActiveState(t *testing.T) {
-	for _, state := range []platformaccounts.State{platformaccounts.StateCreating, platformaccounts.StateRotating} {
+	for _, state := range []string{"creating", "rotating"} {
 		account := readyManualAccount()
 		account.State = state
 		if manualAccountReady(account, "test") {
@@ -464,10 +463,10 @@ func TestManualCommandRejectsChangedCatalogBeforeReservation(t *testing.T) {
 func TestManualCommandRejectsExpiredOrChangedAccountBeforeReservation(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		mutate func(*time.Time, *platformaccounts.Account)
+		mutate func(*time.Time, *ManualAccount)
 	}{
-		{name: "expired preview", mutate: func(now *time.Time, _ *platformaccounts.Account) { *now = now.Add(manualPreviewTTL) }},
-		{name: "runtime generation changed", mutate: func(_ *time.Time, account *platformaccounts.Account) { account.RuntimeGeneration++ }},
+		{name: "expired preview", mutate: func(now *time.Time, _ *ManualAccount) { *now = now.Add(manualPreviewTTL) }},
+		{name: "runtime generation changed", mutate: func(_ *time.Time, account *ManualAccount) { account.RuntimeGeneration++ }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 8, 6, 2, 0, 0, 0, time.UTC)

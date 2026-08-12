@@ -124,7 +124,7 @@ func TestSystemReadinessNamesFrozenComponents(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readiness status = %d body=%s", response.Code, response.Body.String())
 	}
-	for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts"} {
+	for _, component := range []string{"process", "database", "gateway", "publicData", "accounts"} {
 		if !strings.Contains(response.Body.String(), `"`+component+`"`) {
 			t.Fatalf("readiness missing %q: %s", component, response.Body.String())
 		}

@@ -8,14 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"sync"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
@@ -24,44 +22,37 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/realtime"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	platformsystem "github.com/QuantProcessing/boltertrader/backend/internal/platform/system"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
-	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
-	"github.com/QuantProcessing/boltertrader/secretstore"
+	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type App struct {
-	cfg                  config.Config
-	contract             backendcontract.Contract
-	accounts             *accounts.Service
-	browser              *http.Server
-	browserLn            net.Listener
-	startOnce            sync.Once
-	shutdownOnce         sync.Once
-	reconciler           *orders.Reconciler
-	accountReconciler    *accountReconciler
-	reconcileStop        context.CancelFunc
-	reconcileDone        chan struct{}
-	accountReconcileDone chan struct{}
-	secretReady          bool
+	cfg           config.Config
+	contract      backendcontract.Contract
+	browser       *http.Server
+	browserLn     net.Listener
+	startOnce     sync.Once
+	shutdownOnce  sync.Once
+	reconciler    *orders.Reconciler
+	reconcileStop context.CancelFunc
+	reconcileDone chan struct{}
 }
 
 type Dependencies struct {
 	Database              *sql.DB
-	SecretProvider        secret.Provider
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
 	MarketDataProbe       marketDataRouteProbe
 	RuntimeProbe          runtimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
+	ManualAccounts        httpapi.ManualAccountAuthority
 	ReconciliationGateway orders.ReconciliationGateway
-	AccountGateway        accounts.GatewayDesiredClient
 	WriteAuthority        WriteAuthority
 }
 
@@ -70,7 +61,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ManualAccounts: gatewayManualAccounts{adapter: adapter}, ReconciliationGateway: adapter})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -95,7 +86,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	}
 	var sessionStore session.Store = session.NewMemoryStore()
 	var identityStore session.IdentityStore
-	var accountStore accounts.Store = accounts.NewMemoryStore()
 	var auditStore audit.Store = audit.NewMemoryStore()
 	var reservationStore reservations.Store = reservations.NewMemoryStore()
 	var commandStore orders.Store = orders.NewMemoryStore()
@@ -110,7 +100,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 			}
 		}
 		identityStore = persistentIdentities
-		accountStore = postgres.NewAccountStore(dependencies.Database)
 		auditStore = postgres.NewAuditStore(dependencies.Database)
 		reservationStore = postgres.NewReservationStore(dependencies.Database)
 		commandStore = postgres.NewCommandStore(dependencies.Database)
@@ -129,41 +118,12 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if err != nil {
 		return nil, err
 	}
-	provider := dependencies.SecretProvider
-	if provider == nil {
-		provider = unavailableSecretProvider{}
-	}
-	secretMode, namespace := secret.ModeTest, secret.TestNamespace
-	if cfg.Mode == "live" {
-		secretMode, namespace = secret.ModeLive, secret.LiveNamespace
-	}
-	secretStore, err := secret.NewStore(secret.Config{Mode: secretMode, Namespace: namespace, KeyVersion: "v1"}, provider)
-	if err != nil {
-		return nil, err
-	}
-	secretReady := secretStore.Readiness(context.Background()) == nil
 	auditService, err := audit.New(auditStore, nil, randomID("audit"))
-	if err != nil {
-		return nil, err
-	}
-	accountSecrets := accounts.SecretStoreAdapter{Store: secretStore}
-	accountService, err := accounts.New(accounts.Options{Store: accountStore, Secrets: accountSecrets, Audit: accounts.AuditServiceAdapter{Service: auditService}, Gateway: dependencies.AccountGateway, Mode: secretstore.Mode(cfg.Mode)})
 	if err != nil {
 		return nil, err
 	}
 
 	now := func() time.Time { return time.Now().UTC() }
-	var accountLifecycleReconciler *accountReconciler
-	if !validationProfile && dependencies.AccountGateway != nil && dependencies.RuntimeProbe != nil {
-		credentialReconciler, reconcileErr := accounts.NewReconciler(accountStore, accountSecrets, dependencies.AccountGateway, now)
-		if reconcileErr != nil {
-			return nil, reconcileErr
-		}
-		accountLifecycleReconciler, reconcileErr = newAccountReconciler(credentialReconciler, dependencies.RuntimeProbe, 5*time.Second, 64)
-		if reconcileErr != nil {
-			return nil, reconcileErr
-		}
-	}
 	catalogSource := dependencies.CatalogSource
 	if catalogSource == nil {
 		catalogSource = unavailableCatalogSource{}
@@ -196,11 +156,14 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	if runtimeProjection == nil {
 		runtimeProjection = httpapi.FailClosedAccountRuntimeProjectionReader{}
 	}
+	var manualAccounts httpapi.ManualAccountAuthority = unavailableManualAccounts{}
+	if dependencies.ManualAccounts != nil {
+		manualAccounts = dependencies.ManualAccounts
+	}
 	readiness := platformsystem.NewReadiness()
 	databaseReady := dependencies.Database != nil
 	readiness.Update("process", readinessComponent(true, ""))
 	readiness.Update("database", readinessComponent(databaseReady, "database_dependency_missing"))
-	readiness.Update("secretStore", readinessComponent(secretReady, "secret_provider_missing"))
 	projectionReadiness := func() platformsystem.Component {
 		status := catalogProjection.Status()
 		return platformsystem.Component{Ready: status.Ready, Reason: status.Reason, ObservedAt: status.ObservedAt}
@@ -217,15 +180,18 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		}
 		return readinessComponent(true, "")
 	})
+	// Accounts are the gateway's record now, not this service's. Readiness for
+	// them therefore means one thing here: can we reach the authority that owns
+	// them. A probe of the gateway's private plane answers exactly that, and
+	// answering it any other way would be asserting a fact we no longer hold.
 	readiness.SetEvaluator("accounts", func() platformsystem.Component {
-		if !databaseReady || !secretReady {
-			return readinessComponent(false, "durable_account_dependencies_missing")
+		if dependencies.RuntimeProbe == nil {
+			return readinessComponent(false, "account_authority_probe_missing")
 		}
-		if accountLifecycleReconciler == nil {
-			return readinessComponent(false, "account_reconciler_missing")
-		}
-		if err := accountLifecycleReconciler.Readiness(); err != nil {
-			return readinessComponent(false, err.Error())
+		probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := dependencies.RuntimeProbe.CheckRuntimeRoute(probeCtx); err != nil {
+			return readinessComponent(false, "account_authority_unavailable")
 		}
 		return readinessComponent(true, "")
 	})
@@ -270,39 +236,30 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
 		WriteAuthority: writeAuthority,
-		Accounts:       &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
 		Audit:          &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
 		PublicData:     publicAPI,
-		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: manualAccounts, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
 		Projections:    &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &App{
-		cfg:               cfg,
-		contract:          contract,
-		accounts:          accountService,
-		browser:           &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		reconciler:        reconciliationRunner,
-		accountReconciler: accountLifecycleReconciler,
-		secretReady:       secretReady,
+		cfg:        cfg,
+		contract:   contract,
+		browser:    &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
+		reconciler: reconciliationRunner,
 	}, nil
 }
 
-type unavailableSecretProvider struct{}
+// unavailableManualAccounts stands in when no account authority was wired. It
+// refuses rather than returning a zero account, because a zero account reads as
+// "not active, not live" — a shape the manual product would reject for the
+// wrong reason, blaming the account instead of the missing wiring.
+type unavailableManualAccounts struct{}
 
-func (unavailableSecretProvider) Check(context.Context, secret.Scope) error {
-	return errors.New("unavailable")
-}
-func (unavailableSecretProvider) Put(context.Context, secretstore.Scope, secretstore.OperationID, []byte) (secretstore.OpaqueRef, error) {
-	return "", errors.New("unavailable")
-}
-func (unavailableSecretProvider) LookupOperation(context.Context, secretstore.Scope, secretstore.OperationID) (secretstore.OpaqueRef, error) {
-	return "", errors.New("unavailable")
-}
-func (unavailableSecretProvider) Delete(context.Context, secretstore.Scope, secretstore.OpaqueRef) error {
-	return errors.New("unavailable")
+func (unavailableManualAccounts) Get(context.Context, string, string) (httpapi.ManualAccount, error) {
+	return httpapi.ManualAccount{}, errors.New("account authority unavailable")
 }
 
 type unavailableCatalogSource struct{}
@@ -346,9 +303,6 @@ func readinessComponent(ready bool, missingReason string) platformsystem.Compone
 }
 
 func (a *App) Start(ctx context.Context) error {
-	if !a.secretReady {
-		return fmt.Errorf("Secret Store is unavailable")
-	}
 	var err error
 	a.startOnce.Do(func() {
 		a.browserLn, err = net.Listen("tcp", a.cfg.BrowserListenAddr)
@@ -356,23 +310,14 @@ func (a *App) Start(ctx context.Context) error {
 			return
 		}
 		go func() { _ = a.browser.Serve(a.browserLn) }()
-		if a.reconciler != nil || a.accountReconciler != nil {
+		if a.reconciler != nil {
 			reconcileCtx, cancel := context.WithCancel(ctx)
 			a.reconcileStop = cancel
-			if a.reconciler != nil {
-				a.reconcileDone = make(chan struct{})
-				go func() {
-					defer close(a.reconcileDone)
-					a.reconciler.Run(reconcileCtx)
-				}()
-			}
-			if a.accountReconciler != nil {
-				a.accountReconcileDone = make(chan struct{})
-				go func() {
-					defer close(a.accountReconcileDone)
-					a.accountReconciler.Run(reconcileCtx)
-				}()
-			}
+			a.reconcileDone = make(chan struct{})
+			go func() {
+				defer close(a.reconcileDone)
+				a.reconciler.Run(reconcileCtx)
+			}()
 		}
 	})
 	if err != nil {
@@ -393,15 +338,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 			case <-a.reconcileDone:
 			case <-ctx.Done():
 				first = ctx.Err()
-			}
-		}
-		if a.accountReconcileDone != nil {
-			select {
-			case <-a.accountReconcileDone:
-			case <-ctx.Done():
-				if first == nil {
-					first = ctx.Err()
-				}
 			}
 		}
 		if a.browser != nil {
@@ -444,39 +380,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	credentialProvider, err := newProductionSecretProvider(cfg)
-	if err != nil {
-		return err
-	}
-	defer credentialProvider.Close()
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter, WriteAuthority: writeAuthority})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ManualAccounts: gatewayManualAccounts{adapter: adapter}, ReconciliationGateway: adapter, WriteAuthority: writeAuthority})
 	if err != nil {
 		return err
 	}
 	return app.Start(ctx)
-}
-
-type commandKeychainRunner struct{}
-
-func (commandKeychainRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).Output()
-}
-
-func newProductionSecretProvider(cfg config.Config) (*secretstore.FilesystemProvider, error) {
-	var source secretstore.KeySource
-	switch cfg.SecretKeySource {
-	case "file":
-		source = secretstore.FileKeySource{Path: cfg.SecretMasterKeyFile}
-	case "keychain":
-		source = secretstore.KeychainSource{Service: cfg.SecretKeychainService, Account: cfg.SecretKeychainAccount, Runner: commandKeychainRunner{}}
-	default:
-		return nil, fmt.Errorf("Secret Store key source is invalid")
-	}
-	provider, err := secretstore.NewFilesystemProvider(secretstore.FilesystemConfig{StateDir: cfg.SecretStoreDir, Mode: secretstore.Mode(cfg.Mode), KeySource: source})
-	if err != nil {
-		return nil, fmt.Errorf("initialize Secret Store: %w", err)
-	}
-	return provider, nil
 }
 
 func loadContract() (backendcontract.Contract, error) {

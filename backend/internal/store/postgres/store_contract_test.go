@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 )
@@ -14,7 +13,6 @@ import (
 func TestStoresImplementPlatformContracts(t *testing.T) {
 	var _ session.Store = (*SessionStore)(nil)
 	var _ session.IdentityStore = (*IdentityStore)(nil)
-	var _ accounts.Store = (*AccountStore)(nil)
 	var _ audit.Store = (*AuditStore)(nil)
 }
 

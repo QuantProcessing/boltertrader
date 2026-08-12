@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,14 +12,13 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
+	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
-	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
 func TestAppStartsAndStops(t *testing.T) {
@@ -59,34 +57,6 @@ func TestAppStartsAndStops(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("app did not stop")
-	}
-}
-
-func TestNewWiresGatewayDesiredClientAndAccountReconciler(t *testing.T) {
-	app, err := New(testConfig(t, "test"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if app.accountReconciler == nil {
-		t.Fatal("production Gateway desired client did not create an account reconciler")
-	}
-}
-
-func TestStartRejectsMissingCredentialWriterBeforeListen(t *testing.T) {
-	cfg := testConfig(t, "test")
-	app, err := NewWithDependencies(cfg, Dependencies{MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "Secret Store") {
-		t.Fatalf("Start error=%v", err)
-	}
-	for _, address := range []string{cfg.BrowserListenAddr} {
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			t.Fatalf("listener %s was bound before secret check: %v", address, err)
-		}
-		_ = listener.Close()
 	}
 }
 
@@ -163,7 +133,7 @@ func TestMigrationValidationRequiresWriterUsageAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if app.reconciler != nil || app.accountReconciler != nil {
+	if app.reconciler != nil {
 		t.Fatal("migration validation constructed a background reconciler")
 	}
 	cookie, csrf := appLogin(t, app)
@@ -231,11 +201,15 @@ func TestAppWiresOwnedRoutesAndKeepsLiveWritesDisabled(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			// Accounts are owned by the Gateway now. The frozen contract still
+			// lists the route, so it stays registered as a scaffold until the
+			// auth edge proxies it — the backend must not answer it with facts
+			// of its own.
 			accountsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
 			accountsRequest.AddCookie(cookie)
 			accountsResponse := httptest.NewRecorder()
 			app.browser.Handler.ServeHTTP(accountsResponse, accountsRequest)
-			if accountsResponse.Code != http.StatusOK || strings.Contains(accountsResponse.Body.String(), `"scaffold":true`) {
+			if accountsResponse.Code != http.StatusOK || !strings.Contains(accountsResponse.Body.String(), `"scaffold":true`) {
 				t.Fatalf("accounts=%d body=%s", accountsResponse.Code, accountsResponse.Body.String())
 			}
 			readinessRequest := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
@@ -245,7 +219,7 @@ func TestAppWiresOwnedRoutesAndKeepsLiveWritesDisabled(t *testing.T) {
 			if readinessResponse.Code != http.StatusServiceUnavailable || strings.Contains(readinessResponse.Body.String(), "not_reported") {
 				t.Fatalf("readiness=%d body=%s", readinessResponse.Code, readinessResponse.Body.String())
 			}
-			for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts"} {
+			for _, component := range []string{"process", "database", "gateway", "publicData", "accounts"} {
 				if !strings.Contains(readinessResponse.Body.String(), `"`+component+`"`) {
 					t.Fatalf("readiness missing %s: %s", component, readinessResponse.Body.String())
 				}
@@ -318,7 +292,7 @@ func TestManualFrozenRoutesReachGatewayAndRecordAuthoritativeEffects(t *testing.
 		t.Fatal(err)
 	}
 	cookie, csrf := appLogin(t, app)
-	accountID := createManualAccount(t, app, cookie, csrf)
+	accountID := appManualAccountID
 
 	venues := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/products/manual/venues", "", "")
 	if venues.Code != http.StatusOK || !strings.Contains(venues.Body.String(), `"venue":"binance"`) || strings.Contains(venues.Body.String(), `"scaffold":true`) {
@@ -389,7 +363,7 @@ func TestManualFrozenRoutesReachGatewayAndRecordAuthoritativeEffects(t *testing.
 		t.Fatalf("fills=%d body=%s", fills.Code, fills.Body.String())
 	}
 	activity := appRequest(t, app, cookie, csrf, http.MethodGet, "/api/v1/activity", "", "")
-	for _, expected := range []string{`"kind":"account.created"`, `"kind":"command.filled"`, `"kind":"fill.recorded"`} {
+	for _, expected := range []string{`"kind":"command.filled"`, `"kind":"fill.recorded"`} {
 		if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), expected) || strings.Contains(activity.Body.String(), `"scaffold":true`) || strings.Contains(activity.Body.String(), `"principalId"`) {
 			t.Fatalf("activity missing %s: status=%d body=%s", expected, activity.Code, activity.Body.String())
 		}
@@ -412,44 +386,25 @@ func (readyMarketDataProbe) CheckMarketDataRoute(context.Context) error { return
 func (readyMarketDataProbe) CheckRuntimeRoute(context.Context) error    { return nil }
 
 func testDependencies() Dependencies {
-	return Dependencies{SecretProvider: appSecretProvider{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, WriteAuthority: NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true, WriterUsage: true, FullCapabilityGrants: true, EffectiveTablePrivileges: true, EffectiveSequencePrivileges: true})}
+	return Dependencies{ManualAccounts: appManualAccounts{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, WriteAuthority: NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true, WriterUsage: true, FullCapabilityGrants: true, EffectiveTablePrivileges: true, EffectiveSequencePrivileges: true})}
 }
 
-type appSecretProvider struct{}
+// appManualAccounts stands in for the Gateway's account authority. Accounts are
+// created and activated there now, so a test that wants a tradable account no
+// longer creates one through this service — it states the fact the Gateway would
+// have reported. The environment is demo so the account only admits test mode.
+type appManualAccounts struct{}
 
-func (appSecretProvider) Check(context.Context, secret.Scope) error { return nil }
-func (appSecretProvider) Put(context.Context, secretstore.Scope, secretstore.OperationID, []byte) (secretstore.OpaqueRef, error) {
-	return secretstore.OpaqueRef(strings.Repeat("A", 43)), nil
-}
-func (appSecretProvider) LookupOperation(context.Context, secretstore.Scope, secretstore.OperationID) (secretstore.OpaqueRef, error) {
-	return secretstore.OpaqueRef(strings.Repeat("A", 43)), nil
-}
-func (appSecretProvider) Delete(context.Context, secretstore.Scope, secretstore.OpaqueRef) error {
-	return nil
-}
+const appManualAccountID = "acc_01J0000000000000000000APP"
 
-func createManualAccount(t *testing.T, app *App, cookie *http.Cookie, csrf string) string {
-	t.Helper()
-	response := appRequest(t, app, cookie, csrf, http.MethodPost, "/api/v1/accounts", `{"venue":"binance","displayName":"Manual","productPolicy":["manual"],"routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"test-only","apiSecret":"test-secret-only"}}}`, "manual-account")
-	var body struct {
-		Data struct {
-			Account struct {
-				AccountID string `json:"accountId"`
-			} `json:"account"`
-		} `json:"data"`
+func (appManualAccounts) Get(_ context.Context, principal, accountID string) (httpapi.ManualAccount, error) {
+	if principal == "" || accountID != appManualAccountID {
+		return httpapi.ManualAccount{}, fmt.Errorf("account %q is unknown", accountID)
 	}
-	if response.Code != http.StatusCreated || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Data.Account.AccountID == "" {
-		t.Fatalf("create account=%d body=%s", response.Code, response.Body.String())
-	}
-	validated, err := app.accounts.MarkValidated(context.Background(), body.Data.Account.AccountID, 1, session.DefaultPrincipalID)
-	if err != nil {
-		t.Fatalf("validate account: %v", err)
-	}
-	active, err := app.accounts.Activate(context.Background(), body.Data.Account.AccountID, validated.DesiredStateRevision, session.DefaultPrincipalID)
-	if err != nil || active.State != "active" {
-		t.Fatalf("activate account=%+v err=%v", active.Public(), err)
-	}
-	return active.ID
+	return httpapi.ManualAccount{
+		ID: appManualAccountID, Venue: "binance", VenueEnvironment: "demo", State: "active",
+		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
+	}, nil
 }
 
 func appLogin(t *testing.T, app *App) (*http.Cookie, string) {

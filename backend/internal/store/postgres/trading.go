@@ -249,6 +249,10 @@ func (store *ReservationStore) List(ctx context.Context, principal string, mode 
 	return items, rows.Err()
 }
 
+// scanner is the shape both *sql.Row and *sql.Rows satisfy, so a projection can
+// be decoded once for the single-row and the iterated read alike.
+type scanner interface{ Scan(...any) error }
+
 const reservationProjection = `SELECT reservation_id,principal_id,mode,product_id,reservation_kind,netting_scope,quantity,notional,currency,status,idempotency_key,payload_hash,expires_at,blocked_reason,created_at,updated_at FROM platform_reservations`
 
 func scanReservation(row scanner) (reservations.Reservation, error) {

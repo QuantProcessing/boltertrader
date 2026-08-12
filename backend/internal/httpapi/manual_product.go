@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	platformaccounts "github.com/QuantProcessing/boltertrader/backend/internal/platform/accounts"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
@@ -58,8 +57,40 @@ type manualAccountFence struct {
 	CredentialVersion    int64  `json:"credentialVersion"`
 }
 
+// ManualAccount is the slice of an account the manual product must see to
+// decide whether an order may be placed against it. The gateway owns the
+// account record; this is the read-only projection carried across the wire, so
+// it holds no credential reference and no route detail.
+//
+// The three fence fields travel together with the identity on purpose. A
+// preview is authorized against the account as it stood when the preview was
+// sealed, and the order is refused if any of them moved in between — a rotated
+// credential or a regenerated runtime must not inherit a prior authorization.
+type ManualAccount struct {
+	ID                   string
+	Venue                string
+	VenueEnvironment     string
+	State                string
+	ProductIDs           []string
+	DesiredStateRevision int64
+	RuntimeGeneration    int64
+	CredentialVersion    int64
+}
+
+// The states and environments the manual product tests for. They match the
+// gateway lifecycle vocabulary; anything else reads as not-ready.
+const (
+	manualAccountActive     = "active"
+	manualEnvironmentLive   = "live"
+	manualProductIdentifier = "manual"
+)
+
+// ManualAccountAuthority answers for an account on behalf of a named principal.
+// The principal travels with the lookup because the authority is the gateway,
+// whose account plane refuses a read that cannot say who is asking; a service
+// token alone establishes the caller, not the user behind it.
 type ManualAccountAuthority interface {
-	Get(context.Context, string) (platformaccounts.Account, error)
+	Get(ctx context.Context, principal, accountID string) (ManualAccount, error)
 }
 
 type manualPreviewCodec interface {
@@ -109,7 +140,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), request.AccountID)
+	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, request.AccountID)
 	if err != nil || account.ID != request.AccountID || !manualAccountReady(account, mode) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -245,7 +276,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), authority.Request.AccountID)
+	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, authority.Request.AccountID)
 	if err != nil || authority.Request.AccountID != authority.AccountFence.AccountID || !manualAccountMatches(account, authority.AccountFence, mode) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -360,7 +391,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), position.AccountID)
+	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, position.AccountID)
 	if err != nil || !manualAccountReady(account, mode) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -475,7 +506,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 	writeJSON(w, status, map[string]any{"meta": meta(r), "data": command})
 }
 
-func manualCatalogAuthority(snapshot catalog.Snapshot, account platformaccounts.Account, instrumentID, mode string) (manualPreviewAuthority, bool) {
+func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID, mode string) (manualPreviewAuthority, bool) {
 	venueID := ""
 	product := ""
 	for _, instrument := range snapshot.Instruments {
@@ -487,7 +518,7 @@ func manualCatalogAuthority(snapshot catalog.Snapshot, account platformaccounts.
 	}
 	for _, venue := range snapshot.Venues {
 		live := venue.Environment == "live"
-		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == string(account.VenueEnvironment) && venue.Ready && live == (mode == string(orders.ModeLive)) {
+		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready && live == (mode == string(orders.ModeLive)) {
 			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product}, true
 		}
 	}
@@ -520,23 +551,23 @@ func manualTestNotionalAllowed(ctx context.Context, request manualPreviewRequest
 	return !quantity.Mul(price).GreaterThan(decimal.NewFromInt(manualTestMaxNotional)), nil
 }
 
-func manualAccountReady(account platformaccounts.Account, mode string) bool {
-	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != platformaccounts.StateActive {
+func manualAccountReady(account ManualAccount, mode string) bool {
+	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != manualAccountActive {
 		return false
 	}
-	live := account.VenueEnvironment == platformaccounts.EnvironmentLive
+	live := account.VenueEnvironment == manualEnvironmentLive
 	if live != (mode == string(orders.ModeLive)) {
 		return false
 	}
 	for _, productID := range account.ProductIDs {
-		if productID == "manual" {
+		if productID == manualProductIdentifier {
 			return true
 		}
 	}
 	return false
 }
 
-func manualAccountMatches(account platformaccounts.Account, fence manualAccountFence, mode string) bool {
+func manualAccountMatches(account ManualAccount, fence manualAccountFence, mode string) bool {
 	return manualAccountReady(account, mode) && account.ID == fence.AccountID &&
 		account.DesiredStateRevision == fence.DesiredStateRevision && account.RuntimeGeneration == fence.RuntimeGeneration &&
 		account.CredentialVersion == fence.CredentialVersion
