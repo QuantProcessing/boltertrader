@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
+	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
+	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 	"github.com/shopspring/decimal"
 )
 

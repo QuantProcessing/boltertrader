@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"strconv"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
+	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 )
 
 type AuditStore struct{ db *sql.DB }

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
-	platformaudit "github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
+	platformaudit "github.com/QuantProcessing/boltertrader/services/trading/audit"
 )
 
 type AuditRouteOptions struct {

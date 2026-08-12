@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/realtime"
-	platformsystem "github.com/QuantProcessing/boltertrader/backend/internal/platform/system"
+	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
+	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
+	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
 
 type catalogSourceFunc func(context.Context) (catalog.Snapshot, error)

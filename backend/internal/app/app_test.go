@@ -13,12 +13,12 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	"github.com/QuantProcessing/boltertrader/services/trading/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
+	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 )
 
 func TestAppStartsAndStops(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/realtime"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
+	"github.com/QuantProcessing/boltertrader/services/trading/realtime"
 )
 
 type ProjectionReadiness struct {

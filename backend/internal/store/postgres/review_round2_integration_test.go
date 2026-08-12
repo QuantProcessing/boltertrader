@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
+	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
+	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 )
 
 func TestPostgresLedgerAppendReplaySurvivesDatabaseRestartWithSubMicrosecondTimestamp(t *testing.T) {

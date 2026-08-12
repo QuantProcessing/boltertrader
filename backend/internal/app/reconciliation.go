@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 )
 
 type reconciliationDispatcher struct {

@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/catalog"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
+	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	"github.com/QuantProcessing/boltertrader/services/trading/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
 )
 
 func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
+	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
+	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 )
 
 var fixtureTime = time.Date(2026, time.August, 5, 1, 2, 3, 0, time.UTC)

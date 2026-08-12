@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/audit"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 )
 
 func TestStoresImplementPlatformContracts(t *testing.T) {

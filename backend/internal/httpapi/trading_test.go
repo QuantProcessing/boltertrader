@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/ledger"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/reservations"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
+	"github.com/QuantProcessing/boltertrader/services/trading/manual"
+	"github.com/QuantProcessing/boltertrader/services/trading/orders"
+	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
+	"github.com/QuantProcessing/boltertrader/services/trading/reservations"
 )
 
 func TestPositionsReturnsInternalErrorWhenPortfolioRepositoryFails(t *testing.T) {
