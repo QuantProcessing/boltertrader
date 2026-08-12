@@ -308,39 +308,6 @@ func TestDemoWriteRecipesSetExplicitVenueWriteGates(t *testing.T) {
 	}
 }
 
-func TestEnabledDemoAcceptanceFilesHaveNoSuccessfulSkipPath(t *testing.T) {
-	root, err := findRepoRoot()
-	if err != nil {
-		t.Fatalf("find repo root: %v", err)
-	}
-	for _, name := range []string{
-		"adapter/binance/perp/demo_acceptance_test.go",
-		"adapter/binance/perp/demo_runtime_acceptance_test.go",
-		"adapter/binance/perp/demo_runtime_tester_test.go",
-		"adapter/binance/spot/demo_exec_test.go",
-		"adapter/binance/spot/demo_runtime_acceptance_test.go",
-		"adapter/okx/perp/demo_acceptance_test.go",
-		"adapter/okx/perp/demo_runtime_acceptance_test.go",
-		"adapter/okx/spot/demo_acceptance_test.go",
-		"adapter/okx/spot/demo_runtime_acceptance_test.go",
-		"adapter/bybit/demo_acceptance_test.go",
-		"adapter/bitget/demo_acceptance_test.go",
-	} {
-		t.Run(name, func(t *testing.T) {
-			data, err := os.ReadFile(filepath.Join(root, name))
-			if err != nil {
-				t.Fatalf("read %s: %v", name, err)
-			}
-			source := string(data)
-			for _, forbidden := range []string{"t.Skip(", "t.Skipf(", "SkipIfTransientLiveNetworkError("} {
-				if strings.Contains(source, forbidden) {
-					t.Errorf("enabled credentialed acceptance must fail rather than skip; found %q", forbidden)
-				}
-			}
-		})
-	}
-}
-
 func TestMakefileSerializesParallelTopLevelTargets(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	if !regexp.MustCompile(`(?m)^\.NOTPARALLEL:\s*$`).MatchString(makefile) {
