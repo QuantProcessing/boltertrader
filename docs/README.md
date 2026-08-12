@@ -41,8 +41,6 @@ These are peer paths for different requirements; none replaces another.
 
 ## Guides
 
-- [Docker-free local platform](guides/docker-free-local-platform.md)
-
 - [Unified exchange API quickstart](guides/exchange-rest-quickstart.md)
 - [Exchange Gateway](guides/exchange-gateway.md)
 - [Writing strategies](guides/strategies.md)

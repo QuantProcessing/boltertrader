@@ -1,4 +1,4 @@
-.PHONY: test test-race test-core test-adapter test-sdk test-capabilities test-p6-offline test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-runtime-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance test-hyperliquid-testnet test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-hip3-write test-hyperliquid-testnet-runtime-hip3 test-hyperliquid-testnet-acceptance test-lighter-testnet test-lighter-testnet-read test-lighter-testnet-spot test-lighter-testnet-runtime-spot test-lighter-testnet-perp test-lighter-testnet-runtime-perp test-lighter-testnet-acceptance
+.PHONY: test test-sdk test-live-read test-demo-acceptance test-binance-demo test-binance-demo-perp test-binance-demo-runtime-perp test-binance-demo-spot-data test-binance-demo-spot test-binance-demo-runtime-spot test-binance-demo-acceptance test-okx-demo test-okx-demo-spot test-okx-demo-runtime-spot test-okx-demo-perp test-okx-demo-runtime-perp test-okx-demo-acceptance test-hyperliquid-testnet test-hyperliquid-testnet-spot-read test-hyperliquid-testnet-spot test-hyperliquid-testnet-runtime-spot test-hyperliquid-testnet-perp-read test-hyperliquid-testnet-perp test-hyperliquid-testnet-runtime-perp test-hyperliquid-testnet-hip3 test-hyperliquid-testnet-hip3-write test-hyperliquid-testnet-runtime-hip3 test-hyperliquid-testnet-acceptance test-lighter-testnet test-lighter-testnet-read test-lighter-testnet-spot test-lighter-testnet-runtime-spot test-lighter-testnet-perp test-lighter-testnet-runtime-perp test-lighter-testnet-acceptance
 .PHONY: test-bybit-demo test-bybit-demo-spot test-bybit-demo-runtime-spot test-bybit-demo-usdt-perp test-bybit-demo-runtime-usdt-perp test-bybit-demo-usdc-perp test-bybit-demo-runtime-usdc-perp test-bybit-demo-acceptance test-bybit-spot-acceptance test-bybit-usdt-perp-acceptance test-bybit-usdc-perp-acceptance test-bybit-acceptance
 .PHONY: test-bitget-demo test-bitget-demo-spot test-bitget-demo-runtime-spot test-bitget-demo-usdt-perp test-bitget-demo-runtime-usdt-perp test-bitget-demo-usdc-perp test-bitget-demo-runtime-usdc-perp test-bitget-demo-acceptance test-bitget-testnet test-bitget-testnet-spot test-bitget-testnet-runtime-spot test-bitget-testnet-usdt-perp test-bitget-testnet-runtime-usdt-perp test-bitget-testnet-usdc-perp test-bitget-testnet-runtime-usdc-perp test-bitget-testnet-acceptance test-bitget-spot-acceptance test-bitget-usdt-perp-acceptance test-bitget-usdc-perp-acceptance test-bitget-acceptance test-bybit-bitget-acceptance
 .PHONY: test-gate-testnet test-gate-testnet-read test-gate-testnet-spot test-gate-testnet-runtime-spot test-gate-testnet-usdt-perp test-gate-testnet-runtime-usdt-perp test-gate-testnet-usdc-perp-deferred test-gate-testnet-acceptance test-gate-spot-acceptance test-gate-usdt-perp-acceptance test-gate-acceptance
@@ -9,37 +9,12 @@
 .PHONY: test-gateway-contract test-gateway-offline test-gateway-race test-gateway-postgres test-gateway-restart test-gateway-security test-gateway
 .PHONY: gateway-compose-dsn test-gateway-docker-config test-gateway-docker-build test-gateway-docker-security test-gateway-docker-smoke test-gateway-docker-persistence test-gateway-docker-postgres test-gateway-docker
 .PHONY: test-gateway-demo-testnet test-gateway-binance-spot-demo test-gateway-binance-usd-perp-demo test-gateway-okx-spot-demo test-gateway-okx-usdt-perp-demo test-gateway-lighter-spot-testnet test-gateway-lighter-perp-testnet test-gateway-hyperliquid-spot-testnet test-gateway-hyperliquid-perp-testnet test-gateway-bybit-spot-demo test-gateway-bybit-usdt-perp-demo test-gateway-bybit-usdc-perp-demo test-gateway-bitget-spot-demo test-gateway-bitget-usdt-perp-demo test-gateway-bitget-usdc-perp-demo test-gateway-gate-spot-testnet test-gateway-gate-usdt-perp-testnet test-gateway-aster-spot-testnet test-gateway-aster-usdt-perp-testnet test-gateway-nado-spot-testnet test-gateway-nado-usdt0-perp-testnet
-.PHONY: dev-platform-up dev-platform-down dev-platform-restart dev-platform-status dev-platform-logs dev-platform-reset dev-platform-doctor test-dev-platform test-browser
-.PHONY: test-platform-offline
+.PHONY: test-browser
 
 .NOTPARALLEL:
 
 test:
 	go test -short ./...
-
-dev-platform-up:
-	./scripts/dev-platform up
-
-dev-platform-down:
-	./scripts/dev-platform down
-
-dev-platform-restart:
-	./scripts/dev-platform restart
-
-dev-platform-status:
-	./scripts/dev-platform status
-
-dev-platform-logs:
-	./scripts/dev-platform logs
-
-dev-platform-reset:
-	./scripts/dev-platform reset
-
-dev-platform-doctor:
-	./scripts/dev-platform doctor
-
-test-dev-platform:
-	go test ./scripts -count=1
 
 test-browser:
 	npm --prefix web ci
@@ -47,26 +22,8 @@ test-browser:
 	npm --prefix web test
 	npm --prefix web run test:e2e
 
-test-platform-offline:
-	./scripts/test-platform-offline
-
-test-race:
-	go test -race ./runtime/...
-
-test-core:
-	go test ./core/... ./runtime/... ./strategy/...
-
-test-adapter:
-	go test -short ./adapter/...
-
 test-sdk:
 	go test -short ./sdk/...
-
-test-capabilities:
-	go test -short ./adapter -count=1
-	go test -short ./adapter/... -run Capabilit -count=1
-
-test-p6-offline: test-core test-adapter test-sdk test-capabilities test-reference-data-offline
 
 test-exchange-offline:
 	go test -short ./exchange/... -count=1

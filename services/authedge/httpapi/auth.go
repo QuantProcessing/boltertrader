@@ -57,30 +57,6 @@ func RegisterAuthRoutes(mux *http.ServeMux, options AuthRoutesOptions) error {
 	return nil
 }
 
-func SessionAuthenticator(sessions *session.Service) func(*http.Request) (string, error) {
-	return func(r *http.Request) (string, error) {
-		cookie, err := r.Cookie(SessionCookieName)
-		if err != nil || cookie.Value == "" {
-			return "", session.ErrInvalidSession
-		}
-		result, err := sessions.Current(r.Context(), cookie.Value)
-		if err != nil {
-			return "", err
-		}
-		return result.Principal.ID, nil
-	}
-}
-
-func SessionMutationAuthorizer(sessions *session.Service) func(*http.Request) error {
-	return func(r *http.Request) error {
-		cookie, err := r.Cookie(SessionCookieName)
-		if err != nil || cookie.Value == "" {
-			return session.ErrInvalidSession
-		}
-		return sessions.RequireCSRF(r.Context(), cookie.Value, r.Header.Get("X-CSRF-Token"))
-	}
-}
-
 func writeCurrentSession(w http.ResponseWriter, r *http.Request, sessions *session.Service) {
 	cookie, err := r.Cookie(SessionCookieName)
 	if err != nil || cookie.Value == "" {

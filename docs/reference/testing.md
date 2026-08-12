@@ -14,13 +14,9 @@ writes.
 | Purpose | Command |
 | --- | --- |
 | Default short suite | `make test` |
-| Core, runtime, and strategy | `make test-core` |
-| Adapter packages | `make test-adapter` |
 | SDK packages | `make test-sdk` |
-| Capability contract | `make test-capabilities` |
-| Full offline gate | `make test-p6-offline` |
-| Integrated Docker-free Platform gate | `make test-platform-offline` |
-| Runtime race checks | `make test-race` |
+| Exchange packages | `make test-exchange-offline` |
+| Gateway contract and security | `make test-gateway-contract`; `make test-gateway-security` |
 | Offline reference-data checks | `make test-reference-data-offline` |
 
 Run the smallest relevant package or target while developing, then the broader
@@ -28,51 +24,18 @@ offline gates appropriate to the change. `go test ./...` is not the default safe
 gate; live-backed tests may inspect the local environment when short mode is not
 enabled.
 
-## Docker-free Platform gates
+## Integrated local gate
 
-The host-local sequence in the
-[Docker-free Platform guide](../guides/docker-free-local-platform.md) starts
-PostgreSQL, Gateway, Platform, funding worker, and web without Docker. Its
-canonical Gateway has a healthy zero-account inventory. Secret Store launcher
-configuration contains identifiers and protected file paths only; commands and
-diagnostics never emit key or credential material.
+There is currently no integrated multi-service gate. The docker-free launcher
+that `make test-platform-offline` drove was retired along with `backend/`: it
+supervised a `platform` process and a funding worker that no longer exist as
+binaries, and shelled into bootstrap scripts deleted with them. Its replacement
+is a Compose-based bring-up plus a single `make up`, which lands with the
+one-command startup work.
 
-`make test-platform-offline` is the canonical integrated implementation gate.
-It runs the following Docker-free sequence in order and stops on the first
-failure:
-
-```sh
-make test-gateway-contract
-make test-gateway-offline
-make test-gateway-race
-make test-gateway-security
-go test ./cmd/account-route-backfill ./scripts -count=1
-(cd backend && go test ./... && go test -race ./... && go vet ./...)
-npm --prefix web run build
-npm --prefix web test -- --run
-npm --prefix web run test:e2e
-```
-
-The aggregate uses `set -eu` and does not source `.env`,
-`scripts/dev-platform.env.example`, or any other environment file. It fails
-closed before invoking tests when `RUN_FULL` is set, `FT_MODE=live`, or a
-venue acceptance, venue opt-in, or Live-write opt-in variable is present with a
-non-empty value. Run it with those variables unset. It performs no external
-venue reads or writes and does not require Docker.
-
-`BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real` is the **G010 no-trade gate**.
-It performs repeated local readiness and browser-root reads and does not provision accounts, enable
-private routes, or call a venue. **G011 is a separate Test-write boundary** and
-requires an explicit handoff, scoped Test credentials, and write attestation.
-Passing G010 is not authorization or evidence for G011, and neither gate
-authorizes Live private writes.
-
-The fenced migration validation order is fixed: targeted offline-safe Go
-packages (including Platform credential and schema-migration commands),
-fixture-backed browser gates, one Docker-free G010 read pass, the
-real browser continuity/stream/idempotency gate, a supervised restart, then the
-same G010 and real-browser gates again. Do not replace the targeted Go commands
-with `go test ./...` and do not add venue acceptance targets to this sequence.
+Until then, run the per-tree targets above. The Gateway Compose targets
+(`make test-gateway-docker-*`) remain the only end-to-end path and require
+Docker.
 
 ## Nine-venue external command inventory
 

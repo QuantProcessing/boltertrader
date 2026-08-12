@@ -1,7 +1,6 @@
 .env
 .env.*
 !.env.example
-backend/.env.local
 gateway/.env.local
 web/.env.local
 .omx/

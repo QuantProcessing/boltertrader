@@ -115,59 +115,40 @@ func TestBrowserRouterIsStrictAndDoesNotMountWorkRoutes(t *testing.T) {
 	}
 }
 
-// Everything past the four auth routes is somebody else's to serve, and this
-// listener's only job on those is to decide whether the caller has a session.
-// Nothing downstream sees a request until that decision has been made.
-func TestDownstreamRoutesAreGatedOnTheSession(t *testing.T) {
-	var reached int
+// Everything past the four auth routes is mounted, not intercepted: the
+// downstream sees the request with its own authorization still to do. The one
+// thing this listener guarantees it is a request id, because a downstream that
+// minted its own would log a different one than the browser was told.
+func TestDownstreamRoutesAreMountedAndCarryARequestID(t *testing.T) {
+	var seen []string
 	handler := newTestHandlerWith(t, func(mux *http.ServeMux) ([]string, error) {
-		mux.HandleFunc("GET /api/v1/system/readiness", func(w http.ResponseWriter, _ *http.Request) {
-			reached++
+		mux.HandleFunc("GET /api/v1/system/readiness", func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, r.Header.Get("X-Request-Id"))
 			w.WriteHeader(http.StatusOK)
 		})
 		return []string{"GET /api/v1/system/readiness"}, nil
 	})
 
+	// No cookie: reaching the handler is the assertion. Deciding who may read
+	// readiness belongs to whatever mounted the route.
 	anonymous := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
 	anonymousResponse := httptest.NewRecorder()
 	handler.ServeHTTP(anonymousResponse, anonymous)
-	if anonymousResponse.Code != http.StatusUnauthorized {
-		t.Fatalf("anonymous status = %d want 401 body=%s", anonymousResponse.Code, anonymousResponse.Body.String())
-	}
-	if reached != 0 {
-		t.Fatalf("downstream reached %d times before authentication", reached)
+	if anonymousResponse.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 body=%s", anonymousResponse.Code, anonymousResponse.Body.String())
 	}
 
-	_, cookie, _ := login(t, handler)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
-	request.AddCookie(cookie)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("authenticated status = %d body=%s", response.Code, response.Body.String())
-	}
-	if reached != 1 {
-		t.Fatalf("downstream reached %d times, want 1", reached)
-	}
-}
+	carried := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
+	carried.Header.Set("X-Request-Id", "req-from-browser")
+	handler.ServeHTTP(httptest.NewRecorder(), carried)
 
-func login(t *testing.T, handler http.Handler) (string, *http.Cookie, string) {
-	t.Helper()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"owner","password":"correct horse battery staple"}`))
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("login status = %d body=%s", response.Code, response.Body.String())
+	if len(seen) != 2 {
+		t.Fatalf("downstream reached %d times, want 2", len(seen))
 	}
-	var body struct {
-		Data struct {
-			Session struct {
-				CSRFToken string `json:"csrfToken"`
-			} `json:"session"`
-		} `json:"data"`
+	if seen[0] == "" {
+		t.Error("downstream saw no request id on a request that arrived without one")
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode login: %v", err)
+	if seen[1] != "req-from-browser" {
+		t.Errorf("downstream saw request id %q, want the one the caller sent", seen[1])
 	}
-	return response.Body.String(), response.Result().Cookies()[0], body.Data.Session.CSRFToken
 }

@@ -53,18 +53,11 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 	}
 }
 
-func TestPlatformOfflineGateHasNoExternalRuntimeDependencies(t *testing.T) {
-	data, err := os.ReadFile("../../scripts/test-platform-offline")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := strings.ToLower(string(data))
-	for _, forbidden := range []string{
-		"docker", "source ", ". .env", "dev-platform.env",
-		"test-real", "test-live", "test-demo",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Errorf("offline gate contains external runtime dependency %q", forbidden)
-		}
-	}
-}
+// The companion assertion here read scripts/test-platform-offline and proved
+// the aggregate gate pulled in no Docker, no environment sourcing and no
+// venue-write target. That script is gone along with the rest of the docker-free
+// launcher, whose services (platform, funding-worker) no longer exist as
+// binaries. The property it guarded — that the default gate stays offline and
+// credential-free — belongs to whatever `make up` replacement P4 lands, and
+// should be re-asserted against that file rather than kept pointing at a
+// deleted one.
