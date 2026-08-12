@@ -17,7 +17,7 @@ const (
 	// ContractVersion is re-exported so callers wiring this listener do not
 	// have to import httpx just to name the version they are pinning to.
 	ContractVersion   = httpx.ContractVersion
-	SessionCookieName = "bt_session"
+	SessionCookieName = session.CookieName
 )
 
 type Options struct {

@@ -16,6 +16,11 @@ import (
 
 const DefaultPrincipalID = "browser-session"
 
+// CookieName is where the browser carries its session token. It lives here
+// rather than in a transport package because every surface that reads a
+// session has to agree on it, and two of them now sit in different packages.
+const CookieName = "bt_session"
+
 const dummyPasswordHash = "$2a$10$7EqJtq98hPqEX7fNZaFWoOHIhi6qMt4u9yjIzhP4sJy.6WjeTi4tC"
 
 var (
