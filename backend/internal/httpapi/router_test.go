@@ -96,7 +96,6 @@ func TestBrowserRouterIsStrictAndDoesNotMountWorkRoutes(t *testing.T) {
 	}{
 		{name: "unknown login field", method: http.MethodPost, path: "/api/v1/auth/login", body: `{"username":"owner","password":"correct horse battery staple","mode":"live"}`, want: http.StatusBadRequest},
 		{name: "wrong login method", method: http.MethodGet, path: "/api/v1/auth/login", want: http.StatusMethodNotAllowed},
-		{name: "work route absent", method: http.MethodGet, path: "/internal/v1/funding-work/status", want: http.StatusNotFound},
 		{name: "gateway route absent", method: http.MethodGet, path: "/internal/v1/accounts/desired", want: http.StatusNotFound},
 		{name: "unversioned route absent", method: http.MethodGet, path: "/system/status", want: http.StatusNotFound},
 	}
@@ -125,7 +124,7 @@ func TestSystemReadinessNamesFrozenComponents(t *testing.T) {
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readiness status = %d body=%s", response.Code, response.Body.String())
 	}
-	for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts", "fundingWorker"} {
+	for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts"} {
 		if !strings.Contains(response.Body.String(), `"`+component+`"`) {
 			t.Fatalf("readiness missing %q: %s", component, response.Body.String())
 		}

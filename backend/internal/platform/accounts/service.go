@@ -137,9 +137,6 @@ func (service *Service) UpdateMetadata(ctx context.Context, id string, revision 
 		if err := validateDurableProductPolicy(productIDs); err != nil {
 			return validationError(err)
 		}
-		if err := validateRouteProductCompatibility(productIDs, account.Routes); err != nil {
-			return validationError(err)
-		}
 		account.DisplayName = displayName
 		account.ProductIDs = append([]string(nil), productIDs...)
 		account.ProductPolicy = append([]string(nil), productIDs...)

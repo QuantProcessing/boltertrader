@@ -28,7 +28,6 @@ type Options struct {
 	Audit           *AuditRouteOptions
 	PublicData      *PublicDataAPI
 	Trading         *TradingOptions
-	Funding         *FundingRoutesOptions
 	Projections     *BrowserProjectionRoutesOptions
 	WriteAuthority  interface {
 		Ready(context.Context) (bool, string)
@@ -144,14 +143,6 @@ func (s *Server) register(options Options) error {
 			for _, route := range []string{"GET /api/v1/products/manual/venues", "POST /api/v1/products/manual/execution-previews", "POST /api/v1/products/manual/commands", "GET /api/v1/products/manual/orders", "GET /api/v1/products/manual/orders/{orderId}"} {
 				owned[route] = true
 			}
-		}
-	}
-	if options.Funding != nil {
-		if err := RegisterFundingRoutes(s.mux, *options.Funding); err != nil {
-			return err
-		}
-		for _, route := range []string{"GET /api/v1/products/funding/opportunities", "GET /api/v1/products/funding/opportunities/{opportunityId}", "POST /api/v1/products/funding/execution-previews", "POST /api/v1/products/funding/commands", "GET /api/v1/products/funding/commands/{commandId}", "GET /api/v1/products/funding/lineage/{lineageId}"} {
-			owned[route] = true
 		}
 	}
 	if options.Projections != nil {
@@ -277,14 +268,13 @@ func readinessPayload(ready bool) map[string]any {
 		return map[string]any{"state": "scaffold", "ready": ready, "observedAt": time.Now().UTC().Format(time.RFC3339)}
 	}
 	return map[string]any{
-		"ready":         ready,
-		"process":       component(),
-		"database":      component(),
-		"secretStore":   component(),
-		"gateway":       component(),
-		"publicData":    component(),
-		"accounts":      component(),
-		"fundingWorker": component(),
+		"ready":       ready,
+		"process":     component(),
+		"database":    component(),
+		"secretStore": component(),
+		"gateway":     component(),
+		"publicData":  component(),
+		"accounts":    component(),
 	}
 }
 

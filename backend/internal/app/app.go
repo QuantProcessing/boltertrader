@@ -27,18 +27,12 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/secret"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	platformsystem "github.com/QuantProcessing/boltertrader/backend/internal/platform/system"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/work"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
-	fundingexecution "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/execution"
-	fundingpolicy "github.com/QuantProcessing/boltertrader/backend/internal/products/funding/policy"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
-	"github.com/QuantProcessing/boltertrader/backend/internal/workapi"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	"github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/shopspring/decimal"
 )
 
 type App struct {
@@ -46,9 +40,7 @@ type App struct {
 	contract             backendcontract.Contract
 	accounts             *accounts.Service
 	browser              *http.Server
-	work                 *http.Server
 	browserLn            net.Listener
-	workLn               net.Listener
 	startOnce            sync.Once
 	shutdownOnce         sync.Once
 	reconciler           *orders.Reconciler
@@ -68,8 +60,6 @@ type Dependencies struct {
 	RuntimeProbe          runtimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
 	ManualGateway         manual.Gateway
-	FundingGateway        work.CommandGateway
-	AccountingSource      accounting.AuthoritativeSource
 	ReconciliationGateway orders.ReconciliationGateway
 	AccountGateway        accounts.GatewayDesiredClient
 	WriteAuthority        WriteAuthority
@@ -80,7 +70,7 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, AccountingSource: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -96,23 +86,8 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		return nil, fmt.Errorf("migration-validation requires verified absent runtime writer USAGE")
 	}
 	validationProfile := cfg.StartupProfile == config.StartupMigrationValidation
-	liveMaximum := decimal.Zero
-	if cfg.FundingLiveEnabled {
-		parsedMaximum, parseErr := decimal.NewFromString(cfg.FundingLiveMaxNotional)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse Funding Live maximum notional: %w", parseErr)
-		}
-		liveMaximum = parsedMaximum
-	}
-	fundingAdmission, err := fundingpolicy.NewAdmission(cfg.FundingLiveEnabled, liveMaximum)
-	if err != nil {
-		return nil, err
-	}
 	if dependencies.ManualGateway == nil {
 		return nil, fmt.Errorf("Manual Gateway dependency is required")
-	}
-	if dependencies.FundingGateway == nil {
-		return nil, fmt.Errorf("Funding Gateway dependency is required")
 	}
 	contract, err := loadContract()
 	if err != nil {
@@ -125,9 +100,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	var reservationStore reservations.Store = reservations.NewMemoryStore()
 	var commandStore orders.Store = orders.NewMemoryStore()
 	var ledgerStore ledger.Store = ledger.NewMemoryStore()
-	var workStore work.Store = work.NewMemoryStore()
-	var fundingPlanStore work.FundingPlanStore = work.NewMemoryFundingPlanStore()
-	var fundingExecutionStore work.FundingExecutionStore = work.NewMemoryFundingExecutionStore()
 	portfolioProjection := portfolio.NewProjection()
 	if dependencies.Database != nil {
 		sessionStore = postgres.NewSessionStore(dependencies.Database)
@@ -143,9 +115,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		reservationStore = postgres.NewReservationStore(dependencies.Database)
 		commandStore = postgres.NewCommandStore(dependencies.Database)
 		ledgerStore = postgres.NewLedgerStore(dependencies.Database)
-		workStore = postgres.NewWorkStore(dependencies.Database)
-		fundingPlanStore = postgres.NewFundingPlanStore(dependencies.Database)
-		fundingExecutionStore = postgres.NewFundingExecutionStore(dependencies.Database)
 		portfolioProjection = portfolio.NewPersistentProjection(postgres.NewPortfolioStore(dependencies.Database))
 	}
 	sessionService, err := session.New(session.Options{
@@ -260,7 +229,6 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		}
 		return readinessComponent(true, "")
 	})
-	readiness.Update("fundingWorker", readinessComponent(false, "worker_not_registered"))
 	readiness.SetEvaluator("canonicalWrites", func() platformsystem.Component {
 		ready, reason := writeAuthority.Ready(context.Background())
 		return readinessComponent(ready, reason)
@@ -291,109 +259,31 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 		cfg.ManualPreviewSigningKey[index] = 0
 	}
 	cfg.ManualPreviewSigningKey = nil
-	fundingProcessor, err := work.NewDurableFundingPayloadProcessor(commandService, fundingPlanStore, fundingExecutionStore, now)
-	if err != nil {
-		return nil, err
-	}
-	fundingProcessor.WithExecutionEvidence(portfolioProjection, ledgerService).WithAdmission(fundingAdmission).WithActivityPublisher(func(command orders.Command) {
-		httpapi.PublishCommandActivity(activityLog, command)
-	})
 	reconciliationGateway := dependencies.ReconciliationGateway
-	if reconciliationGateway == nil {
-		reconciliationGateway, _ = dependencies.FundingGateway.(orders.ReconciliationGateway)
-	}
 	var reconciliationRunner *orders.Reconciler
 	if !validationProfile && reconciliationGateway != nil {
-		reconciliationRunner, err = orders.NewReconciler(commandService, reconciliationGateway, reconciliationDispatcher{manual: manualService, funding: fundingProcessor}, orders.Mode(cfg.Mode), now)
+		reconciliationRunner, err = orders.NewReconciler(commandService, reconciliationGateway, reconciliationDispatcher{manual: manualService}, orders.Mode(cfg.Mode), now)
 		if err != nil {
 			return nil, err
 		}
 	}
-	fundingPlanProducer, err := fundingexecution.NewPlanProducer(fundingPlanStore, fundingExecutionStore)
-	if err != nil {
-		return nil, err
-	}
-	fundingPlanProducer.WithAdmission(fundingAdmission).WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))
-	var accountingIngestor *accounting.Ingestor
-	if !validationProfile && dependencies.AccountingSource != nil {
-		accountingObserver, observerErr := newAccountingFactObserver(activityLog, auditService)
-		if observerErr != nil {
-			return nil, observerErr
-		}
-		accountingIngestor, err = accounting.NewIngestor(dependencies.AccountingSource, accounting.NewPlatformAdapter(ledgerService, portfolioProjection), accountingObserver)
-		if err != nil {
-			return nil, err
-		}
-	}
-	fundingProjection, err := httpapi.NewSharedFundingProjection(httpapi.SharedFundingProjectionOptions{
-		Catalog: catalogProjection, MarketData: marketService, Accounts: accountService,
-		Reservations: reservationStore, Executions: fundingExecutionStore, Positions: portfolioProjection,
-		Accounting: accountingIngestor, Admission: fundingAdmission, Now: now,
-	})
-	if err != nil {
-		return nil, err
-	}
-	workService := work.NewWithStoreGatewayProcessorAndPlanProducer(workapi.ContractVersion, 15*time.Second, workStore, fundingProcessor, fundingPlanProducer, dependencies.FundingGateway)
-	workService.SetDependencyReadinessEvaluator(work.DependencyReadinessFunc(func(ctx context.Context) error {
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		persistence, ok := workStore.(interface{ Readiness(context.Context) error })
-		if !ok {
-			return fmt.Errorf("Platform work persistence readiness is unavailable")
-		}
-		if err := persistence.Readiness(ctx); err != nil {
-			return err
-		}
-		if _, err := catalogProjection.Snapshot(ctx); err != nil {
-			return fmt.Errorf("Gateway catalog authority is unavailable: %w", err)
-		}
-		if dependencies.MarketDataProbe == nil {
-			return fmt.Errorf("Gateway market-data readiness probe is unavailable")
-		}
-		if err := dependencies.MarketDataProbe.CheckMarketDataRoute(ctx); err != nil {
-			return fmt.Errorf("Gateway market-data authority is unavailable: %w", err)
-		}
-		if dependencies.RuntimeProbe == nil {
-			return fmt.Errorf("Gateway runtime readiness probe is unavailable")
-		}
-		if err := dependencies.RuntimeProbe.CheckRuntimeRoute(ctx); err != nil {
-			return fmt.Errorf("Gateway account runtime authority is unavailable: %w", err)
-		}
-		return nil
-	}))
-	workService.SetLiveWritesEnabled(cfg.FundingLiveEnabled)
 	browserHandler, err := httpapi.New(httpapi.Options{
 		Sessions: sessionService, Mode: cfg.Mode, ContractVersion: httpapi.ContractVersion,
 		WriteAuthority: writeAuthority,
 		Accounts:       &httpapi.AccountRoutesOptions{Service: accountService, Authenticate: authenticate, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Blockers: func(context.Context, string) (accounts.Blockers, error) { return accounts.Blockers{}, nil }, Activity: activityLog, Mode: cfg.Mode},
 		Audit:          &httpapi.AuditRouteOptions{Service: auditService, Authenticate: authenticate},
 		PublicData:     publicAPI,
-		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog, FundingAccounting: fundingProjection.(httpapi.FundingAccountingRefresher)},
-		Funding:        &httpapi.FundingRoutesOptions{Projection: fundingProjection, Work: workService, Executions: fundingExecutionStore, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
+		Trading:        &httpapi.TradingOptions{Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection, Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService, ManualAccounts: accountService, ManualMarketData: marketService, Principal: principal, AuthorizeMutation: httpapi.SessionMutationAuthorizer(sessionService), Activity: activityLog},
 		Projections:    &httpapi.BrowserProjectionRoutesOptions{Runtimes: runtimeProjection, Commands: commandStore, Activity: activityLog, Principal: principal},
 	})
 	if err != nil {
 		return nil, err
 	}
-	workHandler, err := workapi.New(workapi.Options{
-		TokenDigest: cfg.FundingWorkerTokenDigest, Mode: cfg.Mode, ContractVersion: workapi.ContractVersion,
-		Service: workService, WriteAuthority: writeAuthority,
-		OnReadiness: func(ready bool) {
-			readiness.Update("fundingWorker", readinessComponent(ready, "worker_not_registered"))
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	readiness.SetEvaluator("fundingWorker", func() platformsystem.Component {
-		return readinessComponent(workService.AnyWorkerReady(), "worker_not_ready")
-	})
 	return &App{
 		cfg:               cfg,
 		contract:          contract,
 		accounts:          accountService,
 		browser:           &http.Server{Addr: cfg.BrowserListenAddr, Handler: browserHandler},
-		work:              &http.Server{Addr: cfg.WorkListenAddr, Handler: workHandler},
 		reconciler:        reconciliationRunner,
 		accountReconciler: accountLifecycleReconciler,
 		secretReady:       secretReady,
@@ -465,13 +355,7 @@ func (a *App) Start(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		a.workLn, err = net.Listen("tcp", a.cfg.WorkListenAddr)
-		if err != nil {
-			_ = a.browserLn.Close()
-			return
-		}
 		go func() { _ = a.browser.Serve(a.browserLn) }()
-		go func() { _ = a.work.Serve(a.workLn) }()
 		if a.reconciler != nil || a.accountReconciler != nil {
 			reconcileCtx, cancel := context.WithCancel(ctx)
 			a.reconcileStop = cancel
@@ -520,18 +404,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 				}
 			}
 		}
-		if a.work != nil {
-			if err := a.work.Shutdown(ctx); err != nil && first == nil {
-				first = err
-			}
-		}
 		if a.browser != nil {
 			if err := a.browser.Shutdown(ctx); err != nil && first == nil {
 				first = err
 			}
-		}
-		if a.workLn != nil {
-			_ = a.workLn.Close()
 		}
 		if a.browserLn != nil {
 			_ = a.browserLn.Close()
@@ -573,7 +449,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer credentialProvider.Close()
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, FundingGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter, WriteAuthority: writeAuthority})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, SecretProvider: credentialProvider.Writer(), CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ReconciliationGateway: adapter, AccountGateway: adapter, WriteAuthority: writeAuthority})
 	if err != nil {
 		return err
 	}

@@ -15,11 +15,8 @@ func TestLoadRequiresProtectedCredentialsAndKeepsOnlyTokenDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.BrowserListenAddr != "127.0.0.1:18091" || cfg.WorkListenAddr != "127.0.0.1:18092" {
+	if cfg.BrowserListenAddr != "127.0.0.1:18091" {
 		t.Fatalf("unexpected listen addrs: %#v", cfg)
-	}
-	if allZero(cfg.FundingWorkerTokenDigest[:]) {
-		t.Fatal("worker token digest is zero")
 	}
 	if cfg.GatewayURL != "http://127.0.0.1:18082" || string(cfg.GatewayToken) != strings.Repeat("gateway-token-", 3) {
 		t.Fatalf("Gateway adapter configuration not loaded")
@@ -102,42 +99,10 @@ func TestLoadRejectsUnsafeManualPreviewSigningKeys(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsCredentialDefaultsAndUnsafeTokenFiles(t *testing.T) {
-	t.Run("missing credentials", func(t *testing.T) {
-		clearEnvironment(t)
-		if _, err := Load(); err == nil {
-			t.Fatal("Load() error = nil")
-		}
-	})
-	t.Run("inline token", func(t *testing.T) {
-		setValidEnvironment(t)
-		t.Setenv("BT_PLATFORM_WORK_TOKEN", strings.Repeat("x", 32))
-		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "inline worker tokens are forbidden") {
-			t.Fatalf("Load() error = %v", err)
-		}
-	})
-	for name, test := range map[string]struct {
-		token      string
-		permission os.FileMode
-	}{
-		"short":      {token: "too-short", permission: 0o600},
-		"permission": {token: strings.Repeat("x", 32), permission: 0o644},
-	} {
-		t.Run(name, func(t *testing.T) {
-			clearEnvironment(t)
-			setBaseEnvironment(t)
-			path := filepath.Join(t.TempDir(), "worker.token")
-			if err := os.WriteFile(path, []byte(test.token), test.permission); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(path, test.permission); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv(FundingWorkerTokenFileEnv, path)
-			if _, err := Load(); err == nil {
-				t.Fatal("Load() error = nil")
-			}
-		})
+func TestLoadRejectsCredentialDefaults(t *testing.T) {
+	clearEnvironment(t)
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil")
 	}
 }
 
@@ -202,30 +167,6 @@ func TestLivePrivateWritesRequireExplicitLiveConfiguration(t *testing.T) {
 	}
 }
 
-func TestFundingLiveAdmissionConfigurationIsExplicitAndModeScoped(t *testing.T) {
-	setValidEnvironment(t)
-	t.Setenv(FundingLiveEnabledEnv, "not-a-bool")
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), FundingLiveEnabledEnv) {
-		t.Fatalf("invalid bool Load() error = %v", err)
-	}
-
-	setValidEnvironment(t)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.FundingLiveEnabled = true
-	cfg.FundingLiveMaxNotional = "250"
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "BT_MODE=live") {
-		t.Fatalf("cross-mode Validate() error = %v", err)
-	}
-	cfg.Mode = "live"
-	cfg.FundingLiveMaxNotional = ""
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), FundingLiveMaxNotionalEnv) {
-		t.Fatalf("missing maximum Validate() error = %v", err)
-	}
-}
-
 func TestMigrationValidationProfileIsTestOnlyAndNonLive(t *testing.T) {
 	setValidEnvironment(t)
 	t.Setenv(PlatformStartupProfileEnv, string(StartupMigrationValidation))
@@ -239,7 +180,6 @@ func TestMigrationValidationProfileIsTestOnlyAndNonLive(t *testing.T) {
 
 	for name, mutate := range map[string]func(*Config){
 		"live mode":           func(value *Config) { value.Mode = "live" },
-		"funding live":        func(value *Config) { value.FundingLiveEnabled = true },
 		"private writes live": func(value *Config) { value.LivePrivateWritesEnabled = true },
 		"unknown profile":     func(value *Config) { value.StartupProfile = "other" },
 	} {
@@ -257,11 +197,6 @@ func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	clearEnvironment(t)
 	setBaseEnvironment(t)
-	path := filepath.Join(t.TempDir(), "worker.token")
-	if err := os.WriteFile(path, []byte(strings.Repeat("token-value-", 4)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(FundingWorkerTokenFileEnv, path)
 	gatewayDir := filepath.Join(t.TempDir(), "test")
 	if err := os.MkdirAll(gatewayDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -318,13 +253,11 @@ func clearEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"BT_MODE", "BT_BOOTSTRAP_USERNAME", "BT_BOOTSTRAP_PASSWORD_HASH",
-		"BT_PLATFORM_WORK_TOKEN", "BT_FUNDING_WORKER_TOKEN", FundingWorkerTokenFileEnv,
-		"BT_PLATFORM_BROWSER_LISTEN_ADDR", "BT_PLATFORM_WORK_LISTEN_ADDR",
+		"BT_PLATFORM_BROWSER_LISTEN_ADDR",
 		GatewayURLEnv, GatewayTokenFileEnv, "BT_PLATFORM_DATABASE", "BT_PLATFORM_DATABASE_ROLE",
 		"BT_MANUAL_PREVIEW_SIGNING_KEY", ManualPreviewSigningKeyFileEnv,
 		LivePrivateWritesEnabledEnv,
 		PlatformStartupProfileEnv,
-		FundingLiveEnabledEnv, FundingLiveMaxNotionalEnv,
 		SecretKeySourceEnv, SecretStoreDirEnv, SecretStoreNamespaceEnv, SecretMasterKeyVersionEnv,
 		SecretMasterKeyFileEnv, SecretKeychainServiceEnv, SecretKeychainAccountEnv,
 	} {

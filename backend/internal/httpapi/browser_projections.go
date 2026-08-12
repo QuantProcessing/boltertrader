@@ -20,22 +20,20 @@ type ProjectionReadiness struct {
 }
 
 type CapabilityOperations struct {
-	Place                  bool `json:"place"`
-	Amend                  bool `json:"amend"`
-	Cancel                 bool `json:"cancel"`
-	OpenOrders             bool `json:"openOrders"`
-	OrderHistory           bool `json:"orderHistory"`
-	Fills                  bool `json:"fills"`
-	Balances               bool `json:"balances"`
-	Account                bool `json:"account"`
-	Positions              bool `json:"positions"`
-	Funding                bool `json:"funding"`
-	AccountFundingPayments bool `json:"accountFundingPayments"`
-	Leverage               bool `json:"leverage"`
-	PrivateStream          bool `json:"privateStream"`
-	MarginMode             bool `json:"marginMode"`
-	PositionMode           bool `json:"positionMode"`
-	FundsTransfer          bool `json:"fundsTransfer"`
+	Place         bool `json:"place"`
+	Amend         bool `json:"amend"`
+	Cancel        bool `json:"cancel"`
+	OpenOrders    bool `json:"openOrders"`
+	OrderHistory  bool `json:"orderHistory"`
+	Fills         bool `json:"fills"`
+	Balances      bool `json:"balances"`
+	Account       bool `json:"account"`
+	Positions     bool `json:"positions"`
+	Leverage      bool `json:"leverage"`
+	PrivateStream bool `json:"privateStream"`
+	MarginMode    bool `json:"marginMode"`
+	PositionMode  bool `json:"positionMode"`
+	FundsTransfer bool `json:"fundsTransfer"`
 }
 
 type AccountCapabilityProjection struct {
@@ -307,7 +305,7 @@ func (handler *browserProjectionHandler) activity(w http.ResponseWriter, r *http
 func (handler *browserProjectionHandler) listCommands(ctx context.Context, principal, mode, productID string) ([]orders.Command, error) {
 	products := []string{productID}
 	if productID == "" {
-		products = []string{"manual", "funding"}
+		products = []string{"manual"}
 	}
 	items := make([]orders.Command, 0)
 	seen := make(map[string]struct{})

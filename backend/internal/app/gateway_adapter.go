@@ -21,7 +21,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/marketdata"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/orders"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/portfolio"
-	"github.com/QuantProcessing/boltertrader/backend/internal/products/funding/accounting"
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/google/uuid"
@@ -271,64 +270,6 @@ type gatewayFillCollection struct {
 		} `json:"fill"`
 	} `json:"items"`
 	NextCursor string `json:"next_cursor,omitempty"`
-}
-
-type gatewayMarkPrice struct {
-	AccountID    string    `json:"account_id"`
-	InstrumentID string    `json:"instrument_id"`
-	Price        string    `json:"price"`
-	ObservedAt   time.Time `json:"observed_at"`
-}
-
-type gatewayFundingPaymentPage struct {
-	Items      []gatewayFundingPayment `json:"items"`
-	NextCursor string                  `json:"next_cursor,omitempty"`
-	Scope      struct {
-		AccountID       string    `json:"account_id"`
-		InstrumentID    string    `json:"instrument_id,omitempty"`
-		AllInstruments  bool      `json:"all_instruments"`
-		SettlementAsset string    `json:"settlement_asset,omitempty"`
-		Start           time.Time `json:"start"`
-		End             time.Time `json:"end"`
-	} `json:"scope"`
-	AccountID       string    `json:"account_id"`
-	InstrumentID    string    `json:"instrument_id,omitempty"`
-	SettlementAsset string    `json:"settlement_asset,omitempty"`
-	Start           time.Time `json:"start"`
-	End             time.Time `json:"end"`
-	Watermark       struct {
-		Revision         int64     `json:"revision"`
-		ObservedAt       time.Time `json:"observed_at"`
-		CompleteThrough  time.Time `json:"complete_through"`
-		Verified         bool      `json:"verified"`
-		Cursor           string    `json:"cursor,omitempty"`
-		EffectiveThrough time.Time `json:"effective_through,omitempty"`
-	} `json:"watermark"`
-	Status              string          `json:"status"`
-	AsOf                time.Time       `json:"as_of"`
-	CompleteThrough     time.Time       `json:"complete_through,omitempty"`
-	Revision            int64           `json:"revision"`
-	Page                json.RawMessage `json:"page"`
-	PaginationTraversal json.RawMessage `json:"pagination_traversal"`
-}
-
-type gatewayFundingPayment struct {
-	FactID           string    `json:"fact_id"`
-	SupersedesFactID string    `json:"supersedes_fact_id,omitempty"`
-	AccountID        string    `json:"account_id"`
-	InstrumentID     string    `json:"instrument_id"`
-	SettlementAsset  string    `json:"settlement_asset"`
-	Amount           string    `json:"amount"`
-	EffectiveAt      time.Time `json:"effective_at"`
-	ObservedAt       time.Time `json:"observed_at,omitempty"`
-	Revision         int64     `json:"revision,omitempty"`
-	PaymentID        string    `json:"payment_id,omitempty"`
-	Venue            string    `json:"venue"`
-	VenueEnvironment string    `json:"venue_environment"`
-	Product          string    `json:"product"`
-	Version          string    `json:"version,omitempty"`
-	SourceRef        string    `json:"source_ref,omitempty"`
-	FormulaVersion   string    `json:"formula_version,omitempty"`
 }
 
 func newGatewayAdapter(rawURL string, token []byte, client *http.Client) (*gatewayAdapter, error) {
@@ -847,7 +788,7 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 		operations := row.Operations
 		projectedCapabilities = append(projectedCapabilities, httpapi.AccountCapabilityProjection{
 			RowID: row.RowID, Venue: row.Venue, Product: row.Product, Settlement: row.Settlement, WriteReady: row.WriteReady,
-			Operations: httpapi.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Funding: operations.Funding, AccountFundingPayments: operations.AccountFundingPayments, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
+			Operations: httpapi.CapabilityOperations{Place: operations.Place, Amend: operations.Amend, Cancel: operations.Cancel, OpenOrders: operations.OpenOrders, OrderHistory: operations.OrderHistory, Fills: operations.Fills, Balances: operations.Balances, Account: operations.Account, Positions: operations.Positions, Leverage: operations.Leverage, PrivateStream: operations.PrivateStream, MarginMode: operations.MarginMode, PositionMode: operations.PositionMode, FundsTransfer: operations.FundsTransfer},
 		})
 	}
 	active, err := projectRuntimeSnapshot(projection.Active)
@@ -929,53 +870,6 @@ func (adapter *gatewayAdapter) fetchMarketData(ctx context.Context, query market
 	}
 	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
 	return result.Data, nil
-}
-
-func (adapter *gatewayAdapter) MarkPrice(ctx context.Context, accountID, instrumentID string) (accounting.MarkPrice, error) {
-	if accountID == "" || instrumentID == "" {
-		return accounting.MarkPrice{}, fmt.Errorf("Gateway mark-price scope is invalid")
-	}
-	var result gatewayMarkPrice
-	if err := adapter.read(ctx, "/v1/mark-price", url.Values{"account_id": {accountID}, "instrument_id": {instrumentID}}, &result); err != nil {
-		return accounting.MarkPrice{}, fmt.Errorf("read Gateway mark price: %w", err)
-	}
-	if result.AccountID != accountID || result.InstrumentID != instrumentID || result.Price == "" || result.ObservedAt.IsZero() {
-		return accounting.MarkPrice{}, fmt.Errorf("Gateway mark-price response is invalid")
-	}
-	return accounting.MarkPrice{AccountID: result.AccountID, InstrumentID: result.InstrumentID, Price: result.Price, ObservedAt: result.ObservedAt.UTC()}, nil
-}
-
-func (adapter *gatewayAdapter) FundingPayments(ctx context.Context, query accounting.FundingPaymentQuery) (accounting.FundingPaymentPage, error) {
-	if query.AccountID == "" || query.InstrumentID == "" || query.SettlementAsset == "" || query.Start.IsZero() || query.End.IsZero() || !query.Start.Before(query.End) || query.Limit < 1 || query.Limit > 500 {
-		return accounting.FundingPaymentPage{}, fmt.Errorf("Gateway funding-payment scope is invalid")
-	}
-	values := url.Values{
-		"account_id": {query.AccountID}, "instrument_id": {query.InstrumentID}, "settlement_asset": {query.SettlementAsset},
-		"start": {query.Start.UTC().Format(time.RFC3339Nano)}, "end": {query.End.UTC().Format(time.RFC3339Nano)}, "pagination.limit": {strconv.Itoa(query.Limit)},
-	}
-	if query.Cursor != "" {
-		values.Set("pagination.cursor", query.Cursor)
-	}
-	var result gatewayFundingPaymentPage
-	if err := adapter.readLimit(ctx, "/v1/funding-payments", values, &result, 1<<20); err != nil {
-		return accounting.FundingPaymentPage{}, fmt.Errorf("read Gateway funding payments: %w", err)
-	}
-	if result.AccountID != query.AccountID || result.InstrumentID != query.InstrumentID || result.SettlementAsset != query.SettlementAsset || result.Scope.AccountID != query.AccountID || result.Scope.InstrumentID != query.InstrumentID || result.Scope.SettlementAsset != query.SettlementAsset || !result.Start.Equal(query.Start) || !result.End.Equal(query.End) || !result.Scope.Start.Equal(query.Start) || !result.Scope.End.Equal(query.End) || result.AsOf.IsZero() {
-		return accounting.FundingPaymentPage{}, fmt.Errorf("Gateway funding-payment response is invalid")
-	}
-	page := accounting.FundingPaymentPage{
-		AccountID: result.AccountID, InstrumentID: result.InstrumentID, NextCursor: result.NextCursor,
-		Start: result.Start.UTC(), End: result.End.UTC(), CompleteThrough: result.CompleteThrough.UTC(), ObservedAt: result.Watermark.ObservedAt.UTC(),
-		Revision: result.Revision, Status: accounting.Completeness(result.Status), Verified: result.Watermark.Verified,
-		Items: make([]accounting.FundingPayment, 0, len(result.Items)),
-	}
-	for _, item := range result.Items {
-		page.Items = append(page.Items, accounting.FundingPayment{
-			FactID: item.FactID, SupersedesFactID: item.SupersedesFactID, AccountID: item.AccountID, InstrumentID: item.InstrumentID,
-			SettlementAsset: item.SettlementAsset, Amount: item.Amount, EffectiveAt: item.EffectiveAt.UTC(), ObservedAt: item.ObservedAt.UTC(), Revision: item.Revision,
-		})
-	}
-	return page, nil
 }
 
 func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {

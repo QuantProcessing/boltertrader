@@ -50,7 +50,7 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 	const canary = "credential-canary-never-return"
 	ctx := WithRequestID(context.Background(), "req-create")
 	created, err := service.Create(ctx, CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentTestnet, DisplayName: "Primary", ProductIDs: []string{"funding"}, SecretMaterial: []byte(canary),
+		Venue: "binance", VenueEnvironment: EnvironmentTestnet, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte(canary),
 	}, "browser-session")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -125,7 +125,7 @@ func TestUpdateMetadataKeepsCanonicalProductPolicyInSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"funding", "manual"}
+	want := []string{"manual"}
 	updated, err := service.UpdateMetadata(context.Background(), account.ID, account.DesiredStateRevision, "Updated", want, "principal_1")
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +148,6 @@ func TestUpdateMetadataRejectsInvalidProductPolicyWithoutMutation(t *testing.T) 
 		{name: "empty"},
 		{name: "duplicate", policy: []string{"manual", "manual"}},
 		{name: "unknown", policy: []string{"unknown"}},
-		{name: "funding on spot only", policy: []string{"funding"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -183,16 +183,16 @@ func TestAccountResponsesExposeCanonicalBrowserIdentityAndPATCHRejectsLegacyFiel
 		t.Fatalf("legacy PATCH status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	patch = httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/acct_contract", strings.NewReader(`{"displayName":"Updated","productIds":["funding"]}`))
+	patch = httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/acct_contract", strings.NewReader(`{"displayName":"Updated","productIds":["manual"]}`))
 	patch.Header.Set("If-Match", AccountETag(1))
 	response = httptest.NewRecorder()
 	mux.ServeHTTP(response, patch)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"productPolicy":["funding"]`) || strings.Contains(response.Body.String(), `"productIds"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"productPolicy":["manual"]`) || strings.Contains(response.Body.String(), `"productIds"`) {
 		t.Fatalf("canonical PATCH status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
-func TestAccountPatchRejectsRouteIncompatibleProductPolicyWithoutMutation(t *testing.T) {
+func TestAccountPatchRejectsInvalidProductPolicyWithoutMutation(t *testing.T) {
 	store := platformaccounts.NewMemoryStore()
 	account := platformaccounts.Account{
 		ID: "acct_patch_policy", Venue: "binance", Mode: "test", NativeEnvironment: platformaccounts.EnvironmentDemo,
@@ -213,7 +213,7 @@ func TestAccountPatchRejectsRouteIncompatibleProductPolicyWithoutMutation(t *tes
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/"+account.ID, strings.NewReader(`{"displayName":"Changed","productIds":["funding"]}`))
+	request := httptest.NewRequest(http.MethodPatch, "/api/v1/accounts/"+account.ID, strings.NewReader(`{"displayName":"Changed","productIds":["spot"]}`))
 	request.Header.Set("If-Match", AccountETag(account.DesiredStateRevision))
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)

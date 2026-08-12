@@ -951,10 +951,6 @@ func TestDurableCreateRejectsInvalidPolicyAndRoutesBeforeEffects(t *testing.T) {
 		{name: "duplicate product policy", mutate: func(request *CreateRequest) { request.ProductPolicy = []string{"manual", "manual"} }},
 		{name: "unknown product policy", mutate: func(request *CreateRequest) { request.ProductPolicy = []string{"unknown"} }},
 		{name: "too many routes", mutate: func(request *CreateRequest) { request.Routes = thirtyThreeRoutes }},
-		{name: "route policy mismatch", mutate: func(request *CreateRequest) {
-			request.ProductPolicy = []string{"funding"}
-			request.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive}}
-		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -231,10 +231,6 @@ func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, 
 		clear(material)
 		return Account{}, nil, "", validationError(err)
 	}
-	if err := validateRouteProductCompatibility(policy, routes); err != nil {
-		clear(material)
-		return Account{}, nil, "", validationError(err)
-	}
 	digestInput := struct {
 		Venue            string
 		DisplayName      string
@@ -262,35 +258,13 @@ func validateDurableProductPolicy(policy []string) error {
 	}
 	seen := make(map[string]struct{}, len(policy))
 	for _, product := range policy {
-		if product != "funding" && product != "manual" {
+		if product != "manual" {
 			return errors.New("product policy is invalid")
 		}
 		if _, duplicate := seen[product]; duplicate {
 			return errors.New("product policy is duplicated")
 		}
 		seen[product] = struct{}{}
-	}
-	return nil
-}
-
-func validateRouteProductCompatibility(policy []string, routes []AccountRoute) error {
-	products := make(map[string]struct{}, len(policy))
-	for _, product := range policy {
-		products[product] = struct{}{}
-	}
-	fundingRoute := false
-	for _, route := range routes {
-		_, manual := products["manual"]
-		_, funding := products["funding"]
-		if funding && route.Product == ProductPerp {
-			fundingRoute = fundingRoute || route.RequestedState == RouteActive
-		}
-		if !manual && !(funding && route.Product == ProductPerp) {
-			return errors.New("route is incompatible with product policy")
-		}
-	}
-	if _, funding := products["funding"]; funding && !fundingRoute {
-		return errors.New("funding product requires an active perpetual route")
 	}
 	return nil
 }

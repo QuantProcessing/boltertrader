@@ -60,9 +60,7 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	commands := &commandProjectionFixture{commands: map[string][]orders.Command{
 		"manual": {
 			{CommandID: "manual-command", PrincipalID: session.DefaultPrincipalID, AccountID: "account-a", LineageID: "manual-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "manual-key", CommandKind: "order.place", State: orders.StateFilled, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-time.Minute), UpdatedAt: now, ExecutionEvidence: orders.ExecutionEvidence{Fills: []orders.FillEvidence{{FillID: "fill-a", AccountID: "account-a", InstrumentID: "btc-usdt", Side: "buy", Quantity: "0.5", Price: "100", Fee: "0.01", FeeCurrency: "USDT", SettlementCurrency: "USDT", OccurredAt: now}}}},
-		},
-		"funding": {
-			{CommandID: "funding-command", PrincipalID: session.DefaultPrincipalID, AccountID: "account-b", LineageID: "funding-lineage", ProductID: "funding", Mode: orders.ModeTest, IdempotencyKey: "funding-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
+			{CommandID: "submitted-command", PrincipalID: session.DefaultPrincipalID, AccountID: "account-b", LineageID: "submitted-lineage", ProductID: "manual", Mode: orders.ModeTest, IdempotencyKey: "submitted-key", CommandKind: "order.place", State: orders.StateSubmitted, Blockers: []orders.Blocker{}, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now.Add(-time.Minute)},
 		},
 	}}
 	passwordHash, _ := session.HashPassword("correct horse battery staple")
@@ -90,8 +88,8 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 		notContain []string
 	}{
 		{path: "/api/v1/accounts/account-a/runtimes", contains: []string{`"accountId":"account-a"`, `"cancel":true`, `"runtimeVersion":9`}, notContain: []string{`"scaffold":true`, "gateway-adapter-token"}},
-		{path: "/api/v1/commands", contains: []string{`"commandId":"manual-command"`, `"commandId":"funding-command"`}, notContain: []string{`"scaffold":true`, `"payload"`, `"principalId"`}},
-		{path: "/api/v1/fills?productId=manual", contains: []string{`"fillId":"fill-a"`, `"productId":"manual"`, `"lineageId":"manual-lineage"`}, notContain: []string{`"funding-lineage"`, `"scaffold":true`}},
+		{path: "/api/v1/commands", contains: []string{`"commandId":"manual-command"`, `"commandId":"submitted-command"`}, notContain: []string{`"scaffold":true`, `"payload"`, `"principalId"`}},
+		{path: "/api/v1/fills?productId=manual", contains: []string{`"fillId":"fill-a"`, `"productId":"manual"`, `"lineageId":"manual-lineage"`}, notContain: []string{`"submitted-lineage"`, `"scaffold":true`}},
 		{path: "/api/v1/activity", contains: []string{`"kind":"account.runtime.updated"`, `"accountId":"account-a"`}, notContain: []string{`"other-command"`, `"scaffold":true`, `"principalId"`}},
 	}
 	for _, test := range tests {
@@ -116,11 +114,11 @@ func TestBrowserProjectionRoutesAreScopedAndReturnAttributedData(t *testing.T) {
 	if runtimes.principal != session.DefaultPrincipalID || runtimes.mode != "test" || runtimes.accountID != "account-a" {
 		t.Fatalf("runtime scope=%q/%q/%q", runtimes.principal, runtimes.mode, runtimes.accountID)
 	}
-	if len(commands.calls) != 3 {
+	if len(commands.calls) != 2 {
 		t.Fatalf("command projection calls=%+v", commands.calls)
 	}
 	for _, call := range commands.calls {
-		if call[0] != session.DefaultPrincipalID || call[1] != "test" || (call[2] != "manual" && call[2] != "funding") {
+		if call[0] != session.DefaultPrincipalID || call[1] != "test" || call[2] != "manual" {
 			t.Fatalf("unscoped command projection call=%+v", call)
 		}
 	}

@@ -219,11 +219,7 @@ func (request CreateRequest) validate() error {
 	}
 	hasQuantity := request.Quantity != ""
 	hasNotional := request.Notional != ""
-	if request.ProductID == "funding" {
-		if !hasQuantity && !hasNotional {
-			return fmt.Errorf("quantity or notional is required")
-		}
-	} else if hasQuantity == hasNotional {
+	if hasQuantity == hasNotional {
 		return fmt.Errorf("exactly one of quantity or notional is required")
 	}
 	if hasQuantity {

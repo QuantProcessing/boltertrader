@@ -11,7 +11,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
 	service := NewService(NewMemoryStore(), func() time.Time { return now })
 	request := CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding", Kind: KindOpen,
+		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen,
 		IdempotencyKey: "reserve-a",
 		Scope:          NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT-PERP", VenueEnvironment: "testnet"},
 		Quantity:       "0.01",
@@ -20,7 +20,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status != StatusHeld || first.ProductID != "funding" || first.Mode != ModeTest {
+	if first.Status != StatusHeld || first.ProductID != "manual" || first.Mode != ModeTest {
 		t.Fatalf("reservation = %+v", first)
 	}
 
@@ -42,7 +42,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	held, err := service.Create(context.Background(), CreateRequest{
-		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding", Kind: KindHedge,
+		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindHedge,
 		IdempotencyKey: "reserve-a",
 		Scope:          NettingScope{AccountID: "account-a", Venue: "okx", InstrumentID: "ETH-USDT-SWAP", VenueEnvironment: "demo"},
 		Notional:       "50", Currency: "USDT",
@@ -51,16 +51,16 @@ func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, request := range []ConsumeRequest{
-		{ReservationID: held.ReservationID, PrincipalID: "principal-b", Mode: ModeTest, ProductID: "funding"},
-		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeLive, ProductID: "funding"},
-		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual"},
+		{ReservationID: held.ReservationID, PrincipalID: "principal-b", Mode: ModeTest, ProductID: "manual"},
+		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeLive, ProductID: "manual"},
+		{ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "other"},
 	} {
 		if _, err := service.Consume(context.Background(), request); !errors.Is(err, ErrOwnership) {
 			t.Fatalf("Consume(%+v) error = %v, want ErrOwnership", request, err)
 		}
 	}
 	consumed, err := service.Consume(context.Background(), ConsumeRequest{
-		ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "funding",
+		ReservationID: held.ReservationID, PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual",
 	})
 	if err != nil || consumed.Status != StatusConsumed {
 		t.Fatalf("consumed = %+v, err=%v", consumed, err)
@@ -100,7 +100,7 @@ func TestServiceRejectsCrossModeVenueEnvironment(t *testing.T) {
 	}
 }
 
-func TestServiceKeepsSingleAmountRuleOutsideFunding(t *testing.T) {
+func TestServiceRejectsQuantityAndNotionalTogether(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	request := CreateRequest{
 		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
@@ -108,7 +108,7 @@ func TestServiceKeepsSingleAmountRuleOutsideFunding(t *testing.T) {
 		Quantity: "0.5", Notional: "50", Currency: "USDT",
 	}
 	if _, err := service.Create(context.Background(), request); err == nil {
-		t.Fatal("non-Funding reservation accepted quantity and notional together")
+		t.Fatal("reservation accepted quantity and notional together")
 	}
 }
 

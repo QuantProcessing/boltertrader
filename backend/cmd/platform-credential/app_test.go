@@ -117,7 +117,6 @@ func setPlatformCredentialTestEnvironment(t *testing.T, gatewayURL string) {
 		}
 		return path
 	}
-	t.Setenv(config.FundingWorkerTokenFileEnv, writeProtected(t.TempDir(), "worker.token", strings.Repeat("worker-token-", 3)))
 	modeDirectory := filepath.Join(t.TempDir(), "test")
 	t.Setenv(config.ManualPreviewSigningKeyFileEnv, writeProtected(modeDirectory, "manual-preview.key", strings.Repeat("manual-key-", 4)))
 	t.Setenv(config.GatewayTokenFileEnv, writeProtected(modeDirectory, "gateway.token", strings.Repeat("gateway-token-", 3)))

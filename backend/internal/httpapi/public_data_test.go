@@ -70,7 +70,7 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
 		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
 		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt", want: http.StatusBadRequest, body: "request is invalid"},
-		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"fundingWorker"`},
+		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"accounts"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
 		response := httptest.NewRecorder()

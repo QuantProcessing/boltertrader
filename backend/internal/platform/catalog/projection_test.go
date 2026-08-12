@@ -120,7 +120,7 @@ func TestProjectionDerivesBrowserVenueContractFromExecutableRegistries(t *testin
 		t.Fatal(err)
 	}
 	for _, venue := range snapshot.Venues {
-		if venue.NativeEnvironment != venue.Environment || len(venue.Products) != 2 || venue.CredentialSchema.SchemaVersion != 1 || venue.CredentialSchema.AuthKind == "" || len(venue.CredentialSchema.Fields) < 2 || len(venue.RouteProfiles) < 2 {
+		if venue.NativeEnvironment != venue.Environment || len(venue.Products) != 1 || venue.CredentialSchema.SchemaVersion != 1 || venue.CredentialSchema.AuthKind == "" || len(venue.CredentialSchema.Fields) < 2 || len(venue.RouteProfiles) < 2 {
 			t.Fatalf("incomplete browser venue projection: %+v", venue)
 		}
 		for _, field := range venue.CredentialSchema.Fields {
@@ -172,7 +172,7 @@ func TestBrowserVenueProjectionCoversEverySupportedRegistryRow(t *testing.T) {
 			for _, profile := range venue.RouteProfiles {
 				got = append(got, profile.RouteProfileID)
 			}
-			if strings.Join(got, ",") != strings.Join(test.profiles, ",") || venue.NativeEnvironment != test.environment || len(venue.Products) != 2 {
+			if strings.Join(got, ",") != strings.Join(test.profiles, ",") || venue.NativeEnvironment != test.environment || len(venue.Products) != 1 {
 				t.Fatalf("venue=%+v profiles=%v", venue, got)
 			}
 		})

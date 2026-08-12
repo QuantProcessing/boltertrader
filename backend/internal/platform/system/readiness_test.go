@@ -30,14 +30,14 @@ func TestReadinessRequiresFrozenComponents(t *testing.T) {
 func TestReadinessEvaluatorIsRecomputedForEverySnapshot(t *testing.T) {
 	service := NewReadiness()
 	ready := true
-	service.SetEvaluator("fundingWorker", func() Component {
+	service.SetEvaluator("gatewayProbe", func() Component {
 		return Component{Ready: ready, Reason: "worker_not_ready"}
 	})
-	if component := service.Status().Components["fundingWorker"]; !component.Ready {
+	if component := service.Status().Components["gatewayProbe"]; !component.Ready {
 		t.Fatalf("initial evaluated component=%+v", component)
 	}
 	ready = false
-	if component := service.Status().Components["fundingWorker"]; component.Ready {
+	if component := service.Status().Components["gatewayProbe"]; component.Ready {
 		t.Fatalf("latched evaluated component=%+v", component)
 	}
 }

@@ -7,7 +7,7 @@ import (
 )
 
 func TestEncodeAccountJSONUsesSQLNullForNilRotation(t *testing.T) {
-	_, rotation, err := encodeAccountJSON(accounts.Account{ProductIDs: []string{"funding"}})
+	_, rotation, err := encodeAccountJSON(accounts.Account{ProductIDs: []string{"manual"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -15,7 +15,7 @@ func TestEncodeAccountJSONUsesSQLNullForNilRotation(t *testing.T) {
 		t.Fatalf("nil rotation encoded as JSON %q", rotation)
 	}
 
-	_, rotation, err = encodeAccountJSON(accounts.Account{ProductIDs: []string{"funding"}, Rotation: &accounts.RotationFence{ID: "rotation-1"}})
+	_, rotation, err = encodeAccountJSON(accounts.Account{ProductIDs: []string{"manual"}, Rotation: &accounts.RotationFence{ID: "rotation-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

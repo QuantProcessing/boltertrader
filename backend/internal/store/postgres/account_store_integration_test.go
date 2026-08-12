@@ -43,7 +43,7 @@ func TestAccountProductPolicyPatchSurvivesDatabaseRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"funding", "manual"}
+	want := []string{"manual"}
 	updated, err := service.UpdateMetadata(ctx, account.ID, 1, "Updated", want, "principal_1")
 	if err != nil || !slices.Equal(updated.ProductPolicy, want) {
 		t.Fatalf("updated=%+v err=%v", updated, err)
@@ -77,7 +77,7 @@ func TestAccountProductPolicyInvalidPatchDoesNotSurviveDatabaseRestart(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.UpdateMetadata(ctx, account.ID, 1, "Changed", []string{"funding"}, "principal_1"); !errors.Is(err, accounts.ErrValidation) {
+	if _, err := service.UpdateMetadata(ctx, account.ID, 1, "Changed", []string{"spot"}, "principal_1"); !errors.Is(err, accounts.ErrValidation) {
 		t.Fatalf("err=%v", err)
 	}
 	if err := database.Close(); err != nil {
@@ -96,7 +96,7 @@ func TestAccountStorePersistsNilRotationAsSQLNullAndObjectRotationAsJSON(t *test
 	now := time.Date(2026, 8, 6, 3, 0, 0, 0, time.UTC)
 	account := accounts.Account{
 		ID: "account-rotation", Venue: "binance", VenueEnvironment: accounts.EnvironmentDemo,
-		DisplayName: "Rotation Account", ProductIDs: []string{"funding"}, SecretRef: "secret://test/account-rotation",
+		DisplayName: "Rotation Account", ProductIDs: []string{"manual"}, SecretRef: "secret://test/account-rotation",
 		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: accounts.StateActive, UpdatedAt: now,
 	}
 	if err := store.Create(ctx, account); err != nil {

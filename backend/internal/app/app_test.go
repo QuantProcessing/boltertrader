@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -35,10 +34,8 @@ func TestAppStartsAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		BrowserListenAddr: "127.0.0.1:18191", WorkListenAddr: "127.0.0.1:18192",
+		BrowserListenAddr: "127.0.0.1:18191",
 		BootstrapUsername: "operator", BootstrapPasswordHash: passwordHash,
-		FundingWorkerTokenFile:      "/protected/test-worker.token",
-		FundingWorkerTokenDigest:    sha256.Sum256([]byte("test-worker-token-with-at-least-32-bytes")),
 		ManualPreviewSigningKeyFile: "/protected/test/manual-preview-signing.key",
 		ManualPreviewSigningKey:     []byte("manual-preview-signing-key-with-at-least-32-bytes"),
 		GatewayURL:                  gateway.URL,
@@ -77,14 +74,14 @@ func TestNewWiresGatewayDesiredClientAndAccountReconciler(t *testing.T) {
 
 func TestStartRejectsMissingCredentialWriterBeforeListen(t *testing.T) {
 	cfg := testConfig(t, "test")
-	app, err := NewWithDependencies(cfg, Dependencies{MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}})
+	app, err := NewWithDependencies(cfg, Dependencies{MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := app.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "Secret Store") {
 		t.Fatalf("Start error=%v", err)
 	}
-	for _, address := range []string{cfg.BrowserListenAddr, cfg.WorkListenAddr} {
+	for _, address := range []string{cfg.BrowserListenAddr} {
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
 			t.Fatalf("listener %s was bound before secret check: %v", address, err)
@@ -180,25 +177,14 @@ func TestMigrationValidationRequiresWriterUsageAbsent(t *testing.T) {
 	}
 }
 
-func TestAppSourceVerifiesAuthorityAndWiresPostgresWorkStoreWhenDatabaseExists(t *testing.T) {
+func TestAppSourceVerifiesRuntimeAuthorityAndDoesNotMigrate(t *testing.T) {
 	source, err := os.ReadFile("app.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(source)
-	for _, required := range []string{
-		"postgres.VerifyRuntimeAuthority(ctx, database, authority.PlatformV15())",
-		"postgres.NewWorkStore(dependencies.Database)",
-		"postgres.NewFundingPlanStore(dependencies.Database)",
-		"postgres.NewFundingExecutionStore(dependencies.Database)",
-		"work.NewDurableFundingPayloadProcessor(commandService, fundingPlanStore, fundingExecutionStore, now)",
-		"fundingexecution.NewPlanProducer(fundingPlanStore, fundingExecutionStore)",
-		"fundingPlanProducer.WithAdmission(fundingAdmission).WithAccounting(accounting.NewPlatformAdapter(ledgerService, portfolioProjection))",
-		"work.NewWithStoreGatewayProcessorAndPlanProducer(workapi.ContractVersion, 15*time.Second, workStore, fundingProcessor, fundingPlanProducer, dependencies.FundingGateway)",
-	} {
-		if !strings.Contains(text, required) {
-			t.Fatalf("app.go missing durable work wiring %q", required)
-		}
+	if !strings.Contains(text, "postgres.VerifyRuntimeAuthority(ctx, database, authority.PlatformV15())") {
+		t.Fatal("app.go does not verify runtime authority")
 	}
 	if strings.Contains(text, "postgres.Migrate(ctx, database)") {
 		t.Fatal("Platform runtime still executes migrations")
@@ -214,9 +200,9 @@ func TestAppUsesDedicatedManualPreviewSigningKey(t *testing.T) {
 	if !strings.Contains(text, "cfg.ManualPreviewSigningKey") {
 		t.Fatal("app.go does not wire the dedicated Manual preview signing key")
 	}
-	forbiddenDerivation := "manualPreviewKey(cfg." + "FundingWorkerTokenDigest)"
+	forbiddenDerivation := "manualPreviewKey(cfg." + "GatewayToken)"
 	if strings.Contains(text, forbiddenDerivation) {
-		t.Fatal("app.go derives Manual preview authority from the Funding Worker bearer token")
+		t.Fatal("app.go derives Manual preview authority from the Gateway bearer token")
 	}
 }
 
@@ -259,7 +245,7 @@ func TestAppWiresOwnedRoutesAndKeepsLiveWritesDisabled(t *testing.T) {
 			if readinessResponse.Code != http.StatusServiceUnavailable || strings.Contains(readinessResponse.Body.String(), "not_reported") {
 				t.Fatalf("readiness=%d body=%s", readinessResponse.Code, readinessResponse.Body.String())
 			}
-			for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts", "fundingWorker"} {
+			for _, component := range []string{"process", "database", "secretStore", "gateway", "publicData", "accounts"} {
 				if !strings.Contains(readinessResponse.Body.String(), `"`+component+`"`) {
 					t.Fatalf("readiness missing %s: %s", component, readinessResponse.Body.String())
 				}
@@ -277,78 +263,6 @@ func TestAppWiresOwnedRoutesAndKeepsLiveWritesDisabled(t *testing.T) {
 				}
 			}
 		})
-	}
-
-	dependencies := testDependencies()
-	dependencies.CatalogSource = appCatalogSource{}
-	app, err := NewWithDependencies(testConfig(t, "test"), dependencies)
-	if err != nil {
-		t.Fatal(err)
-	}
-	registration := httptest.NewRequest(http.MethodPost, "/internal/v1/funding-work/workers/registrations", strings.NewReader(`{"workerId":"worker-1","instanceId":"instance-1","productId":"funding","mode":"test","contractVersion":"boltertrader-product-platform-upgrade/v4"}`))
-	registration.Header.Set("Authorization", "Bearer test-worker-token-with-at-least-32-bytes")
-	registration.Header.Set("Idempotency-Key", "registration-1")
-	response := httptest.NewRecorder()
-	app.work.Handler.ServeHTTP(response, registration)
-	if response.Code != http.StatusCreated || strings.Contains(response.Body.String(), `"scaffold":true`) {
-		t.Fatalf("registration=%d body=%s", response.Code, response.Body.String())
-	}
-	assertFundingWorkerReadiness(t, app, false)
-	heartbeat := httptest.NewRequest(http.MethodPut, "/internal/v1/funding-work/workers/worker-1/heartbeat", strings.NewReader(`{"workerGeneration":1,"instanceId":"instance-1","state":"ready","activeLeaseIds":[],"lastAppliedFactsCursor":""}`))
-	heartbeat.Header.Set("Authorization", "Bearer test-worker-token-with-at-least-32-bytes")
-	heartbeat.Header.Set("X-Worker-Id", "worker-1")
-	heartbeat.Header.Set("X-Worker-Generation", "1")
-	heartbeat.Header.Set("X-Worker-Instance-Id", "instance-1")
-	heartbeatResponse := httptest.NewRecorder()
-	app.work.Handler.ServeHTTP(heartbeatResponse, heartbeat)
-	if heartbeatResponse.Code != http.StatusOK {
-		t.Fatalf("heartbeat=%d body=%s", heartbeatResponse.Code, heartbeatResponse.Body.String())
-	}
-	assertFundingWorkerReadiness(t, app, true)
-}
-
-func TestAppWiresFundingBrowserThroughSharedWorkService(t *testing.T) {
-	source, err := os.ReadFile("app.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(source)
-	workIndex := strings.Index(text, "workService := work.NewWithStoreGatewayProcessorAndPlanProducer")
-	browserIndex := strings.Index(text, "browserHandler, err := httpapi.New")
-	if workIndex < 0 || browserIndex < 0 || workIndex > browserIndex {
-		t.Fatalf("Funding work service must exist before browser wiring: work=%d browser=%d", workIndex, browserIndex)
-	}
-	for _, required := range []string{"httpapi.NewSharedFundingProjection", "Catalog: catalogProjection", "MarketData: marketService", "Accounts: accountService", "Reservations: reservationStore", "Admission: fundingAdmission", "workService.SetDependencyReadinessEvaluator", "persistence.Readiness(ctx)", "catalogProjection.Snapshot(ctx)", "dependencies.MarketDataProbe.CheckMarketDataRoute(ctx)", "dependencies.RuntimeProbe.CheckRuntimeRoute(ctx)", "workService.SetLiveWritesEnabled(cfg.FundingLiveEnabled)", "fundingProcessor.WithExecutionEvidence(portfolioProjection, ledgerService).WithAdmission(fundingAdmission)", "fundingPlanProducer.WithAdmission(fundingAdmission)", "&httpapi.FundingRoutesOptions", "Projection: fundingProjection", "Work: workService", "Executions: fundingExecutionStore", "manualService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled)"} {
-		if !strings.Contains(text, required) {
-			t.Errorf("app Funding wiring missing %q", required)
-		}
-	}
-}
-
-func assertFundingWorkerReadiness(t *testing.T, app *App, want bool) {
-	t.Helper()
-	login := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"operator","password":"correct horse battery staple"}`))
-	loginResponse := httptest.NewRecorder()
-	app.browser.Handler.ServeHTTP(loginResponse, login)
-	if loginResponse.Code != http.StatusOK {
-		t.Fatalf("login=%d body=%s", loginResponse.Code, loginResponse.Body.String())
-	}
-	readinessRequest := httptest.NewRequest(http.MethodGet, "/api/v1/system/readiness", nil)
-	readinessRequest.AddCookie(loginResponse.Result().Cookies()[0])
-	readinessResponse := httptest.NewRecorder()
-	app.browser.Handler.ServeHTTP(readinessResponse, readinessRequest)
-	var readinessBody struct {
-		Data struct {
-			Components map[string]struct {
-				Ready bool `json:"ready"`
-			} `json:"components"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(readinessResponse.Body.Bytes(), &readinessBody); err != nil {
-		t.Fatal(err)
-	}
-	if readinessBody.Data.Components["fundingWorker"].Ready != want {
-		t.Fatalf("funding worker readiness=%v want=%v body=%s", readinessBody.Data.Components["fundingWorker"].Ready, want, readinessResponse.Body.String())
 	}
 }
 
@@ -490,15 +404,6 @@ func TestManualFailsStartupWithoutGatewayAuthority(t *testing.T) {
 	if _, err := NewWithDependencies(testConfig(t, "test"), Dependencies{}); err == nil || !strings.Contains(err.Error(), "Manual Gateway") {
 		t.Fatalf("NewWithDependencies() error=%v, want fail-closed Manual Gateway dependency", err)
 	}
-	if _, err := NewWithDependencies(testConfig(t, "test"), Dependencies{ManualGateway: &recordingManualGateway{}}); err == nil || !strings.Contains(err.Error(), "Funding Gateway") {
-		t.Fatalf("NewWithDependencies() error=%v, want fail-closed Funding Gateway dependency", err)
-	}
-}
-
-type recordingFundingGateway struct{}
-
-func (*recordingFundingGateway) Handoff(context.Context, orders.Command) (orders.HandoffResult, error) {
-	return orders.HandoffResult{Outcome: orders.HandoffAccepted}, nil
 }
 
 type readyMarketDataProbe struct{}
@@ -507,7 +412,7 @@ func (readyMarketDataProbe) CheckMarketDataRoute(context.Context) error { return
 func (readyMarketDataProbe) CheckRuntimeRoute(context.Context) error    { return nil }
 
 func testDependencies() Dependencies {
-	return Dependencies{SecretProvider: appSecretProvider{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, FundingGateway: &recordingFundingGateway{}, WriteAuthority: NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true, WriterUsage: true, FullCapabilityGrants: true, EffectiveTablePrivileges: true, EffectiveSequencePrivileges: true})}
+	return Dependencies{SecretProvider: appSecretProvider{}, MarketDataProbe: readyMarketDataProbe{}, RuntimeProbe: readyMarketDataProbe{}, ManualGateway: &recordingManualGateway{}, WriteAuthority: NewWriteAuthority(WriteAuthorityFacts{RuntimeInherits: true, WriterUsage: true, FullCapabilityGrants: true, EffectiveTablePrivileges: true, EffectiveSequencePrivileges: true})}
 }
 
 type appSecretProvider struct{}
@@ -609,5 +514,5 @@ func testConfig(t *testing.T, mode string) config.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return config.Config{BrowserListenAddr: "127.0.0.1:18191", WorkListenAddr: "127.0.0.1:18192", BootstrapUsername: "operator", BootstrapPasswordHash: passwordHash, FundingWorkerTokenFile: "/protected/worker.token", FundingWorkerTokenDigest: sha256.Sum256([]byte("test-worker-token-with-at-least-32-bytes")), ManualPreviewSigningKeyFile: "/protected/" + mode + "/manual-preview-signing.key", ManualPreviewSigningKey: []byte("manual-preview-signing-key-with-at-least-32-bytes"), GatewayURL: "http://127.0.0.1:18082", GatewayTokenFile: "/protected/" + mode + "/gateway.token", GatewayToken: []byte("gateway-adapter-token-with-at-least-32-bytes"), Mode: mode}
+	return config.Config{BrowserListenAddr: "127.0.0.1:18191", BootstrapUsername: "operator", BootstrapPasswordHash: passwordHash, ManualPreviewSigningKeyFile: "/protected/" + mode + "/manual-preview-signing.key", ManualPreviewSigningKey: []byte("manual-preview-signing-key-with-at-least-32-bytes"), GatewayURL: "http://127.0.0.1:18082", GatewayTokenFile: "/protected/" + mode + "/gateway.token", GatewayToken: []byte("gateway-adapter-token-with-at-least-32-bytes"), Mode: mode}
 }

@@ -224,12 +224,6 @@ func enrichBrowserVenues(snapshot Snapshot) (Snapshot, error) {
 		}
 		venue.NativeEnvironment = venue.Environment
 		venue.Products = []string{"manual"}
-		for _, profile := range profiles {
-			if profile.Product == string(routeprofile.ProductPerp) {
-				venue.Products = []string{"funding", "manual"}
-				break
-			}
-		}
 		venue.CredentialSchema = schema
 		venue.RouteProfiles = profiles
 	}
