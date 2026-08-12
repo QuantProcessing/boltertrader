@@ -30,7 +30,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/products/manual"
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

@@ -927,32 +927,11 @@ func TestProductPlatformMakeGatesAreExplicitAndPhony(t *testing.T) {
 	}
 	makefile := string(payload)
 	for _, required := range []string{
-		"test-browser test-real",
 		"test-browser:\n\tnpm --prefix web ci\n\tnpm --prefix web run build\n\tnpm --prefix web test\n\tnpm --prefix web run test:e2e",
-		"test-real:\n\t./scripts/test-real-platform",
 	} {
 		if !strings.Contains(makefile, required) {
 			t.Errorf("Makefile is missing gate contract %q", required)
 		}
-	}
-}
-
-func TestRealPlatformGateFailsClosedBeforeReadiness(t *testing.T) {
-	repo := repoRoot(t)
-	script := filepath.Join(repo, "scripts", "test-real-platform")
-	for name, env := range map[string][]string{
-		"missing attestation": append(os.Environ(), "FT_MODE=test"),
-		"wrong mode":          append(os.Environ(), "BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=live"),
-		"venue writes":        append(os.Environ(), "BT_DEV_REAL_STACK_ACCEPTANCE=1", "FT_MODE=test", "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			cmd := exec.Command(script)
-			cmd.Dir = repo
-			cmd.Env = env
-			if output, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("gate unexpectedly passed: %s", output)
-			}
-		})
 	}
 }
 
@@ -1069,38 +1048,9 @@ func TestDockerFreeOperatorGuideIsLinkedAndPreservesSafetyBoundary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"dev-platform.env.example", "make test-browser", "make test-real", "does not activate migration", "no venue accounts", "G010", "G011", "zero-account inventory", "Secret Store"} {
+	for _, required := range []string{"dev-platform.env.example", "make test-browser", "does not activate migration", "no venue accounts", "G010", "G011", "zero-account inventory", "Secret Store"} {
 		if !strings.Contains(string(guide), required) {
 			t.Errorf("operator guide is missing %q", required)
-		}
-	}
-}
-
-func TestLauncherHelpAndRealGateDocumentExactG010Sequence(t *testing.T) {
-	repo := repoRoot(t)
-	launcher, err := os.ReadFile(filepath.Join(repo, "scripts", "dev-platform"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"help)", ". ./scripts/dev-platform.env.example", "make dev-platform-doctor", "make dev-platform-up", "make dev-platform-status", "BT_DEV_REAL_STACK_ACCEPTANCE=1 make test-real", "G010 no-trade", "G011 Test-write"} {
-		if !strings.Contains(string(launcher), want) {
-			t.Errorf("launcher help missing %q", want)
-		}
-	}
-	realGate, err := os.ReadFile(filepath.Join(repo, "scripts", "test-real-platform"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(realGate)
-	if strings.Contains(text, "curl --fail --silent --show-error http://127.0.0.1:18091/api/v1/system/readiness") {
-		t.Fatal("real gate probes authenticated browser readiness without a user session")
-	}
-	if strings.Count(text, "http://127.0.0.1:13001/") < 2 {
-		t.Fatalf("real gate does not repeat browser reads: %s", text)
-	}
-	for _, want := range []string{"BT_DEV_REAL_BROWSER_ACCEPTANCE=1", "test:e2e:real", "G010", "no-trade", "G011", "Test-write", "no venue writes"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("real gate missing %q", want)
 		}
 	}
 }

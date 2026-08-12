@@ -8,8 +8,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
-	"github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

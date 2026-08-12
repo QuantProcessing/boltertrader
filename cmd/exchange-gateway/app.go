@@ -19,6 +19,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
 	"github.com/QuantProcessing/boltertrader/gateway/auth"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/config"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
@@ -32,7 +33,6 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/reference"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
-	migrationauthority "github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -701,7 +701,7 @@ func defaultVerifyDatabaseAuthority(override func(context.Context, process.Postg
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		return postgres.VerifyRuntimeAuthority(ctx, realPool, migrationauthority.GatewayV6())
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV6())
 	}
 }
 

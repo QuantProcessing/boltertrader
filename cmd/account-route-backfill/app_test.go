@@ -34,7 +34,7 @@ func TestDecodeMappingValidatesTrustedProfiles(t *testing.T) {
 }
 
 func TestRepositoryMappingValidates(t *testing.T) {
-	data, err := os.ReadFile("../../migration/backfills/account-route-v1.json")
+	data, err := os.ReadFile("../../backfills/account-route-v1.json")
 	if err != nil {
 		t.Fatal(err)
 	}

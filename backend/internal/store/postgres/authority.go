@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 )
 
 type AuthorityResult = authority.RuntimeAuthorityResult

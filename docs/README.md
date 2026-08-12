@@ -42,7 +42,6 @@ These are peer paths for different requirements; none replaces another.
 ## Guides
 
 - [Docker-free local platform](guides/docker-free-local-platform.md)
-- [Docker-free migration operations](guides/docker-free-migration.md)
 
 - [Unified exchange API quickstart](guides/exchange-rest-quickstart.md)
 - [Exchange Gateway](guides/exchange-gateway.md)

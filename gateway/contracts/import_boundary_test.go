@@ -17,12 +17,11 @@ func TestGatewayProductionImportBoundary(t *testing.T) {
 		"github.com/QuantProcessing/boltertrader/sdk",
 	}
 	allowedRepo := map[string]bool{
-		"github.com/QuantProcessing/boltertrader/credential":          true,
-		"github.com/QuantProcessing/boltertrader/exchange":            true,
-		"github.com/QuantProcessing/boltertrader/exchange/factory":    true,
-		"github.com/QuantProcessing/boltertrader/migration/authority": true,
-		"github.com/QuantProcessing/boltertrader/routeprofile":        true,
-		"github.com/QuantProcessing/boltertrader/secretstore":         true,
+		"github.com/QuantProcessing/boltertrader/credential":       true,
+		"github.com/QuantProcessing/boltertrader/exchange":         true,
+		"github.com/QuantProcessing/boltertrader/exchange/factory": true,
+		"github.com/QuantProcessing/boltertrader/routeprofile":     true,
+		"github.com/QuantProcessing/boltertrader/secretstore":      true,
 	}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {

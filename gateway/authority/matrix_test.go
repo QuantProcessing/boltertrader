@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 )
 
 func TestPlatformV15IsExhaustiveAndStable(t *testing.T) {

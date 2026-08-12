@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	platformpostgres "github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
 )

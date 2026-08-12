@@ -46,7 +46,7 @@ make test-gateway-contract
 make test-gateway-offline
 make test-gateway-race
 make test-gateway-security
-go test ./migration ./cmd/migration-tool ./cmd/account-route-backfill ./scripts -count=1
+go test ./cmd/account-route-backfill ./scripts -count=1
 (cd backend && go test ./... && go test -race ./... && go vet ./...)
 npm --prefix web run build
 npm --prefix web test -- --run

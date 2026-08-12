@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

@@ -9,7 +9,7 @@
 .PHONY: test-gateway-contract test-gateway-offline test-gateway-race test-gateway-postgres test-gateway-restart test-gateway-security test-gateway
 .PHONY: gateway-compose-dsn test-gateway-docker-config test-gateway-docker-build test-gateway-docker-security test-gateway-docker-smoke test-gateway-docker-persistence test-gateway-docker-postgres test-gateway-docker
 .PHONY: test-gateway-demo-testnet test-gateway-binance-spot-demo test-gateway-binance-usd-perp-demo test-gateway-okx-spot-demo test-gateway-okx-usdt-perp-demo test-gateway-lighter-spot-testnet test-gateway-lighter-perp-testnet test-gateway-hyperliquid-spot-testnet test-gateway-hyperliquid-perp-testnet test-gateway-bybit-spot-demo test-gateway-bybit-usdt-perp-demo test-gateway-bybit-usdc-perp-demo test-gateway-bitget-spot-demo test-gateway-bitget-usdt-perp-demo test-gateway-bitget-usdc-perp-demo test-gateway-gate-spot-testnet test-gateway-gate-usdt-perp-testnet test-gateway-aster-spot-testnet test-gateway-aster-usdt-perp-testnet test-gateway-nado-spot-testnet test-gateway-nado-usdt0-perp-testnet
-.PHONY: dev-platform-up dev-platform-down dev-platform-restart dev-platform-status dev-platform-logs dev-platform-reset dev-platform-doctor test-dev-platform test-browser test-real
+.PHONY: dev-platform-up dev-platform-down dev-platform-restart dev-platform-status dev-platform-logs dev-platform-reset dev-platform-doctor test-dev-platform test-browser
 .PHONY: test-platform-offline
 
 .NOTPARALLEL:
@@ -46,9 +46,6 @@ test-browser:
 	npm --prefix web run build
 	npm --prefix web test
 	npm --prefix web run test:e2e
-
-test-real:
-	./scripts/test-real-platform
 
 test-platform-offline:
 	./scripts/test-platform-offline
