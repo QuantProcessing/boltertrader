@@ -18,6 +18,8 @@ import (
 
 	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/account"
+	"github.com/QuantProcessing/boltertrader/gateway/account/authorityclient"
+	"github.com/QuantProcessing/boltertrader/gateway/account/lifecycle"
 	"github.com/QuantProcessing/boltertrader/gateway/auth"
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
@@ -137,7 +139,8 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		}
 		internalHandlerFactory = defaultInternalHandlerFactory(deps.buildInternalHandler, internalAuth, func() *gatewayAuthority {
 			return restoredAuthority
-		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready })
+		}, func() bool { return gatewayMonitor != nil && gatewayMonitor.Component("canonicalWrites").Ready },
+			accountLifecycleDeps{credentials: credentialProvider, runtime: runtimeLifecycle, mode: runtimeMode})
 	}
 	processDeps := process.Dependencies{
 		CheckCredentialResolver:  checkCredentialResolver,
@@ -286,6 +289,7 @@ func defaultInternalHandlerFactory(
 	authMiddleware auth.BearerMiddleware,
 	authorityProvider func() *gatewayAuthority,
 	writeReady func() bool,
+	accountDeps accountLifecycleDeps,
 ) func(context.Context, process.PostgresPool, process.AccountManager) (http.Handler, error) {
 	return func(ctx context.Context, pool process.PostgresPool, accounts process.AccountManager) (http.Handler, error) {
 		var handler http.Handler
@@ -297,7 +301,7 @@ func defaultInternalHandlerFactory(
 			if authority == nil {
 				return nil, fmt.Errorf("internal authority is unavailable")
 			}
-			handler, err = httpapi.NewInternalHandler(httpapi.InternalOptions{
+			options := httpapi.InternalOptions{
 				Authority:  authority,
 				WriteReady: writeReady,
 				Authenticate: func(request *http.Request) error {
@@ -306,12 +310,91 @@ func defaultInternalHandlerFactory(
 					}
 					return nil
 				},
-			})
+			}
+			if accountDeps.available() {
+				realPool, ok := pool.(*pgxpool.Pool)
+				if !ok {
+					return nil, fmt.Errorf("postgres pool type")
+				}
+				service, lifecycleErr := accountDeps.newService(realPool, authority)
+				if lifecycleErr != nil {
+					return nil, lifecycleErr
+				}
+				options.Lifecycle = service
+				options.Blockers = accountDeps.blockers()
+			}
+			handler, err = httpapi.NewInternalHandler(options)
 		}
 		if err != nil || handler == nil {
 			return nil, fmt.Errorf("internal HTTP API setup")
 		}
 		return authMiddleware.Wrap(httpapi.NewWriteGate(writeReady).Wrap(handler)), nil
+	}
+}
+
+// accountLifecycleDeps carries what the durable account lifecycle needs but the
+// internal handler factory has no other way to reach: somewhere to write
+// credentials, and something that can say what still holds an account open. A
+// gateway started without a credential provider — the migration-validation
+// profile, or a test that supplies its own resolver — leaves this empty and the
+// lifecycle routes are simply not mounted.
+type accountLifecycleDeps struct {
+	credentials *secretstore.FilesystemProvider
+	runtime     account.RuntimeLifecycle
+	mode        account.RuntimeMode
+}
+
+func (deps accountLifecycleDeps) available() bool {
+	return deps.credentials != nil && deps.runtime != nil
+}
+
+func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, error) {
+	mode := secretstore.Mode(deps.mode)
+	// The namespace and key version are the ones newGatewayCredentialResolver
+	// already refused to start without, so the lifecycle writes into the same
+	// scope the runtime reads from.
+	credentials, err := secret.NewStore(secret.Config{
+		Mode: mode, Namespace: "boltertrader/" + string(deps.mode), KeyVersion: "v1",
+	}, deps.credentials.Writer())
+	if err != nil {
+		return nil, fmt.Errorf("account lifecycle credential store")
+	}
+	desired, err := authorityclient.New(authority, mode)
+	if err != nil {
+		return nil, fmt.Errorf("account lifecycle authority client")
+	}
+	service, err := lifecycle.New(lifecycle.Options{
+		Store:   postgres.NewAccountLifecycleStore(pool),
+		Secrets: lifecycle.SecretStoreAdapter{Store: credentials},
+		Audit:   postgres.NewAccountLifecycleAuditStore(pool),
+		Gateway: desired,
+		Mode:    mode,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("account lifecycle setup")
+	}
+	return service, nil
+}
+
+// blockers translates the runtime's inventory count into the lifecycle's. The
+// gateway owns orders and positions; reservations belong to trading-svc, which
+// does not exist yet, so that count stays zero rather than being guessed.
+func (deps accountLifecycleDeps) blockers() httpapi.AccountBlockers {
+	runtime := deps.runtime
+	return func(ctx context.Context, accountID string) (lifecycle.Blockers, error) {
+		id := domain.AccountID(accountID)
+		if id.Validate() != nil {
+			return lifecycle.Blockers{}, fmt.Errorf("account identifier is invalid")
+		}
+		blockers, err := runtime.Blockers(ctx, id)
+		if err != nil {
+			return lifecycle.Blockers{}, err
+		}
+		return lifecycle.Blockers{
+			OpenOrders:        blockers.OpenOrders,
+			UncertainCommands: blockers.UncertainCommands,
+			OwnedPositions:    blockers.Positions,
+		}, nil
 	}
 }
 

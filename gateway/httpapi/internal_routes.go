@@ -229,6 +229,13 @@ type InternalOptions struct {
 	Authenticate func(*http.Request) error
 	MaxBodyBytes int64
 	WriteReady   func() bool
+	// Lifecycle is optional. A gateway without a durable account store can
+	// still serve the runtime and catalog surfaces, so the account lifecycle
+	// routes are only mounted when something can answer them.
+	Lifecycle AccountLifecycle
+	// Blockers is required alongside Lifecycle: draining or removing an account
+	// while inventory remains open would strand it.
+	Blockers AccountBlockers
 }
 
 type InternalHandler struct {
@@ -236,6 +243,8 @@ type InternalHandler struct {
 	authenticate func(*http.Request) error
 	bodyLimit    int64
 	writeReady   func() bool
+	lifecycle    AccountLifecycle
+	blockers     AccountBlockers
 	mux          *http.ServeMux
 }
 
@@ -265,11 +274,17 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Authority == nil || options.Authenticate == nil {
 		return nil, fmt.Errorf("internal HTTP API dependencies are incomplete")
 	}
+	if options.Lifecycle != nil && options.Blockers == nil {
+		return nil, fmt.Errorf("internal HTTP API account lifecycle requires a blockers source")
+	}
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, mux: http.NewServeMux()}
 	handler.register()
+	if handler.lifecycle != nil {
+		handler.registerAccountLifecycle()
+	}
 	return handler, nil
 }
 
@@ -278,7 +293,7 @@ func (handler *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		handler.writeError(w, r, http.StatusUnauthorized, "GATEWAY_ADAPTER_AUTH_REQUIRED", false)
 		return
 	}
-	if r.Method == http.MethodPut && handler.writeReady != nil && !handler.writeReady() {
+	if isMutationRequest(r) && handler.writeReady != nil && !handler.writeReady() {
 		handler.writeError(w, r, http.StatusServiceUnavailable, "GATEWAY_WRITES_NOT_READY", true)
 		return
 	}
