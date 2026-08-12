@@ -1,4 +1,4 @@
-package app
+package gateway
 
 import (
 	"context"
@@ -24,12 +24,12 @@ import (
 func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set(ModeHeader, "test")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +77,12 @@ func TestGatewayAdapterAcceptsPendingOnlyAndTombstonedRuntimeShapes(t *testing.T
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set(gatewayModeHeader, "test")
+				w.Header().Set(ModeHeader, "test")
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(test.response))
 			}))
 			defer server.Close()
-			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -153,7 +153,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	unauthorized, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	unauthorized, err := newClient(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 		t.Fatalf("unauthorized Fetch() err=%v rejected=%d authority requests=%d", err, rejected, len(authority.requests))
 	}
 
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 		len(snapshot.Instruments) != 1 || snapshot.Instruments[0].InstrumentID != "BTC-USDT" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
-	fact, err := (gatewayMarketDataSource{adapter: adapter}).Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" || !fact.ObservedAt.Equal(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)) {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
@@ -220,7 +220,7 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 		}
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	if _, err := projection.Snapshot(context.Background()); err == nil {
 		t.Fatal("old Gateway catalog became fresh after Platform fetch")
 	}
-	fact, err := (gatewayMarketDataSource{adapter: adapter}).Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
@@ -249,7 +249,7 @@ func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(
 		_, _ = w.Write([]byte(`{"data":{"revision":"","observedAt":"0001-01-01T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestGatewayAdapterMarketDataProbeAcceptsAuthoritativeEmptyCatalog(t *testin
 		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestGatewayAdapterMarketDataProbeRejectsMissingEmptyCatalogInventory(t *tes
 				_, _ = fmt.Fprintf(w, `{"data":{"revision":"gateway-empty-catalog","observedAt":"2026-08-11T00:00:00Z"%s}}`, test.instruments)
 			}))
 			defer server.Close()
-			adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+			adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -301,7 +301,7 @@ func TestGatewayAdapterMarketDataProbeRejectsWhitespaceEmptyCatalogRevision(t *t
 		_, _ = w.Write([]byte(`{"data":{"revision":" ","observedAt":"2026-08-11T00:00:00Z","instruments":[]}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrume
 		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-unready","observedAt":"2026-08-11T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":false}]}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewa
 		}
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T)
 		`{"data":[]} {}`,
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
-		adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+		adapter, err := newClient(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -378,24 +378,24 @@ func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "denied", http.StatusUnauthorized) }))
 	defer server.Close()
-	adapter, _ := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	adapter, _ := newClient(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
 	if _, err := adapter.Fetch(context.Background()); err == nil {
 		t.Fatal("non-success response accepted")
 	}
 }
 
-var _ catalog.Source = (*gatewayAdapter)(nil)
-var _ marketdata.Source = gatewayMarketDataSource{}
+var _ catalog.Source = (*Client)(nil)
+var _ marketdata.Source = MarketDataSource{}
 
 func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	var mu sync.Mutex
-	requests := make([]gatewayPlaceRequest, 0, 2)
+	requests := make([]placeRequest, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/orders" || r.Header.Get("Authorization") != "Bearer "+token {
 			t.Errorf("request path/auth=%s/%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
-		var body gatewayPlaceRequest
+		var body placeRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.IdempotencyKey != r.Header.Get("Idempotency-Key") {
 			t.Errorf("request body=%+v err=%v", body, err)
 		}
@@ -406,7 +406,7 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"submitted","resource_version":1}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestConfiguredGatewayAdapterCancelsManualOrderByGatewayIdentity(t *testing.
 		_, _ = w.Write([]byte(`{"command_id":"command_manual_1","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"canceled","resource_version":2}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestConfiguredGatewayAdapterDrainsCanceledOrderFillPages(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestConfiguredGatewayAdapterPropagatesExactAccountFence(t *testing.T) {
 		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000001","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"submitted","resource_version":1}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestConfiguredGatewayAdapterRejectsUnnormalizedPayloadBeforeHTTP(t *testing
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	adapter, err := newClient(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestConfiguredGatewayAdapterRejectsLiveBeforeHTTP(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
+	adapter, err := newClient(server.URL, []byte(strings.Repeat("x", 32)), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 		calls := 0
 		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
 		defer server.Close()
-		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		adapter, _ := newClient(server.URL, []byte(token), server.Client())
 		result, err := adapter.Handoff(context.Background(), orders.Command{Mode: orders.ModeTest})
 		if err == nil || result.Outcome != orders.HandoffNotAttempted || calls != 0 {
 			t.Fatalf("result=%+v calls=%d err=%v", result, calls, err)
@@ -582,7 +582,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 			http.Error(w, "rejected", http.StatusUnprocessableEntity)
 		}))
 		defer server.Close()
-		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		adapter, _ := newClient(server.URL, []byte(token), server.Client())
 		result, err := adapter.Handoff(context.Background(), valid)
 		if err == nil || result.Outcome != orders.HandoffRejected {
 			t.Fatalf("result=%+v err=%v", result, err)
@@ -604,7 +604,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 				_, _ = w.Write([]byte(test.body))
 			}))
 			defer server.Close()
-			adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+			adapter, _ := newClient(server.URL, []byte(token), server.Client())
 			result, err := adapter.Handoff(context.Background(), valid)
 			if err == nil || result.Outcome != orders.HandoffOutcomeUnknown {
 				t.Fatalf("result=%+v err=%v", result, err)
@@ -614,7 +614,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 
 	t.Run("outcome unknown", func(t *testing.T) {
 		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("connection reset") })}
-		adapter, _ := newGatewayAdapter("http://127.0.0.1:1", []byte(token), client)
+		adapter, _ := newClient("http://127.0.0.1:1", []byte(token), client)
 		result, err := adapter.Handoff(context.Background(), valid)
 		if err == nil || result.Outcome != orders.HandoffOutcomeUnknown {
 			t.Fatalf("result=%+v err=%v", result, err)
@@ -627,7 +627,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"submitted","resource_version":7}`))
 		}))
 		defer server.Close()
-		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		adapter, _ := newClient(server.URL, []byte(token), server.Client())
 		result, err := adapter.Handoff(context.Background(), valid)
 		if err != nil || result.Outcome != orders.HandoffAccepted || result.Evidence.CommandID != "gateway-command" || result.Evidence.GatewayOrderID != "gateway-order" || result.Evidence.ClientOrderID != "client-order" || result.Evidence.State != "submitted" || result.Evidence.ResourceVersion != 7 {
 			t.Fatalf("result=%+v err=%v", result, err)
@@ -644,7 +644,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":8}`))
 		}))
 		defer server.Close()
-		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		adapter, _ := newClient(server.URL, []byte(token), server.Client())
 		result, err := adapter.Handoff(context.Background(), valid)
 		if err != nil || len(result.Evidence.Fills) != 1 || result.Evidence.Fills[0].FillID != "fill-1" || len(result.Evidence.OrderEvents) != 1 {
 			t.Fatalf("result=%+v err=%v", result, err)
@@ -661,7 +661,7 @@ func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing
 			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":9}`))
 		}))
 		defer server.Close()
-		adapter, _ := newGatewayAdapter(server.URL, []byte(token), server.Client())
+		adapter, _ := newClient(server.URL, []byte(token), server.Client())
 		result, err := adapter.Handoff(context.Background(), valid)
 		if err == nil || result.Outcome != orders.HandoffOutcomeUnknown ||
 			result.Evidence.GatewayOrderID != "gateway-order" || result.Evidence.State != "filled" ||
@@ -682,17 +682,17 @@ func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing
 	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeLive, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
 	serverMode := "live"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(gatewayModeHeader) != serverMode {
+		if r.Header.Get(ModeHeader) != serverMode {
 			http.Error(w, "mode mismatch", http.StatusConflict)
 			return
 		}
-		w.Header().Set(gatewayModeHeader, serverMode)
+		w.Header().Set(ModeHeader, serverMode)
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"submitted","resource_version":1}`))
 	}))
 	defer server.Close()
 
-	denied, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeLive, false, server.Client())
+	denied, err := NewClientForMode(server.URL, []byte(token), orders.ModeLive, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +700,7 @@ func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing
 		t.Fatalf("default Live result=%+v err=%v", result, err)
 	}
 
-	enabled, _ := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeLive, true, server.Client())
+	enabled, _ := NewClientForMode(server.URL, []byte(token), orders.ModeLive, true, server.Client())
 	if result, err := enabled.Handoff(context.Background(), command); err != nil || result.Outcome != orders.HandoffAccepted {
 		t.Fatalf("enabled Live result=%+v err=%v", result, err)
 	}
@@ -723,17 +723,17 @@ func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get(gatewayModeHeader) != "test" {
-					t.Errorf("request mode attestation=%q", r.Header.Get(gatewayModeHeader))
+				if r.Header.Get(ModeHeader) != "test" {
+					t.Errorf("request mode attestation=%q", r.Header.Get(ModeHeader))
 				}
 				if test.responseMode != "" {
-					w.Header().Set(gatewayModeHeader, test.responseMode)
+					w.Header().Set(ModeHeader, test.responseMode)
 				}
 				_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-1","observedAt":"2026-08-09T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
 			}))
 			defer server.Close()
 
-			adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -748,10 +748,10 @@ func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
 func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(gatewayModeHeader) != "test" {
-			t.Errorf("mode=%q", r.Header.Get(gatewayModeHeader))
+		if r.Header.Get(ModeHeader) != "test" {
+			t.Errorf("mode=%q", r.Header.Get(ModeHeader))
 		}
-		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set(ModeHeader, "test")
 		switch r.URL.Path {
 		case "/v1/orders/gateway-order":
 			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":2}`))
@@ -762,7 +762,7 @@ func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +785,7 @@ func TestGatewayAdapterRejectsAllZeroOrderFenceBeforeHandoff(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapterForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}

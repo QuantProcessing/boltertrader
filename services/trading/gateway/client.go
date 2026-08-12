@@ -1,4 +1,13 @@
-package app
+// Package gateway is the trading service's client for the Gateway's HTTP
+// surface: the catalog it reads instruments from, the market data it quotes
+// against, the account authority it fences orders on, and the order plane it
+// hands executions to.
+//
+// It lives on trading's side of the wire rather than the Gateway's because
+// every type here is a decoding of what the Gateway said, judged against what
+// trading needs — a Gateway response that satisfies the Gateway's own contract
+// can still be unusable here, and this package is where that is decided.
+package gateway
 
 import (
 	"bytes"
@@ -22,29 +31,35 @@ import (
 	"github.com/QuantProcessing/boltertrader/services/trading/portfolio"
 )
 
-type gatewayAdapter struct {
+// Client is trading's handle on the Gateway. One instance serves every question
+// trading asks — catalog, market data, accounts, orders, fills — because they
+// all travel the same authenticated origin under the same mode, and splitting
+// them would mean four places that can disagree about which Gateway is real.
+type Client struct {
 	baseURL            string
 	token              []byte
-	client             *http.Client
+	httpClient         *http.Client
 	mode               orders.Mode
 	liveWrites         bool
 	requireAttestation bool
 }
 
 const (
-	gatewayModeHeader             = "X-Bolter-Mode"
-	gatewayAuthorityResponseLimit = 64 << 10
+	// ModeHeader carries the mode attestation both ways: the client states the
+	// mode it believes it is in, and refuses a response that disagrees.
+	ModeHeader             = "X-Bolter-Mode"
+	authorityResponseLimit = 64 << 10
 )
 
-type gatewayReadEnvelope[T any] struct {
+type readEnvelope[T any] struct {
 	Data T `json:"data"`
 }
 
-type gatewayRuntimeProjection struct {
+type runtimeProjectionView struct {
 	AccountID                       string                           `json:"accountId"`
-	Active                          *gatewayRuntimeSnapshotView      `json:"active,omitempty"`
-	Pending                         *gatewayPendingSnapshotView      `json:"pending,omitempty"`
-	Retiring                        []gatewayRuntimeSnapshotView     `json:"retiring"`
+	Active                          *runtimeSnapshotView             `json:"active,omitempty"`
+	Pending                         *pendingSnapshotView             `json:"pending,omitempty"`
+	Retiring                        []runtimeSnapshotView            `json:"retiring"`
 	Tombstoned                      *bool                            `json:"tombstoned"`
 	DesiredStateRevision            *int64                           `json:"desiredStateRevision"`
 	RuntimeGeneration               *int64                           `json:"runtimeGeneration"`
@@ -55,20 +70,20 @@ type gatewayRuntimeProjection struct {
 	LastAppliedDesiredStateRevision *int64                           `json:"lastAppliedDesiredStateRevision"`
 	LastAppliedRuntimeGeneration    *int64                           `json:"lastAppliedRuntimeGeneration"`
 	BlockedReason                   *string                          `json:"blockedReason"`
-	Capabilities                    []gatewayRuntimeCapability       `json:"capabilities"`
+	Capabilities                    []runtimeCapabilityView          `json:"capabilities"`
 	ObservedAt                      *time.Time                       `json:"observedAt"`
 }
 
-type gatewayRuntimeCapability struct {
-	RowID      string                      `json:"rowId"`
-	Venue      string                      `json:"venue"`
-	Product    string                      `json:"product"`
-	Settlement string                      `json:"settlement,omitempty"`
-	WriteReady bool                        `json:"writeReady"`
-	Operations gatewayCapabilityOperations `json:"operations"`
+type runtimeCapabilityView struct {
+	RowID      string                   `json:"rowId"`
+	Venue      string                   `json:"venue"`
+	Product    string                   `json:"product"`
+	Settlement string                   `json:"settlement,omitempty"`
+	WriteReady bool                     `json:"writeReady"`
+	Operations capabilityOperationsView `json:"operations"`
 }
 
-type gatewayRouteRuntimeView struct {
+type routeRuntimeView struct {
 	RouteID         string `json:"routeId"`
 	Product         string `json:"product"`
 	SettlementAsset string `json:"settlementAsset,omitempty"`
@@ -78,22 +93,22 @@ type gatewayRouteRuntimeView struct {
 	Reason          string `json:"reason,omitempty"`
 }
 
-type gatewayRuntimeSnapshotView struct {
-	OperationID          string                    `json:"operationId"`
-	DesiredStateRevision int64                     `json:"desiredStateRevision"`
-	RuntimeGeneration    int64                     `json:"runtimeGeneration"`
-	CredentialVersion    int64                     `json:"credentialVersion"`
-	RequestedState       string                    `json:"requestedState"`
-	Routes               []gatewayRouteRuntimeView `json:"routes"`
+type runtimeSnapshotView struct {
+	OperationID          string             `json:"operationId"`
+	DesiredStateRevision int64              `json:"desiredStateRevision"`
+	RuntimeGeneration    int64              `json:"runtimeGeneration"`
+	CredentialVersion    int64              `json:"credentialVersion"`
+	RequestedState       string             `json:"requestedState"`
+	Routes               []routeRuntimeView `json:"routes"`
 }
 
-type gatewayPendingSnapshotView struct {
-	gatewayRuntimeSnapshotView
+type pendingSnapshotView struct {
+	runtimeSnapshotView
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
 }
 
-type gatewayCapabilityOperations struct {
+type capabilityOperationsView struct {
 	Place                  bool `json:"place"`
 	Amend                  bool `json:"amend"`
 	Cancel                 bool `json:"cancel"`
@@ -112,18 +127,27 @@ type gatewayCapabilityOperations struct {
 	FundsTransfer          bool `json:"funds_transfer"`
 }
 
-type gatewayMarketDataSource struct{ adapter *gatewayAdapter }
+// MarketDataSource adapts the client to marketdata.Source. It is a type of its
+// own rather than a method set on Client because Client already answers the
+// catalog's Fetch, and one type cannot hold two.
+type MarketDataSource struct{ client *Client }
 
-// gatewayManualAccounts answers the manual product's account question from the
+// MarketData views the client as a market-data source.
+func (client *Client) MarketData() MarketDataSource { return MarketDataSource{client: client} }
+
+// ManualAccounts answers the manual product's account question from the
 // Gateway's internal account plane. The public /v1/accounts/{id} view cannot
 // serve here: it reports runtime readiness, not the account's lifecycle state,
 // environment, or the three fences a preview is sealed against.
-type gatewayManualAccounts struct{ adapter *gatewayAdapter }
+type ManualAccounts struct{ client *Client }
 
-// gatewayAccountRecord mirrors lifecycle.PublicAccount. Every field the Gateway
+// Accounts views the client as the manual product's account authority.
+func (client *Client) Accounts() ManualAccounts { return ManualAccounts{client: client} }
+
+// accountRecordView mirrors lifecycle.PublicAccount. Every field the Gateway
 // emits must be named because the read decoder refuses unknown fields, so a
 // field added there fails loudly here rather than being silently dropped.
-type gatewayAccountRecord struct {
+type accountRecordView struct {
 	ID                   string          `json:"accountId"`
 	Venue                string          `json:"venue"`
 	Mode                 string          `json:"mode"`
@@ -139,18 +163,18 @@ type gatewayAccountRecord struct {
 	UpdatedAt            time.Time       `json:"updatedAt"`
 }
 
-func (source gatewayManualAccounts) Get(ctx context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
-	if source.adapter == nil {
+func (source ManualAccounts) Get(ctx context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
+	if source.client == nil {
 		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account authority is unavailable")
 	}
 	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" {
 		return tradinghttp.ManualAccount{}, fmt.Errorf("Gateway account read scope is invalid")
 	}
-	var envelope gatewayReadEnvelope[struct {
-		Account gatewayAccountRecord `json:"account"`
+	var envelope readEnvelope[struct {
+		Account accountRecordView `json:"account"`
 	}]
 	path := "/internal/v1/accounts/" + url.PathEscape(accountID)
-	if err := source.adapter.readLimit(ctx, principal, path, nil, &envelope, gatewayAuthorityResponseLimit); err != nil {
+	if err := source.client.readLimit(ctx, principal, path, nil, &envelope, authorityResponseLimit); err != nil {
 		return tradinghttp.ManualAccount{}, fmt.Errorf("read Gateway account: %w", err)
 	}
 	account := envelope.Data.Account
@@ -171,18 +195,14 @@ func (source gatewayManualAccounts) Get(ctx context.Context, principal, accountI
 	}, nil
 }
 
-type marketDataRouteProbe interface {
-	CheckMarketDataRoute(context.Context) error
-}
-
-func (source gatewayMarketDataSource) Fetch(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
-	if source.adapter == nil {
+func (source MarketDataSource) Fetch(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
+	if source.client == nil {
 		return marketdata.Fact{}, fmt.Errorf("Gateway market-data source is unavailable")
 	}
-	return source.adapter.fetchMarketData(ctx, query)
+	return source.client.fetchMarketData(ctx, query)
 }
 
-type gatewayOrderIntent struct {
+type orderIntent struct {
 	AccountID            string `json:"accountId,omitempty"`
 	InstrumentID         string `json:"instrumentId"`
 	Side                 string `json:"side"`
@@ -197,7 +217,7 @@ type gatewayOrderIntent struct {
 	CredentialVersion    uint64 `json:"credentialVersion"`
 }
 
-type gatewayPlaceRequest struct {
+type placeRequest struct {
 	AccountID            string `json:"account_id"`
 	InstrumentID         string `json:"instrument_id"`
 	IdempotencyKey       string `json:"idempotency_key"`
@@ -212,7 +232,7 @@ type gatewayPlaceRequest struct {
 	CredentialVersion    uint64 `json:"credential_version"`
 }
 
-type gatewayPlaceResponse struct {
+type placeResponse struct {
 	CommandID       string `json:"command_id"`
 	GatewayOrderID  string `json:"gateway_order_id"`
 	ClientOrderID   string `json:"client_order_id"`
@@ -220,7 +240,7 @@ type gatewayPlaceResponse struct {
 	ResourceVersion int64  `json:"resource_version"`
 }
 
-type gatewayFillCollection struct {
+type fillCollection struct {
 	Items []struct {
 		AccountID       string `json:"account_id"`
 		InstrumentID    string `json:"instrument_id"`
@@ -239,32 +259,41 @@ type gatewayFillCollection struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-func newGatewayAdapter(rawURL string, token []byte, client *http.Client) (*gatewayAdapter, error) {
-	adapter, err := newGatewayAdapterForMode(rawURL, token, orders.ModeTest, false, client)
-	if adapter != nil {
-		adapter.requireAttestation = false
+// newClient builds a test-mode client that does not require the Gateway to
+// attest its mode back. Only tests use it: a hand-rolled httptest server has no
+// reason to know about the attestation header, and demanding it there would
+// test the fixture rather than the client.
+func newClient(rawURL string, token []byte, httpClient *http.Client) (*Client, error) {
+	client, err := NewClientForMode(rawURL, token, orders.ModeTest, false, httpClient)
+	if client != nil {
+		client.requireAttestation = false
 	}
-	return adapter, err
+	return client, err
 }
 
-func newGatewayAdapterForMode(rawURL string, token []byte, mode orders.Mode, liveWrites bool, client *http.Client) (*gatewayAdapter, error) {
+// NewClientForMode builds the client trading talks to the Gateway through. It
+// refuses at construction rather than at first call: a token too short to be a
+// service token, a mode that is neither test nor live, live writes claimed
+// under a test mode, or a plaintext origin that is not loopback are all
+// configuration mistakes, and the useful moment to say so is startup.
+func NewClientForMode(rawURL string, token []byte, mode orders.Mode, liveWrites bool, httpClient *http.Client) (*Client, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 || (mode != orders.ModeTest && mode != orders.ModeLive) || (liveWrites && mode != orders.ModeLive) {
-		return nil, fmt.Errorf("Gateway adapter configuration is invalid")
+		return nil, fmt.Errorf("Gateway client configuration is invalid")
 	}
 	if parsed.Scheme == "http" {
 		address := net.ParseIP(parsed.Hostname())
 		if address == nil || !address.IsLoopback() {
-			return nil, fmt.Errorf("Gateway adapter plaintext origin is invalid")
+			return nil, fmt.Errorf("Gateway client plaintext origin is invalid")
 		}
 	}
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &gatewayAdapter{baseURL: strings.TrimRight(parsed.String(), "/"), token: bytes.Clone(token), client: client, mode: mode, liveWrites: liveWrites, requireAttestation: true}, nil
+	return &Client{baseURL: strings.TrimRight(parsed.String(), "/"), token: bytes.Clone(token), httpClient: httpClient, mode: mode, liveWrites: liveWrites, requireAttestation: true}, nil
 }
 
-func validGatewayRequestedState(state string) bool {
+func validRequestedState(state string) bool {
 	switch state {
 	case "creating", "active", "rotating", "draining", "drained", "disabled", "removing", "removed":
 		return true
@@ -273,16 +302,16 @@ func validGatewayRequestedState(state string) bool {
 	}
 }
 
-func (adapter *gatewayAdapter) Execute(ctx context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
-	if request.Mode != adapter.mode || (request.Mode == orders.ModeLive && !adapter.liveWrites) {
+func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest) (manual.GatewayResult, error) {
+	if request.Mode != client.mode || (request.Mode == orders.ModeLive && !client.liveWrites) {
 		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
 	}
-	intent := gatewayOrderIntent{
+	intent := orderIntent{
 		AccountID: request.AccountID, InstrumentID: request.InstrumentID, Side: request.Side, Quantity: request.Quantity,
 		OrderType: request.OrderType, LimitPrice: request.LimitPrice, TimeInForce: request.TimeInForce, ReduceOnly: request.ReduceOnly,
 		DesiredStateRevision: uint64(request.DesiredStateRevision), RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
 	}
-	handoff, err := adapter.place(ctx, request.CommandID, intent)
+	handoff, err := client.place(ctx, request.CommandID, intent)
 	result := manual.GatewayResult{CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode, State: manualState(handoff.Evidence.State), Handoff: handoff}
 	for _, fill := range handoff.Evidence.Fills {
 		result.Fills = append(result.Fills, manual.FillFact{FillID: fill.FillID, CommandID: request.CommandID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Mode: request.Mode, Side: portfolio.Side(fill.Side), Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt})
@@ -296,14 +325,14 @@ func (adapter *gatewayAdapter) Execute(ctx context.Context, request manual.Gatew
 	return result, nil
 }
 
-func (adapter *gatewayAdapter) Cancel(ctx context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
-	if request.Mode != adapter.mode || (request.Mode == orders.ModeLive && !adapter.liveWrites) {
+func (client *Client) Cancel(ctx context.Context, request manual.GatewayCancelRequest) (manual.GatewayResult, error) {
+	if request.Mode != client.mode || (request.Mode == orders.ModeLive && !client.liveWrites) {
 		return manual.GatewayResult{}, orders.ErrLiveWriteDisabled
 	}
 	if request.CommandID == "" || request.AccountID == "" || request.InstrumentID == "" || request.GatewayOrderID == "" {
 		return manual.GatewayResult{}, fmt.Errorf("Gateway cancel identity is incomplete")
 	}
-	handoff, err := adapter.cancel(ctx, request)
+	handoff, err := client.cancel(ctx, request)
 	result := manual.GatewayResult{
 		CommandID: request.CommandID, AccountID: request.AccountID, Mode: request.Mode,
 		State: manualState(handoff.Evidence.State), Handoff: handoff,
@@ -337,11 +366,11 @@ func manualState(state string) manual.GatewayState {
 	}
 }
 
-func (adapter *gatewayAdapter) Handoff(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
-	if command.Mode != adapter.mode || (command.Mode == orders.ModeLive && !adapter.liveWrites) {
+func (client *Client) Handoff(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
+	if command.Mode != client.mode || (command.Mode == orders.ModeLive && !client.liveWrites) {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, orders.ErrLiveWriteDisabled
 	}
-	var intent gatewayOrderIntent
+	var intent orderIntent
 	decoder := json.NewDecoder(bytes.NewReader(command.Payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&intent); err != nil {
@@ -353,19 +382,19 @@ func (adapter *gatewayAdapter) Handoff(ctx context.Context, command orders.Comma
 	if intent.AccountID == "" {
 		intent.AccountID = command.AccountID
 	}
-	return adapter.place(ctx, command.CommandID, intent)
+	return client.place(ctx, command.CommandID, intent)
 }
 
-func (adapter *gatewayAdapter) Reconcile(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
+func (client *Client) Reconcile(ctx context.Context, command orders.Command) (orders.HandoffResult, error) {
 	current := command.ExecutionEvidence
 	if current.GatewayOrderID == "" {
 		if command.State == orders.StateUncertain {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, fmt.Errorf("Gateway reconciliation identity is unavailable")
 		}
-		return adapter.Handoff(ctx, command)
+		return client.Handoff(ctx, command)
 	}
-	var result gatewayPlaceResponse
-	if err := adapter.read(ctx, "/v1/orders/"+url.PathEscape(current.GatewayOrderID), nil, &result); err != nil {
+	var result placeResponse
+	if err := client.read(ctx, "/v1/orders/"+url.PathEscape(current.GatewayOrderID), nil, &result); err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, err
 	}
 	if result.CommandID != current.CommandID || result.GatewayOrderID != current.GatewayOrderID || result.ClientOrderID != current.ClientOrderID || result.ResourceVersion < current.ResourceVersion || result.State == "" {
@@ -374,7 +403,7 @@ func (adapter *gatewayAdapter) Reconcile(ctx context.Context, command orders.Com
 	evidence := orders.ExecutionEvidence{CommandID: result.CommandID, GatewayOrderID: result.GatewayOrderID, ClientOrderID: result.ClientOrderID, State: result.State, ResourceVersion: result.ResourceVersion,
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}}}
 	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, err := adapter.fetchFills(ctx, result.GatewayOrderID, command.AccountID, "")
+		fills, err := client.fetchFills(ctx, result.GatewayOrderID, command.AccountID, "")
 		if err != nil {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: current}, err
 		}
@@ -383,17 +412,17 @@ func (adapter *gatewayAdapter) Reconcile(ctx context.Context, command orders.Com
 	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
 }
 
-func (adapter *gatewayAdapter) Fetch(ctx context.Context) (catalog.Snapshot, error) {
-	var venues gatewayReadEnvelope[[]catalog.Venue]
-	if err := adapter.read(ctx, "/internal/v1/catalog/venues", nil, &venues); err != nil {
+func (client *Client) Fetch(ctx context.Context) (catalog.Snapshot, error) {
+	var venues readEnvelope[[]catalog.Venue]
+	if err := client.read(ctx, "/internal/v1/catalog/venues", nil, &venues); err != nil {
 		return catalog.Snapshot{}, fmt.Errorf("read Gateway venues: %w", err)
 	}
-	var instruments gatewayReadEnvelope[struct {
+	var instruments readEnvelope[struct {
 		Revision    string               `json:"revision"`
 		ObservedAt  time.Time            `json:"observedAt"`
 		Instruments []catalog.Instrument `json:"instruments"`
 	}]
-	if err := adapter.read(ctx, "/internal/v1/catalog/instruments", nil, &instruments); err != nil {
+	if err := client.read(ctx, "/internal/v1/catalog/instruments", nil, &instruments); err != nil {
 		return catalog.Snapshot{}, fmt.Errorf("read Gateway instruments: %w", err)
 	}
 	if strings.TrimSpace(instruments.Data.Revision) == "" || instruments.Data.ObservedAt.IsZero() {
@@ -405,12 +434,12 @@ func (adapter *gatewayAdapter) Fetch(ctx context.Context) (catalog.Snapshot, err
 	}, nil
 }
 
-func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
-	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || mode != string(adapter.mode) {
+func (client *Client) ListAccountRuntimes(ctx context.Context, principal, mode, accountID string) ([]tradinghttp.AccountRuntimeProjection, error) {
+	if strings.TrimSpace(principal) == "" || strings.TrimSpace(accountID) == "" || mode != string(client.mode) {
 		return nil, fmt.Errorf("Gateway runtime projection scope is invalid")
 	}
-	var runtime gatewayReadEnvelope[gatewayRuntimeProjection]
-	if err := adapter.read(ctx, "/internal/v1/accounts/runtime/"+url.PathEscape(accountID), nil, &runtime); err != nil {
+	var runtime readEnvelope[runtimeProjectionView]
+	if err := client.read(ctx, "/internal/v1/accounts/runtime/"+url.PathEscape(accountID), nil, &runtime); err != nil {
 		return nil, fmt.Errorf("read Gateway runtime account: %w", err)
 	}
 	projection := runtime.Data
@@ -444,7 +473,7 @@ func (adapter *gatewayAdapter) ListAccountRuntimes(ctx context.Context, principa
 	}
 	var pending *tradinghttp.PendingRuntimeSnapshotProjection
 	if projection.Pending != nil {
-		projected, projectErr := projectRuntimeSnapshot(&projection.Pending.gatewayRuntimeSnapshotView)
+		projected, projectErr := projectRuntimeSnapshot(&projection.Pending.runtimeSnapshotView)
 		if projectErr != nil || !validPendingRuntimeState(projection.Pending.State) {
 			return nil, fmt.Errorf("Gateway pending runtime response is invalid")
 		}
@@ -480,11 +509,11 @@ func timeValue(value *time.Time) time.Time {
 	return value.UTC()
 }
 
-func projectRuntimeSnapshot(snapshot *gatewayRuntimeSnapshotView) (*tradinghttp.RuntimeSnapshotProjection, error) {
+func projectRuntimeSnapshot(snapshot *runtimeSnapshotView) (*tradinghttp.RuntimeSnapshotProjection, error) {
 	if snapshot == nil {
 		return nil, nil
 	}
-	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || snapshot.DesiredStateRevision < 1 || snapshot.RuntimeGeneration < 1 || snapshot.CredentialVersion < 1 || !validGatewayRequestedState(snapshot.RequestedState) {
+	if _, err := secretstore.ParseOperationID(snapshot.OperationID); err != nil || snapshot.DesiredStateRevision < 1 || snapshot.RuntimeGeneration < 1 || snapshot.CredentialVersion < 1 || !validRequestedState(snapshot.RequestedState) {
 		return nil, fmt.Errorf("Gateway runtime snapshot response is invalid")
 	}
 	routes := make([]tradinghttp.RouteRuntimeProjection, 0, len(snapshot.Routes))
@@ -506,10 +535,10 @@ func validPendingRuntimeState(state string) bool {
 	}
 }
 
-func (adapter *gatewayAdapter) fetchMarketData(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
+func (client *Client) fetchMarketData(ctx context.Context, query marketdata.Query) (marketdata.Fact, error) {
 	values := url.Values{"venue": {query.Venue}, "environment": {query.Environment}, "product": {query.Product}, "instrumentId": {query.InstrumentID}}
-	var result gatewayReadEnvelope[marketdata.Fact]
-	if err := adapter.read(ctx, "/internal/v1/market-data", values, &result); err != nil {
+	var result readEnvelope[marketdata.Fact]
+	if err := client.read(ctx, "/internal/v1/market-data", values, &result); err != nil {
 		return marketdata.Fact{}, fmt.Errorf("read Gateway market data: %w", err)
 	}
 	if result.Data.Venue != query.Venue || result.Data.Environment != query.Environment || result.Data.Product != query.Product || result.Data.InstrumentID != query.InstrumentID || result.Data.ObservedAt.IsZero() {
@@ -519,13 +548,13 @@ func (adapter *gatewayAdapter) fetchMarketData(ctx context.Context, query market
 	return result.Data, nil
 }
 
-func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
-	var result gatewayReadEnvelope[struct {
+func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
+	var result readEnvelope[struct {
 		Revision    string               `json:"revision"`
 		ObservedAt  time.Time            `json:"observedAt"`
 		Instruments []catalog.Instrument `json:"instruments"`
 	}]
-	if err := adapter.read(ctx, "/internal/v1/catalog/instruments", nil, &result); err != nil {
+	if err := client.read(ctx, "/internal/v1/catalog/instruments", nil, &result); err != nil {
 		return fmt.Errorf("probe Gateway catalog authority: %w", err)
 	}
 	readyInstrument := false
@@ -541,16 +570,16 @@ func (adapter *gatewayAdapter) CheckMarketDataRoute(ctx context.Context) error {
 	return nil
 }
 
-func (adapter *gatewayAdapter) read(ctx context.Context, path string, query url.Values, target any) error {
-	return adapter.readLimit(ctx, "", path, query, target, 64<<10)
+func (client *Client) read(ctx context.Context, path string, query url.Values, target any) error {
+	return client.readLimit(ctx, "", path, query, target, 64<<10)
 }
 
 // readLimit carries an optional principal because part of the Gateway's private
 // plane refuses a read that cannot say who is asking: the service token proves
 // which service called, not which user it called for. An empty principal sends
 // no header, which is what the routes that answer for the service itself want.
-func (adapter *gatewayAdapter) readLimit(ctx context.Context, principal, path string, query url.Values, target any, limit int64) error {
-	requestURL := adapter.baseURL + path
+func (client *Client) readLimit(ctx context.Context, principal, path string, query url.Values, target any, limit int64) error {
+	requestURL := client.baseURL + path
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
 	}
@@ -558,17 +587,17 @@ func (adapter *gatewayAdapter) readLimit(ctx context.Context, principal, path st
 	if err != nil {
 		return fmt.Errorf("construct Gateway request")
 	}
-	request.Header.Set("Authorization", "Bearer "+string(adapter.token))
+	request.Header.Set("Authorization", "Bearer "+string(client.token))
 	if principal != "" {
 		request.Header.Set("X-Bolter-Principal", principal)
 	}
-	adapter.attest(request)
-	response, err := adapter.client.Do(request)
+	client.attest(request)
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("Gateway read failed")
 	}
 	defer response.Body.Close()
-	if err := adapter.verifyAttestation(response); err != nil {
+	if err := client.verifyAttestation(response); err != nil {
 		return err
 	}
 	if response.StatusCode != http.StatusOK {
@@ -586,7 +615,7 @@ func (adapter *gatewayAdapter) readLimit(ctx context.Context, principal, path st
 	return nil
 }
 
-func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, intent gatewayOrderIntent) (orders.HandoffResult, error) {
+func (client *Client) place(ctx context.Context, idempotencyID string, intent orderIntent) (orders.HandoffResult, error) {
 	orderType := strings.ToLower(intent.OrderType)
 	policy := strings.ToLower(intent.LimitPolicy)
 	if policy == "" && orderType == "limit" {
@@ -601,7 +630,7 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 	if intent.DesiredStateRevision == 0 || intent.RuntimeGeneration == 0 || intent.CredentialVersion == 0 {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order fence is incomplete")
 	}
-	payload, err := json.Marshal(gatewayPlaceRequest{
+	payload, err := json.Marshal(placeRequest{
 		AccountID: intent.AccountID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID,
 		Side: intent.Side, Type: orderType, Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly,
 		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
@@ -609,20 +638,20 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("encode Gateway order")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, adapter.baseURL+"/v1/orders", bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/v1/orders", bytes.NewReader(payload))
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway request")
 	}
-	request.Header.Set("Authorization", "Bearer "+string(adapter.token))
+	request.Header.Set("Authorization", "Bearer "+string(client.token))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", idempotencyID)
-	adapter.attest(request)
-	response, err := adapter.client.Do(request)
+	client.attest(request)
+	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order handoff failed")
 	}
 	defer response.Body.Close()
-	if err := adapter.verifyAttestation(response); err != nil {
+	if err := client.verifyAttestation(response); err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, err
 	}
 	if response.StatusCode != http.StatusAccepted {
@@ -635,7 +664,7 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	var result gatewayPlaceResponse
+	var result placeResponse
 	if err := decoder.Decode(&result); err != nil || result.CommandID == "" || result.GatewayOrderID == "" || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway order response is invalid")
 	}
@@ -648,7 +677,7 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
 	}
 	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, fillErr := adapter.fetchFills(ctx, result.GatewayOrderID, intent.AccountID, intent.InstrumentID)
+		fills, fillErr := client.fetchFills(ctx, result.GatewayOrderID, intent.AccountID, intent.InstrumentID)
 		if fillErr != nil {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
 		}
@@ -657,19 +686,19 @@ func (adapter *gatewayAdapter) place(ctx context.Context, idempotencyID string, 
 	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
 }
 
-func (adapter *gatewayAdapter) cancel(ctx context.Context, request manual.GatewayCancelRequest) (orders.HandoffResult, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, adapter.baseURL+"/v1/orders/"+url.PathEscape(request.GatewayOrderID), nil)
+func (client *Client) cancel(ctx context.Context, request manual.GatewayCancelRequest) (orders.HandoffResult, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, client.baseURL+"/v1/orders/"+url.PathEscape(request.GatewayOrderID), nil)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway cancel request")
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+string(adapter.token))
-	adapter.attest(httpRequest)
-	response, err := adapter.client.Do(httpRequest)
+	httpRequest.Header.Set("Authorization", "Bearer "+string(client.token))
+	client.attest(httpRequest)
+	response, err := client.httpClient.Do(httpRequest)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel handoff failed")
 	}
 	defer response.Body.Close()
-	if err := adapter.verifyAttestation(response); err != nil {
+	if err := client.verifyAttestation(response); err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, err
 	}
 	if response.StatusCode != http.StatusAccepted {
@@ -682,7 +711,7 @@ func (adapter *gatewayAdapter) cancel(ctx context.Context, request manual.Gatewa
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
 	decoder.DisallowUnknownFields()
-	var result gatewayPlaceResponse
+	var result placeResponse
 	if err := decoder.Decode(&result); err != nil || result.CommandID != request.CommandID || result.GatewayOrderID != request.GatewayOrderID || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
 	}
@@ -695,7 +724,7 @@ func (adapter *gatewayAdapter) cancel(ctx context.Context, request manual.Gatewa
 		OrderEvents: []orders.OrderEventEvidence{{EventID: result.GatewayOrderID + ":" + strconv.FormatInt(result.ResourceVersion, 10), State: result.State, ResourceVersion: result.ResourceVersion}},
 	}
 	if result.State == "filled" || result.State == "partially_filled" || result.State == "canceled" || result.State == "cancelled" {
-		fills, fillErr := adapter.fetchFills(ctx, result.GatewayOrderID, request.AccountID, request.InstrumentID)
+		fills, fillErr := client.fetchFills(ctx, result.GatewayOrderID, request.AccountID, request.InstrumentID)
 		if fillErr != nil {
 			return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown, Evidence: evidence}, fmt.Errorf("read Gateway fill evidence: %w", fillErr)
 		}
@@ -704,15 +733,15 @@ func (adapter *gatewayAdapter) cancel(ctx context.Context, request manual.Gatewa
 	return orders.HandoffResult{Outcome: orders.HandoffAccepted, Evidence: evidence}, nil
 }
 
-const maxGatewayFillPages = 100
+const maxFillPages = 100
 
-func (adapter *gatewayAdapter) fetchFills(ctx context.Context, gatewayOrderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
+func (client *Client) fetchFills(ctx context.Context, gatewayOrderID, accountID, instrumentID string) ([]orders.FillEvidence, error) {
 	query := url.Values{"gateway_order_id": {gatewayOrderID}, "account_id": {accountID}, "instrument_id": {instrumentID}, "pagination.limit": {"100"}}
 	fills := make([]orders.FillEvidence, 0)
 	seenCursors := map[string]struct{}{"": {}}
-	for page := 0; page < maxGatewayFillPages; page++ {
-		var result gatewayFillCollection
-		if err := adapter.read(ctx, "/v1/fills", query, &result); err != nil {
+	for page := 0; page < maxFillPages; page++ {
+		var result fillCollection
+		if err := client.read(ctx, "/v1/fills", query, &result); err != nil {
 			return nil, fmt.Errorf("read Gateway fills: %w", err)
 		}
 		for _, item := range result.Items {
@@ -730,17 +759,17 @@ func (adapter *gatewayAdapter) fetchFills(ctx context.Context, gatewayOrderID, a
 		seenCursors[result.NextCursor] = struct{}{}
 		query.Set("pagination.cursor", result.NextCursor)
 	}
-	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxGatewayFillPages)
+	return nil, fmt.Errorf("Gateway fill pagination exceeded %d pages", maxFillPages)
 }
 
-func (adapter *gatewayAdapter) attest(request *http.Request) {
-	if adapter.requireAttestation {
-		request.Header.Set(gatewayModeHeader, string(adapter.mode))
+func (client *Client) attest(request *http.Request) {
+	if client.requireAttestation {
+		request.Header.Set(ModeHeader, string(client.mode))
 	}
 }
 
-func (adapter *gatewayAdapter) verifyAttestation(response *http.Response) error {
-	if adapter.requireAttestation && response.Header.Get(gatewayModeHeader) != string(adapter.mode) {
+func (client *Client) verifyAttestation(response *http.Response) error {
+	if client.requireAttestation && response.Header.Get(ModeHeader) != string(client.mode) {
 		return fmt.Errorf("Gateway mode attestation mismatch")
 	}
 	return nil

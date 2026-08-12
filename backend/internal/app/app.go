@@ -21,6 +21,7 @@ import (
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
 	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/ledger"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
@@ -45,6 +46,18 @@ type App struct {
 	reconcileDone chan struct{}
 }
 
+// The route probes are declared here rather than beside their implementation
+// because the readiness evaluators below are the only thing that asks the
+// question. Naming them on this side keeps the Gateway client free to answer it
+// without knowing that anyone treats the answer as readiness.
+type marketDataRouteProbe interface {
+	CheckMarketDataRoute(context.Context) error
+}
+
+type runtimeRouteProbe interface {
+	CheckRuntimeRoute(context.Context) error
+}
+
 type Dependencies struct {
 	Database *sql.DB
 	// TradingDatabase is deliberately separate from Database. The trading
@@ -66,11 +79,11 @@ type Dependencies struct {
 }
 
 func New(cfg config.Config) (*App, error) {
-	adapter, err := newGatewayAdapterForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
+	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithDependencies(cfg, Dependencies{CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ManualAccounts: gatewayManualAccounts{adapter: adapter}, ReconciliationGateway: adapter})
+	return NewWithDependencies(cfg, Dependencies{CatalogSource: gatewayClient, MarketDataSource: gatewayClient.MarketData(), MarketDataProbe: gatewayClient, RuntimeProbe: gatewayClient, RuntimeProjection: gatewayClient, ManualGateway: gatewayClient, ManualAccounts: gatewayClient.Accounts(), ReconciliationGateway: gatewayClient})
 }
 
 func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, error) {
@@ -396,11 +409,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 		EffectiveSequencePrivileges:  authorityResult.EffectiveSequencePrivileges,
 		CanonicalOwnershipViolations: len(authorityResult.OwnershipViolations),
 	})
-	adapter, err := newGatewayAdapterForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
+	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
 	if err != nil {
 		return err
 	}
-	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: adapter, MarketDataSource: gatewayMarketDataSource{adapter: adapter}, MarketDataProbe: adapter, RuntimeProbe: adapter, RuntimeProjection: adapter, ManualGateway: adapter, ManualAccounts: gatewayManualAccounts{adapter: adapter}, ReconciliationGateway: adapter, WriteAuthority: writeAuthority})
+	app, err := NewWithDependencies(cfg, Dependencies{Database: database, CatalogSource: gatewayClient, MarketDataSource: gatewayClient.MarketData(), MarketDataProbe: gatewayClient, RuntimeProbe: gatewayClient, RuntimeProjection: gatewayClient, ManualGateway: gatewayClient, ManualAccounts: gatewayClient.Accounts(), ReconciliationGateway: gatewayClient, WriteAuthority: writeAuthority})
 	if err != nil {
 		return err
 	}

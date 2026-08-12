@@ -1,4 +1,4 @@
-package app
+package gateway
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func TestGatewayFillPaginationRejectsNonAdjacentCursorCycle(t *testing.T) {
 		_, _ = w.Write([]byte(responses[r.URL.Query().Get("pagination.cursor")]))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,20 +45,20 @@ func TestGatewayFillPaginationHasFinitePageBound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		next := "page-" + strconv.Itoa(requests)
-		if requests > maxGatewayFillPages+5 {
+		if requests > maxFillPages+5 {
 			next = r.URL.Query().Get("pagination.cursor")
 		}
 		_, _ = fmt.Fprintf(w, `{"items":[],"next_cursor":%q}`, next)
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := adapter.fetchFills(context.Background(), "order-a", "account-a", "BTC-USDT"); err == nil || !strings.Contains(err.Error(), "pagination exceeded") {
 		t.Fatalf("fill pagination page-bound error=%v", err)
 	}
-	if requests != maxGatewayFillPages {
-		t.Fatalf("fill pagination made %d requests, want %d", requests, maxGatewayFillPages)
+	if requests != maxFillPages {
+		t.Fatalf("fill pagination made %d requests, want %d", requests, maxFillPages)
 	}
 }

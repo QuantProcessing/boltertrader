@@ -1,4 +1,4 @@
-package app
+package gateway
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func TestGatewayRuntimeReadinessProbeFailsClosed(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"ready":false}}`))
 	}))
 	defer server.Close()
-	adapter, err := newGatewayAdapter(server.URL, []byte(token), server.Client())
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}

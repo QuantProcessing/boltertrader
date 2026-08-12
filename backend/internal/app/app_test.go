@@ -14,6 +14,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
 	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
+	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
 	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/manual"
 	"github.com/QuantProcessing/boltertrader/services/trading/marketdata"
@@ -63,14 +64,14 @@ func TestAppStartsAndStops(t *testing.T) {
 func TestNewUsesConfiguredGatewayReadSourcesForManualPreview(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set(tradinggateway.ModeHeader, "test")
 		if r.Header.Get("Authorization") != "Bearer "+token {
 			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
 		}
-		if r.Header.Get(gatewayModeHeader) != "test" {
-			t.Errorf("mode attestation=%q", r.Header.Get(gatewayModeHeader))
+		if r.Header.Get(tradinggateway.ModeHeader) != "test" {
+			t.Errorf("mode attestation=%q", r.Header.Get(tradinggateway.ModeHeader))
 		}
-		w.Header().Set(gatewayModeHeader, "test")
+		w.Header().Set(tradinggateway.ModeHeader, "test")
 		switch r.URL.Path {
 		case "/internal/v1/market-data/readiness":
 			if r.URL.RawQuery != "" {
