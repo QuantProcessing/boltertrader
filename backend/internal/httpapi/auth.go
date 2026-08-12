@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
 )
 

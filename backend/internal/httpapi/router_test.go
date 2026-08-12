@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 )
 
 func newTestHandler(t *testing.T) http.Handler {

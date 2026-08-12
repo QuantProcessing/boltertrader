@@ -11,7 +11,7 @@ import (
 	"time"
 
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 )
 
 type testWriteAuthority struct{ ready bool }

@@ -5,16 +5,16 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 )
 
-type SessionStore struct{ db *sql.DB }
+type SessionStore struct{ database *sql.DB }
 
-func NewSessionStore(db *sql.DB) *SessionStore { return &SessionStore{db: db} }
+func NewSessionStore(database *sql.DB) *SessionStore { return &SessionStore{database: database} }
 
 func (store *SessionStore) Save(ctx context.Context, stored session.StoredSession) error {
-	_, err := store.db.ExecContext(ctx, `
-		INSERT INTO platform_sessions (token_digest, principal_id, mode, username, csrf_digest, expires_at)
+	_, err := store.database.ExecContext(ctx, `
+		INSERT INTO sessions (token_digest, principal_id, mode, username, csrf_digest, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (token_digest) DO UPDATE SET
 			principal_id = EXCLUDED.principal_id, mode = EXCLUDED.mode,
@@ -26,9 +26,9 @@ func (store *SessionStore) Save(ctx context.Context, stored session.StoredSessio
 
 func (store *SessionStore) Get(ctx context.Context, tokenDigest string) (session.StoredSession, error) {
 	var stored session.StoredSession
-	err := store.db.QueryRowContext(ctx, `
+	err := store.database.QueryRowContext(ctx, `
 		SELECT token_digest, principal_id, mode, username, csrf_digest, expires_at
-		FROM platform_sessions WHERE token_digest = $1`, tokenDigest).Scan(
+		FROM sessions WHERE token_digest = $1`, tokenDigest).Scan(
 		&stored.TokenDigest, &stored.Principal.ID, &stored.Principal.Mode,
 		&stored.Principal.Username, &stored.CSRFDigest, &stored.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -38,17 +38,17 @@ func (store *SessionStore) Get(ctx context.Context, tokenDigest string) (session
 }
 
 func (store *SessionStore) Delete(ctx context.Context, tokenDigest string) error {
-	_, err := store.db.ExecContext(ctx, `DELETE FROM platform_sessions WHERE token_digest = $1`, tokenDigest)
+	_, err := store.database.ExecContext(ctx, `DELETE FROM sessions WHERE token_digest = $1`, tokenDigest)
 	return err
 }
 
-type IdentityStore struct{ db *sql.DB }
+type IdentityStore struct{ database *sql.DB }
 
-func NewIdentityStore(db *sql.DB) *IdentityStore { return &IdentityStore{db: db} }
+func NewIdentityStore(database *sql.DB) *IdentityStore { return &IdentityStore{database: database} }
 
 func (store *IdentityStore) Upsert(ctx context.Context, identity session.Identity) error {
-	_, err := store.db.ExecContext(ctx, `
-		INSERT INTO platform_identities (principal_id, mode, username, password_hash)
+	_, err := store.database.ExecContext(ctx, `
+		INSERT INTO identities (principal_id, mode, username, password_hash)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (mode, username) DO UPDATE SET
 			principal_id = EXCLUDED.principal_id, password_hash = EXCLUDED.password_hash,
@@ -56,11 +56,15 @@ func (store *IdentityStore) Upsert(ctx context.Context, identity session.Identit
 	return err
 }
 
+// FindByUsername ignores disabled identities rather than reporting them as
+// disabled: the caller turns any lookup failure into the same generic login
+// rejection, and distinguishing them here would only create a way to probe
+// which usernames exist.
 func (store *IdentityStore) FindByUsername(ctx context.Context, mode, username string) (session.Identity, error) {
 	var identity session.Identity
-	err := store.db.QueryRowContext(ctx, `
+	err := store.database.QueryRowContext(ctx, `
 		SELECT principal_id, username, password_hash, mode
-		FROM platform_identities WHERE mode = $1 AND username = $2 AND disabled_at IS NULL`, mode, username).Scan(
+		FROM identities WHERE mode = $1 AND username = $2 AND disabled_at IS NULL`, mode, username).Scan(
 		&identity.PrincipalID, &identity.Username, &identity.PasswordHash, &identity.Mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return session.Identity{}, session.ErrNotFound

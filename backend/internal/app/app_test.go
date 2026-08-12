@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
 	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"

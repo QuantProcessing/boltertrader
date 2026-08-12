@@ -13,11 +13,12 @@ import (
 	"github.com/QuantProcessing/boltertrader/backend/internal/config"
 	frozencontract "github.com/QuantProcessing/boltertrader/backend/internal/contract"
 	"github.com/QuantProcessing/boltertrader/backend/internal/httpapi"
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 	"github.com/QuantProcessing/boltertrader/backend/internal/store/postgres"
 	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	backendcontract "github.com/QuantProcessing/boltertrader/internal/productplatformcontract"
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
+	"github.com/QuantProcessing/boltertrader/services/authedge/session"
+	authedgepostgres "github.com/QuantProcessing/boltertrader/services/authedge/store/postgres"
 	tradingapp "github.com/QuantProcessing/boltertrader/services/trading/app"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	tradinggateway "github.com/QuantProcessing/boltertrader/services/trading/gateway"
@@ -125,8 +126,8 @@ func NewWithDependencies(cfg config.Config, dependencies Dependencies) (*App, er
 	var sessionStore session.Store = session.NewMemoryStore()
 	var identityStore session.IdentityStore
 	if dependencies.Database != nil {
-		sessionStore = postgres.NewSessionStore(dependencies.Database)
-		persistentIdentities := postgres.NewIdentityStore(dependencies.Database)
+		sessionStore = authedgepostgres.NewSessionStore(dependencies.Database)
+		persistentIdentities := authedgepostgres.NewIdentityStore(dependencies.Database)
 		if !validationProfile {
 			if err := seedBootstrapIdentity(context.Background(), persistentIdentities, cfg); err != nil {
 				return nil, fmt.Errorf("seed bootstrap identity: %w", err)

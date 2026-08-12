@@ -5,14 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/QuantProcessing/boltertrader/backend/internal/platform/session"
 )
-
-func TestStoresImplementPlatformContracts(t *testing.T) {
-	var _ session.Store = (*SessionStore)(nil)
-	var _ session.IdentityStore = (*IdentityStore)(nil)
-}
 
 func TestIdentityAccountAuditMigrationIsFencedAndSecretSafe(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "migrations", "0002_identity_accounts_audit.sql")
