@@ -9,26 +9,80 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestAuthorityMatrixRealPostgres(t *testing.T) {
+// roleAttributes are the two properties that decide whether a role works in
+// this stack. login says whether a process may authenticate as it; inherit says
+// whether it silently receives the privileges of roles it belongs to. Both are
+// read back for the runtime role by CollectPostgresRuntimeCatalog, and both are
+// the difference between a stack that serves and one that fails several layers
+// away from the cause.
+type roleAttributes struct {
+	login   bool
+	inherit bool
+}
+
+// stackRoles is docker/postgres/initdb/010-databases-and-roles.sql restated as
+// an expectation. Every entry is load-bearing for a check some process makes.
+var stackRoles = map[string]roleAttributes{
+	// Serving identities. They log in, and they must inherit: the gateway
+	// runtime holds no grant of its own, only what its writer membership
+	// carries.
+	"bolter_gateway_test":  {login: true, inherit: true},
+	"bolter_trading_test":  {login: true, inherit: true},
+	"bolter_authedge_test": {login: true, inherit: true},
+	// The migrator owns the gateway database, which is what leaves the serving
+	// role owning nothing it could drop. It logs in because nothing in this
+	// repository issues SET ROLE — cmd/gateway-migrate has to arrive as this
+	// role rather than become it.
+	"bolter_gateway_test_migrator": {login: true, inherit: true},
+	// A privilege container, not a connection. VerifyRuntimeCatalog fails when
+	// it finds the writer able to reach the database in its own right.
+	"bolter_gateway_test_writer": {login: false, inherit: true},
+	// Exists only to receive the CONNECT grant ApplyAuthority issues, which
+	// would error against a missing role.
+	"bolter_platform_test_admin": {login: false, inherit: true},
+}
+
+// TestStackClusterTopologyRealPostgres checks the cluster the stack is started
+// against, rather than the Go that talks to it. Everything asserted here is
+// created by the initdb script above and then depended on by a specific
+// refusal: the gateway reads its role attributes and memberships back through
+// VerifyRuntimeCatalog at every start, and cmd/trading and cmd/authedge each
+// pin their database and role name in config.
+//
+// This matters because the initdb script is triggered by an empty data
+// directory, not by a version check. A named volume surviving an edit to that
+// file means it never runs, and the cluster then starts cleanly and fails deep
+// inside a migration. This test, and the equivalent check in `make doctor`,
+// exist to name that failure at the cluster instead.
+//
+// Gated because it needs a real cluster provisioned that way: point PGSERVICEFILE
+// at the stack's service file and set BT_G010_POSTGRES_ACCEPT=1. It only reads,
+// so it is safe against a running stack. It does assume the three migrators have
+// already run, since the gateway database's ACL is applied by ApplyAuthority
+// rather than at init.
+func TestStackClusterTopologyRealPostgres(t *testing.T) {
 	if os.Getenv("BT_G010_POSTGRES_ACCEPT") != "1" {
 		t.Skip("BT_G010_POSTGRES_ACCEPT=1 is required for local PostgreSQL authority verification")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	pool, err := pgxpool.New(ctx, "service=platform_maintenance_test dbname=postgres")
+	// Through the migrator's service entry, because it is the only role in the
+	// stack that both logs in and has no serving duty to disturb. The catalogs
+	// read below are cluster-wide, so which database it lands in does not
+	// matter — but the service file supplies no dbname, so one is named here.
+	pool, err := pgxpool.New(ctx, "service=gateway_test dbname=bolter_gateway_test")
 	if err != nil {
-		t.Fatal("connect through platform_maintenance_test service")
+		t.Fatalf("connect through the gateway_test service: %v", err)
 	}
 	defer pool.Close()
 
+	expectedNames := make([]string, 0, len(stackRoles))
+	for name := range stackRoles {
+		expectedNames = append(expectedNames, name)
+	}
 	rows, err := pool.Query(ctx, `
-		SELECT r.rolname, r.rolcanlogin, r.rolcreatedb, r.rolcreaterole, r.rolinherit
-		FROM pg_roles r
-		WHERE r.rolname = ANY($1)
-		ORDER BY r.rolname`, []string{
-		"bolter_funding_test_migrator", "bolter_platform_test_migrator", "bolter_gateway_test_migrator",
-		"bolter_platform_test", "bolter_gateway_test", "bolter_platform_test_admin",
-	})
+		SELECT rolname, rolcanlogin, rolinherit, rolcreatedb, rolcreaterole, rolsuper
+		FROM pg_roles WHERE rolname = ANY($1) ORDER BY rolname`, expectedNames)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,99 +90,80 @@ func TestAuthorityMatrixRealPostgres(t *testing.T) {
 	seen := 0
 	for rows.Next() {
 		var name string
-		var login, createdb, createrole, inherit bool
-		if err := rows.Scan(&name, &login, &createdb, &createrole, &inherit); err != nil {
+		var observed roleAttributes
+		var createdb, createrole, superuser bool
+		if err := rows.Scan(&name, &observed.login, &observed.inherit, &createdb, &createrole, &superuser); err != nil {
 			t.Fatal(err)
 		}
 		seen++
-		switch name {
-		case "bolter_platform_test_admin":
-			if !login || !createdb || !createrole || inherit {
-				t.Fatalf("maintenance attributes are unsafe")
-			}
-		case "bolter_platform_test", "bolter_gateway_test":
-			if !login || createdb || createrole || !inherit {
-				t.Fatalf("runtime %s attributes are unsafe", name)
-			}
-		default:
-			if login || createdb || createrole || inherit {
-				t.Fatalf("migrator %s attributes are unsafe", name)
-			}
+		if observed != stackRoles[name] {
+			t.Fatalf("role %s attributes=%+v want=%+v", name, observed, stackRoles[name])
+		}
+		// No role in this stack creates databases, creates roles, or is a
+		// superuser. The last one is not redundant with the ownership checks
+		// below: every REVOKE the authority pass applies is ignored for a
+		// superuser, so a superuser runtime would make the whole split
+		// decorative while VerifyRuntimeCatalog still reported it intact.
+		if createdb || createrole || superuser {
+			t.Fatalf("role %s holds cluster-wide rights: createdb=%t createrole=%t superuser=%t", name, createdb, createrole, superuser)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if seen != 6 {
-		t.Fatalf("authority roles found=%d want=6", seen)
+	if seen != len(stackRoles) {
+		t.Fatalf("stack roles found=%d want=%d", seen, len(stackRoles))
 	}
 
-	type membershipOptions struct {
-		admin   bool
-		inherit bool
-		set     bool
+	// The runtime reaches every privilege it has through this membership.
+	// Losing it does not produce a connection error; it produces a permission
+	// denial on the first write, which is a bad thing to learn from an order.
+	var writerMembership, runtimeInherits bool
+	if err := pool.QueryRow(ctx, `
+		SELECT pg_has_role('bolter_gateway_test', 'bolter_gateway_test_writer', 'MEMBER'),
+		       (SELECT rolinherit FROM pg_roles WHERE rolname = 'bolter_gateway_test')`).Scan(&writerMembership, &runtimeInherits); err != nil {
+		t.Fatal(err)
 	}
-	expectedMemberships := map[string]membershipOptions{
-		"bolter_funding_test_migrator":  {set: true},
-		"bolter_platform_test_migrator": {set: true},
-		"bolter_gateway_test_migrator":  {set: true},
-		"bolter_funding_test_writer":    {admin: true},
-		"bolter_platform_test":          {admin: true},
-		"bolter_platform_test_writer":   {admin: true},
-		"bolter_gateway_test":           {admin: true},
-		"bolter_gateway_test_writer":    {admin: true},
-		"pg_signal_backend":             {set: true},
+	if !writerMembership || !runtimeInherits {
+		t.Fatalf("gateway runtime writerMembership=%t inherits=%t", writerMembership, runtimeInherits)
 	}
-	membershipRows, err := pool.Query(ctx, `
-		SELECT granted.rolname, grantor.rolname,
-		       membership.admin_option, membership.inherit_option, membership.set_option
-		FROM pg_auth_members membership
-		JOIN pg_roles granted ON granted.oid = membership.roleid
+
+	// The maintenance role is granted nothing. It is a CONNECT recipient and
+	// nothing else, and a role no process authenticates as is exactly the one
+	// whose accumulated privileges nobody would notice.
+	var maintenanceMemberships int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM pg_auth_members membership
 		JOIN pg_roles member ON member.oid = membership.member
-		JOIN pg_roles grantor ON grantor.oid = membership.grantor
-		WHERE member.rolname = 'bolter_platform_test_admin'
-		ORDER BY granted.rolname`)
-	if err != nil {
+		WHERE member.rolname = 'bolter_platform_test_admin'`).Scan(&maintenanceMemberships); err != nil {
 		t.Fatal(err)
 	}
-	defer membershipRows.Close()
-	seenMemberships := 0
-	for membershipRows.Next() {
-		var grantedRole, grantor string
-		var observed membershipOptions
-		if err := membershipRows.Scan(&grantedRole, &grantor, &observed.admin, &observed.inherit, &observed.set); err != nil {
-			t.Fatal(err)
-		}
-		expected, ok := expectedMemberships[grantedRole]
-		if !ok || observed != expected || grantor == "bolter_platform_test_admin" {
-			t.Fatalf("unsafe maintenance membership role=%s grantor=%s options=%+v", grantedRole, grantor, observed)
-		}
-		seenMemberships++
-	}
-	if err := membershipRows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if seenMemberships != len(expectedMemberships) {
-		t.Fatalf("maintenance memberships found=%d want=%d", seenMemberships, len(expectedMemberships))
+	if maintenanceMemberships != 0 {
+		t.Fatalf("maintenance role holds %d memberships, want 0", maintenanceMemberships)
 	}
 
+	// One database per service, none reachable by PUBLIC. The gateway's is
+	// owned by a role it does not serve as, which is what stops a compromised
+	// serving role from dropping the tables underneath itself; trading and the
+	// auth edge own their own, since neither verifies an authority matrix and a
+	// split nothing checks would drift in silence.
 	for database, owner := range map[string]string{
-		"bolter_funding_test":  "bolter_funding_test_migrator",
-		"bolter_platform_test": "bolter_platform_test_migrator",
 		"bolter_gateway_test":  "bolter_gateway_test_migrator",
+		"bolter_trading_test":  "bolter_trading_test",
+		"bolter_authedge_test": "bolter_authedge_test",
 	} {
 		var observedOwner string
-		var publicConnect, maintenanceConnect bool
+		var publicConnect bool
 		if err := pool.QueryRow(ctx, `
 			SELECT pg_get_userbyid(datdba), EXISTS (
 				SELECT 1 FROM aclexplode(COALESCE(datacl, acldefault('d', datdba)))
-				WHERE grantee=0 AND privilege_type='CONNECT'
-			), has_database_privilege('bolter_platform_test_admin', datname, 'CONNECT')
-			FROM pg_database WHERE datname=$1`, database).Scan(&observedOwner, &publicConnect, &maintenanceConnect); err != nil {
-			t.Fatal(err)
+				WHERE grantee = 0 AND privilege_type = 'CONNECT'
+			)
+			FROM pg_database WHERE datname = $1`, database).Scan(&observedOwner, &publicConnect); err != nil {
+			t.Fatalf("inspect database %s: %v", database, err)
 		}
-		if observedOwner != owner || publicConnect || !maintenanceConnect {
-			t.Fatalf("database=%s owner=%s publicConnect=%t maintenanceConnect=%t", database, observedOwner, publicConnect, maintenanceConnect)
+		if observedOwner != owner || publicConnect {
+			t.Fatalf("database=%s owner=%s want=%s publicConnect=%t", database, observedOwner, owner, publicConnect)
 		}
 	}
 }

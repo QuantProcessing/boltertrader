@@ -1,7 +1,31 @@
+# The gateway serves two planes on two listeners, and both are load-bearing.
+#
+#   listen          /v1/*           the capability plane: orders, fills, market
+#                                   data. Published to 127.0.0.1 by compose.
+#   internal_listen /internal/v1/*  the authority plane: accounts, credentials,
+#                                   catalog, runtime state. NOT published — it is
+#                                   reachable only from the compose bridge, by
+#                                   trading and the auth edge.
+#
+# Configuring only the first is what an earlier version of this file did, and it
+# does not degrade gracefully: the gateway simply never starts the second
+# listener, every /internal/v1 request 404s, and trading reports itself unready
+# with three separate probe failures that each look like a missing feature.
+#
+# Both non-loopback opt-ins are asserted here for the same reason: these are
+# container-namespace binds, and the gateway's own loopback is reachable by
+# nothing but the gateway. The claim being made is about compose's network, which
+# no process in it can verify for itself.
 server:
   listen: 0.0.0.0:18080
   allow_non_loopback_listen: true
   auth_token_ref: env://GATEWAY_AUTH_TOKEN
+  internal_listen: 0.0.0.0:18082
+  allow_non_loopback_internal_listen: true
+  # A second token, not the one above. The planes have different audiences and
+  # different blast radii — the authority plane can rotate a venue credential —
+  # so a service trusted with orders is not thereby trusted with accounts.
+  internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN

@@ -200,6 +200,55 @@ postgres:
 	}
 }
 
+// The Gateway answers 409 to any request that does not attest the mode it is
+// running in, health routes included, and Compose reads that 409 as "unhealthy"
+// forever — holding back every service that depends on it. The mode is read
+// from the config rather than assumed, so this asserts the explicit case: a
+// hard-coded "test" would satisfy the default and fail exactly where it matters.
+func TestHealthAttestsTheModeFromTheConfig(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		modeLine string
+		want     string
+	}{
+		{name: "default", modeLine: "", want: "test"},
+		{name: "explicit live", modeLine: "  mode: live\n", want: "live"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var gotMode string
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				gotMode = request.Header.Get("X-Bolter-Mode")
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(strings.NewReader("ok")),
+					Header:     make(http.Header),
+				}, nil
+			})}
+
+			root := t.TempDir()
+			writeSecret(t, root, "TOKEN", "token-long-enough-to-be-a-token")
+			configPath := writeConfig(t, `
+server:
+  listen: 127.0.0.1:18080
+  auth_token_ref: env://TOKEN
+`+test.modeLine+`
+postgres:
+  dsn_ref: env://POSTGRES_DSN
+`)
+
+			err := runDockerSupport(context.Background(), []string{
+				"health", "-config", configPath, "-kind", "ready",
+			}, dockerSupportDeps{secretRoot: root, httpClient: client})
+			if err != nil {
+				t.Fatalf("health ready: %v", err)
+			}
+			if gotMode != test.want {
+				t.Fatalf("attested mode = %q, want %q", gotMode, test.want)
+			}
+		})
+	}
+}
+
 func TestHealthFailureIsBoundedAndRedacted(t *testing.T) {
 	token := "health-secret-canary"
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {

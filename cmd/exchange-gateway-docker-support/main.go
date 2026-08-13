@@ -25,6 +25,11 @@ const (
 	defaultSecretRoot   = "/run/secrets"
 	defaultProbeTimeout = 2 * time.Second
 	maxProbeTimeout     = 10 * time.Second
+	// gatewayModeHeader is restated from cmd/exchange-gateway rather than
+	// shared, because the two are separate package mains. The contract it names
+	// is fixed by api/exchange-gateway/v1/internal-openapi.yaml, so the copy
+	// cannot drift silently without that document being wrong too.
+	gatewayModeHeader = "X-Bolter-Mode"
 )
 
 var safeEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -148,6 +153,14 @@ func probeGateway(ctx context.Context, args []string, deps dockerSupportDeps) er
 		return fmt.Errorf("construct health request")
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	// The Gateway wraps every route in a mode attestation, health included, and
+	// answers 409 to a request that does not state which mode it believes it is
+	// talking to. The mode comes out of the same config the Gateway itself
+	// parses, through the same loader, so this is the value it compares against
+	// rather than a guess: a probe that skipped this would report a healthy
+	// Gateway as permanently unhealthy, and Compose would hold back every
+	// service that waits on it.
+	request.Header.Set(gatewayModeHeader, file.Server.Mode)
 	client := deps.httpClient
 	if client == nil {
 		client = &http.Client{}

@@ -116,6 +116,50 @@ func TestNonLoopbackListenRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+// TestNonLoopbackInternalListenRequiresItsOwnOptIn pins the property that makes
+// the two opt-ins worth having separately: widening the capability plane must
+// not widen the authority plane. A single flag governing both would pass the
+// first half of this test and silently publish accounts and credentials.
+func TestNonLoopbackInternalListenRequiresItsOwnOptIn(t *testing.T) {
+	withInternal := strings.Replace(validYAML(), "  auth_token_ref: env://TOKEN\n",
+		"  auth_token_ref: env://TOKEN\n  internal_listen: 0.0.0.0:18082\n  internal_auth_token_ref: env://INTERNAL_TOKEN\n", 1)
+	if _, err := config.LoadYAML([]byte(withInternal)); err == nil || !strings.Contains(err.Error(), "allow_non_loopback_internal_listen") {
+		t.Fatalf("non-loopback internal_listen error = %v", err)
+	}
+	// The public opt-in alone must not unlock it.
+	publicOnly := strings.Replace(withInternal, "  internal_listen:", "  allow_non_loopback_listen: true\n  internal_listen:", 1)
+	if _, err := config.LoadYAML([]byte(publicOnly)); err == nil || !strings.Contains(err.Error(), "allow_non_loopback_internal_listen") {
+		t.Fatalf("public opt-in widened the authority plane: %v", err)
+	}
+	optedIn := strings.Replace(publicOnly, "  internal_listen: 0.0.0.0:18082", "  internal_listen: 0.0.0.0:18082\n  allow_non_loopback_internal_listen: true", 1)
+	file, err := config.LoadYAML([]byte(optedIn))
+	if err != nil {
+		t.Fatalf("opted-in internal config: %v", err)
+	}
+	if !file.Server.AllowNonLoopbackInternalListen || file.Server.InternalListen != "0.0.0.0:18082" {
+		t.Fatalf("internal listener not carried through: %+v", file.Server)
+	}
+	// The opt-in has to reach the hash, or a stack that flipped it would
+	// resume against a ledger entry recorded under the narrower configuration.
+	loopback := strings.Replace(optedIn, "  allow_non_loopback_internal_listen: true\n", "", 1)
+	loopback = strings.Replace(loopback, "internal_listen: 0.0.0.0:18082", "internal_listen: 127.0.0.1:18082", 1)
+	narrower, err := config.LoadYAML([]byte(loopback))
+	if err != nil {
+		t.Fatalf("loopback internal config: %v", err)
+	}
+	wide, err := file.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := narrower.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wide == narrow {
+		t.Fatal("hash does not distinguish a published authority plane from a loopback one")
+	}
+}
+
 func validYAML() string {
 	return `server:
   listen: 127.0.0.1:18080
