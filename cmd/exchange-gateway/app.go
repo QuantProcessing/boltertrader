@@ -316,12 +316,13 @@ func defaultInternalHandlerFactory(
 				if !ok {
 					return nil, fmt.Errorf("postgres pool type")
 				}
-				service, lifecycleErr := accountDeps.newService(realPool, authority)
+				service, reconciler, lifecycleErr := accountDeps.newService(realPool, authority)
 				if lifecycleErr != nil {
 					return nil, lifecycleErr
 				}
 				options.Lifecycle = service
 				options.Blockers = accountDeps.blockers()
+				go runCredentialReconciler(ctx, reconciler)
 			}
 			handler, err = httpapi.NewInternalHandler(options)
 		}
@@ -348,7 +349,25 @@ func (deps accountLifecycleDeps) available() bool {
 	return deps.credentials != nil && deps.runtime != nil
 }
 
-func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, error) {
+// newService builds the durable account lifecycle and the reconciler that
+// finishes what it starts.
+//
+// The two are returned together because neither is complete alone. A durable
+// create applies the desired state to the runtime and then demands proof that
+// the runtime is *already* serving it — every requested-active route ready —
+// before it promotes the account to active. That proof is not available
+// synchronously: applying a snapshot registers the account's routes, but a
+// route becomes ready only once the venue connection and its private stream
+// are up, which happens on its own schedule some seconds later. The create call
+// therefore loses that race routinely, and leaves behind an account stuck in
+// "creating" with its credential operation stuck in "applying" — a state the
+// manual product refuses to trade on.
+//
+// The reconciler is the designed answer: it rescans operations parked in a
+// recoverable state, re-reads the runtime's truth, and performs the same
+// promotion once the routes really are ready. Creation is eventually
+// consistent by construction, so nothing else has to be.
+func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpapi.InternalAuthority) (*lifecycle.Service, *lifecycle.Reconciler, error) {
 	mode := secretstore.Mode(deps.mode)
 	// The namespace and key version are the ones newGatewayCredentialResolver
 	// already refused to start without, so the lifecycle writes into the same
@@ -357,23 +376,65 @@ func (deps accountLifecycleDeps) newService(pool *pgxpool.Pool, authority httpap
 		Mode: mode, Namespace: "boltertrader/" + string(deps.mode), KeyVersion: "v1",
 	}, deps.credentials.Writer())
 	if err != nil {
-		return nil, fmt.Errorf("account lifecycle credential store")
+		return nil, nil, fmt.Errorf("account lifecycle credential store")
 	}
 	desired, err := authorityclient.New(authority, mode)
 	if err != nil {
-		return nil, fmt.Errorf("account lifecycle authority client")
+		return nil, nil, fmt.Errorf("account lifecycle authority client")
 	}
+	store := postgres.NewAccountLifecycleStore(pool)
+	secrets := lifecycle.SecretStoreAdapter{Store: credentials}
 	service, err := lifecycle.New(lifecycle.Options{
-		Store:   postgres.NewAccountLifecycleStore(pool),
-		Secrets: lifecycle.SecretStoreAdapter{Store: credentials},
+		Store:   store,
+		Secrets: secrets,
 		Audit:   postgres.NewAccountLifecycleAuditStore(pool),
 		Gateway: desired,
 		Mode:    mode,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("account lifecycle setup")
+		return nil, nil, fmt.Errorf("account lifecycle setup")
 	}
-	return service, nil
+	reconciler, err := lifecycle.NewReconciler(store, secrets, desired, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("account lifecycle reconciler setup")
+	}
+	return service, reconciler, nil
+}
+
+// credentialReconcileInterval is how often parked credential operations are
+// retried, and credentialReconcileBatch how many are taken per pass.
+//
+// The interval is set by what it is waiting for. The common case is a create
+// that raced ahead of its routes becoming ready, which resolves within seconds
+// of the venue connecting; a slower sweep would leave a freshly created account
+// untradeable for no reason other than the timer. It is not a poll of anything
+// remote — a pass with nothing parked is one indexed query.
+const (
+	credentialReconcileInterval = 5 * time.Second
+	credentialReconcileBatch    = 32
+)
+
+// runCredentialReconciler drives the reconciler until ctx ends.
+//
+// A failed pass is not reported here. The reconciler already writes its reason
+// onto the operation row as a stable error code, which outlives any log line
+// and is what an operator inspecting a stuck account actually reads. Repeating
+// it here would emit one line every interval for as long as a venue takes to
+// come up, which on a cold stack is every start.
+func runCredentialReconciler(ctx context.Context, reconciler *lifecycle.Reconciler) {
+	if reconciler == nil {
+		return
+	}
+	ticker := time.NewTicker(credentialReconcileInterval)
+	defer ticker.Stop()
+	for {
+		_ = reconciler.RunOnce(ctx, credentialReconcileBatch)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // blockers translates the runtime's inventory count into the lifecycle's. The
