@@ -225,72 +225,72 @@ and the next process must complete reconciliation before reopening writes.
 
 ## Docker single-host deployment
 
-The reference deployment requires Docker Engine with Compose v2. It is a
-single-host operational example: one Gateway container, one PostgreSQL
-container, and one named PostgreSQL volume. It does not provide Kubernetes,
+The local stack requires Docker Engine with Compose v2. It is a single-host
+operational example: PostgreSQL, three one-shot migrators, and the three
+services, with one named PostgreSQL volume. It does not provide Kubernetes,
 multi-host scheduling, registry publishing, or high availability.
 
-Copy the public template and create the three referenced files outside the
-repository:
+Bring it up with:
 
 ```sh
-cp docker/gateway.env.example gateway.env
-chmod 600 gateway.env ./gateway-secrets/*
+make up
 ```
 
-`gateway.env` contains paths and public settings only. The actual bearer token,
-Gateway PostgreSQL DSN, and PostgreSQL password live in those files and enter
-the containers as Docker secrets. The DSN used by the reference stack names
-the Compose service, for example
-`postgres://gateway:<password>@postgres:5432/gateway?sslmode=disable`.
-Do not put any secret value in `gateway.env`, the image, a build argument, or
-`docker/gateway.docker.yaml`.
+That generates the stack's credentials under `.secrets/test/` and its variables
+into `.env.stack`, brings every service up, and then runs `make doctor`. It is
+idempotent: a second run reuses the existing credentials. `make doctor` reports
+what is wrong when something is, and `make logs` tails every service.
 
-The supplied Docker config deliberately starts with `accounts: []`. Add
-accounts by copying that config to an operator-owned file. Each new
-`env://NAME` credential also needs a matching Compose secret mounted at
-`/run/secrets/NAME`; the Docker helper resolves only these explicit names and
-then execs Gateway as PID1.
+Nothing needs to be copied by hand and no secret value belongs in `.env.stack`,
+the image, a build argument, or `docker/gateway.docker.yaml`. The bearer token
+and the Gateway PostgreSQL DSN live in files under `.secrets/test/` at 0600, and
+`.env.stack` holds only the paths that point at them. Both files reach Gateway as
+Docker secrets at `/run/secrets/GATEWAY_AUTH_TOKEN` and
+`/run/secrets/GATEWAY_POSTGRES_DSN`.
 
-Build and start:
+Every Compose invocation in the Makefile passes `--env-file .env.stack`
+explicitly, including the ones that only read metadata. Without it Compose
+auto-loads the repository's `./.env`, which holds live venue API credentials that
+would then be interpolated into the stack's environment.
 
-```sh
-docker compose --env-file gateway.env config
-docker compose --env-file gateway.env up -d --build --wait
-```
+`docker/gateway.docker.yaml` deliberately starts with `accounts: []`. Add
+accounts by copying it to an operator-owned file and pointing
+`GATEWAY_CONFIG_FILE` at the copy. Each new `env://NAME` credential also needs a
+matching Compose secret mounted at `/run/secrets/NAME`; the Docker helper
+resolves only these explicit names and then execs Gateway as PID1.
 
 The host publication is `127.0.0.1:18080` by default. Inside the container,
 `allow_non_loopback_listen: true` explicitly permits `0.0.0.0:18080`; ordinary
 non-container configs remain loopback-only.
 
-Inspect authenticated health and logs without printing the bearer token:
+Inspect authenticated health without printing the bearer token:
 
 ```sh
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind live
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind ready
-docker compose --env-file gateway.env logs --tail=200 gateway
 ```
 
-`docker compose stop gateway` sends SIGTERM to Gateway as PID1. The reference
-stack allows 15 seconds, exceeding Gateway's 10-second drain budget. For an
-upgrade, build the new immutable image, run the Docker verification targets,
-then recreate Gateway. Startup migrations and reconciliation run before write
-readiness reopens.
+Stopping a service sends SIGTERM to it as PID1. The stack allows 15 seconds,
+exceeding Gateway's 10-second drain budget. For an upgrade, build the new
+immutable image, run the container gates, then recreate the service. Startup
+migrations and reconciliation run before write readiness reopens.
 
-PostgreSQL persistence is the named `gateway_postgres_data` volume.
-`docker compose down` retains it; `docker compose down -v` deliberately deletes
-it. Back up and restore that volume using normal PostgreSQL tooling. The
-reference Compose file never publishes PostgreSQL to the host; the random
-loopback publication in `docker/compose.test.yaml` is test-only.
+PostgreSQL persistence is the named `postgres_data` volume. `make down` retains
+it; `make down-hard` deliberately deletes it. Back up and restore that volume
+using normal PostgreSQL tooling.
 
-For external PostgreSQL, deploy the Gateway image without the reference
-PostgreSQL service and point `GATEWAY_POSTGRES_DSN_FILE` at a TLS-enabled DSN
-for the external database. Run the migration and restart gates against a
-disposable copy before rollout. Keep the database and Gateway network private.
+`down-hard` is also the only way an edit to the initdb script takes effect: the
+PostgreSQL image runs those scripts once, when the data directory is empty, so a
+surviving volume means a changed role set is never applied.
+
+For external PostgreSQL, deploy the image without the bundled PostgreSQL service
+and point `GATEWAY_POSTGRES_DSN_FILE` at a TLS-enabled DSN for the external
+database. Run the migration and restart gates against a disposable copy before
+rollout. Keep the database and Gateway network private.
 
 Terminate TLS at a same-host ingress or reverse proxy. The default loopback
 publication is suitable for that shape. Publishing Gateway on another
@@ -299,16 +299,18 @@ TLS, bearer-token rotation, and access-log review. This single-host stack has
 no leader election or automatic failover; use only one Gateway owner for each
 configured exchange account.
 
-Docker verification:
+Container verification. Each of these builds its own throwaway Compose project
+with generated credentials and kernel-assigned ports, so none needs `make up` to
+have run and none disturbs a stack that is already up:
 
 ```sh
-make test-gateway-docker-config
-make test-gateway-docker-build
-make test-gateway-docker-security
-make test-gateway-docker-smoke
-make test-gateway-docker-persistence
-make test-gateway-docker-postgres
-make test-gateway-docker
+make test-compose-config
+make test-compose-build
+make test-compose-security
+make test-compose-smoke
+make test-compose-persistence
+make test-compose-postgres
+make test-compose
 ```
 
 ## Verification

@@ -29,13 +29,13 @@ enabled.
 There is currently no integrated multi-service gate. The docker-free launcher
 that `make test-platform-offline` drove was retired along with `backend/`: it
 supervised a `platform` process and a funding worker that no longer exist as
-binaries, and shelled into bootstrap scripts deleted with them. Its replacement
-is a Compose-based bring-up plus a single `make up`, which lands with the
-one-command startup work.
+binaries, and shelled into bootstrap scripts deleted with them.
 
-Until then, run the per-tree targets above. The Gateway Compose targets
-(`make test-gateway-docker-*`) remain the only end-to-end path and require
-Docker.
+Its replacement has landed. `make up` brings the whole stack up and `make doctor`
+diagnoses it; the container gates (`make test-compose-*`) are the end-to-end path
+and require Docker. Each builds its own throwaway Compose project with generated
+credentials and kernel-assigned ports, so none needs `make up` to have run and
+none disturbs a stack that is already up.
 
 ## Nine-venue external command inventory
 

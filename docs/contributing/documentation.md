@@ -126,8 +126,8 @@ state.
   tokens match their mirror contract.
 - No secret, raw evidence, private path, development plan, task identifier, or
   temporary implementation history entered the public tree.
-- `git diff --check`, `make test-capabilities`, and tests relevant to changed
-  examples or behavior pass.
+- `git diff --check`, `make test`, and tests relevant to changed examples or
+  behavior pass.
 
 See [Contributing an adapter](adapters.md) for implementation-specific matrix and
 verification obligations.

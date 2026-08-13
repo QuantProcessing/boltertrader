@@ -60,7 +60,6 @@ Go 1.26 or later is required by `go.mod`.
 
 ```sh
 make test
-make test-capabilities
 ```
 
 The default suite is credential-free and uses short mode. Exchange-backed reads

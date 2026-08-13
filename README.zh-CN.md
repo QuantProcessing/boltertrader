@@ -57,7 +57,6 @@ lease 或 capacity-admission 路径。完整契约见
 
 ```sh
 make test
-make test-capabilities
 ```
 
 默认测试套件不需要凭证，并使用 short mode。交易所读写均为显式启用；文档中的
