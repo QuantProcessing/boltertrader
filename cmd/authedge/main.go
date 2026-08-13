@@ -6,8 +6,11 @@
 // principal, so this process holds two credentials that must never be reachable
 // from the browser side of the boundary.
 //
-// The listener binds loopback only. This edge has no TLS of its own; putting it
-// on a routable address would publish a plaintext session cookie.
+// The listener binds loopback unless BT_AUTHEDGE_ALLOW_NON_LOOPBACK_LISTEN says
+// otherwise. This edge has no TLS of its own, so a routable address would
+// publish a plaintext session cookie. The one deployment that needs the opt-in
+// is a container, where the cookie is only as exposed as the port mapping the
+// host chooses to publish.
 package main
 
 import (

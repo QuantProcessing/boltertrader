@@ -37,7 +37,7 @@ func validEnv(t *testing.T) map[string]string {
 
 func applyEnv(t *testing.T, env map[string]string) {
 	t.Helper()
-	for _, name := range []string{modeEnv, listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, previewSigningKeyEnv, livePrivateWritesEnv, inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
+	for _, name := range []string{modeEnv, listenAddrEnv, databaseEnv, databaseRoleEnv, databaseHostEnv, gatewayURLEnv, serviceTokenFileEnv, gatewayTokenFileEnv, previewSigningKeyEnv, livePrivateWritesEnv, allowNonLoopbackEnv, allowPlaintextEnv, inlinePreviewKeyEnv, inlineServiceTokenEnv, inlineGatewayTokenName} {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}
@@ -61,7 +61,8 @@ func TestLoadAcceptsAValidEnvironment(t *testing.T) {
 }
 
 // Nothing in this process authenticates a browser, so a routable listener would
-// publish the trading surface to anyone who could reach the host.
+// publish the trading surface to anyone who could reach the host. It stays
+// refused unless the operator opts in by name.
 func TestLoadRequiresALoopbackListener(t *testing.T) {
 	for _, address := range []string{"0.0.0.0:18092", "192.168.1.10:18092", ":18092", "127.0.0.1"} {
 		env := validEnv(t)
@@ -70,6 +71,108 @@ func TestLoadRequiresALoopbackListener(t *testing.T) {
 		if _, err := load(); err == nil || !strings.Contains(err.Error(), listenAddrEnv) {
 			t.Fatalf("address %q accepted: %v", address, err)
 		}
+	}
+}
+
+// A container reaches its service through a port mapping the host controls, so
+// the process must bind the interface its runtime routes to rather than the
+// loopback of its own network namespace.
+func TestLoadAllowsARoutableListenerOnlyWhenOptedIn(t *testing.T) {
+	env := validEnv(t)
+	env[listenAddrEnv] = "0.0.0.0:18092"
+	env[allowNonLoopbackEnv] = "true"
+	applyEnv(t, env)
+	cfg, err := load()
+	if err != nil {
+		t.Fatalf("opted-in routable bind rejected: %v", err)
+	}
+	if !cfg.AllowNonLoopbackListen || cfg.ListenAddr != "0.0.0.0:18092" {
+		t.Fatalf("opt-in not recorded: %+v", cfg.AllowNonLoopbackListen)
+	}
+
+	// A malformed address is still malformed; the opt-in widens the host, it
+	// does not excuse a missing port.
+	env = validEnv(t)
+	env[listenAddrEnv] = "127.0.0.1"
+	env[allowNonLoopbackEnv] = "true"
+	applyEnv(t, env)
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), listenAddrEnv) {
+		t.Fatalf("address without a port accepted under the opt-in: %v", err)
+	}
+
+	// "yes" is the shape of an operator who believes they have opted in.
+	// Reading it as false would bind loopback while they expect a routable
+	// listener; reading it as true would widen the bind on a typo.
+	env = validEnv(t)
+	env[allowNonLoopbackEnv] = "yes"
+	applyEnv(t, env)
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), allowNonLoopbackEnv) {
+		t.Fatalf("ambiguous opt-in accepted: %v", err)
+	}
+}
+
+// The Gateway token travels on every upstream request, so a plaintext origin
+// that is not loopback puts it in front of anyone on the path. The listen opt-in
+// must not be what unlocks that — they are separate exposures and an operator
+// who wanted a routable bind did not thereby ask to trust the network they dial.
+func TestLoadRequiresALoopbackGatewayOriginForPlaintext(t *testing.T) {
+	for _, rawURL := range []string{"http://gateway:18080", "http://10.0.0.4:18080", "http://evil.example.com"} {
+		env := validEnv(t)
+		env[gatewayURLEnv] = rawURL
+		env[allowNonLoopbackEnv] = "true"
+		applyEnv(t, env)
+		if _, err := load(); err == nil || !strings.Contains(err.Error(), gatewayURLEnv) {
+			t.Fatalf("plaintext origin %q accepted: %v", rawURL, err)
+		}
+	}
+
+	// TLS carries its own protection for the token, so the hostname is not this
+	// check's business.
+	env := validEnv(t)
+	env[gatewayURLEnv] = "https://gateway.internal:18080"
+	applyEnv(t, env)
+	if _, err := load(); err != nil {
+		t.Fatalf("https origin rejected: %v", err)
+	}
+}
+
+// Services on a compose bridge address each other by DNS name, and no check
+// inside this process can tell that bridge from the open internet — so the
+// operator asserts it. The cost is that the same flag admits any routable
+// origin, which is why it is off by default and never inferred.
+func TestLoadAllowsAPlaintextNonLoopbackGatewayOnlyWhenOptedIn(t *testing.T) {
+	env := validEnv(t)
+	env[gatewayURLEnv] = "http://gateway:18080"
+	env[allowPlaintextEnv] = "true"
+	applyEnv(t, env)
+	cfg, err := load()
+	if err != nil {
+		t.Fatalf("opted-in plaintext upstream rejected: %v", err)
+	}
+	if !cfg.AllowNonLoopbackUpstream || cfg.GatewayURL != "http://gateway:18080" {
+		t.Fatalf("opt-in not recorded: %+v", cfg.AllowNonLoopbackUpstream)
+	}
+
+	// The opt-in widens the host the origin may name. It does not turn a path,
+	// a query, or embedded credentials into an origin.
+	for _, rawURL := range []string{"http://gateway:18080/v1", "http://user:pw@gateway:18080", "ftp://gateway:18080"} {
+		env = validEnv(t)
+		env[gatewayURLEnv] = rawURL
+		env[allowPlaintextEnv] = "true"
+		applyEnv(t, env)
+		if _, err := load(); err == nil || !strings.Contains(err.Error(), gatewayURLEnv) {
+			t.Fatalf("%q accepted under the opt-in: %v", rawURL, err)
+		}
+	}
+
+	// "yes" is the shape of an operator who believes they have opted in. Reading
+	// it as false fails the stack they expected to work; reading it as true
+	// widens the trust boundary on a typo.
+	env = validEnv(t)
+	env[allowPlaintextEnv] = "yes"
+	applyEnv(t, env)
+	if _, err := load(); err == nil || !strings.Contains(err.Error(), allowPlaintextEnv) {
+		t.Fatalf("ambiguous opt-in accepted: %v", err)
 	}
 }
 

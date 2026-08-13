@@ -41,28 +41,6 @@ func TestRepositoryGitignoreProtectsEnvironmentCredentials(t *testing.T) {
 	}
 }
 
-func TestDemoAcceptanceRecipesRejectSkippedTests(t *testing.T) {
-	makefile := readRepoMakefile(t)
-	for target, want := range map[string]string{
-		"test-binance-demo-perp":         "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceDemoExecAcceptance$$'",
-		"test-binance-demo-runtime-perp": "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceDemoRuntimeAcceptance$$'",
-		"test-binance-demo-spot-data":    "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceSpotDemoDataAcceptance$$'",
-		"test-binance-demo-spot":         "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceSpotDemoExecAcceptance$$'",
-		"test-binance-demo-runtime-spot": "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestBinanceSpotDemoRuntimeAcceptance$$'",
-		"test-okx-demo-spot":             "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestOKXSpotDemoExecAcceptance$$'",
-		"test-okx-demo-runtime-spot":     "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestOKXSpotDemoRuntimeAcceptance$$'",
-		"test-okx-demo-perp":             "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestOKXPerpDemoExecAcceptance$$'",
-		"test-okx-demo-runtime-perp":     "go run ./internal/testenv/cmd/noskipgotest -- -v -run '^TestOKXPerpDemoRuntimeAcceptance$$'",
-	} {
-		t.Run(target, func(t *testing.T) {
-			block := makeTargetBlock(t, makefile, target)
-			if !strings.Contains(block, want) {
-				t.Fatalf("%s recipe must use noskipgotest with an exact verbose test selector\nblock:\n%s", target, block)
-			}
-		})
-	}
-}
-
 func TestExchangeOfflineTargetIsPhony(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	phony := make(map[string]bool)
@@ -252,62 +230,6 @@ func TestExchangeAcceptanceVenueAggregatesAndExternalAlias(t *testing.T) {
 	}
 }
 
-func TestLighterAcceptanceRecipesUseExactSelectors(t *testing.T) {
-	makefile := readRepoMakefile(t)
-	for target, selector := range map[string]string{
-		"test-lighter-testnet-read":         "-run '^TestLighterTestnetReadAcceptance$$'",
-		"test-lighter-testnet-spot":         "-run '^TestLighterTestnetSpotWriteAcceptance$$'",
-		"test-lighter-testnet-runtime-spot": "-run '^TestLighterTestnetSpotRuntimeAcceptance$$'",
-		"test-lighter-testnet-perp":         "-run '^TestLighterTestnetPerpWriteAcceptance$$'",
-		"test-lighter-testnet-runtime-perp": "-run '^TestLighterTestnetPerpRuntimeAcceptance$$'",
-	} {
-		t.Run(target, func(t *testing.T) {
-			block := makeTargetBlock(t, makefile, target)
-			if !strings.Contains(block, selector) {
-				t.Fatalf("%s recipe must use exact selector %q\nblock:\n%s", target, selector, block)
-			}
-		})
-	}
-}
-
-func TestDemoWriteRecipesSetExplicitVenueWriteGates(t *testing.T) {
-	makefile := readRepoMakefile(t)
-	for target, want := range map[string]string{
-		"test-binance-demo-perp":             "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-		"test-binance-demo-runtime-perp":     "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-		"test-binance-demo-spot":             "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-		"test-binance-demo-runtime-spot":     "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-		"test-okx-demo-spot":                 "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-		"test-okx-demo-runtime-spot":         "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-		"test-okx-demo-perp":                 "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-		"test-okx-demo-runtime-perp":         "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-		"test-bybit-demo-spot":               "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bybit-demo-runtime-spot":       "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bybit-demo-usdt-perp":          "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bybit-demo-runtime-usdt-perp":  "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bybit-demo-usdc-perp":          "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bybit-demo-runtime-usdc-perp":  "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-		"test-bitget-demo-spot":              "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-		"test-bitget-demo-runtime-spot":      "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-		"test-bitget-demo-usdt-perp":         "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-		"test-bitget-demo-runtime-usdt-perp": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-		"test-bitget-demo-usdc-perp":         "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-		"test-bitget-demo-runtime-usdc-perp": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-	} {
-		t.Run(target, func(t *testing.T) {
-			block := makeTargetBlock(t, makefile, target)
-			if !strings.Contains(block, want) {
-				t.Fatalf("%s recipe must set %s command-locally\nblock:\n%s", target, want, block)
-			}
-		})
-	}
-
-	spotData := makeTargetBlock(t, makefile, "test-binance-demo-spot-data")
-	if strings.Contains(spotData, "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1") {
-		t.Fatalf("read-only Binance Spot data recipe must not enable writes\nblock:\n%s", spotData)
-	}
-}
-
 func TestMakefileSerializesParallelTopLevelTargets(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	if !regexp.MustCompile(`(?m)^\.NOTPARALLEL:\s*$`).MatchString(makefile) {
@@ -351,10 +273,6 @@ codex-serial-probe-a codex-serial-probe-b:
 func TestCredentialedWriteRecipesReserveCleanupTimeout(t *testing.T) {
 	makefile := readRepoMakefile(t)
 	minimums := map[string]time.Duration{
-		"test-binance-demo-perp":                 5 * time.Minute,
-		"test-binance-demo-runtime-perp":         6 * time.Minute,
-		"test-binance-demo-spot":                 5 * time.Minute,
-		"test-binance-demo-runtime-spot":         6 * time.Minute,
 		"test-exchange-binance-demo-spot":        6 * time.Minute,
 		"test-exchange-binance-demo-perp":        6 * time.Minute,
 		"test-exchange-okx-demo-spot":            6 * time.Minute,
@@ -395,44 +313,6 @@ func TestCredentialedWriteRecipesReserveCleanupTimeout(t *testing.T) {
 		"test-exchange-aster-testnet-usdt-perp":  15 * time.Minute,
 		"test-exchange-nado-testnet-spot":        15 * time.Minute,
 		"test-exchange-nado-testnet-usdt0-perp":  15 * time.Minute,
-		"test-okx-demo-spot":                     5 * time.Minute,
-		"test-okx-demo-runtime-spot":             6 * time.Minute,
-		"test-okx-demo-perp":                     5 * time.Minute,
-		"test-okx-demo-runtime-perp":             6 * time.Minute,
-		"test-bybit-demo-spot":                   5 * time.Minute,
-		"test-bybit-demo-runtime-spot":           6 * time.Minute,
-		"test-bybit-demo-usdt-perp":              5 * time.Minute,
-		"test-bybit-demo-runtime-usdt-perp":      6 * time.Minute,
-		"test-bybit-demo-usdc-perp":              5 * time.Minute,
-		"test-bybit-demo-runtime-usdc-perp":      6 * time.Minute,
-		"test-bitget-demo-spot":                  5 * time.Minute,
-		"test-bitget-demo-runtime-spot":          6 * time.Minute,
-		"test-bitget-demo-usdt-perp":             5 * time.Minute,
-		"test-bitget-demo-runtime-usdt-perp":     6 * time.Minute,
-		"test-bitget-demo-usdc-perp":             5 * time.Minute,
-		"test-bitget-demo-runtime-usdc-perp":     6 * time.Minute,
-		"test-gate-testnet-spot":                 5 * time.Minute,
-		"test-gate-testnet-runtime-spot":         6 * time.Minute,
-		"test-gate-testnet-usdt-perp":            5 * time.Minute,
-		"test-gate-testnet-runtime-usdt-perp":    6 * time.Minute,
-		"test-hyperliquid-testnet-spot":          5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-spot":  6 * time.Minute,
-		"test-hyperliquid-testnet-perp":          5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-perp":  6 * time.Minute,
-		"test-hyperliquid-testnet-hip3-write":    5 * time.Minute,
-		"test-hyperliquid-testnet-runtime-hip3":  6 * time.Minute,
-		"test-lighter-testnet-spot":              5 * time.Minute,
-		"test-lighter-testnet-runtime-spot":      6 * time.Minute,
-		"test-lighter-testnet-perp":              5 * time.Minute,
-		"test-lighter-testnet-runtime-perp":      6 * time.Minute,
-		"test-aster-testnet-spot":                5 * time.Minute,
-		"test-aster-testnet-runtime-spot":        6 * time.Minute,
-		"test-aster-testnet-perp":                5 * time.Minute,
-		"test-aster-testnet-runtime-perp":        6 * time.Minute,
-		"test-nado-testnet-spot":                 5 * time.Minute,
-		"test-nado-testnet-runtime-spot":         6 * time.Minute,
-		"test-nado-testnet-perp":                 5 * time.Minute,
-		"test-nado-testnet-runtime-perp":         6 * time.Minute,
 	}
 	timeoutPattern := regexp.MustCompile(`(?:^|\s)-timeout=([^\s]+)`)
 	discovered := make(map[string]struct{})

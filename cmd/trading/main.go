@@ -6,9 +6,12 @@
 // rather than a session cookie, and the durable state is trading's own database
 // rather than the platform's.
 //
-// The listener binds loopback only, and refuses to start otherwise. Nothing here
-// authenticates a browser, so exposing it on a routable address would publish
-// the trading surface to anyone who could reach the host.
+// The listener binds loopback unless BT_TRADING_ALLOW_NON_LOOPBACK_LISTEN says
+// otherwise. Nothing here authenticates a browser, so a routable address would
+// publish the trading surface to anyone who could reach the host. The one
+// deployment that needs the opt-in is a container, where the port is reachable
+// only through a mapping the host controls and the process must bind the
+// interface its runtime routes to rather than its own namespace's loopback.
 package main
 
 import (
@@ -50,7 +53,8 @@ func run(ctx context.Context) error {
 	}
 	defer database.Close()
 
-	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil)
+	gatewayClient, err := tradinggateway.NewClientForMode(cfg.GatewayURL, cfg.AllowNonLoopbackUpstream, cfg.GatewayToken, orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled, nil,
+		tradinggateway.WithAuthorityPlane(cfg.GatewayInternalURL, cfg.AllowNonLoopbackUpstream, cfg.GatewayInternalToken))
 	if err != nil {
 		return err
 	}
