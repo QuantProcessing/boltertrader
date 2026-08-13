@@ -198,6 +198,35 @@ func readyManualAccount() ManualAccount {
 		ID: "account-a", Venue: "binance", VenueEnvironment: "demo",
 		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1,
 		CredentialVersion: 1, State: manualAccountActive,
+		Routes: []ManualAccountRoute{{RouteID: "perp", Product: "perp", RequestedState: manualAccountActive}},
+	}
+}
+
+func TestManualAccountRoutePrefersSettlementSpecificRouteOverProductWideOne(t *testing.T) {
+	account := ManualAccount{Routes: []ManualAccountRoute{
+		{RouteID: "perp-any", Product: "perp", RequestedState: manualAccountActive},
+		{RouteID: "perp-usdc", Product: "perp", SettlementAsset: "USDC", RequestedState: manualAccountActive},
+		{RouteID: "spot-disabled", Product: "spot", RequestedState: "disabled"},
+	}}
+	tests := []struct {
+		name       string
+		product    string
+		settlement string
+		wantRoute  string
+		wantRouted bool
+	}{
+		{"settlement specific wins", "perp", "USDC", "perp-usdc", true},
+		{"unnamed settlement falls back to product wide", "perp", "USDT", "perp-any", true},
+		{"disabled route does not serve its product", "spot", "USDT", "", false},
+		{"unrouted product is refused", "margin", "USDT", "", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route, routed := manualAccountRoute(account, test.product, test.settlement)
+			if route != test.wantRoute || routed != test.wantRouted {
+				t.Fatalf("route=%q routed=%v, want %q/%v", route, routed, test.wantRoute, test.wantRouted)
+			}
+		})
 	}
 }
 

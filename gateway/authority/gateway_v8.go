@@ -1,11 +1,11 @@
 package authority
 
 const (
-	GatewayV7MigrationDigest = "8faae3d3ce4c36825f67617c5f3c996978a7bb65fd275956854e1048ab0a8800"
-	GatewayV7Digest          = "4196af9f019401ec55e077be6a34514650b8a32dcd4468a424e73d565ef57c44"
+	GatewayV8MigrationDigest = "662852a2fa5c3e126cf420e5108e8d1e4c04d2c584a0edecfe833cf9a1dcfc75"
+	GatewayV8Digest          = "07b6851eaec3707e2264526e4472b6175065ac5bd721ab3b209d499c09189b92"
 )
 
-func GatewayV7() Matrix {
+func GatewayV8() Matrix {
 	objects := make([]Object, 0, 25)
 	objects = append(objects, table("schema_migrations", MigrationOnly, []string{"SELECT"}, nil))
 	for _, name := range []string{
@@ -14,7 +14,6 @@ func GatewayV7() Matrix {
 		"gateway_account_retirements",
 		"gateway_account_routes",
 		"gateway_account_runtime_heads",
-		"gateway_accounts",
 		"gateway_candidate_observations",
 		"gateway_credential_operations",
 		"gateway_desired_accounts",
@@ -40,9 +39,9 @@ func GatewayV7() Matrix {
 		Probe: "SELECT has_function_privilege(current_user, 'public.prevent_terminal_order_state_regression()', 'EXECUTE')",
 	})
 	return Matrix{
-		Name:            "gateway-v7",
-		SchemaVersion:   7,
-		MigrationDigest: GatewayV7MigrationDigest,
+		Name:            "gateway-v8",
+		SchemaVersion:   8,
+		MigrationDigest: GatewayV8MigrationDigest,
 		Roles: RoleTopology{
 			Maintenance: "bolter_platform_test_admin",
 			Migrator:    "bolter_gateway_test_migrator",

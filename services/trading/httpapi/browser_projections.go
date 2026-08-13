@@ -384,11 +384,22 @@ func fillProjection(command orders.Command, fill orders.FillEvidence) FillProjec
 	return FillProjection{FillID: fill.FillID, CommandID: command.CommandID, LineageID: command.LineageID, ProductID: command.ProductID, AccountID: fill.AccountID, InstrumentID: fill.InstrumentID, Side: fill.Side, Quantity: fill.Quantity, Price: fill.Price, Fee: fill.Fee, FeeCurrency: fill.FeeCurrency, SettlementCurrency: fill.SettlementCurrency, OccurredAt: fill.OccurredAt}
 }
 
+// publishCommandActivity names the event after the state the command now
+// holds, which is what a placement changes.
 func publishCommandActivity(publisher ActivityPublisher, command orders.Command) {
+	publishCommandActivityAs(publisher, command, "command."+string(command.State))
+}
+
+// publishCommandActivityAs lets a caller name the event after the intent
+// instead of the state. A cancel needs this: the venue has not confirmed it
+// yet, so the command is still "submitted", and deriving the kind from the
+// state would file the cancellation under the same name as the placement it
+// cancels — leaving the audit chain unable to say a cancel ever happened.
+func publishCommandActivityAs(publisher ActivityPublisher, command orders.Command, kind string) {
 	if publisher == nil {
 		return
 	}
-	_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Mode: string(command.Mode), Kind: "command." + string(command.State), ProductID: command.ProductID, AccountID: command.AccountID, ResourceID: command.CommandID, Payload: commandProjection(command)})
+	_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Mode: string(command.Mode), Kind: kind, ProductID: command.ProductID, AccountID: command.AccountID, ResourceID: command.CommandID, Payload: commandProjection(command)})
 	for _, fill := range command.ExecutionEvidence.Fills {
 		_, _ = publisher.Publish(ActivityRecord{PrincipalID: command.PrincipalID, Mode: string(command.Mode), Kind: "fill.recorded", ProductID: command.ProductID, AccountID: fill.AccountID, ResourceID: fill.FillID, Payload: fillProjection(command, fill)})
 	}

@@ -13,14 +13,14 @@ import (
 )
 
 const (
-	modeEnv                = "BT_MODE"
-	listenAddrEnv          = "BT_TRADING_LISTEN_ADDR"
-	databaseEnv            = "BT_TRADING_DATABASE"
-	databaseRoleEnv        = "BT_TRADING_DATABASE_ROLE"
-	databaseHostEnv        = "BT_TRADING_DATABASE_HOST"
-	serviceTokenFileEnv    = "BT_TRADING_SERVICE_TOKEN_FILE"
-	gatewayURLEnv          = "BT_GATEWAY_URL"
-	gatewayTokenFileEnv    = "BT_GATEWAY_TOKEN_FILE"
+	modeEnv             = "BT_MODE"
+	listenAddrEnv       = "BT_TRADING_LISTEN_ADDR"
+	databaseEnv         = "BT_TRADING_DATABASE"
+	databaseRoleEnv     = "BT_TRADING_DATABASE_ROLE"
+	databaseHostEnv     = "BT_TRADING_DATABASE_HOST"
+	serviceTokenFileEnv = "BT_TRADING_SERVICE_TOKEN_FILE"
+	gatewayURLEnv       = "BT_GATEWAY_URL"
+	gatewayTokenFileEnv = "BT_GATEWAY_TOKEN_FILE"
 	// The Gateway answers on two listeners with two tokens: /v1 is the
 	// capability plane this service uses for orders and fills, /internal/v1 is
 	// the authority plane it uses for the catalog, runtime accounts, market-data

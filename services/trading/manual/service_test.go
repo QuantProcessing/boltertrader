@@ -82,7 +82,7 @@ func TestCancelRestingOrderTransitionsOriginalCommand(t *testing.T) {
 	command = submittedCommand(t, commands, command)
 	fixture.cancelResults = []GatewayResult{{
 		CommandID: command.CommandID, AccountID: command.AccountID, Mode: command.Mode,
-		State: GatewayStateCanceled, Handoff: authoritativeHandoff(command.CommandID, "canceled", 2, nil),
+		State: GatewayStateCanceled, Handoff: authoritativeHandoff("canceled", 2, nil),
 	}}
 
 	result, err := service.Cancel(context.Background(), command)
@@ -107,7 +107,7 @@ func TestCancelAppliesPartialFillsAndFeesBeforeCanceledTransition(t *testing.T) 
 	fill.CommandID, fill.Quantity, fill.Price, fill.Fee = command.CommandID, "1", "100", "0.5"
 	fixture.cancelResults = []GatewayResult{{
 		CommandID: command.CommandID, AccountID: command.AccountID, Mode: command.Mode,
-		State: GatewayStateCanceled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff(command.CommandID, "canceled", 2, []FillFact{fill}),
+		State: GatewayStateCanceled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff("canceled", 2, []FillFact{fill}),
 	}}
 
 	result, err := service.Cancel(context.Background(), command)
@@ -133,7 +133,7 @@ func TestCancelFillRaceAppliesAuthoritativeFillAndClosesPosition(t *testing.T) {
 	fill.FillID, fill.CommandID, fill.Side, fill.Price = "gateway-fill-cancel-race", resting.CommandID, portfolio.SideSell, "102"
 	fixture.cancelResults = []GatewayResult{{
 		CommandID: resting.CommandID, AccountID: resting.AccountID, Mode: resting.Mode,
-		State: GatewayStateFilled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff(resting.CommandID, "filled", 2, []FillFact{fill}),
+		State: GatewayStateFilled, Fills: []FillFact{fill}, Handoff: authoritativeHandoff("filled", 2, []FillFact{fill}),
 	}}
 
 	result, err := service.Cancel(context.Background(), resting)
@@ -543,7 +543,7 @@ func submittedCommand(t *testing.T, commands *orders.Service, command orders.Com
 	t.Helper()
 	result, err := commands.Transition(context.Background(), orders.TransitionRequest{
 		CommandID: command.CommandID, State: orders.StateSubmitted,
-		Evidence: authoritativeHandoff(command.CommandID, "submitted", 1, nil).Evidence,
+		Evidence: authoritativeHandoff("submitted", 1, nil).Evidence,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -551,9 +551,12 @@ func submittedCommand(t *testing.T, commands *orders.Service, command orders.Com
 	return result
 }
 
-func authoritativeHandoff(commandID, state string, version int64, fills []FillFact) orders.HandoffResult {
+func authoritativeHandoff(state string, version int64, fills []FillFact) orders.HandoffResult {
 	evidence := orders.ExecutionEvidence{
-		CommandID: commandID, GatewayOrderID: "gateway-order-1", ClientOrderID: "client-order-1",
+		// The Gateway mints its own command id and never echoes back the
+		// trading command id it was handed. Stamping the trading id here would
+		// let a cancel that is impossible in production pass in tests.
+		CommandID: "gateway-command-1", GatewayOrderID: "gateway-order-1", ClientOrderID: "client-order-1",
 		State: state, ResourceVersion: version,
 		OrderEvents: []orders.OrderEventEvidence{{EventID: fmt.Sprintf("gateway-order-1:%d", version), State: state, ResourceVersion: version, OccurredAt: fixtureTime}},
 	}

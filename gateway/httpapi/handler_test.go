@@ -25,7 +25,7 @@ import (
 
 func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
 
 	unauthorized := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body)))
@@ -50,6 +50,7 @@ func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *test
 		t.Fatalf("place status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if fixture.orders.place.PrincipalID == "" || fixture.orders.place.AccountID != "acct-a" ||
+		fixture.orders.place.RouteID != "spot" ||
 		fixture.orders.place.Quantity.String() != "0.001" || fixture.orders.place.WriteFence != (account.WriteFence{
 		AccountID: "acct-a", DesiredStateRevision: 1, RuntimeGeneration: 2, CredentialVersion: 3,
 	}) {
@@ -68,6 +69,11 @@ func TestHandlerRejectsMalformedBodiesAndUnsupportedOrForbiddenSurfacesBeforeBac
 	}{
 		{"duplicate key", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","account_id":"acct-b"}`, http.StatusBadRequest},
 		{"unknown field", http.MethodPost, "/v1/orders", `{"unknown":true}`, http.StatusBadRequest},
+		// An order that does not name its route is refused here rather than
+		// forwarded: the coordinator validates the route before it resolves
+		// one, so an omitted route_id surfaces as an unclassified failure --
+		// a 500 -- instead of the caller error it is.
+		{"missing route", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`, http.StatusBadRequest},
 		{"amend unsupported", http.MethodPatch, "/v1/orders/018f0000-0000-7000-8000-000000000002", `{}`, http.StatusNotImplemented},
 		{"order book requires scope", http.MethodGet, "/v1/order-book", "", http.StatusBadRequest},
 		{"transfer absent", http.MethodPost, "/v1/transfers", `{}`, http.StatusNotFound},
@@ -145,7 +151,7 @@ func TestHandlerAccountReadinessIncludesCoordinatorWriteGate(t *testing.T) {
 
 func TestHandlerRejectsHostileJSONAndPaginationWithoutBackendIO(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	valid := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	valid := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
 	tests := []struct {
 		name        string
 		contentType string
@@ -153,7 +159,7 @@ func TestHandlerRejectsHostileJSONAndPaginationWithoutBackendIO(t *testing.T) {
 	}{
 		{name: "missing content type", body: []byte(valid)},
 		{name: "wrong content type", contentType: "text/plain", body: []byte(valid)},
-		{name: "duplicate nested key", contentType: "application/json", body: []byte(`{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","extra":{"x":1,"x":2}}`)},
+		{name: "duplicate nested key", contentType: "application/json", body: []byte(`{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","extra":{"x":1,"x":2}}`)},
 		{name: "trailing value", contentType: "application/json", body: []byte(valid + `{}`)},
 		{name: "invalid unicode", contentType: "application/json", body: append([]byte(`{"account_id":"`), 0xff, '"', '}')},
 		{name: "oversized body", contentType: "application/json", body: []byte(`{"account_id":"` + strings.Repeat("a", int(defaultBodyLimit)) + `"}`)},
@@ -192,7 +198,7 @@ func TestHandlerErrorEnvelopeNeverReflectsNativeErrorMaterial(t *testing.T) {
 	fixture.orders.placeErr = exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{
 		Operation: "PlaceOrder", Code: "51000", SafeMessage: canary,
 	})
-	body := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -270,7 +276,7 @@ func TestHandlerIdempotencyConflictReturnsExistingCommandAndRequestCorrelation(t
 		ClientOrderID:  "1", State: domain.StatePrepared,
 	}
 	fixture.orders.placeErr = order.ErrIdempotencyConflict
-	body := `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")

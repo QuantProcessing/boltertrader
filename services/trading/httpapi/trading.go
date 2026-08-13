@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -102,7 +103,7 @@ func (handler *tradingHandler) createReservation(w http.ResponseWriter, r *http.
 		Scope: request.NettingScope, Quantity: quantity, Notional: notional, Currency: currency, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key")),
 	})
 	if err != nil {
-		tradingError(w, statusForTradingError(err), codeForTradingError(err))
+		tradingFailure(w, r, "reservations.create", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"meta": httpx.Meta(r), "data": created})
@@ -131,7 +132,7 @@ func (handler *tradingHandler) releaseReservation(w http.ResponseWriter, r *http
 	}
 	item, err := handler.options.Reservations.Release(r.Context(), principal, reservations.Mode(mode), r.PathValue("reservationId"))
 	if err != nil {
-		tradingError(w, statusForTradingError(err), codeForTradingError(err))
+		tradingFailure(w, r, "reservations.release", err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"meta": httpx.Meta(r), "data": item})
@@ -171,7 +172,7 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 		ReservationID: request.ReservationID, IdempotencyKey: request.IdempotencyKey, Method: r.Method, Path: r.URL.Path, CommandKind: request.CommandKind, Payload: request.Payload,
 	})
 	if err != nil {
-		tradingError(w, statusForTradingError(err), codeForTradingError(err))
+		tradingFailure(w, r, "commands.create", err)
 		return
 	}
 	status := http.StatusAccepted
@@ -291,4 +292,26 @@ func codeForTradingError(err error) string {
 		return "LIVE_PRIVATE_WRITE_DISABLED"
 	}
 	return "VALIDATION_ERROR"
+}
+
+// tradingFailure renders err to the caller and, when the mapping above has lost
+// the cause, records it.
+//
+// codeForTradingError collapses everything it does not recognise into
+// VALIDATION_ERROR, which tells a caller only that something was refused — not
+// whether the reservation, the command ledger, or the venue itself refused it.
+// That is the right answer to send outward, because the causes here come from
+// the Gateway and carry venue text we do not control, but it leaves nothing
+// behind to act on: a placement rejected by Binance and a placement rejected by
+// our own ledger are indistinguishable at the wire.
+//
+// Only the collapsed case is logged. The three mapped codes already name their
+// cause exactly, so logging those would add a line per idempotent replay — which
+// is the common case, not a fault.
+func tradingFailure(w http.ResponseWriter, r *http.Request, operation string, err error) {
+	code := codeForTradingError(err)
+	if code == "VALIDATION_ERROR" {
+		slog.Error("trading command failed", "operation", operation, "method", r.Method, "path", r.URL.Path, "cause", err)
+	}
+	tradingError(w, statusForTradingError(err), code)
 }

@@ -34,6 +34,7 @@ type GatewayRequest struct {
 	AccountID, InstrumentID, Side            string
 	Quantity, OrderType, LimitPrice          string
 	TimeInForce                              string
+	RouteID                                  string
 	Mode                                     orders.Mode
 	ReduceOnly                               bool
 	DesiredStateRevision, RuntimeGeneration  int64
@@ -89,6 +90,7 @@ type placeIntent struct {
 	LimitPrice           string `json:"limitPrice,omitempty"`
 	TimeInForce          string `json:"timeInForce,omitempty"`
 	ReduceOnly           bool   `json:"reduceOnly,omitempty"`
+	RouteID              string `json:"routeId,omitempty"`
 	DesiredStateRevision int64  `json:"desiredStateRevision,omitempty"`
 	RuntimeGeneration    int64  `json:"runtimeGeneration,omitempty"`
 	CredentialVersion    int64  `json:"credentialVersion,omitempty"`
@@ -245,7 +247,12 @@ func (service *Service) Cancel(ctx context.Context, command orders.Command) (ord
 	if current.State == orders.StateFilled || current.State == orders.StateCanceled || current.State == orders.StateFailed {
 		return current, nil
 	}
-	if current.ExecutionEvidence.CommandID != current.CommandID || current.ExecutionEvidence.GatewayOrderID == "" {
+	// The evidence carries the Gateway's own identifiers, not ours: its
+	// CommandID is the UUID the Gateway minted for the placement, which never
+	// equals the trading command id it was handed. Requiring the two to be
+	// equal made every cancel impossible, so assert what a cancel actually
+	// needs — a Gateway order to name, and the Gateway command that produced it.
+	if current.ExecutionEvidence.GatewayOrderID == "" || current.ExecutionEvidence.CommandID == "" {
 		return current, fmt.Errorf("manual order has no authoritative Gateway identity")
 	}
 	intent, err := decodePlaceIntent(current.Payload)
@@ -406,7 +413,7 @@ func gatewayRequest(command orders.Command, intent placeIntent) GatewayRequest {
 	request := GatewayRequest{
 		CommandID: command.CommandID, IdempotencyKey: command.IdempotencyKey, AccountID: command.AccountID, Mode: command.Mode,
 		InstrumentID: intent.InstrumentID, Side: intent.Side, Quantity: intent.Quantity, OrderType: intent.OrderType,
-		LimitPrice: intent.LimitPrice, TimeInForce: intent.TimeInForce, ReduceOnly: intent.ReduceOnly,
+		LimitPrice: intent.LimitPrice, TimeInForce: intent.TimeInForce, ReduceOnly: intent.ReduceOnly, RouteID: intent.RouteID,
 		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
 	}
 	if command.ReservationID != nil {

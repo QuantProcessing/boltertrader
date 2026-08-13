@@ -60,7 +60,7 @@ func migrateProductionGateway(ctx context.Context, service, database, role strin
 	if err := postgres.Migrate(ctx, pool); err != nil {
 		return migrationResult{}, fmt.Errorf("GATEWAY_MIGRATION_BLOCKED")
 	}
-	matrix := authority.GatewayV7()
+	matrix := authority.GatewayV8()
 	if err := postgres.ApplyAuthority(ctx, pool, matrix); err != nil {
 		return migrationResult{}, fmt.Errorf("GATEWAY_AUTHORITY_BLOCKED")
 	}

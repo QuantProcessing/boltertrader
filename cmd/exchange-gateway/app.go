@@ -845,7 +845,7 @@ func defaultVerifyDatabaseAuthority(override func(context.Context, process.Postg
 		if !ok {
 			return postgres.AuthorityResult{}, fmt.Errorf("postgres pool type")
 		}
-		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV7())
+		return postgres.VerifyRuntimeAuthority(ctx, realPool, authority.GatewayV8())
 	}
 }
 

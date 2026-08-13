@@ -22,6 +22,7 @@ type Reconciler struct {
 	now        func() time.Time
 	interval   time.Duration
 	lease      time.Duration
+	onSettled  func(Command)
 }
 
 func NewReconciler(commands *Service, gateway ReconciliationGateway, dispatcher ReconciliationDispatcher, mode Mode, now func() time.Time) (*Reconciler, error) {
@@ -32,6 +33,19 @@ func NewReconciler(commands *Service, gateway ReconciliationGateway, dispatcher 
 		now = time.Now
 	}
 	return &Reconciler{commands: commands, gateway: gateway, dispatcher: dispatcher, mode: mode, now: now, interval: time.Second, lease: 15 * time.Second}, nil
+}
+
+// SetSettlementObserver registers a callback invoked whenever reconciliation
+// carries a command into a terminal state. The reconciler, not the HTTP
+// handler, is what learns a venue's final answer, so without this the audit
+// trail stops at "submitted" and never records that the order filled or
+// cancelled. The callback runs inline and must not block.
+func (runner *Reconciler) SetSettlementObserver(observer func(Command)) {
+	runner.onSettled = observer
+}
+
+func terminalState(state State) bool {
+	return state == StateFilled || state == StateCanceled || state == StateFailed
 }
 
 func (runner *Reconciler) Run(ctx context.Context) {
@@ -76,14 +90,18 @@ func (runner *Reconciler) reconcile(ctx context.Context, task ReconciliationTask
 		})
 		return err
 	}
-	_, err = runner.dispatcher.RecordReconciliation(ctx, command, handoff)
+	settled, err := runner.dispatcher.RecordReconciliation(ctx, command, handoff)
 	if err != nil {
 		_, _ = runner.commands.Transition(ctx, TransitionRequest{
 			CommandID: command.CommandID, State: StateUncertain, Reason: ReconciliationEvidenceInvalid,
 			NextAttemptAt: runner.now().UTC().Add(reconciliationBackoff(task.AttemptCount)), Evidence: command.ExecutionEvidence,
 		})
+		return err
 	}
-	return err
+	if runner.onSettled != nil && terminalState(settled.State) {
+		runner.onSettled(settled)
+	}
+	return nil
 }
 
 func reconciliationBackoff(attempt int) time.Duration {

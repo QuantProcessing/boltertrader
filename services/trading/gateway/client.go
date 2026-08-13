@@ -189,19 +189,31 @@ func (client *Client) Accounts() ManualAccounts { return ManualAccounts{client: 
 // emits must be named because the read decoder refuses unknown fields, so a
 // field added there fails loudly here rather than being silently dropped.
 type accountRecordView struct {
-	ID                   string          `json:"accountId"`
-	Venue                string          `json:"venue"`
-	Mode                 string          `json:"mode"`
-	NativeEnvironment    string          `json:"nativeEnvironment"`
-	DisplayName          string          `json:"displayName"`
-	ProductPolicy        []string        `json:"productPolicy"`
-	Routes               json.RawMessage `json:"routes,omitempty"`
-	Status               string          `json:"status"`
-	DesiredStateRevision int64           `json:"desiredStateRevision"`
-	RuntimeGeneration    int64           `json:"runtimeGeneration"`
-	CredentialVersion    int64           `json:"credentialVersion"`
-	LastValidatedAt      *time.Time      `json:"lastValidatedAt"`
-	UpdatedAt            time.Time       `json:"updatedAt"`
+	ID                   string             `json:"accountId"`
+	Venue                string             `json:"venue"`
+	Mode                 string             `json:"mode"`
+	NativeEnvironment    string             `json:"nativeEnvironment"`
+	DisplayName          string             `json:"displayName"`
+	ProductPolicy        []string           `json:"productPolicy"`
+	Routes               []accountRouteView `json:"routes,omitempty"`
+	Status               string             `json:"status"`
+	DesiredStateRevision int64              `json:"desiredStateRevision"`
+	RuntimeGeneration    int64              `json:"runtimeGeneration"`
+	CredentialVersion    int64              `json:"credentialVersion"`
+	LastValidatedAt      *time.Time         `json:"lastValidatedAt"`
+	UpdatedAt            time.Time          `json:"updatedAt"`
+}
+
+// accountRouteView mirrors lifecycle.AccountRoute. It is the account record's
+// declared routing, which is a different thing from routeRuntimeView above:
+// that one reports whether a route is currently usable, this one is what the
+// account was configured with. An order names the latter.
+type accountRouteView struct {
+	RouteID         string `json:"routeId"`
+	Product         string `json:"product"`
+	SettlementAsset string `json:"settlementAsset,omitempty"`
+	RouteProfileID  string `json:"routeProfileId"`
+	RequestedState  string `json:"requestedState"`
 }
 
 func (source ManualAccounts) Get(ctx context.Context, principal, accountID string) (tradinghttp.ManualAccount, error) {
@@ -224,12 +236,20 @@ func (source ManualAccounts) Get(ctx context.Context, principal, accountID strin
 	}
 	// NativeEnvironment is the venue environment. The Gateway derives both from
 	// the same route profile, and the public record carries only this one.
+	routes := make([]tradinghttp.ManualAccountRoute, 0, len(account.Routes))
+	for _, route := range account.Routes {
+		routes = append(routes, tradinghttp.ManualAccountRoute{
+			RouteID: route.RouteID, Product: route.Product,
+			SettlementAsset: route.SettlementAsset, RequestedState: route.RequestedState,
+		})
+	}
 	return tradinghttp.ManualAccount{
 		ID:                   account.ID,
 		Venue:                account.Venue,
 		VenueEnvironment:     account.NativeEnvironment,
 		State:                account.Status,
 		ProductIDs:           account.ProductPolicy,
+		Routes:               routes,
 		DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration:    account.RuntimeGeneration,
 		CredentialVersion:    account.CredentialVersion,
@@ -253,6 +273,7 @@ type orderIntent struct {
 	LimitPolicy          string `json:"limitPolicy,omitempty"`
 	TimeInForce          string `json:"timeInForce,omitempty"`
 	ReduceOnly           bool   `json:"reduceOnly,omitempty"`
+	RouteID              string `json:"routeId,omitempty"`
 	DesiredStateRevision uint64 `json:"desiredStateRevision"`
 	RuntimeGeneration    uint64 `json:"runtimeGeneration"`
 	CredentialVersion    uint64 `json:"credentialVersion"`
@@ -260,6 +281,7 @@ type orderIntent struct {
 
 type placeRequest struct {
 	AccountID            string `json:"account_id"`
+	RouteID              string `json:"route_id"`
 	InstrumentID         string `json:"instrument_id"`
 	IdempotencyKey       string `json:"idempotency_key"`
 	Side                 string `json:"side"`
@@ -417,6 +439,7 @@ func (client *Client) Execute(ctx context.Context, request manual.GatewayRequest
 	intent := orderIntent{
 		AccountID: request.AccountID, InstrumentID: request.InstrumentID, Side: request.Side, Quantity: request.Quantity,
 		OrderType: request.OrderType, LimitPrice: request.LimitPrice, TimeInForce: request.TimeInForce, ReduceOnly: request.ReduceOnly,
+		RouteID:              request.RouteID,
 		DesiredStateRevision: uint64(request.DesiredStateRevision), RuntimeGeneration: uint64(request.RuntimeGeneration), CredentialVersion: uint64(request.CredentialVersion),
 	}
 	handoff, err := client.place(ctx, request.CommandID, intent)
@@ -733,14 +756,14 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 			policy = "resting"
 		}
 	}
-	if idempotencyID == "" || intent.AccountID == "" || intent.InstrumentID == "" || intent.Side == "" || intent.Quantity == "" || (orderType != "market" && orderType != "limit") {
+	if idempotencyID == "" || intent.AccountID == "" || intent.RouteID == "" || intent.InstrumentID == "" || intent.Side == "" || intent.Quantity == "" || (orderType != "market" && orderType != "limit") {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order intent is incomplete")
 	}
 	if intent.DesiredStateRevision == 0 || intent.RuntimeGeneration == 0 || intent.CredentialVersion == 0 {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("Gateway order fence is incomplete")
 	}
 	payload, err := json.Marshal(placeRequest{
-		AccountID: intent.AccountID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID,
+		AccountID: intent.AccountID, RouteID: intent.RouteID, InstrumentID: intent.InstrumentID, IdempotencyKey: idempotencyID,
 		Side: intent.Side, Type: orderType, Quantity: intent.Quantity, LimitPrice: intent.LimitPrice, LimitPolicy: policy, ReduceOnly: intent.ReduceOnly,
 		DesiredStateRevision: intent.DesiredStateRevision, RuntimeGeneration: intent.RuntimeGeneration, CredentialVersion: intent.CredentialVersion,
 	})
@@ -824,7 +847,13 @@ func (client *Client) cancel(ctx context.Context, request manual.GatewayCancelRe
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
 	decoder.DisallowUnknownFields()
 	var result placeResponse
-	if err := decoder.Decode(&result); err != nil || result.CommandID != request.CommandID || result.GatewayOrderID != request.GatewayOrderID || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
+	// command_id and gateway_order_id live in different namespaces. The cancel
+	// is addressed by gateway order id, so the Gateway echoing it back is a
+	// real correlation check. Its command_id is one the Gateway minted for the
+	// cancel; the request carries our trading command id and the Gateway never
+	// even sees it — a DELETE has no body. Demanding the two be equal made
+	// every cancel fail, so assert only that the Gateway named a command.
+	if err := decoder.Decode(&result); err != nil || result.CommandID == "" || result.GatewayOrderID != request.GatewayOrderID || result.ClientOrderID == "" || result.State == "" || result.ResourceVersion < 1 {
 		return orders.HandoffResult{Outcome: orders.HandoffOutcomeUnknown}, fmt.Errorf("Gateway cancel response is invalid")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {

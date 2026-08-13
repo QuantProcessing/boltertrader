@@ -24,7 +24,7 @@ func TestGatewayRuntimeAuthorityRealPostgres(t *testing.T) {
 	if err := pool.Ping(ctx); err != nil {
 		t.Fatal("ping gateway_runtime_test service")
 	}
-	matrix := authority.GatewayV7()
+	matrix := authority.GatewayV8()
 	result, err := VerifyRuntimeAuthority(ctx, pool, matrix)
 	if err != nil {
 		t.Fatalf("verify real Gateway runtime authority: %v", err)

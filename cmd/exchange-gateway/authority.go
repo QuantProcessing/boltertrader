@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -256,6 +257,15 @@ type managerAuthorityReads struct {
 	mode     account.RuntimeMode
 	profiles *routeprofile.Registry
 	now      func() time.Time
+}
+
+// clock reports the read's notion of now, in UTC. Tests inject now to make
+// observation times deterministic; production leaves it nil.
+func (reads managerAuthorityReads) clock() time.Time {
+	if reads.now == nil {
+		return time.Now().UTC()
+	}
+	return reads.now().UTC()
 }
 
 type opaqueRuntimeLifecycle struct {
@@ -532,6 +542,21 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		err = errors.New("unsupported authority operation")
 	}
 	if err != nil {
+		// This is the one place every internal-plane failure passes through, and
+		// the last place its cause still exists: authorityError maps the error to
+		// a status and a stable code, and the HTTP layer above renders anything
+		// unmapped as a bare INTERNAL_ERROR. Without this line a caller sees
+		// "request denied" and nothing — not which operation, not which account,
+		// not why — which is exactly what made the account-promotion and
+		// market-data failures each take a full diagnostic session to place.
+		//
+		// The cause is safe to log here because it is ours: these errors are
+		// built from store sentinels, manager state, and venue responses, none of
+		// which carry credential material. The request is not logged, only its
+		// operation and account, because request bodies on this plane do.
+		slog.Error("gateway internal authority operation failed",
+			"operation", request.Operation, "accountId", request.AccountID,
+			"operationId", request.OperationID, "cause", err)
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
@@ -1054,11 +1079,7 @@ func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, e
 		}
 	}
 	if observedAt.IsZero() {
-		now := reads.now
-		if now == nil {
-			now = time.Now
-		}
-		observedAt = now().UTC()
+		observedAt = reads.clock()
 	}
 	sort.Slice(instruments, func(i, j int) bool {
 		if instruments[i].Venue == instruments[j].Venue {
@@ -1163,7 +1184,7 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		if err != nil {
 			return authorityMarketData{}, fmt.Errorf("read order book: %w", err)
 		}
-		if book.Time.IsZero() || len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
+		if len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
 			return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
 		}
 		result.Bids, err = projectAuthorityLevels(book.Bids)
@@ -1176,7 +1197,20 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		}
 		result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
 		result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
-		if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
+		// A venue that timestamps its own book is believed over our clock, and the
+		// latest observation gathered so far wins. But exchange.OrderBook declares
+		// Time omitempty because a venue is allowed not to send one — Binance
+		// spot's depth endpoint returns lastUpdateId, bids and asks and nothing
+		// else — and a REST snapshot is still observed at a definite instant: the
+		// moment we read it. Requiring a venue timestamp rejected every Binance
+		// spot book outright, which is a fact about that endpoint's response
+		// shape, not about the market. Our clock is only the fallback, never an
+		// override, so every path that already had a real venue time is unchanged.
+		if book.Time.IsZero() {
+			if result.ObservedAt.IsZero() {
+				result.ObservedAt = reads.clock()
+			}
+		} else if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
 			result.ObservedAt = book.Time.UTC()
 		}
 		if result.ObservedAt.IsZero() {

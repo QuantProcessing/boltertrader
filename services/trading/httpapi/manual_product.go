@@ -47,8 +47,14 @@ type manualPreviewAuthority struct {
 	Venue            string               `json:"venue"`
 	VenueEnvironment string               `json:"venueEnvironment"`
 	Product          string               `json:"product"`
-	IssuedAt         time.Time            `json:"issuedAt"`
-	ExpiresAt        time.Time            `json:"expiresAt"`
+	// RouteID is the account route the preview was priced against. It is
+	// sealed here for the same reason the three fences are: the Gateway
+	// refuses a placement whose route does not match the account's current
+	// one, so an order must carry the route it was authorized under rather
+	// than whichever route the account happens to hold at submission.
+	RouteID   string    `json:"routeId"`
+	IssuedAt  time.Time `json:"issuedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 type manualAccountFence struct {
@@ -61,7 +67,7 @@ type manualAccountFence struct {
 // ManualAccount is the slice of an account the manual product must see to
 // decide whether an order may be placed against it. The gateway owns the
 // account record; this is the read-only projection carried across the wire, so
-// it holds no credential reference and no route detail.
+// it holds no credential reference.
 //
 // The three fence fields travel together with the identity on purpose. A
 // preview is authorized against the account as it stood when the preview was
@@ -73,9 +79,22 @@ type ManualAccount struct {
 	VenueEnvironment     string
 	State                string
 	ProductIDs           []string
+	Routes               []ManualAccountRoute
 	DesiredStateRevision int64
 	RuntimeGeneration    int64
 	CredentialVersion    int64
+}
+
+// ManualAccountRoute is one of the account's declared trading routes. The
+// gateway refuses an order that does not name the route it is trading through,
+// so the manual product has to resolve one before it can place anything: the
+// instrument's product picks the route, and the route's identifier is sealed
+// into the preview.
+type ManualAccountRoute struct {
+	RouteID         string
+	Product         string
+	SettlementAsset string
+	RequestedState  string
 }
 
 // The states and environments the manual product tests for. They match the
@@ -288,7 +307,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		return
 	}
 	currentRoute, routeReady := manualCatalogAuthority(snapshot, account, authority.Request.InstrumentID, mode)
-	if !routeReady || snapshot.Revision != authority.CatalogRevision || currentRoute.Venue != authority.Venue || currentRoute.VenueEnvironment != authority.VenueEnvironment || currentRoute.Product != authority.Product {
+	if !routeReady || snapshot.Revision != authority.CatalogRevision || currentRoute.Venue != authority.Venue || currentRoute.VenueEnvironment != authority.VenueEnvironment || currentRoute.Product != authority.Product || currentRoute.RouteID != authority.RouteID {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
@@ -325,10 +344,10 @@ func (handler *manualProductHandler) cancelCommand(w http.ResponseWriter, r *htt
 	if resumableManualState(command.State) {
 		command, err = handler.trading.options.Manual.Cancel(r.Context(), command)
 		if err != nil {
-			tradingError(w, statusForTradingError(err), codeForTradingError(err))
+			tradingFailure(w, r, "manual.cancel", err)
 			return
 		}
-		publishCommandActivity(handler.trading.options.Activity, command)
+		publishCommandActivityAs(handler.trading.options.Activity, command, "command.cancel_accepted")
 		status = http.StatusAccepted
 	}
 	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
@@ -359,7 +378,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		if resumableManualState(command.State) {
 			command, err = handler.trading.options.Manual.Execute(r.Context(), command)
 			if err != nil {
-				tradingError(w, statusForTradingError(err), codeForTradingError(err))
+				tradingFailure(w, r, "manual.close", err)
 				return
 			}
 		} else if command.State == orders.StateFailed || command.State == orders.StateCanceled {
@@ -461,6 +480,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 		"instrumentId": preview.InstrumentID, "side": preview.Side, "quantity": preview.Quantity,
 		"orderType": strings.ToLower(preview.OrderType), "limitPrice": preview.LimitPrice,
 		"timeInForce": preview.TimeInForce, "reduceOnly": preview.ReduceOnly,
+		"routeId":              authority.RouteID,
 		"desiredStateRevision": authority.AccountFence.DesiredStateRevision,
 		"runtimeGeneration":    authority.AccountFence.RuntimeGeneration,
 		"credentialVersion":    authority.AccountFence.CredentialVersion,
@@ -477,7 +497,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 		Quantity: preview.Quantity, IdempotencyKey: request.IdempotencyKey + ":reservation",
 	})
 	if err != nil {
-		tradingError(w, statusForTradingError(err), codeForTradingError(err))
+		tradingFailure(w, r, "manual.place.reserve", err)
 		return
 	}
 	command, replay, err := handler.trading.options.Commands.Create(r.Context(), orders.CreateRequest{
@@ -486,14 +506,14 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 		CommandKind: "manual.place", Mode: orders.Mode(mode), Payload: intentPayload,
 	})
 	if err != nil {
-		tradingError(w, statusForTradingError(err), codeForTradingError(err))
+		tradingFailure(w, r, "manual.place.command", err)
 		return
 	}
 	publish := !replay || resumableManualState(command.State)
 	if publish {
 		command, err = handler.trading.options.Manual.Execute(r.Context(), command)
 		if err != nil {
-			tradingError(w, statusForTradingError(err), codeForTradingError(err))
+			tradingFailure(w, r, "manual.place.execute", err)
 			return
 		}
 	}
@@ -510,20 +530,57 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID, mode string) (manualPreviewAuthority, bool) {
 	venueID := ""
 	product := ""
+	settlement := ""
 	for _, instrument := range snapshot.Instruments {
 		if instrument.InstrumentID == instrumentID && instrument.Ready {
 			venueID = instrument.Venue
 			product = instrument.Product
+			settlement = instrument.Settlement
 			break
 		}
+	}
+	routeID, routed := manualAccountRoute(account, product, settlement)
+	if !routed {
+		return manualPreviewAuthority{}, false
 	}
 	for _, venue := range snapshot.Venues {
 		live := venue.Environment == "live"
 		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready && live == (mode == string(orders.ModeLive)) {
-			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product}, true
+			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product, RouteID: routeID}, true
 		}
 	}
 	return manualPreviewAuthority{}, false
+}
+
+// manualAccountRoute picks the account route an order for this product and
+// settlement asset must be placed through.
+//
+// A route that names a settlement asset serves only instruments settling in it;
+// one that names none serves the whole product. The named route therefore wins
+// when both match, so adding a settlement-specific route to an account does not
+// silently reroute the instruments it was added for through the general one.
+//
+// No match means the account cannot trade this instrument at all, which the
+// callers render the same way as an unknown instrument: the order is refused
+// here rather than at the Gateway, where the refusal would arrive as a fence
+// violation and read as a race.
+func manualAccountRoute(account ManualAccount, product, settlement string) (string, bool) {
+	fallback := ""
+	for _, route := range account.Routes {
+		if route.RequestedState != manualAccountActive || route.Product != product || route.RouteID == "" {
+			continue
+		}
+		if route.SettlementAsset == "" {
+			if fallback == "" {
+				fallback = route.RouteID
+			}
+			continue
+		}
+		if route.SettlementAsset == settlement {
+			return route.RouteID, true
+		}
+	}
+	return fallback, fallback != ""
 }
 
 func manualTestNotionalAllowed(ctx context.Context, request manualPreviewRequest, authority manualPreviewAuthority, source ManualMarketAuthority) (bool, error) {

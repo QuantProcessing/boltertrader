@@ -486,13 +486,14 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 
 	manualResult, err := adapter.Execute(context.Background(), manual.GatewayRequest{
 		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:demo:spot:BTC-USDT",
+		RouteID:        "spot",
 		IdempotencyKey: "ignored-in-favor-of-command", Side: "buy", Quantity: "2", OrderType: "market", Mode: orders.ModeTest,
 		DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3,
 	})
 	if err != nil || manualResult.State != manual.GatewayStateSubmitted || manualResult.Handoff.Outcome != orders.HandoffAccepted || manualResult.Handoff.Evidence.GatewayOrderID == "" {
 		t.Fatalf("Manual Execute() result=%+v err=%v", manualResult, err)
 	}
-	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:demo:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:demo:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
 	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", Mode: orders.ModeTest, ProductID: "manual", Payload: normalizedPayload}); err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +518,7 @@ func TestConfiguredGatewayAdapterCancelsManualOrderByGatewayIdentity(t *testing.
 			t.Errorf("cancel request=%s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
 		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"command_id":"command_manual_1","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"canceled","resource_version":2}`))
+		_, _ = w.Write([]byte(`{"command_id":"018f0000-0000-7000-8000-000000000009","gateway_order_id":"018f0000-0000-7000-8000-000000000002","client_order_id":"42","state":"canceled","resource_version":2}`))
 	}))
 	defer server.Close()
 	adapter, err := newClient(server.URL, []byte(token), server.Client())
@@ -541,7 +542,7 @@ func TestConfiguredGatewayAdapterDrainsCanceledOrderFillPages(t *testing.T) {
 		switch r.Method {
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusAccepted)
-			_, _ = w.Write([]byte(`{"command_id":"command_manual_1","gateway_order_id":"gateway-order","client_order_id":"42","state":"canceled","resource_version":3}`))
+			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"42","state":"canceled","resource_version":3}`))
 		case http.MethodGet:
 			cursors = append(cursors, r.URL.Query().Get("pagination.cursor"))
 			if len(cursors) == 1 {
@@ -587,7 +588,7 @@ func TestConfiguredGatewayAdapterPropagatesExactAccountFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := json.RawMessage(`{"accountId":"account-long","instrumentId":"BTC-USDT-LONG","side":"buy","quantity":"0.5","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	payload := json.RawMessage(`{"accountId":"account-long","instrumentId":"BTC-USDT-LONG","side":"buy","quantity":"0.5","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
 	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", Mode: orders.ModeTest, ProductID: "manual", Payload: payload}); err != nil {
 		t.Fatalf("Handoff: %v", err)
 	}
@@ -637,7 +638,7 @@ func TestConfiguredGatewayAdapterRejectsLiveBeforeHTTP(t *testing.T) {
 
 func TestGatewayHandoffClassifiesOutcomesAndPreservesAcceptedEvidence(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
-	valid := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeTest, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+	valid := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeTest, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
 
 	t.Run("not attempted", func(t *testing.T) {
 		calls := 0
@@ -752,7 +753,7 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 
 func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing.T) {
 	const token = "gateway-adapter-token-with-at-least-32-bytes"
-	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeLive, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
+	command := orders.Command{CommandID: "platform-command", AccountID: "account-a", Mode: orders.ModeLive, Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)}
 	serverMode := "live"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(ModeHeader) != serverMode {
@@ -864,7 +865,7 @@ func TestGatewayAdapterRejectsAllZeroOrderFenceBeforeHandoff(t *testing.T) {
 	}
 	result, err := adapter.Handoff(context.Background(), orders.Command{
 		CommandID: "command-1", AccountID: "account-a", Mode: orders.ModeTest,
-		Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market"}`),
+		Payload: json.RawMessage(`{"instrumentId":"BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp"}`),
 	})
 	if err == nil || result.Outcome != orders.HandoffNotAttempted || requests != 0 {
 		t.Fatalf("result=%+v err=%v requests=%d", result, err, requests)

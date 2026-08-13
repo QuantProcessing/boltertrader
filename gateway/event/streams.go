@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -719,6 +720,9 @@ func (manager *StreamManager) dynamicRouteUnavailable(
 	resync bool,
 	observer privateStreamRouteObserver,
 ) {
+	slog.Warn("private stream route unavailable; account writes suspended",
+		"account_id", string(accountID), "route_id", string(fence.RouteID),
+		"account_fence", fence.AccountFence, "reason", reason, "resync", resync)
 	_ = manager.reconciler.SuspendAccount(accountID)
 	_ = observer.SetPrivateStreamRouteState(fence, false, reason)
 	manager.publishHealth(accountID)
@@ -767,6 +771,8 @@ func (manager *StreamManager) activatePrivateStream(ctx context.Context, account
 }
 
 func (manager *StreamManager) unavailable(accountID domain.AccountID, reason string, resync bool) {
+	slog.Warn("private stream unavailable; account writes suspended",
+		"account_id", string(accountID), "reason", reason, "resync", resync)
 	_ = manager.reconciler.SuspendAccount(accountID)
 	_ = manager.accounts.SetPrivateStreamState(accountID, false, reason)
 	manager.publishHealth(accountID)
@@ -1147,14 +1153,14 @@ func (manager *StreamManager) openSpotInstrument(
 			return nil
 		}
 		return observeErr
-	}, nil)
+	}, nil, "orders", accountID)
 	fills, err := socket.WatchFills(ctx, request)
 	if err != nil {
 		return err
 	}
 	monitorSubscription(ctx, streams, fills, func(event exchange.FillEvent) error {
 		return manager.publishFill(accountID, instrumentID, event)
-	}, nil)
+	}, nil, "fills", accountID)
 	return nil
 }
 
@@ -1177,7 +1183,7 @@ func (manager *StreamManager) openPerpInstrument(
 	}
 	monitorSubscription(ctx, streams, positions, func(event exchange.PositionEvent) error {
 		return manager.publishPositions(accountID, instrumentID, event)
-	}, nil)
+	}, nil, "positions", accountID)
 	return nil
 }
 
@@ -1198,7 +1204,7 @@ func (manager *StreamManager) openBalances(
 		return manager.publishBalances(accountID, event)
 	}, func() {
 		streams.observeActivation(routeID)
-	})
+	}, "balances", accountID)
 	return nil
 }
 
@@ -1215,6 +1221,8 @@ func monitorSubscription[T any](
 	subscription exchange.Subscription[T],
 	onEvent func(T) error,
 	onActive func(),
+	kind string,
+	accountID domain.AccountID,
 ) {
 	streams.add(subscription.Close)
 	go func() {
@@ -1227,11 +1235,11 @@ func monitorSubscription[T any](
 				return
 			case event, open := <-events:
 				if !open {
-					streams.fault()
+					faultSubscription(streams, kind, accountID, "events_closed", nil)
 					return
 				}
 				if err := onEvent(event); err != nil {
-					streams.fault()
+					faultSubscription(streams, kind, accountID, "event_apply_failed", err)
 					return
 				}
 			case status, open := <-statuses:
@@ -1241,7 +1249,7 @@ func monitorSubscription[T any](
 				}
 				if status.State == exchange.SubscriptionGap || status.State == exchange.SubscriptionClosed ||
 					status.Phase == exchange.GapStarted {
-					streams.fault()
+					faultSubscription(streams, kind, accountID, fmt.Sprintf("status_%s_%s", status.State, status.Phase), nil)
 					return
 				}
 				if status.State == exchange.SubscriptionActive && onActive != nil {
@@ -1253,16 +1261,30 @@ func monitorSubscription[T any](
 					continue
 				}
 				if streamErr != nil {
-					streams.fault()
+					faultSubscription(streams, kind, accountID, "stream_error", streamErr)
 					return
 				}
 			}
 			if events == nil && statuses == nil && errorsChannel == nil {
-				streams.fault()
+				faultSubscription(streams, kind, accountID, "all_channels_closed", nil)
 				return
 			}
 		}
 	}()
+}
+
+// faultSubscription names the cause before tripping the account's write gate.
+// The fault channel carries only a signal, and every one of the five ways a
+// subscription can die converges on the same suspend, so without this line an
+// operator sees writes start failing with no way to tell a venue disconnect
+// from a gateway-side apply error.
+func faultSubscription(streams *accountStreams, kind string, accountID domain.AccountID, cause string, err error) {
+	attributes := []any{"account_id", string(accountID), "subscription", kind, "cause", cause}
+	if err != nil {
+		attributes = append(attributes, "error", err)
+	}
+	slog.Warn("private stream subscription faulted", attributes...)
+	streams.fault()
 }
 
 func (manager *StreamManager) publishFill(accountID domain.AccountID, instrumentID domain.InstrumentID, event exchange.FillEvent) error {
