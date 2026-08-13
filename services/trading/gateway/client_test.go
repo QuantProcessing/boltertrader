@@ -29,7 +29,7 @@ func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
 	}))
 	defer server.Close()
-	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestGatewayAdapterAcceptsPendingOnlyAndTombstonedRuntimeShapes(t *testing.T
 				_, _ = w.Write([]byte(test.response))
 			}))
 			defer server.Close()
-			adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -322,6 +322,79 @@ func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrume
 	if err := adapter.CheckMarketDataRoute(context.Background()); err == nil {
 		t.Fatal("non-empty catalog without a ready instrument was accepted")
 	}
+}
+
+// TestGatewayAdapterReadsACatalogLargerThanAnAuthorityEnvelope pins the one
+// property that distinguishes the catalog reads from every other read this
+// client makes: their size is a function of how many venues the Gateway has
+// brought up, not of the request. A single venue's spot book is already several
+// times the envelope limit, so a shared cap does not merely truncate — the
+// truncated document fails to decode, the projection reports it as invalid
+// Gateway facts, and a healthy stack reads as an unready service from the
+// moment its catalog stops being empty. The failure is invisible in any fixture
+// small enough to be convenient, which is why the assertion here is on the wire
+// size as much as on the decode.
+func TestGatewayAdapterReadsACatalogLargerThanAnAuthorityEnvelope(t *testing.T) {
+	const instruments = 512
+	catalogBody, err := json.Marshal(readEnvelope[struct {
+		Revision    string               `json:"revision"`
+		ObservedAt  time.Time            `json:"observedAt"`
+		Instruments []catalog.Instrument `json:"instruments"`
+	}]{Data: struct {
+		Revision    string               `json:"revision"`
+		ObservedAt  time.Time            `json:"observedAt"`
+		Instruments []catalog.Instrument `json:"instruments"`
+	}{
+		Revision:    "gateway-catalog-bulk",
+		ObservedAt:  time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC),
+		Instruments: bulkInstruments(instruments),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(catalogBody)) <= authorityResponseLimit {
+		t.Fatalf("catalog fixture is %d bytes, which does not exceed the %d-byte authority envelope limit it exists to exceed", len(catalogBody), authorityResponseLimit)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/catalog/venues":
+			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"demo","ready":true}]}`))
+		case "/internal/v1/catalog/instruments":
+			_, _ = w.Write(catalogBody)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := adapter.Fetch(context.Background())
+	if err != nil {
+		t.Fatalf("Fetch() = %v", err)
+	}
+	if snapshot.Revision != "gateway-catalog-bulk" || len(snapshot.Instruments) != instruments {
+		t.Fatalf("Fetch() returned revision %q with %d instruments, want %q with %d", snapshot.Revision, len(snapshot.Instruments), "gateway-catalog-bulk", instruments)
+	}
+	if err := adapter.CheckMarketDataRoute(context.Background()); err != nil {
+		t.Fatalf("CheckMarketDataRoute() = %v", err)
+	}
+}
+
+func bulkInstruments(count int) []catalog.Instrument {
+	built := make([]catalog.Instrument, 0, count)
+	for index := range count {
+		symbol := fmt.Sprintf("SYM%04d-USDT", index)
+		built = append(built, catalog.Instrument{
+			InstrumentID: strings.ToLower(symbol), Venue: "binance", Environment: "demo", Product: "spot",
+			Symbol: symbol, BaseAsset: fmt.Sprintf("SYM%04d", index), QuoteAsset: "USDT", Ready: true,
+			Rules: catalog.TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001", MinNotional: "5"},
+		})
+	}
+	return built
 }
 
 func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewayAccess(t *testing.T) {
@@ -692,7 +765,7 @@ func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing
 	}))
 	defer server.Close()
 
-	denied, err := NewClientForMode(server.URL, []byte(token), orders.ModeLive, false, server.Client())
+	denied, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeLive, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +773,7 @@ func TestGatewayAdapterRequiresExactModeAttestationAndGatesLiveWrites(t *testing
 		t.Fatalf("default Live result=%+v err=%v", result, err)
 	}
 
-	enabled, _ := NewClientForMode(server.URL, []byte(token), orders.ModeLive, true, server.Client())
+	enabled, _ := NewClientForMode(server.URL, false, []byte(token), orders.ModeLive, true, server.Client())
 	if result, err := enabled.Handoff(context.Background(), command); err != nil || result.Outcome != orders.HandoffAccepted {
 		t.Fatalf("enabled Live result=%+v err=%v", result, err)
 	}
@@ -733,7 +806,7 @@ func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
 			}))
 			defer server.Close()
 
-			adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+			adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -762,7 +835,7 @@ func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -785,7 +858,7 @@ func TestGatewayAdapterRejectsAllZeroOrderFenceBeforeHandoff(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
-	adapter, err := NewClientForMode(server.URL, []byte(token), orders.ModeTest, false, server.Client())
+	adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}

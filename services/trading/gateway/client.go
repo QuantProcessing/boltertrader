@@ -33,15 +33,45 @@ import (
 
 // Client is trading's handle on the Gateway. One instance serves every question
 // trading asks — catalog, market data, accounts, orders, fills — because they
-// all travel the same authenticated origin under the same mode, and splitting
-// them would mean four places that can disagree about which Gateway is real.
+// all travel under the same mode, and splitting them per topic would mean four
+// places that can disagree about which Gateway is real.
+//
+// The Gateway does split, but along one seam only, and not by topic: it serves
+// a capability plane at /v1 and an authority plane at /internal/v1, separately
+// bound and separately authenticated. So the client holds two origins and two
+// tokens, chosen by the request path in one place (originFor) rather than at
+// each call site. When the two are configured identically — which is what every
+// single-process deployment and every test fixture does — the split costs
+// nothing and the behaviour is exactly what it was before.
 type Client struct {
 	baseURL            string
 	token              []byte
+	internalBaseURL    string
+	internalToken      []byte
 	httpClient         *http.Client
 	mode               orders.Mode
 	liveWrites         bool
 	requireAttestation bool
+}
+
+// authorityPathPrefix is the whole of the routing rule. It is a property of the
+// Gateway's URL space rather than of any caller, which is why the decision lives
+// here: a new /internal/v1 call added anywhere in this file reaches the right
+// listener with the right credential without its author having to know that two
+// listeners exist.
+const authorityPathPrefix = "/internal/"
+
+// ordersPath is named because two methods build a request against it and one of
+// them appends to it. Written out at each site, a later edit that moves orders
+// behind the authority plane would have to find both.
+const ordersPath = "/v1/orders"
+
+// originFor resolves a request path to the origin and credential that serve it.
+func (client *Client) originFor(path string) (string, []byte) {
+	if strings.HasPrefix(path, authorityPathPrefix) {
+		return client.internalBaseURL, client.internalToken
+	}
+	return client.baseURL, client.token
 }
 
 const (
@@ -49,6 +79,17 @@ const (
 	// mode it believes it is in, and refuses a response that disagrees.
 	ModeHeader             = "X-Bolter-Mode"
 	authorityResponseLimit = 64 << 10
+	// catalogResponseLimit bounds the two catalog reads, which are the only
+	// bulk documents on this client. Everything else it reads is a control-plane
+	// envelope describing one account, one order or one fill page, and 64 KiB is
+	// a generous ceiling for those — but the instrument catalog is one row per
+	// tradable symbol, so its size tracks how many venues the Gateway has
+	// brought up rather than anything about the request. One venue's spot book
+	// already exceeds 64 KiB, and the truncation reads as a decode failure,
+	// which the projection then reports as invalid Gateway facts. Holding both
+	// kinds of response to one limit therefore turns a healthy Gateway into an
+	// unready service the moment its catalog is no longer empty.
+	catalogResponseLimit = 8 << 20
 )
 
 type readEnvelope[T any] struct {
@@ -264,7 +305,7 @@ type fillCollection struct {
 // reason to know about the attestation header, and demanding it there would
 // test the fixture rather than the client.
 func newClient(rawURL string, token []byte, httpClient *http.Client) (*Client, error) {
-	client, err := NewClientForMode(rawURL, token, orders.ModeTest, false, httpClient)
+	client, err := NewClientForMode(rawURL, false, token, orders.ModeTest, false, httpClient)
 	if client != nil {
 		client.requireAttestation = false
 	}
@@ -276,21 +317,88 @@ func newClient(rawURL string, token []byte, httpClient *http.Client) (*Client, e
 // service token, a mode that is neither test nor live, live writes claimed
 // under a test mode, or a plaintext origin that is not loopback are all
 // configuration mistakes, and the useful moment to say so is startup.
-func NewClientForMode(rawURL string, token []byte, mode orders.Mode, liveWrites bool, httpClient *http.Client) (*Client, error) {
+//
+// allowNonLoopbackPlaintext sits next to the URL it governs because it governs
+// only that URL. It is checked here as well as in the process's own
+// configuration, deliberately: this constructor is reachable from any caller,
+// and a gate that only runs when cmd/trading happens to have run first is not a
+// gate. What the flag buys is a container stack, where the Gateway is a DNS name
+// on an operator-created bridge; what it costs is that it equally permits a
+// genuinely routable origin, which is why it is the caller's assertion to make
+// and never a default.
+func NewClientForMode(rawURL string, allowNonLoopbackPlaintext bool, token []byte, mode orders.Mode, liveWrites bool, httpClient *http.Client, options ...ClientOption) (*Client, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 || (mode != orders.ModeTest && mode != orders.ModeLive) || (liveWrites && mode != orders.ModeLive) {
 		return nil, fmt.Errorf("Gateway client configuration is invalid")
 	}
-	if parsed.Scheme == "http" {
-		address := net.ParseIP(parsed.Hostname())
-		if address == nil || !address.IsLoopback() {
-			return nil, fmt.Errorf("Gateway client plaintext origin is invalid")
-		}
+	if err := checkPlaintextOrigin(parsed, allowNonLoopbackPlaintext); err != nil {
+		return nil, err
 	}
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Client{baseURL: strings.TrimRight(parsed.String(), "/"), token: bytes.Clone(token), httpClient: httpClient, mode: mode, liveWrites: liveWrites, requireAttestation: true}, nil
+	origin := strings.TrimRight(parsed.String(), "/")
+	// Both planes default to the capability plane's origin and credential. That
+	// is not a placeholder: one process serving both paths behind one token is a
+	// real topology — it is what every test fixture here is, and what a
+	// single-binary deployment would be — so the default is a configuration, not
+	// an absence. The compose stack overrides it because there the planes are on
+	// two listeners with two tokens.
+	client := &Client{
+		baseURL:            origin,
+		token:              bytes.Clone(token),
+		internalBaseURL:    origin,
+		internalToken:      bytes.Clone(token),
+		httpClient:         httpClient,
+		mode:               mode,
+		liveWrites:         liveWrites,
+		requireAttestation: true,
+	}
+	for _, option := range options {
+		if err := option(client); err != nil {
+			return nil, err
+		}
+	}
+	return client, nil
+}
+
+// ClientOption adjusts a client at construction. It is variadic rather than a
+// seventh positional parameter because the thing it configures is absent in
+// every caller that does not have a split Gateway, and six positional arguments
+// is already the point past which one more reads as noise.
+type ClientOption func(*Client) error
+
+// WithAuthorityPlane points the /internal/v1 routes at their own origin and
+// credential. Both are required together: an origin without its token would
+// authenticate the authority plane with the capability plane's secret, which is
+// the exact confusion the Gateway's two listeners exist to prevent.
+func WithAuthorityPlane(rawURL string, allowNonLoopbackPlaintext bool, token []byte) ClientOption {
+	return func(client *Client) error {
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || len(token) < 32 {
+			return fmt.Errorf("Gateway authority plane configuration is invalid")
+		}
+		if err := checkPlaintextOrigin(parsed, allowNonLoopbackPlaintext); err != nil {
+			return err
+		}
+		client.internalBaseURL = strings.TrimRight(parsed.String(), "/")
+		client.internalToken = bytes.Clone(token)
+		return nil
+	}
+}
+
+// checkPlaintextOrigin is shared by both planes deliberately. A token travelling
+// in cleartext to a routable host is readable on the path whichever plane it
+// opens, and the authority plane's token is the more valuable of the two.
+func checkPlaintextOrigin(parsed *url.URL, allowNonLoopbackPlaintext bool) error {
+	if parsed.Scheme != "http" || allowNonLoopbackPlaintext {
+		return nil
+	}
+	address := net.ParseIP(parsed.Hostname())
+	if address == nil || !address.IsLoopback() {
+		return fmt.Errorf("Gateway client plaintext origin is invalid")
+	}
+	return nil
 }
 
 func validRequestedState(state string) bool {
@@ -414,7 +522,7 @@ func (client *Client) Reconcile(ctx context.Context, command orders.Command) (or
 
 func (client *Client) Fetch(ctx context.Context) (catalog.Snapshot, error) {
 	var venues readEnvelope[[]catalog.Venue]
-	if err := client.read(ctx, "/internal/v1/catalog/venues", nil, &venues); err != nil {
+	if err := client.readLimit(ctx, "", "/internal/v1/catalog/venues", nil, &venues, catalogResponseLimit); err != nil {
 		return catalog.Snapshot{}, fmt.Errorf("read Gateway venues: %w", err)
 	}
 	var instruments readEnvelope[struct {
@@ -422,7 +530,7 @@ func (client *Client) Fetch(ctx context.Context) (catalog.Snapshot, error) {
 		ObservedAt  time.Time            `json:"observedAt"`
 		Instruments []catalog.Instrument `json:"instruments"`
 	}]
-	if err := client.read(ctx, "/internal/v1/catalog/instruments", nil, &instruments); err != nil {
+	if err := client.readLimit(ctx, "", "/internal/v1/catalog/instruments", nil, &instruments, catalogResponseLimit); err != nil {
 		return catalog.Snapshot{}, fmt.Errorf("read Gateway instruments: %w", err)
 	}
 	if strings.TrimSpace(instruments.Data.Revision) == "" || instruments.Data.ObservedAt.IsZero() {
@@ -554,7 +662,7 @@ func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
 		ObservedAt  time.Time            `json:"observedAt"`
 		Instruments []catalog.Instrument `json:"instruments"`
 	}]
-	if err := client.read(ctx, "/internal/v1/catalog/instruments", nil, &result); err != nil {
+	if err := client.readLimit(ctx, "", "/internal/v1/catalog/instruments", nil, &result, catalogResponseLimit); err != nil {
 		return fmt.Errorf("probe Gateway catalog authority: %w", err)
 	}
 	readyInstrument := false
@@ -571,7 +679,7 @@ func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
 }
 
 func (client *Client) read(ctx context.Context, path string, query url.Values, target any) error {
-	return client.readLimit(ctx, "", path, query, target, 64<<10)
+	return client.readLimit(ctx, "", path, query, target, authorityResponseLimit)
 }
 
 // readLimit carries an optional principal because part of the Gateway's private
@@ -579,7 +687,8 @@ func (client *Client) read(ctx context.Context, path string, query url.Values, t
 // which service called, not which user it called for. An empty principal sends
 // no header, which is what the routes that answer for the service itself want.
 func (client *Client) readLimit(ctx context.Context, principal, path string, query url.Values, target any, limit int64) error {
-	requestURL := client.baseURL + path
+	origin, token := client.originFor(path)
+	requestURL := origin + path
 	if len(query) > 0 {
 		requestURL += "?" + query.Encode()
 	}
@@ -587,7 +696,7 @@ func (client *Client) readLimit(ctx context.Context, principal, path string, que
 	if err != nil {
 		return fmt.Errorf("construct Gateway request")
 	}
-	request.Header.Set("Authorization", "Bearer "+string(client.token))
+	request.Header.Set("Authorization", "Bearer "+string(token))
 	if principal != "" {
 		request.Header.Set("X-Bolter-Principal", principal)
 	}
@@ -638,11 +747,12 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("encode Gateway order")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.baseURL+"/v1/orders", bytes.NewReader(payload))
+	origin, token := client.originFor(ordersPath)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, origin+ordersPath, bytes.NewReader(payload))
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway request")
 	}
-	request.Header.Set("Authorization", "Bearer "+string(client.token))
+	request.Header.Set("Authorization", "Bearer "+string(token))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Idempotency-Key", idempotencyID)
 	client.attest(request)
@@ -687,11 +797,13 @@ func (client *Client) place(ctx context.Context, idempotencyID string, intent or
 }
 
 func (client *Client) cancel(ctx context.Context, request manual.GatewayCancelRequest) (orders.HandoffResult, error) {
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, client.baseURL+"/v1/orders/"+url.PathEscape(request.GatewayOrderID), nil)
+	path := ordersPath + "/" + url.PathEscape(request.GatewayOrderID)
+	origin, token := client.originFor(path)
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodDelete, origin+path, nil)
 	if err != nil {
 		return orders.HandoffResult{Outcome: orders.HandoffNotAttempted}, fmt.Errorf("construct Gateway cancel request")
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+string(client.token))
+	httpRequest.Header.Set("Authorization", "Bearer "+string(token))
 	client.attest(httpRequest)
 	response, err := client.httpClient.Do(httpRequest)
 	if err != nil {
