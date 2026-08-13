@@ -114,7 +114,32 @@ type Service struct {
 	routes     httpapi.Options
 	readiness  *platformsystem.Readiness
 	reconciler *orders.Reconciler
+	catalog    *catalog.Projection
 }
+
+// catalogTTL is how long the catalog projection's facts stay valid; after it,
+// Status reports the projection stale and readiness goes red. catalogRefresh is
+// how often Run renews them.
+//
+// The refresh has to be strictly shorter than the TTL, and by enough to absorb
+// a slow fetch or a missed tick: facts renewed only once they have already
+// expired leave a window in which a healthy service reports itself unready. A
+// third of the TTL gives two chances to land before that window opens.
+//
+// The TTL itself is not ours to pick freely. It is measured against the
+// Gateway's observedAt, which is the moment the Gateway loaded the oldest
+// catalog it is reporting — not the moment we fetched it — so refreshing faster
+// cannot make it smaller. The Gateway republishes on its own timer (once a
+// minute) and vouches for a catalog for two minutes; a TTL under that rejects
+// facts the authority that produced them still considers current, and the
+// service reports a working Gateway unready for whatever fraction of each cycle
+// the two numbers disagree by. Matching the Gateway's own validity window makes
+// this a real detector instead: it goes red when the Gateway has actually
+// stopped republishing, which is a full cycle missed, and not before.
+const (
+	catalogTTL     = 2 * time.Minute
+	catalogRefresh = catalogTTL / 3
+)
 
 // New assembles the service. It reports a configuration error rather than
 // degrading: a trading service missing its command store or its principal
@@ -145,7 +170,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if marketSource == nil {
 		marketSource = unavailableMarketDataSource{}
 	}
-	catalogProjection, err := catalog.NewProjection(catalogSource, 30*time.Second, now)
+	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +247,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		},
 		readiness:  readiness,
 		reconciler: reconciler,
+		catalog:    catalogProjection,
 	}, nil
 }
 
@@ -241,18 +267,48 @@ func (service *Service) Register(mux *http.ServeMux) ([]string, error) {
 // must report it even when the answer is no.
 func (service *Service) Readiness() *platformsystem.Readiness { return service.readiness }
 
-// Run drives the reconciler until ctx is cancelled. It returns immediately when
-// no reconciler was assembled, so a host can call it unconditionally.
+// Run maintains the service's background state until ctx is cancelled: it keeps
+// the catalog projection warm, and drives the reconciler when one was assembled.
 func (service *Service) Run(ctx context.Context) {
-	if service.reconciler == nil {
-		return
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		service.refreshCatalog(ctx)
+	}()
+	if service.reconciler != nil {
+		service.reconciler.Run(ctx)
+	} else {
+		<-ctx.Done()
 	}
-	service.reconciler.Run(ctx)
+	<-refreshed
 }
 
-// HasReconciler reports whether Run would do anything. Hosts use it to decide
-// whether to spend a goroutine and a shutdown wait on it.
-func (service *Service) HasReconciler() bool { return service.reconciler != nil }
+// refreshCatalog renews the catalog projection for as long as ctx lives.
+//
+// Readiness reports the projection, so something has to maintain it whether or
+// not a client asks for it. Left to Snapshot's demand-driven faulting, a service
+// whose Gateway is perfectly reachable reports "catalog_unavailable" from
+// startup until unrelated traffic happens to arrive, and reports
+// "catalog_projection_stale" again after any lull longer than the TTL. Both
+// describe this loop's absence rather than anything about the Gateway.
+func (service *Service) refreshCatalog(ctx context.Context) {
+	ticker := time.NewTicker(catalogRefresh)
+	defer ticker.Stop()
+	for {
+		// A failed refresh is not logged here. The projection already records
+		// why as the reason readiness reports, which is where an operator can
+		// act on it; logging as well would repeat one line per tick for as long
+		// as a Gateway takes to come up, which on a cold stack is every time.
+		refreshCtx, cancel := context.WithTimeout(ctx, catalogRefresh)
+		_ = service.catalog.Refresh(refreshCtx)
+		cancel()
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
 
 // stores picks durable or in-memory backing for every store in one place, so
 // there is no way to end up with half the service persistent and half not.

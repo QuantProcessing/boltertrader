@@ -119,12 +119,29 @@ func NewProjection(source Source, ttl time.Duration, now func() time.Time) (*Pro
 }
 
 func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
+	return projection.load(ctx, false)
+}
+
+// Refresh renews the projection whether or not it has expired, and is how a
+// caller keeps it warm rather than merely reading it.
+//
+// Snapshot cannot serve that purpose: it refetches only once the facts are
+// already older than the TTL, so a loop built on it renews the projection
+// strictly after the window in which Status reports it stale. The two methods
+// therefore answer different questions — Snapshot asks for facts and accepts
+// cached ones, Refresh asks for the fetch itself.
+func (projection *Projection) Refresh(ctx context.Context) error {
+	_, err := projection.load(ctx, true)
+	return err
+}
+
+func (projection *Projection) load(ctx context.Context, force bool) (Snapshot, error) {
 	if ctx == nil {
 		return Snapshot{}, fmt.Errorf("catalog context is required")
 	}
 	for {
 		projection.mu.Lock()
-		if projection.loaded && projection.now().UTC().Sub(projection.snapshot.ObservedAt) <= projection.ttl {
+		if !force && projection.loaded && projection.now().UTC().Sub(projection.snapshot.ObservedAt) <= projection.ttl {
 			snapshot := clone(projection.snapshot)
 			projection.mu.Unlock()
 			return snapshot, nil
@@ -136,6 +153,12 @@ func (projection *Projection) Snapshot(ctx context.Context) (Snapshot, error) {
 			case <-ctx.Done():
 				return Snapshot{}, ctx.Err()
 			case <-wait:
+				// Whoever we waited on has just fetched, which is as fresh as
+				// our own fetch would have been. Dropping force here is what
+				// lets concurrent refreshes coalesce: holding it would send
+				// each waiter off to fetch again in turn, so N refreshes that
+				// arrive together would cost N round trips instead of one.
+				force = false
 				continue
 			}
 		}

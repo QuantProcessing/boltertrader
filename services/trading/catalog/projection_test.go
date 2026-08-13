@@ -61,6 +61,80 @@ func TestProjectionCoalescesGatewayFacts(t *testing.T) {
 	}
 }
 
+// clockedSource observes its facts at the moment it is asked for them, the way a
+// Gateway does. countingSource cannot stand in: its ObservedAt is frozen at
+// construction, so refetching it would return facts that age anyway.
+//
+// It carries no venues or instruments because none of what follows depends on
+// them — the subject is when the projection fetches, not what it fetched.
+type clockedSource struct {
+	calls int
+	now   func() time.Time
+}
+
+func (source *clockedSource) Fetch(context.Context) (Snapshot, error) {
+	source.calls++
+	return Snapshot{Revision: "gateway-rev-1", ObservedAt: source.now()}, nil
+}
+
+// TestRefreshRenewsBeforeTheProjectionCanGoStale pins the difference between the
+// projection's two entry points, which is the reason both exist.
+//
+// Readiness reports Status, and Status only reads — nothing fetches unless a
+// caller asks. Left to Snapshot's demand-driven faulting, a service whose
+// Gateway is perfectly reachable reports it unavailable from startup until
+// unrelated client traffic happens to arrive. Nor can Snapshot on a timer fix
+// that: it serves cached facts until they expire, so it would renew the
+// projection strictly after the window in which Status already calls it stale.
+func TestRefreshRenewsBeforeTheProjectionCanGoStale(t *testing.T) {
+	const ttl = 30 * time.Second
+	clock := time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC)
+	now := func() time.Time { return clock }
+	source := &clockedSource{now: now}
+	projection, err := NewProjection(source, ttl, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Cold: the projection has never been asked for anything, so it knows
+	// nothing. This is the state that reported a healthy stack unready.
+	if status := projection.Status(); status.Ready || status.Reason != ReasonUnavailable {
+		t.Fatalf("cold Status() = %#v, want unready with reason %q", status, ReasonUnavailable)
+	}
+	if err := projection.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh() = %v", err)
+	}
+	if status := projection.Status(); !status.Ready || status.Age != 0 {
+		t.Fatalf("Status() after Refresh = %#v, want ready at age 0", status)
+	}
+
+	// A third of the way to expiry the facts are still valid, so Snapshot serves
+	// them from cache — and the projection goes on ageing toward the staleness
+	// Status would then report.
+	clock = clock.Add(ttl / 3)
+	if _, err := projection.Snapshot(context.Background()); err != nil {
+		t.Fatalf("Snapshot() = %v", err)
+	}
+	if source.calls != 1 {
+		t.Fatalf("Snapshot refetched unexpired facts: Gateway fetches = %d, want 1", source.calls)
+	}
+	if age := projection.Status().Age; age != ttl/3 {
+		t.Fatalf("Age after cached Snapshot = %v, want %v", age, ttl/3)
+	}
+
+	// Refresh at that same moment fetches, and the age it resets is what keeps a
+	// maintained projection from ever reaching the TTL.
+	if err := projection.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh() = %v", err)
+	}
+	if source.calls != 2 {
+		t.Fatalf("Refresh served cached facts: Gateway fetches = %d, want 2", source.calls)
+	}
+	if status := projection.Status(); !status.Ready || status.Age != 0 {
+		t.Fatalf("Status() after second Refresh = %#v, want ready at age 0", status)
+	}
+}
+
 func TestProjectionRejectsUntrustedCatalogFacts(t *testing.T) {
 	source := &countingSource{snapshot: Snapshot{
 		Venues:      []Venue{{Venue: "binance", Environment: "testnet", Ready: true}},
