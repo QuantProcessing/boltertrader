@@ -317,28 +317,36 @@ func TestStreamManagerOpensDynamicRoutesFromAtomicSelectionsAndDeduplicatesBalan
 	}
 	receiveEvent(t, subscription)
 	receiveEvent(t, subscription)
+
+	// Both balance events are now published, and the barrier is still shut. It
+	// asks whether the private streams are live, and a payload's baseline does
+	// not answer that: five of the nine adapters only ever emit EventDelta, and
+	// Binance emits nothing at all while an account's balances do not move.
 	select {
-	case <-streams.snapshot:
-		t.Fatal("private snapshot barrier completed after only the spot route snapshot")
+	case <-streams.activated:
+		t.Fatal("private activation barrier completed on balance payloads alone")
 	default:
 	}
 
-	perpGeneration.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	// The exchange layer reports liveness the same way for every venue, once the
+	// backend's subscribe has succeeded. That is what opens the barrier.
+	spotGeneration.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
+	perpGeneration.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	select {
-	case <-streams.snapshot:
+	case <-streams.activated:
 	case <-time.After(time.Second):
-		t.Fatal("private snapshot barrier did not complete after every route snapshot")
+		t.Fatal("private activation barrier did not complete after every route reported active")
 	}
 }
 
-func TestAccountStreamsFaultBeforeEveryRequiredSnapshotDoesNotReleaseBarrier(t *testing.T) {
+func TestAccountStreamsFaultBeforeEveryRouteActivatesDoesNotReleaseBarrier(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	streams := &accountStreams{
-		cancel: cancel, faults: make(chan struct{}, 1), snapshot: make(chan struct{}),
+		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
 	}
 	defer streams.close()
-	streams.expectSnapshots(map[domain.RouteID]struct{}{"spot": {}, "perp-usdt": {}})
-	streams.observeSnapshot("spot")
+	streams.expectActivations(map[domain.RouteID]struct{}{"spot": {}, "perp-usdt": {}})
+	streams.observeActivation("spot")
 	streams.fault()
 
 	select {
@@ -347,8 +355,8 @@ func TestAccountStreamsFaultBeforeEveryRequiredSnapshotDoesNotReleaseBarrier(t *
 		t.Fatal("private stream fault was not reported")
 	}
 	select {
-	case <-streams.snapshot:
-		t.Fatal("fault released the private snapshot barrier before every route snapshot")
+	case <-streams.activated:
+		t.Fatal("fault released the private activation barrier before every route activated")
 	default:
 	}
 	if err := ctx.Err(); err != nil {
@@ -392,7 +400,7 @@ func TestStreamManagerFailsClosedWhenDynamicRouteSelectionsCrossGenerations(t *t
 	}
 }
 
-func TestStreamManagerReconnectRequiresFreshPrivateSnapshotBarrier(t *testing.T) {
+func TestStreamManagerReconnectRequiresFreshPrivateActivationBarrier(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
@@ -418,9 +426,9 @@ func TestStreamManagerReconnectRequiresFreshPrivateSnapshotBarrier(t *testing.T)
 	t.Cleanup(manager.Close)
 	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
 	if accounts.LatestReady() || accounts.BarrierCount() != 0 {
-		t.Fatalf("ready=%t barriers=%d before initial snapshot", accounts.LatestReady(), accounts.BarrierCount())
+		t.Fatalf("ready=%t barriers=%d before initial activation", accounts.LatestReady(), accounts.BarrierCount())
 	}
-	first.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 1 })
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
@@ -428,9 +436,9 @@ func TestStreamManagerReconnectRequiresFreshPrivateSnapshotBarrier(t *testing.T)
 		return reconciler.Recoveries() == 2 && socket.Generation() == 2 && !accounts.LatestReady()
 	})
 	if accounts.BarrierCount() != 1 {
-		t.Fatalf("barriers=%d before reconnect snapshot", accounts.BarrierCount())
+		t.Fatalf("barriers=%d before reconnect activation", accounts.BarrierCount())
 	}
-	second.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 2 })
 	barriers := accounts.Barriers()
 	if barriers[0].snapshotID == barriers[1].snapshotID || barriers[0].sequence >= barriers[1].sequence {
@@ -438,7 +446,7 @@ func TestStreamManagerReconnectRequiresFreshPrivateSnapshotBarrier(t *testing.T)
 	}
 }
 
-func TestStreamManagerDynamicRoutesRequireIndependentSnapshotBarriers(t *testing.T) {
+func TestStreamManagerDynamicRoutesRequireIndependentActivationBarriers(t *testing.T) {
 	hub := newTestHub(t, 32, 16)
 	spotFirst, spotSecond := newFakeStreamGeneration(), newFakeStreamGeneration()
 	perpFirst := newFakeStreamGeneration()
@@ -474,8 +482,8 @@ func TestStreamManagerDynamicRoutesRequireIndependentSnapshotBarriers(t *testing
 	t.Cleanup(manager.Close)
 	awaitCondition(t, func() bool { return reconciler.Recoveries() == 1 })
 
-	spotFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
-	perpFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
+	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool {
 		return accounts.LatestReady() && accounts.BarrierCount() == 2 &&
 			accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt")
@@ -489,7 +497,7 @@ func TestStreamManagerDynamicRoutesRequireIndependentSnapshotBarriers(t *testing
 		t.Fatalf("spot reconnect changed perp route: ready=%t generation=%d",
 			accounts.RouteReady("perp-usdt"), perpSocket.spot.Generation())
 	}
-	spotSecond.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	spotSecond.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.LatestReady() && accounts.BarrierCount() == 3 })
 	if !accounts.RouteReady("spot") || !accounts.RouteReady("perp-usdt") {
 		t.Fatalf("route readiness after spot recovery: spot=%t perp=%t",
@@ -530,8 +538,8 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	spotFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
-	perpFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
+	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt") })
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
@@ -543,7 +551,7 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 		t.Fatalf("spot gap restarted unrelated perp subscriptions: generation=%d", generation)
 	}
 
-	spotSecond.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	spotSecond.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
 	if !accounts.RouteReady("perp-usdt") {
 		t.Fatal("spot recovery changed unrelated perp readiness")
@@ -586,8 +594,8 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnectIsBlocked(t
 	}
 	t.Cleanup(manager.Close)
 	defer close(reconciler.release)
-	spotFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
-	perpFirst.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	spotFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
+	perpFirst.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") && accounts.RouteReady("perp-usdt") })
 
 	spotFirst.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
@@ -635,16 +643,16 @@ func TestStreamManagerReconnectsRouteAfterBarrierCallbackFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(manager.Close)
-	first.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	first.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return socket.Generation() == 2 && reconciler.Recoveries() == 2 })
 	if accounts.RouteReady("spot") {
 		t.Fatal("route became ready after rejected private-stream barrier")
 	}
-	second.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
 }
 
-func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialSnapshot(t *testing.T) {
+func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
@@ -672,15 +680,15 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialSnapshot(t *t
 	t.Cleanup(manager.Close)
 	awaitCondition(t, func() bool { return socket.Generation() == 1 && reconciler.Recoveries() == 1 })
 	if accounts.RouteReady("spot") {
-		t.Fatal("route became ready before the initial private snapshot")
+		t.Fatal("route became ready before its private stream activated")
 	}
 
 	first.fills.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionGap, Phase: exchange.GapStarted}
 	awaitCondition(t, func() bool { return socket.Generation() == 2 && reconciler.Recoveries() == 2 })
 	if accounts.RouteReady("spot") {
-		t.Fatal("route became ready after reconnect but before the replacement snapshot")
+		t.Fatal("route became ready after reconnect but before the replacement stream activated")
 	}
-	second.balances.events <- exchange.BalanceEvent{Kind: exchange.EventSnapshot}
+	second.balances.status <- exchange.StreamStatusEvent{State: exchange.SubscriptionActive}
 	awaitCondition(t, func() bool { return accounts.RouteReady("spot") })
 }
 

@@ -690,8 +690,8 @@ func (manager *StreamManager) waitDynamicRouteActivation(
 		case <-ctx.Done():
 			result.err = ctx.Err()
 		case <-streams.faults:
-			result.err = fmt.Errorf("private stream fault before snapshot")
-		case <-streams.snapshot:
+			result.err = fmt.Errorf("private stream fault before activation")
+		case <-streams.activated:
 		}
 		select {
 		case results <- result:
@@ -745,8 +745,8 @@ func (manager *StreamManager) activatePrivateStream(ctx context.Context, account
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-streams.faults:
-		return fmt.Errorf("private stream fault before snapshot")
-	case <-streams.snapshot:
+		return fmt.Errorf("private stream fault before activation")
+	case <-streams.activated:
 	}
 	select {
 	case <-ctx.Done():
@@ -786,37 +786,50 @@ func (manager *StreamManager) publishHealth(accountID domain.AccountID) {
 	manager.publish(accountID, KindAccountHealth, "account", time.Time{}, payload)
 }
 
+// accountStreams owns one account's private subscriptions and the two signals a
+// supervisor waits on: faults, and activated.
+//
+// activated closes once every route in this session has a live private stream.
+// Liveness here is the exchange layer's own SubscriptionActive status, not the
+// arrival of a balance snapshot. EventSnapshot states something about a
+// payload's baseline, which is a different question: five of the nine adapters
+// only ever emit EventDelta, and Binance cannot emit a snapshot at all for a
+// quiet account, because its account-position stream fires only when a balance
+// changes. A barrier keyed on it therefore never opens, and the route stays
+// private_stream_starting forever. SubscriptionActive is emitted uniformly for
+// every venue once the backend's subscribe has succeeded, which is the question
+// this barrier is actually asking.
 type accountStreams struct {
-	cancel           context.CancelFunc
-	faults           chan struct{}
-	snapshot         chan struct{}
-	mu               sync.Mutex
-	closers          []func() error
-	snapshotMu       sync.Mutex
-	pendingSnapshots map[domain.RouteID]struct{}
-	once             sync.Once
-	faultOnce        sync.Once
-	onFault          func()
+	cancel             context.CancelFunc
+	faults             chan struct{}
+	activated          chan struct{}
+	mu                 sync.Mutex
+	closers            []func() error
+	activationMu       sync.Mutex
+	pendingActivations map[domain.RouteID]struct{}
+	once               sync.Once
+	faultOnce          sync.Once
+	onFault            func()
 }
 
-func (streams *accountStreams) expectSnapshots(routes map[domain.RouteID]struct{}) {
-	streams.snapshotMu.Lock()
-	defer streams.snapshotMu.Unlock()
-	streams.pendingSnapshots = make(map[domain.RouteID]struct{}, len(routes))
+func (streams *accountStreams) expectActivations(routes map[domain.RouteID]struct{}) {
+	streams.activationMu.Lock()
+	defer streams.activationMu.Unlock()
+	streams.pendingActivations = make(map[domain.RouteID]struct{}, len(routes))
 	for routeID := range routes {
-		streams.pendingSnapshots[routeID] = struct{}{}
+		streams.pendingActivations[routeID] = struct{}{}
 	}
 }
 
-func (streams *accountStreams) observeSnapshot(routeID domain.RouteID) {
-	streams.snapshotMu.Lock()
-	defer streams.snapshotMu.Unlock()
-	if _, pending := streams.pendingSnapshots[routeID]; !pending {
+func (streams *accountStreams) observeActivation(routeID domain.RouteID) {
+	streams.activationMu.Lock()
+	defer streams.activationMu.Unlock()
+	if _, pending := streams.pendingActivations[routeID]; !pending {
 		return
 	}
-	delete(streams.pendingSnapshots, routeID)
-	if len(streams.pendingSnapshots) == 0 {
-		close(streams.snapshot)
+	delete(streams.pendingActivations, routeID)
+	if len(streams.pendingActivations) == 0 {
+		close(streams.activated)
 	}
 }
 
@@ -861,7 +874,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 	}
 	streamContext, cancel := context.WithCancel(ctx)
 	streams := &accountStreams{
-		cancel: cancel, faults: make(chan struct{}, 1), snapshot: make(chan struct{}),
+		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
 		onFault: func() {
 			manager.unavailable(accountID, account.ReasonPrivateStreamGap, true)
 		},
@@ -877,7 +890,7 @@ func (manager *StreamManager) openAccountStreams(ctx context.Context, accountID 
 		return streams, nil
 	}
 	staticRoute := domain.RouteID("static")
-	streams.expectSnapshots(map[domain.RouteID]struct{}{staticRoute: {}})
+	streams.expectActivations(map[domain.RouteID]struct{}{staticRoute: {}})
 
 	switch status.Product {
 	case exchange.ProductSpot:
@@ -999,7 +1012,7 @@ func (manager *StreamManager) openDynamicAccountStreams(
 	for _, streamRoute := range selected {
 		balanceRoutes[streamRoute.selection.RouteID] = struct{}{}
 	}
-	streams.expectSnapshots(balanceRoutes)
+	streams.expectActivations(balanceRoutes)
 	openedBalanceRoutes := make(map[domain.RouteID]struct{}, len(balanceRoutes))
 	for _, streamRoute := range selected {
 		route := streamRoute.selection
@@ -1049,7 +1062,7 @@ func (manager *StreamManager) openDynamicRouteStreams(
 	streamContext, cancel := context.WithCancel(ctx)
 	var streams *accountStreams
 	streams = &accountStreams{
-		cancel: cancel, faults: make(chan struct{}, 1), snapshot: make(chan struct{}),
+		cancel: cancel, faults: make(chan struct{}, 1), activated: make(chan struct{}),
 		onFault: func() {
 			select {
 			case faults <- dynamicRouteFault{routeID: routeID, streams: streams}:
@@ -1057,7 +1070,7 @@ func (manager *StreamManager) openDynamicRouteStreams(
 			}
 		},
 	}
-	streams.expectSnapshots(map[domain.RouteID]struct{}{routeID: {}})
+	streams.expectActivations(map[domain.RouteID]struct{}{routeID: {}})
 	closeOnError := func(err error) (*accountStreams, error) {
 		streams.close()
 		return nil, err
@@ -1134,14 +1147,14 @@ func (manager *StreamManager) openSpotInstrument(
 			return nil
 		}
 		return observeErr
-	})
+	}, nil)
 	fills, err := socket.WatchFills(ctx, request)
 	if err != nil {
 		return err
 	}
 	monitorSubscription(ctx, streams, fills, func(event exchange.FillEvent) error {
 		return manager.publishFill(accountID, instrumentID, event)
-	})
+	}, nil)
 	return nil
 }
 
@@ -1164,7 +1177,7 @@ func (manager *StreamManager) openPerpInstrument(
 	}
 	monitorSubscription(ctx, streams, positions, func(event exchange.PositionEvent) error {
 		return manager.publishPositions(accountID, instrumentID, event)
-	})
+	}, nil)
 	return nil
 }
 
@@ -1182,22 +1195,26 @@ func (manager *StreamManager) openBalances(
 		return err
 	}
 	monitorSubscription(ctx, streams, balances, func(event exchange.BalanceEvent) error {
-		if err := manager.publishBalances(accountID, event); err != nil {
-			return err
-		}
-		if event.Kind == exchange.EventSnapshot {
-			streams.observeSnapshot(routeID)
-		}
-		return nil
+		return manager.publishBalances(accountID, event)
+	}, func() {
+		streams.observeActivation(routeID)
 	})
 	return nil
 }
 
+// monitorSubscription drains one subscription until ctx ends or it faults.
+//
+// onActive, when supplied, fires each time the exchange layer reports the
+// subscription live. That report is the only venue-neutral evidence the gateway
+// gets that a private stream is up: it is emitted uniformly once the backend's
+// subscribe succeeds, whereas the events themselves arrive only when the venue
+// has something to say.
 func monitorSubscription[T any](
 	ctx context.Context,
 	streams *accountStreams,
 	subscription exchange.Subscription[T],
 	onEvent func(T) error,
+	onActive func(),
 ) {
 	streams.add(subscription.Close)
 	go func() {
@@ -1226,6 +1243,9 @@ func monitorSubscription[T any](
 					status.Phase == exchange.GapStarted {
 					streams.fault()
 					return
+				}
+				if status.State == exchange.SubscriptionActive && onActive != nil {
+					onActive()
 				}
 			case streamErr, open := <-errorsChannel:
 				if !open {
