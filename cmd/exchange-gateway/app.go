@@ -26,6 +26,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/config"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	gatewayevent "github.com/QuantProcessing/boltertrader/gateway/event"
+	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/health"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/observability"
@@ -126,6 +127,31 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 		runtimeLifecycle = productionLifecycle
 	}
 	publicHandlerFactory := defaultHandlerFactory(deps.buildHandler, authMiddleware, metrics)
+	// fundingBoard backs /internal/v1/funding-board. It is built here, beside
+	// the process wiring, rather than inside defaultBuildAccountManager because
+	// that constructor early-returns a test-injected manager: assembling the
+	// board there would make the matrix vanish under exactly the harnesses that
+	// exercise the internal plane. Nothing about it is account-derived, so it
+	// has no reason to live behind the manager anyway.
+	//
+	// A failure to build it is not a failure to boot. The board is one read of
+	// many, and refusing to start the gateway because a public rate feed could
+	// not be assembled would trade an entire trading surface for a table.
+	var fundingBoard *fundingboard.Source
+	if !validationProfile {
+		boardFactory, boardErr := fundingboard.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
+		if boardErr == nil {
+			fundingBoard, boardErr = fundingboard.NewSource(boardFactory, routeprofile.DefaultRegistry(), routeprofile.Mode(runtimeMode))
+		}
+		if boardErr != nil {
+			fundingBoard = nil
+		}
+		defer func() {
+			if fundingBoard != nil {
+				_ = fundingBoard.Close()
+			}
+		}()
+	}
 	var internalHandler http.Handler
 	var restoredAuthority *gatewayAuthority
 	var gatewayMonitor *health.Monitor
@@ -163,7 +189,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 					return attachErr
 				}
 			}
-			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, runtimeMode)
+			authority, restoreErr := newGatewayAuthority(restoreCtx, postgres.NewStore(realPool), realManager, runtimeMode, withFundingBoard(fundingBoard))
 			if restoreErr != nil {
 				return restoreErr
 			}

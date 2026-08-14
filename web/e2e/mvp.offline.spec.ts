@@ -115,11 +115,31 @@ test.describe("the MVP path", () => {
       ["Portfolio", /\/portfolio$/],
       ["Settings", /\/settings$/],
       ["Activity", /\/activity$/],
+      ["Funding", /\/funding$/],
       ["Trade", /\/trade$/],
     ] as const) {
       await nav.getByRole("link", { name: label }).click();
       await expect(page).toHaveURL(path);
     }
+  });
+
+  // The board is the one screen that needs no account, no credential and no
+  // instrument selection, so this is also the assertion that it renders from
+  // public data alone. What it checks beyond "the page loaded" is the two
+  // things the matrix exists to do: pivot one instrument across venues into a
+  // single row, and mark a column that did not answer instead of dropping it.
+  test("shows the funding board without an account", async ({ page }) => {
+    await signIn(page, edge);
+    await navOf(page).getByRole("link", { name: "Funding" }).click();
+
+    await expect(page).toHaveURL(/\/funding$/);
+    await expect(page.getByRole("columnheader", { name: /binance/ })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: /bybit/ })).toBeVisible();
+
+    // BTC is quoted by binance and bybit under the same symbol, so it survives
+    // the cross-venue filter; a venue that answered nothing is still a column.
+    await expect(page.getByRole("cell", { name: "BTC-USDT", exact: false })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: /okx/ })).toContainText("down");
   });
 
   test("sends the operator back to login when the session ends", async ({ page }) => {

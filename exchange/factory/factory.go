@@ -752,6 +752,42 @@ func instrumentLoaderForConfig(configName string, settings settings) exchange.In
 	}
 }
 
+// fundingBoardLoaderForConfig mirrors instrumentLoaderForConfig for the
+// credential-free funding surface.
+//
+// Only perpetual configs appear: spot has no funding, and aster is absent
+// because the gateway capability matrix marks it as the one perp venue that
+// publishes none (`Funding: code != "ATP"`). A caller asking for any of those
+// gets nil, which the connector turns into a configuration error rather than an
+// empty board — silently answering "no rates" for a venue that has them would
+// look identical to a venue that is merely down.
+func fundingBoardLoaderForConfig(configName string, settings settings) exchange.FundingBoardLoader {
+	switch configName {
+	case "binance-usd-perp":
+		return factoryclient.NewBinanceFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+	case "okx-usdt-perp":
+		return factoryclient.NewOKXFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+	case "lighter-perp":
+		return factoryclient.NewLighterFundingBoardLoader(factorySettingsForConfig(configName, settings))
+	case "hyperliquid-perp":
+		return factoryclient.NewHyperliquidFundingBoardLoader(factorySettingsForConfig(configName, settings))
+	case "bybit-usdt-perp":
+		return factoryclient.NewBybitFundingBoardLoader("USDT", factorySettingsForConfig(configName, settings))
+	case "bybit-usdc-perp":
+		return factoryclient.NewBybitFundingBoardLoader("USDC", factorySettingsForConfig(configName, settings))
+	case "bitget-usdt-perp":
+		return factoryclient.NewBitgetFundingBoardLoader("USDT-FUTURES", factorySettingsForConfig(configName, settings))
+	case "bitget-usdc-perp":
+		return factoryclient.NewBitgetFundingBoardLoader("USDC-FUTURES", factorySettingsForConfig(configName, settings))
+	case "gate-usdt-perp":
+		return factoryclient.NewGateFundingBoardLoader(factorySettingsForConfig(configName, settings))
+	case "nado-usdt0-perp":
+		return factoryclient.NewNadoFundingBoardLoader(factorySettingsForConfig(configName, settings))
+	default:
+		return nil
+	}
+}
+
 func factorySettings(settings settings) factoryclient.Settings {
 	catalog := settings.catalog
 	if catalog == nil {

@@ -93,6 +93,7 @@ type Dependencies struct {
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
 	CandleSource          marketdata.CandleSource
+	FundingBoardSource    marketdata.BoardSource
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
@@ -175,6 +176,10 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if candleSource == nil {
 		candleSource = unavailableCandleSource{}
 	}
+	boardSource := dependencies.FundingBoardSource
+	if boardSource == nil {
+		boardSource = unavailableFundingBoardSource{}
+	}
 	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
 	if err != nil {
 		return nil, err
@@ -193,6 +198,22 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	// Giving candles a second coordinator would let the two together spend
 	// twice what either believes is the limit.
 	candleService, err := marketdata.NewCandleService(candleSource, budget)
+	if err != nil {
+		return nil, err
+	}
+	// The board shares the same coordinator on the same reasoning, though it
+	// spends under its own key rather than a venue's: a board read is one call
+	// to the Gateway, not one per venue, and charging it to ten venues would
+	// exhaust allowances that were never touched.
+	//
+	// Its TTL is three times the quote projection's because the two answer
+	// questions that age differently. A top-of-book fact prices a fill and is
+	// worthless a few seconds later; a funding rate settles on the hour, and the
+	// board exists to rank venues against each other rather than to price
+	// anything. Fifteen seconds also sits under the Gateway's own thirty-second
+	// refresh, so the projection never serves an edition older than the one
+	// upstream is willing to rebuild.
+	boardService, err := marketdata.NewBoardService(boardSource, budget, 15*time.Second, now)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +237,8 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	readiness := newReadiness(dependencies, catalogProjection)
 	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{
 		Catalog: catalogProjection, MarketData: marketService, Candles: candleService,
-		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
+		FundingBoard: boardService,
+		Readiness:    readiness, Realtime: hub, Principal: dependencies.Principal,
 	})
 	if err != nil {
 		return nil, err
@@ -408,6 +430,12 @@ type unavailableCandleSource struct{}
 
 func (unavailableCandleSource) FetchCandles(context.Context, marketdata.CandleQuery) (marketdata.CandlePage, error) {
 	return marketdata.CandlePage{}, errors.New("gateway projection unavailable")
+}
+
+type unavailableFundingBoardSource struct{}
+
+func (unavailableFundingBoardSource) FetchFundingBoard(context.Context) (marketdata.BoardSnapshot, error) {
+	return marketdata.BoardSnapshot{}, errors.New("gateway projection unavailable")
 }
 
 // reservationGate narrows the reservation service to the one question the

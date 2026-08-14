@@ -19,6 +19,7 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
@@ -77,7 +78,7 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 		}}, nil
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
 		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData,
-		httpapi.AuthorityCandles:
+		httpapi.AuthorityCandles, httpapi.AuthorityFundingBoard:
 		return httpapi.AuthorityResponse{Body: []any{}}, nil
 	default:
 		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
@@ -238,6 +239,73 @@ type authorityFundingPoint struct {
 	FundingTime time.Time `json:"fundingTime"`
 }
 
+// authorityFundingBoard is the whole cross-venue rate table, one column per
+// funding-capable route profile.
+//
+// It is a separate projection from authorityMarketData rather than a list of
+// them because the board is read without an account: MarketData is served from
+// a configured account's authenticated client, while every cell here comes from
+// a public endpoint. Folding the two together would mean an operator with no
+// accounts either sees an empty board or sees one and cannot tell which cells
+// required credentials.
+type authorityFundingBoard struct {
+	Mode       string                  `json:"mode"`
+	ObservedAt time.Time               `json:"observedAt"`
+	Venues     []authorityFundingVenue `json:"venues"`
+}
+
+// authorityFundingVenue is one column.
+//
+// Stale and Unavailable are both on the wire because they are different answers
+// to "may I compare this number against the next column": stale means these
+// rates are the venue's last known ones and older than the rest of the table,
+// unavailable means there is nothing recent enough to put beside another venue
+// at all. An unavailable column carries no rows by construction upstream.
+//
+// ObservedAt carries omitzero, not omitempty: omitempty does not consult
+// time.Time.IsZero, so an unavailable column — which has no observation time by
+// definition — would ship "0001-01-01T00:00:00Z" and render as an age of two
+// thousand years rather than as no reading at all.
+type authorityFundingVenue struct {
+	Venue          string                `json:"venue"`
+	Environment    string                `json:"environment"`
+	Product        string                `json:"product"`
+	Settlement     string                `json:"settlement,omitempty"`
+	RouteProfileID string                `json:"routeProfileId"`
+	ObservedAt     time.Time             `json:"observedAt,omitzero"`
+	Stale          bool                  `json:"stale"`
+	Unavailable    bool                  `json:"unavailable"`
+	Rows           []authorityFundingRow `json:"rows"`
+}
+
+// authorityFundingRow is one instrument's rate on one venue.
+//
+// Every optional cell is a plain string carrying omitempty rather than
+// exchange.OptionalDecimal, which serialises as {"value":…,"valid":…} and would
+// put "0" on the wire for a venue that published nothing. Seven of the ten
+// venues leave open interest empty in their bulk call, so an absent cell has to
+// stay absent rather than become a number the venue never quoted.
+//
+// NextFundingTime is the same argument in the time domain, and needs omitzero
+// to make it: omitempty ignores time.Time entirely, so a zero time reaches the
+// browser as "0001-01-01T00:00:00Z" and renders as a settlement countdown that
+// has already elapsed. Hyperliquid and lighter publish a bare rate with no
+// settlement clock, and binance, okx, and nado leave it out whenever the venue
+// itself omits it, so the zero is reachable on a third of the table.
+type authorityFundingRow struct {
+	Symbol          string    `json:"symbol"`
+	NativeSymbol    string    `json:"nativeSymbol,omitempty"`
+	NativeID        string    `json:"nativeId,omitempty"`
+	BaseAsset       string    `json:"baseAsset,omitempty"`
+	QuoteAsset      string    `json:"quoteAsset,omitempty"`
+	Rate            string    `json:"rate"`
+	IntervalHours   int64     `json:"intervalHours,omitempty"`
+	NextFundingTime time.Time `json:"nextFundingTime,omitzero"`
+	MarkPrice       string    `json:"markPrice,omitempty"`
+	IndexPrice      string    `json:"indexPrice,omitempty"`
+	OpenInterest    string    `json:"openInterest,omitempty"`
+}
+
 func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPublicRuntimeAccount {
 	result := make([]authorityPublicRuntimeAccount, 0, len(runtimes))
 	for _, runtime := range runtimes {
@@ -274,6 +342,7 @@ type authorityReadSource interface {
 	Instruments() (authorityCatalogInstruments, error)
 	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
 	Candles(context.Context, authorityCandlesQuery) (authorityCandles, error)
+	FundingBoard(context.Context) (authorityFundingBoard, error)
 	Runtime(string) (authorityRuntimeProjection, error)
 }
 
@@ -296,7 +365,12 @@ type managerAuthorityReads struct {
 	manager  authorityAccountSource
 	mode     account.RuntimeMode
 	profiles *routeprofile.Registry
-	now      func() time.Time
+	// board serves the funding matrix from public endpoints. It is deliberately
+	// beside manager rather than behind it: every other read on this type walks
+	// reads.manager.Accounts() for a ReadReady route, and the board's whole
+	// point is to answer before any account exists.
+	board *fundingboard.Source
+	now   func() time.Time
 }
 
 // clock reports the read's notion of now, in UTC. Tests inject now to make
@@ -428,16 +502,39 @@ func (lifecycle *opaqueRuntimeLifecycle) Blockers(ctx context.Context, accountID
 	return blockers, nil
 }
 
-func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, mode account.RuntimeMode) (*gatewayAuthority, error) {
+// authorityOption adjusts the reads assembled by newGatewayAuthority.
+//
+// It is variadic rather than a fourth parameter because the constructor has
+// nineteen call sites, eighteen of them tests that care about desired state and
+// nothing else. It is also an option rather than a setter on the returned value
+// because reads is read under no lock by every request: fixing it before the
+// authority is reachable keeps it immutable afterwards.
+type authorityOption func(*managerAuthorityReads)
+
+// withFundingBoard supplies the credential-free source behind the funding
+// matrix. A nil source leaves the board answering ErrBoardUnavailable, which is
+// what a test-injected account manager should see — an honest gap rather than a
+// board that silently has no venues.
+func withFundingBoard(board *fundingboard.Source) authorityOption {
+	return func(reads *managerAuthorityReads) { reads.board = board }
+}
+
+func newGatewayAuthority(ctx context.Context, desiredStore store.DesiredStateStore, manager *account.Manager, mode account.RuntimeMode, options ...authorityOption) (*gatewayAuthority, error) {
 	if ctx == nil || desiredStore == nil || manager == nil {
 		return nil, errors.New("gateway authority dependencies are incomplete")
 	}
 	if mode == "" {
 		mode = account.RuntimeModeTest
 	}
+	reads := managerAuthorityReads{manager: manager, mode: mode, profiles: routeprofile.DefaultRegistry(), now: time.Now}
+	for _, option := range options {
+		if option != nil {
+			option(&reads)
+		}
+	}
 	authority := &gatewayAuthority{
 		store: desiredStore, manager: manager, routeStatus: manager.RouteStatus,
-		reads: managerAuthorityReads{manager: manager, mode: mode, profiles: routeprofile.DefaultRegistry(), now: time.Now},
+		reads: reads,
 		mode:  mode, now: time.Now,
 	}
 	if snapshots, ok := desiredStore.(store.RuntimeSnapshotStore); ok {
@@ -599,6 +696,11 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		} else {
 			response.Body = bars
 		}
+	case httpapi.AuthorityFundingBoard:
+		// No query to validate and no identity to echo back: the board is the
+		// whole table for the gateway's mode, so there is nothing a caller could
+		// ask for that would make one column right and another wrong.
+		response.Body, err = authority.reads.FundingBoard(ctx)
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions,
 		httpapi.AuthorityRuntimeUncertain, httpapi.AuthorityRuntimeEvents,
 		httpapi.AuthorityPrivateEvents:
@@ -1167,6 +1269,60 @@ func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, e
 	return authorityCatalogInstruments{Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: observedAt, Instruments: instruments}, nil
 }
 
+// FundingBoard serves the cross-venue funding matrix from public endpoints.
+//
+// It is the one read on this type that never touches reads.manager: the board
+// is what an operator looks at before configuring anything, so binding it to a
+// ReadReady route would make a fresh install render an empty market.
+//
+// A nil source is ErrBoardUnavailable rather than an empty board. The two are
+// indistinguishable on the wire otherwise, and "every venue is down" is a
+// conclusion an operator would act on.
+func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityFundingBoard, error) {
+	if reads.board == nil {
+		return authorityFundingBoard{}, fundingboard.ErrBoardUnavailable
+	}
+	snapshot, err := reads.board.Snapshot(ctx)
+	if err != nil {
+		return authorityFundingBoard{}, err
+	}
+	board := authorityFundingBoard{
+		Mode:       snapshot.Mode,
+		ObservedAt: snapshot.ObservedAt,
+		Venues:     make([]authorityFundingVenue, 0, len(snapshot.Venues)),
+	}
+	for _, venue := range snapshot.Venues {
+		column := authorityFundingVenue{
+			Venue: venue.Venue, Environment: venue.Environment, Product: venue.Product,
+			Settlement: venue.Settlement, RouteProfileID: venue.RouteProfileID,
+			ObservedAt: venue.ObservedAt, Stale: venue.Stale, Unavailable: venue.Unavailable,
+			Rows: make([]authorityFundingRow, 0, len(venue.Entries)),
+		}
+		for _, entry := range venue.Entries {
+			row := authorityFundingRow{
+				Symbol: entry.Symbol, NativeSymbol: entry.NativeSymbol, NativeID: entry.NativeID,
+				BaseAsset: entry.BaseAsset, QuoteAsset: entry.QuoteAsset,
+				Rate: entry.Rate.String(), NextFundingTime: entry.NextFundingTime,
+			}
+			if entry.IntervalHours.Valid {
+				row.IntervalHours = entry.IntervalHours.Value
+			}
+			if entry.MarkPrice.Valid {
+				row.MarkPrice = entry.MarkPrice.Value.String()
+			}
+			if entry.IndexPrice.Valid {
+				row.IndexPrice = entry.IndexPrice.Value.String()
+			}
+			if entry.OpenInterest.Valid {
+				row.OpenInterest = entry.OpenInterest.Value.String()
+			}
+			column.Rows = append(column.Rows, row)
+		}
+		board.Venues = append(board.Venues, column)
+	}
+	return board, nil
+}
+
 func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, environment, product, instrumentID string) (authorityMarketData, error) {
 	venue = strings.TrimSpace(venue)
 	environment = strings.TrimSpace(environment)
@@ -1533,6 +1689,12 @@ func authorityError(err error) error {
 		return httpapi.AuthorityError{Status: http.StatusConflict, Code: "RUNTIME_MODE_MISMATCH"}
 	case errors.Is(err, account.ErrLiveWriteDisabled):
 		return httpapi.AuthorityError{Status: http.StatusForbidden, Code: "LIVE_PRIVATE_WRITE_DISABLED"}
+	case errors.Is(err, fundingboard.ErrBoardUnavailable):
+		// A table where every venue failed is a snapshot, not an error, so
+		// reaching here means the source itself could not be built or has been
+		// closed. That is a gateway configuration fault the caller may retry
+		// through, not a 500 the caller caused.
+		return httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "FUNDING_BOARD_UNAVAILABLE", Retryable: true}
 	default:
 		return httpapi.AuthorityError{Status: http.StatusInternalServerError, Code: "INTERNAL_ERROR", Retryable: true}
 	}

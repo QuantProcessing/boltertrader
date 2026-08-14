@@ -6,6 +6,7 @@ import type {
   Candle,
   CandlePage,
   Command,
+  FundingBoardSnapshot,
   Instrument,
   ManualIntent,
   MarketFact,
@@ -108,6 +109,91 @@ const FACT: MarketFact = {
   observedAt: "2026-08-13T09:00:00Z",
 };
 
+/**
+ * Two venues quoting one instrument, which is the least that makes a matrix a
+ * matrix: a spread needs two columns, and the third column here is unavailable
+ * so the page's degraded marker has something real to mark. Lighter is the
+ * venue that publishes a rate with no interval and no open interest, so the row
+ * that cannot honestly be annualised is present rather than hypothetical.
+ */
+const FUNDING_BOARD: FundingBoardSnapshot = {
+  mode: "test",
+  observedAt: "2026-08-13T09:00:00Z",
+  venues: [
+    {
+      venue: "binance",
+      environment: "test",
+      product: "perp",
+      settlement: "USDT",
+      routeProfileId: "binance.perp.usdt.test.v1",
+      observedAt: "2026-08-13T09:00:00Z",
+      stale: false,
+      unavailable: false,
+      rows: [
+        {
+          symbol: "BTC-USDT",
+          baseAsset: "BTC",
+          quoteAsset: "USDT",
+          rate: "0.0001",
+          intervalHours: 8,
+          nextFundingTime: "2026-08-13T16:00:00Z",
+          markPrice: "64001.00",
+        },
+        {
+          symbol: "ETH-USDT",
+          baseAsset: "ETH",
+          quoteAsset: "USDT",
+          rate: "-0.00025",
+          intervalHours: 8,
+          nextFundingTime: "2026-08-13T16:00:00Z",
+        },
+      ],
+    },
+    {
+      venue: "bybit",
+      environment: "test",
+      product: "perp",
+      settlement: "USDT",
+      routeProfileId: "bybit.perp.usdt.test.v1",
+      observedAt: "2026-08-13T09:00:00Z",
+      stale: false,
+      unavailable: false,
+      rows: [
+        {
+          symbol: "BTC-USDT",
+          baseAsset: "BTC",
+          quoteAsset: "USDT",
+          rate: "0.00042",
+          intervalHours: 8,
+          nextFundingTime: "2026-08-13T16:00:00Z",
+          openInterest: "1520.44",
+        },
+      ],
+    },
+    {
+      venue: "lighter",
+      environment: "test",
+      product: "perp",
+      settlement: "USDC",
+      routeProfileId: "lighter.perp.usdc.test.v1",
+      observedAt: "2026-08-13T08:58:00Z",
+      stale: true,
+      unavailable: false,
+      rows: [{ symbol: "BTC-USDC", baseAsset: "BTC", quoteAsset: "USDC", rate: "0.00007" }],
+    },
+    {
+      venue: "okx",
+      environment: "test",
+      product: "perp",
+      settlement: "USDT",
+      routeProfileId: "okx.perp.usdt.test.v1",
+      stale: false,
+      unavailable: true,
+      rows: [],
+    },
+  ],
+};
+
 /** Deterministic bars: a chart that redraws differently per run is untestable. */
 function candles(count: number): Candle[] {
   const step = 15 * 60_000;
@@ -201,6 +287,10 @@ export class FakeEdge {
 
     if (path === "/api/v1/market-data") {
       return ok(route, { meta: META, data: FACT, rateLimit: budget() });
+    }
+
+    if (path === "/api/v1/funding-board") {
+      return ok(route, { meta: META, data: FUNDING_BOARD, rateLimit: budget() });
     }
 
     if (path === "/api/v1/candles") {

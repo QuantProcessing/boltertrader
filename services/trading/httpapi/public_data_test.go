@@ -47,7 +47,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 		readiness.Update(component, platformsystem.Component{Ready: true, Reason: "ready", ObservedAt: now})
 	}
 	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Candles: &candleStub{}, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
 	small, _ := realtime.NewHub(1, time.Now)
 	expired, _ := small.Publish("one", map[string]bool{"ready": true})
 	_, _ = small.Publish("two", map[string]bool{"ready": true})
-	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	expiredRequest := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+expired.Cursor, nil)
 	expiredResponse := httptest.NewRecorder()
 	api.Handle(expiredResponse, expiredRequest, "GET /api/v1/realtime/stream")
@@ -189,3 +189,17 @@ func (*candleStub) Get(_ context.Context, query marketdata.CandleQuery) (marketd
 	}, nil
 }
 func (*candleStub) BudgetStatus(string) marketdata.BudgetStatus { return marketdata.BudgetStatus{} }
+
+type fundingBoardStub struct{}
+
+func (*fundingBoardStub) Get(context.Context) (marketdata.BoardSnapshot, error) {
+	return marketdata.BoardSnapshot{
+		Mode: "test",
+		Venues: []marketdata.BoardVenue{{
+			Venue: "binance", Environment: "demo", Product: "perp",
+			RouteProfileID: "binance.perp.usdt.demo.v1",
+			Rows:           []marketdata.BoardRow{{Symbol: "BTC-USDT", Rate: "0.0001"}},
+		}},
+	}, nil
+}
+func (*fundingBoardStub) BudgetStatus() marketdata.BudgetStatus { return marketdata.BudgetStatus{} }

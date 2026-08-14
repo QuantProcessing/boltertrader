@@ -420,6 +420,71 @@ export interface CandleQuery extends MarketDataQuery {
 /** The bound the Gateway and trading both enforce — `marketdata.MaxCandles`. */
 export const MAX_CANDLES = 500;
 
+/* --- Funding board ------------------------------------------------------- */
+
+/**
+ * `marketdata.BoardRow` — one instrument's funding on one venue.
+ *
+ * Almost every field is optional, and that is the point rather than laxity: the
+ * Go side carries `omitempty` on each of these because seven of the ten funding
+ * venues leave open interest out of their bulk call, and two publish a bare rate
+ * with no settlement clock. An absent cell arrives absent, and the matrix has to
+ * render it as "—" rather than as a zero the venue never quoted.
+ *
+ * `rate` is the rate for one interval, not annualised. Converting it to APR
+ * needs `intervalHours`, which is itself optional — a row without one can be
+ * shown per-period but cannot honestly be shown per-year.
+ */
+export interface FundingBoardRow {
+  symbol: string;
+  nativeSymbol?: string;
+  nativeId?: string;
+  baseAsset?: string;
+  quoteAsset?: string;
+  rate: string;
+  intervalHours?: number;
+  nextFundingTime?: string;
+  markPrice?: string;
+  indexPrice?: string;
+  openInterest?: string;
+}
+
+/**
+ * `marketdata.BoardVenue` — one column.
+ *
+ * `stale` and `unavailable` answer different questions. Stale means these are
+ * the venue's last known rates and older than the rest of the table; unavailable
+ * means there is nothing recent enough to put beside another venue's number, and
+ * the server guarantees such a column carries no rows at all. Neither may be
+ * rendered as an ordinary empty column: a spread computed against a column that
+ * silently vanished is a spread against a venue the operator never chose.
+ */
+export interface FundingBoardVenue {
+  venue: string;
+  environment: string;
+  product: string;
+  settlement?: string;
+  routeProfileId: string;
+  observedAt?: string;
+  stale: boolean;
+  unavailable: boolean;
+  rows: FundingBoardRow[];
+}
+
+/**
+ * `marketdata.BoardSnapshot` — the whole cross-venue matrix in one read.
+ *
+ * Unlike every other market read on this surface it takes no query at all: the
+ * server rejects any query string with a 400, because there is exactly one board
+ * and every visitor asks for it identically. That is also why it is cached and
+ * single-flighted server-side, and why polling it faster here would buy nothing.
+ */
+export interface FundingBoardSnapshot {
+  mode: Mode;
+  observedAt: string;
+  venues: FundingBoardVenue[];
+}
+
 /* --- Portfolio and ledger ------------------------------------------------ */
 
 /** `portfolio.Position`. A negative `quantity` is short. */

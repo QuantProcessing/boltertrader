@@ -17,9 +17,11 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/gateway/catalog"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
+	"github.com/QuantProcessing/boltertrader/gateway/fundingboard"
 	"github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
+	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -507,6 +509,130 @@ func TestGatewayAuthorityRejectsUnavailableMarketDataProjection(t *testing.T) {
 	}
 }
 
+// TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells
+// pins the two properties the board projection exists to hold.
+//
+// The first is that it answers with no accounts configured. The board is what
+// an operator looks at before configuring anything, and every other read on
+// managerAuthorityReads walks the manager for a ReadReady route; a refactor
+// that "helpfully" routed this one through the manager too would leave a fresh
+// install staring at an empty market with no error to explain it.
+//
+// The second is that an optional cell the venue never quoted stays off the
+// wire. exchange.OptionalDecimal marshals as {"value":…,"valid":…}, so emitting
+// it raw would render an absent open interest as the number zero — and seven of
+// the ten venues leave open interest empty in their bulk call. A board is read
+// by comparing venues against each other, which makes an invented zero worse
+// than a blank.
+func TestGatewayAuthorityFundingBoardProjectsWithoutAccountsAndOmitsAbsentCells(t *testing.T) {
+	ctx := context.Background()
+	observedAt := time.Unix(1720000000, 0).UTC()
+	accounts := &fakeAuthorityAccounts{}
+	reads := managerAuthorityReads{
+		manager: accounts,
+		mode:    account.RuntimeModeTest,
+		board: newTestFundingBoardSource(t, exchange.FundingBoardEntry{
+			Symbol: "BTC-USDT", NativeSymbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+			Rate:          decimal.RequireFromString("-0.00042"),
+			IntervalHours: exchange.OptionalInt{Value: 8, Valid: true},
+			MarkPrice:     exchange.OptionalDecimal{Value: decimal.RequireFromString("64000.5"), Valid: true},
+		}),
+		now: func() time.Time { return observedAt },
+	}
+
+	board, err := reads.FundingBoard(ctx)
+	if err != nil {
+		t.Fatalf("FundingBoard: %v", err)
+	}
+	if len(accounts.resources) != 0 || accounts.routeStatusCalls != nil {
+		t.Fatalf("board consulted the account manager: %+v", accounts.routeStatusCalls)
+	}
+	if len(board.Venues) == 0 {
+		t.Fatal("board carries no venue columns")
+	}
+
+	var rows int
+	for _, venue := range board.Venues {
+		rows += len(venue.Rows)
+	}
+	if rows == 0 {
+		t.Fatalf("board carries no rows: %+v", board.Venues)
+	}
+
+	encoded, err := json.Marshal(board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, absent := range []string{"openInterest", "indexPrice", "\"valid\"", "\"value\"", "0001-01-01"} {
+		if strings.Contains(string(encoded), absent) {
+			t.Fatalf("board JSON carries %q for a cell no venue quoted: %s", absent, encoded)
+		}
+	}
+	for _, present := range []string{"\"rate\":\"-0.00042\"", "\"markPrice\":\"64000.5\"", "\"intervalHours\":8"} {
+		if !strings.Contains(string(encoded), present) {
+			t.Fatalf("board JSON is missing %s: %s", present, encoded)
+		}
+	}
+}
+
+// TestGatewayAuthorityFundingBoardWithoutSourceIsUnavailable pins that a
+// gateway with no board reports one, rather than serving a table with no
+// venues. The two are indistinguishable once they reach the browser, and "every
+// venue is down" is a conclusion an operator would trade on.
+func TestGatewayAuthorityFundingBoardWithoutSourceIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityFundingBoard}); err == nil {
+		t.Fatal("a gateway with no funding board answered as though it had one")
+	}
+	var authorityErr httpapi.AuthorityError
+	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusServiceUnavailable ||
+		authorityErr.Code != "FUNDING_BOARD_UNAVAILABLE" || !authorityErr.Retryable {
+		t.Fatalf("error=%T %v", err, err)
+	}
+}
+
+// newTestFundingBoardSource builds a board whose every venue answers with the
+// same single entry, so a projection test can assert field mapping without
+// depending on which venues the profile registry happens to carry.
+func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) *fundingboard.Source {
+	t.Helper()
+	source, err := fundingboard.NewSource(constantFundingFactory{entry: entry}, routeprofile.DefaultRegistry(), routeprofile.ModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+	return source
+}
+
+type constantFundingFactory struct{ entry exchange.FundingBoardEntry }
+
+func (factory constantFundingFactory) Build(profile routeprofile.Profile) (fundingboard.Connector, error) {
+	return constantFundingConnector{
+		scope: exchange.CatalogScope{
+			Venue:       exchange.Venue(profile.Venue),
+			Product:     exchange.Product(profile.Product),
+			Environment: exchange.Environment(profile.NativeEnvironment),
+			Settlement:  profile.SettlementAsset,
+		},
+		entry: factory.entry,
+	}, nil
+}
+
+type constantFundingConnector struct {
+	scope exchange.CatalogScope
+	entry exchange.FundingBoardEntry
+}
+
+func (connector constantFundingConnector) Refresh(context.Context) (exchange.FundingBoardSnapshot, error) {
+	return exchange.FundingBoardSnapshot{Scope: connector.scope, Entries: []exchange.FundingBoardEntry{connector.entry}}, nil
+}
+
+func (constantFundingConnector) Close() error { return nil }
+
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
@@ -605,12 +731,13 @@ func assertRuntimeJSONHasNoSecretRef(t *testing.T, encoded []byte, canary string
 }
 
 type staticAuthorityReads struct {
-	venues      []authorityVenue
-	instruments []authorityInstrument
-	marketData  authorityMarketData
-	candles     authorityCandles
-	runtime     authorityRuntimeProjection
-	err         error
+	venues       []authorityVenue
+	instruments  []authorityInstrument
+	marketData   authorityMarketData
+	candles      authorityCandles
+	fundingBoard authorityFundingBoard
+	runtime      authorityRuntimeProjection
+	err          error
 }
 
 func (reads staticAuthorityReads) Venues() []authorityVenue {
@@ -633,6 +760,10 @@ func (reads staticAuthorityReads) Candles(_ context.Context, query authorityCand
 	candles.Venue, candles.Environment = query.Venue, query.Environment
 	candles.Product, candles.InstrumentID, candles.Interval = query.Product, query.InstrumentID, query.Interval
 	return candles, reads.err
+}
+
+func (reads staticAuthorityReads) FundingBoard(context.Context) (authorityFundingBoard, error) {
+	return reads.fundingBoard, reads.err
 }
 
 func (reads staticAuthorityReads) Runtime(string) (authorityRuntimeProjection, error) {

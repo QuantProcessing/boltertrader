@@ -57,6 +57,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
 
           <Group heading="Go to">
             <Item onSelect={() => run(() => void navigate({ to: "/trade" }))}>Trade</Item>
+            <Item onSelect={() => run(() => void navigate({ to: "/funding" }))}>Funding</Item>
             <Item onSelect={() => run(() => void navigate({ to: "/portfolio" }))}>Portfolio</Item>
             <Item onSelect={() => run(() => void navigate({ to: "/activity" }))}>Activity</Item>
             <Item onSelect={() => run(() => void navigate({ to: "/settings" }))}>Settings</Item>

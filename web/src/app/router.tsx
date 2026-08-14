@@ -19,6 +19,7 @@ import { Outlet, createRootRouteWithContext, createRoute, createRouter, redirect
 import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
+import { FundingPage } from "@/routes/funding";
 import { LoginPage } from "@/routes/login";
 import { PortfolioPage } from "@/routes/portfolio";
 import { SettingsPage } from "@/routes/settings";
@@ -81,13 +82,14 @@ const indexRoute = createRoute({
 });
 
 const tradeRoute = createRoute({ getParentRoute: () => appRoute, path: "/trade", component: TradePage });
+const fundingRoute = createRoute({ getParentRoute: () => appRoute, path: "/funding", component: FundingPage });
 const portfolioRoute = createRoute({ getParentRoute: () => appRoute, path: "/portfolio", component: PortfolioPage });
 const activityRoute = createRoute({ getParentRoute: () => appRoute, path: "/activity", component: ActivityPage });
 const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: "/settings", component: SettingsPage });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  appRoute.addChildren([indexRoute, tradeRoute, portfolioRoute, activityRoute, settingsRoute]),
+  appRoute.addChildren([indexRoute, tradeRoute, fundingRoute, portfolioRoute, activityRoute, settingsRoute]),
 ]);
 
 export function createAppRouter(context: RouterContext) {

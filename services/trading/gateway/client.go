@@ -98,6 +98,16 @@ const (
 	// above the worst case, which leaves room for venues that quote more
 	// precision than the arithmetic above assumes.
 	candleResponseLimit = 1 << 20
+	// fundingBoardResponseLimit bounds the whole cross-venue funding matrix,
+	// which is the second bulk document on this client and for the same reason
+	// as the catalog: its size tracks how many perpetuals the Gateway's ten
+	// funding-capable venues list, not anything about the request. Ten columns
+	// of several hundred rows, each row carrying a symbol, a rate and up to
+	// three price strings, is comfortably past 64 KiB — and past it exactly when
+	// the board is healthiest and most venues are answering. Truncation would
+	// surface as a decode failure and be reported as an unavailable board, so
+	// the ceiling matches the catalog's rather than the control plane's.
+	fundingBoardResponseLimit = 8 << 20
 )
 
 type readEnvelope[T any] struct {
@@ -284,6 +294,20 @@ func (source CandleSource) FetchCandles(ctx context.Context, query marketdata.Ca
 		return marketdata.CandlePage{}, fmt.Errorf("Gateway candle source is unavailable")
 	}
 	return source.client.fetchCandles(ctx, query)
+}
+
+// FundingBoardSource adapts the client to marketdata.BoardSource, alongside the
+// two adapters above and for the same reason.
+type FundingBoardSource struct{ client *Client }
+
+// FundingBoard views the client as a funding-board source.
+func (client *Client) FundingBoard() FundingBoardSource { return FundingBoardSource{client: client} }
+
+func (source FundingBoardSource) FetchFundingBoard(ctx context.Context) (marketdata.BoardSnapshot, error) {
+	if source.client == nil {
+		return marketdata.BoardSnapshot{}, fmt.Errorf("Gateway funding-board source is unavailable")
+	}
+	return source.client.fetchFundingBoard(ctx)
 }
 
 type orderIntent struct {
@@ -733,6 +757,22 @@ func (client *Client) fetchCandles(ctx context.Context, query marketdata.CandleQ
 	for index := range result.Data.Candles {
 		result.Data.Candles[index].OpenTime = result.Data.Candles[index].OpenTime.UTC()
 		result.Data.Candles[index].CloseTime = result.Data.Candles[index].CloseTime.UTC()
+	}
+	return result.Data, nil
+}
+
+// fetchFundingBoard reads the cross-venue funding matrix.
+//
+// It names neither an account nor a venue, which is what distinguishes it from
+// the two reads above: the board's whole purpose is to be legible before any
+// account exists, and the Gateway assembles it from public endpoints on its own
+// refresh clock. So there is no query to send and nothing to cross-check the
+// response against beyond its own internal consistency, which the projection's
+// validateBoard judges once the bytes are decoded.
+func (client *Client) fetchFundingBoard(ctx context.Context) (marketdata.BoardSnapshot, error) {
+	var result readEnvelope[marketdata.BoardSnapshot]
+	if err := client.readLimit(ctx, "", "/internal/v1/funding-board", nil, &result, fundingBoardResponseLimit); err != nil {
+		return marketdata.BoardSnapshot{}, fmt.Errorf("read Gateway funding board: %w", err)
 	}
 	return result.Data, nil
 }

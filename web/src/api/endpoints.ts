@@ -42,6 +42,7 @@ import type {
   CommandProjection,
   CredentialBundle,
   Fill,
+  FundingBoardSnapshot,
   Instrument,
   LedgerEntry,
   ManualCommandRequest,
@@ -137,6 +138,7 @@ export const paths = {
   catalogInstruments: "/api/v1/catalog/instruments",
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
+  fundingBoard: "/api/v1/funding-board",
   realtimeStream: "/api/v1/realtime/stream",
 
   reservations: "/api/v1/reservations",
@@ -274,6 +276,28 @@ export const market = {
       query: { ...query },
       signal,
     });
+    return { value: body.data, rateLimit: body.rateLimit };
+  },
+};
+
+/* --- Funding ------------------------------------------------------------- */
+
+export const funding = {
+  /**
+   * The whole cross-venue funding matrix, in one read, with no parameters.
+   *
+   * Deliberately no query argument: the server calls `validateQuery(r, nil)` on
+   * this route, so a stray `?venue=binance` is a 400 rather than a filter. Every
+   * narrowing the board offers — venue chips, search, minimum open interest, the
+   * per-period/APR switch — is therefore client-side by construction, which is
+   * also what lets them all be instant.
+   *
+   * The read costs the Gateway one call no matter how many columns come back,
+   * and `rateLimit` is charged to the board's own budget line rather than to any
+   * venue, so polling this cannot starve the order ticket's quotes.
+   */
+  async board(signal?: AbortSignal): Promise<Metered<FundingBoardSnapshot>> {
+    const body = await apiRequest<RateLimitedEnvelope<FundingBoardSnapshot>>(paths.fundingBoard, { signal });
     return { value: body.data, rateLimit: body.rateLimit };
   },
 };

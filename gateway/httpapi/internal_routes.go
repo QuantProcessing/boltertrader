@@ -36,6 +36,7 @@ const (
 	AuthorityMarketData          AuthorityOperation = "market_data"
 	AuthorityCandles             AuthorityOperation = "candles"
 	AuthorityPrivateEvents       AuthorityOperation = "private_events"
+	AuthorityFundingBoard        AuthorityOperation = "funding_board"
 )
 
 type RotationFence struct {
@@ -249,6 +250,7 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/market-data"},
 	{http.MethodGet, "/internal/v1/candles"},
 	{http.MethodGet, "/internal/v1/private-events"},
+	{http.MethodGet, "/internal/v1/funding-board"},
 }
 
 func InternalRoutes() []Route { return append([]Route(nil), internalRoutes...) }
@@ -302,6 +304,7 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
 	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
+	handler.mux.HandleFunc("GET /internal/v1/funding-board", handler.read(AuthorityFundingBoard))
 }
 
 func (handler *InternalHandler) applyDesired(w http.ResponseWriter, r *http.Request) {

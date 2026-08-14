@@ -35,6 +35,14 @@ type CandlesProjection interface {
 	BudgetStatus(string) marketdata.BudgetStatus
 }
 
+// FundingBoardProjection is its own interface for the same reason
+// CandlesProjection is, plus one of its own: the board's BudgetStatus takes no
+// venue, because the board is one Gateway read rather than one read per venue.
+type FundingBoardProjection interface {
+	Get(context.Context) (marketdata.BoardSnapshot, error)
+	BudgetStatus() marketdata.BudgetStatus
+}
+
 type ReadinessProjection interface {
 	Status() platformsystem.Snapshot
 	Readiness() platformsystem.Snapshot
@@ -46,18 +54,19 @@ type RealtimeProjection interface {
 }
 
 type PublicDataDependencies struct {
-	Catalog    CatalogProjection
-	MarketData MarketDataProjection
-	Candles    CandlesProjection
-	Readiness  ReadinessProjection
-	Realtime   RealtimeProjection
-	Principal  func(*http.Request) (principalID, mode string, err error)
+	Catalog      CatalogProjection
+	MarketData   MarketDataProjection
+	Candles      CandlesProjection
+	FundingBoard FundingBoardProjection
+	Readiness    ReadinessProjection
+	Realtime     RealtimeProjection
+	Principal    func(*http.Request) (principalID, mode string, err error)
 }
 
 type PublicDataAPI struct{ dependencies PublicDataDependencies }
 
 func NewPublicDataAPI(dependencies PublicDataDependencies) (*PublicDataAPI, error) {
-	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Candles == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
+	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Candles == nil || dependencies.FundingBoard == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
 		return nil, httpx.ConfigErr("public-data dependencies are incomplete")
 	}
 	return &PublicDataAPI{dependencies: dependencies}, nil
@@ -76,6 +85,7 @@ func (api *PublicDataAPI) Register(mux *http.ServeMux) error {
 		"GET /api/v1/catalog/instruments",
 		"GET /api/v1/market-data",
 		"GET /api/v1/candles",
+		"GET /api/v1/funding-board",
 		"GET /api/v1/realtime/stream",
 	} {
 		route := route
@@ -99,6 +109,8 @@ func (api *PublicDataAPI) Handle(w http.ResponseWriter, r *http.Request, route s
 		api.marketData(w, r)
 	case "GET /api/v1/candles":
 		api.candles(w, r)
+	case "GET /api/v1/funding-board":
+		api.fundingBoard(w, r)
 	case "GET /api/v1/realtime/stream":
 		api.realtime(w, r)
 	default:
@@ -211,6 +223,36 @@ func (api *PublicDataAPI) candles(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"meta": httpx.Meta(r), "data": page, "rateLimit": api.dependencies.Candles.BudgetStatus(query.Venue),
+	})
+}
+
+// fundingBoard answers the cross-venue funding matrix.
+//
+// It is the only read on this surface that takes no parameters at all, which is
+// the point of it: the board is the one market view that exists before a
+// principal has configured any account, so there is nothing to name and nothing
+// to scope. validateQuery with no names still runs, and rejects a request that
+// carries any query string — a caller passing venue= is asking for something
+// this route does not do, and silently ignoring it would let them believe they
+// had filtered the board when they had not.
+func (api *PublicDataAPI) fundingBoard(w http.ResponseWriter, r *http.Request) {
+	if err := validateQuery(r, nil); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
+		return
+	}
+	snapshot, err := api.dependencies.FundingBoard.Get(r.Context())
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		code := "PUBLIC_DATA_NOT_READY"
+		if errors.Is(err, marketdata.ErrRateLimited) {
+			status = http.StatusTooManyRequests
+			code = "RATE_LIMITED"
+		}
+		httpx.WriteError(w, status, code, "funding-board projection is unavailable", nil, true, httpx.RequestID(r))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"meta": httpx.Meta(r), "data": snapshot, "rateLimit": api.dependencies.FundingBoard.BudgetStatus(),
 	})
 }
 

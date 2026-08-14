@@ -6815,6 +6815,86 @@
       "tests": [
         "TestPublicInstrumentConnectorConstructsOnlySupportedProfilesAndStaysCredentialFree"
       ]
+    },
+    {
+      "id": "exchange.FundingBoardEntry",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingBoardSnapshot",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingBoardSnapshot.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingBoardLoader",
+      "kind": "interface",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingBoardLoader.LoadFundingBoard",
+      "kind": "interface_method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange/factory.NewPublicFundingConnector",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardSourceDegradesPerVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingConnector",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardSourceDegradesPerVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingConnector.Refresh",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardSourceDegradesPerVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingConnector.Scope",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardSourceDegradesPerVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingConnector.Close",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingBoardSourceDegradesPerVenue"
+      ]
     }
   ]
 }

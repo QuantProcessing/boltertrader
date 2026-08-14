@@ -25,6 +25,7 @@ interface Section {
 
 const SECTIONS: Section[] = [
   { to: "/trade", label: "Trade" },
+  { to: "/funding", label: "Funding" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/activity", label: "Activity" },
   { to: "/settings", label: "Settings" },
