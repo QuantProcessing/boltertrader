@@ -90,6 +90,14 @@ const (
 	// kinds of response to one limit therefore turns a healthy Gateway into an
 	// unready service the moment its catalog is no longer empty.
 	catalogResponseLimit = 8 << 20
+	// candleResponseLimit bounds one candle page. It cannot share the 64 KiB
+	// ceiling above: a bar carries two RFC 3339 timestamps and five decimal
+	// strings, which is close to 190 bytes of JSON, so the 500-bar maximum page
+	// lands near 95 KiB and would be truncated into a decode failure — reported,
+	// misleadingly, as invalid Gateway facts. One MiB is an order of magnitude
+	// above the worst case, which leaves room for venues that quote more
+	// precision than the arithmetic above assumes.
+	candleResponseLimit = 1 << 20
 )
 
 type readEnvelope[T any] struct {
@@ -261,6 +269,21 @@ func (source MarketDataSource) Fetch(ctx context.Context, query marketdata.Query
 		return marketdata.Fact{}, fmt.Errorf("Gateway market-data source is unavailable")
 	}
 	return source.client.fetchMarketData(ctx, query)
+}
+
+// CandleSource adapts the client to marketdata.CandleSource. It is separate
+// from MarketDataSource for the same reason that one is separate from Client:
+// the two answer different interfaces, and a single type cannot hold both.
+type CandleSource struct{ client *Client }
+
+// Candles views the client as a candle source.
+func (client *Client) Candles() CandleSource { return CandleSource{client: client} }
+
+func (source CandleSource) FetchCandles(ctx context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
+	if source.client == nil {
+		return marketdata.CandlePage{}, fmt.Errorf("Gateway candle source is unavailable")
+	}
+	return source.client.fetchCandles(ctx, query)
 }
 
 type orderIntent struct {
@@ -676,6 +699,41 @@ func (client *Client) fetchMarketData(ctx context.Context, query marketdata.Quer
 		return marketdata.Fact{}, fmt.Errorf("Gateway market-data response is invalid")
 	}
 	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
+	return result.Data, nil
+}
+
+// fetchCandles reads the chart's bars from the Gateway's internal plane.
+//
+// It sends no account: the internal candle route is keyed by the instrument,
+// and the Gateway resolves a read-ready route on the requested venue itself.
+// That is the same shape as fetchMarketData above, and for the same reason —
+// candles are public data, and the browser asks for an instrument's bars rather
+// than for one account's view of them.
+func (client *Client) fetchCandles(ctx context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
+	values := url.Values{
+		"venue": {query.Venue}, "environment": {query.Environment}, "product": {query.Product},
+		"instrumentId": {query.InstrumentID}, "interval": {query.Interval},
+	}
+	// An absent limit is the Gateway's default rather than a missing argument,
+	// so a zero here means "a screenful" and must not be sent as "limit=0",
+	// which the Gateway reads as an invalid bound.
+	if query.Limit > 0 {
+		values.Set("limit", strconv.Itoa(query.Limit))
+	}
+	var result readEnvelope[marketdata.CandlePage]
+	if err := client.readLimit(ctx, "", "/internal/v1/candles", values, &result, candleResponseLimit); err != nil {
+		return marketdata.CandlePage{}, fmt.Errorf("read Gateway candles: %w", err)
+	}
+	if result.Data.Venue != query.Venue || result.Data.Environment != query.Environment ||
+		result.Data.Product != query.Product || result.Data.InstrumentID != query.InstrumentID ||
+		result.Data.Interval != query.Interval || result.Data.ObservedAt.IsZero() {
+		return marketdata.CandlePage{}, fmt.Errorf("Gateway candles response is invalid")
+	}
+	result.Data.ObservedAt = result.Data.ObservedAt.UTC()
+	for index := range result.Data.Candles {
+		result.Data.Candles[index].OpenTime = result.Data.Candles[index].OpenTime.UTC()
+		result.Data.Candles[index].CloseTime = result.Data.Candles[index].CloseTime.UTC()
+	}
 	return result.Data, nil
 }
 

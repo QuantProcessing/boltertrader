@@ -66,6 +66,14 @@ type markPriceProjection struct {
 	ObservedAt   time.Time           `json:"observed_at"`
 }
 
+type candlesProjection struct {
+	AccountID    domain.AccountID    `json:"account_id"`
+	InstrumentID domain.InstrumentID `json:"instrument_id"`
+	Interval     string              `json:"interval"`
+	Candles      []exchange.Candle   `json:"candles"`
+	Page         exchange.PageInfo   `json:"page"`
+}
+
 type fundingRateProjection struct {
 	Rate            decimal.Decimal          `json:"rate"`
 	MarkPrice       exchange.OptionalDecimal `json:"mark_price"`
@@ -221,6 +229,65 @@ func (handler *Handler) getMarkPrice(w http.ResponseWriter, r *http.Request) {
 	}
 	defer subscription.Close()
 	projection, err := awaitMarkPriceSnapshot(r.Context(), selection, subscription)
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projection)
+}
+
+// getCandles serves historical OHLCV for one account-scoped instrument.
+//
+// Structurally this is the twin of listFundingRateHistory, not of getOrderBook:
+// a windowed list with start/end/limit/cursor rather than a point-in-time
+// snapshot, so it uses the same `pagination.*` query vocabulary.
+func (handler *Handler) getCandles(w http.ResponseWriter, r *http.Request) {
+	selection, err := handler.selectPublicMarket(r)
+	if err != nil {
+		handler.invalidOrFail(w, err)
+		return
+	}
+	interval, err := PortableCandleInterval(r.URL.Query().Get("interval"))
+	if err != nil {
+		handler.invalid(w)
+		return
+	}
+	start, err := optionalRFC3339(r.URL.Query().Get("start"))
+	if err != nil {
+		handler.invalid(w)
+		return
+	}
+	end, err := optionalRFC3339(r.URL.Query().Get("end"))
+	// An empty or inverted window is refused here rather than forwarded: some
+	// venues reject it and some silently return everything, and a chart cannot
+	// tell those two answers apart.
+	if err != nil || !start.IsZero() && !end.IsZero() && !end.After(start) {
+		handler.invalid(w)
+		return
+	}
+	limit, err := listLimit(r)
+	if err != nil {
+		handler.invalid(w)
+		return
+	}
+	client, err := handler.publicRESTClient(selection)
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	page, err := client.Candles(r.Context(), exchange.CandlesRequest{
+		Instrument: selection.instrument,
+		Interval:   interval,
+		Start:      start,
+		End:        end,
+		Limit:      limit,
+		Cursor:     r.URL.Query().Get("pagination.cursor"),
+	})
+	if err != nil {
+		handler.fail(w, err)
+		return
+	}
+	projection, err := projectCandles(selection, interval, page)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -792,6 +859,84 @@ func projectBBO(selection publicMarketSelection, book exchange.OrderBook) (bboPr
 		AccountID: selection.accountID, InstrumentID: selection.instrumentID,
 		Bid: book.Bids[0], Ask: book.Asks[0], ObservedAt: observedTime(book.Time),
 	}, nil
+}
+
+func projectCandles(
+	selection publicMarketSelection,
+	interval string,
+	page exchange.CandlePage,
+) (candlesProjection, error) {
+	candles := make([]exchange.Candle, len(page.Candles))
+	for index, candle := range page.Candles {
+		if err := ValidCandle(candle); err != nil {
+			return candlesProjection{}, err
+		}
+		candle.OpenTime = candle.OpenTime.UTC()
+		if !candle.CloseTime.IsZero() {
+			candle.CloseTime = candle.CloseTime.UTC()
+		}
+		candles[index] = candle
+	}
+	return candlesProjection{
+		AccountID: selection.accountID, InstrumentID: selection.instrumentID,
+		Interval: interval, Candles: candles, Page: page.Page,
+	}, nil
+}
+
+// ValidCandle rejects a bar that cannot be drawn.
+//
+// A zero open time is the one that matters: without it a chart has no x-axis
+// and would silently stack every bar at the epoch. The high/low relations catch
+// a transposed venue payload, which otherwise renders as a plausible-looking
+// candle pointing the wrong way. Volume may be zero — an interval with no
+// trades is a real interval — but open/high/low/close must all be positive.
+func ValidCandle(candle exchange.Candle) error {
+	malformed := func(reason string) error {
+		return fmt.Errorf("%w: candle %s", exchange.ErrMalformedResponse, reason)
+	}
+	switch {
+	case candle.OpenTime.IsZero():
+		return malformed("open time is missing")
+	case !candle.CloseTime.IsZero() && !candle.CloseTime.After(candle.OpenTime):
+		return malformed("close time does not follow open time")
+	case !candle.Open.IsPositive() || !candle.High.IsPositive() ||
+		!candle.Low.IsPositive() || !candle.Close.IsPositive():
+		return malformed("prices are not positive")
+	case candle.Volume.IsNegative():
+		return malformed("volume is negative")
+	case candle.High.LessThan(candle.Low),
+		candle.High.LessThan(candle.Open), candle.High.LessThan(candle.Close),
+		candle.Low.GreaterThan(candle.Open), candle.Low.GreaterThan(candle.Close):
+		return malformed("high/low do not bound open/close")
+	default:
+		return nil
+	}
+}
+
+// PortableCandleInterval is the venue-neutral interval vocabulary.
+//
+// It is exported because both of the gateway's HTTP planes answer for candles —
+// the account-scoped `/v1/candles` here and the venue-keyed
+// `/internal/v1/candles` the trading service reads — and the two must accept
+// exactly the same set. A second copy in cmd/exchange-gateway would drift.
+//
+// The set is copied from `portableCandleInterval` in
+// exchange/internal/factoryclient/public_websocket.go, which enforces the same
+// list for WatchCandles — the intervals every supported venue can serve. That
+// package is internal, so the list cannot be shared; keep the two in step.
+//
+// Enforcing it here is what keeps the REST surface venue-neutral. Venues
+// disagree on spelling — OKX's native form is `1H`/`1D` while Binance's is
+// `1h`/`1d` — and the exchange layer passes the string through verbatim. Were
+// the gateway to do the same, a caller's interval string would have to change
+// when the instrument's venue changed.
+func PortableCandleInterval(interval string) (string, error) {
+	switch interval {
+	case "1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d":
+		return interval, nil
+	default:
+		return "", fmt.Errorf("candle interval is invalid")
+	}
 }
 
 func validBBO(bid, ask exchange.BookLevel) error {

@@ -90,6 +90,7 @@ const gatewayDSN = "postgres://bolter_gateway_test@postgres:5432/bolter_gateway_
 const (
 	defaultPostgresPort = "15432"
 	defaultGatewayPort  = "18080"
+	defaultWebPort      = "18090"
 	defaultAuthEdgePort = "18091"
 	defaultTradingPort  = "18092"
 	defaultUsername     = "operator"
@@ -108,6 +109,7 @@ const (
 	postgresDSNVar           = "GATEWAY_POSTGRES_DSN_FILE"
 	postgresPortVar          = "POSTGRES_PORT"
 	gatewayPortVar           = "GATEWAY_PORT"
+	webPortVar               = "WEB_PORT"
 	authEdgePortVar          = "AUTHEDGE_PORT"
 	tradingPortVar           = "TRADING_PORT"
 	bootstrapUserVar         = "BT_BOOTSTRAP_USERNAME"
@@ -117,6 +119,7 @@ const (
 type Config struct {
 	PostgresPort      string
 	GatewayPort       string
+	WebPort           string
 	AuthEdgePort      string
 	TradingPort       string
 	BootstrapUsername string
@@ -390,6 +393,7 @@ func resolveConfig(envStackPath string) (Config, error) {
 	config := Config{
 		PostgresPort:      resolve(postgresPortVar, previous, defaultPostgresPort),
 		GatewayPort:       resolve(gatewayPortVar, previous, defaultGatewayPort),
+		WebPort:           resolve(webPortVar, previous, defaultWebPort),
 		AuthEdgePort:      resolve(authEdgePortVar, previous, defaultAuthEdgePort),
 		TradingPort:       resolve(tradingPortVar, previous, defaultTradingPort),
 		BootstrapUsername: resolve(bootstrapUserVar, previous, defaultUsername),
@@ -400,6 +404,7 @@ func resolveConfig(envStackPath string) (Config, error) {
 	}{
 		{postgresPortVar, config.PostgresPort},
 		{gatewayPortVar, config.GatewayPort},
+		{webPortVar, config.WebPort},
 		{authEdgePortVar, config.AuthEdgePort},
 		{tradingPortVar, config.TradingPort},
 	} {
@@ -487,7 +492,10 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 %s=%s
 %s=%s
 
-# Published ports. compose binds every one of them to 127.0.0.1.
+# Published ports. compose binds every one of them to 127.0.0.1. %s is the one
+# a browser uses; the other three are for tooling and for probing a service in
+# isolation when something is wrong.
+%s=%s
 %s=%s
 %s=%s
 %s=%s
@@ -505,8 +513,10 @@ func renderEnvStack(secretDir string, config Config, uid, gid int) string {
 		authTokenFileVar, filepath.Join(secretDir, GatewayAuthTokenFile),
 		internalAuthTokenFileVar, filepath.Join(secretDir, GatewayInternalAuthTokenFile),
 		postgresDSNVar, filepath.Join(secretDir, GatewayPostgresDSNFile),
+		webPortVar,
 		postgresPortVar, config.PostgresPort,
 		gatewayPortVar, config.GatewayPort,
+		webPortVar, config.WebPort,
 		authEdgePortVar, config.AuthEdgePort,
 		tradingPortVar, config.TradingPort,
 		filepath.Join(SecretDirName, Mode, BootstrapPasswordHashFile),

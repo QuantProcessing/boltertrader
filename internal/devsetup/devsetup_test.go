@@ -50,7 +50,7 @@ var protectedTokenFiles = []string{
 // what any test observes.
 func bootstrapInto(t *testing.T, root string) Result {
 	t.Helper()
-	for _, name := range []string{postgresPortVar, gatewayPortVar, authEdgePortVar, tradingPortVar, bootstrapUserVar} {
+	for _, name := range []string{postgresPortVar, gatewayPortVar, authEdgePortVar, tradingPortVar, webPortVar, bootstrapUserVar} {
 		t.Setenv(name, "")
 	}
 	result, err := Bootstrap(root)
@@ -348,6 +348,7 @@ func TestStackDefaultsMatchCompose(t *testing.T) {
 		gatewayPortVar:   defaultGatewayPort,
 		authEdgePortVar:  defaultAuthEdgePort,
 		tradingPortVar:   defaultTradingPort,
+		webPortVar:       defaultWebPort,
 		bootstrapUserVar: defaultUsername,
 		secretDirVar:     "./" + SecretDirName,
 	} {

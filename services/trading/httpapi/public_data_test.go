@@ -47,7 +47,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 		readiness.Update(component, platformsystem.Component{Ready: true, Reason: "ready", ObservedAt: now})
 	}
 	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Candles: &candleStub{}, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +70,14 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
 		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
 		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt", want: http.StatusBadRequest, body: "request is invalid"},
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m", want: http.StatusOK, body: `"interval":"1m"`},
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=100", want: http.StatusOK, body: `"interval":"1m"`},
+		// limit is the one optional field, so it must be rejected on its own
+		// terms rather than by the required-field sweep.
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=0", want: http.StatusBadRequest, body: "must be between 1 and 500"},
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=501", want: http.StatusBadRequest, body: "must be between 1 and 500"},
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusBadRequest, body: `field \"interval\" is required`},
+		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
 		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"accounts"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
@@ -98,7 +106,7 @@ func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
 	small, _ := realtime.NewHub(1, time.Now)
 	expired, _ := small.Publish("one", map[string]bool{"ready": true})
 	_, _ = small.Publish("two", map[string]bool{"ready": true})
-	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	expiredRequest := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+expired.Cursor, nil)
 	expiredResponse := httptest.NewRecorder()
 	api.Handle(expiredResponse, expiredRequest, "GET /api/v1/realtime/stream")
@@ -171,3 +179,13 @@ func (*marketStub) Get(context.Context, marketdata.Query) (marketdata.Fact, erro
 	return marketdata.Fact{}, nil
 }
 func (*marketStub) BudgetStatus(string) marketdata.BudgetStatus { return marketdata.BudgetStatus{} }
+
+type candleStub struct{}
+
+func (*candleStub) Get(_ context.Context, query marketdata.CandleQuery) (marketdata.CandlePage, error) {
+	return marketdata.CandlePage{
+		Venue: query.Venue, Environment: query.Environment, Product: query.Product,
+		InstrumentID: query.InstrumentID, Interval: query.Interval,
+	}, nil
+}
+func (*candleStub) BudgetStatus(string) marketdata.BudgetStatus { return marketdata.BudgetStatus{} }

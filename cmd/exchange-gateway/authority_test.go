@@ -608,6 +608,7 @@ type staticAuthorityReads struct {
 	venues      []authorityVenue
 	instruments []authorityInstrument
 	marketData  authorityMarketData
+	candles     authorityCandles
 	runtime     authorityRuntimeProjection
 	err         error
 }
@@ -622,6 +623,16 @@ func (reads staticAuthorityReads) Instruments() (authorityCatalogInstruments, er
 
 func (reads staticAuthorityReads) MarketData(context.Context, string, string, string, string) (authorityMarketData, error) {
 	return reads.marketData, reads.err
+}
+
+func (reads staticAuthorityReads) Candles(_ context.Context, query authorityCandlesQuery) (authorityCandles, error) {
+	candles := reads.candles
+	// The dispatcher rejects a page whose identity does not echo the request, so
+	// a stub that returned a zero-valued identity would fail every caller for a
+	// reason that has nothing to do with what the test is asserting.
+	candles.Venue, candles.Environment = query.Venue, query.Environment
+	candles.Product, candles.InstrumentID, candles.Interval = query.Product, query.InstrumentID, query.Interval
+	return candles, reads.err
 }
 
 func (reads staticAuthorityReads) Runtime(string) (authorityRuntimeProjection, error) {

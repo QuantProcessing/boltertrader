@@ -1,6 +1,8 @@
-# The whole local stack: one postgres, three one-shot migrators, three services.
+# The whole local stack: one postgres, three one-shot migrators, three services,
+# and the web frontend in front of them.
 #
-# `make up` brings this up and the MVP loop runs against port ${AUTHEDGE_PORT}.
+# `make up` brings this up and the browser opens ${WEB_PORT}; the MVP loop can
+# also be driven against the auth edge directly on ${AUTHEDGE_PORT}.
 # Everything here is the test-mode stack; nothing in this file is a template for
 # a deployment. Four properties are load-bearing and each is explained where it
 # appears: every published port is bound to 127.0.0.1, secrets arrive as
@@ -346,6 +348,45 @@ services:
         condition: service_started
       gateway:
         condition: service_healthy
+    <<: *hardening
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Web — the built frontend, and the reverse proxy that puts it on the same
+  # origin as the auth edge. See docker/web/Dockerfile for why this is a second
+  # image rather than a route in a Go service.
+  # ---------------------------------------------------------------------------
+  web:
+    image: ${BOLTER_WEB_IMAGE:-boltertrader-web:local}
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    volumes:
+      # Read-only, like every other configuration mount here: the process that
+      # faces the browser has no business rewriting its own routing table.
+      - "./docker/web/Caddyfile:/etc/caddy/Caddyfile:ro"
+    ports:
+      # 8080 inside, because Caddy's non-root user cannot bind 80 and this
+      # container runs as the host uid like all the others.
+      - "127.0.0.1:${WEB_PORT:-18090}:8080"
+    depends_on:
+      # service_started, not healthy: the auth edge has no healthcheck for the
+      # reason its own block explains. A proxy that starts before its upstream
+      # answers 502 for a few seconds; one that waits on a condition compose
+      # cannot observe never starts at all.
+      authedge:
+        condition: service_started
+    # Unlike the Go services this image is not the gateway's, so it inherits no
+    # misdirected probe — and unlike them it can be probed without a credential,
+    # because serving index.html is unauthenticated by definition. That makes
+    # `--wait` meaningful here: `make up` returns when the page is actually being
+    # served, not when the container happens to be running.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
     <<: *hardening
     restart: unless-stopped
 

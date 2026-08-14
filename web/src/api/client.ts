@@ -1,352 +1,267 @@
-import {
-  AuthGenerationGuard,
-  StaleAuthGenerationError,
-  authGeneration,
-} from "../state/authGeneration";
+/* ---------------------------------------------------------------------------
+ * The transport.
+ *
+ * One `fetch` wrapper, and everything the browser needs to talk to the auth
+ * edge correctly: the session cookie, the CSRF token, the error envelope, and
+ * the epoch guard that stops one principal's answers from painting another
+ * principal's screen.
+ *
+ * This file knows nothing about routes or response shapes. It returns the
+ * parsed body and lets `endpoints.ts` say what that body is — the services use
+ * four different envelopes, and which one a route speaks is a fact about the
+ * route, not about the transport.
+ *
+ * Every path is same-origin and relative. In development the Vite server
+ * proxies `/api` to the auth edge (see vite.config.ts); in production the same
+ * origin serves both. There is deliberately no configurable base URL: a
+ * cross-origin base would mean the session cookie stops being sent, and the
+ * failure would look like "logged out" rather than "misconfigured".
+ * ------------------------------------------------------------------------- */
 
-const DEFAULT_BASE_PATH = "/api/v1";
-const MUTATION_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+import { ApiError, NetworkError, StaleSessionError, type ApiErrorBody } from "./errors";
 
-export interface ApiErrorOptions {
-  status?: number;
-  code?: string;
-  retryable?: boolean;
-  details?: unknown;
-  requestId?: string;
-  response?: Response | null;
+/** `internal/httpx.Meta` — present on every response except the gateway plane's. */
+export interface ResponseMeta {
+  requestId: string;
+  contractVersion: string;
+  apiVersion: string;
 }
 
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly retryable: boolean;
-  readonly details: unknown;
-  readonly requestId: string;
-  readonly response: Response | null;
-  readonly isAuthError: boolean;
+/* --- Session epoch ------------------------------------------------------- */
 
-  constructor(message = "request failed", options: ApiErrorOptions = {}) {
-    super(message);
-    this.name = "ApiError";
-    this.status = options.status ?? 0;
-    this.code = options.code ?? "REQUEST_FAILED";
-    this.retryable = options.retryable ?? false;
-    this.details = options.details ?? null;
-    this.requestId = options.requestId ?? "";
-    this.response = options.response ?? null;
-    this.isAuthError = this.status === 401 || this.code === "AUTH_REQUIRED";
-  }
+/**
+ * The session epoch. Bumped whenever the identity behind the cookie changes:
+ * login, logout, or an expiry detected by any request.
+ *
+ * A request captures the epoch when it starts and compares it when it lands. If
+ * they differ, the answer is about a principal who is no longer signed in and
+ * is discarded as a StaleSessionError.
+ *
+ * This discards the ANSWER, never the EFFECT. A mutation that completed during
+ * a logout still happened at the venue; the guard only prevents its result from
+ * being rendered for whoever is signed in now. Anything that needs to know
+ * whether a write landed must ask again after signing in, not infer it from
+ * this error.
+ */
+let sessionEpoch = 0;
+
+export function currentSessionEpoch(): number {
+  return sessionEpoch;
 }
 
-export interface ApiEnvelope<T> {
-  meta?: {
-    requestId?: string;
-    contractVersion?: string;
-    apiVersion?: string;
-    [key: string]: unknown;
-  };
-  data: T;
-  [key: string]: unknown;
+/** Invalidates every in-flight request. Call on login, logout and expiry. */
+export function advanceSessionEpoch(): void {
+  sessionEpoch += 1;
 }
 
-export type ApiQueryValue = string | number | boolean | null | undefined;
+/* --- CSRF ---------------------------------------------------------------- */
 
-export interface ApiRequestOptions {
-  query?: Record<string, ApiQueryValue | ApiQueryValue[]>;
-  headers?: HeadersInit;
-  requestId?: string;
-  csrfToken?: string;
+/**
+ * The CSRF token, held in memory only.
+ *
+ * The session cookie is HttpOnly, so this token is the one half of the pair
+ * JavaScript can see — which is exactly what makes it work. It arrives in the
+ * body of login and `/me`, and the auth edge requires it on every unsafe method
+ * (`proxy.go:216`). Deliberately not persisted: a token in localStorage
+ * outlives the session it was minted for, and would be replayed on the next
+ * page load against a cookie that no longer matches it.
+ */
+let csrfToken: string | null = null;
+
+export function setCsrfToken(token: string | null): void {
+  csrfToken = token;
+}
+
+export function currentCsrfToken(): string | null {
+  return csrfToken;
+}
+
+/* --- Requests ------------------------------------------------------------ */
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * How long a request may take before it is abandoned.
+ *
+ * Generous, because the slow paths are real work rather than a stall: an
+ * execution preview and an order placement both cross the auth edge, trading
+ * and the gateway to reach a venue. A timeout tight enough to feel responsive
+ * would abort orders that were about to succeed, and an aborted order is the
+ * one outcome the operator cannot resolve by looking at the screen.
+ */
+const DEFAULT_TIMEOUT_MS = 20_000;
+
+export interface RequestOptions {
+  method?: string;
+  /** Serialised as JSON. Omit for a body-less request. */
+  body?: unknown;
+  query?: QueryParams;
+  /**
+   * Sent as `Idempotency-Key`. Trading compares it byte-for-byte against the
+   * `idempotencyKey` in the body and rejects a mismatch with 400, so the two
+   * are never derived separately — `endpoints.ts` sets both from one value.
+   */
   idempotencyKey?: string;
-  idempotencyScope?: string;
+  /**
+   * Sent as `If-Match`. The gateway's account lifecycle answers 428
+   * `IF_MATCH_REQUIRED` without it on every mutation but create: an account's
+   * desired state may only be changed by someone who has seen the revision
+   * they are changing.
+   */
+  ifMatch?: string;
   signal?: AbortSignal;
-  allowStatuses?: number[];
+  timeoutMs?: number;
 }
 
-export interface ApiClientOptions {
-  basePath?: string;
-  fetchImpl?: typeof fetch;
-  requestIdFactory?: () => string;
-  idempotencyKeyFactory?: (scope: string) => string;
-  authGuard?: AuthGenerationGuard;
-}
+export type QueryParams = Record<string, string | number | boolean | null | undefined>;
 
-interface ErrorEnvelope {
-  error?: {
-    code?: string;
-    message?: string;
-    retryable?: boolean;
-    details?: unknown;
-    requestId?: string;
-  };
-  meta?: { requestId?: string };
-}
+/**
+ * Performs one request and returns its parsed body.
+ *
+ * Throws ApiError when the server answered and said no, NetworkError when
+ * nothing answered, and StaleSessionError when the session moved underneath the
+ * request. It never returns a failure as a value — every caller here is a query
+ * or a mutation whose framework expects a rejected promise.
+ */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { method = "GET", body, query, idempotencyKey, ifMatch, signal, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  const epoch = sessionEpoch;
 
-export class ApiClient {
-  private readonly basePath: string;
-  private readonly fetchImpl?: typeof fetch;
-  private readonly requestIdFactory: () => string;
-  private readonly idempotencyKeyFactory: (scope: string) => string;
-  private readonly authGuard: AuthGenerationGuard;
-  private readonly idempotencyKeys = new Map<string, string>();
-  private readonly sessionExpiredListeners = new Set<(error: ApiError) => void>();
-  private csrfToken = "";
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (!SAFE_METHODS.has(method) && csrfToken) {
+    headers["X-CSRF-Token"] = csrfToken;
+  }
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
+  if (ifMatch) {
+    headers["If-Match"] = ifMatch;
+  }
 
-  constructor(options: ApiClientOptions = {}) {
-    this.basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
-    this.fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-    this.requestIdFactory = options.requestIdFactory ?? generateRequestId;
-    this.idempotencyKeyFactory = options.idempotencyKeyFactory ?? generateIdempotencyKey;
-    this.authGuard = options.authGuard ?? authGeneration;
-    this.authGuard.onBoundary(() => {
-      this.csrfToken = "";
-      this.idempotencyKeys.clear();
+  let response: Response;
+  try {
+    response = await fetch(buildUrl(path, query), {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      // Same-origin rather than "include": the cookie is same-origin by
+      // construction, and "include" would quietly keep working if someone
+      // later pointed this at another host — hiding the moment the deployment
+      // stopped matching what the auth edge's cookie policy assumes.
+      credentials: "same-origin",
+      signal: deadline(signal, timeoutMs),
+    });
+  } catch (cause) {
+    if (sessionEpoch !== epoch) throw new StaleSessionError();
+    // A caller-cancelled request is not a transport failure. Rethrowing the
+    // AbortError as-is lets the query layer recognise its own cancellation
+    // instead of reporting a network problem that did not happen.
+    if (signal?.aborted) throw cause;
+    throw new NetworkError(cause);
+  }
+
+  if (sessionEpoch !== epoch) throw new StaleSessionError();
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await errorBody(response));
+  }
+  // 204 is the whole answer for `DELETE /api/v1/auth/session`. Reading a body
+  // that was never sent would throw inside the JSON parse and report a logout
+  // that worked as a failure.
+  if (response.status === 204 || response.headers.get("Content-Length") === "0") {
+    return undefined as T;
+  }
+  try {
+    return (await response.json()) as T;
+  } catch (cause) {
+    throw new ApiError(response.status, {
+      code: "INVALID_RESPONSE",
+      message: "The server sent a response this client could not read",
+      details: { path },
+      retryable: false,
+      requestId: response.headers.get("X-Request-Id") ?? "",
     });
   }
-
-  get<T>(path: string, options: ApiRequestOptions = {}): Promise<ApiEnvelope<T> | null> {
-    return this.request<T>("GET", path, undefined, options);
-  }
-
-  post<T>(path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<ApiEnvelope<T> | null> {
-    return this.request<T>("POST", path, body, options);
-  }
-
-  put<T>(path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<ApiEnvelope<T> | null> {
-    return this.request<T>("PUT", path, body, options);
-  }
-
-  patch<T>(path: string, body?: unknown, options: ApiRequestOptions = {}): Promise<ApiEnvelope<T> | null> {
-    return this.request<T>("PATCH", path, body, options);
-  }
-
-  delete<T>(path: string, options: ApiRequestOptions = {}): Promise<ApiEnvelope<T> | null> {
-    return this.request<T>("DELETE", path, undefined, options);
-  }
-
-  setSession(session: { csrfToken?: string | null }): void {
-    const token = String(session.csrfToken ?? "").trim();
-    if (!token || token === this.csrfToken) return;
-    this.authGuard.advance("session-established");
-    this.csrfToken = token;
-  }
-
-  clearSession(reason = "session-cleared"): void {
-    this.authGuard.advance(reason);
-  }
-
-  onSessionExpired(listener: (error: ApiError) => void): () => void {
-    this.sessionExpiredListeners.add(listener);
-    return () => this.sessionExpiredListeners.delete(listener);
-  }
-
-  idempotencyKey(scope: string): string {
-    const normalizedScope = String(scope).trim();
-    if (!normalizedScope) throw new TypeError("idempotency scope is required");
-    const existing = this.idempotencyKeys.get(normalizedScope);
-    if (existing) return existing;
-    const key = this.idempotencyKeyFactory(normalizedScope);
-    this.idempotencyKeys.set(normalizedScope, key);
-    return key;
-  }
-
-  clearIdempotencyKey(scope: string): void {
-    this.idempotencyKeys.delete(String(scope).trim());
-  }
-
-  async request<T>(
-    method: string,
-    path: string,
-    body?: unknown,
-    options: ApiRequestOptions = {},
-  ): Promise<ApiEnvelope<T> | null> {
-    if (!this.fetchImpl) {
-      throw new ApiError("fetch is unavailable", { code: "FETCH_UNAVAILABLE" });
-    }
-
-    const normalizedMethod = method.toUpperCase();
-    const normalizedPath = validatePath(path);
-    const requestId = options.requestId?.trim() || this.requestIdFactory();
-    const csrfToken = options.csrfToken?.trim() || this.csrfToken;
-    const mutation = MUTATION_METHODS.has(normalizedMethod);
-    const login = normalizedMethod === "POST" && normalizedPath === "/auth/login";
-    if (mutation && !login && !csrfToken) {
-      throw new ApiError("CSRF token is required for mutations", {
-        code: "MISSING_CSRF_TOKEN",
-        requestId,
-      });
-    }
-
-    const headers = new Headers(options.headers);
-    headers.set("Accept", "application/json");
-    headers.set("X-Request-Id", requestId);
-    if (mutation && !login) headers.set("X-CSRF-Token", csrfToken);
-    const idempotencyKey = options.idempotencyKey?.trim()
-      || (options.idempotencyScope ? this.idempotencyKey(options.idempotencyScope) : "");
-    if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
-    if (body !== undefined) headers.set("Content-Type", "application/json");
-
-    const auth = this.authGuard.capture();
-    const signal = combineSignals(auth.signal, options.signal);
-    let response: Response;
-    try {
-      response = await this.fetchImpl(buildUrl(this.basePath, normalizedPath, options.query), {
-        method: normalizedMethod,
-        credentials: "include",
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal,
-      });
-    } catch (error) {
-      auth.assertCurrent();
-      if (options.signal?.aborted) throw error;
-      throw new ApiError(error instanceof Error ? error.message : "network request failed", {
-        code: "NETWORK_ERROR",
-        retryable: true,
-        requestId,
-      });
-    }
-
-    const envelope = await parseResponse(response);
-    auth.assertCurrent();
-    if (!response.ok && !options.allowStatuses?.includes(response.status) || isErrorEnvelope(envelope)) {
-      const apiError = errorFromResponse(response, envelope, requestId);
-      if (apiError.isAuthError) {
-        this.clearSession("session-expired");
-        for (const listener of this.sessionExpiredListeners) listener(apiError);
-      }
-      throw apiError;
-    }
-
-    if (response.status !== 204 && envelope === null) {
-      throw new ApiError("Platform API returned an invalid response", {
-        status: response.status,
-        code: "INVALID_RESPONSE",
-        retryable: true,
-        requestId,
-        response,
-      });
-    }
-
-    if (normalizedMethod === "DELETE" && normalizedPath === "/auth/session") {
-      this.clearSession("logout");
-    } else if (login && envelope) {
-      const csrf = extractCsrfToken(envelope);
-      if (csrf) this.setSession({ csrfToken: csrf });
-    }
-    return envelope as ApiEnvelope<T> | null;
-  }
 }
 
-export function generateIdempotencyKey(scope = "operation"): string {
-  return `${sanitizePrefix(scope)}_${Date.now().toString(36)}_${randomToken()}`;
-}
-
-function generateRequestId(): string {
-  return `req_${Date.now().toString(36)}_${randomToken()}`;
-}
-
-function randomToken(): string {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+function buildUrl(path: string, query?: QueryParams): string {
+  if (!query) return path;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    // An absent optional means "let the server decide", which is not the same
+    // as sending it empty — trading rejects a named-but-blank query field.
+    if (value === undefined || value === null || value === "") continue;
+    params.set(key, String(value));
   }
-  const bytes = new Uint8Array(12);
-  globalThis.crypto?.getRandomValues?.(bytes);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
-    || Math.random().toString(36).slice(2, 14);
+  const encoded = params.toString();
+  return encoded === "" ? path : `${path}?${encoded}`;
 }
 
-function sanitizePrefix(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 32) || "operation";
+/**
+ * Combines the caller's cancellation with a deadline of our own, so a request
+ * nobody is waiting for cannot hold a connection open indefinitely.
+ */
+function deadline(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-function normalizeBasePath(basePath: string): string {
-  const value = basePath.trim();
-  if (!value.startsWith("/") || value.startsWith("//") || value.includes("://")) {
-    throw new TypeError("basePath must be a same-origin path");
-  }
-  return value.replace(/\/+$/, "") || DEFAULT_BASE_PATH;
-}
-
-function validatePath(path: string): string {
-  const value = String(path).trim();
-  if (!value.startsWith("/") || value.startsWith("//")) {
-    throw new TypeError("API paths must start with /");
-  }
-  if (value.split(/[?#]/, 1)[0].split("/").includes("..")) {
-    throw new TypeError("API path cannot escape /api/v1");
-  }
-  return value;
-}
-
-function buildUrl(
-  basePath: string,
-  path: string,
-  queryValues?: Record<string, ApiQueryValue | ApiQueryValue[]>,
-): string {
-  const [pathname, existingQuery = ""] = path.split("?", 2);
-  const query = new URLSearchParams(existingQuery);
-  for (const [name, raw] of Object.entries(queryValues ?? {})) {
-    const values = Array.isArray(raw) ? raw : [raw];
-    for (const value of values) {
-      if (value === null || value === undefined || value === "") continue;
-      query.append(name, String(value));
-    }
-  }
-  const encoded = query.toString();
-  return `${basePath}${pathname}${encoded ? `?${encoded}` : ""}`;
-}
-
-function combineSignals(authSignal: AbortSignal, requestSignal?: AbortSignal): AbortSignal {
-  if (!requestSignal) return authSignal;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([authSignal, requestSignal]);
-  const controller = new AbortController();
-  const abort = (event: Event) => controller.abort((event.target as AbortSignal).reason);
-  authSignal.addEventListener("abort", abort, { once: true });
-  requestSignal.addEventListener("abort", abort, { once: true });
-  if (authSignal.aborted) controller.abort(authSignal.reason);
-  if (requestSignal.aborted) controller.abort(requestSignal.reason);
-  return controller.signal;
-}
-
-async function parseResponse(response: Response): Promise<unknown | null> {
-  if (response.status === 204) return null;
-  if (!response.headers.get("Content-Type")?.toLowerCase().includes("application/json")) return null;
+/**
+ * Reads the error envelope, and invents one when the failure came from
+ * somewhere that does not speak it.
+ *
+ * Not every non-2xx passes through `internal/httpx`: a dev proxy with no
+ * upstream, a gateway timeout, or a static host answering the SPA fallback all
+ * produce a body that is not our envelope. Those must still become an ApiError
+ * with a code, because the alternative is `undefined.code` at the point where
+ * the UI decides what to show.
+ */
+async function errorBody(response: Response): Promise<ApiErrorBody> {
+  const requestId = response.headers.get("X-Request-Id") ?? "";
+  let parsed: unknown;
   try {
-    return await response.json();
+    parsed = await response.json();
   } catch {
-    return null;
+    return {
+      code: fallbackCode(response.status),
+      message: response.statusText || `HTTP ${response.status}`,
+      details: {},
+      retryable: response.status >= 500,
+      requestId,
+    };
   }
+  const envelope = (parsed as { error?: Partial<ApiErrorBody> } | null)?.error;
+  if (!envelope || typeof envelope.code !== "string") {
+    return {
+      code: fallbackCode(response.status),
+      message: response.statusText || `HTTP ${response.status}`,
+      details: {},
+      retryable: response.status >= 500,
+      requestId,
+    };
+  }
+  return {
+    code: envelope.code,
+    message: envelope.message ?? "",
+    details: envelope.details ?? {},
+    retryable: envelope.retryable ?? false,
+    requestId: envelope.requestId || requestId,
+  };
 }
 
-function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
-  return Boolean(value && typeof value === "object" && "error" in value);
+/**
+ * The 401 case is the one that matters: `isAuthFailure` branches on status as
+ * well as code, so an unenveloped 401 from a proxy hop still signs the operator
+ * out rather than showing an unexplained error.
+ */
+function fallbackCode(status: number): string {
+  if (status === 401) return "AUTH_REQUIRED";
+  if (status === 403) return "AUTH_REQUIRED";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 409) return "CONFLICT";
+  if (status === 429) return "RATE_LIMITED";
+  return status >= 500 ? "UPSTREAM_UNAVAILABLE" : "REQUEST_FAILED";
 }
-
-function errorFromResponse(response: Response, value: unknown, requestId: string): ApiError {
-  const envelope = isErrorEnvelope(value) ? value : {};
-  const error = envelope.error ?? {};
-  return new ApiError(
-    error.message || (response.status === 401 ? "session expired" : `HTTP ${response.status}`),
-    {
-      status: response.status,
-      code: error.code || (response.status === 401 ? "AUTH_REQUIRED" : "HTTP_ERROR"),
-      retryable: error.retryable ?? response.status >= 500,
-      details: error.details,
-      requestId: error.requestId || envelope.meta?.requestId || requestId,
-      response,
-    },
-  );
-}
-
-function extractCsrfToken(envelope: unknown): string {
-  if (!envelope || typeof envelope !== "object" || !("data" in envelope)) return "";
-  const data = envelope.data;
-  if (!data || typeof data !== "object" || !("session" in data)) return "";
-  const session = data.session;
-  if (!session || typeof session !== "object" || !("csrfToken" in session)) return "";
-  return typeof session.csrfToken === "string" ? session.csrfToken.trim() : "";
-}
-
-export { StaleAuthGenerationError };
-
-export const apiClient = new ApiClient();

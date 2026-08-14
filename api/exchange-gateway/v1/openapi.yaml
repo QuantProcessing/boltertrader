@@ -217,6 +217,28 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/MarkPriceProjection'}
         default: {$ref: '#/components/responses/Error'}
+  /v1/candles:
+    get:
+      operationId: getCandles
+      parameters:
+        - {name: account_id, in: query, required: true, schema: {type: string}}
+        - {name: instrument_id, in: query, required: true, schema: {type: string}}
+        # The enum is the venue-neutral vocabulary, not a passthrough. Venues
+        # disagree on spelling (OKX writes 1H/1D, Binance 1h/1d), so accepting
+        # the native form would make a caller's interval depend on which venue
+        # the instrument happens to live on.
+        - {name: interval, in: query, required: true, schema: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}}
+        - {name: start, in: query, schema: {type: string, format: date-time}}
+        - {name: end, in: query, schema: {type: string, format: date-time}}
+        - {$ref: '#/components/parameters/PaginationLimit'}
+        - {$ref: '#/components/parameters/PaginationCursor'}
+      responses:
+        '200':
+          description: account-scoped normalized OHLCV bars in ascending open-time order
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CandlesProjection'}
+        default: {$ref: '#/components/responses/Error'}
   /v1/accounts/{account_id}/instruments/{instrument_id}/leverage:
     put:
       operationId: setLeverage
@@ -437,6 +459,35 @@ components:
         instrument_id: {type: string}
         price: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
         observed_at: {type: string, format: date-time}
+    CandlesProjection:
+      type: object
+      required: [account_id, instrument_id, interval, candles, page]
+      additionalProperties: false
+      properties:
+        account_id: {type: string}
+        instrument_id: {type: string}
+        interval: {type: string, enum: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d]}
+        candles: {type: array, items: {$ref: '#/components/schemas/Candle'}}
+        page: {$ref: '#/components/schemas/PageInfo'}
+    Candle:
+      type: object
+      # Every field is always present on the wire: `omitempty` on a time.Time is
+      # a no-op in encoding/json, so a venue that supplies no close time sends
+      # the zero instant rather than omitting the key. Read a close_time of
+      # 0001-01-01T00:00:00Z as "not reported", not as a real timestamp.
+      required: [open_time, close_time, open, high, low, close, volume, complete]
+      additionalProperties: false
+      properties:
+        open_time: {type: string, format: date-time}
+        close_time: {type: string, format: date-time}
+        open: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        high: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        low: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        close: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        volume: {type: string, pattern: '^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$'}
+        # False on the newest bar of a live window: the interval is still open
+        # and every field but open_time may still change.
+        complete: {type: boolean}
     FundingHistoryProjection:
       type: object
       required: [account_id, instrument_id, items]

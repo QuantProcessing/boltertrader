@@ -60,6 +60,8 @@ paths:
     get: {operationId: listInternalInstruments, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/market-data:
     get: {operationId: getInternalMarketData, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/candles:
+    get: {operationId: getInternalCandles, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/private-events:
     get: {operationId: listInternalPrivateEvents, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
 components:

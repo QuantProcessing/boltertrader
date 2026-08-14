@@ -63,6 +63,7 @@ func TestOpenAPIInventoryAndSecurityAreStructurallyFrozen(t *testing.T) {
 		"/v1/order-book":                  {"get": "getOrderBook"},
 		"/v1/bbo":                         {"get": "getBBO"},
 		"/v1/mark-price":                  {"get": "getMarkPrice"},
+		"/v1/candles":                     {"get": "getCandles"},
 		"/v1/public/ws":                   {"get": "streamPublicMarket"},
 		"/v1/accounts/{account_id}/instruments/{instrument_id}/leverage": {"put": "setLeverage"},
 		"/v1/ws": {"get": "streamPrivateEvents"},
@@ -170,6 +171,14 @@ func TestOpenAPISchemaInventoryAndRequiredFieldsAreFrozen(t *testing.T) {
 		"MarkPriceProjection": {
 			required:   []string{"account_id", "instrument_id", "observed_at", "price"},
 			properties: []string{"account_id", "instrument_id", "observed_at", "price"},
+		},
+		"CandlesProjection": {
+			required:   []string{"account_id", "candles", "instrument_id", "interval", "page"},
+			properties: []string{"account_id", "candles", "instrument_id", "interval", "page"},
+		},
+		"Candle": {
+			required:   []string{"close", "close_time", "complete", "high", "low", "open", "open_time", "volume"},
+			properties: []string{"close", "close_time", "complete", "high", "low", "open", "open_time", "volume"},
 		},
 		"FundingHistoryProjection": {
 			required:   []string{"account_id", "instrument_id", "items"},

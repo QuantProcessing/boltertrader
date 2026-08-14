@@ -92,6 +92,7 @@ type Dependencies struct {
 	Database              *sql.DB
 	CatalogSource         catalog.Source
 	MarketDataSource      marketdata.Source
+	CandleSource          marketdata.CandleSource
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
@@ -170,6 +171,10 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if marketSource == nil {
 		marketSource = unavailableMarketDataSource{}
 	}
+	candleSource := dependencies.CandleSource
+	if candleSource == nil {
+		candleSource = unavailableCandleSource{}
+	}
 	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
 	if err != nil {
 		return nil, err
@@ -179,6 +184,15 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 		return nil, err
 	}
 	marketService, err := marketdata.NewService(marketSource, budget, 5*time.Second, now)
+	if err != nil {
+		return nil, err
+	}
+	// The candle service shares the coordinator rather than taking one of its
+	// own: the budget models what the venue will tolerate, and a chart's reads
+	// and a quote panel's reads spend the same allowance at the same venue.
+	// Giving candles a second coordinator would let the two together spend
+	// twice what either believes is the limit.
+	candleService, err := marketdata.NewCandleService(candleSource, budget)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +215,8 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 
 	readiness := newReadiness(dependencies, catalogProjection)
 	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{
-		Catalog: catalogProjection, MarketData: marketService, Readiness: readiness,
-		Realtime: hub, Principal: dependencies.Principal,
+		Catalog: catalogProjection, MarketData: marketService, Candles: candleService,
+		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
 	})
 	if err != nil {
 		return nil, err
@@ -388,6 +402,12 @@ type unavailableMarketDataSource struct{}
 
 func (unavailableMarketDataSource) Fetch(context.Context, marketdata.Query) (marketdata.Fact, error) {
 	return marketdata.Fact{}, errors.New("gateway projection unavailable")
+}
+
+type unavailableCandleSource struct{}
+
+func (unavailableCandleSource) FetchCandles(context.Context, marketdata.CandleQuery) (marketdata.CandlePage, error) {
+	return marketdata.CandlePage{}, errors.New("gateway projection unavailable")
 }
 
 // reservationGate narrows the reservation service to the one question the

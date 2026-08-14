@@ -74,7 +74,7 @@ func Diagnose(ctx context.Context, root string) ([]Check, error) {
 		// Without the env file there are no ports to probe and no secret
 		// directory to inspect, so every remaining check would fail for the
 		// same single reason and bury it.
-		for _, name := range []string{"credentials", "credential store", "postgres", "gateway", "trading", "auth edge"} {
+		for _, name := range []string{"credentials", "credential store", "postgres", "gateway", "trading", "auth edge", "web"} {
 			add(Check{Name: name, Status: Skip, Detail: "no " + EnvStackName + " to read the port from"})
 		}
 		return checks, nil
@@ -95,6 +95,7 @@ func Diagnose(ctx context.Context, root string) ([]Check, error) {
 	add(checkGateway(ctx, valueOr(values, gatewayPortVar, defaultGatewayPort), filepath.Join(root, SecretDirName, Mode, GatewayAuthTokenFile)))
 	add(checkTrading(ctx, valueOr(values, tradingPortVar, defaultTradingPort), filepath.Join(root, SecretDirName, Mode, TradingServiceTokenFile)))
 	add(checkAuthEdge(ctx, valueOr(values, authEdgePortVar, defaultAuthEdgePort)))
+	add(checkWeb(ctx, valueOr(values, webPortVar, defaultWebPort)))
 	return checks, nil
 }
 
@@ -499,6 +500,36 @@ func checkAuthEdge(ctx context.Context, port string) Check {
 		return Check{Name: "auth edge", Status: Fail, Detail: fmt.Sprintf("/api/v1/me returned %d, want 401 without a session", status), Fix: "`make logs` has the reason"}
 	}
 	return Check{Name: "auth edge", Status: Pass, Detail: "serving on http://127.0.0.1:" + port}
+}
+
+// checkWeb is the one check an operator can reproduce by opening a browser, and
+// it asks for the same thing a browser does: the document at /. A 200 proves
+// both halves of that container — Caddy started, and the build stage actually
+// produced a bundle for it to serve, which inspecting the container cannot tell
+// apart from an empty /srv.
+//
+// It deliberately does not probe through the /api proxy. That path's health is
+// the auth edge's, reported above on its own line, and folding the two together
+// would blame the frontend for an upstream that had not finished starting.
+func checkWeb(ctx context.Context, port string) Check {
+	status, err := probeHTTP(ctx, "http://127.0.0.1:"+port+"/", nil)
+	if err != nil {
+		return Check{
+			Name:   "web",
+			Status: Fail,
+			Detail: firstLine(err.Error()),
+			Fix:    "`make logs` will say why it exited" + heldBy(port),
+		}
+	}
+	if status != http.StatusOK {
+		return Check{
+			Name:   "web",
+			Status: Fail,
+			Detail: fmt.Sprintf("/ returned %d, want 200", status),
+			Fix:    "the image may hold no bundle; rebuild it with `make up`",
+		}
+	}
+	return Check{Name: "web", Status: Pass, Detail: "open http://127.0.0.1:" + port}
 }
 
 func probeHTTP(ctx context.Context, url string, headers map[string]string) (int, error) {

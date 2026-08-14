@@ -1,0 +1,575 @@
+/* ---------------------------------------------------------------------------
+ * The requests the browser makes, and the table they are drawn from.
+ *
+ * The set of reachable paths is not a design decision made here — it is
+ * `services/authedge/proxy/routes.go`, which is the only thing that decides what
+ * a browser can talk to. A path absent from that table returns 404 from the auth
+ * edge no matter how correct it looks, so `paths` below mirrors it and the
+ * functions are written against that mirror.
+ *
+ * `paths` is the full table; the functions are the subset the UI calls. Two
+ * routes are deliberately listed without a wrapper — `POST /api/v1/reservations`
+ * and `GET /api/v1/audit`. Trading opens reservations itself as part of placing
+ * an order, and the audit route is being retired, so neither has a caller worth
+ * inventing a request type for.
+ *
+ * Two consequences of that table are worth stating outright, because both look
+ * like bugs from the frontend:
+ *
+ *   - The gateway's public `/v1/*` plane is NOT reachable. Market data, the
+ *     order book and candles all arrive through trading, which fronts the
+ *     gateway's internal plane on the browser's behalf. There is no browser
+ *     path to `/v1/order-book` and adding one here would not create it.
+ *   - `/api/v1/accounts/{id}/runtimes` is a trading projection while every
+ *     other `/api/v1/accounts` path is the gateway's account lifecycle. They
+ *     differ by suffix alone. That is why the table is explicit and why these
+ *     functions are grouped by owning service rather than by URL prefix.
+ *
+ * Response envelopes differ per service and per route — five shapes across this
+ * surface. Each function unwraps its own, so nothing above this layer ever
+ * writes `.data.items`.
+ * ------------------------------------------------------------------------- */
+
+import { apiRequest, advanceSessionEpoch, setCsrfToken, type ResponseMeta } from "./client";
+import type {
+  Account,
+  AccountRoute,
+  AccountRuntime,
+  ActivityEvent,
+  CandlePage,
+  CandleQuery,
+  Command,
+  CommandProjection,
+  CredentialBundle,
+  Fill,
+  Instrument,
+  LedgerEntry,
+  ManualCommandRequest,
+  ManualPreview,
+  ManualPreviewRequest,
+  MarketDataQuery,
+  MarketFact,
+  PnLSnapshot,
+  Position,
+  RateLimitStatus,
+  Reservation,
+  SessionState,
+  SystemSnapshot,
+  Venue,
+  CatalogProjectionMeta,
+} from "./types";
+
+/* --- Envelopes ----------------------------------------------------------- */
+
+/** `{meta, data}` — the common case. */
+interface DataEnvelope<T> {
+  meta: ResponseMeta;
+  data: T;
+}
+
+/** `{meta, data: {items}}` — every trading list route. */
+interface ItemsEnvelope<T> {
+  meta: ResponseMeta;
+  data: { items: T[] };
+}
+
+/** `{meta, data: [...], projection}` — catalog, where `data` is a bare array. */
+interface ProjectionEnvelope<T> {
+  meta: ResponseMeta;
+  data: T[];
+  projection: CatalogProjectionMeta;
+}
+
+/** `{meta, data, rateLimit}` — market data and candles, which spend venue budget. */
+interface RateLimitedEnvelope<T> {
+  meta: ResponseMeta;
+  data: T;
+  rateLimit: RateLimitStatus;
+}
+
+/**
+ * `{data: {accounts | account}}` — the gateway plane, which has NO `meta` key.
+ *
+ * It is not an oversight to fix here: those routes are served by the gateway's
+ * own writer, not by `internal/httpx`, and the auth edge forwards the body
+ * untouched. Reading `.meta` off one of these is `undefined`.
+ */
+interface GatewayEnvelope<T> {
+  data: T;
+}
+
+/** `{meta, data: {revision, items}}` — the manual product's venue list alone. */
+interface RevisionedItemsEnvelope<T> {
+  meta: ResponseMeta;
+  data: { revision: string; items: T[] };
+}
+
+/** What a catalog read carries besides its rows. */
+export interface Projected<T> {
+  items: T[];
+  projection: CatalogProjectionMeta;
+}
+
+/** What a market read carries besides its value: the venue's remaining budget. */
+export interface Metered<T> {
+  value: T;
+  rateLimit: RateLimitStatus;
+}
+
+/* --- Paths --------------------------------------------------------------- */
+
+/**
+ * The literal paths, in one place, matching `proxy.routes` exactly.
+ *
+ * Kept separate from the functions so a route table change can be diffed
+ * against the Go table by eye — which is the only check there is, since nothing
+ * validates these strings until a request 404s.
+ */
+export const paths = {
+  login: "/api/v1/auth/login",
+  session: "/api/v1/auth/session",
+  me: "/api/v1/me",
+
+  systemStatus: "/api/v1/system/status",
+  systemReadiness: "/api/v1/system/readiness",
+
+  catalogVenues: "/api/v1/catalog/venues",
+  catalogInstruments: "/api/v1/catalog/instruments",
+  marketData: "/api/v1/market-data",
+  candles: "/api/v1/candles",
+  realtimeStream: "/api/v1/realtime/stream",
+
+  reservations: "/api/v1/reservations",
+  reservation: (reservationId: string) => `/api/v1/reservations/${encodeURIComponent(reservationId)}`,
+  commands: "/api/v1/commands",
+  command: (commandId: string) => `/api/v1/commands/${encodeURIComponent(commandId)}`,
+
+  positions: "/api/v1/positions",
+  ledger: "/api/v1/ledger",
+  pnl: "/api/v1/pnl",
+  fills: "/api/v1/fills",
+  activity: "/api/v1/activity",
+  audit: "/api/v1/audit",
+
+  accountRuntimes: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/runtimes`,
+
+  manualVenues: "/api/v1/products/manual/venues",
+  manualPreviews: "/api/v1/products/manual/execution-previews",
+  manualCommands: "/api/v1/products/manual/commands",
+  manualOrders: "/api/v1/products/manual/orders",
+  manualOrder: (orderId: string) => `/api/v1/products/manual/orders/${encodeURIComponent(orderId)}`,
+
+  accounts: "/api/v1/accounts",
+  account: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}`,
+  accountValidate: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/validate`,
+  accountRotate: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/rotate`,
+  accountDisable: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/disable`,
+  accountDrain: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}/drain`,
+} as const;
+
+/* --- Auth ---------------------------------------------------------------- */
+
+/**
+ * Signing in and out both move the session boundary, so both advance the epoch:
+ * anything still in flight was authorized as someone else and must not land.
+ *
+ * The CSRF token is captured here rather than by the caller because forgetting
+ * it produces a session that reads fine and cannot write — a failure that shows
+ * up much later, at the first order, as an unexplained 403.
+ */
+export const auth = {
+  async login(username: string, password: string, signal?: AbortSignal): Promise<SessionState> {
+    advanceSessionEpoch();
+    const body = await apiRequest<DataEnvelope<SessionState>>(paths.login, {
+      method: "POST",
+      body: { username, password },
+      signal,
+    });
+    setCsrfToken(body.data.session.csrfToken);
+    return body.data;
+  },
+
+  /**
+   * Who is signed in, according to the cookie the browser cannot read.
+   *
+   * This is how a reload recovers a session: the cookie survives, the in-memory
+   * CSRF token does not, and this is what mints a usable one again.
+   */
+  async me(signal?: AbortSignal): Promise<SessionState> {
+    const body = await apiRequest<DataEnvelope<SessionState>>(paths.me, { signal });
+    setCsrfToken(body.data.session.csrfToken);
+    return body.data;
+  },
+
+  /** 204, no body. The server clears the cookie; we clear everything else. */
+  async logout(signal?: AbortSignal): Promise<void> {
+    try {
+      await apiRequest<void>(paths.session, { method: "DELETE", signal });
+    } finally {
+      // Even a failed logout must not leave a token behind that suggests the
+      // session is still good. Whatever the server did, this client is done
+      // with it.
+      setCsrfToken(null);
+      advanceSessionEpoch();
+    }
+  },
+};
+
+/* --- System -------------------------------------------------------------- */
+
+export const system = {
+  /** Always 200, even when degraded. Poll this for the banner. */
+  status: async (signal?: AbortSignal): Promise<SystemSnapshot> =>
+    (await apiRequest<DataEnvelope<SystemSnapshot>>(paths.systemStatus, { signal })).data,
+
+  /**
+   * Answers 503 when not ready, which surfaces as an ApiError rather than a
+   * snapshot with `ready: false`. Use `status` for anything that needs to
+   * render the degraded state instead of failing on it.
+   */
+  readiness: async (signal?: AbortSignal): Promise<SystemSnapshot> =>
+    (await apiRequest<DataEnvelope<SystemSnapshot>>(paths.systemReadiness, { signal })).data,
+};
+
+/* --- Catalog and market data --------------------------------------------- */
+
+export const catalog = {
+  async venues(signal?: AbortSignal): Promise<Projected<Venue>> {
+    const body = await apiRequest<ProjectionEnvelope<Venue>>(paths.catalogVenues, { signal });
+    return { items: body.data, projection: body.projection };
+  },
+
+  async instruments(signal?: AbortSignal): Promise<Projected<Instrument>> {
+    const body = await apiRequest<ProjectionEnvelope<Instrument>>(paths.catalogInstruments, { signal });
+    return { items: body.data, projection: body.projection };
+  },
+};
+
+export const market = {
+  /**
+   * Top of book plus depth, mark price and funding for one instrument.
+   *
+   * All four query fields are required and the server rejects an unknown fifth
+   * outright — it is a strict allow-list, not a filter, so passing a stray
+   * `accountId` produces a 400 rather than being ignored.
+   */
+  async data(query: MarketDataQuery, signal?: AbortSignal): Promise<Metered<MarketFact>> {
+    const body = await apiRequest<RateLimitedEnvelope<MarketFact>>(paths.marketData, {
+      query: { ...query },
+      signal,
+    });
+    return { value: body.data, rateLimit: body.rateLimit };
+  },
+
+  /**
+   * Historical bars, ascending by open time, with the newest possibly still
+   * forming (`complete: false`).
+   *
+   * `limit` is the one optional field. Omitting it takes the server's default;
+   * sending 0 or anything over 500 is a 400, so the chart must clamp before it
+   * asks rather than after it fails.
+   */
+  async candles(query: CandleQuery, signal?: AbortSignal): Promise<Metered<CandlePage>> {
+    const body = await apiRequest<RateLimitedEnvelope<CandlePage>>(paths.candles, {
+      query: { ...query },
+      signal,
+    });
+    return { value: body.data, rateLimit: body.rateLimit };
+  },
+};
+
+/* --- Trading ledgers and projections ------------------------------------- */
+
+const items = <T,>(envelope: ItemsEnvelope<T>): T[] => envelope.data.items;
+
+export const trading = {
+  positions: async (query: PositionQuery = {}, signal?: AbortSignal): Promise<Position[]> =>
+    items(await apiRequest<ItemsEnvelope<Position>>(paths.positions, { query: { ...query }, signal })),
+
+  ledger: async (query: LedgerQuery = {}, signal?: AbortSignal): Promise<LedgerEntry[]> =>
+    items(await apiRequest<ItemsEnvelope<LedgerEntry>>(paths.ledger, { query: { ...query }, signal })),
+
+  /** A single aggregate, not a list — this one is a bare `{meta, data}`. */
+  pnl: async (query: LedgerQuery = {}, signal?: AbortSignal): Promise<PnLSnapshot> =>
+    (await apiRequest<DataEnvelope<PnLSnapshot>>(paths.pnl, { query: { ...query }, signal })).data,
+
+  fills: async (query: FillQuery = {}, signal?: AbortSignal): Promise<Fill[]> =>
+    items(await apiRequest<ItemsEnvelope<Fill>>(paths.fills, { query: { ...query }, signal })),
+
+  activity: async (query: ActivityQuery = {}, signal?: AbortSignal): Promise<ActivityEvent[]> =>
+    items(await apiRequest<ItemsEnvelope<ActivityEvent>>(paths.activity, { query: { ...query }, signal })),
+
+  /** The trimmed projection: no payload, no execution evidence. */
+  commands: async (query: CommandQuery = {}, signal?: AbortSignal): Promise<CommandProjection[]> =>
+    items(await apiRequest<ItemsEnvelope<CommandProjection>>(paths.commands, { query: { ...query }, signal })),
+
+  command: async (commandId: string, signal?: AbortSignal): Promise<CommandProjection> =>
+    (await apiRequest<DataEnvelope<CommandProjection>>(paths.command(commandId), { signal })).data,
+
+  reservations: async (signal?: AbortSignal): Promise<Reservation[]> =>
+    items(await apiRequest<ItemsEnvelope<Reservation>>(paths.reservations, { signal })),
+
+  releaseReservation: async (reservationId: string, signal?: AbortSignal): Promise<Reservation> =>
+    (await apiRequest<DataEnvelope<Reservation>>(paths.reservation(reservationId), { method: "DELETE", signal })).data,
+
+  /** Trading's own view of an account's runtime — NOT the gateway's account record. */
+  accountRuntimes: async (accountId: string, signal?: AbortSignal): Promise<AccountRuntime[]> =>
+    items(await apiRequest<ItemsEnvelope<AccountRuntime>>(paths.accountRuntimes(accountId), { signal })),
+};
+
+/**
+ * Every optional filter below is an exact-match allow-list on the server: an
+ * unknown field, a repeated one, or one present but blank is a 400, not a
+ * silently ignored parameter. `buildUrl` drops empty values for that reason.
+ */
+export interface PositionQuery {
+  accountId?: string;
+  productId?: string;
+}
+
+export interface LedgerQuery {
+  productId?: string;
+  lineageId?: string;
+  accountId?: string;
+  instrumentId?: string;
+}
+
+export interface FillQuery {
+  productId?: string;
+  accountId?: string;
+  instrumentId?: string;
+  lineageId?: string;
+}
+
+export interface ActivityQuery {
+  kind?: string;
+  productId?: string;
+  accountId?: string;
+  resourceId?: string;
+}
+
+export interface CommandQuery {
+  productId?: string;
+  accountId?: string;
+  state?: string;
+}
+
+/* --- The manual product -------------------------------------------------- */
+
+/**
+ * The order path, and the only one the browser may use to trade.
+ *
+ * `POST /api/v1/commands` exists and looks general, but trading rejects any
+ * body with `productId: "manual"` on it — manual orders must carry a sealed
+ * preview, and that route has no way to check one. Do not route orders there.
+ */
+export const manual = {
+  /** `{meta, data: {revision, items}}` — this route's shape and no other's. */
+  async venues(signal?: AbortSignal): Promise<{ revision: string; items: Venue[] }> {
+    const body = await apiRequest<RevisionedItemsEnvelope<Venue>>(paths.manualVenues, { signal });
+    return body.data;
+  },
+
+  /**
+   * Step one of two: price and validate the intent, and get back a sealed
+   * `previewId`.
+   *
+   * 201, and the seal expires 30 seconds later — `MANUAL_PREVIEW_TTL_MS`. The
+   * deadline is inside the token and is not returned, so the countdown starts
+   * when this resolves.
+   *
+   * `mode` must equal the session principal's mode or the server answers 400,
+   * which is a guard against a stale tab submitting into the wrong one.
+   */
+  preview: async (request: ManualPreviewRequest, signal?: AbortSignal): Promise<ManualPreview> =>
+    (await apiRequest<DataEnvelope<ManualPreview>>(paths.manualPreviews, { method: "POST", body: request, signal })).data,
+
+  /**
+   * Step two: act on the sealed preview.
+   *
+   * One route, three actions, told apart by which identifiers are set — see
+   * `ManualCommandRequest`. The returned status varies (202 for a new place,
+   * 200 for a replay) but the body is always the full `Command`, so the caller
+   * reads `state` rather than the status code.
+   *
+   * `idempotencyKey` goes in the body and the header both; the server compares
+   * them and rejects a mismatch, so they are set from one value here.
+   */
+  command: async (request: ManualCommandRequest, signal?: AbortSignal): Promise<Command> =>
+    (
+      await apiRequest<DataEnvelope<Command>>(paths.manualCommands, {
+        method: "POST",
+        body: request,
+        idempotencyKey: request.idempotencyKey,
+        signal,
+      })
+    ).data,
+
+  /** The full records, with payload and execution evidence — unlike `trading.commands`. */
+  orders: async (signal?: AbortSignal): Promise<Command[]> =>
+    items(await apiRequest<ItemsEnvelope<Command>>(paths.manualOrders, { signal })),
+
+  order: async (orderId: string, signal?: AbortSignal): Promise<Command> =>
+    (await apiRequest<DataEnvelope<Command>>(paths.manualOrder(orderId), { signal })).data,
+};
+
+/* --- Accounts (the gateway plane) ---------------------------------------- */
+
+/**
+ * `httpapi.createAccountRecordRequest`.
+ *
+ * There is no `mode` field, deliberately: the gateway derives the mode and the
+ * native environment from the route profiles, so a client that sent one could
+ * disagree with the routes it also sent. `routes` is what decides it.
+ */
+export interface CreateAccountRequest {
+  venue: string;
+  displayName: string;
+  productPolicy: string[];
+  routes: AccountRoute[];
+  credentialBundle: CredentialBundle;
+}
+
+/** `httpapi.updateAccountRecordRequest` — the only two fields a PATCH may change. */
+export interface UpdateAccountRequest {
+  displayName: string;
+  productIds: string[];
+}
+
+/**
+ * The desired-state ETag, built from the revision the caller has already read.
+ *
+ * `gateway/httpapi/internal_routes.go` mints exactly this string and parses
+ * exactly this string, so reconstructing it here is not a guess about the
+ * server's format — it is the format, and a mismatch is a 428 rather than a
+ * silent overwrite. Building it from the `desiredStateRevision` already on the
+ * account means no extra read before a mutation.
+ */
+const desiredETag = (revision: number): string => `"desired-state-revision-${revision}"`;
+
+/**
+ * The account lifecycle, forwarded to the gateway's INTERNAL plane because it
+ * accepts credential material.
+ *
+ * Nothing here ever returns a secret: the gateway's `PublicAccount` has no
+ * field for one. A credential is written and then only ever referred to by
+ * `credentialVersion`, which is what makes PRODUCT.md's write-only rule an
+ * property of the API rather than a discipline in the UI.
+ *
+ * Three protocol facts every mutation below is written around:
+ *
+ *   - Every mutation except create carries `If-Match`. Without it the gateway
+ *     answers 428 `IF_MATCH_REQUIRED`; with a stale revision it answers 409
+ *     `DESIRED_STATE_REVISION_CONFLICT`, which the caller resolves by re-reading
+ *     the account rather than by retrying the same write.
+ *   - Create, rotate and remove carry `Idempotency-Key`, because each of them
+ *     writes credential material or destroys it and a retried request must not
+ *     do it twice.
+ *   - `validate`, `disable`, `drain` and `remove` send NO body. The gateway
+ *     reads the body and rejects anything that is not empty or `{}`.
+ *
+ * Note the envelope: `{data: ...}` with no `meta`.
+ */
+export const accounts = {
+  list: async (signal?: AbortSignal): Promise<Account[]> =>
+    (await apiRequest<GatewayEnvelope<{ accounts: Account[] }>>(paths.accounts, { signal })).data.accounts,
+
+  get: async (accountId: string, signal?: AbortSignal): Promise<Account> =>
+    (await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), { signal })).data.account,
+
+  /** 201. The only mutation with no revision to match — the account does not exist yet. */
+  create: async (request: CreateAccountRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accounts, {
+        method: "POST",
+        body: request,
+        idempotencyKey,
+        signal,
+      })
+    ).data.account,
+
+  update: async (
+    accountId: string,
+    revision: number,
+    patch: UpdateAccountRequest,
+    signal?: AbortSignal,
+  ): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), {
+        method: "PATCH",
+        body: patch,
+        ifMatch: desiredETag(revision),
+        signal,
+      })
+    ).data.account,
+
+  /**
+   * 202, not 204: removal is accepted rather than done. The credential is only
+   * deleted once the runtime confirms the account is tombstoned, so the account
+   * comes back in state `removing` and the caller keeps watching it.
+   */
+  remove: async (
+    accountId: string,
+    revision: number,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.account(accountId), {
+        method: "DELETE",
+        ifMatch: desiredETag(revision),
+        idempotencyKey,
+        signal,
+      })
+    ).data.account,
+
+  /** Asks the venue whether the stored credential still works. */
+  validate: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountValidate(accountId), {
+        method: "POST",
+        ifMatch: desiredETag(revision),
+        signal,
+      })
+    ).data.account,
+
+  /**
+   * Rotation is not atomic and is not meant to look it: the account carries an
+   * `active` and a `pending` runtime at once until the new credential proves
+   * itself. `trading.accountRuntimes` is what shows that state.
+   */
+  rotate: async (
+    accountId: string,
+    revision: number,
+    credentialBundle: CredentialBundle,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountRotate(accountId), {
+        method: "POST",
+        body: { credentialBundle },
+        ifMatch: desiredETag(revision),
+        idempotencyKey,
+        signal,
+      })
+    ).data.account,
+
+  disable: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountDisable(accountId), {
+        method: "POST",
+        ifMatch: desiredETag(revision),
+        signal,
+      })
+    ).data.account,
+
+  drain: async (accountId: string, revision: number, signal?: AbortSignal): Promise<Account> =>
+    (
+      await apiRequest<GatewayEnvelope<{ account: Account }>>(paths.accountDrain(accountId), {
+        method: "POST",
+        ifMatch: desiredETag(revision),
+        signal,
+      })
+    ).data.account,
+};

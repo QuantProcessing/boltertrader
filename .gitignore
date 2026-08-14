@@ -8,3 +8,5 @@ web/.env.local
 # its bcrypt hash. .env.stack is already covered by .env.* above.
 .secrets/
 .local/
+# Local agent tooling (browser preview launch config); not part of the product.
+.claude/

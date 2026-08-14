@@ -102,7 +102,7 @@ doctor:
 # as bcrypt. A placeholder of the wrong shape fails inside a container at startup,
 # which is the least legible place for it to fail.
 #
-# The four ports are overridden to 0 in the environment, where they beat the
+# Every published port is overridden to 0 in the environment, where they beat the
 # generated .env.stack, so the kernel assigns them: that is what makes these
 # projects safe to run beside a live `make up` and beside each other. BT_SECRET_DIR
 # is overridden for a subtler reason — the generated value is relative, and compose
@@ -127,12 +127,13 @@ test-compose-config:
 	tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT INT TERM; \
 	go run ./internal/devsetup/cmd/bootstrap -root "$$tmp" -quiet >/dev/null; \
-	BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 \
+	BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0 \
 		docker compose --env-file "$$tmp/.env.stack" -f compose.yaml config --quiet
 	go test ./gateway/config ./cmd/exchange-gateway-docker-support -run 'Test(NonLoopback|RunLoads|RunRejects|Health)' -count=1
 
 test-compose-build:
 	docker build --build-arg GOPROXY="$${BOLTER_DOCKER_GOPROXY:-https://proxy.golang.org,direct}" -f Dockerfile -t "$${BOLTER_IMAGE:-boltertrader:local}" .
+	docker build -f docker/web/Dockerfile -t "$${BOLTER_WEB_IMAGE:-boltertrader-web:local}" .
 
 # What must not be in the image: the repository. A distroless image holding seven
 # static binaries has no reason to carry source, and this grep exists because the
@@ -168,7 +169,7 @@ test-compose-smoke:
 	tmp=$$(mktemp -d); \
 	trap 'docker compose --env-file "$$tmp/.env.stack" -f compose.yaml -p "$$project" down --volumes --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
 	go run ./internal/devsetup/cmd/bootstrap -root "$$tmp" -quiet >/dev/null; \
-	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0; \
+	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0; \
 	compose="docker compose --env-file $$tmp/.env.stack -f compose.yaml -p $$project"; \
 	$$compose up -d --no-build --wait --wait-timeout 180; \
 	$$compose exec -T gateway /usr/local/bin/exchange-gateway-docker-support health -config /etc/boltertrader/gateway.yaml -kind live; \
@@ -193,7 +194,7 @@ test-compose-persistence:
 	tmp=$$(mktemp -d); sentinel="persistence-$$$$"; \
 	trap 'docker compose --env-file "$$tmp/.env.stack" -f compose.yaml -p "$$project" down --volumes --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
 	go run ./internal/devsetup/cmd/bootstrap -root "$$tmp" -quiet >/dev/null; \
-	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0; \
+	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0; \
 	compose="docker compose --env-file $$tmp/.env.stack -f compose.yaml -p $$project"; \
 	$$compose up -d --wait --wait-timeout 120 postgres; \
 	$$compose exec -T postgres psql -U bolter_gateway_test_migrator -d bolter_gateway_test -v ON_ERROR_STOP=1 -c 'CREATE TABLE IF NOT EXISTS compose_persistence_probe (value text PRIMARY KEY)' -c "INSERT INTO compose_persistence_probe(value) VALUES ('$$sentinel')"; \
@@ -211,7 +212,7 @@ test-compose-postgres:
 	tmp=$$(mktemp -d); \
 	trap 'docker compose --env-file "$$tmp/.env.stack" -f compose.yaml -p "$$project" down --volumes --remove-orphans >/dev/null 2>&1 || true; rm -rf "$$tmp"' EXIT INT TERM; \
 	go run ./internal/devsetup/cmd/bootstrap -root "$$tmp" -quiet >/dev/null; \
-	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0; \
+	export BT_SECRET_DIR="$$tmp/.secrets" POSTGRES_PORT=0 GATEWAY_PORT=0 TRADING_PORT=0 AUTHEDGE_PORT=0 WEB_PORT=0; \
 	compose="docker compose --env-file $$tmp/.env.stack -f compose.yaml -p $$project"; \
 	$$compose up -d --no-build --wait --wait-timeout 120 postgres gateway-migrate; \
 	endpoint=$$($$compose port postgres 5432); \

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantProcessing/boltertrader/internal/httpx"
@@ -25,6 +26,15 @@ type MarketDataProjection interface {
 	BudgetStatus(string) marketdata.BudgetStatus
 }
 
+// CandlesProjection is separate from MarketDataProjection because the two are
+// backed by different services — the top-of-book projection caches, the candle
+// one does not — and folding them into one interface would force whichever
+// implementation answers it to fake the half it does not own.
+type CandlesProjection interface {
+	Get(context.Context, marketdata.CandleQuery) (marketdata.CandlePage, error)
+	BudgetStatus(string) marketdata.BudgetStatus
+}
+
 type ReadinessProjection interface {
 	Status() platformsystem.Snapshot
 	Readiness() platformsystem.Snapshot
@@ -38,6 +48,7 @@ type RealtimeProjection interface {
 type PublicDataDependencies struct {
 	Catalog    CatalogProjection
 	MarketData MarketDataProjection
+	Candles    CandlesProjection
 	Readiness  ReadinessProjection
 	Realtime   RealtimeProjection
 	Principal  func(*http.Request) (principalID, mode string, err error)
@@ -46,7 +57,7 @@ type PublicDataDependencies struct {
 type PublicDataAPI struct{ dependencies PublicDataDependencies }
 
 func NewPublicDataAPI(dependencies PublicDataDependencies) (*PublicDataAPI, error) {
-	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
+	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Candles == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
 		return nil, httpx.ConfigErr("public-data dependencies are incomplete")
 	}
 	return &PublicDataAPI{dependencies: dependencies}, nil
@@ -64,6 +75,7 @@ func (api *PublicDataAPI) Register(mux *http.ServeMux) error {
 		"GET /api/v1/catalog/venues",
 		"GET /api/v1/catalog/instruments",
 		"GET /api/v1/market-data",
+		"GET /api/v1/candles",
 		"GET /api/v1/realtime/stream",
 	} {
 		route := route
@@ -85,6 +97,8 @@ func (api *PublicDataAPI) Handle(w http.ResponseWriter, r *http.Request, route s
 		api.catalog(w, r, false)
 	case "GET /api/v1/market-data":
 		api.marketData(w, r)
+	case "GET /api/v1/candles":
+		api.candles(w, r)
 	case "GET /api/v1/realtime/stream":
 		api.realtime(w, r)
 	default:
@@ -145,6 +159,58 @@ func (api *PublicDataAPI) marketData(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"meta": httpx.Meta(r), "data": fact, "rateLimit": api.dependencies.MarketData.BudgetStatus(query.Venue),
+	})
+}
+
+// candles answers the chart's read.
+//
+// The query is validated field by field rather than through validateQuery
+// because limit is genuinely optional — an absent limit means "a screenful",
+// which is what the first paint of a chart wants — and validateQuery treats
+// every name it is given as required.
+func (api *PublicDataAPI) candles(w http.ResponseWriter, r *http.Request) {
+	err := validateOptionalQuery(r, []string{"venue", "environment", "product", "instrumentId", "interval", "limit"})
+	if err == nil {
+		for _, name := range []string{"venue", "environment", "product", "instrumentId", "interval"} {
+			if strings.TrimSpace(r.URL.Query().Get(name)) == "" {
+				err = fmt.Errorf("query field %q is required", name)
+				break
+			}
+		}
+	}
+	limit := 0
+	if err == nil {
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			parsed, parseErr := strconv.Atoi(raw)
+			if parseErr != nil || parsed <= 0 || parsed > marketdata.MaxCandles {
+				err = fmt.Errorf("query field \"limit\" must be between 1 and %d", marketdata.MaxCandles)
+			} else {
+				limit = parsed
+			}
+		}
+	}
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
+		return
+	}
+	query := marketdata.CandleQuery{
+		Venue: r.URL.Query().Get("venue"), Environment: r.URL.Query().Get("environment"),
+		Product: r.URL.Query().Get("product"), InstrumentID: r.URL.Query().Get("instrumentId"),
+		Interval: r.URL.Query().Get("interval"), Limit: limit,
+	}
+	page, err := api.dependencies.Candles.Get(r.Context(), query)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		code := "PUBLIC_DATA_NOT_READY"
+		if errors.Is(err, marketdata.ErrRateLimited) {
+			status = http.StatusTooManyRequests
+			code = "RATE_LIMITED"
+		}
+		httpx.WriteError(w, status, code, "candles projection is unavailable", map[string]any{"venue": query.Venue}, true, httpx.RequestID(r))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"meta": httpx.Meta(r), "data": page, "rateLimit": api.dependencies.Candles.BudgetStatus(query.Venue),
 	})
 }
 

@@ -1,0 +1,104 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./theme.css";
+
+/* The dark class is applied to <html> in index.html so the first paint is
+ * already graphite. Toggling adds `light` and removes `dark`. */
+@custom-variant light (&:where(.light, .light *));
+
+@layer base {
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    background-color: var(--color-bg);
+    /* Streaming numbers must not resize their own column. */
+    font-variant-numeric: tabular-nums;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* One focus treatment for the entire product. Two pixels of accent with an
+   * offset clears WCAG 2.2 non-text contrast on both panel and page, and the
+   * offset is what keeps it visible on a control that sits flush against a
+   * container edge (SC 2.4.11). */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  /* Numbers are mono and tabular everywhere, without asking each call site to
+   * remember. A price that jitters horizontally as it ticks is a defect. */
+  [data-numeric] {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero" 1;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklch, var(--color-accent) 32%, transparent);
+    color: var(--color-text);
+  }
+
+  /* A dense table with a visible scrollbar gutter is calmer than one that
+   * reflows when the scrollbar appears. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-dim);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer utilities {
+  /* Column headers. Uppercase and tracked out so an 11px label reads as
+   * structure rather than as small body text. */
+  .th {
+    font-size: var(--text-micro);
+    line-height: var(--text-micro--line-height);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-dim);
+    font-weight: 500;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
