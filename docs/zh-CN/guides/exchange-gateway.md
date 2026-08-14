@@ -11,16 +11,16 @@ smart order routing、资金划转、充值或 withdrawal endpoint。服务 **no
 
 ## 选择这个产品
 
-BolterTrader 提供三种同级路径：
+BolterTrader 在交易所之上提供两种同级路径：
 
 - 调用方在 Go 进程内自行负责 lifecycle、缓存与持久化时，直接使用规范化
   `exchange` client；
 - 需要常驻进程集中管理 account、凭证、Catalog、订单状态、reconciliation
-  和私有事件时，使用 Exchange Gateway；
-- 需要单一策略的有状态执行框架时，使用 `runtime`。
+  和私有事件时，使用 Exchange Gateway。
 
-Gateway 构建在 `exchange` 之上；它不使用 `runtime`，也不替代另外两种同级
-产品。
+Gateway 构建在 `exchange` 之上，并不替代它。产品服务位于 Gateway 之上而非
+之侧：trading 服务持有自己的命令账本并调用这里的资源，它也是 Gateway 唯一
+面向的调用方类型。见 [trading 服务](trading-service.md)。
 
 ## 服务形态
 
@@ -93,12 +93,12 @@ curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
 curl -X POST \
   -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: strategy-a-10001" \
+  -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-demo-spot",
     "instrument_id":"binance:demo:spot:BTC-USDT",
-    "idempotency_key":"strategy-a-10001",
+    "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
     "quantity":"0.001",
@@ -210,7 +210,7 @@ reconciliation 后才能重新开放 write readiness。
 ## Docker single-host 部署
 
 本地栈需要 Docker Engine 和 Compose v2。它是 single-host 运维示例：
-PostgreSQL、三个一次性 migrator 和三个服务，外加一个 PostgreSQL named
+PostgreSQL、三个一次性 migrator 和四个服务，外加一个 PostgreSQL named
 volume；不包含 Kubernetes、多主机调度、registry publishing 或 high
 availability。
 

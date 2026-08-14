@@ -1,122 +1,122 @@
-# 状态与对账
+# 状态与协调
 
 > 英文为规范版本。[English](../../concepts/state-reconciliation.md)
 
-本页定义 runtime 状态如何与交易所权威证据收敛，包括覆盖范围、来源、成交去重、
-启动、重连与激活。账户快照的精确形态由
-[账户与交易品种](accounts-instruments.md)说明。
+一笔下落不明的订单不是一个「出错了，重试吧」。它是一个问句，而本页拥有这个问句如何被回答。
 
-## 权威输入保持类型化
+被协调的那些状态属于[执行与风险](execution-risk.md)，运维要做的动作属于
+[运维与恢复](../guides/operations-recovery.md)。
 
-对账消费彼此独立、类型化的中立来源：
+## 两个协调器，两个问句
 
-- `AccountClient.AccountState` 提供强制账户快照，用于余额、保证金摘要、身份和
-  新鲜度；
-- 配置 execution client 时，`ExecutionClient.GenerateExecutionMassStatus`
-  提供订单、成交和持仓报告域；
-- capability-advertised 的 `AccountClient.Positions` 可以被归一化到同一条持仓
-  报告比较路径。当 execution client 不拥有该域时直接使用它；当 execution
-  position coverage 既不完整、也没有明确标记为不请求时，将其作为受保护的
-  fallback。
+系统里有两个，分处两层，而它们并不冗余：
 
-持仓 fallback 必须证明账户、交易所、冻结的交易品种 selector、请求时间边界
-以及账户能力完全相同。超出范围的 row、重复身份、缺失能力、时钟回退或 failed query（查询失败）
-都会保留原 execution coverage 并附带 warning。该 fallback 不会把持仓嵌入
-`AccountState`，也不会把账户快照变成 execution-owned mass status。
+| | Gateway 协调器 | Trading 协调器 |
+| --- | --- | --- |
+| 问的是 | 交易所把这笔订单怎么了？ | 这条命令走到终态了吗？ |
+| 证据 | 按订单标识符做的一次精确查询 | Gateway 给出的答案 |
+| 词汇 | Gateway 的九个订单状态 | Trading 的六个命令状态 |
+| 写的是 | Gateway 的命令与订单记录 | 命令账本与活动流 |
 
-账户快照的 account ID 必须与 runtime 账户匹配，其 venue 必须与账户客户端的
-能力来源匹配。在信任任何报告 row 之前，mass-status 响应会针对精确的 query
-venue、account、client filter 和冻结的 instrument selector 进行校验。
+只有 gateway 那个接触交易所。Trading 那个去问 gateway，自己从不持有 venue client——这正是为什么
+一个失去 gateway 的 trading 服务会报「未知」，而不是自己编一个结论出来。
 
-## 覆盖范围控制基于缺失的结论
+## 精确查询是唯一的权威
 
-Open orders、fills 和 positions 各自携带独立的 `ReportCoverage` 状态：
-`Unknown`、`NotRequested`、`Complete`、`Partial` 或 `Unavailable`。Complete
-与 partial 证据还携带精确的 account、client filter、归一化 instrument
-selector 和 observation boundary。Fill coverage 还拥有其精确的 `From`/
-`Through` 历史区间。
+Gateway 协调器只问一个很窄的问题：对这条命令，交易所对这个标识符怎么说？学到过交易所订单 ID 就
+按它查，没学到就按 client order ID 查——那个标识符本来就是为了被查而存在的，所以它铸在 dispatch
+之前而不是之后。
 
-这些域不可互换。Complete open-order coverage 不能证明 fill history 完整，
-账户持仓快照也不能扩大 execution report 的冻结范围。Runtime 会接受有效
-partial scope 内的正向证据，但只有该身份与该域具有 complete coverage 时，
-才会根据“缺失”得出结论。
+可能的答案，以及各自能了结什么：
 
-## 各个域如何收敛
+| 交易所的答案 | 记录的原因 | 结果 |
+| --- | --- | --- |
+| 找到，并带一个状态 | *（无）* | 走到证据所携带的那个状态 |
+| 未找到 | *（见下）* | 从 `dispatching` 或 `uncertain` 走到 `rejected`；否则不作结论 |
+| 无法确认 | `evidence_unconfirmed` | 留在 `uncertain`，稍后再试 |
+| 查询失败 | `lookup_failed` | 留在 `uncertain`，稍后再试 |
+| 证据不合法 | `evidence_invalid` | 留在 `uncertain`，稍后再试 |
 
-- 有效 `AccountState` 通过规范的 account-cache 应用路径，并更新对账新鲜度。
-- 交易所报告的 open orders 会刷新已知订单，并实体化首次在 runtime 外部观察到
-  的订单。
-- Complete 且冻结的 open-order snapshot 中缺失的 cached open order 会变为
-  `Unknown`；对账不会凭空把原因设为 `Canceled` 或 `Filled`。
-- 恢复的 fills 走节点的规范 fill path，使 cache、portfolio、terminal-order
-  state 和 callbacks 与实时事件保持一致。
-- Position reports 是比较证据。它们可以产生阻塞 finding，但 reconciler 不会
-  直接覆盖或清除 position cache state。
+注意这张表的不对称。只有「找到」，以及「未找到」的一种很窄的读法，才能了结这个问句。其余一切都
+把命令原样留在那里，记下原因，再排一次尝试。
 
-只有类型化身份一致时，订单和成交证据才能解决 ambiguous in-flight command。
-未变化的 open order 可以确认 ambiguous submit，但不能证明 pending cancel 或
-modify 已成功。结果分类由[执行与风险](execution-risk.md)负责。
+协调**允许**得不出结论。那是一种被支持的结果，不是缺陷：一个必须给出答案的协调器，迟早会给出一个
+错答案。
 
-## 来源、身份与成交去重
+## 「未找到」只是有时候才算答案
 
-恢复的 fills 携带 `SourceReconciliation` 以及 snapshot/reconciliation event
-flags；从 report data 合成的 fills 会显式标记为 synthetic。Runtime 使用交易所
-范围内的身份 `AccountID + InstrumentID + TradeID` 去重成交，不包含 order
-aliases，因为这些 alias 可能稍后才被学习到。报告没有 trade ID 时，对账会在
-应用前派生稳定的 synthetic ID。
+未找到的意思是，交易所**此刻**没有这个标识符的记录。它能否证明这笔订单从未存在，完全取决于命令
+失联时停在哪。
 
-Adapter 重连 snapshot 交付的 fill 会保留其原始 stream source 与 snapshot
-provenance。Snapshot flag 不是丢弃该 fill 的理由：它与 live traffic 一样进入
-规范 fill path 和交易所范围内的去重，因此重复交付的 snapshot fill 及其随后
-到达的 live duplicate 只会应用一次。
+从 `dispatching` 或 `uncertain` 出发，未找到被当作一次拒绝。身份铸在接触交易所之前，所以交易所
+若真接受了这次写入，那个标识符就该在。这笔订单从未落地。
 
-Modify 会保留订单原始的逻辑 `ClientID`。Sparse venue response 会从该 logical
-request 补全。如果交易所返回不同的 response `ClientID`，runtime 只有在该
-identity 尚未被占用时才接受 response，随后会把它归一化回原始 `ClientID`；
-runtime 不会注册 alternate client alias。已属于另一个订单的 identity 会 fail
-closed，且绝不会重新绑定该 logical order。
+从其他任何状态出发，未找到被记为「无法确认」，命令留在 uncertain。一笔一小时前还 `open` 的订单，
+如今不在答案里，可能是成交了，可能是被撤了，也可能只是掉出了那次查询所覆盖的窗口。在那里断言
+「已拒绝」，是编造。
 
-Reconciler 保留有界的 completed-fill index，以及下一 cursor window 使用的独立
-exact overlap set。Journal-backed state store 会在 full-coverage cursor 前进前
-记录 applied-fill dependencies。重启时，replay 会为幂等状态播种，但不会再次
-应用业务状态或发出 callback。Identity conflict 和 retention exhaustion 会
-fail closed，而不会容许潜在的重复成交。
+这次读取本身比它看上去更弱。没有任何一行能靠翻页证明缺席——把历史翻到底，并不能确立一笔订单从未
+存在——而有些行根本无法确认缺席，只能把它报成「未被证明」。哪些行能证明什么由
+[不支持的能力](../reference/unsupported.md)拥有。协调器的规则在每一行上都一样：只有当一个缺席
+所对照的那个状态使它成为证据时，它才是证据。
 
-Incomplete fill coverage 可以应用可信的正向 fills，但不能推进持久的
-full-coverage cursor。后续 pass 会有意与上一次成功边界重叠，并依靠去重确保
-该重叠安全。
+## 节奏不同，因为问句不同
 
-### Journal 保留语义
+| | Gateway | Trading |
+| --- | --- | --- |
+| 扫描间隔 | 1 秒 | 1 秒 |
+| 下次尝试排在 | 5 秒后，固定 | 5 秒起，倍增至 60 秒封顶 |
+| 租约 | 30 秒 | 15 秒 |
+| 每轮领取 | 100 条 | 20 条 |
+| 何时不再重试 | 20 次尝试之后 | *（不停；改由退避封顶）* |
 
-Physical journal file 保持 append-only。Retention 只限制内存中的 ordinary
-replayed diagnostic/history window；recovery-critical records 会额外保留，包括
-open 或 ambiguous intents、blocking reports、uncommitted applied events，以及
-latest cursor 与其 dependencies。丢弃 ordinary in-memory entry 不会重写或压缩
-磁盘文件。Runtime 不会自动压缩磁盘文件，因此不能把 bounded diagnostic memory
-理解为 bounded journal file size。
+两者都以租约而非锁来领任务，于是一个中途死掉的实例是靠租约过期把任务放出来，而不是攥着不放。
 
-## 启动、重连与 stream gap
+两种上界的差别是有意的。Gateway 在二十次尝试之后不再领这条任务，因为一次失败了二十次的交易所查询
+不会在第二十一次成功，此时该上人了。Trading 只退避、不放弃，因为它依赖的是 gateway，而 gateway
+是会回来的。
 
-`TradingNode.Run` 会 replay open command intents，在节点的 reconciliation 与
-event-serialization locks 下执行启动对账，评估 activation verdict，之后才启动
-strategy callbacks 和常规 event processing。Reconciliation error 会把节点
-置于 failed 状态。
+## 让闸门重开的是恢复
 
-`TradingNode.Reconnect` 调用实现了 `contract.Reconnectable` 的客户端，然后在
-恢复交易前对账。内部自行重连的客户端不会被强制走该方法。Private-stream gap
-会立即把交易置于 reconciling；恢复会等待每个 active gap generation，运行一次
-scoped reconciliation，然后重新评估 activation。如果 execution stream 可能
-丢失 fills，但 adapter 没有 authoritative fill-history report，重连恢复会保持
-restricted，而不会假定连续性。
+协调解决一条命令。恢复解决一个账户。
 
-## 激活判定
+一次 dispatch 失败会关上该账户的写入闸门，失去可证明的私有流连续性同样会。闸门关着的时候，下单
+以「需要恢复」被拒绝，而不是被尝试。闸门不按定时器重开，也不因为一切看起来安静下来了就重开。
 
-存在 execution evidence 时，激活要求 complete open-order coverage，并要求
-fill 与 position coverage 要么 complete，要么明确 not requested。Incomplete
-fill cursor continuity 和 blocking findings 也会阻止激活。Diagnostic warnings
-与通用 `Partial` summary bit 本身不是权威；最终判定由类型化的 domain coverage
-和 findings 决定。
+它在恢复跑过、且每一条可恢复命令都被解决之后才重开。恢复会载入该账户尚未解决的命令，并按它们停在
+哪里分别处置：
 
-组合方式见[运行 Runtime 节点](../guides/runtime-node.md)，操作员行动见
-[运维与恢复](../guides/operations-recovery.md)。Demo/Testnet 证据策略由
-[测试](../reference/testing.md)负责。
+- 仍处于 `prepared` 的命令从未抵达交易所，于是现在就 dispatch，并重新校验 fence。
+- 越过那一点的一切，则对照交易所的精确证据做协调。
+
+哪怕只剩一条未解决，恢复也返回「不完整」，闸门保持关闭。部分恢复不算恢复。一个还有一条命令处于
+未知状态的账户，就是一个持仓未知的账户，而去交易它，正是一个小的不明确变成一个大的不明确的方式。
+
+## 通往活动流只有一条路
+
+一个已落定的状态抵达界面，只有一条路径：trading 协调器的结算观察者。
+
+这一点值得明说，因为那个显而易见的替代方案是错的。接下这笔订单的 handler 在命令提交之后立刻返回，
+它永远不会知道订单是否成交。若审计轨迹由 handler 来写，它会永远停在「已提交」。学到交易所最终答案
+的是协调器，所以记录它的也必须是协调器。
+
+观察者在扫描循环里内联执行，且不得阻塞。一个慢的观察者不只是拖住一行——它拖住的是其余每一条
+uncertain 命令都在等的那一轮扫描。
+
+## 协调不做什么
+
+它不重试下单。一条走到不明确的命令只会被查询，绝不被重发。这恰恰是它可以一直跑着而仍然安全的原因。
+
+它不重建成交，也不从历史里重建持仓。它每条命令只回答一个问题。
+
+它不推翻终态。一旦 gateway 手里有了权威证据，后来的扫描无法重开这个问题，因为终态没有任何出边。
+
+而在上面那一种很窄的情形之外，它不把一个缺席变成一个结论。
+
+## 相关
+
+- [执行与风险](execution-risk.md) —— 被协调的那些状态，以及 `uncertain` 为何存在
+- [账户与 instrument](accounts-instruments.md) —— 恢复所对照的 fence 与生命周期
+- [运维与恢复](../guides/operations-recovery.md) —— 运维的操作步骤
+- [Trading 服务](../guides/trading-service.md) —— 命令账本与活动流
+- [不支持的能力](../reference/unsupported.md) —— 哪些行能证明缺席

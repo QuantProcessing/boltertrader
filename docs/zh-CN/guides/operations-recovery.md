@@ -1,94 +1,127 @@
 # 运维与恢复
 
-[English](../../guides/operations-recovery.md) · 本页是英文规范页的中文镜像。
+> 英文为规范版本。[English](../../guides/operations-recovery.md)
 
-## 归属与范围
+本页讲怎么把这套栈跑起来，以及结果不明确时该怎么办。它不能替代交易所自己的 runbook，
+而且这里没有任何东西能把 Demo 或 Testnet 的证据变成生产就绪。
 
-本页负责说明启动、重连、订单结果不明确以及有界非生产 cleanup 时的 operator
-action。它不能替代交易所 runbook，也不会根据 Demo/Testnet 证据声称已具备生产
-readiness。
+## 运行这套栈
 
-## 从权威状态开始
+五条命令覆盖整个生命周期。
 
-启用 write 前使用 `node.Resync(ctx)`。确认 reconciliation report、account
-freshness、product/account mode，并确保不存在不安全的预存状态。stream gap 或
-reconnect 后，使用 `node.Reconnect(ctx)` 或显式 resync；不要仅靠 callback 重建
-order 或 position。
-
-`Reconnect` 会调用实现 `contract.Reconnectable` 的 client，随后执行
-reconciliation。`Resync` 会与 event application 串行化。这两种方法都不会把
-缺失的 fill history 变成“订单从未成交”的证据；当 recovery 不充分时，lifecycle
-可以保持 reconciling 或 halted。
-
-## 将歧义视为状态，而不是重试信号
-
-提交后的 timeout 或 transport error 可能意味着交易所已经接受订单。保留原始
-client ID 以及所有 venue order ID，再使用该产品支持的精确 status、open-order、
-fill 和 position 证据。第一笔订单的结果得到解析之前，不要使用新的 identity
-提交替代订单。
-
-execution journal 和 reconciliation path 会区分 intent、confirmed result 和
-unresolved outcome。failed command（失败的命令）并不能证明没有 write 到达交易所。
-
-| 观测结果 | Operator 操作 |
+| 命令 | 效果 |
 | --- | --- |
-| 交接给交易所前，本地 validation、lifecycle 或 risk 拒绝 | 修复 request 或 readiness condition；不要为该次被拒绝的尝试执行交易所 cleanup |
-| 已确认订单 | 保留 client ID 和 venue ID；遵循常规 status/fill handling |
-| 可能已交接给交易所，但没有权威结果 | 冻结替代性 write，使用准确的已知 identity 查询，执行 reconciliation；若证据仍不完整，则将结果保留为 ambiguous |
-| 权威的 terminal result | 只执行该 terminal order/fill/account 证据能够证明合理的 cleanup |
+| `make up` | 生成密钥与 `.env.stack`，构建、启动、等待健康，然后跑 doctor |
+| `make doctor` | 诊断一个正在运行的栈，不改动任何东西 |
+| `make logs` | 跟随全部容器的输出 |
+| `make down` | 停掉栈，保留数据库卷 |
+| `make down-hard` | 停掉栈，并删除卷 |
 
-不在完整 open-order list 中，只能证明订单当前不再 open。它不能虚构 terminal
-cause、证明 fill 为零或授权替代订单。若产品实现了 exact status report 和 exact
-fill report，则使用它们；否则保持结果 unresolved。
+`make up` 可以反复跑。缺的它会生成，松的它会收紧，已经对的它不动。
 
-## Cleanup 必须有界
+两种拆栈方式的区别，比看上去更重要。Postgres 镜像只在数据目录为空时跑一次初始化脚本。
+因此卷活下来，就意味着被改过的角色集合永远不会被应用——所以只要动了
+`docker/postgres/initdb/` 下的任何东西，就只有 `make down-hard` 能让那次改动生效。
 
-acceptance harness 只会取消它能够识别且由 validation 创建的订单，也只会
-flatten 它能够归因并约束的 exposure。zero exit 时，应用测试针对准确产品定义的
-success。任何 nonzero 或 ambiguous exit 都意味着最终状态未经确认，即使 deferred
-cleanup 已执行。
+## 读懂 `make doctor`
 
-- Binance Spot：检查准确的 validation ID、所选 symbol 的 open order，以及权威
-  base-asset balance 相对于已捕获 baseline 的变化。success 允许小于一个 size step
-  的 dust；它不能证明整个 account 完全相等。
-- Hyperliquid Perp：检查准确的 validation ID、所选 scope 的 open order，以及所选
-  Perp 的 account/runtime position。success 不会认证 Spot、HIP-3 或每一种 account
-  product。
+Doctor 按固定顺序跑一组检查，而这个顺序就是排查顺序：某一项失败之后，它下面的往往
+都因为同一个原因而失败。
 
-绝不要盲目取消无关订单，也不要 flatten 未经证明的 position。如果 close outcome
-存在歧义，额外 sell 可能创建 short position。
+| 检查 | 健康的答案 |
+| --- | --- |
+| `docker` | 守护进程有响应 |
+| `.env.stack` | 存在且非空 |
+| `credentials` | 七个文件，权限 `0600`，位于 `.secrets/<mode>` |
+| `credential store` | 存在，且对 gateway 运行所用的 uid 可写 |
+| `postgres` | 端口可以接受连接 |
+| `postgres roles` | 六个角色、三个数据库、writer 成员资格已授予 |
+| `gateway` | 带认证的 `/v1/health/ready` 返回 `200` |
+| `trading` | 带认证的 `/api/v1/system/readiness` 返回 `200` |
+| `auth edge` | 无会话时 `/api/v1/me` 返回 `401` |
+| `web` | `/` 返回 `200` |
 
-下面的代码摘自当前的 bounded cleanup implementation
-[`adapter/internal/runtimeaccept/order_lifecycle.go`](../../../adapter/internal/runtimeaccept/order_lifecycle.go)，
-并非独立程序。它展示了 ambiguous close 之后 fail-closed 的 Perp 规则：稳定的
-nonzero position 证据会阻止再次发送 flattening order。
+其中三项值得解释，因为每一项都有一个看起来合理、实则错误的读法。
 
-```go
-if !allowFlatten {
-	reports, err := waitForStableCleanupPosition(cleanupCtx, exec, spec)
-	if err != nil {
-		return errors.Join(cancelErr, err)
-	}
-	if len(reports) != 0 {
-		return errors.Join(cancelErr, fmt.Errorf("position cleanup blocked: close outcome ambiguous; refusing an additional sell with %d non-zero position report(s)", len(reports)))
-	}
-	return cancelErr
-}
-```
+**Gateway 探针会带 bearer token。** 就绪位于与其他每一条 `/v1` 路由相同的认证之后，
+所以不带认证的探针会把健康的 gateway 报成坏的。容器镜像是 distroless 的，没有 shell
+可以用来读那个 token 文件——这正是这项检查跑在宿主机上的原因。
 
-对于 Spot，cleanup 受以下条件约束：已捕获的权威 base-balance baseline、观测到的
-lifecycle-created fill quantity、fee reserve、size step 和 minimum notional。
-它绝不会出售根据 account-wide balance 推定归属的资产。对于 Perp，cleanup 仅限
-所选 instrument/account scope、观测到的 lifecycle exposure、显式 quantity cap 和
-reduce-only semantics。若 close outcome 存在歧义，就会禁止再次自动尝试 flatten。
+**Auth edge 返回 `401` 才算通过。** 那里返回 `200` 就意味着 edge 替一个它从未认证过的
+principal 作答——这项检查把任何其他状态码都视为失败，包括成功。
 
-## 证据与升级
+**角色成员资格是被显式核对的。** 一次没发生的 grant 会留下两个都存在的角色和一个写不进去
+的服务，否则这个问题要到第一次 insert 才暴露，而不是在启动时。
 
-记录 candidate、command、environment/product、client ID 和 venue ID、terminal
-report 以及 reconciliation result，但不要记录 secret。raw execution evidence
-应保持私密；公开 certification summary 只包含 scoped、dated、zero-skip result。
+Skip 从来不是值得看的那一行。Skip 总是位于某个已经在它上面被报出来的失败的下游。
 
-- [CEX Demo 演练](../getting-started/cex-demo.md)
-- [DEX Testnet 演练](../getting-started/dex-testnet.md)
-- [测试参考](../reference/testing.md)
-- [状态与对账](../concepts/state-reconciliation.md)
+## 启动与关停
+
+Gateway 在自己的前置条件成立之前拒绝提供服务：配置、凭证解密、数据库连通、schema 版本、
+catalog 加载、route profile、就绪注册。一个始终不就绪的 gateway 一定是其中某一项没过，
+而 `make logs` 会说是哪一项。它不会以降级状态启动，因为一个在 catalog 加载完成前就接受
+写入的 gateway，会拿着自己并不掌握的规则去校验订单。
+
+关停方向上，gateway 在这套栈十五秒的停止窗口内最多 drain 十秒。在途请求会跑完，新请求
+不再开始。Drain 的结果被记录为指标，因此一个被以快于其 drain 速度停掉的栈是可见的，
+而不是靠推断。
+
+## 不明确是一种状态，不是重试信号
+
+提交之后的超时或传输错误，可能意味着交易所已经接受了这笔订单。这是本页最重要的一条
+运维事实，而两层都是围绕它构建的。
+
+Trading 服务的命令账本有一个显式的 `uncertain` 状态；只要 gateway 查询失败、或者返回了
+它无法解读的证据，reconciler 就把该命令置于此。重试从五秒起退避，翻倍直到一分钟封顶，
+整段时间内该命令始终可被认领。它不会因为一次读失败就变成 `failed`。
+
+**在第一次结果尚未定论之前，不要用一个新身份提交替代订单。** 保留原始的 command ID 和
+任何交易所订单 ID，并且只按这些精确身份去查。一条失败的命令，并不能证明没有任何写入抵达
+交易所。
+
+| 观察到的结果 | Operator 动作 |
+| --- | --- |
+| 交给交易所之前的校验、生命周期或风控拒绝 | 修请求或就绪条件；不要为这次尝试做任何交易所侧 cleanup |
+| 已确认的订单 | 保留 command 与交易所 ID；按正常的状态与成交处理走 |
+| 可能已交给交易所但没有权威结果 | 冻结替代写入，按精确的已知身份去查，做 reconcile；证据仍不完整就让结果保持不明确 |
+| 权威的终态结果 | 只做那些由终态订单、成交或账户证据所支持的 cleanup |
+
+从一份完整的挂单列表中缺席，只能证明这笔订单不在挂单中。它不提供终态原因，不证明零成交，
+也不构成替代下单的授权。在实现了精确状态报告与精确成交报告的 product 上使用它们；否则
+结果保持未定论。
+
+终态只经由结算观察者抵达活动流，别无他途——所以界面显示的是账本结算下来的东西，而不是提交
+那一刻响应体所暗示的东西。见 [trading 服务](trading-service.md)。
+
+## 数据流缺口
+
+Gateway 的公开流按设计没有 cursor replay。每个连接都从一份全新的权威 snapshot 开始，
+检测到缺口时发出 `resync_required` 并关闭，而不是默默跳过事件。
+
+把这个事件当作权威：重连，取新的 snapshot。不要用你收到的那些事件去重建订单或持仓。缺口
+意味着你手上的序列不完整，而把不完整的序列当作完整的来应用，会得到一个看起来已经结算、
+实际并没有的持仓。
+
+## Cleanup 是有界的
+
+验收装置只撤销它能识别为自己所有的订单，只平掉它能归因且能定界的敞口。退出码为零时，
+适用该测试精确的、按 product 限定的成功定义。任何非零或不明确的退出，都意味着最终状态
+未被确认——哪怕延迟 cleanup 跑过了。
+
+绝不盲目撤销无关订单，也绝不平掉未经证实的持仓。**如果平仓结果不明确，再卖一笔可能凭空
+建立一个空头。** Cleanup 路径正因如此是 fail-closed 的：一次不明确的平仓之后，稳定的非零
+持仓证据会阻止再下一笔平仓单，而不是重试。
+
+现货 cleanup 由捕获到的权威基础资产余额基线、观测到的成交数量、手续费预留、size step 与
+最小名义额共同定界。它绝不从账户整体余额里去卖推定属于自己的部分。永续 cleanup 则被限制在
+选定的 instrument 与 account 范围内，带显式数量上限与 reduce-only 语义。
+
+## 证据
+
+记录 command、environment 与 product、client 与交易所 ID、终态报告，以及 reconciliation
+结果。不要记录任何 secret。原始执行证据保持私有；对外发布的内容只包含有范围、有日期、
+zero-skip 的结果。
+
+- [测试](../reference/testing.md)
+- [状态与 reconciliation](../concepts/state-reconciliation.md)
+- [本地栈](../getting-started/local-stack.md)

@@ -13,16 +13,17 @@ required durable service.
 
 ## Choosing this product
 
-BolterTrader exposes three peer paths:
+BolterTrader exposes two peer paths over the venues:
 
 - use direct `exchange` clients for a convenient normalized API inside a Go
   process when the caller owns lifecycle, caching, and durability;
 - use Exchange Gateway when a resident process must centralize accounts,
-  credentials, Catalog, order state, reconciliation, and private events;
-- use `runtime` for one strategy's stateful execution framework.
+  credentials, Catalog, order state, reconciliation, and private events.
 
-Gateway is built above `exchange`; it does not use `runtime` or replace either
-peer product.
+Gateway is built above `exchange` and does not replace it. Product services sit
+above Gateway rather than beside it: the trading service holds its own command
+ledger and calls these resources, and it is the only kind of caller Gateway is
+designed for. See [the trading service](trading-service.md).
 
 ## Service shape
 
@@ -99,12 +100,12 @@ Place an order with an account, gateway instrument ID, and idempotency key:
 curl -X POST \
   -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: strategy-a-10001" \
+  -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-demo-spot",
     "instrument_id":"binance:demo:spot:BTC-USDT",
-    "idempotency_key":"strategy-a-10001",
+    "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
     "quantity":"0.001",
@@ -226,7 +227,7 @@ and the next process must complete reconciliation before reopening writes.
 ## Docker single-host deployment
 
 The local stack requires Docker Engine with Compose v2. It is a single-host
-operational example: PostgreSQL, three one-shot migrators, and the three
+operational example: PostgreSQL, three one-shot migrators, and the four
 services, with one named PostgreSQL volume. It does not provide Kubernetes,
 multi-host scheduling, registry publishing, or high availability.
 

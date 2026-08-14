@@ -1,10 +1,9 @@
 # 贡献文档
 
-[English](../../contributing/documentation.md)
+> 英文为规范版本。[English](../../contributing/documentation.md)
 
-> 本页是中文镜像；英文版是规范文本。**归属：**本页拥有 public-safe
-> curation、canonical-page ownership、English/Chinese mirror maintenance 与
-> documentation review rule。
+**归属：**本页拥有 public-safe curation、canonical-page ownership、
+English/Chinese mirror maintenance 与 documentation review rule。
 
 ## 为公开边界进行策划
 
@@ -32,9 +31,11 @@ candidate/date/scope summary。Raw evidence 保留在公开树之外。
 
 - Getting Started 拥有 end-to-end onboarding journey。
 - Concepts 拥有稳定架构与执行语义。
-- Guides 拥有 task-oriented API、data、strategy 与 recovery procedure。
-- Venue 页面拥有当前 venue/product behavior、caveat、selector 与 target use。
-- [能力矩阵](../adapter-capabilities.md)拥有详细静态 runtime product table。
+- Guides 拥有 task-oriented service、data 与 recovery procedure。
+- [REST](../reference/exchange-rest-v1-operation-matrix.md) 与
+  [WebSocket](../reference/exchange-ws-v1-operation-matrix.md) 操作矩阵拥有按行
+  的覆盖，[Venue 与 account mode](../reference/exchange-venues-and-account-modes.md)
+  拥有 venue、product 与 environment 的身份。
 - [Unsupported surface](../reference/unsupported.md)拥有跨 venue 的 absent、
   deferred 与 SDK-only inventory。
 - [测试与证据](../reference/testing.md)拥有完整 command ladder 与 evidence rule。
@@ -44,7 +45,7 @@ candidate/date/scope summary。Raw evidence 保留在公开树之外。
 - Contributor 页面拥有 extension 与 maintenance obligation。
 
 次级页面可以写明完成任务所需的最小事实并链接到 owner，但不得复制完整
-credential table、command ladder、capability matrix、generic submission
+credential table、command ladder、operation matrix、generic submission
 contract、SDK-only inventory 或 status ontology。
 
 ## English 与 Chinese mirror contract
@@ -108,8 +109,8 @@ limitation。不要粘贴 raw log 或 account state。
   满足 mirror contract。
 - 没有 secret、raw evidence、private path、development plan、task identifier
   或 temporary implementation history 进入 public tree。
-- `git diff --check`、`make test-capabilities` 与 changed example/behavior 的相关
+- `git diff --check`、`make test` 与 changed example/behavior 的相关
   test 通过。
 
 实现专用的 matrix 与 verification obligation 参见
-[贡献 Adapter](adapters.md)。
+[新增一个 venue](venues.md)。

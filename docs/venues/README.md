@@ -1,46 +1,56 @@
-# Venue Guides
+# Venue Support
 
 [Chinese mirror](../zh-CN/venues/README.md) · This English page is canonical.
 
-## Ownership and scope
+## What this page is
 
-This index routes to venue-specific environment, product, configuration, order,
-account, and acceptance notes. Venue pages are the owner of venue-specific
-semantics; the detailed per-product truth table remains in the 21-row
-[capability matrix](../adapter-capabilities.md).
+This is a router, not a source of truth. Venue behavior is not documented
+per venue any more: it is documented per dimension, on pages that are frozen
+against the code by contract tests. Use the table below to find the owner of
+whatever venue fact you need.
 
-| Venue | Public non-production environment | Runtime product pages |
-| --- | --- | --- |
-| [Binance](binance.md) | Demo | Spot, USD-M Perp |
-| [OKX](okx.md) | Demo | Spot cash, USDT-linear SWAP |
-| [Bybit](bybit.md) | Demo Trading | Spot, USDT-linear Perp, USDC-linear Perp |
-| [Bitget](bitget.md) | Demo/PAP | Spot, USDT-linear Perp, USDC-linear Perp |
-| [Gate](gate.md) | Testnet | Spot, USDT-linear Perp; USDC deferred |
-| [Hyperliquid](hyperliquid.md) | Testnet | Spot, Perp, HIP-3 Perp |
-| [Lighter](lighter.md) | Testnet | Spot, Perp |
-| [Aster](aster.md) | Testnet | Spot, USDT-linear Perp |
-| [Nado](nado.md) | Testnet | Spot no-borrow, Perp |
+| Question | Owner |
+| --- | --- |
+| Which normalized REST products and methods exist | [Exchange REST V1 operation matrix](../reference/exchange-rest-v1-operation-matrix.md) |
+| Which normalized WebSocket products and methods exist | [Exchange WebSocket V1 operation matrix](../reference/exchange-ws-v1-operation-matrix.md) |
+| Account system, logical identity, position mode, margin mode, leverage, order caveats | [Exchange venue and account-mode differences](../reference/exchange-venues-and-account-modes.md) |
+| Which command certifies a product row against Demo/Testnet | [Testing and certification](../reference/testing.md) |
+| Credential names, environments, and write gates | [Configuration](../reference/configuration.md) |
+| Venues that exist only as an SDK, and deferred dimensions | [Unsupported, deferred, and SDK-only surfaces](../reference/unsupported.md) |
 
-## How to read a venue page
+## Certified venues and product rows
 
-- Request and subscription methods are listed separately. A coarse `Market`,
-  `Execution`, or `Account` stream flag does not prove that every normalized
-  subscription method is wired.
-- `Submit`, `Cancel`, `CancelAll`, and `Modify` are reported independently of
-  stream support. A venue may reconcile commands through REST without private
-  stream dispatch.
-- Report coverage distinguishes exact single-order evidence, open-order
-  snapshots, bounded fill history, positions, and account state. An open-only
-  absence is not terminal-order proof unless the venue page says otherwise.
-- Reference data is Perp-only unless stated otherwise. Current open interest is
-  queried directly from the venue and is not a retained runtime cache.
-- A recorded successful zero-skip Demo/Testnet run proves only its named product,
-  lifecycle, and terminal assertions. Target existence alone proves nothing
-  about current external behavior, and no run establishes production readiness
-  or unnamed products, account modes, or stream dimensions.
+Nine venues reach the gateway, across twenty product rows. Each row has its own
+acceptance target; `make test-gateway-demo-testnet` runs all twenty serially.
 
-The documented acceptance targets use the repository's zero-skip runner. Read
-[Testing](../reference/testing.md) for gate and cleanup semantics and
-[Configuration](../reference/configuration.md) for the canonical credential and
-safety-gate names. SDK-only venues and deferred dimensions are owned by
-[Unsupported and Deferred Features](../reference/unsupported.md).
+| Venue | Non-production environment | Product rows | Acceptance targets |
+| --- | --- | --- | --- |
+| Aster | Testnet | `ATS`, `ATP` | `test-gateway-aster-spot-testnet`, `test-gateway-aster-usdt-perp-testnet` |
+| Binance | Demo | `BNS`, `BNP` | `test-gateway-binance-spot-demo`, `test-gateway-binance-usd-perp-demo` |
+| Bitget | Demo | `BGS`, `BGU`, `BGC` | `test-gateway-bitget-spot-demo`, `test-gateway-bitget-usdt-perp-demo`, `test-gateway-bitget-usdc-perp-demo` |
+| Bybit | Demo | `BYS`, `BYU`, `BYC` | `test-gateway-bybit-spot-demo`, `test-gateway-bybit-usdt-perp-demo`, `test-gateway-bybit-usdc-perp-demo` |
+| Gate | Testnet | `GTS`, `GTU` | `test-gateway-gate-spot-testnet`, `test-gateway-gate-usdt-perp-testnet` |
+| Hyperliquid | Testnet | `HLS`, `HLP` | `test-gateway-hyperliquid-spot-testnet`, `test-gateway-hyperliquid-perp-testnet` |
+| Lighter | Testnet | `LIS`, `LIP` | `test-gateway-lighter-spot-testnet`, `test-gateway-lighter-perp-testnet` |
+| Nado | Testnet | `NDS`, `NDP` | `test-gateway-nado-spot-testnet`, `test-gateway-nado-usdt0-perp-testnet` |
+| OKX | Demo | `OXS`, `OXP` | `test-gateway-okx-spot-demo`, `test-gateway-okx-usdt-perp-demo` |
+
+`sdk/` additionally contains Backpack, EdgeX, GRVT, and StandX. Those venues
+have no `exchange/factory` construction path and therefore no product row.
+
+## Reading a support claim
+
+Support is per product row, and three claims are routinely confused:
+
+- **Implemented** means the operation matrix marks the row `A` and the code
+  path exists. It says nothing about external behavior today.
+- **Demo/Testnet-certified** means a recorded zero-skip run of that row's
+  acceptance target passed. It proves only the products, lifecycle, and
+  terminal assertions that run names — not neighbouring rows, account modes,
+  or stream dimensions.
+- **Production-ready** is never claimed by this repository. No non-production
+  run establishes it.
+
+The existence of a `sdk/<venue>` package, a make target, or a matrix cell is
+not evidence of any of the three. Only a zero-skip exit code is, and only for
+its own row.

@@ -2,9 +2,9 @@
 
 [English](../../exchange/README.md) · 本页镜像英文规范页。
 
-`exchange` 模块是独立、规范化、SDK-backed 的 API。它与 `adapter/*` 和
-`runtime/*` 相互独立：调用方直接构造 typed `exchange.SpotClient` 或
-`exchange.PerpClient`，并显式选择 venue、product 与 environment。
+`exchange` 模块是独立、规范化、SDK-backed 的 API。它不依赖其上的任何一层：
+调用方直接构造 typed `exchange.SpotClient` 或 `exchange.PerpClient`，并显式
+选择 venue、product 与 environment。
 
 ## 从这里开始
 
@@ -13,9 +13,8 @@
 - 按照[统一交易所 API 快速入门](../guides/exchange-rest-quickstart.md)完成 typed
   构造与安全的非生产示例。
 - 如果调用方不应在进程内管理 client、缓存、凭证和重启恢复，而应通过常驻远程
-  服务交互，请选择 [Exchange Gateway](../guides/exchange-gateway.md)。
-- 如果进程承载单一有状态策略，请选择 [runtime node](../guides/runtime-node.md)。
-  三者是同级产品路径，不是直接 API 的迭代版本。
+  服务交互，请选择 [Exchange Gateway](../guides/exchange-gateway.md)。两者是
+  同级入口，不是同一套 API 的迭代版本。
 
 ## 精确 API 清单
 
@@ -40,8 +39,8 @@ order-caveat 摘要。
 ## 边界与事实来源
 
 Exchange 行为声明必须以 public exchange contract、factory、manifest、
-exchange test 与 exchange-specific acceptance evidence 为依据。Adapter 和
-runtime 文档可以提供背景，但不能定义本模块的行为。
+exchange test 与 exchange-specific acceptance evidence 为依据。Gateway 与
+产品服务文档可以提供背景，但不能定义本模块的行为。
 
 - [Exchange contract](../../../exchange/contract.go)
 - [Factory API](../../../exchange/factory/factory.go)

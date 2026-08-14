@@ -1,10 +1,9 @@
 # Contributing Documentation
 
-[简体中文](../zh-CN/contributing/documentation.md)
+> Canonical language: English. [Chinese mirror](../zh-CN/contributing/documentation.md)
 
-> English is canonical. **Owner:** this page owns public-safe curation,
-> canonical-page ownership, English/Chinese mirror maintenance, and documentation
-> review rules.
+**Owner:** this page owns public-safe curation, canonical-page ownership,
+English/Chinese mirror maintenance, and documentation review rules.
 
 ## Curate for the public boundary
 
@@ -34,11 +33,12 @@ canonical inventories:
 
 - Getting Started owns end-to-end onboarding journeys.
 - Concepts owns stable architecture and execution semantics.
-- Guides own task-oriented API, data, strategy, and recovery procedures.
-- Venue pages own current venue/product behavior, caveats, selectors, and target
-  use.
-- The [capability matrix](../adapter-capabilities.md) owns the detailed static
-  runtime product table.
+- Guides own task-oriented service, data, and recovery procedures.
+- The [REST](../reference/exchange-rest-v1-operation-matrix.md) and
+  [WebSocket](../reference/exchange-ws-v1-operation-matrix.md) operation matrices
+  own per-row coverage, and
+  [Venues and account modes](../reference/exchange-venues-and-account-modes.md)
+  owns venue, product, and environment identity.
 - [Unsupported surfaces](../reference/unsupported.md) owns cross-venue absent,
   deferred, and SDK-only inventory.
 - [Testing and evidence](../reference/testing.md) owns the complete command
@@ -49,7 +49,7 @@ canonical inventories:
 - Contributor pages own extension and maintenance obligations.
 
 A secondary page may state the minimum fact needed for its task and link to the
-owner. It must not copy a full credential table, command ladder, capability
+owner. It must not copy a full credential table, command ladder, operation
 matrix, generic submission contract, SDK-only inventory, or status ontology.
 
 ## English and Chinese mirror contract
@@ -129,5 +129,5 @@ state.
 - `git diff --check`, `make test`, and tests relevant to changed examples or
   behavior pass.
 
-See [Contributing an adapter](adapters.md) for implementation-specific matrix and
+See [Adding a venue](venues.md) for the implementation-specific matrix and
 verification obligations.

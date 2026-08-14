@@ -103,10 +103,6 @@ not the same as current Demo/Testnet certification or production readiness.
 - [Testing and certification semantics](docs/reference/testing.md)
 - [Documentation index](docs/README.md)
 
-Much of `docs/` still describes the single-strategy `runtime` and the per-venue
-`adapter/` packages that this layering replaced. Those pages are being brought
-forward; where they disagree with this file, this file is current.
-
 ## Safety
 
 The canonical external walkthroughs use non-production environments and bounded

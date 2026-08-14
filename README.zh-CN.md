@@ -93,10 +93,6 @@ Demo/Testnet 认证，也不代表 production readiness。
 - [测试与认证语义](docs/zh-CN/reference/testing.md)
 - [文档索引](docs/zh-CN/README.md)
 
-`docs/` 中相当一部分内容仍在描述被这次分层取代的单策略 `runtime` 与
-per-venue `adapter/` package。那些页面正在陆续更新；如与本文件冲突，以本文件
-为准。
-
 ## 安全
 
 规范的外部演练使用非生产环境和有界订单，但仍可能创建交易所状态。请使用有资金、

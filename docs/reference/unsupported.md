@@ -1,103 +1,143 @@
-# Unsupported, Deferred, and SDK-Only Surfaces
+# Unsupported surfaces
 
-[简体中文](../zh-CN/reference/unsupported.md)
+> Canonical language: English. [Chinese mirror](../zh-CN/reference/unsupported.md)
 
-> English is canonical. **Owner:** this page owns cross-venue unsupported,
-> deferred, and SDK-only inventory. The
-> [capability matrix](../adapter-capabilities.md) owns the detailed static runtime
-> rows; venue pages own product-specific order, configuration, and stream rules.
+This page is the inventory of what BolterTrader does not do. It uses the status
+words from the [Glossary](glossary.md) exactly: **unsupported** means the
+normalized surface is absent, **deferred** means it is deliberately outside the
+current slice, and **SDK-only** means low-level venue code exists with no product
+row above it. None of the three says a venue lacks the feature.
 
-Use the exact status meanings in the [glossary](glossary.md). A limitation here
-describes BolterTrader's normalized surface, not every feature available from the
-venue itself.
+The two operation matrices are the authority for per-row detail. This page states
+the boundaries that hold across rows, and does not restate the cells.
 
-## Deferred and absent product slices
+## Removed on purpose
 
-- Bybit dated linear futures are deferred. The current derivative registry has
-  USDT-linear and USDC-linear Perp/SWAP rows, not a dated-Future row.
-- Gate USDC-linear Perp/Futures is deferred. The current Gate derivative slice is
-  USDT-linear.
-- The current static matrix contains 21 Spot and Perp product rows. Do not infer
-  a runtime Future or Option product from a core enum, an SDK model, or a venue's
-  external product catalog.
+Three capabilities existed in an earlier design and were deleted, not deferred.
+They are named here because the words still circulate.
 
-## Cross-venue command boundaries
+| Removed | What replaced it |
+| --- | --- |
+| The strategy runtime — a long-running process that owned a bus, a cache, and strategy orchestration | Product services over the gateway's HTTP surface. The trading service is the manual-trading one |
+| Backtesting | Nothing. There is no historical simulation surface anywhere in this tree |
+| The funding product — a service that traded funding-rate spreads | Nothing yet. Funding *data* is still read per row; the product is a future rewrite |
 
-- Strategy `Context` grants ordinary `Submit` and client-ID `Cancel`. It does not
-  grant `Modify`, `CancelAll`, execution reports, account mutations, or direct
-  adapter/SDK access.
-- Static `Modify` is absent for both Aster rows, both Nado rows, Binance Spot, and
-  both Gate rows. Other rows advertising it still remain subject to their venue
-  page's order and product restrictions.
-- `CancelAll`, `SetLeverage`, and `SetMarginMode` are adapter-level methods, not
-  portable strategy commands. Their availability is product-specific, and an
-  inapplicable implementation returns `contract.ErrNotSupported`.
-- Lighter currently exposes leverage and margin-mode code paths, but their
-  adapter/SDK parameter contract is not documented as usable, Spot scope is not
-  rejected locally, and Testnet acceptance does not cover them. Do not rely on
-  those mutations until the contract and product guard are corrected and
-  verified.
-- Runtime has no generic prepared-order, lease, venue-capacity, or
-  admission-reservation protocol. The portable path uses side-effect-free
-  `ValidateSubmit`, optional configured venue-neutral risk/reservation, durable
-  intent, and one ordinary adapter `Submit`.
+If you find a page, comment, or issue that mentions a strategy `Context`, a
+`runtime/` package, or a per-venue `adapter/` package, it predates the current
+[architecture](../concepts/architecture.md).
 
-See [Strategies](../guides/strategies.md) and
-[Execution and risk](../concepts/execution-risk.md) for the portable API and
-submission semantics.
+## Absent on every product row
 
-## Cross-venue data and report boundaries
+The gateway's capability matrix carries these five flags as false on all twenty
+rows. They are gateway-level absences, not venue limitations:
 
-- Every current Spot row has unsupported normalized position reports. Spot
-  balance or inventory state does not become a derivative position report.
-- Aster, Nado, and Gate expose venue-specific bounded/current fill sources; Bybit
-  exposes bounded execution history; Bitget exposes bounded 90-day trade
-  history. Binance, OKX, and Lighter have no concrete normalized fill-report
-  method. Hyperliquid's static rows declare fill reports unsupported, while its
-  Spot, Perp, and HIP-3 clients fetch `UserFills` and apply bounded local filters;
-  mass status still does not advertise an authoritative fill ledger.
-- Every current order-report row carries the open-only caveat: absence from a
-  complete open-order result cannot establish the terminal reason or reconstruct
-  missing fills.
-- No current static row promises adapter receive/emit latency timestamps. Runtime
-  bus, application, callback, and command timing remains separately available.
-- Hyperliquid Spot has no normalized public book, quote, or trade subscription.
-  Authenticated private order/fill and spot-state plumbing is conditional on a
-  successful adapter startup; allocated channels or configuration alone do not
-  establish readiness.
-- Lighter implements REST book/bar queries and Perp derivative-reference
-  streaming. Its normalized book, quote, and trade subscriptions are
-  unsupported.
-- Current open interest is an optional direct `OpenInterestClient` query where
-  implemented. It is not a runtime-cache or subscription surface.
+| Capability | Status |
+| --- | --- |
+| Amend / modify an order | Unsupported. Cancel and replace instead. No amend operation exists in the REST matrix either |
+| Set leverage | Unsupported through the gateway. The exchange layer has `SetLeverage` for perps, but no product row exposes it |
+| Set margin mode | Unsupported |
+| Set position mode | Unsupported |
+| Transfer funds | Unsupported. Nothing in this tree moves money between accounts or wallets |
 
-Bars, concrete stream kinds, report bounds, account mutations, order types, and
-time-in-force rules are product-specific. Consult the
-[venue index](../venues/README.md), the capability matrix, and
-[Market and reference data](../guides/market-reference-data.md) rather than
-inferring them from a coarse capability category.
+`SetLeverage` deserves a note: on Nado the exchange layer returns success with an
+effective leverage of zero, because the venue has no leverage setter — the
+backend risk engine decides. A success there means "accepted and ignored", which
+is exactly the kind of ambiguity a gateway row should not advertise.
+
+## Deferred product slices
+
+Twenty product rows exist, all of them spot or perp.
+
+- **No dated futures.** Bybit's dated linear futures and every other venue's
+  dated contracts are outside the slice.
+- **No options.** No venue, no row.
+- **Gate USDC-linear perp** is deferred; Gate's perp row is USDT-linear.
+- **Aster perp (`ATP`) has no funding surface.** It is the only perp row without
+  one.
+- **Account funding payments** — the per-account history of what funding
+  actually cost — resolve on four rows only: `BNP`, `LIP`, `BYU`, `GTU`. The
+  other perp rows expose the funding rate without the payment history.
+
+Do not infer a product from an enum, an SDK model, or a venue's public catalog.
+A row exists when it is in the matrix.
+
+## Reads that cannot prove absence
+
+Two limits apply to every row, and both matter when an order's fate is
+uncertain.
+
+**Exact lookup is not universal.** `LookupExactOrder` — fetch one order by its
+identifier and get an authoritative answer — is admitted on eleven rows: `BNS`,
+`BNP`, `OXS`, `OXP`, `LIS`, `LIP`, `HLS`, `HLP`, `BYS`, `BYU`, `BYC`. On the
+other nine (`BGS`, `BGU`, `BGC`, `GTS`, `GTU`, `ATS`, `ATP`, `NDS`, `NDP`) it is
+absent, and the only reconstruction available is a scan of open and recent
+orders.
+
+Even where it exists, the strategy differs. Most rows read back by client or
+venue order ID. Lighter's two rows scan the active list plus the first inactive
+page, and cannot confirm absence — an order that has aged out of that page is
+unproven, not gone.
+
+**No row proves absence by pagination.** Walking history to its end does not
+establish that an order never existed. This is the open-only caveat: a complete
+open-order read proves an order is no longer open, and nothing more. It cannot
+supply the terminal reason and it cannot reconstruct fills. When a submission is
+ambiguous, [Operations and recovery](../guides/operations-recovery.md) is the
+procedure — not a retry.
+
+**Cancel is located by order ID.** Cancelling by client order ID alone is not
+part of the twenty-row guarantee, and Nado additionally requires a lowercase
+`0x`-prefixed 32-byte order digest rather than a numeric identifier.
+
+## Rows that are not write-ready
+
+Nineteen of the twenty rows accept writes by default. **Lighter spot (`LIS`)**
+does not: it is registered, readable, and excluded from default write
+promotion, pending demo/testnet evidence of two-sided liquidity and an exact
+lookup. Treat it as a read row until that evidence exists.
+
+## Streams
+
+The [WebSocket matrix](exchange-ws-v1-operation-matrix.md) is narrow in one
+predictable way and one unpredictable way.
+
+Predictably: the ten spot rows have no position, mark-price, or funding-rate
+subscription, because spot has none of those things. Spot balance state is not a
+position report, and no reconciliation turns it into one.
+
+Unpredictably: **Nado perp (`NDP`) admits `WatchMarkPrice` at compile time but
+returns an unsupported error at runtime**, with a nil subscription. It is the one
+place in the matrices where an `A` cell does not mean a working stream, and it is
+called out here because a compile-time check will not catch it.
+
+Candle intervals are fixed across rows: `1m`, `5m`, `15m`, `30m`, `1h`, `4h`,
+`12h`, `1d`. Balance subscriptions are account-wide rather than per instrument.
+See [Market and reference data](../guides/market-reference-data.md).
 
 ## SDK-only venue families
 
-The four rows below exhaust the repository's top-level SDK families that do not
-have a static runtime capability row. They are low-level integration surfaces,
-not strategy/runtime availability and not Demo/Testnet or production
-certification.
+Four venue families have SDK code and no product row. They are low-level
+integration surfaces: no normalized coverage, no gateway row, no evidence.
 
-| SDK family | Product shape represented in the SDK | Low-level market surface | Low-level order/account surface | Low-level stream surface |
+| SDK family | Product shape in the SDK | Market surface | Order and account surface | Stream surface |
 | --- | --- | --- | --- | --- |
-| Backpack | Spot plus perpetual/futures-oriented models | Markets, ticker, depth/order book, trades, funding rates, mark prices, and klines | Account settings, balances, open orders, positions, fill history, single/batch placement (plus an `ExecuteOrder` compatibility wrapper), and single/all cancellation | Generic raw public/private subscriber; depth, order, fill, and position payload models |
-| EdgeX | Linear Perp | Exchange metadata, ticker, depth, klines, long/short ratio, and current/paged/historical funding | Signed place/cancel/cancel-all, order queries, account, assets/collateral, position transactions, and leverage | Public metadata, ticker, kline, book, trade, and funding; private order, fill, position, and balance |
-| GRVT | Perp-oriented fixtures on a generic multi-product-shaped model | Instruments, book, mini/full ticker, trades, klines, and historical funding | Signed create/cancel/cancel-all, open orders, leverage, account summary, and funding-account summary | Public mini/full ticker, book, trades, and klines; private order, fill, position, and fund movements; authenticated WebSocket create/cancel/cancel-all |
-| StandX | Perp | Symbol information/statistics, overview, depth, price, recent trades, and funding history | Create, single/multiple cancel, leverage, margin mode, positions, balances, open orders, and user trades | Public price, depth, and trades; authenticated orders, positions, balance, trades, and WebSocket create/cancel commands |
+| Backpack | Spot plus perpetual/futures-oriented models | Markets, ticker, depth, trades, funding rates, mark prices, klines | Account settings, balances, open orders, positions, fill history, single and batch placement, single and bulk cancellation | Raw public and private subscriber; depth, order, fill, position payloads |
+| EdgeX | Linear perp | Exchange metadata, ticker, depth, klines, long/short ratio, current and historical funding | Signed place, cancel, cancel-all, order queries, account, collateral, position transactions, leverage | Public metadata, ticker, kline, book, trade, funding; private order, fill, position, balance |
+| GRVT | Perp-oriented, on a multi-product-shaped model | Instruments, book, ticker, trades, klines, historical funding | Signed create, cancel, cancel-all, open orders, leverage, account and funding-account summaries | Public ticker, book, trades, klines; private order, fill, position, fund movements; authenticated WebSocket create and cancel |
+| StandX | Perp | Symbol information and statistics, overview, depth, price, recent trades, funding history | Create, single and bulk cancel, leverage, margin mode, positions, balances, open orders, user trades | Public price, depth, trades; authenticated orders, positions, balance, trades, WebSocket create and cancel |
 
-SDK presence establishes neither normalized adapter completeness nor external
-verification. Promotion requires the [adapter contribution contract](../contributing/adapters.md),
-a concrete static runtime row, matching tests, and product-scoped evidence.
+These four are why "SDK-only" is a status word. Thirteen SDK families exist;
+nine reach the exchange layer's factory and become gateway rows. The gap is the
+point of the layering, not an oversight.
 
-## Related references
+Promoting one is a defined path: [Adding a venue](../contributing/venues.md)
+walks it from the SDK through `exchange/factory`, a gateway product row, both
+matrices, and a Make target.
 
-- [Capability matrix](../adapter-capabilities.md)
-- [Testing and evidence](testing.md)
-- [Configuration](configuration.md)
-- [Architecture](../concepts/architecture.md)
+## Related
+
+- [Glossary](glossary.md) — what each status word permits
+- [REST operation matrix](exchange-rest-v1-operation-matrix.md)
+- [WebSocket operation matrix](exchange-ws-v1-operation-matrix.md)
+- [Venues and account modes](exchange-venues-and-account-modes.md)
+- [Testing](testing.md) — what a green run proves

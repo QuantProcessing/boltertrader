@@ -1,131 +1,149 @@
-# Testing and Evidence
+# Testing
 
-[简体中文](../zh-CN/reference/testing.md)
+> Canonical language: English. [Chinese mirror](../zh-CN/reference/testing.md)
 
-> English is canonical. **Owner:** this page owns the repository test ladder,
-> the complete nine-venue command inventory, and the rules for interpreting
-> non-production evidence. Venue pages own prerequisites and product caveats.
+This page is the inventory of what you can run and what a green run proves. The
+default path is offline, credential-free, and deterministic; everything that
+touches a venue is a separate, explicitly named target.
 
-## Offline-first test ladder
+## The default path
 
-The default path is credential-free and never opts into external reads or
-writes.
+```sh
+make test
+```
 
-| Purpose | Command |
+`go test -short ./...` across the repository. It needs no credentials, no
+Docker, and no network. This is the gate to run before every commit.
+
+| Target | Scope |
 | --- | --- |
-| Default short suite | `make test` |
-| SDK packages | `make test-sdk` |
-| Exchange packages | `make test-exchange-offline` |
-| Gateway contract and security | `make test-gateway-contract`; `make test-gateway-security` |
-| Offline reference-data checks | `make test-reference-data-offline` |
+| `make test` | The whole repository, short mode |
+| `make test-sdk` | `./sdk/...` only |
+| `make test-exchange-offline` | `./exchange/...` with `-count=1` |
+| `make test-exchange-race` | `./exchange/...` under `-race` |
+| `make test-exchange-redaction` | The six tests that prove credentials never reach an error string |
+| `make test-exchange-quality` | offline, then redaction, then race |
+| `make test-gateway-offline` | `./gateway/...` and `./cmd/exchange-gateway` |
+| `make test-gateway-contract` | `contracts`, `domain`, `capability`, `store` |
+| `make test-gateway-security` | Import boundary, OpenAPI, config redaction, crosswalk |
+| `make test-gateway-race` | The gateway packages under `-race` |
+| `make test-gateway` | offline, then race, then security |
+| `make test-browser` | The web app: install, build, Vitest, Playwright |
 
-Run the smallest relevant package or target while developing, then the broader
-offline gates appropriate to the change. `go test ./...` is not the default safe
-gate; live-backed tests may inspect the local environment when short mode is not
-enabled.
+`go test ./...` without `-short` is not the safe default. Tests that can reach a
+venue inspect the environment when short mode is off.
 
-## Integrated local gate
+Two gateway targets need a real PostgreSQL and read `GATEWAY_TEST_POSTGRES_DSN`
+from the environment; they fail fast when it is unset rather than skipping.
+`make test-gateway-postgres` covers migrations, the command store, the audit
+store, and account ownership. `make test-gateway-restart` covers the coordinator's
+process-crash windows. `make test-compose-postgres` provisions a throwaway
+cluster and runs both for you, which is the easier path.
 
-There is currently no integrated multi-service gate. The docker-free launcher
-that `make test-platform-offline` drove was retired along with `backend/`: it
-supervised a `platform` process and a funding worker that no longer exist as
-binaries, and shelled into bootstrap scripts deleted with them.
+## Container gates
 
-Its replacement has landed. `make up` brings the whole stack up and `make doctor`
-diagnoses it; the container gates (`make test-compose-*`) are the end-to-end path
-and require Docker. Each builds its own throwaway Compose project with generated
-credentials and kernel-assigned ports, so none needs `make up` to have run and
-none disturbs a stack that is already up.
+```sh
+make test-compose
+```
 
-## Nine-venue external command inventory
+Six sub-targets, in order:
 
-Every command in this table targets a named Demo/Testnet environment. The
-reference-data column is read-only. Venue aggregates and runtime targets can
-place, cancel, or otherwise mutate real non-production exchange state.
+| Target | What it proves |
+| --- | --- |
+| `test-compose-config` | The Compose file renders and the binaries load their config |
+| `test-compose-build` | Both images build |
+| `test-compose-security` | Non-root user, pinned entrypoint, no source or secrets in the image, all seven binaries present |
+| `test-compose-smoke` | Migrators complete, services start, the gateway answers its own live and ready probes, and each service exits `0` within 15 seconds of `SIGTERM` |
+| `test-compose-persistence` | Data survives a container recreate |
+| `test-compose-postgres` | The real-PostgreSQL suites, against a throwaway cluster |
 
-| Environment | Venue aggregate | Reference-data read | Runtime write target(s) |
-| --- | --- | --- | --- |
-| Aster V3 Testnet | `make test-aster-testnet-acceptance` | `make test-aster-testnet-reference-data-read` | `make test-aster-testnet-runtime-spot`; `make test-aster-testnet-runtime-perp` |
-| Nado Testnet | `make test-nado-testnet-acceptance` | `make test-nado-testnet-reference-data-read` | `make test-nado-testnet-runtime-spot`; `make test-nado-testnet-runtime-perp` |
-| Binance Demo | `make test-binance-demo-acceptance` | `make test-binance-demo-reference-data-read` | `make test-binance-demo-runtime-spot`; `make test-binance-demo-runtime-perp` |
-| OKX Demo | `make test-okx-demo-acceptance` | `make test-okx-demo-reference-data-read` | `make test-okx-demo-runtime-spot`; `make test-okx-demo-runtime-perp` |
-| Bybit Demo Trading | `make test-bybit-acceptance` | `make test-bybit-demo-reference-data-read` | `make test-bybit-demo-runtime-spot`; `make test-bybit-demo-runtime-usdt-perp`; `make test-bybit-demo-runtime-usdc-perp` |
-| Bitget Demo/PAP | `make test-bitget-acceptance` | `make test-bitget-demo-reference-data-read` | `make test-bitget-demo-runtime-spot`; `make test-bitget-demo-runtime-usdt-perp`; `make test-bitget-demo-runtime-usdc-perp` |
-| Gate Testnet | `make test-gate-testnet-acceptance` | `make test-gate-testnet-reference-data-read` | `make test-gate-testnet-runtime-spot`; `make test-gate-testnet-runtime-usdt-perp` |
-| Hyperliquid Testnet | `make test-hyperliquid-testnet-acceptance` | `make test-hyperliquid-testnet-reference-data-read` | `make test-hyperliquid-testnet-runtime-spot`; `make test-hyperliquid-testnet-runtime-perp`; `make test-hyperliquid-testnet-runtime-hip3` |
-| Lighter Testnet | `make test-lighter-testnet-acceptance` | `make test-lighter-testnet-reference-data-read` | `make test-lighter-testnet-runtime-spot`; `make test-lighter-testnet-runtime-perp` |
+Each of these builds its own Compose project with generated credentials and
+kernel-assigned ports. None of them requires `make up` to have run, and none of
+them disturbs a stack that is already up.
 
-`make test-reference-data-read` is the only all-nine aggregate: it runs the nine
-reference-data targets above. There is no all-nine write-acceptance aggregate.
+## External acceptance
 
-## Aggregate asymmetries
+Everything below places real orders on a real non-production venue. Every target
+sets its write gate command-locally — that is the only way a write gate should
+ever be set. See [Configuration](configuration.md).
 
-Do not infer membership from an aggregate's name:
+### Exchange layer
 
-- `make test-demo-acceptance` covers Binance, OKX, Bybit, and Bitget only.
-- `make test-aster-nado-testnet-acceptance` pairs Aster and Nado;
-  `make test-bybit-bitget-acceptance` pairs Bybit and Bitget.
-- Only the Aster and Nado venue aggregates currently include their standalone
-  reference-data target. Other venue aggregates may include different read
-  checks, but not the exact reference-data target in the table.
-- The `test-bitget-testnet-*` target names are compatibility aliases for the canonical
-  Bitget Demo/PAP targets. They do not identify a second environment.
-- `make test-live-read` is a broad opt-in SDK/adapter smoke path. Because it does
-  not provide the per-target zero-skip contract, it is not certification
-  evidence by itself.
+Nine venues, aggregated as `make test-exchange-acceptance`.
 
-Run the exact target whose product and evidence scope you intend to claim.
+| Environment | Aggregate | Product targets |
+| --- | --- | --- |
+| Binance Demo | `test-exchange-binance-demo-acceptance` | `-spot`, `-perp` |
+| OKX Demo | `test-exchange-okx-demo-acceptance` | `-spot`, `-perp` |
+| Bybit Demo | `test-exchange-bybit-demo-acceptance` | `-spot`, `-usdt-perp`, `-usdc-perp` |
+| Bitget Demo | `test-exchange-bitget-demo-acceptance` | `-spot`, `-usdt-perp`, `-usdc-perp` |
+| Gate Testnet | `test-exchange-gate-testnet-acceptance` | `-spot`, `-usdt-perp` |
+| Aster Testnet | `test-exchange-aster-testnet-acceptance` | `-spot`, `-usdt-perp` |
+| Nado Testnet | `test-exchange-nado-testnet-acceptance` | `-spot`, `-usdt0-perp` |
+| Hyperliquid Testnet | `test-exchange-hyperliquid-testnet-acceptance` | `-spot`, `-perp` |
+| Lighter Testnet | `test-exchange-lighter-testnet-acceptance` | `-spot`, `-perp` |
+
+Product target names are the aggregate's prefix plus the suffix, so Bybit's USDC
+perpetual is `make test-exchange-bybit-demo-usdc-perp`.
+
+### Gateway product rows
+
+Twenty targets, one per gateway product row, aggregated as
+`make test-gateway-demo-testnet`:
+
+| Venue | Targets |
+| --- | --- |
+| Binance | `test-gateway-binance-spot-demo`, `test-gateway-binance-usd-perp-demo` |
+| OKX | `test-gateway-okx-spot-demo`, `test-gateway-okx-usdt-perp-demo` |
+| Lighter | `test-gateway-lighter-spot-testnet`, `test-gateway-lighter-perp-testnet` |
+| Hyperliquid | `test-gateway-hyperliquid-spot-testnet`, `test-gateway-hyperliquid-perp-testnet` |
+| Bybit | `test-gateway-bybit-spot-demo`, `test-gateway-bybit-usdt-perp-demo`, `test-gateway-bybit-usdc-perp-demo` |
+| Bitget | `test-gateway-bitget-spot-demo`, `test-gateway-bitget-usdt-perp-demo`, `test-gateway-bitget-usdc-perp-demo` |
+| Gate | `test-gateway-gate-spot-testnet`, `test-gateway-gate-usdt-perp-testnet` |
+| Aster | `test-gateway-aster-spot-testnet`, `test-gateway-aster-usdt-perp-testnet` |
+| Nado | `test-gateway-nado-spot-testnet`, `test-gateway-nado-usdt0-perp-testnet` |
+
+These are named for the product rows the gateway exposes, and each one runs the
+exchange-layer acceptance test for that row. The naming exists so that a claim
+about a gateway product row maps to exactly one command — not so that the same
+test can be counted twice.
 
 ## Gates, skips, and serial execution
 
-- Live reads require `BOLTER_ENABLE_LIVE_READ_TESTS=1`. Canonical Make targets set
-  it command-locally.
-- Live writes require a venue-specific command-local gate. Run the Make target;
-  do not make a write gate persistent configuration. Exact names are in
-  [Configuration](configuration.md).
-- Canonical external targets use `internal/testenv/cmd/noskipgotest`: a skipped
-  test is a non-pass, not successful evidence. Missing credentials, an unavailable
-  product, or a selector mismatch therefore blocks a certification claim.
-- The top-level Makefile declares `.NOTPARALLEL`, which serializes prerequisites
-  in one invocation. Separate Make processes can still overlap. Run live-write
-  commands serially and wait for terminal verification before starting another.
+**Write gates are command-local.** Each external target prefixes its own
+`BOLTER_ENABLE_<VENUE>_<ENV>_WRITES=1`. Exporting one into your shell profile or
+a `.env` file turns every subsequent `go test` into a potential venue write.
+Don't.
 
-## Scoped state and terminal proof
+**A skip is a failure.** External targets run through
+`internal/testenv/cmd/noskipgotest`, which fails when zero tests executed and
+fails when any test skipped. A missing credential, an unavailable product, or a
+selector that matched nothing therefore cannot be mistaken for a pass.
 
-The public onboarding journeys are repository acceptance harnesses, not reusable
-strategy applications:
+**Runs are serial.** The Makefile declares `.NOTPARALLEL`, which serializes
+prerequisites within one invocation. It does not serialize separate `make`
+processes. Run one live-write target at a time and wait for terminal
+verification before starting the next.
 
-- [Binance Spot Demo](../getting-started/cex-demo.md) runs
-  `make test-binance-demo-runtime-spot`. Success covers validation-owned orders
-  for the selected symbol and an authoritative base-balance delta below one size
-  step.
-- [Hyperliquid standard Perp Testnet](../getting-started/dex-testnet.md) runs
-  `make test-hyperliquid-testnet-runtime-perp`. Success covers loaded open orders
-  and both venue-account and runtime positions in the selected standard-Perp
-  scope.
+## What a green run proves
 
-The same principle applies to every live target: a zero exit proves only the
-symbol/product/account scope and terminal assertions encoded by that harness. It
-does not prove account-wide emptiness, mainnet behavior, or evergreen production
-readiness.
+A zero exit proves the product, symbol, and account scope that harness encodes,
+and nothing wider. It does not prove account-wide emptiness, mainnet behavior,
+or continued production readiness.
 
-A nonzero result, timeout, skip, or ambiguous submission does not prove cleanup.
-Inspect the validation-owned IDs and exact product scope before remediation.
-Never blindly resubmit an ambiguous order, cancel unrelated orders, or flatten an
-unconfirmed account. See
+A nonzero result, a timeout, a skip, or an ambiguous submission does not prove
+cleanup ran. Inspect the harness-owned order IDs and the exact product scope
+before remediating, and never blind-cancel unrelated orders or flatten an
+unconfirmed position. See
 [Operations and recovery](../guides/operations-recovery.md).
 
-## Certification record
+## Publishing evidence
 
-Use the [status ontology](glossary.md). A public
-**Demo/Testnet-certified** summary must name:
+A Demo/Testnet-certified claim — the term is defined in the
+[Glossary](glossary.md) — must name the environment and exact product scope, the
+exact Make target, the zero-skip result and its date, and any limitation that
+narrows it.
 
-- the candidate identifier and validation date;
-- the environment and exact product scope;
-- the exact Make target and zero-skip result;
-- the harness's terminal state assertions; and
-- any known limitation that narrows the evidence.
-
-Publish that concise, redacted summary—not credentials, raw logs, account
-residuals, or local paths. Implementation and capability declarations remain
-separate claims from external evidence.
+Publish that summary and nothing else. No credentials, no raw logs, no account
+residuals, no local paths. Implementation, capability, and external evidence stay
+three separate claims.

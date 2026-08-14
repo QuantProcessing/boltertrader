@@ -1,91 +1,117 @@
-# 账户与交易品种
+# 账户与 instrument
 
 > 英文为规范版本。[English](../../concepts/accounts-instruments.md)
 
-本页定义交易所中立的交易品种、账户、余额、保证金、持仓和账户 readiness 模型。
-报告覆盖范围与收敛由[状态与对账](state-reconciliation.md)说明。
+在能交易任何东西之前，有两件事必须先被点名：是谁的凭证在动作，以及动作在哪个可交易物上。
+Gateway 拥有这两个答案，而两者都比看上去更窄。
 
-## 交易品种分离中立身份与交易所身份
+[术语表](../reference/glossary.md)拥有这些词。本页拥有它们背后的模型。
 
-`InstrumentID` 是 runtime key：由 `Venue`、规范 `Symbol` 和产品 `Kind` 组成。
-它绝不包含交易所的整数 asset index 或备用 wire symbol。这些形式位于已解析的
-`Instrument` 上，由 adapter 通过中立的 `InstrumentProvider` 契约暴露。
+## 一个账户同时是四样东西
 
-一个 `Instrument` 携带：
+Gateway 账户不是一对带标签的凭证。它是一条同时携带下列内容的记录：
 
-- 中立的 base、quote 和 settlement currencies；
-- adapter 自己管理的 `VenueSymbol` 和可选 `AssetIndex` routing identity；
-- 精确十进制的 price tick、size step、minimum quantity、minimum notional 和
-  contract multiplier；
-- 派生的 price precision，以及中立的 net-only 或 hedge-capable position-mode
-  capability。
-
-Runtime 使用这些字段进行精确计算和通用策略判断；它不会重新解释交易所 symbol
-规则。Prices、quantities、multipliers、balances 和 PnL 使用
-`shopspring/decimal`；只有在无法避免的 wire conversion 边界才使用 floating
-point。
-
-## 精确的 `AccountState` 快照
-
-每个 account adapter 都必须实现 `AccountClient.AccountState`。该快照只包含以下
-账户域：
-
-| 字段组 | 字段 |
+| 组成 | 装的是什么 |
 | --- | --- |
-| 身份 | `AccountID`, `Venue`, `Type`, `BaseCurrency` |
-| 余额 | `Balances[]` |
-| 保证金要求 | `Margins[]` |
-| 可选汇总 | `Summary` |
-| 报告与事件身份 | `Reported`, `EventID` |
-| 时间 | `TsEvent`, `TsInit` |
+| 身份 | 交易所、交易所环境、模式、显示名 |
+| 凭证 | 一个指向密钥存储的引用——绝不是材料本身 |
+| Route | 一条或多条 product route，各自绑定一个 route profile |
+| 修订号 | 期望状态修订号、runtime generation、凭证版本 |
+| 状态 | 八个生命周期状态之一 |
 
-`Type` 是粗粒度中立账户类型 `Cash` 或 `Margin`；`Unknown` 不是有效的权威状态。
-每个 `AccountBalance` 包含 `AccountID`、currency、total、free、locked、borrowed、
-interest 和 update time。每个 `MarginBalance` 包含 currency、可选 instrument
-scope、initial requirement、maintenance requirement 和 update time。可选 summary
-包含 settlement currency、equity、available collateral 和 update time。
+把凭证**引用**与凭证**材料**分开，是这里最吃重的一件事。凭证经 gateway 的内部面进入并落到密钥
+存储；此后每一条读路径返回的都是一个脱敏投影——它根本没有那个字段可以省略。Gateway 之上的
+任何东西都问不到材料，因为 gateway 之上没有任何类型有地方放它。
 
-Orders 和 positions 有意不嵌入 `AccountState`。Order、fill 与 position reports
-是类型化的 execution-report domains。Adapter 声明支持时，
-`AccountClient.Positions` snapshot 可以提供 scoped position evidence，但对账会
-把该证据转换到同一条 position-report comparison path，而不会把它视为账户
-快照的一部分。
+三个修订号计数器的存在，是为了让某一刻做出的决定能够在稍后被**拒绝**，而不是被默默重新解释。
+它们在[执行与风险](execution-risk.md)里真正干活，也在那里展开。
 
-## 持仓与余额
+## 生命周期是状态机，不是一个状态字段
 
-中立 `Position` 具有 account 和 instrument identity、position side、signed
-quantity、entry 和 mark prices、unrealized PnL、leverage 以及 update time。
-正数量表示 long，负数量表示 short；当两条 hedge-mode legs 可以共存时，
-`PositionSide` 会保持二者独立。
+一个账户的状态说的是控制面**下一步可以请求什么**，而允许的转移就是全部权威：
 
-对于 cash balances，在没有 borrowing 或 interest 时，模型可以校验
-`total = free + locked`。Margin-account 的 `Free` 可以表示 free margin，因此
-不会对所有账户统一施加该 cash invariant。
+| 从 | 可以变成 |
+| --- | --- |
+| *（新建）* | `creating` |
+| `creating` | `active`、`disabled` |
+| `active` | `rotating`、`draining`、`disabled` |
+| `rotating` | `active`、`disabled` |
+| `draining` | `drained`、`disabled` |
+| `drained` | `removing`、`disabled` |
+| `disabled` | `removing`、`removed` |
+| `removing` | `removed` |
+| `removed` | *（无）* |
 
-## 账户身份与 readiness
+整体形状是线性且不可逆的，只有两处例外。**轮换**离开 `active` 再回到 `active`，并带上一个 fence
+点名它从哪个凭证版本与 runtime generation 走到哪个。**排空**离开 `active` 且不再回来：它的存在
+是为了让一个账户能在挂单与持仓仍在收敛的过程中被有序关停，而不是在半途被切断。
 
-真实交易所的 execution 与 account clients 通过 `contract.AccountIDProvider`
-暴露其逻辑账户。二者都配置时，ID 必须一致；显式期望的 runtime account ID 也
-必须匹配。空的或冲突的 adapter identities 会在启动或对账前失败。
+`disabled` 几乎从任何地方都可达，这是有意的。它是那个「停」，而一个「停」绝不该因为你恰好走到
+哪一步而被挡住。
 
-`AccountState.ValidateTradingReady` 要求快照有效、`Reported=true`、event ID
-非空、event 与 initialization timestamps 存在、stale threshold 为正，并且
-account-state 或 reconciliation time 仍然新鲜。Generic risk 可以对增加风险的
-订单要求这种 authoritative readiness；详细风险策略由
-[执行与风险](execution-risk.md)负责。
+移除还有一个状态表看不见的前置条件：一个仍有挂单、活跃预留、不明确命令或自有持仓的账户，会把
+这些逐条列为 blocker，而不是给一句汇总。「无法移除」不是运维能据以行动的答案，「三条不明确的
+命令」才是。
 
-## 账户模式属于 adapter
+## Route 承载 product，账户不承载
 
-交易所账户模式、账户角色、保证金模式和持仓模式不会成为 runtime 分支。Adapter
-发现并校验 unified/classic accounts、owner/agent roles、cross/isolated margin
-以及 one-way/hedge positions 等形式，并在配置形态不受支持时 fail closed。
-`AccountState.Type` 仍是粗粒度中立的 cash-or-margin 结果，而不是每种交易所模式
-的副本。
+一个账户没有 product，它的 **route** 才有。
 
-可移植的 `AccountClient` 契约仍暴露 `SetLeverage` 和 `SetMarginMode`。它们是
-中立命令，不是 discovery mechanisms。每个 adapter 要么实现交易所映射，要么
-返回 `contract.ErrNotSupported`；必须按交易所和产品分别检查支持情况。
+每条 route 点名一个 product、一个结算资产、一个 route profile，以及运维希望它处在的状态。
+Profile 在账户所属 mode 下经 route profile 注册表解析，而校验是一次三方一致：profile 的
+product、结算资产与原生环境必须逐项与账户自身相符。能解析但不一致的 route 会被拒绝——因为
+route profile 恰恰就是决定一个签名请求发去哪里的那个东西。
 
-在依赖账户或产品模式之前，请查看[能力矩阵](../adapter-capabilities.md)、
-[配置](../reference/configuration.md)和
-[不支持（Unsupported）与延期（Deferred）功能](../reference/unsupported.md)。
+这就是为什么一个账户可以同时持有多条 route——一家用不止一种资产结算永续的交易所，每种结算就要
+一条——也是为什么处在 `creating`、`active` 或 `rotating` 的账户必须至少有一条活跃 route。一个
+没有任何途径抵达交易所的账户，不属于上述任何一个状态；它只是绕了个弯的 `disabled`。
+
+Mode 边界同样是绝对的。`test` 覆盖 demo 与 testnet，`live` 覆盖 live，而跑在其中一种下的进程
+解析不出属于另一种的 profile。这不是一道可以被授予的权限检查——那个 profile 根本不在那张注册
+表里。
+
+## Instrument 是投影，不是透传
+
+Gateway 的 instrument 类型是对 exchange 层那个的有意收窄。原生 symbol、原生 ID、传输层编码，
+以及任何带凭证的元数据都不跨过这条边界。跨过去的是：
+
+| 字段 | 含义 |
+| --- | --- |
+| Instrument ID | 稳定的四段或五段名字 |
+| 交易所、环境、product、结算资产 | 它被解析时所处的 scope |
+| Symbol、基础资产、计价资产 | 规范的、与交易所无关的 |
+| 规则 | 价格步长、数量步长、最小数量、最小名义额 |
+
+Instrument ID 的语法是被强制的，不是约定俗成的。最后一段必须是规范 symbol，而校验器坚持要那个
+连字符——一个漏上来的原生 symbol 没有连字符，于是最便宜的那道检查恰好抓住了最要紧的那种失败。
+出现结算段时，它必须是一个规范化资产，且自身不含连字符。
+
+那四条规则就是全部的盘前形状契约。这里没有交易所的手续费档位，没有按账户的限额，也没有流动性
+提示。那些是会在你手底下变化的交易所答案，而一条过期的规则比一条缺席的规则更糟。
+
+## 新鲜度是答案的一部分
+
+一个 catalog 快照不只是一张 instrument 列表。它带着一个修订号、一个 generation 与加载时刻，而
+由它导出的状态会把陈旧、可读、可写作为三个分开的事实报出来，并附上原因。
+
+它们分开，是因为它们分开地坏掉。一个快照可以新鲜到足以报价、又陈旧到不足以据以交易。一次刷新
+失败不会清空 catalog——它只是打上标记，于是读取仍可由已知的旧数据服务，而写入被拒绝。把这些
+塌缩成一个布尔值，会在两个方向上都给出错误答案。
+
+除新鲜度之外，可写还有第二个输入：这个 product 行是否被晋升为默认可写，以及这个具体账户此刻
+是否就绪。二十行里有十九行默认接受写入；那唯一的例外见[不支持的能力](../reference/unsupported.md)，
+而让某个具体账户不再就绪的原因见[运维与恢复](../guides/operations-recovery.md)。
+
+## 这为上面几层换来了什么
+
+一个产品服务按 ID 要一个 instrument，拿回来的东西可以直接渲染、据以校验、存起来——里面没有任何
+一处与具体交易所有关的分支。它要一个账户，拿回来的记录可以直接展示，而全程不曾持有任何密钥。
+这两条性质在全部二十个 product 行上都成立，而这正是一张下单面板能服务九家交易所的唯一理由。
+
+## 相关
+
+- [架构](architecture.md) —— 这条边界落在哪
+- [执行与风险](execution-risk.md) —— 那些修订号在守什么
+- [状态与协调](state-reconciliation.md) —— 一个账户对交易所的视图如何重建
+- [市场与参考数据](../guides/market-reference-data.md) —— 这套模型之上的读取面
+- [Exchange gateway](../guides/exchange-gateway.md) —— 提供它的那个服务
