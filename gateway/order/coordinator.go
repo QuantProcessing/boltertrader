@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -699,6 +700,21 @@ func (coordinator *Coordinator) dispatch(ctx context.Context, route Route, prepa
 		return resultFromStored(dispatching), err
 	}
 	states, venueOrderID, uncertain := classifyPlaceResult(route, request, ack, placeErr)
+	// classifyPlaceResult collapses every venue outcome into a state, which is
+	// the right shape for the ledger but leaves an operator with a bare
+	// "rejected" and no way to learn why. The venue's own words are the only
+	// account of the refusal that exists, so record them here; nothing else
+	// downstream ever sees placeErr again.
+	if placeErr != nil {
+		slog.Error("gateway venue placement failed",
+			"commandId", dispatching.CommandID, "accountId", dispatching.AccountID,
+			"instrumentId", dispatching.InstrumentID, "routeId", routeID, "cause", placeErr)
+	} else if ack.State == exchange.AckRejected {
+		slog.Error("gateway venue rejected placement",
+			"commandId", dispatching.CommandID, "accountId", dispatching.AccountID,
+			"instrumentId", dispatching.InstrumentID, "routeId", routeID,
+			"venueCode", ack.VenueCode, "venueMessage", ack.VenueMessage)
+	}
 	current := dispatching
 	for _, nextState := range states {
 		nextEventID, idErr := coordinator.identity.EventID()

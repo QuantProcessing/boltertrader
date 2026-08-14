@@ -11,16 +11,16 @@ smart order routing、资金划转、充值或 withdrawal endpoint。服务 **no
 
 ## 选择这个产品
 
-BolterTrader 提供三种同级路径：
+BolterTrader 在交易所之上提供两种同级路径：
 
 - 调用方在 Go 进程内自行负责 lifecycle、缓存与持久化时，直接使用规范化
   `exchange` client；
 - 需要常驻进程集中管理 account、凭证、Catalog、订单状态、reconciliation
-  和私有事件时，使用 Exchange Gateway；
-- 需要单一策略的有状态执行框架时，使用 `runtime`。
+  和私有事件时，使用 Exchange Gateway。
 
-Gateway 构建在 `exchange` 之上；它不使用 `runtime`，也不替代另外两种同级
-产品。
+Gateway 构建在 `exchange` 之上，并不替代它。产品服务位于 Gateway 之上而非
+之侧：trading 服务持有自己的命令账本并调用这里的资源，它也是 Gateway 唯一
+面向的调用方类型。见 [trading 服务](trading-service.md)。
 
 ## 服务形态
 
@@ -49,30 +49,28 @@ secret reference 解析，YAML 不得包含 secret 明文。
 
 ## 配置
 
-每个交易所产品账户配置一个 account。V1 为 Binance、OKX、Lighter、
-Hyperliquid、Bybit、Bitget、Gate、Aster、Nado 建模共二十个产品行，其中
-十九行默认 write-ready；Lighter Testnet Spot 在外部环境证明双边流动性和
-exact lookup 之前保持 read-only。
+YAML 文件只配置进程本身：监听地址、bearer token 引用与 PostgreSQL DSN
+引用。账户属于持久化状态而非文件状态，通过内部监听器的
+`PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}`
+声明并存入 PostgreSQL，重启后自动加载，无需改动任何文件。
 
 ```yaml
 server:
   listen: 127.0.0.1:8080
   auth_token_ref: env://GATEWAY_AUTH_TOKEN
+  internal_listen: 127.0.0.1:8081
+  internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN
-accounts:
-  - account_id: binance-demo-spot
-    venue: binance
-    product: spot
-    environment: demo
-    credentials:
-      api_key_ref: env://BINANCE_DEMO_API_KEY
-      api_secret_ref: env://BINANCE_DEMO_API_SECRET
 ```
 
-不同交易所使用严格类型化的 credential 字段。未知字段、重复 account ID、
-无效 venue/product/environment 组合或明文 secret，都会在 listener 打开前
-阻止启动。
+配置文件严格解码。未知字段、未开启 `allow_non_loopback_listen` 的非回环
+监听、非回环的内部监听器或明文 secret，都会在 listener 打开前阻止启动。
+
+V1 为 Binance、OKX、Lighter、Hyperliquid、Bybit、Bitget、Gate、Aster、Nado
+建模共二十个产品行，其中十九行默认 write-ready；Lighter Testnet Spot 在外部
+环境证明双边流动性和 exact lookup 之前保持 read-only。不同交易所使用严格
+类型化的 credential 字段，在账户声明时严格解码。
 
 启动：
 
@@ -95,12 +93,12 @@ curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
 curl -X POST \
   -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: strategy-a-10001" \
+  -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-demo-spot",
     "instrument_id":"binance:demo:spot:BTC-USDT",
-    "idempotency_key":"strategy-a-10001",
+    "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
     "quantity":"0.001",
@@ -211,82 +209,82 @@ reconciliation 后才能重新开放 write readiness。
 
 ## Docker single-host 部署
 
-参考部署需要 Docker Engine 和 Compose v2。它是 single-host 运维示例：一个
-Gateway container、一个 PostgreSQL container 和一个 PostgreSQL named
+本地栈需要 Docker Engine 和 Compose v2。它是 single-host 运维示例：
+PostgreSQL、三个一次性 migrator 和四个服务，外加一个 PostgreSQL named
 volume；不包含 Kubernetes、多主机调度、registry publishing 或 high
 availability。
 
-复制公开模板，并在仓库外创建其中引用的三个文件：
+启动方式只有一条命令：
 
 ```sh
-cp docker/gateway.env.example gateway.env
-chmod 600 gateway.env ./gateway-secrets/*
+make up
 ```
 
-`gateway.env` 只能保存路径和公开设置。Bearer token、Gateway PostgreSQL DSN
-及 PostgreSQL password 必须保存在这些文件中，通过 Docker secrets 挂载。
-参考栈的 DSN 使用 Compose service 名，例如
-`postgres://gateway:<password>@postgres:5432/gateway?sslmode=disable`。
-不能把 secret 明文写入 `gateway.env`、image、build argument 或
-`docker/gateway.docker.yaml`。
+它会在 `.secrets/test/` 下生成栈的凭证、把变量写入 `.env.stack`、启动全部服务，
+最后执行 `make doctor`。该命令是幂等的：再次运行会复用已有凭证。出问题时用
+`make doctor` 定位，用 `make logs` 查看全部服务日志。
 
-默认 Docker config 使用 `accounts: []` 安全启动。配置真实账户时，应复制
-配置到 operator 自己管理的文件；每个新增的 `env://NAME` credential 也必须
-在 Compose 中声明同名 secret，并挂载到 `/run/secrets/NAME`。Docker helper
-只解析这些显式名称，随后 exec Gateway，使 Gateway 成为 PID1。
+不需要手工复制任何文件，也不能把 secret 明文写入 `.env.stack`、image、build
+argument 或 `docker/gateway.docker.yaml`。Bearer token 和 Gateway PostgreSQL DSN
+以 0600 保存在 `.secrets/test/` 下的文件里，`.env.stack` 只保存指向它们的路径。
+两者通过 Docker secrets 到达 Gateway，挂载点为
+`/run/secrets/GATEWAY_AUTH_TOKEN` 与 `/run/secrets/GATEWAY_POSTGRES_DSN`。
 
-构建并启动：
+Makefile 中每一次 Compose 调用都显式传入 `--env-file .env.stack`，包括只读取
+元数据的那些。不传时 Compose 会自动加载仓库的 `./.env`——那里保存着真实交易所
+API 凭证，会被插值进栈的环境变量。
 
-```sh
-docker compose --env-file gateway.env config
-docker compose --env-file gateway.env up -d --build --wait
-```
+`docker/gateway.docker.yaml` 默认使用 `accounts: []` 安全启动。配置真实账户时，
+应复制该文件到 operator 自己管理的位置，并让 `GATEWAY_CONFIG_FILE` 指向副本；
+每个新增的 `env://NAME` credential 也必须在 Compose 中声明同名 secret，并挂载到
+`/run/secrets/NAME`。Docker helper 只解析这些显式名称，随后 exec Gateway，使
+Gateway 成为 PID1。
 
 默认 host publication 为 `127.0.0.1:18080`。container 内的
 `allow_non_loopback_listen: true` 仅显式允许 `0.0.0.0:18080`；普通非 Docker
 配置仍默认只允许 loopback。
 
-检查带认证的 health 和 logs，命令不会打印 bearer token：
+检查带认证的 health，命令不会打印 bearer token：
 
 ```sh
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind live
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind ready
-docker compose --env-file gateway.env logs --tail=200 gateway
 ```
 
-`docker compose stop gateway` 会向 PID1 Gateway 发送 SIGTERM。参考配置给出
-15 秒停止窗口，高于 Gateway 的 10 秒 drain budget。升级时先构建新的不可变
-image，执行 Docker 验证目标，再 recreate Gateway；服务会在重新开放 write
-readiness 前完成 migration 和 reconciliation。
+停止服务会向作为 PID1 的进程发送 SIGTERM。栈给出 15 秒停止窗口，高于 Gateway 的
+10 秒 drain budget。升级时先构建新的不可变 image，执行容器验证目标，再 recreate
+服务；服务会在重新开放 write readiness 前完成 migration 和 reconciliation。
 
-PostgreSQL persistence 使用 named volume `gateway_postgres_data`。
-`docker compose down` 会保留它，`docker compose down -v` 会明确删除它。
-应使用常规 PostgreSQL 工具备份与恢复。生产 Compose 不向 host 发布
-PostgreSQL；`docker/compose.test.yaml` 中随机 loopback port 仅供测试。
+PostgreSQL persistence 使用 named volume `postgres_data`。`make down` 会保留它，
+`make down-hard` 会明确删除它。应使用常规 PostgreSQL 工具备份与恢复。
 
-使用 external PostgreSQL 时，应脱离参考 PostgreSQL service 单独部署 Gateway
-image，并让 `GATEWAY_POSTGRES_DSN_FILE` 指向启用 TLS 的外部 DSN。上线前先在
-临时数据库运行 migration 与 restart gate，并保持数据库网络私有。
+`down-hard` 也是让 initdb 脚本改动生效的唯一方式：PostgreSQL image 只在数据目录
+为空时执行这些脚本一次，因此 volume 存留就意味着改过的角色集永远不会被应用。
+
+使用 external PostgreSQL 时，应脱离内置 PostgreSQL service 单独部署 image，并让
+`GATEWAY_POSTGRES_DSN_FILE` 指向启用 TLS 的外部 DSN。上线前先在临时数据库运行
+migration 与 restart gate，并保持数据库网络私有。
 
 TLS 应终止在同一主机的 ingress 或 reverse proxy。默认 loopback publication
 适合该形态。若要发布到其他网卡，必须显式配置 firewall、TLS、bearer token
 轮换和 access-log 审查。此 single-host 栈没有 leader election 或自动
 failover；每个交易所 account 只能有一个 Gateway owner。
 
-Docker 验证：
+容器验证。下面每个目标都会用生成的凭证和内核分配的端口创建各自的一次性 Compose
+project，因此既不需要先跑 `make up`，也不会干扰已经启动的栈：
 
 ```sh
-make test-gateway-docker-config
-make test-gateway-docker-build
-make test-gateway-docker-security
-make test-gateway-docker-smoke
-make test-gateway-docker-persistence
-make test-gateway-docker-postgres
-make test-gateway-docker
+make test-compose-config
+make test-compose-build
+make test-compose-security
+make test-compose-smoke
+make test-compose-persistence
+make test-compose-postgres
+make test-compose
 ```
 
 ## 验证

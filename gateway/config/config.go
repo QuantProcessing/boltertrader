@@ -20,13 +20,28 @@ type File struct {
 }
 
 type ServerConfig struct {
-	StartupProfile         StartupProfile `yaml:"startup_profile,omitempty" json:"startup_profile"`
-	Mode                   string         `yaml:"mode" json:"mode"`
-	Listen                 string         `yaml:"listen" json:"listen"`
-	AllowNonLoopbackListen bool           `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
-	AuthTokenRef           secret.Ref     `yaml:"auth_token_ref" json:"auth_token_ref"`
-	InternalListen         string         `yaml:"internal_listen,omitempty" json:"internal_listen,omitempty"`
-	InternalAuthTokenRef   secret.Ref     `yaml:"internal_auth_token_ref,omitempty" json:"internal_auth_token_ref,omitempty"`
+	StartupProfile StartupProfile `yaml:"startup_profile,omitempty" json:"startup_profile"`
+	Mode           string         `yaml:"mode" json:"mode"`
+	Listen         string         `yaml:"listen" json:"listen"`
+	// The two listeners carry two different planes and are configured
+	// independently: `listen` serves /v1, the capability plane every caller may
+	// reach, and `internal_listen` serves /internal/v1, the authority plane that
+	// answers for accounts, credentials and runtime state. They have separate
+	// tokens and separate opt-ins because widening one says nothing about the
+	// other — a stack that publishes the capability plane to its host has not
+	// thereby agreed to publish the authority plane anywhere.
+	AllowNonLoopbackListen bool       `yaml:"allow_non_loopback_listen" json:"allow_non_loopback_listen"`
+	AuthTokenRef           secret.Ref `yaml:"auth_token_ref" json:"auth_token_ref"`
+	InternalListen         string     `yaml:"internal_listen,omitempty" json:"internal_listen,omitempty"`
+	// AllowNonLoopbackInternalListen exists because loopback stopped being the
+	// only private interface. It was correct while the whole stack was one host's
+	// processes; under compose the authority plane's consumers are other
+	// containers, and the gateway's own loopback is reachable by nothing but the
+	// gateway. Refusing here would not keep the plane private, it would keep it
+	// unreachable — so the check became an assertion the operator makes about the
+	// network, exactly like the one above it.
+	AllowNonLoopbackInternalListen bool       `yaml:"allow_non_loopback_internal_listen,omitempty" json:"allow_non_loopback_internal_listen,omitempty"`
+	InternalAuthTokenRef           secret.Ref `yaml:"internal_auth_token_ref,omitempty" json:"internal_auth_token_ref,omitempty"`
 }
 
 type StartupProfile string
@@ -179,8 +194,11 @@ func (file File) Validate() error {
 	if file.Server.InternalListen != "" {
 		internalHost, _, internalErr := net.SplitHostPort(file.Server.InternalListen)
 		internalAddress := net.ParseIP(internalHost)
-		if internalErr != nil || internalAddress == nil || !internalAddress.IsLoopback() {
-			return fmt.Errorf("server internal listener must be a loopback IP host:port")
+		if internalErr != nil || internalAddress == nil {
+			return fmt.Errorf("server internal_listen must be an IP host:port")
+		}
+		if !internalAddress.IsLoopback() && !file.Server.AllowNonLoopbackInternalListen {
+			return fmt.Errorf("server non-loopback internal_listen requires allow_non_loopback_internal_listen")
 		}
 	}
 	if file.Postgres.DSNRef.IsZero() {
@@ -192,13 +210,14 @@ func (file File) Validate() error {
 func (file File) Hash() (string, error) {
 	sanitized := hashFile{
 		Server: hashServer{
-			StartupProfile:         file.Server.StartupProfile,
-			Mode:                   file.Server.Mode,
-			Listen:                 file.Server.Listen,
-			AllowNonLoopbackListen: file.Server.AllowNonLoopbackListen,
-			AuthTokenRef:           file.Server.AuthTokenRef.Fingerprint(),
-			InternalListen:         file.Server.InternalListen,
-			InternalAuthTokenRef:   file.Server.InternalAuthTokenRef.Fingerprint(),
+			StartupProfile:                 file.Server.StartupProfile,
+			Mode:                           file.Server.Mode,
+			Listen:                         file.Server.Listen,
+			AllowNonLoopbackListen:         file.Server.AllowNonLoopbackListen,
+			AuthTokenRef:                   file.Server.AuthTokenRef.Fingerprint(),
+			InternalListen:                 file.Server.InternalListen,
+			AllowNonLoopbackInternalListen: file.Server.AllowNonLoopbackInternalListen,
+			InternalAuthTokenRef:           file.Server.InternalAuthTokenRef.Fingerprint(),
 		},
 		Postgres: hashPostgres{
 			DSNRef: file.Postgres.DSNRef.Fingerprint(),
@@ -228,6 +247,7 @@ func (file File) MarshalJSON() ([]byte, error) {
 	}
 	if file.Server.InternalListen != "" {
 		server["internal_listen"] = file.Server.InternalListen
+		server["allow_non_loopback_internal_listen"] = file.Server.AllowNonLoopbackInternalListen
 		server["internal_auth_token_ref"] = "redacted"
 	}
 	return json.Marshal(map[string]any{
@@ -259,13 +279,14 @@ type hashFile struct {
 	Postgres hashPostgres `json:"postgres"`
 }
 type hashServer struct {
-	StartupProfile         StartupProfile `json:"startup_profile"`
-	Mode                   string         `json:"mode"`
-	Listen                 string         `json:"listen"`
-	AllowNonLoopbackListen bool           `json:"allow_non_loopback_listen"`
-	AuthTokenRef           string         `json:"auth_token_ref"`
-	InternalListen         string         `json:"internal_listen,omitempty"`
-	InternalAuthTokenRef   string         `json:"internal_auth_token_ref,omitempty"`
+	StartupProfile                 StartupProfile `json:"startup_profile"`
+	Mode                           string         `json:"mode"`
+	Listen                         string         `json:"listen"`
+	AllowNonLoopbackListen         bool           `json:"allow_non_loopback_listen"`
+	AuthTokenRef                   string         `json:"auth_token_ref"`
+	InternalListen                 string         `json:"internal_listen,omitempty"`
+	AllowNonLoopbackInternalListen bool           `json:"allow_non_loopback_internal_listen,omitempty"`
+	InternalAuthTokenRef           string         `json:"internal_auth_token_ref,omitempty"`
 }
 type hashPostgres struct {
 	DSNRef string `json:"dsn_ref"`

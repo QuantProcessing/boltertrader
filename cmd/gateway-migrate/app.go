@@ -8,8 +8,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 	"github.com/QuantProcessing/boltertrader/gateway/store/postgres"
-	"github.com/QuantProcessing/boltertrader/migration/authority"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -60,7 +60,7 @@ func migrateProductionGateway(ctx context.Context, service, database, role strin
 	if err := postgres.Migrate(ctx, pool); err != nil {
 		return migrationResult{}, fmt.Errorf("GATEWAY_MIGRATION_BLOCKED")
 	}
-	matrix := authority.GatewayV6()
+	matrix := authority.GatewayV8()
 	if err := postgres.ApplyAuthority(ctx, pool, matrix); err != nil {
 		return migrationResult{}, fmt.Errorf("GATEWAY_AUTHORITY_BLOCKED")
 	}

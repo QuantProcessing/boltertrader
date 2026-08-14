@@ -88,11 +88,13 @@ func TestCoordinatorRealPostgresProcessCrashWindows(t *testing.T) {
 		t.Run(test.phase, func(t *testing.T) {
 			accountID := domain.AccountID(fmt.Sprintf("crash-%d-%s", index, strings.ReplaceAll(test.phase, "_", "-")))
 			postgresStore := gatewaypostgres.NewStore(pool)
-			if err := postgresStore.RegisterAccount(ctx, gatewaypostgres.AccountRegistration{
-				AccountID: accountID, Venue: "binance", Product: "spot", Environment: "demo",
-				ConfigHash: strings.Repeat("a", 64), Status: "enabled",
+			if _, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
+				AccountID: accountID, Venue: "binance", VenueEnvironment: "demo",
+				SecretRef:            strings.Repeat("A", 43),
+				DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
+				RequestedState: store.DesiredCreating,
 			}); err != nil {
-				t.Fatalf("register account: %v", err)
+				t.Fatalf("create desired account: %v", err)
 			}
 			prepareCrashActiveRuntime(t, ctx, postgresStore, accountID)
 

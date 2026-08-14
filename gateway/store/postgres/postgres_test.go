@@ -79,16 +79,18 @@ func testAccountID(t *testing.T) domain.AccountID {
 
 func registerTestAccount(t *testing.T, ctx context.Context, postgresStore *Store) {
 	t.Helper()
-	err := postgresStore.RegisterAccount(ctx, AccountRegistration{
-		AccountID:   testAccountID(t),
-		Venue:       "binance",
-		Product:     "spot",
-		Environment: "demo",
-		ConfigHash:  strings.Repeat("a", 64),
-		Status:      "enabled",
+	_, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
+		AccountID:            testAccountID(t),
+		Venue:                "binance",
+		VenueEnvironment:     "demo",
+		SecretRef:            strings.Repeat("A", 43),
+		DesiredStateRevision: 1,
+		RuntimeGeneration:    1,
+		CredentialVersion:    1,
+		RequestedState:       store.DesiredCreating,
 	})
 	if err != nil {
-		t.Fatalf("RegisterAccount: %v", err)
+		t.Fatalf("CreateDesiredAccount: %v", err)
 	}
 }
 
@@ -241,12 +243,19 @@ func TestMigrateRealPostgresConcurrentStartersSerialize(t *testing.T) {
 			t.Fatalf("concurrent Migrate: %v", err)
 		}
 	}
+	// The claim is that concurrent starters apply each migration exactly once,
+	// so the expectation tracks the embedded set rather than a literal that has
+	// to be bumped by hand on every migration.
+	expected, err := embeddedMigrations()
+	if err != nil {
+		t.Fatalf("embeddedMigrations: %v", err)
+	}
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if rows != 6 {
-		t.Fatalf("schema_migrations rows = %d, want 6", rows)
+	if rows != len(expected) {
+		t.Fatalf("schema_migrations rows = %d, want %d", rows, len(expected))
 	}
 }
 
@@ -1093,7 +1102,7 @@ func runConcurrentReservations(ctx context.Context, postgresStore *Store, reques
 	return results, errs
 }
 
-func TestRegisterAccountRealPostgresStoresNonSecretStatusAndConfigHash(t *testing.T) {
+func TestRegisterTestAccountRealPostgresSeedsTheDesiredAccountAuthority(t *testing.T) {
 	ctx := context.Background()
 	pool := newTestPool(t)
 	if err := Migrate(ctx, pool); err != nil {
@@ -1102,16 +1111,16 @@ func TestRegisterAccountRealPostgresStoresNonSecretStatusAndConfigHash(t *testin
 	postgresStore := NewStore(pool)
 	registerTestAccount(t, ctx, postgresStore)
 
-	var venue, product, environment, configHash, status string
+	var venue, environment, requestedState string
 	err := pool.QueryRow(ctx, `
-		SELECT venue, product, environment, config_hash, status
-		FROM gateway_accounts
+		SELECT venue, venue_environment, requested_state
+		FROM gateway_desired_accounts
 		WHERE account_id = $1
-	`, testAccountID(t)).Scan(&venue, &product, &environment, &configHash, &status)
+	`, testAccountID(t)).Scan(&venue, &environment, &requestedState)
 	if err != nil {
-		t.Fatalf("load gateway account: %v", err)
+		t.Fatalf("load desired account: %v", err)
 	}
-	if venue != "binance" || product != "spot" || environment != "demo" || configHash != strings.Repeat("a", 64) || status != "enabled" {
-		t.Fatalf("stored account metadata = %q/%q/%q/%q/%q", venue, product, environment, configHash, status)
+	if venue != "binance" || environment != "demo" || requestedState != string(store.DesiredCreating) {
+		t.Fatalf("stored account metadata = %q/%q/%q", venue, environment, requestedState)
 	}
 }

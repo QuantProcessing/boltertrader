@@ -2,79 +2,96 @@
 
 > 英文为规范版本。[English](README.md)
 
-BolterTrader 是一个 Go 原生交易系统，在同一套 venue 集成之上提供三种同级
-产品路径：直接使用规范化 `exchange` API、自托管 Exchange Gateway，以及面向
-单一策略的 `runtime`。请按部署方式和状态归属选择；三者互不弃用，也不是彼此的
-包装层。
+BolterTrader 是一个 Go 原生、自托管的交易系统，面向单个操作者和他们自己的
+交易所账户。它是一个分层的整体：venue SDK 被归一化为 venue-neutral 的
+`exchange` API，Exchange Gateway 在其上提供带持久订单身份的常驻能力面，
+上层的产品服务构建在 gateway 之上，而不是与它并列。
 
-## 选择起步路径
+## 运行
 
-- 初次接触本仓库：阅读[前置条件](docs/zh-CN/getting-started/prerequisites.md)。
-- 没有凭证：运行[离线 runtime 演练](docs/zh-CN/getting-started/offline-runtime.md)。
-- CEX 非生产验证：使用 [Binance Spot Demo](docs/zh-CN/getting-started/cex-demo.md)。
-- DEX 非生产验证：使用 [Hyperliquid Perp Testnet](docs/zh-CN/getting-started/dex-testnet.md)。
-- 在 Go 进程内嵌入 venue-neutral client：使用独立的
-  [统一交易所 API](docs/zh-CN/exchange/README.md)。
-- 通过常驻服务集中管理 account、Catalog、持久订单身份、重启恢复和私有事件：
-  使用 [Exchange Gateway](docs/zh-CN/guides/exchange-gateway.md)。
-- 承载单一有状态策略：使用 [runtime node 指南](docs/zh-CN/guides/runtime-node.md)。
-- 查找某个主题或 venue：打开[文档索引](docs/zh-CN/README.md)。
+运行整套栈只需要 Docker 与 Docker Compose；在容器外构建或测试需要 Go 1.26
+或更高版本（由 `go.mod` 要求）。
+
+```sh
+make up
+```
+
+首次运行会生成凭证与 `.env.stack`，构建并启动全部容器，等待它们健康，然后
+运行下面的检查。首次运行会**只打印一次**生成的 `operator` 密码，同时也保存在
+`.secrets/<mode>/bootstrap_password`。应用入口是 <http://127.0.0.1:18090>。
+
+```sh
+make doctor   # 什么起来了、什么没起来、每个服务在哪个端口
+make logs     # 每个服务最近 200 行日志
+make down     # 停止整套栈（down-hard 会连 postgres 卷一起删）
+```
+
+这里没有任何命令会读取仓库的 `.env`：那个文件保存的是验收 target 用的交易所
+API 凭证，而这套栈自己的变量——端口、uid、密钥路径——生成在 `.env.stack` 里。
+所有对外端口都只绑定 `127.0.0.1`。
 
 ## 一分钟了解架构
 
-| 产品路径 | 适用场景 | 负责内容 |
-| --- | --- | --- |
-| 直接 `exchange` | 进程内使用规范化 REST 和 WebSocket client | typed client 与 venue 归一化；生命周期、缓存和持久化由调用方负责 |
-| Exchange Gateway | 通过常驻服务提供远程 REST/私有 WebSocket | account client、凭证、Catalog、持久订单身份、reconciliation 与事件投递 |
-| `runtime` | 单一策略的有状态执行 | strategy context、cache、portfolio、risk、lifecycle 与 reconciliation |
-
-这些边界是有意设计的：
-
-- `exchange/` 是规范化的驱动与模型层，可被调用方直接使用，也可由 Gateway 使用。
-- `gateway/` 是构建在 `exchange/` 之上的服务；它不导入 `runtime/`、adapter、
-  strategy 或 venue SDK package。
-- `core/` 定义与 venue 无关的 decimal model、contract、enum 和 clock。
-- `runtime/` 负责可移植状态，并且只能依赖 `core/`。
-- `adapter/<venue>/` 吸收 venue product、identifier、签名、响应语义、
-  account profile 和 Unsupported（不支持的）surface 等差异。
-- `sdk/<venue>/` 忠实表示 venue API；仅有 SDK package 并不意味着存在
-  runtime-adapter 支持。
-- `strategy/` 通过收窄的 `Context` 行动，绝不直接使用 adapter 或 SDK。
-
-订单提交遵循一条通用 runtime 路径：
-
 ```text
-ValidateSubmit → optional configured venue-neutral risk/reservation → Submit
+web            React 19 + Vite，由 Caddy 托管，与 auth edge 同源
+  │
+  ├── services/authedge     会话终结 + 路径转发
+  │      │                  （浏览器唯一直接对话的对象）
+  │      ├──────────────────────────┐
+  │      ▼                          ▼
+  │   gateway                  services/trading
+  │   账户、凭证、目录、能力、    手动下单编排、命令账本、
+  │   订单、行情                持仓、预留、活动流
+  │      ▲──────────────────────────┘
+  ▼
+exchange       覆盖 9 个交易所的 venue-neutral client 与模型
+  │
+sdk            13 个交易所，各自忠实表示其原生 API
 ```
 
-venue capacity 以服务端为准。runtime 不存在 venue-specific prepared-submit、
-lease 或 capacity-admission 路径。完整契约见
-[执行与风险](docs/zh-CN/concepts/execution-risk.md)。
+每一层只负责一件事，边界由 `gateway/contracts/import_boundary_test.go` 强制：
 
-## 离线验证
+- `sdk/<venue>/` 忠实表示 venue API。仅存在 SDK package 不意味着 gateway
+  支持该交易所。
+- `exchange/` 把各交易所归一化为一套 typed client 与模型。生命周期、缓存和
+  持久化由调用方负责；它也可以脱离整套栈，单独嵌入 Go 进程使用。
+- `gateway/` 是 `exchange/` 之上的共享能力面：账户、加密凭证、catalog、
+  能力与风控限额解析、持久订单身份、reconciliation 和私有事件投递。它不导入
+  venue SDK package。
+- `services/trading` 与 `services/authedge` 是构建在 gateway `/v1` 之上的
+  产品服务。它们自身不含任何交易所集成，各自在同一个 postgres 实例中拥有
+  独立 schema。
+- `web/` 是唯一的前端。它只与 auth edge 通信，且同源，因此会话 cookie 得以
+  保持 `HttpOnly` 与 `SameSite=Strict`。
 
-`go.mod` 要求 Go 1.26 或更高版本。
+auth edge 是刻意做薄的：它终结浏览器会话，然后按路径前缀转发到 gateway 或
+trading，注入服务令牌与身份头，并剥离浏览器自己带来的这两个头。它**不做响应
+聚合**——前端用 TanStack Query 并发 fan-out。
+
+## 验证
 
 ```sh
-make test
-make test-capabilities
+make test                 # Go，不需要凭证，short mode
+make test-compose         # compose 配置、镜像构建、加固、冒烟、持久化
+cd web && npm run build && npm test && npm run test:e2e
 ```
 
-默认测试套件不需要凭证，并使用 short mode。交易所读写均为显式启用；文档中的
-Demo/Testnet Make target 会仅为对应命令设置写入 gate，并在选定的验收测试发生
-skip 时失败。
+默认套件离线且确定性。交易所读写均为显式启用：文档中的 Demo/Testnet Make
+target 会仅为对应命令设置写入 gate，并在选定的验收测试发生 skip 时失败。
 
 ## 当前支持
 
-runtime 矩阵目前包含 21 个 product 行，覆盖 Aster、Nado、Binance、OKX、
-Bybit、Bitget、Gate、Hyperliquid 和 Lighter。支持以 product 为单位：
-某一行处于 Implemented（已实现）状态或存在底层 SDK，不等同于当前已通过
+gateway 的 Demo/Testnet 验收矩阵（`make test-gateway-demo-testnet`）覆盖
+Aster、Binance、Bitget、Bybit、Gate、Hyperliquid、Lighter、Nado 和 OKX 上的
+20 个 product 行。`sdk/` 另外还包含 Backpack、EdgeX、GRVT 和 StandX。支持以
+product 为单位：某一行处于 Implemented 状态或存在底层 SDK，不等同于当前已通过
 Demo/Testnet 认证，也不代表 production readiness。
 
-- [Runtime adapter 能力矩阵](docs/zh-CN/adapter-capabilities.md)
+- [统一交易所 API](docs/zh-CN/exchange/README.md)
+- [Exchange Gateway](docs/zh-CN/guides/exchange-gateway.md)
 - [Venue 指南](docs/zh-CN/venues/README.md)
-- [Unsupported、Deferred（延期）和 SDK-only surface](docs/zh-CN/reference/unsupported.md)
 - [测试与认证语义](docs/zh-CN/reference/testing.md)
+- [文档索引](docs/zh-CN/README.md)
 
 ## 安全
 
@@ -83,8 +100,10 @@ Demo/Testnet 认证，也不代表 production readiness。
 所记录的终止条件。在非零或结果不明确的退出后，检查精确的 validation ID 和权威的
 product-scoped 状态；绝不要盲目取消或平掉无关 exposure。
 
+凭证在整条链路上只写不读：经应用提交、由 gateway 加密静态存储，任何读取路径都
+不会把它返回。
+
 ## 贡献
 
-请从 [adapter 贡献规则](docs/zh-CN/contributing/adapters.md)或
-[公开文档契约](docs/zh-CN/contributing/documentation.md)开始。development plan、
-原始 validation evidence、凭证和本地执行产物不属于公开文档。
+请从[公开文档契约](docs/zh-CN/contributing/documentation.md)开始。development
+plan、原始 validation evidence、凭证和本地执行产物不属于公开文档。

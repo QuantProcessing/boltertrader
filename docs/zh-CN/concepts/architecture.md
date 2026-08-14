@@ -2,73 +2,111 @@
 
 > 英文为规范版本。[English](../../concepts/architecture.md)
 
-本页定义 BolterTrader 稳定的分层与依赖边界。详细的提交语义由
-[执行与风险](execution-risk.md)说明，状态收敛则由
-[状态与对账](state-reconciliation.md)说明。
+本页定义 BolterTrader 的分层与依赖边界。提交语义由[执行与风险](execution-risk.md)
+说明，状态收敛由[状态与 reconciliation](state-reconciliation.md)说明，account 与
+instrument 身份由 [Account 与 instrument](accounts-instruments.md) 说明。
 
 ## 分层与依赖方向
 
-| 层 | 负责 | 可以了解 |
+| 层 | 负责 | 可以 import |
 | --- | --- | --- |
-| `core/` | 中立模型、枚举、时钟、事件信封、能力与客户端契约 | 标准库和精确十进制基础类型 |
-| `runtime/` | 事件处理、缓存、投资组合、执行、风险、日志、生命周期与对账 | 中立的 `core/{clock,contract,enums,model}` 包及同级 runtime 包 |
-| `adapter/<venue>/` | 交易品种解析、账户模式发现、无状态请求校验、归一化、流/报告语义与交易所错误映射 | `core/`、对应交易所 SDK 及共享 adapter 辅助代码 |
-| `sdk/<venue>/` | 官方 API 传输、签名、端点与线协议类型 | 交易所 API，而非 runtime 策略 |
-| `runtime/strategy` | 可移植的策略上下文与回调契约 | 中立的 runtime 视图与契约 |
-| `strategy/` and `cmd/` | 示例策略与应用组合 | Runtime 以及显式选择的 adapter |
+| `sdk/<venue>/` | 单个 venue 的原生 API：传输、签名、endpoint profile 与线协议类型 | 标准库及其自身的传输依赖 |
+| `exchange/` | 基于 SDK 的 venue-neutral typed client 与模型，以及通过 `exchange/factory` 的构造 | 仅在 `exchange/internal/**` 中 import `sdk/**`，另加 `credential`、`routeprofile` |
+| `gateway/` | 共享能力面：account、加密凭证、catalog、能力与限额解析、持久订单身份、reconciliation 与私有事件投递 | `gateway/**`、`credential`、`exchange`、`exchange/factory`、`routeprofile`、`secretstore` |
+| `services/` | 构建在 gateway HTTP 面之上的产品行为：命令账本、projection、浏览器会话与转发 | 自身目录树、`internal/**`、`credential`、`routeprofile`、`secretstore` |
+| `web/` | 唯一的前端 | auth edge 的 `/api/v1` 面 |
 
-在本仓库中，生产 runtime 代码不导入 `adapter/**` 或 `sdk/**`。它在项目层
-只依赖上表列出的四个中立 core 包和其他 runtime 包；标准库与
-`shopspring/decimal` 导入不会削弱这条边界。交易所名称可以作为
-`InstrumentID` 或能力声明中的数据，但不能用来选择交易所专用的 runtime
-分支。
+依赖严格向下。任何一层都不会 import 它上面的层，也不会 import 同级的内部实现。
 
-## 组合边界
+其中两层本身就是入口，而不只是上一层的实现细节：
+[统一交易所 API](../exchange/README.md) 可嵌入任意 Go 进程，
+[Exchange Gateway](../guides/exchange-gateway.md) 服务于任意产品，不限于本仓库
+里的这一个。
 
-应用代码选择交易所，并构造其 SDK 与 adapter。它只把
-`contract.MarketDataClient`、`contract.ExecutionClient` 和
-`contract.AccountClient` 传给 `runtime.NewNode`。对于仅市场数据进程等部分
-节点，任一客户端都可以缺省。
+## 被强制的边界
 
-Runtime 通过市场客户端的 `InstrumentProvider` 获取归一化交易品种，分别
-保留执行能力与账户能力的来源，并从配置的中立客户端中解析一个逻辑账户
-身份。策略接收的是 runtime 上下文，而不是 adapter 或 SDK 句柄。
+有三个测试把上表钉在代码上。正因为如此，边界违规会让 `make test` 变红，而不是
+只能靠 review 发现。
 
-## 状态归属与串行化
+- `gateway/contracts/import_boundary_test.go` 遍历 `gateway/` 下每个非测试
+  `.go` 文件，拒绝任何不属于 `gateway/...` 的仓库 import，例外只有五个 package：
+  `credential`、`exchange`、`exchange/factory`、`routeprofile`、`secretstore`。
+  因此 gateway 连误引用 venue SDK 都做不到。
+- `exchange/boundary_test.go` 拒绝公开的 `exchange` 与 `exchange/factory` 文件中
+  任何含 `/sdk/`、`/adapter/` 或 `/runtime/` 的 import，也拒绝名为 `rawParams`、
+  `nativeParams`、`sdkClient`、`nativeClient` 的公开逃逸符号。SDK 接线位于
+  `exchange/internal/**`，因此调用方无法通过规范化 API 拿到原生句柄。
+- `exchange/docs_manifest_test.go` 与 `exchange/docs_system_contract_test.go` 把两张
+  operation matrix 和 venue 差异表钉在
+  `exchange/testdata/public_surface_manifest.json` 上，因此文档里的能力声明不会
+  与支撑它的代码脱节。
 
-节点通过一条 runtime 总线消费类型化的市场、执行和账户信封。实时事件变更
-与恢复变更都通过 runtime 自己管理的缓存、投资组合、成交与回调路径收敛。
-直接对账与事件应用串行执行，因此权威快照不会与实时变更竞争并产生策略可见
-的错误状态。
+services 层的边界由构造方式保证，而非由测试保证：`services/` 下没有任何生产文件
+import `gateway/**` 或 `exchange/**`。产品服务通过 HTTP 访问 gateway——正是这一点
+让 gateway 可替换、可独立部署，并可被不在本仓库中的产品使用。
 
-主要状态所有者有意彼此分离：
+## 进程与网络拓扑
 
-- cache 负责归一化的当前状态；
-- portfolio 负责账户感知的敞口与估值视图；
-- execution journal 负责命令意图和结果恢复；
-- reconciliation 负责在明确限定的范围内与权威报告比较；
-- lifecycle 负责命令处于 active、restricted 还是 halted 状态。
+`make up` 会启动八个容器：PostgreSQL、三个运行完即退出的 migrator，以及四个
+常驻服务。所有发布出来的端口都只绑定 `127.0.0.1`。
 
-这些组件交换中立模型。任何组件都不会接收 SDK 响应类型。
+```text
+浏览器 ──► web (Caddy)
+              │  同源：/api/* 被反向代理
+              ▼
+         services/authedge ──┬──► gateway            /internal/v1/accounts…
+                             └──► services/trading   其余全部
+                                        │
+                                        └──► gateway /v1
+                                                 │
+                                            exchange ──► sdk ──► venue
+```
+
+浏览器只与一个 origin 通信。由于前端产物与 `/api/*` 同源，会话 cookie 得以保持
+`HttpOnly` 与 `SameSite=Strict`，也不存在任何 CORS 面。auth edge 终结该会话，并
+按路径前缀转发，同时注入服务令牌与调用者身份头；它不做响应聚合。gateway 的账户
+生命周期只在其内部面可达，因为它接收凭证材料。
+
+Postgres 只跑一个实例。gateway、trading 服务与 auth edge 在其中各自拥有独立
+schema，彼此从不读对方的表。
 
 ## 交易所差异应放在哪里
 
-Adapter 负责那些无法表达为通用策略的差异：原生 symbol 或 asset index、
-支持的订单字段、账户和持仓模式、请求签名、端点 profile、stream gap 解释、
-报告覆盖范围以及精确的响应身份。SDK 负责其线协议表示。Runtime 只负责这些
-差异被转换为 core 契约后的可移植编排。
+无法表达为可移植策略的差异要尽可能下沉：
 
-Runtime 的提交表面就是普通的 `ExecutionClient` 契约。Adapter 可以在实现
-`Submit` 时在内部准备或签名请求，但 runtime 不存在 prepared-order、venue
-pre-trade lease 或 venue-capacity admission 协议。唯一规范流程见
-[执行与风险](execution-risk.md)。
+- `sdk/<venue>` 负责线协议表示、签名与 endpoint profile。
+- `exchange/internal/<venue>` 负责原生 symbol 与 asset index、支持的订单字段、
+  account 与 position mode 发现、stream gap 解释、报告覆盖范围，以及向规范化
+  错误的映射。
+- `exchange` 只暴露每个已实现 venue 都能表达的东西。某个 venue 无法满足的维度
+  会成为 `exchange.ErrUnsupported`，而不是调用方里的 venue 专用分支。
+
+在 `exchange` 之上，venue 名称是数据——instrument identifier 或能力记录的一部分。
+它绝不能用来选择代码路径。真正的差异集中记录在
+[venue 与 account-mode 差异](../reference/exchange-venues-and-account-modes.md)。
+
+## 共享能力应放在哪里
+
+gateway 刻意做厚，产品服务刻意做薄。任何不止一个产品会需要的东西都放在 gateway：
+凭证存储、账户生命周期、catalog、能力与限额解析、持久订单身份、reconciliation
+与私有事件投递。
+
+产品服务只负责自己这个产品的决策——对手动交易产品而言，就是命令账本、预览、
+预留，以及其界面所需的 projection。当一个产品服务长出了第二个产品也会需要的能力，
+这就是把它下沉进 gateway 的信号，而不是复制一份的信号。
 
 ## 贡献者边界检查
 
-增加 runtime 抽象之前，先判断每个已实现（implemented）交易所能否在不暴露 SDK 类型或交易所
-专用生命周期的前提下表达它。如果不能，请把行为留在 adapter 中，并只暴露
-最小的中立能力。
+新增抽象之前，先判断哪一层能在不泄漏下一层的前提下表达它：
 
-接下来可阅读[账户与交易品种](accounts-instruments.md)、
-[adapter 贡献指南](../contributing/adapters.md)以及详细的
-[能力矩阵](../adapter-capabilities.md)。
+- 如果它需要 SDK 类型，它属于 `exchange/internal/<venue>`。
+- 如果它需要在 `exchange` 之上写 venue 分支，说明归一化还没做完。
+- 如果第二个产品也会需要它，它属于 `gateway/`，而不是某个 service。
+- 如果它需要在 `services/` 内使用 gateway 的 Go 类型，说明 gateway 的 HTTP 面缺了
+  东西；应该扩展那个面，而不是扩展 import 图。
+
+接下来可阅读 [Account 与 instrument](accounts-instruments.md)、
+[venue 贡献指南](../contributing/venues.md)，以及服务指南：
+[gateway](../guides/exchange-gateway.md)、
+[trading 服务](../guides/trading-service.md)、
+[auth edge](../guides/auth-edge.md) 和 [web 应用](../guides/web-app.md)。

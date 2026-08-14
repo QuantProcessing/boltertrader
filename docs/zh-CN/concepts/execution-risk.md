@@ -2,80 +2,124 @@
 
 > 英文为规范版本。[English](../../concepts/execution-risk.md)
 
-本页定义交易所中立的提交顺序、本地风险预留和执行结果语义。交易所专用支持
-仍以[能力矩阵](../adapter-capabilities.md)为准；对账细节由
-[状态与对账](state-reconciliation.md)说明。
+下单是这套系统里唯一一个「错了要花钱」的操作。这里的一切都源于一条性质：请求发往交易所的那
+一刻起，你可能永远不会知道它的下场。
 
-## 通用提交顺序
+本页拥有 gateway 对此的处置方式。恢复过程见[状态与协调](state-reconciliation.md)，面向运维的
+具体步骤见[运维与恢复](../guides/operations-recovery.md)。
 
-进入面向交易所的路径前，runtime 会解析账户和客户端身份、拒绝重复 client
-ID、检查生命周期命令 gate，并确认执行能力声明了 Submit。随后执行同一套
-共享顺序：
+## 身份先于交易所存在
 
-1. 调用 adapter 无副作用的 `ValidateSubmit`。
-2. 如果已配置，调用交易所中立的 `SubmissionRiskChecker`，并保留其敞口释放
-   closure。
-3. 创建并持久追加命令意图，同时以同一身份跟踪 in-flight 状态。
-4. 将归一化订单以 `PendingNew` 插入 cache。
-5. 对执行客户端的普通 `Submit` 只调用一次。
-6. 分类结果，并把命令结果连同任何权威订单更新一起提交。
-7. engine 调用返回时释放本地敞口预留。
+Gateway 在**接触交易所之前**就铸出并持久化一笔订单的身份，而不是之后。一次预留在一步之内写下
+三个标识符与规范化后的请求：
 
-Runtime 会在创建意图前后检查 context cancellation。意图尚不存在时，取消会
-直接返回，不留下持久命令状态。意图记录后，runtime 会追加一个本地结果，且
-仍不会调用 `Submit`。Journal 或 cache 失败也会在交易所边界之前停止。
-
-校验与普通提交之间不存在 adapter hook。特别是，runtime 不存在
-`SubmitPrepared`、venue pre-trade lease 或本地 venue-capacity admission
-路径。Adapter 可以在它唯一的 `Submit` 实现内部私下完成所需签名或准备；这
-不会改变 runtime 协议。
-
-## 风险预留的含义
-
-`CheckSubmission` 在同一把锁下评估通用策略，并在接受后返回幂等的释放函数。
-并发检查会计入已经持有的预留，从而填补 `PendingNew` 订单在 cache 中可见之前
-的空档。Execution engine 会立即 defer 释放，因此敞口占用通常覆盖意图持久化、
-pending 状态插入、交易所调用与结果提交，并且在此后的每条错误路径上仍会释放。
-
-内置 checker 可以执行：
-
-- kill switch 和正数量检查；
-- 有界的重复 client-ID 保留；
-- 调用者配置的 `MaxOrderQty`、`MaxOrderNotional` 和 `MaxPositionQty`；
-- 来自归一化元数据的交易品种最小数量与最小名义价值；
-- 对 Spot cash 的新鲜、已入金现金余额保护，包括工作中订单和并发预留订单；
-- 针对增加衍生品风险的订单，检查已配置的产品/账户来源和新鲜的权威保证金
-  账户状态。
-
-释放敞口不会擦除有界的 client-ID 去重历史。该历史独立于短期敞口占用来保护
-幂等性。
-
-## 本地策略不等于交易所容量
-
-通用数量、名义价值和持仓限额是调用者选择的安全策略。交易品种最小值是静态
-请求约束。Spot cash 检查保护已知的本地库存。它们都不声称能够预测交易所
-流动性、rate limit、统一保证金容量或最终是否接受。
-
-对于保证金账户，启用相应策略时 runtime 要求权威 readiness，但把可用容量
-交给交易所判断。Adapter 只校验它能在本地证明且无副作用的请求缺陷；服务端
-仍是接受或拒绝的权威。
-
-## 确定性结果与歧义交接
-
-| 结果 | 证据 | Runtime 处理 |
+| 标识符 | 形状 | 用途 |
 | --- | --- | --- |
-| 交易所边界前的本地拒绝或不支持（unsupported）命令 | 交易所调用前失败 | 不写入交易所；如果已经记录本地意图，则关闭该意图 |
-| 已确认接受 | 无错误且订单响应不是 rejected | 提交返回的订单并解决 in-flight 命令 |
-| 交易所明确拒绝 | 显式 venue-rejection error，或无错误但响应携带 `Rejected`/`Expired` 订单 | 提交 rejected 订单并解决 in-flight 命令 |
-| 边界后的防御性 unsupported | 被调用客户端在交易所边界后返回 `contract.ErrNotSupported` | 以 `Sent=true` 记录 `OutcomeUnsupported`，提交 rejected terminal 订单并解决意图，而不是把它保留为 ambiguous |
-| Ambiguous | 交易所边界后的任何其他错误，包括 timeout、cancellation、disconnect 或未分类错误 | 保持意图 in flight 并保留 `PendingNew`，以及任何可信的 venue-order alias |
+| Command ID | UUIDv7 | 这一次下单尝试 |
+| Gateway order ID | UUIDv7 | 订单本身，在它余下的整个生命里 |
+| Client order ID | 正 `uint48` | 告诉交易所的那个 |
 
-边界后返回错误，并不会仅因为“有错误”就被视为 rejection。上表明确的
-`ErrNotSupported` 分支是防御性分类器，用于处理违反已声明/已校验操作边界的
-客户端；其他边界后失败可能意味着交易所已经接受写入。因此 Ambiguous 状态
-应交给权威订单/成交对账处理，而不是允许使用新身份重试。只有范围明确的证据
-才能在之后确认接受或明确的否定结果。
+Client order ID 之所以是 `uint48`，是因为那是九家交易所都接受的交集。它是一个窄整数，不是一个
+格式化字符串，而且由 gateway 分配，不由调用方选。
 
-运维处置见[运维与恢复](../guides/operations-recovery.md)。策略调用者还应阅读
-[编写策略](../guides/strategies.md)和
-[不支持（Unsupported）与延期（Deferred）功能](../reference/unsupported.md)。
+「身份先行」正是不明确情形之所以还能救回来的原因。一笔发出去却没有得到回答的订单，仍然有一条
+持久记录、一个已知的 client order ID 和一个已记录的状态——而这恰恰是协调所需要的输入。改成在
+响应到达时才铸身份，剩下的就是根本无从查起。
+
+## 幂等是一个哈希，不是一句承诺
+
+调用方给出一个幂等键。Gateway 把它与请求的 SHA-256 哈希配成一对，而请求先经解码再重新编码做
+规范化，于是字段顺序与数字写法都改变不了结果。
+
+由此有两种结果，两者之别很要紧：
+
+- **同键、同哈希**——一次重放。Gateway 返回最初那个结果并标记为重放，不接触交易所。一次重试的
+  提交就是同一次提交。
+- **同键、不同哈希**——冲突，拒绝。调用方把一个键复用给了另一笔订单，这是个 bug，必须以错误的
+  形式浮出来，而不是变成第二笔订单。
+
+哈希覆盖账户、route、instrument、方向、类型、数量、限价与限价策略、只减仓标志，以及三个 fence
+修订号。请求**意味着**什么，全在哈希里；请求碰巧**被怎样传输**，一律不在。
+
+## Write fence 拒绝，而不重新解释
+
+调用方在请求里声明它认为自己正在通过哪条 route 交易，以及它据以决策的那几个修订号：账户期望
+状态修订号、runtime generation、凭证版本。三者都必须为正——一个为零的计数器意思是「我没看过」，
+而 gateway 不会接受一次从未观察过它所依赖的状态的写入。
+
+Fence 被有意检查两次：一次在解析 route 时，一次在订单被标记为 dispatching 之后、driver 被调用
+之前。要紧的是第二次，因为一次凭证轮换或一次账户排空恰好可能落在两者之间。
+
+过期的 fence 会被拒绝，绝不被重新解释。另一种做法——把请求当作「当前状态就是调用方所指的状态」
+来读——会悄悄把一笔订单送上调用方从未评估过的凭证或 route。那正是 fence 要防的失败模式，所以
+它是一次拒绝，不是一次重试。
+
+Gateway 还持有一道按账户的写入闸门。一次 dispatch 失败会关上它，并且它保持关闭直到恢复完成：
+此后的下单会以「未就绪」被拒绝，而不是对着一个真实状态未知的账户继续尝试。
+
+## 九个状态，其中一个是问句
+
+一笔订单的状态不是贴在交易所响应上的标签。它是 gateway 显式走过的一台状态机上的位置：
+
+| 状态 | 可以变成 |
+| --- | --- |
+| `prepared` | `dispatching`、`rejected` |
+| `dispatching` | `accepted`、`uncertain`、`rejected` |
+| `accepted` | `open`、`partially_filled`、`filled`、`canceled`、`rejected`、`uncertain` |
+| `open` | `partially_filled`、`filled`、`canceled`、`uncertain` |
+| `partially_filled` | `filled`、`canceled`、`uncertain` |
+| `uncertain` | `accepted`、`open`、`partially_filled`、`filled`、`canceled`、`rejected` |
+| `filled`、`canceled`、`rejected` | *（终态）* |
+
+`uncertain` 就是设计本身。它是一个有持久记录的真状态，不是一个错误返回，也不是一种缺席——一笔
+下落不明的订单是关于世界的一个事实，而一个无法表示它的系统只会把它表示成某种假的东西。
+
+注意 `uncertain` 能走到哪：除它自己以外的一切。这就是协调的全部承诺。另外注意终态没有任何出边，
+包括回到 `uncertain` 的那条。一旦 gateway 拿到了权威证据，后来的怀疑不会重新打开这个问题。
+
+Trading 服务为它自己的命令保留了**另一套**六状态词汇。两者是有意分开的命名空间，见
+[Trading 服务](../guides/trading-service.md)。
+
+## 交接记录默认往最坏处想
+
+在调用 driver 之前，gateway 先开一条交接记录。这条记录的落定是延迟执行的，而**它的默认落定
+就是 uncertain**。
+
+这把通常的失败方向反了过来。进程在半途被杀、context 被取消、driver panic——交接记录仍然会落定，
+并且落定为「我们不知道」。只有一次明确的接受或一次明确的拒绝才会覆盖那个默认值。没有任何东西
+需要记得去记录怀疑，因为在什么都没发生时被记录下来的，恰恰就是怀疑。
+
+## 明确的结果与不明确的交接
+
+| 结果 | 证据 | Gateway 的处置 |
+| --- | --- | --- |
+| 边界之前被拒 | 校验、fence、闸门或幂等冲突失败 | 没有交易所写入。命令从未离开 `prepared` |
+| 确认被接受 | 一个带订单且无错误的交易所响应 | 走到 `accepted`，再按交易所所报继续走；记录交易所结果 |
+| 明确的拒绝 | 一次明确的交易所拒绝，并连同交易所自己的错误码与消息一起记日志 | 走到 `rejected`。终态 |
+| 不明确 | 边界之后的任何其他失败：超时、取消、断连、传输错误、未分类错误 | `uncertain`，附上一份协调计划，并向调用方返回一个 outcome-uncertain 错误 |
+
+边界之后的一个错误，不会仅因为它是个错误就被当成拒绝。交易所可能已经接受了这次写入，只是没能
+告诉你。把那个当成拒绝并重试，正是一笔本意的订单变成两笔真实订单的方式。
+
+所以不明确这一支不重试。它带着计划交给协调，返回一个把话说明白的错误，并关上该账户的写入闸门。
+调用方学到的是「未知」——这是真的，而不是「失败」——那是猜的。
+
+## Gateway 检查什么，不检查什么
+
+在 dispatch 之前，gateway 用解析出的 product 与该 instrument 的规则校验请求——方向、类型、数量
+与价格步长、最小数量、最小名义额。这是一次不做 I/O 的形状检查，用的都是 gateway 手里已有的
+数据。
+
+它不检查交易所流动性、统一保证金容量、手续费档位或持仓限额。`/v1/risk-limits` 报告交易所风控
+限额未被规范化并说明原因，而不是返回一份看着像那么回事的限额表。一份过期或凭空造出的限额比一份
+缺席的更糟，因为它会被信任。
+
+限速器是 gateway 端到端真正执行的那一条运行时约束，按交易所 profile、按 principal、按 endpoint
+分别计键，于是一个账户花不掉另一个账户的预算。
+
+## 相关
+
+- [账户与 instrument](accounts-instruments.md) —— fence 里那些修订号属于什么
+- [状态与协调](state-reconciliation.md) —— `uncertain` 如何被解决
+- [运维与恢复](../guides/operations-recovery.md) —— 运维的操作步骤
+- [不支持的能力](../reference/unsupported.md) —— 哪些行能证明什么

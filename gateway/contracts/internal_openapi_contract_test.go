@@ -234,7 +234,8 @@ func TestInternalAuthorityOpenAPIIsCompleteStrictAndSeparatelyAuthenticated(t *t
 		"/internal/v1/accounts/runtime/{accountId}":                                      {"get"},
 		"/internal/v1/accounts/runtime/{accountId}/events":                               {"get"},
 		"/internal/v1/catalog/venues":                                                    {"get"}, "/internal/v1/catalog/instruments": {"get"},
-		"/internal/v1/market-data": {"get"}, "/internal/v1/private-events": {"get"},
+		"/internal/v1/market-data": {"get"}, "/internal/v1/candles": {"get"},
+		"/internal/v1/private-events": {"get"},
 	}
 	if len(document.Paths) != len(want) {
 		t.Fatalf("internal paths=%d want=%d", len(document.Paths), len(want))

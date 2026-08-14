@@ -1,59 +1,138 @@
 # Glossary
 
-[简体中文](../zh-CN/reference/glossary.md)
+> Canonical language: English. [Chinese mirror](../zh-CN/reference/glossary.md)
 
-> English is canonical. **Owner:** this page owns BolterTrader's normative public
-> terminology. Other pages use these meanings and link here instead of creating
-> local definitions.
+This page owns BolterTrader's normative vocabulary. Other pages use these
+meanings and link here instead of defining a term locally.
 
-## Status and publication ontology
+Most of these words mean something looser elsewhere. They are narrow here on
+purpose, because the distance between "we implemented it" and "we watched it
+work against a testnet" is the distance between a claim you can publish and one
+you cannot.
 
-| Term | Normative meaning | Must not imply |
+## Naming something to trade
+
+Five words compose into one identifier, in this order.
+
+| Term | Meaning | Values |
 | --- | --- | --- |
-| Implemented | Code for the named surface exists in the current tree | A capability declaration, external verification, or production readiness |
-| Capability-advertised | A static or configured dynamic declaration advertises the exact product, report, command, or stream surface | That every method in a coarse category works, or that the surface has passed external acceptance |
-| Demo/Testnet-certified | The named non-production target passed with zero skips for a named candidate, date, environment, product scope, and terminal assertion | Mainnet correctness, evergreen validity, account-wide cleanliness, or production readiness |
-| Deferred | The product or surface is intentionally outside the current implementation slice for a stated reason | That the venue lacks it, or that it is permanently rejected |
-| Unsupported | The exact normalized surface is absent or returns `contract.ErrNotSupported` | That the venue or its low-level API lacks an equivalent feature |
-| SDK-only | Low-level venue SDK code exists without a runtime adapter/product row | Normalized adapter, runtime, strategy, or certification coverage |
-| Production-ready | Separate operational evidence supports use in the stated production scope | A conclusion inferred from implementation, a capability bit, or Demo/Testnet evidence |
-| Public-safe | Curated material is suitable for the public documentation tree: secrets and account residue are absent, operational evidence is summarized, and current source owns every claim | That raw logs, plans, traces, reviewer conversations, or private paths may be published |
-| Development-generated | Temporary plans, raw validation output, traces, reviewer notes, and migration artifacts produced while developing or verifying a change | A public source of truth or content that may be copied into public pages without curation |
+| Venue | An exchange | `binance`, `okx`, `lighter`, `hyperliquid`, `bybit`, `bitget`, `gate`, `aster`, `nado` |
+| Environment | Which of that venue's networks | `live`, `demo`, `testnet` |
+| Product | The instrument family | `spot`, `perp` |
+| Settlement asset | What a contract settles in, where a venue runs more than one | `USDT`, `USDC`, `USDT0` |
+| Canonical symbol | The venue-neutral pair | `BTC-USDT` |
 
-Bare **supported** and **certified** are not normative statuses. Name the exact
-product and surface, then use one of the terms above.
+A **native symbol** is whatever the venue calls that same instrument —
+`BTCUSDT`, a numeric market index, a contract code. Native symbols stay inside
+`exchange/internal/<venue>`. Nothing above the exchange layer should ever see
+one.
 
-## Execution and evidence vocabulary
+An **instrument ID** is the gateway's stable name for one tradable thing:
 
-| Term | Normative meaning |
+```text
+venue:environment:product:symbol
+venue:environment:product:settlement:symbol
+```
+
+`binance:demo:spot:BTC-USDT` and `nado:testnet:perp:USDT0:BTC-USDT` are both well
+formed. The settlement segment appears only where a venue needs it to
+disambiguate. The last segment must be a canonical symbol, which is why the
+validator insists on the hyphen: it is the cheapest way to catch a native symbol
+that leaked upward.
+
+A **route profile** is the resolved combination of venue, product, settlement,
+and environment, named by an ID like `binance.spot.demo.v1` or
+`nado.perp.usdt0.testnet.v1`. A **route** is a profile bound to one account's
+credentials, and a **route ID** names it inside a write.
+
+**Mode** is coarser than environment, and exists for one reason: `test` covers
+`demo` and `testnet`, `live` covers `live`, and a process running in one mode
+cannot resolve a profile belonging to the other. Environment says which network;
+mode says which class of consequence.
+
+## Product rows
+
+A **product row** is one venue-and-product combination the gateway exposes,
+identified by a three-letter **product code**. There are twenty, and they are the
+unit in which capability, evidence, and test targets are all counted:
+
+| Venue | Spot | Perp |
+| --- | --- | --- |
+| Binance | `BNS` | `BNP` |
+| OKX | `OXS` | `OXP` |
+| Lighter | `LIS` | `LIP` |
+| Hyperliquid | `HLS` | `HLP` |
+| Bybit | `BYS` | `BYU`, `BYC` |
+| Bitget | `BGS` | `BGU`, `BGC` |
+| Gate | `GTS` | `GTU` |
+| Aster | `ATS` | `ATP` |
+| Nado | `NDS` | `NDP` |
+
+The [REST](exchange-rest-v1-operation-matrix.md) and
+[WebSocket](exchange-ws-v1-operation-matrix.md) operation matrices carry one
+column per code. A claim that names a product row means exactly one of these —
+never "Bybit" as a whole, and never "perpetuals" as a category.
+
+## Identity
+
+| Term | Meaning |
 | --- | --- |
-| Acceptance harness | An explicit opt-in repository test that performs bounded real verification against a named non-production environment; it is not a reusable strategy application |
-| Clean final state | A zero-exit terminal assertion within the exact symbol, product, account, and validation-owned-order scope of the harness |
-| Ambiguous outcome | Venue handoff may have occurred but an authoritative result is not proven; automatic retry or compensating action is unsafe |
-| Open-only caveat | Complete open-order coverage can prove a scoped order is no longer open, but cannot invent a terminal cause or missing fills |
-| Runtime latency | Bus, application, callback, and command timing measured by runtime instrumentation; adapter receive/emit timing is a separate claim and may be absent |
+| Principal | Who is acting. The auth edge derives it from the session and injects it as a header; a service never takes it from the browser |
+| Account | A registered venue account: credentials, a route profile, and the gateway state belonging to them |
+| Command ID | The trading service's identifier for one manual command. It is what the interface, the activity feed, and the command endpoint use |
+| Gateway command ID | The gateway's own identifier, minted when it accepts a placement. A different namespace from the above, and not derivable from it |
+| Gateway order ID | The gateway's durable order identity, independent of whatever the venue later returns |
+| Client order ID | A positive decimal `uint48` string sent to the venue |
+| Idempotency key | The caller-supplied token that makes a retried submission the same submission |
+| Write fence | The account revision, runtime generation, credential version, and route ID a write was decided against. A write carrying a stale fence is refused rather than reinterpreted |
 
-## Data and report vocabulary
+The two command namespaces are the most common source of confusion in this
+system. When reading gateway logs, quote the gateway's identifiers; when reading
+the interface, quote the trading service's.
 
-| Term | Normative meaning |
+## Status words
+
+Ranked, roughly, by how much each one lets you claim.
+
+| Term | What it asserts | What it does not |
+| --- | --- | --- |
+| Implemented | Code for the named surface exists in the current tree | That anything ran, or that a venue accepted it |
+| Admitted | The operation is present on that product row at compile time — `A` in the operation matrices | That the venue honors it, or that it has been exercised |
+| Write-ready | The capability matrix marks that row as accepting writes by default | Anything about one specific account's readiness |
+| Demo/Testnet-certified | One named non-production target passed with zero skips, for a named product scope, on a named date | Mainnet behavior, account-wide cleanliness, or that it still passes today |
+| Production-ready | Separate operational evidence supports the stated production scope | Anything inferable from the three rows above |
+| Deferred | Deliberately outside the current slice, for a stated reason | That the venue lacks it, or that it was rejected permanently |
+| Unsupported | The normalized surface is absent, or returns an unsupported error | That the venue's own API lacks the feature |
+| SDK-only | Low-level venue code exists with no product row above it | Normalized coverage of any kind |
+
+Bare **supported** and bare **certified** are not statuses. Name the product row
+and the surface, then pick one of the words above.
+
+## Evidence words
+
+| Term | Meaning |
 | --- | --- |
-| Market stream | A coarse capability category; concrete book, quote, trade, or derivative-reference stream kinds must still be named |
-| Derivative reference data | Funding, mark, index, or oracle values normalized into market events and cache state where the exact product implements them |
-| Query-only OI | Current open interest fetched directly through the optional `OpenInterestClient`; it is neither subscribed nor stored in runtime cache |
-| Account-state snapshot | The mandatory authoritative readiness snapshot returned by `AccountClient.AccountState`, including account scope, available balances, margin summary, identity, and freshness. Positions remain separate typed report/query evidence. |
-| Mass status | The execution adapter's directly owned order, fill, and position report domains returned together; account-only snapshots do not become execution-owned report support through reconciliation |
+| Acceptance harness | An opt-in test that performs one bounded real interaction with a named non-production environment. It is not a reusable trading application |
+| Zero-skip | The run executed at least one test and skipped none. A skip is a failure, because a missing credential must not read as a pass |
+| Clean final state | A terminal assertion within the exact symbol, product, account, and harness-owned-order scope — not a statement about the account |
+| Ambiguous outcome | The venue may have received the write, but no authoritative result proves it. Automatic retry is unsafe |
+| Open-only caveat | A complete open-order read can prove an order is no longer open. It cannot invent a terminal reason or reconstruct missing fills |
+| Public-safe | Suitable for this tree: no credentials, no account residue, no local paths, no raw logs, and current source owns every claim |
 
-## Architecture vocabulary
+## Layer words
 
-| Term | Normative meaning |
+| Term | Meaning |
 | --- | --- |
-| Core | Venue-neutral enums, models, contracts, and clocks under `core/` |
-| Runtime | Venue-neutral bus, cache, execution, portfolio, risk, reconciliation, and strategy orchestration under `runtime/` |
-| Adapter | The translation and behavioral boundary between normalized contracts and a venue SDK/API under `adapter/<venue>/` |
-| SDK | Low-level official-API-shaped client code under `sdk/<venue>/`; its presence alone does not establish a runtime product |
+| SDK | `sdk/<venue>/`: one venue's native API, shaped like that venue's own documentation |
+| Exchange | `exchange/`: the venue-neutral typed API over those SDKs. An entry point in its own right, not an internal detail |
+| Gateway | `gateway/`: the shared capability plane — accounts, credentials, catalog, capability and limit resolution, durable order identity, reconciliation, private events |
+| Public plane | The gateway's `/v1` surface, which product services call |
+| Internal plane | The gateway's `/internal/v1` surface, which accepts credential material and is never mounted publicly |
+| Service | `services/<name>/`: one product's behavior over the gateway's HTTP surface. The trading service and the auth edge are the two |
+| Auth edge | `services/authedge/`: session termination and path-table forwarding. It aggregates nothing |
+| Web | `web/`: the only frontend, served same-origin with the API |
 
-See [Architecture](../concepts/architecture.md), the
-[capability matrix](../adapter-capabilities.md),
-[Testing and evidence](testing.md), and
-[Unsupported, deferred, and SDK-only surfaces](unsupported.md) for concrete use
-of this vocabulary.
+See [Architecture](../concepts/architecture.md) for how those layers depend on
+each other, [Testing](testing.md) for the targets that produce evidence, and
+[Unsupported surfaces](unsupported.md) for what these words are currently
+attached to.

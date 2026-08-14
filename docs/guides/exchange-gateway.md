@@ -13,16 +13,17 @@ required durable service.
 
 ## Choosing this product
 
-BolterTrader exposes three peer paths:
+BolterTrader exposes two peer paths over the venues:
 
 - use direct `exchange` clients for a convenient normalized API inside a Go
   process when the caller owns lifecycle, caching, and durability;
 - use Exchange Gateway when a resident process must centralize accounts,
-  credentials, Catalog, order state, reconciliation, and private events;
-- use `runtime` for one strategy's stateful execution framework.
+  credentials, Catalog, order state, reconciliation, and private events.
 
-Gateway is built above `exchange`; it does not use `runtime` or replace either
-peer product.
+Gateway is built above `exchange` and does not replace it. Product services sit
+above Gateway rather than beside it: the trading service holds its own command
+ledger and calls these resources, and it is the only kind of caller Gateway is
+designed for. See [the trading service](trading-service.md).
 
 ## Service shape
 
@@ -52,31 +53,31 @@ must not appear in the YAML file.
 
 ## Configuration
 
-Run one statically configured account entry per venue/product account. The
-service models twenty V1 rows across Binance, OKX, Lighter, Hyperliquid, Bybit,
-Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
-Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
-exact lookup in its external environment.
+The YAML file configures the process only: listeners, the bearer token
+reference, and the PostgreSQL DSN reference. Accounts are durable state rather
+than file state. They are declared through the authenticated internal listener
+at `PUT /internal/v1/accounts/desired/{accountId}/operations/{operationId}` and
+stored in PostgreSQL, so a restart reloads them without editing any file.
 
 ```yaml
 server:
   listen: 127.0.0.1:8080
   auth_token_ref: env://GATEWAY_AUTH_TOKEN
+  internal_listen: 127.0.0.1:8081
+  internal_auth_token_ref: env://GATEWAY_INTERNAL_AUTH_TOKEN
 postgres:
   dsn_ref: env://GATEWAY_POSTGRES_DSN
-accounts:
-  - account_id: binance-demo-spot
-    venue: binance
-    product: spot
-    environment: demo
-    credentials:
-      api_key_ref: env://BINANCE_DEMO_API_KEY
-      api_secret_ref: env://BINANCE_DEMO_API_SECRET
 ```
 
-The exact credential fields differ by venue and are strictly decoded. Unknown
-fields, duplicate account IDs, invalid product/environment combinations, or
-literal secret values prevent startup before the listener opens.
+The file is strictly decoded. An unknown field, a non-loopback listener without
+`allow_non_loopback_listen`, a non-loopback internal listener, or a literal
+secret value prevents startup before the listener opens.
+
+V1 models twenty venue/product rows across Binance, OKX, Lighter, Hyperliquid,
+Bybit, Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
+Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
+exact lookup in its external environment. The exact credential fields differ by
+venue and are strictly decoded on the account declaration.
 
 Start the service:
 
@@ -99,12 +100,12 @@ Place an order with an account, gateway instrument ID, and idempotency key:
 curl -X POST \
   -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: strategy-a-10001" \
+  -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
     "account_id":"binance-demo-spot",
     "instrument_id":"binance:demo:spot:BTC-USDT",
-    "idempotency_key":"strategy-a-10001",
+    "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
     "quantity":"0.001",
@@ -225,72 +226,72 @@ and the next process must complete reconciliation before reopening writes.
 
 ## Docker single-host deployment
 
-The reference deployment requires Docker Engine with Compose v2. It is a
-single-host operational example: one Gateway container, one PostgreSQL
-container, and one named PostgreSQL volume. It does not provide Kubernetes,
+The local stack requires Docker Engine with Compose v2. It is a single-host
+operational example: PostgreSQL, three one-shot migrators, and the four
+services, with one named PostgreSQL volume. It does not provide Kubernetes,
 multi-host scheduling, registry publishing, or high availability.
 
-Copy the public template and create the three referenced files outside the
-repository:
+Bring it up with:
 
 ```sh
-cp docker/gateway.env.example gateway.env
-chmod 600 gateway.env ./gateway-secrets/*
+make up
 ```
 
-`gateway.env` contains paths and public settings only. The actual bearer token,
-Gateway PostgreSQL DSN, and PostgreSQL password live in those files and enter
-the containers as Docker secrets. The DSN used by the reference stack names
-the Compose service, for example
-`postgres://gateway:<password>@postgres:5432/gateway?sslmode=disable`.
-Do not put any secret value in `gateway.env`, the image, a build argument, or
-`docker/gateway.docker.yaml`.
+That generates the stack's credentials under `.secrets/test/` and its variables
+into `.env.stack`, brings every service up, and then runs `make doctor`. It is
+idempotent: a second run reuses the existing credentials. `make doctor` reports
+what is wrong when something is, and `make logs` tails every service.
 
-The supplied Docker config deliberately starts with `accounts: []`. Add
-accounts by copying that config to an operator-owned file. Each new
-`env://NAME` credential also needs a matching Compose secret mounted at
-`/run/secrets/NAME`; the Docker helper resolves only these explicit names and
-then execs Gateway as PID1.
+Nothing needs to be copied by hand and no secret value belongs in `.env.stack`,
+the image, a build argument, or `docker/gateway.docker.yaml`. The bearer token
+and the Gateway PostgreSQL DSN live in files under `.secrets/test/` at 0600, and
+`.env.stack` holds only the paths that point at them. Both files reach Gateway as
+Docker secrets at `/run/secrets/GATEWAY_AUTH_TOKEN` and
+`/run/secrets/GATEWAY_POSTGRES_DSN`.
 
-Build and start:
+Every Compose invocation in the Makefile passes `--env-file .env.stack`
+explicitly, including the ones that only read metadata. Without it Compose
+auto-loads the repository's `./.env`, which holds live venue API credentials that
+would then be interpolated into the stack's environment.
 
-```sh
-docker compose --env-file gateway.env config
-docker compose --env-file gateway.env up -d --build --wait
-```
+`docker/gateway.docker.yaml` deliberately starts with `accounts: []`. Add
+accounts by copying it to an operator-owned file and pointing
+`GATEWAY_CONFIG_FILE` at the copy. Each new `env://NAME` credential also needs a
+matching Compose secret mounted at `/run/secrets/NAME`; the Docker helper
+resolves only these explicit names and then execs Gateway as PID1.
 
 The host publication is `127.0.0.1:18080` by default. Inside the container,
 `allow_non_loopback_listen: true` explicitly permits `0.0.0.0:18080`; ordinary
 non-container configs remain loopback-only.
 
-Inspect authenticated health and logs without printing the bearer token:
+Inspect authenticated health without printing the bearer token:
 
 ```sh
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind live
-docker compose --env-file gateway.env exec -T gateway \
+docker compose --env-file .env.stack -f compose.yaml exec -T gateway \
   /usr/local/bin/exchange-gateway-docker-support health \
   -config /etc/boltertrader/gateway.yaml -kind ready
-docker compose --env-file gateway.env logs --tail=200 gateway
 ```
 
-`docker compose stop gateway` sends SIGTERM to Gateway as PID1. The reference
-stack allows 15 seconds, exceeding Gateway's 10-second drain budget. For an
-upgrade, build the new immutable image, run the Docker verification targets,
-then recreate Gateway. Startup migrations and reconciliation run before write
-readiness reopens.
+Stopping a service sends SIGTERM to it as PID1. The stack allows 15 seconds,
+exceeding Gateway's 10-second drain budget. For an upgrade, build the new
+immutable image, run the container gates, then recreate the service. Startup
+migrations and reconciliation run before write readiness reopens.
 
-PostgreSQL persistence is the named `gateway_postgres_data` volume.
-`docker compose down` retains it; `docker compose down -v` deliberately deletes
-it. Back up and restore that volume using normal PostgreSQL tooling. The
-reference Compose file never publishes PostgreSQL to the host; the random
-loopback publication in `docker/compose.test.yaml` is test-only.
+PostgreSQL persistence is the named `postgres_data` volume. `make down` retains
+it; `make down-hard` deliberately deletes it. Back up and restore that volume
+using normal PostgreSQL tooling.
 
-For external PostgreSQL, deploy the Gateway image without the reference
-PostgreSQL service and point `GATEWAY_POSTGRES_DSN_FILE` at a TLS-enabled DSN
-for the external database. Run the migration and restart gates against a
-disposable copy before rollout. Keep the database and Gateway network private.
+`down-hard` is also the only way an edit to the initdb script takes effect: the
+PostgreSQL image runs those scripts once, when the data directory is empty, so a
+surviving volume means a changed role set is never applied.
+
+For external PostgreSQL, deploy the image without the bundled PostgreSQL service
+and point `GATEWAY_POSTGRES_DSN_FILE` at a TLS-enabled DSN for the external
+database. Run the migration and restart gates against a disposable copy before
+rollout. Keep the database and Gateway network private.
 
 Terminate TLS at a same-host ingress or reverse proxy. The default loopback
 publication is suitable for that shape. Publishing Gateway on another
@@ -299,16 +300,18 @@ TLS, bearer-token rotation, and access-log review. This single-host stack has
 no leader election or automatic failover; use only one Gateway owner for each
 configured exchange account.
 
-Docker verification:
+Container verification. Each of these builds its own throwaway Compose project
+with generated credentials and kernel-assigned ports, so none needs `make up` to
+have run and none disturbs a stack that is already up:
 
 ```sh
-make test-gateway-docker-config
-make test-gateway-docker-build
-make test-gateway-docker-security
-make test-gateway-docker-smoke
-make test-gateway-docker-persistence
-make test-gateway-docker-postgres
-make test-gateway-docker
+make test-compose-config
+make test-compose-build
+make test-compose-security
+make test-compose-smoke
+make test-compose-persistence
+make test-compose-postgres
+make test-compose
 ```
 
 ## Verification

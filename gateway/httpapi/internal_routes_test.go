@@ -189,6 +189,9 @@ func TestRotationFinalizationValidationRejectsIdentityFenceAndShapeConflicts(t *
 	}
 }
 
+// The desired-state plane is read-only apart from the operation-scoped PUTs.
+// Account writes belong to the lifecycle service on /internal/v1/accounts, so
+// these paths must stay unrouted no matter what else gets mounted alongside.
 func TestInternalAuthorityRejectsLegacyDesiredMutationRoutes(t *testing.T) {
 	authority := new(fakeInternalAuthority)
 	handler, err := NewInternalHandler(InternalOptions{Authority: authority, Authenticate: func(*http.Request) error { return nil }})
@@ -234,6 +237,7 @@ func TestInternalAuthorityRouteInventoryIsFrozen(t *testing.T) {
 		{http.MethodGet, "/internal/v1/catalog/venues"},
 		{http.MethodGet, "/internal/v1/catalog/instruments"},
 		{http.MethodGet, "/internal/v1/market-data"},
+		{http.MethodGet, "/internal/v1/candles"},
 		{http.MethodGet, "/internal/v1/private-events"},
 	}
 	got := InternalRoutes()

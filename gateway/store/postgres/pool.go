@@ -43,35 +43,3 @@ func newStore(pool *pgxpool.Pool, options storeOptions) *Store {
 		afterRotationFinalizationReplayMiss: options.afterRotationFinalizationReplayMiss,
 	}
 }
-
-type AccountRegistration struct {
-	AccountID   domain.AccountID
-	Venue       string
-	Product     string
-	Environment string
-	Settlement  string
-	ConfigHash  string
-	Status      string
-}
-
-func (store *Store) RegisterAccount(ctx context.Context, registration AccountRegistration) error {
-	if err := registration.AccountID.Validate(); err != nil {
-		return err
-	}
-	_, err := store.pool.Exec(ctx, `
-		INSERT INTO gateway_accounts(account_id, venue, product, environment, settlement, config_hash, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (account_id) DO UPDATE SET
-			venue = EXCLUDED.venue,
-			product = EXCLUDED.product,
-			environment = EXCLUDED.environment,
-			settlement = EXCLUDED.settlement,
-			config_hash = EXCLUDED.config_hash,
-			status = EXCLUDED.status,
-			updated_at = now()
-	`, registration.AccountID, registration.Venue, registration.Product, registration.Environment, registration.Settlement, registration.ConfigHash, registration.Status)
-	if err != nil {
-		return redactErr("register account", err)
-	}
-	return nil
-}

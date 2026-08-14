@@ -3,8 +3,6 @@ package errs
 import (
 	"errors"
 	"fmt"
-
-	"github.com/QuantProcessing/boltertrader/core/contract"
 )
 
 var (
@@ -17,7 +15,6 @@ var (
 	ErrMinQuantity         = errors.New("below minimum quantity")
 	ErrAuthFailed          = errors.New("authentication failed")
 	ErrNetworkTimeout      = errors.New("network timeout")
-	ErrNotSupported        = contract.ErrNotSupported
 )
 
 type ExchangeError struct {

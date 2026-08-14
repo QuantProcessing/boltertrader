@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -74,7 +76,8 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 			Revision: fmt.Sprintf("gateway-%x", revision[:16]), ObservedAt: time.Now().UTC(), Instruments: []authorityInstrument{},
 		}}, nil
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
-		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData:
+		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData,
+		httpapi.AuthorityCandles:
 		return httpapi.AuthorityResponse{Body: []any{}}, nil
 	default:
 		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
@@ -195,6 +198,40 @@ type authorityLevel struct {
 	Quantity string `json:"quantity"`
 }
 
+// authorityCandlesQuery is a struct rather than the positional arguments
+// MarketData takes because it carries six fields, five of them strings, and
+// four of those are venue/environment/product/instrumentId in an order nothing
+// in the type system enforces.
+type authorityCandlesQuery struct {
+	Venue        string
+	Environment  string
+	Product      string
+	InstrumentID string
+	Interval     string
+	Limit        int
+}
+
+type authorityCandles struct {
+	Venue        string            `json:"venue"`
+	Environment  string            `json:"environment"`
+	Product      string            `json:"product"`
+	InstrumentID string            `json:"instrumentId"`
+	Interval     string            `json:"interval"`
+	Candles      []authorityCandle `json:"candles"`
+	ObservedAt   time.Time         `json:"observedAt"`
+}
+
+type authorityCandle struct {
+	OpenTime  time.Time `json:"openTime"`
+	CloseTime time.Time `json:"closeTime"`
+	Open      string    `json:"open"`
+	High      string    `json:"high"`
+	Low       string    `json:"low"`
+	Close     string    `json:"close"`
+	Volume    string    `json:"volume"`
+	Complete  bool      `json:"complete"`
+}
+
 type authorityFundingPoint struct {
 	Rate        string    `json:"rate"`
 	ObservedAt  time.Time `json:"observedAt,omitempty"`
@@ -227,12 +264,16 @@ func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPubli
 const (
 	authorityDepthLimit          = 20
 	authorityFundingHistoryLimit = 20
+	// Matches the public plane's maxListLimit. It is a screenful of 1m bars with
+	// room to scroll, and every supported venue serves 500 in one call.
+	authorityCandleLimitMax = 500
 )
 
 type authorityReadSource interface {
 	Venues() []authorityVenue
 	Instruments() (authorityCatalogInstruments, error)
 	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
+	Candles(context.Context, authorityCandlesQuery) (authorityCandles, error)
 	Runtime(string) (authorityRuntimeProjection, error)
 }
 
@@ -256,6 +297,15 @@ type managerAuthorityReads struct {
 	mode     account.RuntimeMode
 	profiles *routeprofile.Registry
 	now      func() time.Time
+}
+
+// clock reports the read's notion of now, in UTC. Tests inject now to make
+// observation times deterministic; production leaves it nil.
+func (reads managerAuthorityReads) clock() time.Time {
+	if reads.now == nil {
+		return time.Now().UTC()
+	}
+	return reads.now().UTC()
 }
 
 type opaqueRuntimeLifecycle struct {
@@ -485,8 +535,6 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		response, err = authority.retireDesired(ctx, request)
 	case httpapi.AuthorityFinalizeRotation:
 		response, err = authority.finalizeRotation(ctx, request)
-	case httpapi.AuthorityCreateDesired:
-		response, err = authority.create(ctx, request.Desired)
 	case httpapi.AuthorityListDesired:
 		response, err = authority.listDesired(ctx)
 	case httpapi.AuthorityGetDesired:
@@ -495,16 +543,6 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		} else {
 			response, err = authority.getDesired(ctx, request.AccountID)
 		}
-	case httpapi.AuthorityValidateDesired:
-		response, err = authority.validate(ctx, request)
-	case httpapi.AuthorityRotateDesired:
-		response, err = authority.rotate(ctx, request)
-	case httpapi.AuthorityUpdateDesired:
-		response, err = authority.update(ctx, request)
-	case httpapi.AuthorityDisableDesired, httpapi.AuthorityDrainDesired:
-		response, err = authority.transition(ctx, request)
-	case httpapi.AuthorityDeleteDesired:
-		err = authority.remove(ctx, request)
 	case httpapi.AuthorityListRuntimeAccounts:
 		response.Body = authorityPublicRuntimes(authority.manager.Runtimes())
 	case httpapi.AuthorityGetRuntimeAccount:
@@ -536,6 +574,31 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		} else {
 			response.Body = fact
 		}
+	case httpapi.AuthorityCandles:
+		query := authorityCandlesQuery{
+			Venue: request.Query.Get("venue"), Environment: request.Query.Get("environment"),
+			Product: request.Query.Get("product"), InstrumentID: request.Query.Get("instrumentId"),
+			Interval: request.Query.Get("interval"),
+		}
+		if strings.TrimSpace(query.Venue) == "" || strings.TrimSpace(query.Environment) == "" ||
+			strings.TrimSpace(query.Product) == "" || strings.TrimSpace(query.InstrumentID) == "" {
+			err = errors.New("candles composite identity is required")
+			break
+		}
+		if query.Interval, err = httpapi.PortableCandleInterval(strings.TrimSpace(query.Interval)); err != nil {
+			break
+		}
+		if query.Limit, err = authorityCandleLimit(request.Query.Get("limit")); err != nil {
+			break
+		}
+		var bars authorityCandles
+		bars, err = authority.reads.Candles(ctx, query)
+		if err == nil && (bars.Venue != query.Venue || bars.Environment != query.Environment ||
+			bars.Product != query.Product || bars.InstrumentID != query.InstrumentID || bars.Interval != query.Interval) {
+			err = errors.New("candles composite identity mismatch")
+		} else {
+			response.Body = bars
+		}
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions,
 		httpapi.AuthorityRuntimeUncertain, httpapi.AuthorityRuntimeEvents,
 		httpapi.AuthorityPrivateEvents:
@@ -544,6 +607,21 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		err = errors.New("unsupported authority operation")
 	}
 	if err != nil {
+		// This is the one place every internal-plane failure passes through, and
+		// the last place its cause still exists: authorityError maps the error to
+		// a status and a stable code, and the HTTP layer above renders anything
+		// unmapped as a bare INTERNAL_ERROR. Without this line a caller sees
+		// "request denied" and nothing — not which operation, not which account,
+		// not why — which is exactly what made the account-promotion and
+		// market-data failures each take a full diagnostic session to place.
+		//
+		// The cause is safe to log here because it is ours: these errors are
+		// built from store sentinels, manager state, and venue responses, none of
+		// which carry credential material. The request is not logged, only its
+		// operation and account, because request bodies on this plane do.
+		slog.Error("gateway internal authority operation failed",
+			"operation", request.Operation, "accountId", request.AccountID,
+			"operationId", request.OperationID, "cause", err)
 		return httpapi.AuthorityResponse{}, authorityError(err)
 	}
 	return response, nil
@@ -1066,11 +1144,7 @@ func (reads managerAuthorityReads) Instruments() (authorityCatalogInstruments, e
 		}
 	}
 	if observedAt.IsZero() {
-		now := reads.now
-		if now == nil {
-			now = time.Now
-		}
-		observedAt = now().UTC()
+		observedAt = reads.clock()
 	}
 	sort.Slice(instruments, func(i, j int) bool {
 		if instruments[i].Venue == instruments[j].Venue {
@@ -1175,7 +1249,7 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		if err != nil {
 			return authorityMarketData{}, fmt.Errorf("read order book: %w", err)
 		}
-		if book.Time.IsZero() || len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
+		if len(book.Bids) == 0 || len(book.Asks) == 0 || len(book.Bids) > authorityDepthLimit || len(book.Asks) > authorityDepthLimit {
 			return authorityMarketData{}, errors.New("bounded two-sided order book is unavailable")
 		}
 		result.Bids, err = projectAuthorityLevels(book.Bids)
@@ -1188,7 +1262,20 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		}
 		result.BestBid, result.BestBidSize = result.Bids[0].Price, result.Bids[0].Quantity
 		result.BestAsk, result.BestAskSize = result.Asks[0].Price, result.Asks[0].Quantity
-		if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
+		// A venue that timestamps its own book is believed over our clock, and the
+		// latest observation gathered so far wins. But exchange.OrderBook declares
+		// Time omitempty because a venue is allowed not to send one — Binance
+		// spot's depth endpoint returns lastUpdateId, bids and asks and nothing
+		// else — and a REST snapshot is still observed at a definite instant: the
+		// moment we read it. Requiring a venue timestamp rejected every Binance
+		// spot book outright, which is a fact about that endpoint's response
+		// shape, not about the market. Our clock is only the fallback, never an
+		// override, so every path that already had a real venue time is unchanged.
+		if book.Time.IsZero() {
+			if result.ObservedAt.IsZero() {
+				result.ObservedAt = reads.clock()
+			}
+		} else if result.ObservedAt.IsZero() || book.Time.After(result.ObservedAt) {
 			result.ObservedAt = book.Time.UTC()
 		}
 		if result.ObservedAt.IsZero() {
@@ -1197,6 +1284,109 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		return result, nil
 	}
 	return authorityMarketData{}, errors.New("configured market-data capability is unavailable")
+}
+
+// Candles answers the chart's read.
+//
+// It resolves an account the way MarketData does — scan for the first
+// read-ready route on the requested venue/environment/product that can resolve
+// the instrument — because the internal plane is keyed by the instrument, not
+// by an account: the browser asks for BTCUSDT bars, not for one account's view
+// of them. Candles are public data, so any read-ready route serves.
+//
+// Unlike MarketData this does not fall through to the next account when the
+// venue call fails. Order-book depth is a per-route capability and a route that
+// cannot serve it is worth skipping; Candles is grade A on every supported
+// venue, so a failure here is the venue refusing, and retrying the same refusal
+// against a sibling route would just multiply the latency before the same
+// error.
+func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityCandlesQuery) (authorityCandles, error) {
+	query.Venue = strings.TrimSpace(query.Venue)
+	query.Environment = strings.TrimSpace(query.Environment)
+	query.Product = strings.TrimSpace(query.Product)
+	query.InstrumentID = strings.TrimSpace(query.InstrumentID)
+	query.Interval = strings.TrimSpace(query.Interval)
+	if query.Venue == "" || query.Environment == "" || query.InstrumentID == "" || query.Interval == "" ||
+		(query.Product != string(exchange.ProductSpot) && query.Product != string(exchange.ProductPerp)) {
+		return authorityCandles{}, errors.New("candles venue, environment, product, instrumentId, and interval are required")
+	}
+	if query.Limit <= 0 || query.Limit > authorityCandleLimitMax {
+		query.Limit = authorityCandleLimitMax
+	}
+	for _, resource := range reads.manager.Accounts() {
+		if string(resource.Venue) != query.Venue || string(resource.Environment) != query.Environment ||
+			string(resource.Product) != query.Product || !resource.ReadReady {
+			continue
+		}
+		instrument, err := reads.manager.Resolve(ctx, resource.AccountID, domain.InstrumentID(query.InstrumentID))
+		if err != nil {
+			continue
+		}
+		var market exchange.MarketREST
+		switch resource.Product {
+		case exchange.ProductSpot:
+			market, err = reads.manager.Spot(resource.AccountID)
+		case exchange.ProductPerp:
+			var client exchange.PerpClient
+			client, err = reads.manager.Perp(resource.AccountID)
+			market = client
+		default:
+			continue
+		}
+		if err != nil || market == nil {
+			continue
+		}
+		page, err := market.Candles(ctx, exchange.CandlesRequest{
+			Instrument: instrument, Interval: query.Interval, Limit: query.Limit,
+		})
+		if err != nil {
+			return authorityCandles{}, fmt.Errorf("read candles: %w", err)
+		}
+		result := authorityCandles{
+			Venue: query.Venue, Environment: query.Environment, Product: query.Product,
+			InstrumentID: query.InstrumentID, Interval: query.Interval,
+			Candles: make([]authorityCandle, len(page.Candles)),
+		}
+		for index, candle := range page.Candles {
+			if err := httpapi.ValidCandle(candle); err != nil {
+				return authorityCandles{}, fmt.Errorf("read candles: %w", err)
+			}
+			// Bars arrive in ascending open-time order and the last one is the
+			// live, still-open interval, so its open time is the freshest thing
+			// the venue told us. It is not a venue clock — no venue timestamps a
+			// candle page — but it bounds staleness the same way, and the trading
+			// service refuses a projection whose observation time is missing.
+			if candle.OpenTime.After(result.ObservedAt) {
+				result.ObservedAt = candle.OpenTime.UTC()
+			}
+			result.Candles[index] = authorityCandle{
+				OpenTime: candle.OpenTime.UTC(), CloseTime: candle.CloseTime.UTC(),
+				Open: candle.Open.String(), High: candle.High.String(), Low: candle.Low.String(),
+				Close: candle.Close.String(), Volume: candle.Volume.String(), Complete: candle.Complete,
+			}
+		}
+		if result.ObservedAt.IsZero() {
+			result.ObservedAt = reads.clock()
+		}
+		return result, nil
+	}
+	return authorityCandles{}, errors.New("configured candles capability is unavailable")
+}
+
+// authorityCandleLimit parses the caller's bound. An absent limit is the
+// default rather than an error: the chart's first paint wants "a screenful",
+// and naming a number is the caller narrowing that, not supplying something
+// missing.
+func authorityCandleLimit(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return authorityCandleLimitMax, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 || limit > authorityCandleLimitMax {
+		return 0, errors.New("candles limit is invalid")
+	}
+	return limit, nil
 }
 
 func routeCapabilityForMarketData(manager authorityAccountSource, resource account.Resource) (capability.Row, error) {
@@ -1227,21 +1417,6 @@ func projectAuthorityLevels(levels []exchange.BookLevel) ([]authorityLevel, erro
 	return result, nil
 }
 
-func (authority *gatewayAuthority) create(ctx context.Context, input *httpapi.DesiredAccount) (httpapi.AuthorityResponse, error) {
-	if input == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired account is required")
-	}
-	desired, err := desiredFromHTTP(*input, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	created, err := authority.store.CreateDesiredAccount(ctx, desired)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(created), nil
-}
-
 func (authority *gatewayAuthority) listDesired(ctx context.Context) (httpapi.AuthorityResponse, error) {
 	items, err := authority.store.ListDesiredAccounts(ctx)
 	if err != nil {
@@ -1261,160 +1436,6 @@ func (authority *gatewayAuthority) getDesired(ctx context.Context, accountID str
 		return httpapi.AuthorityResponse{}, err
 	}
 	return desiredResponse(desired), nil
-}
-
-func (authority *gatewayAuthority) validate(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil || request.Mutation.DesiredStateRevision != current.DesiredStateRevision ||
-		request.Mutation.RuntimeGeneration != current.RuntimeGeneration || request.Mutation.CredentialVersion != current.CredentialVersion {
-		return httpapi.AuthorityResponse{}, store.ErrDesiredStateRevisionConflict
-	}
-	desired, err := authority.runtimeDesired(current, current.SecretRef, account.RuntimeStateActive)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if err := authority.manager.ValidateRuntime(ctx, desired); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return httpapi.AuthorityResponse{Body: map[string]any{"ready": true}, DesiredStateRevision: current.DesiredStateRevision}, nil
-}
-
-func (authority *gatewayAuthority) rotate(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil || request.Mutation.RotationFence == nil {
-		return httpapi.AuthorityResponse{}, errors.New("rotation mutation is incomplete")
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, store.DesiredRotating, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	fence := next.RotationFence
-	candidate := next
-	candidate.RuntimeGeneration = fence.ToRuntimeGeneration
-	candidate.CredentialVersion = fence.ToCredentialVersion
-	candidate.RequestedState = store.DesiredActive
-	desired, err := authority.runtimeDesired(candidate, next.SecretRef, account.RuntimeStateActive)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if err := authority.manager.ValidateRuntime(ctx, desired); err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) update(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired mutation is required")
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, store.DesiredAccountState(request.Mutation.RequestedState), authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-
-	switch {
-	case current.RequestedState == store.DesiredCreating && next.RequestedState == store.DesiredActive:
-		runtimeDesired, convertErr := authority.runtimeDesired(next, next.SecretRef, account.RuntimeStateActive)
-		if convertErr != nil {
-			return httpapi.AuthorityResponse{}, convertErr
-		}
-		if _, err := authority.manager.CreateRuntime(ctx, runtimeDesired); err != nil {
-			return httpapi.AuthorityResponse{}, err
-		}
-	case current.RequestedState == store.DesiredRotating && next.RequestedState == store.DesiredActive:
-		runtimeDesired, convertErr := authority.runtimeDesired(next, next.SecretRef, account.RuntimeStateActive)
-		if convertErr != nil {
-			return httpapi.AuthorityResponse{}, convertErr
-		}
-		if _, err := authority.manager.RotateRuntime(ctx, runtimeDesired, uint64(request.ExpectedRevision)); err != nil {
-			return httpapi.AuthorityResponse{}, err
-		}
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) transition(ctx context.Context, request httpapi.AuthorityRequest) (httpapi.AuthorityResponse, error) {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if request.Mutation == nil {
-		return httpapi.AuthorityResponse{}, errors.New("desired mutation is required")
-	}
-	nextState := store.DesiredDisabled
-	runtimeState := account.RuntimeStateDisabled
-	if request.Operation == httpapi.AuthorityDrainDesired {
-		nextState = store.DesiredDraining
-		runtimeState = account.RuntimeStateDraining
-	}
-	next, err := desiredFromMutation(current, *request.Mutation, nextState, authority.now())
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	runtime, err := authority.manager.Runtime(current.AccountID)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	if runtimeState == account.RuntimeStateDraining {
-		_, err = authority.manager.DrainRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision, uint64(next.DesiredStateRevision))
-	} else {
-		_, err = authority.manager.DisableRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision, uint64(next.DesiredStateRevision))
-	}
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	stored, err := authority.store.ApplyDesiredAccount(ctx, request.ExpectedRevision, next)
-	if err != nil {
-		return httpapi.AuthorityResponse{}, err
-	}
-	return desiredResponse(stored), nil
-}
-
-func (authority *gatewayAuthority) remove(ctx context.Context, request httpapi.AuthorityRequest) error {
-	current, err := authority.loadExpected(ctx, request.AccountID, request.ExpectedRevision)
-	if err != nil {
-		return err
-	}
-	if current.RequestedState != store.DesiredRemoved {
-		return store.ErrInvalidAccountTransition
-	}
-	if runtime, runtimeErr := authority.manager.Runtime(current.AccountID); runtimeErr == nil {
-		if err := authority.manager.RemoveRuntime(ctx, current.AccountID, runtime.Desired.DesiredStateRevision); err != nil {
-			return err
-		}
-	} else if !errors.Is(runtimeErr, account.ErrUnknownAccount) {
-		return runtimeErr
-	}
-	return authority.store.DeleteDesiredAccount(ctx, current.AccountID, request.ExpectedRevision)
-}
-
-func (authority *gatewayAuthority) loadExpected(ctx context.Context, accountID string, revision int64) (store.DesiredAccount, error) {
-	desired, err := authority.store.LoadDesiredAccount(ctx, domain.AccountID(accountID))
-	if err != nil {
-		return store.DesiredAccount{}, err
-	}
-	if revision <= 0 || desired.DesiredStateRevision != revision {
-		return store.DesiredAccount{}, store.ErrDesiredStateRevisionConflict
-	}
-	return desired, nil
 }
 
 func (authority *gatewayAuthority) restore(ctx context.Context) error {
@@ -1461,57 +1482,6 @@ func (authority *gatewayAuthority) runtimeDesired(desired store.DesiredAccount, 
 		RuntimeGeneration: uint64(desired.RuntimeGeneration), CredentialVersion: uint64(desired.CredentialVersion),
 		RequestedState: state, RotationFence: rotationFence,
 	}, nil
-}
-
-func desiredFromHTTP(input httpapi.DesiredAccount, now time.Time) (store.DesiredAccount, error) {
-	desired := store.DesiredAccount{
-		AccountID: domain.AccountID(input.AccountID), Venue: input.Venue, VenueEnvironment: input.VenueEnvironment,
-		SecretRef: input.SecretRef, DesiredStateRevision: input.DesiredStateRevision,
-		RuntimeGeneration: input.RuntimeGeneration, CredentialVersion: input.CredentialVersion,
-		RequestedState: store.DesiredAccountState(input.RequestedState), UpdatedAt: now.UTC(),
-	}
-	if input.RotationFence != nil {
-		desired.RotationFence = rotationFenceFromHTTP(*input.RotationFence, now)
-	}
-	if err := desired.Validate(); err != nil {
-		return store.DesiredAccount{}, err
-	}
-	return desired, nil
-}
-
-func desiredFromMutation(current store.DesiredAccount, mutation httpapi.DesiredMutation, state store.DesiredAccountState, now time.Time) (store.DesiredAccount, error) {
-	next := current
-	if mutation.SecretRef != "" {
-		next.SecretRef = mutation.SecretRef
-	}
-	next.DesiredStateRevision = mutation.DesiredStateRevision
-	next.RuntimeGeneration = mutation.RuntimeGeneration
-	next.CredentialVersion = mutation.CredentialVersion
-	next.RequestedState = state
-	next.UpdatedAt = now.UTC()
-	if mutation.RotationFence != nil {
-		next.RotationFence = rotationFenceFromHTTP(*mutation.RotationFence, now)
-	} else {
-		next.RotationFence = nil
-	}
-	if err := next.Validate(); err != nil {
-		return store.DesiredAccount{}, err
-	}
-	return next, nil
-}
-
-func rotationFenceFromHTTP(input httpapi.RotationFence, now time.Time) *store.RotationFence {
-	fence := &store.RotationFence{
-		ID: input.RotationFenceID, State: store.RotationFenceState(input.State),
-		FromCredentialVersion: input.FromCredentialVersion, ToCredentialVersion: input.ToCredentialVersion,
-		FromRuntimeGeneration: input.FromRuntimeGeneration, ToRuntimeGeneration: input.ToRuntimeGeneration,
-		ArmedAt: now.UTC(),
-	}
-	if fence.State == store.RotationReleased {
-		released := now.UTC()
-		fence.ReleasedAt = &released
-	}
-	return fence
 }
 
 func desiredResponse(desired store.DesiredAccount) httpapi.AuthorityResponse {

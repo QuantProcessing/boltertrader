@@ -52,3 +52,11 @@ func RotationFinalizationsMigrationSQL() string {
 	}
 	return string(data)
 }
+
+func AccountConsolidationMigrationSQL() string {
+	data, err := Migrations.ReadFile("migrations/007_account_consolidation.sql")
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
+}

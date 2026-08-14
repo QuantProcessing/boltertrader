@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -134,6 +135,7 @@ var routes = []Route{
 	{http.MethodGet, "/v1/order-book"},
 	{http.MethodGet, "/v1/bbo"},
 	{http.MethodGet, "/v1/mark-price"},
+	{http.MethodGet, "/v1/candles"},
 	{http.MethodGet, "/v1/public/ws"},
 	{http.MethodPut, "/v1/accounts/{account_id}/instruments/{instrument_id}/leverage"},
 	{http.MethodGet, "/v1/ws"},
@@ -214,6 +216,7 @@ func (handler *Handler) register() {
 	handler.mux.HandleFunc("GET /v1/order-book", handler.getOrderBook)
 	handler.mux.HandleFunc("GET /v1/bbo", handler.getBBO)
 	handler.mux.HandleFunc("GET /v1/mark-price", handler.getMarkPrice)
+	handler.mux.HandleFunc("GET /v1/candles", handler.getCandles)
 	handler.mux.HandleFunc("GET /v1/public/ws", handler.publicMarketEvents)
 	handler.mux.HandleFunc("PUT /v1/accounts/{account_id}/instruments/{instrument_id}/leverage", handler.setLeverage)
 	handler.mux.HandleFunc("GET /v1/ws", handler.privateEvents)
@@ -378,7 +381,14 @@ func (handler *Handler) listRiskLimits(w http.ResponseWriter, r *http.Request) {
 }
 
 type placeOrderBody struct {
-	AccountID            string `json:"account_id"`
+	AccountID string `json:"account_id"`
+	// RouteID pins the account route the caller believes it is trading
+	// through. It belongs with the write fence below rather than with the
+	// order's economics: the caller states what it observed, and the
+	// coordinator refuses the placement if the account has since been routed
+	// elsewhere. Required, because an order that does not say which route it
+	// was priced against cannot be checked against one.
+	RouteID              string `json:"route_id"`
 	InstrumentID         string `json:"instrument_id"`
 	IdempotencyKey       string `json:"idempotency_key"`
 	Side                 string `json:"side"`
@@ -443,6 +453,10 @@ func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlatio
 	if err != nil {
 		return order.PlaceRequest{}, err
 	}
+	routeID := domain.RouteID(body.RouteID)
+	if err := routeID.Validate(); err != nil {
+		return order.PlaceRequest{}, err
+	}
 	instrumentID, err := parseInstrumentID(body.InstrumentID)
 	if err != nil {
 		return order.PlaceRequest{}, err
@@ -485,7 +499,7 @@ func (body placeOrderBody) placeRequest(principal domain.PrincipalID, correlatio
 		}
 	}
 	return order.PlaceRequest{
-		PrincipalID: principal, AccountID: accountID, InstrumentID: instrumentID,
+		PrincipalID: principal, AccountID: accountID, RouteID: routeID, InstrumentID: instrumentID,
 		IdempotencyKey: key, CorrelationID: correlationID, Side: side, Type: orderType, Quantity: quantity,
 		LimitPrice: limitPrice, LimitPolicy: policy, ReduceOnly: body.ReduceOnly,
 		WriteFence: account.WriteFence{AccountID: accountID, DesiredStateRevision: body.DesiredStateRevision, RuntimeGeneration: body.RuntimeGeneration, CredentialVersion: body.CredentialVersion},
@@ -719,8 +733,26 @@ func (handler *Handler) fail(w http.ResponseWriter, err error) {
 	handler.failWithCorrelation(w, err, correlationID)
 }
 
+// failWithCorrelation is the one path every public-plane failure takes, so it is
+// where a cause classifyError could not name gets recorded.
+//
+// classifyError's default arm collapses everything it does not recognise into
+// internal_error, and safeMessage then replaces the text with "internal error".
+// Sending that outward is deliberate — an unclassified error may carry venue
+// text, a DSN, or a store's internal shape, none of which belong to the caller —
+// but it also means the only account of what went wrong is discarded at the
+// moment it is most needed. A caller sees a correlation ID and nothing else, and
+// so does an operator reading the logs, because there were none.
+//
+// Only the collapsed case is logged, at the correlation ID the caller was
+// handed, so a report of "I got 500 with id X" resolves to a line. The named
+// codes already say what happened, and several of them — not_found,
+// idempotency_conflict, rate_limited — are ordinary traffic rather than faults.
 func (handler *Handler) failWithCorrelation(w http.ResponseWriter, err error, correlationID domain.EventID) {
 	status, code, retryable := classifyError(err)
+	if code == "internal_error" {
+		slog.Error("gateway public request failed", "correlationId", string(correlationID), "cause", err)
+	}
 	writeError(w, status, code, safeMessage(code), string(correlationID), retryable)
 }
 

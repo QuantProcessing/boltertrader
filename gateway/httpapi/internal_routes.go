@@ -1,11 +1,9 @@
 package httpapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -26,14 +24,7 @@ const (
 	AuthorityRuntimePositions    AuthorityOperation = "runtime.positions"
 	AuthorityRuntimeUncertain    AuthorityOperation = "runtime.uncertain_commands"
 	AuthorityListDesired         AuthorityOperation = "accounts.desired.list"
-	AuthorityCreateDesired       AuthorityOperation = "accounts.desired.create"
 	AuthorityGetDesired          AuthorityOperation = "accounts.desired.get"
-	AuthorityUpdateDesired       AuthorityOperation = "accounts.desired.update"
-	AuthorityValidateDesired     AuthorityOperation = "accounts.desired.validate"
-	AuthorityRotateDesired       AuthorityOperation = "accounts.desired.rotate"
-	AuthorityDisableDesired      AuthorityOperation = "accounts.desired.disable"
-	AuthorityDrainDesired        AuthorityOperation = "accounts.desired.drain"
-	AuthorityDeleteDesired       AuthorityOperation = "accounts.desired.delete"
 	AuthorityApplyDesired        AuthorityOperation = "accounts.desired.apply"
 	AuthorityRetireDesired       AuthorityOperation = "accounts.desired.retire"
 	AuthorityFinalizeRotation    AuthorityOperation = "accounts.desired.rotation_finalize"
@@ -43,6 +34,7 @@ const (
 	AuthorityCatalogVenues       AuthorityOperation = "catalog.venues"
 	AuthorityCatalogInstruments  AuthorityOperation = "catalog.instruments"
 	AuthorityMarketData          AuthorityOperation = "market_data"
+	AuthorityCandles             AuthorityOperation = "candles"
 	AuthorityPrivateEvents       AuthorityOperation = "private_events"
 )
 
@@ -64,15 +56,6 @@ type DesiredAccount struct {
 	RuntimeGeneration    int64          `json:"runtimeGeneration"`
 	CredentialVersion    int64          `json:"credentialVersion"`
 	RequestedState       string         `json:"requestedState"`
-	RotationFence        *RotationFence `json:"rotationFence,omitempty"`
-}
-
-type DesiredMutation struct {
-	SecretRef            string         `json:"secretRef,omitempty"`
-	DesiredStateRevision int64          `json:"desiredStateRevision"`
-	RuntimeGeneration    int64          `json:"runtimeGeneration"`
-	CredentialVersion    int64          `json:"credentialVersion"`
-	RequestedState       string         `json:"requestedState,omitempty"`
 	RotationFence        *RotationFence `json:"rotationFence,omitempty"`
 }
 
@@ -195,7 +178,6 @@ type AuthorityRequest struct {
 	OperationID          string
 	ExpectedRevision     int64
 	Desired              *DesiredAccount
-	Mutation             *DesiredMutation
 	DesiredApply         *DesiredApplyRequest
 	Retirement           *RetireRequest
 	RotationFinalization *RotationFinalizationRequest
@@ -229,6 +211,13 @@ type InternalOptions struct {
 	Authenticate func(*http.Request) error
 	MaxBodyBytes int64
 	WriteReady   func() bool
+	// Lifecycle is optional. A gateway without a durable account store can
+	// still serve the runtime and catalog surfaces, so the account lifecycle
+	// routes are only mounted when something can answer them.
+	Lifecycle AccountLifecycle
+	// Blockers is required alongside Lifecycle: draining or removing an account
+	// while inventory remains open would strand it.
+	Blockers AccountBlockers
 }
 
 type InternalHandler struct {
@@ -236,6 +225,8 @@ type InternalHandler struct {
 	authenticate func(*http.Request) error
 	bodyLimit    int64
 	writeReady   func() bool
+	lifecycle    AccountLifecycle
+	blockers     AccountBlockers
 	mux          *http.ServeMux
 }
 
@@ -256,6 +247,7 @@ var internalRoutes = []Route{
 	{http.MethodGet, "/internal/v1/catalog/venues"},
 	{http.MethodGet, "/internal/v1/catalog/instruments"},
 	{http.MethodGet, "/internal/v1/market-data"},
+	{http.MethodGet, "/internal/v1/candles"},
 	{http.MethodGet, "/internal/v1/private-events"},
 }
 
@@ -265,11 +257,17 @@ func NewInternalHandler(options InternalOptions) (*InternalHandler, error) {
 	if options.Authority == nil || options.Authenticate == nil {
 		return nil, fmt.Errorf("internal HTTP API dependencies are incomplete")
 	}
+	if options.Lifecycle != nil && options.Blockers == nil {
+		return nil, fmt.Errorf("internal HTTP API account lifecycle requires a blockers source")
+	}
 	if options.MaxBodyBytes <= 0 {
 		options.MaxBodyBytes = defaultBodyLimit
 	}
-	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, mux: http.NewServeMux()}
+	handler := &InternalHandler{authority: options.Authority, authenticate: options.Authenticate, bodyLimit: options.MaxBodyBytes, writeReady: options.WriteReady, lifecycle: options.Lifecycle, blockers: options.Blockers, mux: http.NewServeMux()}
 	handler.register()
+	if handler.lifecycle != nil {
+		handler.registerAccountLifecycle()
+	}
 	return handler, nil
 }
 
@@ -278,7 +276,7 @@ func (handler *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		handler.writeError(w, r, http.StatusUnauthorized, "GATEWAY_ADAPTER_AUTH_REQUIRED", false)
 		return
 	}
-	if r.Method == http.MethodPut && handler.writeReady != nil && !handler.writeReady() {
+	if isMutationRequest(r) && handler.writeReady != nil && !handler.writeReady() {
 		handler.writeError(w, r, http.StatusServiceUnavailable, "GATEWAY_WRITES_NOT_READY", true)
 		return
 	}
@@ -302,6 +300,7 @@ func (handler *InternalHandler) register() {
 	handler.mux.HandleFunc("GET /internal/v1/catalog/venues", handler.read(AuthorityCatalogVenues))
 	handler.mux.HandleFunc("GET /internal/v1/catalog/instruments", handler.read(AuthorityCatalogInstruments))
 	handler.mux.HandleFunc("GET /internal/v1/market-data", handler.read(AuthorityMarketData))
+	handler.mux.HandleFunc("GET /internal/v1/candles", handler.read(AuthorityCandles))
 	handler.mux.HandleFunc("GET /internal/v1/private-events", handler.read(AuthorityPrivateEvents))
 }
 
@@ -355,49 +354,6 @@ func (handler *InternalHandler) finalizeRotation(w http.ResponseWriter, r *http.
 		Operation: AuthorityFinalizeRotation, Mode: mode, AccountID: finalization.AccountID,
 		OperationID: finalization.OperationID, RotationFinalization: &finalization,
 	})
-}
-
-func (handler *InternalHandler) createDesired(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("If-None-Match") != "*" {
-		handler.writeError(w, r, http.StatusPreconditionRequired, "IF_NONE_MATCH_REQUIRED", false)
-		return
-	}
-	var desired DesiredAccount
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &desired); err != nil || desired.validateCreate() != nil {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	handler.execute(w, r, http.StatusCreated, AuthorityRequest{Operation: AuthorityCreateDesired, Desired: &desired})
-}
-
-func (handler *InternalHandler) mutateDesired(operation AuthorityOperation) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		revision, err := parseDesiredETag(r.Header.Get("If-Match"))
-		if err != nil {
-			handler.writeError(w, r, http.StatusPreconditionRequired, "IF_MATCH_REQUIRED", false)
-			return
-		}
-		var mutation DesiredMutation
-		if err := decodeStrictJSON(w, r, handler.bodyLimit, &mutation); err != nil || mutation.validate(operation) != nil {
-			handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-			return
-		}
-		handler.execute(w, r, http.StatusOK, AuthorityRequest{Operation: operation, AccountID: r.PathValue("accountId"), ExpectedRevision: revision, Mutation: &mutation})
-	}
-}
-
-func (handler *InternalHandler) deleteDesired(w http.ResponseWriter, r *http.Request) {
-	revision, err := parseDesiredETag(r.Header.Get("If-Match"))
-	if err != nil {
-		handler.writeError(w, r, http.StatusPreconditionRequired, "IF_MATCH_REQUIRED", false)
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, handler.bodyLimit))
-	if err != nil || len(bytes.TrimSpace(body)) != 0 {
-		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
-		return
-	}
-	handler.execute(w, r, http.StatusNoContent, AuthorityRequest{Operation: AuthorityDeleteDesired, AccountID: r.PathValue("accountId"), ExpectedRevision: revision})
 }
 
 func (handler *InternalHandler) read(operation AuthorityOperation) http.HandlerFunc {
@@ -539,66 +495,6 @@ func parseDesiredETag(value string) (int64, error) {
 		return 0, errors.New("invalid If-Match")
 	}
 	return revision, nil
-}
-
-func (desired DesiredAccount) validateCreate() error {
-	if desired.AccountID == "" || desired.Venue == "" || desired.SecretRef == "" || desired.DesiredStateRevision != 1 || desired.RuntimeGeneration != 1 || desired.CredentialVersion != 1 {
-		return errors.New("invalid desired account")
-	}
-	if desired.VenueEnvironment != "demo" && desired.VenueEnvironment != "testnet" && desired.VenueEnvironment != "live" {
-		return errors.New("invalid venue environment")
-	}
-	if desired.RequestedState != "creating" && desired.RequestedState != "active" {
-		return errors.New("invalid requested state")
-	}
-	return nil
-}
-
-func (mutation DesiredMutation) validate(operation AuthorityOperation) error {
-	if mutation.DesiredStateRevision <= 0 || mutation.RuntimeGeneration <= 0 || mutation.CredentialVersion <= 0 {
-		return errors.New("invalid desired mutation")
-	}
-	switch operation {
-	case AuthorityValidateDesired:
-		if mutation.SecretRef != "" || mutation.RequestedState != "" || mutation.RotationFence != nil {
-			return errors.New("invalid validate mutation")
-		}
-	case AuthorityRotateDesired:
-		if mutation.SecretRef == "" || mutation.RotationFence == nil || mutation.RequestedState != "" ||
-			mutation.RotationFence.validate(mutation.RuntimeGeneration, mutation.CredentialVersion) != nil {
-			return errors.New("invalid rotate mutation")
-		}
-	case AuthorityDisableDesired:
-		if mutation.SecretRef != "" || mutation.RequestedState != "disabled" || mutation.RotationFence != nil {
-			return errors.New("invalid lifecycle mutation")
-		}
-	case AuthorityDrainDesired:
-		if mutation.SecretRef != "" || mutation.RequestedState != "draining" || mutation.RotationFence != nil {
-			return errors.New("invalid lifecycle mutation")
-		}
-	case AuthorityUpdateDesired:
-		if mutation.SecretRef == "" || !validRequestedState(mutation.RequestedState) ||
-			(mutation.RotationFence != nil && mutation.RotationFence.validate(mutation.RuntimeGeneration, mutation.CredentialVersion) != nil) {
-			return errors.New("invalid desired update")
-		}
-	default:
-		return errors.New("invalid desired operation")
-	}
-	return nil
-}
-
-func (fence RotationFence) validate(runtimeGeneration, credentialVersion int64) error {
-	if fence.RotationFenceID == "" || fence.State == "" ||
-		fence.FromRuntimeGeneration != runtimeGeneration || fence.ToRuntimeGeneration != runtimeGeneration+1 ||
-		fence.FromCredentialVersion != credentialVersion || fence.ToCredentialVersion != credentialVersion+1 {
-		return errors.New("invalid rotation fence")
-	}
-	switch fence.State {
-	case "armed", "replacement_ready", "released", "expired", "blocked":
-		return nil
-	default:
-		return errors.New("invalid rotation fence state")
-	}
 }
 
 func validRequestedState(state string) bool {

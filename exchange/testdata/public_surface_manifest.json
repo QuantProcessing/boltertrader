@@ -6783,6 +6783,38 @@
       "tests": [
         "TestTwentyKnownConfigsInferAndConstructProductClients"
       ]
+    },
+    {
+      "id": "exchange/factory.NewPublicInstrumentConnector",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicInstrumentConnectorConstructsOnlySupportedProfilesAndStaysCredentialFree"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicInstrumentConnector",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicInstrumentConnectorConstructsOnlySupportedProfilesAndStaysCredentialFree"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicInstrumentConnector.Refresh",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicInstrumentConnectorConstructsOnlySupportedProfilesAndStaysCredentialFree"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicInstrumentConnector.Close",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestPublicInstrumentConnectorConstructsOnlySupportedProfilesAndStaysCredentialFree"
+      ]
     }
   ]
 }

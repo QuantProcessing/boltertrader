@@ -2,65 +2,71 @@
 
 > 英文为规范版本。[English](../README.md)
 
-本索引是公开文档导航的主要归属页。先选择一个演练，然后通过 Concepts 了解系统
-行为，通过 Guides 了解 API 和操作，通过 Venues 了解 product-specific 事实，
-通过 Reference 查阅精确的状态、配置和测试语义。
+本索引是公开文档导航的主要归属页。先通过「入门」把整套栈跑起来，然后通过
+Concepts 了解系统行为，通过 Guides 了解每一层的 API 与操作，通过 Reference
+查阅精确的 venue 支持范围、配置和测试语义。
 
 [返回项目中文 README](../../README.zh-CN.md)
 
-## 选择产品路径
+## 各层如何组合
 
-- [直接使用统一交易所 API](exchange/README.md)：在进程内使用规范化 client。
-- [Exchange Gateway](guides/exchange-gateway.md)：通过常驻服务集中管理 account、
-  Catalog、持久订单、reconciliation 和私有事件。
-- [Runtime node](guides/runtime-node.md)：承载单一策略的有状态执行。
+BolterTrader 是一个分层的整体，不是一组可互换的产品。每一层只依赖它下面的
+那一层：
 
-三者是面向不同需求的同级路径，不存在替代或弃用关系。
+```text
+web                        唯一的前端
+services/authedge          浏览器会话与路径转发
+services/trading           构建在 gateway 之上的手动交易产品
+gateway                    共享能力面
+exchange                   venue-neutral 的 typed client
+sdk                        每个 venue 一个 package，忠实表示其原生 API
+```
+
+强制的 import 规则见[架构与边界](concepts/architecture.md)。其中两层也可以
+单独使用：
+
+- [统一交易所 API](exchange/README.md) 可嵌入任意 Go 进程，不需要它之上的
+  任何一层。
+- [Exchange Gateway](guides/exchange-gateway.md) 是常驻服务，为其上的任意
+  产品集中管理 account、catalog、持久订单、reconciliation 和私有事件。
 
 ## 入门
 
 - [前置条件](getting-started/prerequisites.md)
-- [Binance Spot Demo](getting-started/cex-demo.md)
-- [Hyperliquid Perp Testnet](getting-started/dex-testnet.md)
-- [离线 runtime](getting-started/offline-runtime.md)
-
-## Exchange API
-
-- [独立统一交易所 API](exchange/README.md)
-- [Exchange Gateway](guides/exchange-gateway.md)
+- [运行本地栈](getting-started/local-stack.md)
+- [下第一笔订单](getting-started/first-order.md)
 
 ## 概念
 
 - [架构与边界](concepts/architecture.md)
+- [Exchange 架构与概念](concepts/exchange.md)
+- [Account 与 instrument](concepts/accounts-instruments.md)
 - [执行与风险](concepts/execution-risk.md)
 - [状态与 reconciliation](concepts/state-reconciliation.md)
-- [Account 与 instrument](concepts/accounts-instruments.md)
 
 ## 指南
 
+Exchange 模块：
+
+- [独立统一交易所 API](exchange/README.md)
 - [统一交易所 API 快速入门](guides/exchange-rest-quickstart.md)
+
+服务：
+
 - [交易所网关](guides/exchange-gateway.md)
-- [编写策略](guides/strategies.md)
-- [构建 runtime node](guides/runtime-node.md)
+- [Trading 服务](guides/trading-service.md)
+- [Auth edge](guides/auth-edge.md)
+- [Web 应用](guides/web-app.md)
+
+运维：
+
 - [市场与 reference data](guides/market-reference-data.md)
 - [操作与恢复](guides/operations-recovery.md)
 
-## Venues
+## 参考
 
-- [Venue 指南索引](venues/README.md)
-- [Binance](venues/binance.md)
-- [OKX](venues/okx.md)
-- [Bybit](venues/bybit.md)
-- [Bitget](venues/bitget.md)
-- [Gate](venues/gate.md)
-- [Hyperliquid](venues/hyperliquid.md)
-- [Lighter](venues/lighter.md)
-- [Aster](venues/aster.md)
-- [Nado](venues/nado.md)
-
-## 能力与参考
-
-- [Runtime adapter 能力矩阵](adapter-capabilities.md)
+- [Venue 支持索引](venues/README.md)
+- [Exchange venue 与 account-mode 差异](reference/exchange-venues-and-account-modes.md)
 - [Exchange REST V1 operation matrix](reference/exchange-rest-v1-operation-matrix.md)
 - [Exchange WebSocket V1 operation matrix](reference/exchange-ws-v1-operation-matrix.md)
 - [Unsupported、Deferred（延期）和 SDK-only surface](reference/unsupported.md)
@@ -70,7 +76,7 @@
 
 ## 贡献
 
-- [Adapter 贡献规则](contributing/adapters.md)
+- [新增一个 venue](contributing/venues.md)
 - [文档贡献规则](contributing/documentation.md)
 
 英文目录是事实来源。公开中文页面镜像其 scope、结构、命令、identifier、

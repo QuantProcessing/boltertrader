@@ -1,104 +1,107 @@
-# Market and Reference Data
+# Market and reference data
 
-[Chinese mirror](../zh-CN/guides/market-reference-data.md) · This English page is canonical.
+> Canonical language: English. [Chinese mirror](../zh-CN/guides/market-reference-data.md)
 
-## Ownership and scope
+Two different things travel under the name "market data", and confusing them is
+the usual source of a chart that will not load or a price that will not move.
 
-This page owns task-oriented use of normalized market data, derivative reference
-data, and current open interest. Exact venue/product availability belongs in the
-[capability matrix](../adapter-capabilities.md) and individual
-[venue pages](../venues/README.md).
+**Reference data** describes what an instrument *is*: its tick size, its lot
+size, its minimum notional, whether the venue supports a given order type. It
+changes rarely and is loaded as a Catalog snapshot.
 
-## Market data surfaces
+**Market data** describes what an instrument is *doing*: top of book, depth,
+mark price, funding. It changes constantly and is never stored.
 
-`contract.MarketDataClient` provides instrument discovery and request/stream
-surfaces for books, quotes, trades, and bars. These dimensions are independent:
-a venue may implement snapshots without streams, or a coarse stream capability
-without wiring every book/quote/trade subscription. Handle
-`contract.ErrNotSupported` per operation rather than inferring support from a
-single broad flag.
+Both cross the same boundary. The browser asks the trading service, the trading
+service asks [the gateway](exchange-gateway.md), and only the gateway holds a
+venue client. No layer above the gateway knows a native symbol.
 
-Resolve the exact `model.InstrumentID` through the market client's
-`InstrumentProvider`. Then choose the narrow operation you need:
+## Reference data
 
-- `OrderBook` and `Bars` are synchronous REST-style requests;
-- `SubscribeBook`, `SubscribeQuotes`, and `SubscribeTrades` publish typed values
-  on `Events()`;
-- capabilities describe the advertised surface, but the concrete call remains
-  authoritative and can return `contract.ErrNotSupported`.
+The gateway loads the Catalog per account at startup and refreshes it. It
+exposes `/v1/instruments`, `/v1/rules`, `/v1/capabilities`, and
+`/v1/risk-limits`.
 
-Normalized market envelopes feed the runtime cache and strategy callbacks. The
-runtime applies its own receive/apply timestamps; those timestamps do not mean an
-adapter supplied venue latency timestamps.
+The trading service republishes what the interface needs as
+`/api/v1/catalog/venues` and `/api/v1/catalog/instruments`. Instrument
+identifiers are the canonical segmented form throughout — venue, environment,
+product, an optional settlement asset, then the canonical symbol — never a
+venue's own symbol string. See
+[Accounts and instruments](../concepts/accounts-instruments.md).
 
-## Derivative reference data
+`/v1/risk-limits` answers honestly rather than approximately: venue risk limits
+are not normalized, so it reports that they are unavailable and says why. It is
+a placeholder with a reason attached, not a limit set you can trade against.
 
-Perpetual products may implement `contract.DerivativeReferenceDataClient`:
+Rules are enforced where they are known, which is at the gateway and again at
+the venue. The order ticket uses them to validate before it will seal a preview,
+so an operator sees "below minimum notional" while editing rather than as a
+rejection after confirming.
 
-- `ReferenceSnapshot` queries the current normalized funding/reference snapshot;
-- `SubscribeReference` delivers `ReferenceDataEvent` values on the normal market
-  event channel;
-- the runtime caches derivative reference snapshots and optionally calls
-  `OnDerivativeReference` on strategies implementing the handler.
+## Market data
 
-Reference streaming is distinct from order-book, quote, and trade streaming.
-Lighter currently wires derivative-reference streaming for Perp, while its
-book/quote/trade subscription methods remain unsupported.
+`GET /api/v1/market-data` returns one fact per instrument: best bid and ask with
+their sizes, up to twenty levels of depth each side, and for perpetuals the mark
+price, the current funding rate with its observation and next-funding times, up
+to twenty historical funding points, and open interest. The perpetual fields are
+absent rather than empty on spot instruments.
 
-A derivative reference snapshot can be partial. Check `snapshot.Fields` before
-reading funding, mark, index, oracle, premium, or funding-time values; a zero
-decimal is not proof that a field was absent. `FieldTimes` carries per-field
-freshness after the runtime merges partial updates. Use
-`Cache.DerivativeReference(instrumentID)` for the latest merged snapshot.
+Every decimal is a string, from the venue to the browser. Nothing on this path
+parses a price into a float.
 
-## Current open interest
+Three properties are worth knowing because they explain what you will see under
+load:
 
-`contract.OpenInterestClient` is an optional direct-query surface. Call
-`node.OpenInterest` or `strategy.Context.OpenInterest` and handle
-`contract.ErrNotSupported`. Current OI is intentionally query-only and is not
-stored in `runtime.Cache`.
+**It is cached with a TTL.** The cache key is venue, environment, product, and
+instrument. A fact that arrives older than the TTL, or dated in the future, is
+rejected as stale rather than served.
 
-Inspect `OpenInterestSnapshot.Fields` before using quantity, notional, or unit;
-venues do not all populate the same combination. `Timestamp` is venue/reference
-time and `ReceivedAt` is local receipt time. A fresh derivative-reference cache
-entry says nothing about the freshness of a separately queried OI snapshot.
+**Concurrent readers coalesce.** Ten browser tabs asking for the same instrument
+at the same moment produce one gateway fetch, not ten. The rest wait on it.
 
-The following is an excerpt, not a standalone program, from the current read-only
-acceptance helper
-[`adapter/internal/runtimeaccept/reference_data.go`](../../adapter/internal/runtimeaccept/reference_data.go).
-It demonstrates the direct query, presence checks, and the deliberate absence of
-an OI cache accessor.
+**A failed fetch evicts.** There is no serve-stale-on-error path. If the venue
+read fails, the entry is removed and the caller gets the error — a price that is
+silently minutes old is worse than a visible gap, because someone will trade on
+it.
 
-```go
-oi, err := node.OpenInterest(ctx, id)
-if err != nil {
-	return ReferenceDataReadReport{}, fmt.Errorf("%s: open interest: %w", label, err)
-}
-if oi.InstrumentID != id {
-	return ReferenceDataReadReport{}, fmt.Errorf("%s: open interest instrument=%s, want %s", label, oi.InstrumentID, id)
-}
-if !oi.Fields.Has(model.OpenInterestHasQuantity) {
-	return ReferenceDataReadReport{}, fmt.Errorf("%s: open interest missing quantity field: %+v", label, oi)
-}
-if oi.Timestamp.IsZero() || oi.ReceivedAt.IsZero() {
-	return ReferenceDataReadReport{}, fmt.Errorf("%s: open interest missing timestamps: %+v", label, oi)
-}
-if _, ok := any(node.Cache).(interface {
-	OpenInterest(model.InstrumentID) (model.OpenInterestSnapshot, bool)
-}); ok {
-	return ReferenceDataReadReport{}, fmt.Errorf("%s: runtime cache unexpectedly exposes open-interest storage", label)
-}
-```
+Reads are also budgeted per venue in a fixed window. Exhausting the window
+returns a rate-limit error rather than queueing, and the remaining budget is
+observable, so a stack that is being hammered says so instead of degrading
+quietly.
 
-## Choosing a path
+## Candles
 
-Use the static matrix as a cross-venue index, then read the venue page for dynamic
-configuration and caveats. Validate real endpoints only through the named
-read-only or Demo/Testnet targets in the [testing reference](../reference/testing.md).
-Do not turn a reference-data read into an order/account probe; the repository's
-read-only acceptance helper intentionally performs no submit, cancel, modify, or
-order-report operation.
+`GET /api/v1/candles` serves the chart. It takes the same instrument
+coordinates plus an interval and a bound, and returns at most five hundred
+candles — the same bound the gateway applies, so a longer page did not come from
+a gateway that agrees about the limit.
 
-- [Capability matrix](../adapter-capabilities.md)
-- [Configuration reference](../reference/configuration.md)
-- [Unsupported and deferred features](../reference/unsupported.md)
+Each candle carries open/high/low/close/volume as strings, its open and close
+times, and a `complete` flag. The last candle of a live series is incomplete and
+will change; drawing it as final is what makes a chart appear to disagree with
+the ticker.
+
+The interval is deliberately not part of the market-data cache key. Folding it
+in would make one instrument occupy eight cache entries whose freshness rules
+disagree with each other.
+
+## Live updates
+
+Neither of the above is polled by the interface. One server-sent stream,
+`/api/v1/realtime/stream`, carries updates for whatever is subscribed. The
+gateway's own `/v1/public/ws` is what feeds it underneath, and that stream has
+no cursor replay by design: every connection starts from a fresh authoritative
+snapshot, and a venue gap emits `resync_required` and closes rather than
+silently skipping.
+
+## What is available where
+
+Not every venue exposes every read, and the differences are recorded rather
+than discovered at runtime:
+
+- [REST operation matrix](../reference/exchange-rest-v1-operation-matrix.md)
+- [WebSocket operation matrix](../reference/exchange-ws-v1-operation-matrix.md)
+- [Venues and account modes](../reference/exchange-venues-and-account-modes.md)
+
+An `N/A` in those matrices is a deliberate deferral, not an accident. See
+[Unsupported](../reference/unsupported.md).

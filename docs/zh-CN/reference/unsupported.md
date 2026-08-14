@@ -1,95 +1,120 @@
-# Unsupported、Deferred 与 SDK-only Surface
+# 不支持的能力
 
-[English](../../reference/unsupported.md)
+> 英文为规范版本。[English](../../reference/unsupported.md)
 
-> 本页是中文镜像；英文版是规范文本。**归属：**本页拥有跨 venue 的
-> unsupported、deferred 与 SDK-only inventory。
-> [能力矩阵](../adapter-capabilities.md)拥有详细的静态 runtime row；venue
-> 页面拥有 product-specific order、configuration 与 stream 规则。
+本页是「BolterTrader 不做什么」的台账。它严格按[术语表](glossary.md)里的状态词说话：
+**unsupported** 指 normalized surface 不存在，**deferred** 指它被刻意放在当前切片之外，
+**SDK-only** 指存在底层交易所代码、其上没有 product 行。这三者都不是在说某家交易所没有这个功能。
 
-请使用[术语表](glossary.md)中的精确状态含义。这里的限制描述
-BolterTrader 的 normalized surface，而不是交易所自身提供的全部功能。
+两张操作矩阵是逐行细节的权威。本页说的是横跨各行都成立的边界，不重述那些单元格。
 
-## Deferred 与缺失的 product slice
+## 被有意删掉的
 
-- Bybit dated linear futures 为 Deferred。当前 derivative registry 只有
-  USDT-linear 与 USDC-linear Perp/SWAP row，没有 dated-Future row。
-- Gate USDC-linear Perp/Futures 为 Deferred。当前 Gate derivative slice 是
-  USDT-linear。
-- 当前静态矩阵包含 21 个 Spot 与 Perp product row。不要因为 core enum、SDK
-  model 或 venue 的外部 product catalog 中出现某个类型，就推断 runtime
-  已有 Future 或 Option product。
+有三样能力存在于早先的设计里，它们是被删除，不是被推迟。这里点名，是因为这些词还在流传。
 
-## 跨 venue command 边界
+| 已删除 | 取而代之的 |
+| --- | --- |
+| 策略 runtime——一个长期运行、自己持有 bus、cache 与策略编排的进程 | Gateway HTTP surface 之上的产品服务。Trading 服务就是手动交易的那一个 |
+| 回测 | 没有。这棵树里任何地方都没有历史模拟的 surface |
+| Funding 产品——一个交易资金费价差的服务 | 暂时没有。Funding **数据**仍按行读取；那个产品是日后的重写 |
 
-- Strategy `Context` 只授予普通 `Submit` 与按 client ID 的 `Cancel`。它不授予
-  `Modify`、`CancelAll`、execution report、account mutation 或直接访问
-  adapter/SDK 的能力。
-- 两个 Aster row、两个 Nado row、Binance Spot 与两个 Gate row 的静态
-  `Modify` 均为 absent。其他声明了该能力的 row 仍受其 venue 页面中的
-  order 与 product 限制约束。
-- `CancelAll`、`SetLeverage` 与 `SetMarginMode` 是 adapter-level method，不是
-  portable strategy command。它们是否可用取决于 product；不适用的实现返回
-  `contract.ErrNotSupported`。
-- Lighter 当前暴露 leverage 与 margin-mode code path，但其 adapter/SDK
-  parameter contract 未被记录为可用，Spot scope 也未被本地拒绝，Testnet
-  acceptance 不覆盖这些方法。在修正并验证 contract 与 product guard 之前，
-  不要依赖这些 mutation。
-- Runtime 没有通用 prepared-order、lease、venue-capacity 或
-  admission-reservation protocol。Portable path 使用 side-effect-free
-  `ValidateSubmit`、可选且已配置的 venue-neutral risk/reservation、durable
-  intent，以及一次普通 adapter `Submit`。
+如果你翻到某个页面、注释或 issue 提到策略 `Context`、`runtime/` 包，或者 per-venue 的
+`adapter/` 包，那是[当前架构](../concepts/architecture.md)之前的东西。
 
-Portable API 与提交流程参见[策略](../guides/strategies.md)和
-[执行与风险](../concepts/execution-risk.md)。
+## 二十行上都不存在的
 
-## 跨 venue 数据与报告边界
+Gateway 的能力矩阵在全部二十行上把下面这五个标志都置为 false。它们是 gateway 层面的缺失，
+不是交易所的限制：
 
-- 当前每个 Spot row 的 normalized position report 均为 Unsupported。Spot
-  balance 或 inventory state 不会变成 derivative position report。
-- Aster、Nado 与 Gate 提供 venue-specific bounded/current fill source；Bybit
-  提供 bounded execution history；Bitget 提供 bounded 90-day trade history。
-  Binance、OKX 与 Lighter 没有具体的 normalized fill-report method。
-  Hyperliquid 的静态 row 将 fill report 声明为 Unsupported，但其 Spot、Perp
-  与 HIP-3 client 会获取 `UserFills` 并应用有界本地过滤；mass status 仍不声明
-  authoritative fill ledger。
-- 当前每个 order-report row 都带有 open-only caveat：从完整 open-order
-  result 中缺席，不能确定 terminal reason，也不能重建缺失 fill。
-- 当前没有任何静态 row 承诺 adapter receive/emit latency timestamp。Runtime
-  bus、application、callback 与 command timing 是独立能力。
-- Hyperliquid Spot 没有 normalized public book、quote 或 trade subscription。
-  Authenticated private order/fill 与 spot-state plumbing 取决于成功的 adapter
-  startup；仅有已分配 channel 或 configuration 不代表 ready。
-- Lighter 实现 REST book/bar query 与 Perp derivative-reference streaming。
-  其 normalized book、quote 与 trade subscription 为 Unsupported。
-- 在 OI surface 为 Implemented 的 product 中，Current open interest 是可选的
-  直接 `OpenInterestClient` query。它不是 runtime-cache 或 subscription surface。
+| 能力 | 状态 |
+| --- | --- |
+| 改单 | 不支持。改用撤单再下单。REST 矩阵里也根本没有 amend 这个操作 |
+| 设置杠杆 | 经由 gateway 不支持。Exchange 层对永续有 `SetLeverage`，但没有任何 product 行暴露它 |
+| 设置保证金模式 | 不支持 |
+| 设置持仓模式 | 不支持 |
+| 划转资金 | 不支持。这棵树里没有任何东西在账户或钱包之间搬钱 |
 
-Bars、具体 stream kind、report bound、account mutation、order type 与
-time-in-force 规则均取决于 product。请查阅[venue 索引](../venues/README.md)、
-能力矩阵与[市场和参考数据](../guides/market-reference-data.md)，不要从粗粒度
-capability category 推断。
+`SetLeverage` 值得补一句：在 Nado 上 exchange 层会返回成功，而生效杠杆为零——因为该交易所
+没有杠杆设置接口，由后端风控引擎决定。那里的「成功」意思是「收到了并忽略了」，而这恰恰是
+一个 gateway 行不该对外声明的那种含糊。
 
-## SDK-only venue family
+## 被推迟的 product 切片
 
-下表四行穷举了仓库中没有静态 runtime capability row 的顶层 SDK family。
-它们是底层 integration surface，不代表 strategy/runtime availability，也不代表
-Demo/Testnet 或 production certification。
+二十个 product 行全部是 spot 或 perp。
 
-| SDK family | SDK 中呈现的 product shape | 底层 market surface | 底层 order/account surface | 底层 stream surface |
+- **没有交割合约。** Bybit 的 dated linear futures 以及其他交易所的交割合约都在切片之外。
+- **没有期权。** 没有任何交易所，没有任何行。
+- **Gate 的 USDC 本位永续**被推迟；Gate 的永续行是 USDT 本位。
+- **Aster 永续（`ATP`）没有 funding surface。** 它是唯一没有的永续行。
+- **账户资金费流水**——即资金费实际收付了多少的按账户历史——只在四行上解析得出：`BNP`、
+  `LIP`、`BYU`、`GTU`。其余永续行只暴露资金费率，没有收付流水。
+
+不要从一个 enum、一个 SDK model 或交易所的公开产品目录去推断某个 product 存在。行在矩阵里，
+它才存在。
+
+## 证明不了「不存在」的读取
+
+有两条限制适用于每一行，而当一笔订单的下落不明时，这两条都要紧。
+
+**精确查单不是普遍能力。** `LookupExactOrder`——按标识符取一笔订单并拿到权威答案——在十一行上
+被接纳：`BNS`、`BNP`、`OXS`、`OXP`、`LIS`、`LIP`、`HLS`、`HLP`、`BYS`、`BYU`、`BYC`。在另外
+九行（`BGS`、`BGU`、`BGC`、`GTS`、`GTU`、`ATS`、`ATP`、`NDS`、`NDP`）上它不存在，唯一可用的
+重建手段是扫挂单与近期订单。
+
+即便存在，策略也不同。多数行按 client 或交易所订单 ID 直接回读。Lighter 的两行扫的是活跃列表
+加上第一页非活跃列表，而且**证明不了不存在**——一笔已经翻过那一页的订单是「未经证实」，不是
+「没有」。
+
+**没有任何一行能靠翻页证明不存在。** 把历史翻到底，并不能确立某笔订单从未存在过。这就是
+open-only caveat：一次完整的挂单读取能证明某单已不再挂着，仅此而已。它给不出终态原因，也
+重建不了成交。当一次提交结果不明确时，正确做法是[运维与恢复](../guides/operations-recovery.md)
+里的流程，而不是重试。
+
+**撤单按订单 ID 定位。** 只凭 client order ID 撤单不在二十行的保证之内；Nado 还额外要求一个
+小写 `0x` 前缀的 32 字节订单摘要，而不是数字标识符。
+
+## 默认不可写的行
+
+二十行里有十九行默认接受写入。**Lighter 现货（`LIS`）** 不在其中：它已注册、可读，但被排除在
+默认写入晋升之外，等待 demo/testnet 上双边流动性与精确查单的证据。在那份证据出现之前，把它
+当成一个只读的行。
+
+## 流
+
+[WebSocket 矩阵](exchange-ws-v1-operation-matrix.md)有一处窄得可预料，还有一处窄得不可预料。
+
+可预料的那处：十个现货行没有持仓、标记价格与资金费率订阅，因为现货本来就没有这些东西。现货
+的余额状态不是持仓报告，也没有任何协调过程会把它变成持仓报告。
+
+不可预料的那处：**Nado 永续（`NDP`）在编译期接纳 `WatchMarkPrice`，但运行时返回 unsupported
+错误**，订阅为 nil。它是两张矩阵里唯一一处 `A` 单元格并不代表一条能用的流，所以在这里点名
+——编译期检查抓不到它。
+
+K 线周期在各行之间是固定的：`1m`、`5m`、`15m`、`30m`、`1h`、`4h`、`12h`、`1d`。余额订阅是账户
+级的，而不是按 instrument 的。参见[市场与参考数据](../guides/market-reference-data.md)。
+
+## 仅 SDK 层存在的交易所
+
+有四个交易所家族只有 SDK 代码、没有 product 行。它们是底层接入 surface：没有 normalized 覆盖，
+没有 gateway 行，也没有证据。
+
+| SDK family | SDK 里呈现的 product 形状 | 行情 surface | 订单与账户 surface | 流 surface |
 | --- | --- | --- | --- | --- |
-| Backpack | Spot plus perpetual/futures-oriented models | Markets、ticker、depth/order book、trades、funding rates、mark prices 与 klines | Account settings、balances、open orders、positions、fill history、single/batch placement（以及一个 `ExecuteOrder` compatibility wrapper）、single/all cancellation | Generic raw public/private subscriber；depth、order、fill 与 position payload models |
-| EdgeX | Linear Perp | Exchange metadata、ticker、depth、klines、long/short ratio 与 current/paged/historical funding | Signed place/cancel/cancel-all、order queries、account、assets/collateral、position transactions 与 leverage | Public metadata、ticker、kline、book、trade 与 funding；private order、fill、position 与 balance |
-| GRVT | Perp-oriented fixtures on a generic multi-product-shaped model | Instruments、book、mini/full ticker、trades、klines 与 historical funding | Signed create/cancel/cancel-all、open orders、leverage、account summary 与 funding-account summary | Public mini/full ticker、book、trades 与 klines；private order、fill、position 与 fund movements；authenticated WebSocket create/cancel/cancel-all |
-| StandX | Perp | Symbol information/statistics、overview、depth、price、recent trades 与 funding history | Create、single/multiple cancel、leverage、margin mode、positions、balances、open orders 与 user trades | Public price、depth 与 trades；authenticated orders、positions、balance、trades 与 WebSocket create/cancel commands |
+| Backpack | 现货，外加面向永续/合约的模型 | 市场、ticker、深度、成交、资金费率、标记价格、K 线 | 账户设置、余额、挂单、持仓、成交历史、单笔与批量下单、单笔与批量撤单 | 裸的公有/私有订阅器；深度、订单、成交、持仓载荷模型 |
+| EdgeX | U 本位永续 | 交易所元数据、ticker、深度、K 线、多空比、当前与历史资金费 | 签名的下单、撤单、全撤、订单查询、账户、抵押品、持仓流水、杠杆 | 公有元数据、ticker、K 线、盘口、成交、资金费；私有订单、成交、持仓、余额 |
+| GRVT | 面向永续，构建在一个多产品形状的模型上 | Instrument、盘口、ticker、成交、K 线、历史资金费 | 签名的创建、撤单、全撤、挂单、杠杆、账户与资金账户摘要 | 公有 ticker、盘口、成交、K 线；私有订单、成交、持仓、资金变动；带鉴权的 WebSocket 创建与撤单 |
+| StandX | 永续 | Symbol 信息与统计、概览、深度、价格、最近成交、资金费历史 | 创建、单笔与批量撤单、杠杆、保证金模式、持仓、余额、挂单、用户成交 | 公有价格、深度、成交；带鉴权的订单、持仓、余额、成交，以及 WebSocket 创建与撤单 |
 
-SDK 的存在既不证明 normalized adapter completeness，也不证明 external
-verification。晋升需要满足[adapter 贡献合同](../contributing/adapters.md)、新增具体
-静态 runtime row 与对应测试，并提供 product-scoped evidence。
+这四家正是「SDK-only」之所以要成为一个状态词的原因。仓库里有十三个 SDK 家族，其中九个抵达
+exchange 层的 factory 并成为 gateway 行。这个差额是分层的意义所在，不是疏漏。
 
-## 相关参考
+晋升其中一个是一条定义好的路径：[新增一个交易所](../contributing/venues.md)把它从 SDK 一路
+走到 `exchange/factory`、一个 gateway product 行、两张矩阵，以及一个 Make target。
 
-- [能力矩阵](../adapter-capabilities.md)
-- [测试与证据](testing.md)
-- [配置](configuration.md)
-- [架构](../concepts/architecture.md)
+## 相关
+
+- [术语表](glossary.md) —— 每个状态词各自允许什么
+- [REST 操作矩阵](exchange-rest-v1-operation-matrix.md)
+- [WebSocket 操作矩阵](exchange-ws-v1-operation-matrix.md)
+- [交易所与账户模式](exchange-venues-and-account-modes.md)
+- [测试](testing.md) —— 跑绿了能证明什么

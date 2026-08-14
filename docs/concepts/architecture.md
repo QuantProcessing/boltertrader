@@ -2,80 +2,127 @@
 
 > Canonical language: English. [Chinese mirror](../zh-CN/concepts/architecture.md)
 
-This page owns BolterTrader's stable layer and dependency boundaries. Detailed
-submission semantics belong in [Execution and Risk](execution-risk.md), while
-state convergence belongs in
-[State and Reconciliation](state-reconciliation.md).
+This page owns BolterTrader's layer and dependency boundaries. Submission
+semantics belong in [Execution and Risk](execution-risk.md); state convergence
+belongs in [State and Reconciliation](state-reconciliation.md); account and
+instrument identity belongs in
+[Accounts and Instruments](accounts-instruments.md).
 
 ## Layers and dependency direction
 
-| Layer | Owns | May know |
+| Layer | Owns | May import |
 | --- | --- | --- |
-| `core/` | Neutral models, enums, clocks, event envelopes, capabilities, and client contracts | Standard library and exact-decimal primitives |
-| `runtime/` | Event processing, cache, portfolio, execution, risk, journal, lifecycle, and reconciliation | Neutral `core/{clock,contract,enums,model}` packages and sibling runtime packages |
-| `adapter/<venue>/` | Instrument resolution, account-mode discovery, stateless request validation, normalization, stream/report semantics, and venue error mapping | `core/`, its venue SDK, and shared adapter helpers |
-| `sdk/<venue>/` | Official API transport, signing, endpoints, and wire types | The venue API rather than runtime policy |
-| `runtime/strategy` | Portable strategy context and callback contracts | Neutral runtime views and contracts |
-| `strategy/` and `cmd/` | Example strategies and application composition | Runtime plus the explicitly selected adapter |
+| `sdk/<venue>/` | One venue's native API: transport, signing, endpoint profiles, and wire types | The standard library and its own transport dependencies |
+| `exchange/` | Venue-neutral typed clients and models over the SDKs, plus construction through `exchange/factory` | `sdk/**` from `exchange/internal/**` only, `credential`, `routeprofile` |
+| `gateway/` | The shared capability plane: accounts, encrypted credentials, catalog, capability and limit resolution, durable order identity, reconciliation, and private event delivery | `gateway/**`, `credential`, `exchange`, `exchange/factory`, `routeprofile`, `secretstore` |
+| `services/` | Product behavior over the gateway's HTTP surface: the command ledger, projections, browser sessions, and forwarding | Its own tree, `internal/**`, `credential`, `routeprofile`, `secretstore` |
+| `web/` | The only frontend | The auth edge's `/api/v1` surface |
 
-Within this repository, production runtime code does not import `adapter/**` or
-`sdk/**`. Its project-layer dependencies are the four neutral core packages
-listed above and other runtime packages; standard-library and
-`shopspring/decimal` imports do not weaken that boundary. A venue name may be
-data in an `InstrumentID` or capability declaration, but it must not select a
-venue-specific runtime branch.
+Dependencies run strictly downward. A layer never imports a layer above it, and
+no layer imports a sibling's internals.
 
-## Composition boundary
+Two layers are entry points in their own right rather than mere implementation
+detail of the one above: [the unified exchange API](../exchange/README.md)
+embeds in any Go process, and [the Exchange Gateway](../guides/exchange-gateway.md)
+serves any product, not only the one in this repository.
 
-Application code chooses a venue and constructs its SDK and adapter. It passes
-only `contract.MarketDataClient`, `contract.ExecutionClient`, and
-`contract.AccountClient` values to `runtime.NewNode`. Any client can be absent
-for a partial node, such as a market-data-only process.
+## Enforced boundaries
 
-The runtime obtains normalized instruments through the market client's
-`InstrumentProvider`, keeps execution and account capability provenance
-separate, and resolves one logical account identity from the configured neutral
-clients. Strategies receive a runtime context, not an adapter or SDK handle.
+Three tests hold the table above to the code. They are the reason a boundary
+violation fails `make test` rather than being noticed in review.
 
-## State ownership and serialization
+- `gateway/contracts/import_boundary_test.go` walks every non-test `.go` file
+  under `gateway/` and rejects any repository import that is not `gateway/...`
+  or one of exactly five packages: `credential`, `exchange`,
+  `exchange/factory`, `routeprofile`, `secretstore`. The gateway therefore
+  cannot reach a venue SDK even accidentally.
+- `exchange/boundary_test.go` rejects any `/sdk/`, `/adapter/`, or `/runtime/`
+  import in the public `exchange` and `exchange/factory` files, and rejects
+  public escape symbols named `rawParams`, `nativeParams`, `sdkClient`, or
+  `nativeClient`. SDK wiring lives under `exchange/internal/**`, so callers
+  cannot reach a native handle through the normalized API.
+- `exchange/docs_manifest_test.go` and `exchange/docs_system_contract_test.go`
+  hold the operation matrices and the venue-difference table to
+  `exchange/testdata/public_surface_manifest.json`, so a capability claim in
+  the documentation cannot drift from the code that backs it.
 
-The node consumes typed market, execution, and account envelopes through one
-runtime bus. Live event mutation and recovered mutation converge through
-runtime-owned cache, portfolio, fill, and callback paths. Direct reconciliation
-is serialized against event application, so an authoritative snapshot cannot
-race a live mutation into strategy-visible state.
+The services layer is bounded by construction rather than by a test: no
+production file under `services/` imports `gateway/**` or `exchange/**` at all.
+A product service reaches the gateway over HTTP, which is what makes the
+gateway replaceable, independently deployable, and usable by a product that
+does not live in this repository.
 
-The main state owners are deliberately distinct:
+## Process and network topology
 
-- cache owns normalized current state;
-- portfolio owns account-aware exposure and valuation views;
-- the execution journal owns command intent and outcome recovery;
-- reconciliation owns scoped comparison with authoritative reports;
-- lifecycle owns whether commands are active, restricted, or halted.
+`make up` starts eight containers: PostgreSQL, three migrators that run to
+completion and exit, and four resident services. Every published port binds
+`127.0.0.1` only.
 
-These components exchange neutral models. None receives an SDK response type.
+```text
+browser ──► web (Caddy)
+              │  same origin: /api/* is reverse-proxied
+              ▼
+         services/authedge ──┬──► gateway            /internal/v1/accounts…
+                             └──► services/trading   everything else
+                                        │
+                                        └──► gateway /v1
+                                                 │
+                                            exchange ──► sdk ──► venue
+```
+
+The browser talks to exactly one origin. Because the bundle and `/api/*` share
+it, the session cookie stays `HttpOnly` and `SameSite=Strict` and no CORS
+surface exists. The auth edge terminates that session and forwards by path
+prefix, injecting a service token and the caller's identity header; it performs
+no response aggregation. The gateway's account lifecycle is reachable only on
+its internal plane, because it accepts credential material.
+
+Postgres runs once. The gateway, the trading service, and the auth edge each
+own separate schemas within it and never read each other's tables.
 
 ## Where venue differences belong
 
-Adapters own differences that cannot be expressed as generic policy: native
-symbols or asset indexes, supported order fields, account and position modes,
-request signing, endpoint profiles, stream-gap interpretation, report coverage,
-and exact response identity. SDKs own their wire representation. Runtime owns
-only portable orchestration after those differences have been translated into
-core contracts.
+Differences that cannot be expressed as portable policy stay as low as possible:
 
-The runtime submission surface is the ordinary `ExecutionClient` contract. An
-adapter may prepare or sign a request internally while implementing `Submit`,
-but runtime has no prepared-order, venue pre-trade lease, or venue-capacity
-admission protocol. See [Execution and Risk](execution-risk.md) for the one
-canonical sequence.
+- `sdk/<venue>` owns the wire representation, signing, and endpoint profiles.
+- `exchange/internal/<venue>` owns native symbols and asset indexes, supported
+  order fields, account and position mode discovery, stream-gap interpretation,
+  report coverage, and error mapping into normalized errors.
+- `exchange` exposes only what every implemented venue can express. A dimension
+  that one venue cannot honour becomes `exchange.ErrUnsupported`, not a
+  venue-specific branch in a caller.
+
+Above `exchange`, a venue name is data — part of an instrument identifier or a
+capability record. It must never select a code path. The
+[venue and account-mode differences](../reference/exchange-venues-and-account-modes.md)
+page is the centralized statement of what actually differs.
+
+## Where shared capability belongs
+
+The gateway is deliberately thick and product services are deliberately thin.
+Anything more than one product would need lives in the gateway: credential
+storage, account lifecycle, catalog, capability and limit resolution, durable
+order identity, reconciliation, and private event delivery.
+
+A product service owns only its own product's decisions — for the manual
+trading product, the command ledger, previews, reservations, and the
+projections its interface needs. When a product service grows a capability that
+a second product would also need, that is a signal to move it down into the
+gateway, not to duplicate it.
 
 ## Boundary checks for contributors
 
-Before adding a runtime abstraction, ask whether every implemented venue can
-express it without exposing SDK types or venue-specific lifecycle. If not, keep
-the behavior in the adapter and expose only the smallest neutral capability.
+Before adding an abstraction, ask which layer can express it without leaking
+the layer below:
+
+- If it needs an SDK type, it belongs in `exchange/internal/<venue>`.
+- If it needs a venue branch above `exchange`, the normalization is incomplete.
+- If a second product would need it, it belongs in `gateway/`, not in a service.
+- If it needs a gateway Go type inside `services/`, the gateway's HTTP surface
+  is missing something; extend that surface instead of the import graph.
 
 Continue with [Accounts and Instruments](accounts-instruments.md), the
-[adapter contributor guide](../contributing/adapters.md), and the detailed
-[capability matrix](../adapter-capabilities.md).
+[venue contributor guide](../contributing/venues.md), and the service guides for
+[the gateway](../guides/exchange-gateway.md),
+[the trading service](../guides/trading-service.md),
+[the auth edge](../guides/auth-edge.md), and [the web app](../guides/web-app.md).

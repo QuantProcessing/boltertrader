@@ -37,8 +37,20 @@ func TestRegisteredRoutesExactlyMatchOpenAPIAndExcludeForbiddenSurfaces(t *testi
 			strings.Join(registered, "\n"), strings.Join(openAPI, "\n"))
 	}
 
+	// Two different things are being guarded here, and the list does not say
+	// which is which, so: `orderbook` is a spelling ban — the surface exists as
+	// `/v1/order-book` and the unhyphenated form is what the check rejects.
+	// The rest are capability bans: surfaces the gateway must not grow, either
+	// because they move funds (`transfer`, `deposit`, `withdraw`, `custody`),
+	// leak secrets (`credential`), bypass account scoping (`route-order`), or
+	// belong to a transport this API does not speak (`grpc`).
+	//
+	// `candles` was removed from the list when `GET /v1/candles` was added: the
+	// capability is in `exchange.MarketREST` on every venue and the chart needs
+	// it. `ticker` and `public-trades` stay banned — they are still unexposed,
+	// and the ban is what keeps that a decision rather than an oversight.
 	forbidden := []string{
-		"orderbook", "candles", "ticker", "public-trades",
+		"orderbook", "ticker", "public-trades",
 		"transfer", "deposit", "withdraw", "credential", "route-order",
 		"custody", "grpc",
 	}

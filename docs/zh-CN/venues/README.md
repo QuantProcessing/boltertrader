@@ -1,40 +1,52 @@
-# 交易所指南
+# Venue 支持
 
 [English canonical](../../venues/README.md) · 本中文页为维护镜像。
 
-## 归属与范围
+## 本页的定位
 
-本索引用于查找各交易所特定的环境、产品、配置、订单、账户和验收说明。
-交易所页面负责定义交易所特有语义；逐产品的详细事实表仍以 21 行的
-[能力矩阵](../adapter-capabilities.md)为准。
+本页是路由页，不是事实来源。venue 行为不再按 venue 分页描述，而是按维度
+描述，且相关页面均由契约测试与代码冻结在一起。请用下表找到你需要的那条
+venue 事实的归属页。
 
-| 交易所 | 公开非生产环境 | Runtime 产品页面 |
-| --- | --- | --- |
-| [Binance](binance.md) | Demo | Spot, USD-M Perp |
-| [OKX](okx.md) | Demo | Spot cash, USDT-linear SWAP |
-| [Bybit](bybit.md) | Demo Trading | Spot, USDT-linear Perp, USDC-linear Perp |
-| [Bitget](bitget.md) | Demo/PAP | Spot, USDT-linear Perp, USDC-linear Perp |
-| [Gate](gate.md) | Testnet | Spot, USDT-linear Perp; USDC deferred |
-| [Hyperliquid](hyperliquid.md) | Testnet | Spot, Perp, HIP-3 Perp |
-| [Lighter](lighter.md) | Testnet | Spot, Perp |
-| [Aster](aster.md) | Testnet | Spot, USDT-linear Perp |
-| [Nado](nado.md) | Testnet | Spot no-borrow, Perp |
+| 问题 | 归属页 |
+| --- | --- |
+| 存在哪些规范化 REST product 与 method | [Exchange REST V1 operation matrix](../reference/exchange-rest-v1-operation-matrix.md) |
+| 存在哪些规范化 WebSocket product 与 method | [Exchange WebSocket V1 operation matrix](../reference/exchange-ws-v1-operation-matrix.md) |
+| Account 体系、逻辑身份、position mode、margin mode、leverage、order caveat | [Exchange venue 与 account-mode 差异](../reference/exchange-venues-and-account-modes.md) |
+| 哪条命令能针对 Demo/Testnet 认证某个 product 行 | [测试与认证](../reference/testing.md) |
+| 凭证名、environment 与写闸门 | [配置](../reference/configuration.md) |
+| 只存在于 SDK 层的 venue，以及被推迟的维度 | [Unsupported、Deferred（延期）和 SDK-only surface](../reference/unsupported.md) |
 
-## 如何阅读交易所页面
+## 已认证的 venue 与 product 行
 
-- 请求方法与订阅方法会分开列出。粗粒度的 `Market`、`Execution` 或
-  `Account` 流标志，并不能证明每一种标准化订阅方法都已接通。
-- `Submit`、`Cancel`、`CancelAll` 和 `Modify` 与流支持分别说明。某个交易所
-  即使没有私有流分发，也可能通过 REST 对命令进行对账。
-- 报告覆盖会区分精确单订单证据、开放订单快照、有界成交历史、持仓和账户
-  状态。除非交易所页面另有说明，仅开放订单范围内的缺失不能证明订单终态。
-- 除非另有说明，参考数据仅适用于 Perp。当前未平仓量直接向交易所查询，
-  runtime 不保留其缓存。
-- 一次有记录、成功且零跳过的 Demo/Testnet 运行，只能证明其明确命名的产品、
-  生命周期和终态断言。仅仅存在测试目标，不能证明当前外部行为；任何一次运行
-  也不能证明生产就绪，或证明未命名的产品、账户模式和流维度。
+九个 venue 接入 gateway，共二十个 product 行。每一行都有自己的验收目标；
+`make test-gateway-demo-testnet` 会串行运行全部二十个。
 
-文档中的验收目标使用仓库的零跳过运行器。请阅读[测试](../reference/testing.md)
-了解门禁与清理语义，并阅读[配置](../reference/configuration.md)了解规范凭证名和
-安全门禁名。SDK-only 交易所和 deferred 维度由
-[Unsupported 和 Deferred 功能](../reference/unsupported.md)说明。
+| Venue | 非生产环境 | Product 行 | 验收目标 |
+| --- | --- | --- | --- |
+| Aster | Testnet | `ATS`, `ATP` | `test-gateway-aster-spot-testnet`, `test-gateway-aster-usdt-perp-testnet` |
+| Binance | Demo | `BNS`, `BNP` | `test-gateway-binance-spot-demo`, `test-gateway-binance-usd-perp-demo` |
+| Bitget | Demo | `BGS`, `BGU`, `BGC` | `test-gateway-bitget-spot-demo`, `test-gateway-bitget-usdt-perp-demo`, `test-gateway-bitget-usdc-perp-demo` |
+| Bybit | Demo | `BYS`, `BYU`, `BYC` | `test-gateway-bybit-spot-demo`, `test-gateway-bybit-usdt-perp-demo`, `test-gateway-bybit-usdc-perp-demo` |
+| Gate | Testnet | `GTS`, `GTU` | `test-gateway-gate-spot-testnet`, `test-gateway-gate-usdt-perp-testnet` |
+| Hyperliquid | Testnet | `HLS`, `HLP` | `test-gateway-hyperliquid-spot-testnet`, `test-gateway-hyperliquid-perp-testnet` |
+| Lighter | Testnet | `LIS`, `LIP` | `test-gateway-lighter-spot-testnet`, `test-gateway-lighter-perp-testnet` |
+| Nado | Testnet | `NDS`, `NDP` | `test-gateway-nado-spot-testnet`, `test-gateway-nado-usdt0-perp-testnet` |
+| OKX | Demo | `OXS`, `OXP` | `test-gateway-okx-spot-demo`, `test-gateway-okx-usdt-perp-demo` |
+
+`sdk/` 另外还包含 Backpack、EdgeX、GRVT 和 StandX。这些 venue 没有
+`exchange/factory` 构造路径，因此也没有 product 行。
+
+## 如何理解一条支持声明
+
+支持以 product 行为单位，且有三种声明经常被混淆：
+
+- **Implemented** 表示 operation matrix 将该行标记为 `A` 且代码路径存在。
+  它不说明当前的外部行为。
+- **Demo/Testnet-certified** 表示该行的验收目标有一次记录在案的零跳过运行
+  通过。它只证明该次运行点名的 product、生命周期与终态断言——不证明相邻的
+  行、account mode 或 stream 维度。
+- **Production-ready** 从不由本仓库声明。任何非生产运行都无法确立它。
+
+`sdk/<venue>` package、make target 或矩阵单元格的存在，都不能作为上述三者
+中任何一条的证据。只有零跳过的退出码可以，且只对它自己那一行有效。

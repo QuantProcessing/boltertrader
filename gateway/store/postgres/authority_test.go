@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/QuantProcessing/boltertrader/migration/authority"
+	"github.com/QuantProcessing/boltertrader/gateway/authority"
 )
 
 func TestGatewayAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing.T) {
-	matrix := authority.GatewayV6()
+	matrix := authority.GatewayV8()
 	statements := strings.Join(databaseAuthorityStatements(matrix, "bolter_gateway_test"), "\n")
 	for _, want := range []string{
 		`ALTER SCHEMA public OWNER TO "bolter_gateway_test_migrator"`,
@@ -23,7 +23,7 @@ func TestGatewayAuthorityRestoresMigratorRuntimeAndMaintenanceConnect(t *testing
 }
 
 func TestGatewayAuthorityMatrixIsValid(t *testing.T) {
-	matrix := authority.GatewayV6()
+	matrix := authority.GatewayV8()
 	if err := matrix.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestEmbeddedGatewayLedgerDigestMatchesAuthorityMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if matrix := authority.GatewayV6(); digest != matrix.MigrationDigest || len(entries) != matrix.SchemaVersion {
+	if matrix := authority.GatewayV8(); digest != matrix.MigrationDigest || len(entries) != matrix.SchemaVersion {
 		t.Fatalf("embedded Gateway ledger digest=%q entries=%d matrix=%+v", digest, len(entries), matrix)
 	}
 }

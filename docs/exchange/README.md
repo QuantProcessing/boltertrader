@@ -2,10 +2,10 @@
 
 [简体中文](../zh-CN/exchange/README.md) · This English page is canonical.
 
-The `exchange` module is a standalone, normalized, SDK-backed API. It is
-independent from `adapter/*` and `runtime/*`: callers construct a typed
-`exchange.SpotClient` or `exchange.PerpClient` directly and select a venue,
-product, and environment explicitly.
+The `exchange` module is a standalone, normalized, SDK-backed API. It depends on
+nothing above it: callers construct a typed `exchange.SpotClient` or
+`exchange.PerpClient` directly and select a venue, product, and environment
+explicitly.
 
 ## Start here
 
@@ -16,10 +16,8 @@ product, and environment explicitly.
   for typed construction and safe non-production examples.
 - If callers should use a resident remote service instead of owning clients,
   caching, credentials, and restart recovery in-process, choose the
-  [Exchange Gateway](../guides/exchange-gateway.md).
-- If the process hosts one stateful strategy, choose the
-  [runtime node](../guides/runtime-node.md). These are peer product paths, not
-  successive versions of the direct API.
+  [Exchange Gateway](../guides/exchange-gateway.md). The two are peer entry
+  points, not successive versions of one API.
 
 ## Exact API inventories
 
@@ -45,8 +43,8 @@ leverage, and order-caveat summary.
 
 Exchange behavior claims must be grounded in the public exchange contracts,
 factory, manifest, exchange tests, and exchange-specific acceptance evidence.
-Adapter and runtime documentation may provide background, but it does not
-define this module's behavior.
+Gateway and product-service documentation may provide background, but it does
+not define this module's behavior.
 
 - [Exchange contracts](../../exchange/contract.go)
 - [Factory API](../../exchange/factory/factory.go)
