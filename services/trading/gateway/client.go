@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -108,10 +109,65 @@ const (
 	// surface as a decode failure and be reported as an unavailable board, so
 	// the ceiling matches the catalog's rather than the control plane's.
 	fundingBoardResponseLimit = 8 << 20
+	// fundingHistoryResponseLimit bounds one settled-funding series. Its worst
+	// case is arithmetic rather than open-ended: the widest window the surface
+	// offers is thirty days, the shortest settlement anyone on the board runs is
+	// hourly, and a point is one timestamp, one decimal string and a small
+	// integer — under 90 bytes. Seven hundred and twenty of those is around
+	// 64 KiB, close enough to the control plane's ceiling to be truncated by it
+	// on a venue that quotes more precision, and far enough from the bulk
+	// documents above that borrowing their 8 MiB would say nothing true about
+	// this read.
+	fundingHistoryResponseLimit = 1 << 20
 )
 
 type readEnvelope[T any] struct {
 	Data T `json:"data"`
+}
+
+// readStatusError carries the rejected status out of readLimit so one caller can
+// tell a permanent refusal from a transient one.
+//
+// Its message is the sentence readLimit used to build inline, and every caller
+// wraps it with %w, so nothing downstream reads differently for having it. Only
+// the funding-history read looks inside: the internal plane answers 404 there
+// when a venue has no history endpoint at all, which is a fact about the venue
+// rather than about the moment, and flattening it into the same string as a 503
+// would have the browser retry a chart that can never exist.
+//
+// The code is best-effort and may be empty. It exists because the internal
+// plane spends 404 on two different facts — a venue with no history surface and
+// an instrument the board is not carrying — and only the first is a statement
+// about the venue. Told apart here, they can be said apart to the operator.
+type readStatusError struct {
+	status int
+	code   string
+}
+
+func (err readStatusError) Error() string {
+	return fmt.Sprintf("Gateway read rejected with status %d", err.status)
+}
+
+// readErrorCode lifts the machine-readable code out of a rejected read's body,
+// draining the rest either way so the connection can be reused.
+//
+// Lenient on purpose, and silent when it fails: an error body is already the
+// unhappy path, and a caller that gets "" simply falls back to reasoning from
+// the status alone — which is what every caller but one does regardless. The
+// limit is the same 64 KiB the body used to be discarded under.
+func readErrorCode(body io.Reader) string {
+	limited := io.LimitReader(body, 64<<10)
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(limited).Decode(&envelope); err != nil {
+		_, _ = io.Copy(io.Discard, limited)
+		return ""
+	}
+	_, _ = io.Copy(io.Discard, limited)
+	return envelope.Error.Code
 }
 
 type runtimeProjectionView struct {
@@ -310,6 +366,22 @@ func (source FundingBoardSource) FetchFundingBoard(ctx context.Context) (marketd
 	return source.client.fetchFundingBoard(ctx)
 }
 
+// FundingHistorySource adapts the client to marketdata.FundingHistorySource,
+// alongside the three adapters above and for the same reason.
+type FundingHistorySource struct{ client *Client }
+
+// FundingHistory views the client as a funding-history source.
+func (client *Client) FundingHistory() FundingHistorySource {
+	return FundingHistorySource{client: client}
+}
+
+func (source FundingHistorySource) FetchFundingHistory(ctx context.Context, read marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
+	if source.client == nil {
+		return marketdata.FundingHistorySeries{}, fmt.Errorf("Gateway funding-history source is unavailable")
+	}
+	return source.client.fetchFundingHistory(ctx, read)
+}
+
 type orderIntent struct {
 	AccountID            string `json:"accountId,omitempty"`
 	InstrumentID         string `json:"instrumentId"`
@@ -350,6 +422,11 @@ type placeResponse struct {
 	ResourceVersion int64  `json:"resource_version"`
 }
 
+// fillCollection decodes strictly, like every read on this client, so it has to
+// name every field the Gateway can put on a fill — not only the ones trading
+// keeps. A fill off a real venue also carries the venue's own identifiers, and a
+// decoder that left them out would reject the entire page instead of ignoring
+// them, which is how a filled order stalls in reconciliation forever.
 type fillCollection struct {
 	Items []struct {
 		AccountID       string `json:"account_id"`
@@ -357,6 +434,15 @@ type fillCollection struct {
 		GatewayOrderID  string `json:"gateway_order_id"`
 		SettlementAsset string `json:"settlement_asset"`
 		Fill            struct {
+			// Named so the page decodes, then dropped: trading books a fill
+			// against the Gateway's canonical identity, and a venue-native
+			// symbol or order id means nothing on this side of the wire.
+			NativeSymbol  string `json:"native_symbol"`
+			NativeID      string `json:"native_id"`
+			OrderID       string `json:"order_id"`
+			ClientOrderID string `json:"client_order_id"`
+			Liquidity     string `json:"liquidity"`
+
 			FillID   string    `json:"fill_id"`
 			Side     string    `json:"side"`
 			Price    string    `json:"price"`
@@ -777,6 +863,30 @@ func (client *Client) fetchFundingBoard(ctx context.Context) (marketdata.BoardSn
 	return result.Data, nil
 }
 
+func (client *Client) fetchFundingHistory(ctx context.Context, read marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
+	values := url.Values{
+		"venue": {read.Venue}, "environment": {read.Environment}, "symbol": {read.Symbol},
+		"since": {read.Since.UTC().Format(time.RFC3339)}, "until": {read.Until.UTC().Format(time.RFC3339)},
+	}
+	var result readEnvelope[marketdata.FundingHistorySeries]
+	if err := client.readLimit(ctx, "", "/internal/v1/funding-history", values, &result, fundingHistoryResponseLimit); err != nil {
+		var rejected readStatusError
+		if errors.As(err, &rejected) && rejected.status == http.StatusNotFound {
+			// The internal plane spends 404 on two facts. Only the code tells
+			// them apart, and a body that arrived without one is read as the
+			// narrower claim: saying "not listed" about a venue that publishes
+			// nothing costs an operator a retry, where the reverse costs them a
+			// false statement about the venue.
+			if rejected.code == "FUNDING_HISTORY_UNSUPPORTED" {
+				return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnsupported
+			}
+			return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnknownInstrument
+		}
+		return marketdata.FundingHistorySeries{}, fmt.Errorf("read Gateway funding history: %w", err)
+	}
+	return result.Data, nil
+}
+
 func (client *Client) CheckMarketDataRoute(ctx context.Context) error {
 	var result readEnvelope[struct {
 		Revision    string               `json:"revision"`
@@ -831,8 +941,7 @@ func (client *Client) readLimit(ctx context.Context, principal, path string, que
 		return err
 	}
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return fmt.Errorf("Gateway read rejected with status %d", response.StatusCode)
+		return readStatusError{status: response.StatusCode, code: readErrorCode(response.Body)}
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, limit))
 	decoder.DisallowUnknownFields()

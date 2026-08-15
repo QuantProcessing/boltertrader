@@ -25,8 +25,8 @@
  *     differ by suffix alone. That is why the table is explicit and why these
  *     functions are grouped by owning service rather than by URL prefix.
  *
- * Response envelopes differ per service and per route — five shapes across this
- * surface. Each function unwraps its own, so nothing above this layer ever
+ * Response envelopes differ per service and per route — seven shapes across
+ * this surface. Each function unwraps its own, so nothing above this layer ever
  * writes `.data.items`.
  * ------------------------------------------------------------------------- */
 
@@ -36,6 +36,12 @@ import type {
   AccountRoute,
   AccountRuntime,
   ActivityEvent,
+  ArbitrageCommandRequest,
+  ArbitrageExecution,
+  ArbitrageOpportunity,
+  ArbitragePair,
+  ArbitragePreview,
+  ArbitragePreviewRequest,
   CandlePage,
   CandleQuery,
   Command,
@@ -43,6 +49,8 @@ import type {
   CredentialBundle,
   Fill,
   FundingBoardSnapshot,
+  FundingHistoryQuery,
+  FundingHistorySeries,
   Instrument,
   LedgerEntry,
   ManualCommandRequest,
@@ -105,6 +113,19 @@ interface RevisionedItemsEnvelope<T> {
   data: { revision: string; items: T[] };
 }
 
+/**
+ * `{meta, data: {items, observedAt}}` — the arbitrage opportunity scan alone.
+ *
+ * The timestamp is the board snapshot every row was ranked against, not the
+ * time of the response. Two rows in one payload are therefore comparable with
+ * each other, and a stale scan is visible as one number rather than having to
+ * be inferred per row.
+ */
+interface ObservedItemsEnvelope<T> {
+  meta: ResponseMeta;
+  data: { items: T[]; observedAt: string };
+}
+
 /** What a catalog read carries besides its rows. */
 export interface Projected<T> {
   items: T[];
@@ -139,6 +160,7 @@ export const paths = {
   marketData: "/api/v1/market-data",
   candles: "/api/v1/candles",
   fundingBoard: "/api/v1/funding-board",
+  fundingHistory: "/api/v1/funding-history",
   realtimeStream: "/api/v1/realtime/stream",
 
   reservations: "/api/v1/reservations",
@@ -160,6 +182,11 @@ export const paths = {
   manualCommands: "/api/v1/products/manual/commands",
   manualOrders: "/api/v1/products/manual/orders",
   manualOrder: (orderId: string) => `/api/v1/products/manual/orders/${encodeURIComponent(orderId)}`,
+
+  arbitrageOpportunities: "/api/v1/products/arbitrage/opportunities",
+  arbitragePreviews: "/api/v1/products/arbitrage/execution-previews",
+  arbitrageCommands: "/api/v1/products/arbitrage/commands",
+  arbitragePositions: "/api/v1/products/arbitrage/positions",
 
   accounts: "/api/v1/accounts",
   account: (accountId: string) => `/api/v1/accounts/${encodeURIComponent(accountId)}`,
@@ -300,6 +327,30 @@ export const funding = {
     const body = await apiRequest<RateLimitedEnvelope<FundingBoardSnapshot>>(paths.fundingBoard, { signal });
     return { value: body.data, rateLimit: body.rateLimit };
   },
+
+  /**
+   * One venue's settled funding over a named window.
+   *
+   * The opposite read from the board in every way that matters: per venue and
+   * per symbol rather than the whole matrix, because no venue offers a bulk
+   * history call — which is also why this belongs to a chosen pair rather than
+   * to the matrix, where it would be hundreds of underlyings times ten venues.
+   *
+   * `window` is one of two literals. The server will not take a range: every
+   * venue's endpoint is paginated, and these are the two spans that come back
+   * whole in a single page from all of them.
+   *
+   * A venue with no history endpoint answers 404 `FUNDING_HISTORY_UNSUPPORTED`
+   * with `retryable: false` — a fact about the venue, not about the moment, and
+   * the caller is expected to say so rather than retry.
+   */
+  async history(query: FundingHistoryQuery, signal?: AbortSignal): Promise<Metered<FundingHistorySeries>> {
+    const body = await apiRequest<RateLimitedEnvelope<FundingHistorySeries>>(paths.fundingHistory, {
+      query: { ...query },
+      signal,
+    });
+    return { value: body.data, rateLimit: body.rateLimit };
+  },
 };
 
 /* --- Trading ledgers and projections ------------------------------------- */
@@ -436,6 +487,125 @@ export const manual = {
   order: async (orderId: string, signal?: AbortSignal): Promise<Command> =>
     (await apiRequest<DataEnvelope<Command>>(paths.manualOrder(orderId), { signal })).data,
 };
+
+/* --- The arbitrage product ----------------------------------------------- */
+
+/** `action: "open"` — spend a sealed preview and place both legs. */
+export interface ArbitrageOpenRequest {
+  previewId: string;
+  lineageId: string;
+  idempotencyKey: string;
+}
+
+/** `action: "close"` — reduce-only market orders against whatever the pair holds. */
+export interface ArbitrageCloseRequest {
+  lineageId: string;
+  idempotencyKey: string;
+}
+
+/** `action: "cancel"` — dispose of one leg, which is what a half-open hedge needs. */
+export interface ArbitrageCancelRequest {
+  lineageId: string;
+  orderId: string;
+  idempotencyKey: string;
+}
+
+/**
+ * The cross-venue hedge: one underlying, two venues, one long and one short.
+ *
+ * `POST .../commands` is one route with three actions, and the server validates
+ * which identifiers may be set for each — `open` needs a `previewId` and no
+ * `orderId`, `close` needs neither, `cancel` needs an `orderId` and no
+ * `previewId`. Sending the wrong combination is a 400, not a lenient
+ * best-effort, so the three are separate functions here and the exclusive
+ * fields are not reachable from the wrong one.
+ *
+ * They also differ in what comes back: `open` and `close` answer with the pair's
+ * `ArbitrageExecution`, `cancel` answers with the single leg's `Command`. That
+ * is why `cancelLeg` is not folded into `execute` despite sharing a URL.
+ */
+export const arbitrage = {
+  /**
+   * The ranked cross-venue spreads, largest first.
+   *
+   * Reachability is opt-in: pass the account ids the operator holds and each
+   * leg comes back carrying the account that can trade it and `executable`
+   * true. Pass none and the scan is still complete — every venue pair is
+   * ranked, just not executable — which is what makes this readable before any
+   * account exists. Naming an account the session does not own does not reveal
+   * anything: the lookup is principal-scoped, so it simply leaves that venue
+   * unreachable.
+   *
+   * The server caps the list at 32 ids and rejects a longer one.
+   */
+  async opportunities(
+    accountIds: string[] = [],
+    signal?: AbortSignal,
+  ): Promise<{ items: ArbitrageOpportunity[]; observedAt: string }> {
+    const body = await apiRequest<ObservedItemsEnvelope<ArbitrageOpportunity>>(paths.arbitrageOpportunities, {
+      query: { accountId: accountIds },
+      signal,
+    });
+    return body.data;
+  },
+
+  /**
+   * Step one: price both legs against the funding board and seal the result.
+   *
+   * 201, and the seal expires 30 seconds later — `ARBITRAGE_PREVIEW_TTL_MS`.
+   * A preview with `blockers` is still returned rather than refused, because
+   * the reasons are what the operator needs to see; it just cannot be spent.
+   */
+  preview: async (request: ArbitragePreviewRequest, signal?: AbortSignal): Promise<ArbitragePreview> =>
+    (await apiRequest<DataEnvelope<ArbitragePreview>>(paths.arbitragePreviews, { method: "POST", body: request, signal }))
+      .data,
+
+  /**
+   * Step two: place both legs.
+   *
+   * 202 when the legs were submitted now, 200 when this is a replay of a
+   * submission that already happened — the body is identical either way, so
+   * read `state` rather than the status. A `partially_open` result is a
+   * success at the HTTP level and a problem at the trading level: one leg
+   * stood up and the other did not, and nothing will unwind it automatically.
+   */
+  open: async (request: ArbitrageOpenRequest, signal?: AbortSignal): Promise<ArbitrageExecution> =>
+    submitArbitrageCommand<ArbitrageExecution>({ ...request, action: "open" }, signal),
+
+  /** Closes both legs of a pair with reduce-only market orders. */
+  close: async (request: ArbitrageCloseRequest, signal?: AbortSignal): Promise<ArbitrageExecution> =>
+    submitArbitrageCommand<ArbitrageExecution>({ ...request, action: "close" }, signal),
+
+  /**
+   * Cancels one leg by command id — the way out of `partially_open`.
+   *
+   * Answers with that leg's `Command`, not the pair, because the other leg is
+   * untouched and reporting the pair would suggest otherwise.
+   */
+  cancelLeg: async (request: ArbitrageCancelRequest, signal?: AbortSignal): Promise<Command> =>
+    submitArbitrageCommand<Command>({ ...request, action: "cancel" }, signal),
+
+  /** One row per lineage: both legs, what they still hold, and accrued funding. */
+  positions: async (signal?: AbortSignal): Promise<ArbitragePair[]> =>
+    items(await apiRequest<ItemsEnvelope<ArbitragePair>>(paths.arbitragePositions, { signal })),
+};
+
+/**
+ * The one request the three command actions share.
+ *
+ * `idempotencyKey` goes in the body and the header both; the server compares
+ * them and rejects a mismatch, so they are set from one value here — the same
+ * rule as the manual product.
+ */
+async function submitArbitrageCommand<T>(request: ArbitrageCommandRequest, signal?: AbortSignal): Promise<T> {
+  const body = await apiRequest<DataEnvelope<T>>(paths.arbitrageCommands, {
+    method: "POST",
+    body: request,
+    idempotencyKey: request.idempotencyKey,
+    signal,
+  });
+  return body.data;
+}
 
 /* --- Accounts (the gateway plane) ---------------------------------------- */
 

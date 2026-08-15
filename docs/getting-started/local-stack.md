@@ -41,7 +41,7 @@ Eight containers, of which three exit as soon as they finish:
 | `trading-migrate` | Applies the trading service's migrations, then exits |
 | `authedge-migrate` | Applies the auth edge's migrations, then exits |
 | `gateway` | The shared capability plane |
-| `trading` | The manual trading product |
+| `trading` | Manual trading and funding arbitrage |
 | `authedge` | Browser sessions and forwarding |
 | `web` | Caddy, serving the frontend and reverse-proxying `/api/*` |
 

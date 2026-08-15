@@ -3,6 +3,7 @@ import type { Page, Route } from "@playwright/test";
 import type {
   Account,
   ActivityEvent,
+  ArbitrageOpportunity,
   Candle,
   CandlePage,
   Command,
@@ -55,12 +56,36 @@ export const ACCOUNT: Account = {
   mode: "test",
   nativeEnvironment: "testnet",
   displayName: "Binance testnet",
-  productPolicy: ["manual"],
+  productPolicy: ["manual", "arbitrage"],
   routes: [
     { routeId: "spot", product: "spot", routeProfileId: "binance:testnet:spot", requestedState: "active" },
   ],
   status: "active",
   desiredStateRevision: 3,
+  runtimeGeneration: 1,
+  credentialVersion: 1,
+  lastValidatedAt: "2026-08-13T09:00:00Z",
+  updatedAt: "2026-08-13T09:00:00Z",
+};
+
+/**
+ * The second venue, which is the whole of what makes a hedge possible.
+ *
+ * Arbitrage is the one product that cannot be exercised by a single account: it
+ * buys on one exchange and sells on another, so a fixture with one account can
+ * only ever prove the refusal. This one carries the perpetual route the funding
+ * board's bybit column quotes.
+ */
+export const HEDGE_ACCOUNT: Account = {
+  accountId: "acct-bybit-testnet",
+  venue: "bybit",
+  mode: "test",
+  nativeEnvironment: "testnet",
+  displayName: "Bybit testnet",
+  productPolicy: ["manual", "arbitrage"],
+  routes: [{ routeId: "perp", product: "perp", routeProfileId: "bybit:testnet:perp", requestedState: "active" }],
+  status: "active",
+  desiredStateRevision: 2,
   runtimeGeneration: 1,
   credentialVersion: 1,
   lastValidatedAt: "2026-08-13T09:00:00Z",
@@ -194,6 +219,52 @@ const FUNDING_BOARD: FundingBoardSnapshot = {
   ],
 };
 
+/**
+ * The one pair the board's two full columns can make.
+ *
+ * Derived by hand from `FUNDING_BOARD` so the two screens agree: binance pays
+ * 0.0001 every eight hours and bybit pays 0.00042, which is 0.0003 and 0.00126
+ * a day. Longs pay where the rate is higher, so the hedge is long binance and
+ * short bybit, and the daily spread is the difference. Lighter quotes BTC-USDC
+ * — a different quote asset, and so not the same underlying — which is why one
+ * opportunity rather than three comes out of a board with three live venues.
+ */
+const ARBITRAGE_OPPORTUNITIES: ArbitrageOpportunity[] = [
+  {
+    symbol: "BTC-USDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    long: {
+      venue: "binance",
+      environment: "test",
+      accountId: ACCOUNT.accountId,
+      instrumentId: "binance:testnet:perp:BTC-USDT",
+      rate: "0.0001",
+      intervalHours: 8,
+      nextFundingTime: "2026-08-13T16:00:00Z",
+      markPrice: "64001.00",
+      dailyRate: "0.0003",
+      stale: false,
+    },
+    short: {
+      venue: "bybit",
+      environment: "test",
+      accountId: HEDGE_ACCOUNT.accountId,
+      instrumentId: "bybit:testnet:perp:BTC-USDT",
+      rate: "0.00042",
+      intervalHours: 8,
+      nextFundingTime: "2026-08-13T16:00:00Z",
+      openInterest: "1520.44",
+      dailyRate: "0.00126",
+      stale: false,
+    },
+    spreadDaily: "0.00096",
+    spreadApr: "0.3504",
+    executable: true,
+    blockers: [],
+  },
+];
+
 /** Deterministic bars: a chart that redraws differently per run is untestable. */
 function candles(count: number): Candle[] {
   const step = 15 * 60_000;
@@ -270,7 +341,7 @@ export class FakeEdge {
     /* --- Gateway plane: no meta key -------------------------------------- */
 
     if (path === "/api/v1/accounts" && method === "GET") {
-      return ok(route, { data: { accounts: [ACCOUNT] } });
+      return ok(route, { data: { accounts: [ACCOUNT, HEDGE_ACCOUNT] } });
     }
 
     /* --- Catalog: a bare array beside a projection ------------------------ */
@@ -337,6 +408,21 @@ export class FakeEdge {
 
     if (path === "/api/v1/products/manual/orders" && method === "GET") {
       return ok(route, { meta: META, data: { items: this.orders } });
+    }
+
+    /* --- The arbitrage product ------------------------------------------- */
+
+    // `{items, observedAt}` rather than `{items}`: the scan states which board
+    // snapshot it ranked, and the page prints that rather than the clock.
+    if (path === "/api/v1/products/arbitrage/opportunities") {
+      return ok(route, {
+        meta: META,
+        data: { items: ARBITRAGE_OPPORTUNITIES, observedAt: FUNDING_BOARD.observedAt },
+      });
+    }
+
+    if (path === "/api/v1/products/arbitrage/positions") {
+      return ok(route, { meta: META, data: { items: [] } });
     }
 
     /* --- Trading projections --------------------------------------------- */

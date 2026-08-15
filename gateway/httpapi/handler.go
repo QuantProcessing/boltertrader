@@ -36,11 +36,20 @@ const (
 type AccountRegistry interface {
 	Accounts() []account.Resource
 	Status(domain.AccountID) (account.Status, error)
+	RouteStatus(domain.AccountID, string, string) (account.Status, error)
 	Capability(domain.AccountID) (capability.Row, error)
+	RouteCapability(domain.AccountID, string, string) (capability.Row, error)
 	Instruments(domain.AccountID) (catalog.Snapshot, error)
 	Resolve(context.Context, domain.AccountID, domain.InstrumentID) (exchange.Instrument, error)
-	Spot(domain.AccountID) (exchange.SpotClient, error)
-	Perp(domain.AccountID) (exchange.PerpClient, error)
+	// SpotRoute and PerpRoute are named by route rather than by account
+	// because an account can run several routes of one product — bybit
+	// settles perpetuals in both USDT and USDC — and the account-only form
+	// refuses to guess between them. Every reader on this plane already
+	// holds the settlement, either from the account.Resource it is walking
+	// or from the instrument it resolved, so asking the ambiguous question
+	// was never necessary; the interface no longer offers it.
+	SpotRoute(domain.AccountID, string) (exchange.SpotClient, error)
+	PerpRoute(domain.AccountID, string) (exchange.PerpClient, error)
 }
 
 type ReferenceService interface {

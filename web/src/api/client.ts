@@ -113,7 +113,10 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
-export type QueryParams = Record<string, string | number | boolean | null | undefined>;
+/**
+ * An array value becomes a repeated key, not a joined list — see `buildUrl`.
+ */
+export type QueryParams = Record<string, string | number | boolean | null | undefined | string[]>;
 
 /**
  * Performs one request and returns its parsed body.
@@ -194,6 +197,17 @@ function buildUrl(path: string, query?: QueryParams): string {
     // An absent optional means "let the server decide", which is not the same
     // as sending it empty — trading rejects a named-but-blank query field.
     if (value === undefined || value === null || value === "") continue;
+    if (Array.isArray(value)) {
+      // Repeated key rather than one comma-joined value: the arbitrage scan
+      // reads `r.URL.Query()["accountId"]`, so "a,b" would arrive as a single
+      // account id nobody holds and silently narrow the result instead of
+      // widening it. An empty array sends nothing, which is the correct
+      // "no accounts named" request.
+      for (const entry of value) {
+        if (entry !== "") params.append(key, entry);
+      }
+      continue;
+    }
     params.set(key, String(value));
   }
   const encoded = params.toString();

@@ -85,6 +85,37 @@ The interval is deliberately not part of the market-data cache key. Folding it
 in would make one instrument occupy eight cache entries whose freshness rules
 disagree with each other.
 
+## Funding rates
+
+Funding arrives on two surfaces, and they are not the same read.
+
+The funding fields on `/api/v1/market-data` — the current rate, its observation
+and next-funding times, the twenty historical points above — belong to one
+instrument on one account. They come with the rest of that instrument's
+snapshot, through that account's own venue client, and they spend that account's
+rate-limit budget.
+
+`GET /api/v1/funding-board` and `GET /api/v1/funding-history` need no account at
+all. The gateway answers them from venue clients it builds without credentials,
+so they resolve before a single account has been declared. The board is the
+whole cross-venue matrix — one column per venue, product, and settlement asset —
+each column carrying its current rate, its settlement interval, and whether that
+venue publishes history. The history is one symbol on one venue over one window,
+`7d` or `30d` and nothing else; an open range would mean paginating a venue
+call, and this read exists to be a single call.
+
+Rates from different venues are not comparable as published, because venues do
+not settle on the same schedule. Anything that ranks them normalizes to a daily
+figure first. That arithmetic, and what it is for, is in
+[the trading service](trading-service.md).
+
+Two absences here are load-bearing. A venue with no history surface reports the
+series unavailable rather than returning an empty one — "we keep none" and
+"there were none" are different answers, and only one of them is a reason to
+stop asking. And the per-account record of what funding actually *cost* is a
+third surface again, resolving on four product rows only; see
+[Unsupported](../reference/unsupported.md).
+
 ## Live updates
 
 Neither of the above is polled by the interface. One server-sent stream,

@@ -485,6 +485,81 @@ export interface FundingBoardSnapshot {
   venues: FundingBoardVenue[];
 }
 
+/* --- Funding history ----------------------------------------------------- */
+
+/**
+ * The two windows the server will serve, and the only two.
+ *
+ * A name rather than a pair of instants because every venue's history endpoint
+ * is paginated, and these are the two spans that fit in one page everywhere on
+ * the board. Anything else is a 400 — the server refuses to truncate silently,
+ * because a funding curve missing its middle looks exactly like a complete one.
+ */
+export const FUNDING_WINDOWS = ["7d", "30d"] as const;
+
+export type FundingWindow = (typeof FUNDING_WINDOWS)[number];
+
+/**
+ * `marketdata.FundingHistoryPoint` — one settlement.
+ *
+ * `rate` is for one interval, not annualised, exactly as on the board; and
+ * `intervalHours` is optional for the same reason it is optional there, so a
+ * point without one can be drawn per-period but cannot honestly be annualised.
+ */
+export interface FundingHistoryPoint {
+  fundingTime: string;
+  rate: string;
+  intervalHours?: number;
+}
+
+/**
+ * `marketdata.FundingHistorySeries` — one venue's settled funding over a window.
+ *
+ * The series carries its own identity and bounds rather than only its points:
+ * two of these are drawn together as the legs of one spread, and a response that
+ * arrived under the wrong venue or over a narrower span would render as a
+ * plausible curve rather than as a visible gap. `points` are strictly ascending
+ * in `fundingTime`.
+ */
+export interface FundingHistorySeries {
+  venue: string;
+  environment: string;
+  symbol: string;
+  since: string;
+  until: string;
+  observedAt: string;
+  points: FundingHistoryPoint[];
+}
+
+/** Every field required; the server rejects an unknown fifth outright. */
+export interface FundingHistoryQuery {
+  venue: string;
+  environment: string;
+  symbol: string;
+  window: FundingWindow;
+}
+
+/**
+ * The code a venue that publishes no history at all answers with.
+ *
+ * It arrives as a 404 with `retryable: false`, which is what stops the shared
+ * retry policy from spinning on a chart that can never exist. One board column
+ * is in this state permanently, so the surface has to name the condition rather
+ * than render it as a failed read.
+ */
+export const FUNDING_HISTORY_UNSUPPORTED = "FUNDING_HISTORY_UNSUPPORTED";
+
+/**
+ * The code a venue that publishes history, but not for this symbol, answers with.
+ *
+ * Also a 404 with `retryable: false`, and kept apart from the code above because
+ * only that one is a claim about the venue. A leg that reported "this venue
+ * publishes no funding history" because the venue happens not to list one
+ * underlying would be telling the operator something false about every other
+ * pair on the same venue.
+ */
+export const FUNDING_HISTORY_INSTRUMENT_UNKNOWN = "FUNDING_HISTORY_INSTRUMENT_UNKNOWN";
+
 /* --- Portfolio and ledger ------------------------------------------------ */
 
 /** `portfolio.Position`. A negative `quantity` is short. */
@@ -548,6 +623,217 @@ export interface Fill {
   settlementCurrency?: string;
   venueSequence: number | null;
   occurredAt: string;
+}
+
+/* --- Arbitrage product --------------------------------------------------- */
+
+/** `httpapi.arbitrageLegRequest` — one side of the hedge, as asked for. */
+export interface ArbitrageLegRequest {
+  accountId: string;
+  instrumentId: string;
+  /** Required when `orderType` is `limit`; ignored otherwise. */
+  limitPrice?: string;
+}
+
+/**
+ * `httpapi.arbitragePreviewRequest`.
+ *
+ * One quantity for both legs, because a hedge whose sides differ in size is not
+ * delta-neutral and the server refuses it. `mode` must equal the session
+ * principal's mode or the answer is a 400, same as the manual product.
+ */
+export interface ArbitragePreviewRequest {
+  long: ArbitrageLegRequest;
+  short: ArbitrageLegRequest;
+  quantity: string;
+  orderType: OrderType;
+  timeInForce?: string;
+  mode: Mode;
+}
+
+/**
+ * `httpapi.arbitrageProductHandler.createCommand`'s three actions.
+ *
+ * They take mutually exclusive fields and the server validates the combination
+ * before doing anything: `open` needs `previewId` and no `orderId`, `close`
+ * needs neither, `cancel` needs `orderId` and no `previewId`. `cancel` exists
+ * for a `partially_open` pair — it disposes of the one leg that stood up, which
+ * is the only way out of a half-hedge, since the product will not unwind one
+ * automatically.
+ */
+export type ArbitrageAction = "open" | "close" | "cancel";
+
+/** `httpapi.arbitrageCommandRequest` */
+export interface ArbitrageCommandRequest {
+  previewId?: string;
+  action: ArbitrageAction;
+  lineageId: string;
+  orderId?: string;
+  idempotencyKey: string;
+}
+
+/**
+ * `httpapi.arbitragePreviewLeg` — a leg priced against the funding board.
+ *
+ * `rate` is per interval and `dailyRate` is the same number normalised to a day
+ * (`rate * 24 / intervalHours`), which is the only form in which two venues on
+ * different settlement clocks can be compared. Both are sent so the UI can show
+ * what the venue quoted next to what it means.
+ */
+export interface ArbitragePreviewLeg {
+  accountId: string;
+  instrumentId: string;
+  venue: string;
+  environment: string;
+  symbol?: string;
+  side: OrderSide;
+  limitPrice?: string;
+  rate?: string;
+  intervalHours?: number;
+  nextFundingTime?: string;
+  markPrice?: string;
+  dailyRate?: string;
+  stale?: boolean;
+}
+
+/**
+ * `httpapi.arbitragePreview` — the sealed quote a two-leg open is spent against.
+ *
+ * `blockers` is what stops the open; `warnings` is what the operator should see
+ * and may still proceed through. A negative spread arrives as a warning rather
+ * than a blocker: paying to hold a hedge is a legitimate thing to choose.
+ */
+export interface ArbitragePreview {
+  previewId: string;
+  request: ArbitragePreviewRequest;
+  long: ArbitragePreviewLeg;
+  short: ArbitragePreviewLeg;
+  quantity: string;
+  notional?: string;
+  spreadDaily?: string;
+  spreadApr?: string;
+  dailyFunding?: string;
+  blockers: string[];
+  warnings: string[];
+}
+
+/** `arbitragePreviewTTL`. The seal is refused after this, and the UI should say so first. */
+export const ARBITRAGE_PREVIEW_TTL_MS = 30_000;
+
+/** `httpapi.arbitrageOpportunityLeg` */
+export interface ArbitrageOpportunityLeg {
+  venue: string;
+  environment: string;
+  /** Present only when the caller named an account that can reach this venue. */
+  accountId?: string;
+  instrumentId?: string;
+  rate: string;
+  intervalHours?: number;
+  nextFundingTime?: string;
+  markPrice?: string;
+  openInterest?: string;
+  dailyRate?: string;
+  stale?: boolean;
+}
+
+/**
+ * `httpapi.arbitrageOpportunity` — one underlying's best cross-venue pair.
+ *
+ * The venue paying most is the short leg and the one paying least is the long
+ * leg, because longs pay funding where the rate is positive. `executable` is
+ * false until both legs resolve to an account the caller actually holds, and
+ * `blockers` says which half is missing.
+ */
+export interface ArbitrageOpportunity {
+  symbol: string;
+  baseAsset: string;
+  quoteAsset: string;
+  long: ArbitrageOpportunityLeg;
+  short: ArbitrageOpportunityLeg;
+  spreadDaily?: string;
+  spreadApr?: string;
+  executable: boolean;
+  blockers: string[];
+}
+
+/** `arbitrage.Leg` */
+export type ArbitrageLeg = "long" | "short";
+
+/**
+ * `arbitrage.PairState`.
+ *
+ * `partially_open` is the one that matters: one leg filled and the other did
+ * not, leaving directional exposure the operator did not ask for. The server
+ * deliberately does not unwind it — that would be an order nobody previewed —
+ * so this state has to be rendered loudly and given its own way out.
+ */
+export type ArbitragePairState =
+  | "opening"
+  | "open"
+  | "partially_open"
+  | "closing"
+  | "closed"
+  | "failed";
+
+/** `arbitrage.LegView` — one leg's command, as the pair sees it. */
+export interface ArbitrageLegView {
+  leg: ArbitrageLeg;
+  commandId: string;
+  lineageId: string;
+  accountId: string;
+  instrumentId: string;
+  side: OrderSide;
+  quantity: string;
+  orderType: OrderType;
+  limitPrice?: string;
+  reduceOnly: boolean;
+  state: CommandState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `httpapi.arbitrageAmount` — accrued funding in one settlement currency. */
+export interface ArbitrageAmount {
+  currency: string;
+  amount: string;
+}
+
+/**
+ * `httpapi.arbitragePair` — one lineage, both legs, everything it still holds.
+ *
+ * `funding` is a list rather than a single amount because a hedge spans two
+ * venues that may settle in different currencies, and summing those would
+ * invent an exchange rate the server never observed.
+ */
+export interface ArbitragePair {
+  lineageId: string;
+  state: ArbitragePairState;
+  legs: ArbitrageLegView[];
+  positions: Position[];
+  funding: ArbitrageAmount[];
+  blockers: string[];
+  updatedAt: string;
+}
+
+/** `httpapi.arbitrageLegFailure` — which leg gave up, and where. */
+export interface ArbitrageLegFailure {
+  leg: ArbitrageLeg;
+  stage: string;
+  code: string;
+}
+
+/**
+ * `httpapi.arbitrageExecution` — what an `open` or `close` did.
+ *
+ * Both legs stay in `legs` even when one failed; the failed one is what tells
+ * the operator which side is missing. 202 means the legs were submitted now,
+ * 200 means this was an idempotent replay of a submission that already happened.
+ */
+export interface ArbitrageExecution {
+  lineageId: string;
+  state: ArbitragePairState;
+  legs: ArbitrageLegView[];
+  failures: ArbitrageLegFailure[];
 }
 
 /* --- Activity ------------------------------------------------------------ */

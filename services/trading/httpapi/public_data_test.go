@@ -47,7 +47,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 		readiness.Update(component, platformsystem.Component{Ready: true, Reason: "ready", ObservedAt: now})
 	}
 	hub, _ := realtime.NewHub(8, func() time.Time { return now })
-	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, err := NewPublicDataAPI(PublicDataDependencies{Catalog: catalogProjection, MarketData: marketProjection, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, FundingHistory: &fundingHistoryStub{}, Readiness: readiness, Realtime: hub, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +78,21 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=501", want: http.StatusBadRequest, body: "must be between 1 and 500"},
 		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusBadRequest, body: `field \"interval\" is required`},
 		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=7d", want: http.StatusOK, body: `"intervalHours":8`},
+		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=30d", want: http.StatusOK, body: `"symbol":"BTC-USDT"`},
+		// The window is a closed set, not a duration: a span this surface will
+		// not fetch in one page has to be refused here rather than truncated
+		// silently at a venue.
+		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=90d", want: http.StatusBadRequest, body: `must be \"7d\" or \"30d\"`},
+		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT", want: http.StatusBadRequest, body: `field \"window\" is required`},
+		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=7d&since=2026-01-01T00:00:00Z", want: http.StatusBadRequest, body: "unknown query field"},
+		// A venue with no history endpoint answers permanently, so the browser
+		// stops asking instead of retrying a chart that cannot exist.
+		{path: "/api/v1/funding-history?venue=nado&environment=testnet&symbol=BTC-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_UNSUPPORTED"},
+		// Equally permanent and deliberately not the same code. A venue that
+		// simply does not list one pair must not be reported as publishing no
+		// funding history, which is false for every other pair it does list.
+		{path: "/api/v1/funding-history?venue=bybit&environment=demo&symbol=NOTLISTED-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"},
 		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"accounts"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
@@ -85,6 +100,13 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Code != test.want || !strings.Contains(response.Body.String(), test.body) {
 			t.Errorf("GET %s = %d %s, want %d containing %q", test.path, response.Code, response.Body.String(), test.want, test.body)
+		}
+		// Every 404 on this surface is a permanent answer, and the browser's
+		// shared retry policy reads exactly this flag to decide whether to keep
+		// asking. A refusal that arrived retryable would leave a leg of the
+		// arbitrage chart spinning for the life of the page.
+		if test.want == http.StatusNotFound && !strings.Contains(response.Body.String(), `"retryable":false`) {
+			t.Errorf("GET %s answered 404 without retryable:false: %s", test.path, response.Body.String())
 		}
 	}
 }
@@ -106,7 +128,7 @@ func TestRealtimeStreamResumesFromCursorAndRejectsExpiredCursor(t *testing.T) {
 	small, _ := realtime.NewHub(1, time.Now)
 	expired, _ := small.Publish("one", map[string]bool{"ready": true})
 	_, _ = small.Publish("two", map[string]bool{"ready": true})
-	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
+	api, _ := NewPublicDataAPI(PublicDataDependencies{Catalog: &catalogStub{}, MarketData: &marketStub{}, Candles: &candleStub{}, FundingBoard: &fundingBoardStub{}, FundingHistory: &fundingHistoryStub{}, Readiness: platformsystem.NewReadiness(), Realtime: small, Principal: func(*http.Request) (string, string, error) { return "principal-a", "test", nil }})
 	expiredRequest := httptest.NewRequest(http.MethodGet, "/api/v1/realtime/stream?cursor="+expired.Cursor, nil)
 	expiredResponse := httptest.NewRecorder()
 	api.Handle(expiredResponse, expiredRequest, "GET /api/v1/realtime/stream")
@@ -203,3 +225,29 @@ func (*fundingBoardStub) Get(context.Context) (marketdata.BoardSnapshot, error) 
 	}, nil
 }
 func (*fundingBoardStub) BudgetStatus() marketdata.BudgetStatus { return marketdata.BudgetStatus{} }
+
+// fundingHistoryStub answers for every venue except the two that refuse
+// permanently. Neither case is decoration: the arbitrage chart draws two legs,
+// so the surface has to be able to say why one of them did not render beside one
+// that did, and it has to say the right thing. "This venue keeps no history" and
+// "this venue does not list this pair" are separate facts with separate codes,
+// and only the first is a claim about the venue.
+type fundingHistoryStub struct{}
+
+func (*fundingHistoryStub) Get(_ context.Context, query marketdata.FundingHistoryQuery) (marketdata.FundingHistorySeries, error) {
+	if query.Venue == "nado" {
+		return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnsupported
+	}
+	if query.Symbol == "NOTLISTED-USDT" {
+		return marketdata.FundingHistorySeries{}, marketdata.ErrFundingHistoryUnknownInstrument
+	}
+	return marketdata.FundingHistorySeries{
+		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
+		Points: []marketdata.FundingHistoryPoint{{
+			FundingTime: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC), Rate: "0.0001", IntervalHours: 8,
+		}},
+	}, nil
+}
+func (*fundingHistoryStub) BudgetStatus(string) marketdata.BudgetStatus {
+	return marketdata.BudgetStatus{}
+}

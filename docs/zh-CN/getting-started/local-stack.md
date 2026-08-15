@@ -38,7 +38,7 @@ make up
 | `trading-migrate` | 应用 trading 服务的 migration 后退出 |
 | `authedge-migrate` | 应用 auth edge 的 migration 后退出 |
 | `gateway` | 共享能力面 |
-| `trading` | 手动交易产品 |
+| `trading` | 手动交易与资金费套利 |
 | `authedge` | 浏览器会话与转发 |
 | `web` | Caddy，托管前端并反向代理 `/api/*` |
 

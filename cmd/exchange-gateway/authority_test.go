@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -150,6 +151,43 @@ func TestManagerAuthorityReadsFetchesFundingOnlyWhenCapabilityAdvertisesIt(t *te
 	}
 }
 
+// A venue may settle one product in more than one asset — bybit runs USDT and
+// USDC perpetuals side by side — and the account manager installs a separate
+// route for each. Accounts() emits one Resource per route and the catalog
+// resolves an instrument for the whole account, so this read must pair the
+// instrument with the one route that can actually trade it. It did neither:
+// it resolved the client by bare account id, an ambiguous question the manager
+// refuses to answer, and it paired whichever route sorted first with every
+// instrument. Both defects took the whole venue down rather than one route.
+func TestManagerAuthorityReadsPairsInstrumentWithTheRouteThatSettlesIt(t *testing.T) {
+	observedAt := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
+	newPerp := func(settlement, bid string) *fakeAuthorityPerp {
+		return &fakeAuthorityPerp{
+			settlement: settlement,
+			book:       exchange.OrderBook{Time: observedAt, Bids: []exchange.BookLevel{{Price: decimal.RequireFromString(bid), Quantity: decimal.NewFromInt(1)}}, Asks: []exchange.BookLevel{{Price: decimal.RequireFromString(bid).Add(decimal.NewFromInt(1)), Quantity: decimal.NewFromInt(2)}}},
+			funding:    exchange.FundingRate{Rate: decimal.RequireFromString("0.0001"), ObservedAt: observedAt},
+		}
+	}
+	// USDC sorts first, so a reader that ignores settlement reaches for it.
+	usdc, usdt := newPerp("USDC", "100"), newPerp("USDT", "200")
+	accounts := &fakeAuthorityAccounts{
+		resources: []account.Resource{
+			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDC", ReadReady: true},
+			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true},
+		},
+		instrument:       exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Symbol: "SIREN-USDT", SettleAsset: "USDT"}},
+		perpBySettlement: map[string]exchange.PerpClient{"USDC": usdc, "USDT": usdt},
+		capabilities: []capability.Row{
+			{Product: "perp", Settlement: "USDC", Operations: capability.Operations{Funding: true}},
+			{Product: "perp", Settlement: "USDT", Operations: capability.Operations{Funding: true}},
+		},
+	}
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "bybit", "demo", "perp", "SIREN-USDT")
+	if err != nil || fact.BestBid != "200" || accounts.perpRouteSettlement != "USDT" || usdc.fundingCalls != 0 {
+		t.Fatalf("fact=%+v settlement=%q usdcCalls=%d err=%v", fact, accounts.perpRouteSettlement, usdc.fundingCalls, err)
+	}
+}
+
 func TestManagerAuthorityReadsSelectsExactEnvironmentAndProduct(t *testing.T) {
 	observedAt := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
 	perp := &fakeAuthorityPerp{
@@ -253,19 +291,26 @@ func TestManagerAuthorityReadsDerivesCapabilityReadinessFromExactRouteStatus(t *
 }
 
 type fakeAuthorityAccounts struct {
-	resources        []account.Resource
-	instrumentErr    error
-	snapshot         catalog.Snapshot
-	instrument       exchange.Instrument
-	perp             exchange.PerpClient
+	resources     []account.Resource
+	instrumentErr error
+	snapshot      catalog.Snapshot
+	instrument    exchange.Instrument
+	perp          exchange.PerpClient
+	// perpBySettlement models a venue that settles one product in several
+	// assets. Set it instead of perp to exercise the multi-route account.
+	perpBySettlement map[string]exchange.PerpClient
 	capability       capability.Row
 	capabilities     []capability.Row
 	resolvedAccount  domain.AccountID
-	snapshots        map[domain.AccountID]catalog.Snapshot
-	runtime          account.RuntimeAccount
-	status           account.Status
-	routeStatuses    map[string]account.Status
-	routeStatusCalls []string
+	// perpRouteSettlement records the settlement the reader disambiguated with,
+	// so a test can prove the route the loop selected is the route it asked a
+	// client for.
+	perpRouteSettlement string
+	snapshots           map[domain.AccountID]catalog.Snapshot
+	runtime             account.RuntimeAccount
+	status              account.Status
+	routeStatuses       map[string]account.Status
+	routeStatusCalls    []string
 }
 
 func (accounts *fakeAuthorityAccounts) Accounts() []account.Resource { return accounts.resources }
@@ -284,7 +329,29 @@ func (accounts *fakeAuthorityAccounts) Spot(domain.AccountID) (exchange.SpotClie
 	return nil, account.ErrProductMismatch
 }
 func (accounts *fakeAuthorityAccounts) Perp(domain.AccountID) (exchange.PerpClient, error) {
+	// Faithful to the account manager: an account running more than one
+	// perpetual route cannot answer "give me the perpetual client".
+	if len(accounts.perpBySettlement) > 1 {
+		return nil, account.ErrProductMismatch
+	}
+	for _, client := range accounts.perpBySettlement {
+		return client, nil
+	}
 	return accounts.perp, nil
+}
+func (accounts *fakeAuthorityAccounts) SpotRoute(accountID domain.AccountID, _ string) (exchange.SpotClient, error) {
+	return accounts.Spot(accountID)
+}
+func (accounts *fakeAuthorityAccounts) PerpRoute(accountID domain.AccountID, settlement string) (exchange.PerpClient, error) {
+	accounts.perpRouteSettlement = settlement
+	if accounts.perpBySettlement != nil {
+		client, ok := accounts.perpBySettlement[settlement]
+		if !ok {
+			return nil, account.ErrProductMismatch
+		}
+		return client, nil
+	}
+	return accounts.Perp(accountID)
 }
 func (accounts *fakeAuthorityAccounts) Capability(domain.AccountID) (capability.Row, error) {
 	return accounts.capability, nil
@@ -312,6 +379,10 @@ func (accounts *fakeAuthorityAccounts) RouteStatus(_ domain.AccountID, product, 
 
 type fakeAuthorityPerp struct {
 	exchange.PerpClient
+	// settlement, when set, makes this client behave like a real settlement-scoped
+	// one: it refuses an instrument that settles in another asset instead of
+	// quietly answering for a contract it does not list.
+	settlement   string
 	book         exchange.OrderBook
 	funding      exchange.FundingRate
 	history      exchange.FundingRatePage
@@ -321,11 +392,24 @@ type fakeAuthorityPerp struct {
 	historyLimit int
 }
 
+func (client *fakeAuthorityPerp) settles(instrument exchange.Instrument) error {
+	if client.settlement == "" || client.settlement == instrument.Identity.SettleAsset {
+		return nil
+	}
+	return fmt.Errorf("instrument quote must match %s settlement", client.settlement)
+}
+
 func (client *fakeAuthorityPerp) OrderBook(_ context.Context, request exchange.OrderBookRequest) (exchange.OrderBook, error) {
+	if err := client.settles(request.Instrument); err != nil {
+		return exchange.OrderBook{}, err
+	}
 	client.bookLimit = request.Limit
 	return client.book, nil
 }
-func (client *fakeAuthorityPerp) FundingRate(context.Context, exchange.FundingRateRequest) (exchange.FundingRate, error) {
+func (client *fakeAuthorityPerp) FundingRate(_ context.Context, request exchange.FundingRateRequest) (exchange.FundingRate, error) {
+	if err := client.settles(request.Instrument); err != nil {
+		return exchange.FundingRate{}, err
+	}
 	client.fundingCalls++
 	return client.funding, nil
 }
@@ -633,6 +717,101 @@ func (connector constantFundingConnector) Refresh(context.Context) (exchange.Fun
 
 func (constantFundingConnector) Close() error { return nil }
 
+// TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer
+// pins the three things this dispatch does that the board's does not, because
+// unlike the board it takes a query.
+//
+// It parses two instants, it refuses a partial identity, and it checks that
+// the answer came back wearing the label it asked for. The last is the one
+// worth a test: two of these series are drawn on one chart as the legs of a
+// spread, so a response that arrived under the wrong venue renders as a
+// plausible number in the wrong place rather than as a visible gap.
+func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t *testing.T) {
+	ctx := context.Background()
+	authority, err := newGatewayAuthority(ctx, newMemoryDesiredStore(), newAuthorityManager(t, account.RuntimeModeTest, newAuthorityLifecycle()), account.RuntimeModeTest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundingTime := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	authority.reads = staticAuthorityReads{fundingSeries: authorityFundingSeries{
+		ObservedAt: time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC),
+		Points:     []authorityFundingSeriesPoint{{FundingTime: fundingTime, Rate: "-0.00042", IntervalHours: 8}},
+	}}
+	query := func(mutate func(map[string][]string)) map[string][]string {
+		values := map[string][]string{
+			"venue": {"binance"}, "environment": {"demo"}, "symbol": {"BTC-USDT"},
+			"since": {"2026-08-07T16:00:00+08:00"}, "until": {"2026-08-14T16:00:00+08:00"},
+		}
+		mutate(values)
+		return values
+	}
+	unchanged := func(map[string][]string) {}
+
+	response, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityFundingHistory, Query: query(unchanged)})
+	if err != nil {
+		t.Fatalf("FundingHistory: %v", err)
+	}
+	series, ok := response.Body.(authorityFundingSeries)
+	if !ok {
+		t.Fatalf("series=%T %+v", response.Body, response.Body)
+	}
+	// The offset is normalised away rather than carried, so two legs quoted by
+	// venues on different clocks land on one axis.
+	wantSince := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
+	if series.Venue != "binance" || series.Environment != "demo" || series.Symbol != "BTC-USDT" ||
+		!series.Since.Equal(wantSince) || series.Since.Location() != time.UTC {
+		t.Fatalf("series identity=%+v", series)
+	}
+	if len(series.Points) != 1 || series.Points[0].Rate != "-0.00042" ||
+		series.Points[0].IntervalHours != 8 || !series.Points[0].FundingTime.Equal(fundingTime) {
+		t.Fatalf("series points=%+v", series.Points)
+	}
+
+	for name, mutate := range map[string]func(map[string][]string){
+		"no venue":       func(values map[string][]string) { delete(values, "venue") },
+		"no environment": func(values map[string][]string) { delete(values, "environment") },
+		"blank symbol":   func(values map[string][]string) { values["symbol"] = []string{"  "} },
+		"no since":       func(values map[string][]string) { delete(values, "since") },
+		// A bound that lost its unit somewhere upstream still parses as an
+		// integer, into a different decade, and the only symptom is an empty
+		// chart. Both of these must be refused at the boundary, not carried.
+		"epoch millis":      func(values map[string][]string) { values["since"] = []string{"1754553600000"} },
+		"date without zone": func(values map[string][]string) { values["until"] = []string{"2026-08-14"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rejected, err := authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityFundingHistory, Query: query(mutate)})
+			if err == nil || rejected.Body != nil {
+				t.Fatalf("body=%+v err=%v", rejected.Body, err)
+			}
+		})
+	}
+
+	authority.reads = relabelingFundingReads{}
+	if _, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityFundingHistory, Query: query(unchanged)}); err == nil {
+		t.Fatal("a series labelled with another venue was served as the one that was asked for")
+	}
+
+	authority.reads = staticAuthorityReads{err: fundingboard.ErrHistoryUnsupported}
+	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{Operation: httpapi.AuthorityFundingHistory, Query: query(unchanged)})
+	var authorityErr httpapi.AuthorityError
+	// Not retryable, unlike the board's own unavailability: nado publishes no
+	// settled series and never will, so a caller that polls this is polling for
+	// a chart that cannot exist.
+	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusNotFound ||
+		authorityErr.Code != "FUNDING_HISTORY_UNSUPPORTED" || authorityErr.Retryable {
+		t.Fatalf("error=%T %v", err, err)
+	}
+}
+
+// relabelingFundingReads answers with a series that is not the one asked for.
+// staticAuthorityReads cannot express this: it echoes the query back precisely
+// so that every other caller clears the dispatcher's identity check.
+type relabelingFundingReads struct{ staticAuthorityReads }
+
+func (relabelingFundingReads) FundingHistory(context.Context, authorityFundingHistoryQuery) (authorityFundingSeries, error) {
+	return authorityFundingSeries{Venue: "bybit", Environment: "demo", Symbol: "BTC-USDT"}, nil
+}
+
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
@@ -731,13 +910,14 @@ func assertRuntimeJSONHasNoSecretRef(t *testing.T, encoded []byte, canary string
 }
 
 type staticAuthorityReads struct {
-	venues       []authorityVenue
-	instruments  []authorityInstrument
-	marketData   authorityMarketData
-	candles      authorityCandles
-	fundingBoard authorityFundingBoard
-	runtime      authorityRuntimeProjection
-	err          error
+	venues        []authorityVenue
+	instruments   []authorityInstrument
+	marketData    authorityMarketData
+	candles       authorityCandles
+	fundingBoard  authorityFundingBoard
+	fundingSeries authorityFundingSeries
+	runtime       authorityRuntimeProjection
+	err           error
 }
 
 func (reads staticAuthorityReads) Venues() []authorityVenue {
@@ -764,6 +944,17 @@ func (reads staticAuthorityReads) Candles(_ context.Context, query authorityCand
 
 func (reads staticAuthorityReads) FundingBoard(context.Context) (authorityFundingBoard, error) {
 	return reads.fundingBoard, reads.err
+}
+
+func (reads staticAuthorityReads) FundingHistory(_ context.Context, query authorityFundingHistoryQuery) (authorityFundingSeries, error) {
+	series := reads.fundingSeries
+	// Same reason Candles echoes its query back: the dispatcher rejects a
+	// response whose identity does not match the request, so a stub returning a
+	// zero-valued one would fail every caller for a reason unrelated to what
+	// the test is asserting.
+	series.Venue, series.Environment, series.Symbol = query.Venue, query.Environment, query.Symbol
+	series.Since, series.Until = query.Since, query.Until
+	return series, reads.err
 }
 
 func (reads staticAuthorityReads) Runtime(string) (authorityRuntimeProjection, error) {

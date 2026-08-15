@@ -194,6 +194,46 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 	}
 }
 
+// TestBoardSourceKeepsOneColumnPerMarket pins that a column is an exchange
+// market, not a route profile.
+//
+// bybit is the one venue the profile registry lists under both `demo` and
+// `testnet`, and test mode resolves both, so an enumeration that trusts the
+// registry's shape stands two columns labelled "bybit · USDT" beside each other
+// carrying different rates. That is the failure this board exists to prevent
+// wearing its most convincing disguise: a table is read by comparing one
+// venue's number against another's, so two columns with one name read as a
+// spread, and no trade can capture it.
+func TestBoardSourceKeepsOneColumnPerMarket(t *testing.T) {
+	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
+	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), routeprofile.ModeTest, sourceOptions{
+		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("newSource: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+
+	snapshot, err := source.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	seen := map[string]string{}
+	for _, venue := range snapshot.Venues {
+		market := venue.Venue + "/" + venue.Settlement
+		if previous, duplicate := seen[market]; duplicate {
+			t.Fatalf("%s occupies two columns: %s and %s", market, previous, venue.RouteProfileID)
+		}
+		seen[market] = venue.RouteProfileID
+	}
+	// The same ten markets live mode shows: which sandbox a rate was read from
+	// is not something the board is a board of.
+	if len(snapshot.Venues) != 10 {
+		t.Fatalf("got %d columns in test mode, want the 10 live mode shows: %+v", len(snapshot.Venues), snapshot.Venues)
+	}
+}
+
 func TestBoardSourceRejectsUnusableConfiguration(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	valid := sourceOptions{interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now}
@@ -325,8 +365,13 @@ func (connector *fakeConnector) Refresh(ctx context.Context) (exchange.FundingBo
 		SchemaVersion: 1,
 		ObservedAt:    time.Unix(1720000000, 0).UTC(),
 		Entries: []exchange.FundingBoardEntry{{
-			Symbol:    "BTC-" + connector.profile.SettlementAsset,
-			BaseAsset: "BTC", QuoteAsset: connector.profile.SettlementAsset,
+			Symbol: "BTC-" + connector.profile.SettlementAsset,
+			// Deliberately not derivable from the canonical symbol: a history
+			// read that reconstructed these instead of borrowing them from the
+			// row would still produce a chart, just of nothing.
+			NativeSymbol: "BTC" + connector.profile.SettlementAsset + "-native",
+			NativeID:     connector.profile.Venue + "-1",
+			BaseAsset:    "BTC", QuoteAsset: connector.profile.SettlementAsset,
 			Rate: decimal.RequireFromString("0.0001"),
 		}},
 	}, nil

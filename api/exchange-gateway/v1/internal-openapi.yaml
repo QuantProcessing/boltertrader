@@ -66,6 +66,8 @@ paths:
     get: {operationId: listInternalPrivateEvents, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
   /internal/v1/funding-board:
     get: {operationId: getInternalFundingBoard, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
+  /internal/v1/funding-history:
+    get: {operationId: getInternalFundingHistory, responses: {'200': {$ref: '#/components/responses/RuntimeFacts'}, default: {$ref: '#/components/responses/Error'}}}
 components:
   securitySchemes:
     gatewayAdapterAuth: {type: http, scheme: bearer}

@@ -681,9 +681,21 @@ type fakeHTTPAccounts struct {
 	capability  capability.Row
 	spot        exchange.SpotClient
 	perp        exchange.PerpClient
+	// routes and routePerps describe an account that runs more than one route
+	// of the same product — the shape bybit takes when it settles perpetuals in
+	// both USDT and USDC. Fixtures that leave them empty have a single route,
+	// and every accessor below falls back to the single-route fields.
+	routes     []account.Resource
+	routePerps map[string]exchange.PerpClient
+	// routeCapabilities is keyed by settlement asset, the only thing that tells
+	// two routes of one perp account apart.
+	routeCapabilities map[string]capability.Row
 }
 
 func (accounts *fakeHTTPAccounts) Accounts() []account.Resource {
+	if len(accounts.routes) > 0 {
+		return accounts.routes
+	}
 	return []account.Resource{accounts.resource}
 }
 func (accounts *fakeHTTPAccounts) Status(accountID domain.AccountID) (account.Status, error) {
@@ -693,10 +705,31 @@ func (accounts *fakeHTTPAccounts) Status(accountID domain.AccountID) (account.St
 	return accounts.status, nil
 }
 func (accounts *fakeHTTPAccounts) Capability(domain.AccountID) (capability.Row, error) {
-	if accounts.capability.RowID != "" {
-		return accounts.capability, nil
+	// The real manager reports one capability row per route and refuses to
+	// collapse two of them into a single answer. A fixture that quietly
+	// returned the first row would hide the exact failure this package
+	// regressed on, so it refuses here too.
+	if len(accounts.routes) > 1 {
+		return capability.Row{}, account.ErrProductMismatch
 	}
-	return capability.StaticMatrix().Rows[0], nil
+	return accounts.capabilityRow(), nil
+}
+
+// RouteCapability answers per route when routeCapabilities names one, and
+// otherwise falls back to the account-wide row so the single-route fixtures
+// keep behaving exactly as they did.
+func (accounts *fakeHTTPAccounts) RouteCapability(_ domain.AccountID, _, settlement string) (capability.Row, error) {
+	if row, ok := accounts.routeCapabilities[settlement]; ok {
+		return row, nil
+	}
+	return accounts.capabilityRow(), nil
+}
+
+func (accounts *fakeHTTPAccounts) capabilityRow() capability.Row {
+	if accounts.capability.RowID != "" {
+		return accounts.capability
+	}
+	return capability.StaticMatrix().Rows[0]
 }
 func (accounts *fakeHTTPAccounts) Instruments(domain.AccountID) (catalog.Snapshot, error) {
 	if len(accounts.instruments) > 0 {
@@ -713,13 +746,28 @@ func (accounts *fakeHTTPAccounts) Resolve(_ context.Context, _ domain.AccountID,
 	}
 	return accounts.instrument, nil
 }
-func (accounts *fakeHTTPAccounts) Spot(domain.AccountID) (exchange.SpotClient, error) {
+func (accounts *fakeHTTPAccounts) RouteStatus(accountID domain.AccountID, product, settlement string) (account.Status, error) {
+	if len(accounts.routes) == 0 {
+		return accounts.Status(accountID)
+	}
+	for _, route := range accounts.routes {
+		if route.AccountID != accountID || string(route.Product) != product || route.Settlement != settlement {
+			continue
+		}
+		return account.Status{Resource: route, ClientReady: true}, nil
+	}
+	return account.Status{}, account.ErrProductMismatch
+}
+func (accounts *fakeHTTPAccounts) SpotRoute(domain.AccountID, string) (exchange.SpotClient, error) {
 	if accounts.spot != nil {
 		return accounts.spot, nil
 	}
 	return fakeHTTPSpotClient{}, nil
 }
-func (accounts *fakeHTTPAccounts) Perp(domain.AccountID) (exchange.PerpClient, error) {
+func (accounts *fakeHTTPAccounts) PerpRoute(_ domain.AccountID, settlement string) (exchange.PerpClient, error) {
+	if client, ok := accounts.routePerps[settlement]; ok {
+		return client, nil
+	}
 	if accounts.perp != nil {
 		return accounts.perp, nil
 	}

@@ -26,6 +26,7 @@ interface Section {
 const SECTIONS: Section[] = [
   { to: "/trade", label: "Trade" },
   { to: "/funding", label: "Funding" },
+  { to: "/funding/arbitrage", label: "Arbitrage" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/activity", label: "Activity" },
   { to: "/settings", label: "Settings" },
@@ -58,6 +59,12 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
               "focus-visible:ring-accent focus-visible:ring-2 focus-visible:outline-none",
             )}
             activeProps={{ className: "border-b-accent font-semibold text-text" }}
+            // Exact, and blind to the query string. Without the first, `/funding`
+            // would also light up on `/funding/arbitrage` and two sections would
+            // claim to be the current one; without the second, the arbitrage
+            // section would go dark the moment a pair was picked, because the
+            // pair lives in the search params.
+            activeOptions={{ exact: true, includeSearch: false }}
           >
             {section.label}
           </Link>

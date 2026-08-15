@@ -22,6 +22,7 @@ import (
 	"time"
 
 	platformsystem "github.com/QuantProcessing/boltertrader/internal/system"
+	"github.com/QuantProcessing/boltertrader/services/trading/arbitrage"
 	"github.com/QuantProcessing/boltertrader/services/trading/audit"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	"github.com/QuantProcessing/boltertrader/services/trading/httpapi"
@@ -94,6 +95,7 @@ type Dependencies struct {
 	MarketDataSource      marketdata.Source
 	CandleSource          marketdata.CandleSource
 	FundingBoardSource    marketdata.BoardSource
+	FundingHistorySource  marketdata.FundingHistorySource
 	MarketDataProbe       MarketDataRouteProbe
 	RuntimeProbe          RuntimeRouteProbe
 	RuntimeProjection     httpapi.AccountRuntimeProjectionReader
@@ -180,6 +182,10 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if boardSource == nil {
 		boardSource = unavailableFundingBoardSource{}
 	}
+	historySource := dependencies.FundingHistorySource
+	if historySource == nil {
+		historySource = unavailableFundingHistorySource{}
+	}
 	catalogProjection, err := catalog.NewProjection(catalogSource, catalogTTL, now)
 	if err != nil {
 		return nil, err
@@ -217,6 +223,16 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	// History spends under the venue's own key rather than the board's: it is
+	// one call to one venue, made when someone opens a pair, and charging it to
+	// the board's ledger would let a few pair pages exhaust the allowance the
+	// matrix poller depends on. It takes the clock because the window arrives
+	// as a name — resolving "7d" is the only thing this service does that the
+	// Gateway cannot do for it.
+	historyService, err := marketdata.NewFundingHistoryService(historySource, budget, now)
+	if err != nil {
+		return nil, err
+	}
 	hub, err := realtime.NewHub(1024, now)
 	if err != nil {
 		return nil, err
@@ -237,8 +253,8 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	readiness := newReadiness(dependencies, catalogProjection)
 	publicAPI, err := httpapi.NewPublicDataAPI(httpapi.PublicDataDependencies{
 		Catalog: catalogProjection, MarketData: marketService, Candles: candleService,
-		FundingBoard: boardService,
-		Readiness:    readiness, Realtime: hub, Principal: dependencies.Principal,
+		FundingBoard: boardService, FundingHistory: historyService,
+		Readiness: readiness, Realtime: hub, Principal: dependencies.Principal,
 	})
 	if err != nil {
 		return nil, err
@@ -252,6 +268,15 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 	if err := manualService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled); err != nil {
 		return nil, err
 	}
+	// Arbitrage takes the same signing key and the same Gateway channel: a hedge
+	// leg is placed the way a manual order is, and both constructors clone the
+	// key, so the zeroing below still leaves nothing for a later caller to reuse.
+	// The two products cannot open each other's previews despite the shared key —
+	// arbitrage's MAC covers an extra domain label for exactly that reason.
+	arbitrageService := arbitrage.NewGatewayServiceWithPreviewKey(commandService, portfolioProjection, ledgerService, dependencies.ManualGateway, now, cfg.ManualPreviewSigningKey)
+	if err := arbitrageService.SetExecutionAdmission(orders.Mode(cfg.Mode), cfg.LivePrivateWritesEnabled); err != nil {
+		return nil, err
+	}
 	for index := range cfg.ManualPreviewSigningKey {
 		cfg.ManualPreviewSigningKey[index] = 0
 	}
@@ -259,7 +284,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 
 	var reconciler *orders.Reconciler
 	if !cfg.ReconcilerDisabled && dependencies.ReconciliationGateway != nil {
-		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, reconciliationDispatcher{manual: manualService}, orders.Mode(cfg.Mode), now)
+		reconciler, err = orders.NewReconciler(commandService, dependencies.ReconciliationGateway, reconciliationDispatcher{manual: manualService, arbitrage: arbitrageService}, orders.Mode(cfg.Mode), now)
 		if err != nil {
 			return nil, err
 		}
@@ -276,6 +301,7 @@ func New(cfg Config, dependencies Dependencies) (*Service, error) {
 				Reservations: reservationService, Commands: commandService, Portfolio: portfolioProjection,
 				Ledger: ledgerService, Catalog: catalogProjection, Manual: manualService,
 				ManualAccounts: manualAccounts, ManualMarketData: marketService,
+				Arbitrage: arbitrageService, FundingBoard: boardService,
 				Principal: dependencies.Principal, AuthorizeMutation: dependencies.AuthorizeMutation,
 				Activity: activityLog,
 			},
@@ -436,6 +462,12 @@ type unavailableFundingBoardSource struct{}
 
 func (unavailableFundingBoardSource) FetchFundingBoard(context.Context) (marketdata.BoardSnapshot, error) {
 	return marketdata.BoardSnapshot{}, errors.New("gateway projection unavailable")
+}
+
+type unavailableFundingHistorySource struct{}
+
+func (unavailableFundingHistorySource) FetchFundingHistory(context.Context, marketdata.FundingHistoryRead) (marketdata.FundingHistorySeries, error) {
+	return marketdata.FundingHistorySeries{}, errors.New("gateway projection unavailable")
 }
 
 // reservationGate narrows the reservation service to the one question the

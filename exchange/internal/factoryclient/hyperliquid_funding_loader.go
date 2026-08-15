@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	hyperliquidbase "github.com/QuantProcessing/boltertrader/sdk/hyperliquid"
 	hyperliquidperp "github.com/QuantProcessing/boltertrader/sdk/hyperliquid/perp"
 )
 
@@ -31,18 +30,7 @@ func NewHyperliquidFundingBoardLoader(settings Settings) exchange.FundingBoardLo
 // compare an hourly rate against an eight-hourly one as if they were the same
 // number.
 func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	base := hyperliquidbase.NewClient()
-	if loader.settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquidbase.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquidbase.EnvironmentMainnet)
-	}
-	if loader.settings.Endpoint != "" {
-		base.BaseURL = loader.settings.Endpoint
-	}
-	if loader.settings.HTTPClient != nil {
-		base.Http = loader.settings.HTTPClient
-	}
+	base := newHyperliquidPublicSDK(loader.settings)
 
 	full, err := hyperliquidperp.NewClient(base).GetMetaAndAssetCtxs(ctx)
 	if err != nil {
@@ -79,4 +67,68 @@ func (loader hyperliquidFundingBoardLoader) LoadFundingBoard(ctx context.Context
 		})
 	}
 	return fundingBoardSnapshot(scope, entries), nil
+}
+
+type hyperliquidFundingHistoryLoader struct {
+	settings Settings
+}
+
+func NewHyperliquidFundingHistoryLoader(settings Settings) exchange.FundingHistoryLoader {
+	return hyperliquidFundingHistoryLoader{settings: settings}
+}
+
+// LoadFundingHistory reads one coin's settled rates, walking forward.
+//
+// Hyperliquid takes a window but no row limit, and answers with at most five
+// hundred settlements counted from the start of the window. At its hourly
+// clock that is under twenty-one days, so a single thirty-day call returns the
+// oldest stretch and stops nine days before now — the opposite end from the one
+// a funding chart is read for. Each pass therefore resumes from the newest
+// settlement it received, one millisecond on, until the window is covered.
+//
+// Overlapping pages are safe: the shared snapshot builder drops repeated
+// stamps, so a venue that includes its cursor row again costs a duplicate
+// rather than a doubled point. The loop also stops if a pass fails to advance
+// the cursor, which is the only way a forward walk could fail to terminate.
+//
+// The coin, not a pair, is the identifier: Hyperliquid addresses perpetuals by
+// bare base asset, which is why the board files NativeSymbol separately from
+// the canonical BTC-USDC spelling.
+func (loader hyperliquidFundingHistoryLoader) LoadFundingHistory(ctx context.Context, request exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error) {
+	since, until, err := fundingHistoryWindow(request)
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+	client := hyperliquidperp.NewClient(newHyperliquidPublicSDK(loader.settings))
+	native := fundingHistoryNative(request)
+
+	points := []exchange.FundingHistoryPoint{}
+	for page, cursor := 0, since; page < hyperliquidFundingHistoryMaxPages; page++ {
+		rows, err := client.GetFundingRateHistory(ctx, native, cursor, until)
+		if err != nil {
+			return exchange.FundingHistorySnapshot{}, hlNormalizeQueryErr(exchange.ProductPerp, fundingHistoryOperation, err, nil)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		newest := cursor
+		for _, row := range rows {
+			if row.Time > newest {
+				newest = row.Time
+			}
+			rate, err := decimalOrSkip(row.FundingRate)
+			if err != nil {
+				continue
+			}
+			points = append(points, exchange.FundingHistoryPoint{
+				FundingTime: fundingHistoryMillisTime(row.Time),
+				Rate:        rate,
+			})
+		}
+		if len(rows) < hyperliquidFundingHistoryPage || newest <= cursor {
+			break
+		}
+		cursor = newest + 1
+	}
+	return fundingHistorySnapshot(request, points), nil
 }

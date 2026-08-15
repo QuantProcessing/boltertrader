@@ -73,6 +73,7 @@ func run(ctx context.Context) error {
 		MarketDataSource:      gatewayClient.MarketData(),
 		CandleSource:          gatewayClient.Candles(),
 		FundingBoardSource:    gatewayClient.FundingBoard(),
+		FundingHistorySource:  gatewayClient.FundingHistory(),
 		MarketDataProbe:       gatewayClient,
 		RuntimeProbe:          gatewayClient,
 		RuntimeProjection:     gatewayClient,

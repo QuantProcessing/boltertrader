@@ -135,9 +135,13 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 			handler.fail(w, store.ErrNotFound)
 			return
 		}
-		resource, ok := handler.accountResource(exactOrder.AccountID)
-		if !ok {
-			handler.fail(w, account.ErrUnknownAccount)
+		resource, resourceErr := handler.accountRoute(
+			exactOrder.AccountID,
+			exchange.Product(exactOrder.InstrumentID.Product()),
+			exactOrder.InstrumentID.Settlement(),
+		)
+		if resourceErr != nil {
+			handler.fail(w, resourceErr)
 			return
 		}
 		selection = resourceSelection{
@@ -176,14 +180,14 @@ func (handler *Handler) listFills(w http.ResponseWriter, r *http.Request) {
 		var page exchange.FillPage
 		switch resource.Product {
 		case exchange.ProductSpot:
-			client, clientErr := handler.accounts.Spot(resource.AccountID)
+			client, clientErr := handler.accounts.SpotRoute(resource.AccountID, resource.Settlement)
 			if clientErr != nil {
 				handler.fail(w, clientErr)
 				return
 			}
 			page, err = client.Fills(r.Context(), request)
 		case exchange.ProductPerp:
-			client, clientErr := handler.accounts.Perp(resource.AccountID)
+			client, clientErr := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
 			if clientErr != nil {
 				handler.fail(w, clientErr)
 				return
@@ -256,14 +260,14 @@ func (handler *Handler) listBalances(w http.ResponseWriter, r *http.Request) {
 		var balances []exchange.Balance
 		switch resource.Product {
 		case exchange.ProductSpot:
-			client, clientErr := handler.accounts.Spot(resource.AccountID)
+			client, clientErr := handler.accounts.SpotRoute(resource.AccountID, resource.Settlement)
 			if clientErr != nil {
 				handler.fail(w, clientErr)
 				return
 			}
 			balances, err = client.Balances(r.Context())
 		case exchange.ProductPerp:
-			client, clientErr := handler.accounts.Perp(resource.AccountID)
+			client, clientErr := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
 			if clientErr != nil {
 				handler.fail(w, clientErr)
 				return
@@ -293,14 +297,16 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]positionResource, 0)
+	// A named account with no perpetual route at all is a spot account being
+	// asked a perpetual question, and that stays an error. But an account that
+	// merely happens to also hold a spot route answers for its perpetual ones,
+	// so the verdict waits until every route has been looked at.
+	perpRoutes := 0
 	for _, resource := range selection.accounts {
 		if resource.Product == exchange.ProductSpot {
-			if selection.accountID != "" {
-				handler.fail(w, account.ErrProductMismatch)
-				return
-			}
 			continue
 		}
+		perpRoutes++
 		if len(items) == selection.limit {
 			break
 		}
@@ -314,7 +320,7 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 			handler.fail(w, err)
 			return
 		}
-		client, err := handler.accounts.Perp(resource.AccountID)
+		client, err := handler.accounts.PerpRoute(resource.AccountID, resource.Settlement)
 		if err != nil {
 			handler.fail(w, err)
 			return
@@ -340,6 +346,10 @@ func (handler *Handler) listPositions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if selection.accountID != "" && perpRoutes == 0 {
+		handler.fail(w, account.ErrProductMismatch)
+		return
+	}
 	writeJSON(w, http.StatusOK, collection[positionResource]{Items: items})
 }
 
@@ -364,16 +374,16 @@ func (handler *Handler) listFundingPayments(w http.ResponseWriter, r *http.Reque
 		handler.invalid(w)
 		return
 	}
-	resource, ok := handler.accountResource(accountID)
-	if !ok {
-		handler.fail(w, account.ErrUnknownAccount)
+	resource, err := handler.accountRoute(accountID, "", r.URL.Query().Get("settlement_asset"))
+	if err != nil {
+		handler.fail(w, err)
 		return
 	}
 	if resource.Product != exchange.ProductPerp {
 		writeJSON(w, http.StatusOK, emptyFundingPaymentPage(accountID, instrumentID, r.URL.Query().Get("settlement_asset"), start, end, exchange.FundingPaymentsUnsupported))
 		return
 	}
-	row, err := handler.accounts.Capability(accountID)
+	row, err := handler.accounts.RouteCapability(accountID, string(resource.Product), resource.Settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -391,7 +401,7 @@ func (handler *Handler) listFundingPayments(w http.ResponseWriter, r *http.Reque
 		}
 		instrument = &resolved
 	}
-	client, err := handler.accounts.Perp(accountID)
+	client, err := handler.accounts.PerpRoute(accountID, resource.Settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -442,7 +452,7 @@ func (handler *Handler) listFundingRates(w http.ResponseWriter, r *http.Request)
 		handler.invalid(w)
 		return
 	}
-	row, err := handler.accounts.Capability(accountID)
+	row, err := handler.accounts.RouteCapability(accountID, instrumentID.Product(), instrumentID.Settlement())
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -456,7 +466,7 @@ func (handler *Handler) listFundingRates(w http.ResponseWriter, r *http.Request)
 		handler.fail(w, err)
 		return
 	}
-	client, err := handler.accounts.Perp(accountID)
+	client, err := handler.accounts.PerpRoute(accountID, instrument.Identity.SettleAsset)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -491,7 +501,7 @@ func (handler *Handler) setLeverage(w http.ResponseWriter, r *http.Request) {
 		handler.invalid(w)
 		return
 	}
-	if _, err := handler.accounts.Capability(accountID); err != nil {
+	if _, err := handler.accounts.RouteCapability(accountID, instrumentID.Product(), instrumentID.Settlement()); err != nil {
 		handler.fail(w, err)
 		return
 	}
@@ -541,17 +551,33 @@ func (handler *Handler) resourceSelection(r *http.Request, allowInstrument bool)
 	}
 	resources := handler.accounts.Accounts()
 	if accountID != "" {
-		found := false
+		// Every route of the account, not the first one found: an account that
+		// settles perpetuals in two assets keeps two books, and a caller asking
+		// for its balances means both of them.
+		//
+		// An instrument filter narrows that back down. It has to: the two books
+		// hold different symbols, so asking the USDC route about a USDT symbol
+		// is not a smaller question but a wrong one, and the venue answers it
+		// with an error rather than an empty page.
+		matched := make([]account.Resource, 0, 2)
 		for _, resource := range resources {
-			if resource.AccountID == accountID {
-				resources = []account.Resource{resource}
-				found = true
-				break
+			if resource.AccountID != accountID {
+				continue
 			}
+			if instrumentID != "" {
+				if product := instrumentID.Product(); product != "" && string(resource.Product) != product {
+					continue
+				}
+				if settlement := instrumentID.Settlement(); settlement != "" && resource.Settlement != settlement {
+					continue
+				}
+			}
+			matched = append(matched, resource)
 		}
-		if !found {
+		if len(matched) == 0 {
 			return resourceSelection{}, account.ErrUnknownAccount
 		}
+		resources = matched
 	}
 	return resourceSelection{
 		accounts: resources, accountID: accountID, instrumentID: instrumentID,
@@ -570,13 +596,35 @@ func (handler *Handler) optionalResolvedInstrument(ctx context.Context, accountI
 	return &instrument, nil
 }
 
-func (handler *Handler) accountResource(accountID domain.AccountID) (account.Resource, bool) {
+// accountRoute names one route of one account. An account id alone is not
+// always a route: bybit settles perpetuals in both USDT and USDC under a single
+// set of credentials, and those two books hold different positions and different
+// balances. product and settlement narrow the search and either may be empty,
+// so a single-route account is still findable by id alone; when the hints leave
+// two routes standing this reports ErrProductMismatch rather than picking one,
+// because picking one would answer a question the caller did not ask.
+func (handler *Handler) accountRoute(accountID domain.AccountID, product exchange.Product, settlement string) (account.Resource, error) {
+	var matched account.Resource
+	found := false
 	for _, resource := range handler.accounts.Accounts() {
-		if resource.AccountID == accountID {
-			return resource, true
+		if resource.AccountID != accountID {
+			continue
 		}
+		if product != "" && resource.Product != product {
+			continue
+		}
+		if settlement != "" && resource.Settlement != settlement {
+			continue
+		}
+		if found {
+			return account.Resource{}, account.ErrProductMismatch
+		}
+		matched, found = resource, true
 	}
-	return account.Resource{}, false
+	if !found {
+		return account.Resource{}, account.ErrUnknownAccount
+	}
+	return matched, nil
 }
 
 func parseFundingPaymentWindow(r *http.Request) (time.Time, time.Time, error) {

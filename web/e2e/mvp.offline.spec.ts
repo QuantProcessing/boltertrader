@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { ACCOUNT, CREDENTIALS, FakeEdge } from "./fake-edge";
+import { ACCOUNT, CREDENTIALS, FakeEdge, HEDGE_ACCOUNT } from "./fake-edge";
 
 /* ---------------------------------------------------------------------------
  * The plan's MVP path, in a browser, against a fake auth edge.
@@ -116,6 +116,7 @@ test.describe("the MVP path", () => {
       ["Settings", /\/settings$/],
       ["Activity", /\/activity$/],
       ["Funding", /\/funding$/],
+      ["Arbitrage", /\/funding\/arbitrage$/],
       ["Trade", /\/trade$/],
     ] as const) {
       await nav.getByRole("link", { name: label }).click();
@@ -142,16 +143,44 @@ test.describe("the MVP path", () => {
     await expect(page.getByRole("columnheader", { name: /okx/ })).toContainText("down");
   });
 
+  // A hedge is the one thing on the terminal that is two orders on two venues,
+  // so what this checks is that both halves survive the trip: the ranked scan
+  // arrives through an envelope nothing else uses (`{items, observedAt}`), and
+  // the ticket resolves each leg to an account on the leg's own exchange.
+  test("ranks a cross-venue spread and offers both legs a home", async ({ page }) => {
+    await signIn(page, edge);
+    await navOf(page).getByRole("link", { name: "Arbitrage" }).click();
+
+    await expect(page).toHaveURL(/\/funding\/arbitrage$/);
+
+    // The scan ranked one pair, and it is the pair the board can make.
+    const spread = page.getByRole("button", { name: /BTC-USDT/ }).first();
+    await expect(spread).toContainText("binance → bybit");
+
+    // Long above short, each picking from accounts on its own exchange: the
+    // pickers are filtered by venue, so a wrong filter puts the wrong name here.
+    const ticket = page.locator("section").filter({ has: page.getByRole("heading", { name: "Hedge" }) });
+    const pickers = ticket.getByLabel("Account");
+    await expect(pickers.nth(0)).toContainText(ACCOUNT.displayName);
+    await expect(pickers.nth(1)).toContainText(HEDGE_ACCOUNT.displayName);
+  });
+
   test("sends the operator back to login when the session ends", async ({ page }) => {
     await signIn(page, edge);
 
     await page.getByRole("button", { name: "Sign out" }).click();
-    await expect(page).toHaveURL(/\/login/);
+    // One capture of where they were, not a stack of them. This shell outlives
+    // the navigation it starts — the login route's `beforeLoad` is async — so an
+    // effect keyed on `location.href` re-runs against its own `/login?redirect=…`
+    // output and wraps it once per render. That reads as a working sign-out
+    // right up until the address is kilobytes long and has to bounce a few dozen
+    // times to unwrap, which a `/\/login/` assertion cannot tell apart from this.
+    await expect(page).toHaveURL("/login?redirect=%2Ftrade");
 
     // And the guard holds on a direct navigation afterwards, rather than
     // flashing the terminal while a query discovers the 401.
     await page.goto("/portfolio");
-    await expect(page).toHaveURL(/\/login\?redirect=/);
+    await expect(page).toHaveURL("/login?redirect=%2Fportfolio");
   });
 });
 

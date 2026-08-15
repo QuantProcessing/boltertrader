@@ -2,11 +2,14 @@
 
 > Canonical language: English. [Chinese mirror](../zh-CN/guides/trading-service.md)
 
-The trading service is the manual-trading product. It owns the command ledger,
-the order-ticket flow, the portfolio and ledger projections, and the reconciler
-that carries a command to its terminal state. It holds no venue credential and
-opens no venue connection: every write goes through
-[the exchange gateway](exchange-gateway.md).
+The trading service hosts the products. There are two: **manual trading**, which
+places one order at a time, and **funding arbitrage**, which places two at once
+on different venues. Both stand on the same command ledger, the same
+reservations, the same reconciler, and the same projections — a product is a set
+of endpoints and an intent shape, not a second copy of the machinery.
+
+The service holds no venue credential and opens no venue connection: every write
+goes through [the exchange gateway](exchange-gateway.md).
 
 It never serves a browser directly. Requests arrive from
 [the auth edge](auth-edge.md) with a service token and an attested principal.
@@ -72,6 +75,65 @@ Reservations are their own resource (`/api/v1/reservations`), created,
 consumed, or released. A reservation that is never consumed is released rather
 than left holding capacity.
 
+## The arbitrage product
+
+The second product trades the funding spread rather than the price. It takes one
+instrument on two venues, goes long where funding is cheapest and short where it
+is dearest, and holds a delta-flat pair that earns the difference. It is a
+cross-venue perpetual hedge and nothing else: no single-venue basis, no spot leg,
+no dated contract.
+
+Rates are not comparable as published. Venues settle funding on their own
+schedule — four hours here, eight there — so a raw rate says nothing until it is
+normalized. Every rate is converted to a daily figure (`rate × 24 ÷
+intervalHours`) before any two are compared, the spread is `shortDaily −
+longDaily`, and the headline APR is that spread times 365. A venue that will not
+say what its interval is cannot be ranked, and the service says so instead of
+assuming eight hours.
+
+`GET /api/v1/products/arbitrage/opportunities` ranks the pairs across the
+accounts named in the request. Each carries its own `blockers`, and a pair with
+any of them is not executable: `funding_interval_unknown`, `account_unreachable`,
+`instrument_unlisted`, `board_stale`. An empty list is the only thing that makes
+the ticket live.
+
+Placement reuses the manual flow's shape exactly.
+`POST /api/v1/products/arbitrage/execution-previews` returns a sealed preview —
+the same seal, the same expiry — except that it prices both legs and reserves
+against both accounts. It also carries `warnings`, which are not blockers and do
+not stop a confirm: `fees_excluded` says the quoted spread is gross,
+`negative_spread` says the ranking inverted between the read and the preview,
+`funding_rate_unavailable` and `board_stale` say a leg's number is older than it
+looks.
+
+`POST /api/v1/products/arbitrage/commands` takes that preview and carries all
+three verbs, distinguished by `action`:
+
+| Action | What it does |
+| --- | --- |
+| `open` | Places both legs from the sealed preview, in one request |
+| `close` | Flattens both legs reduce-only, in one request |
+| `cancel` | Withdraws one named resting leg |
+
+Every one of them requires a `lineageId` and an `Idempotency-Key` that matches
+the body. The **lineage** is the pair's identity: two orders on two venues in two
+command rows, tied together by one identifier. It is what makes "close the pair"
+a single operation rather than two cancels the operator has to sequence
+correctly, and it is what `GET /api/v1/products/arbitrage/positions` groups by.
+A pair whose leg payload cannot be read back reports `leg_payload_unreadable`
+and refuses to close, because a close it cannot describe is a close it cannot
+prove.
+
+Both legs still go through the ledger one command at a time. There is no atomic
+two-venue write and the service does not pretend otherwise: a pair can end up
+with one leg filled and one leg `uncertain`, which is exactly the state the
+ledger exists to hold. Reconciliation resolves each leg against its own venue,
+and the pair is whatever its legs turn out to be.
+
+Live writes are refused outright. `open`, `close`, and `cancel` all return
+`403 LIVE_PRIVATE_WRITE_DISABLED` in live mode; the product is test-mode only
+until it has evidence it does not yet have.
+
 ## Reconciliation
 
 A ticker-driven reconciler claims due tasks under a lease and asks the gateway
@@ -104,13 +166,29 @@ calls:
   interface shows on each account.
 - `/api/v1/catalog/venues`, `/api/v1/catalog/instruments` — what can be traded.
 - `/api/v1/market-data`, `/api/v1/candles` — the ticker strip and the chart.
+- `/api/v1/products/arbitrage/opportunities`,
+  `/api/v1/products/arbitrage/positions` — the ranked spreads and the open pairs.
 - `/api/v1/realtime/stream` — the single server-sent stream the interface holds
   open.
+
+Two reads are not projections and do not pretend to be.
+`/api/v1/funding-board` and `/api/v1/funding-history` are served from the
+gateway's credential-free public plane, which needs no account to answer. The
+board is the whole matrix, one column per venue-product-settlement; the history
+is one instrument on one venue over a bounded window, `7d` or `30d` and nothing
+else — an open range would mean paginating a venue call, which is the thing this
+read is built to avoid. A venue with no history surface is reported unavailable
+rather than empty. See
+[Market and reference data](market-reference-data.md).
 
 Collection responses are enveloped as `{"data":{"items":[…]}}`, with a `meta`
 object alongside `data`. Single-resource responses put the resource directly in
 `data`. A client that reads `data.items` on a single resource, or `data` on a
-collection, is reading the wrong shape.
+collection, is reading the wrong shape. The board and the history are single
+resources by that rule, not collections: `data` is the snapshot or the series
+itself, with its columns under `venues` and its readings under `points`. Both
+also carry a third top-level key, `rateLimit`, which is what is left of the
+venue budget the read spent.
 
 ## Storage
 

@@ -17,7 +17,7 @@ layer depends only on the one below it:
 ```text
 web                        the only frontend
 services/authedge          browser sessions and path forwarding
-services/trading           the manual-trading product over the gateway
+services/trading           manual trading and funding arbitrage
 gateway                    shared capability plane
 exchange                   venue-neutral typed clients
 sdk                        one package per venue's native API

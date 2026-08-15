@@ -95,6 +95,30 @@ func NewInstrumentID(venue, environment, product, settlement, symbol string) (In
 
 func (id InstrumentID) String() string { return string(id) }
 
+// Product and Settlement read back the two fields NewInstrumentID wrote, so a
+// reader holding only an instrument id can say which of an account's routes it
+// belongs to. That question is not academic: one account may run several routes
+// at once, and bybit settles perpetuals in both USDT and USDC under a single
+// set of credentials. Product alone does not tell those two apart.
+//
+// Settlement returns "" for the four-part form, which omits it by design — a
+// venue whose product has no settlement asset to name.
+func (id InstrumentID) Product() string {
+	parts := strings.Split(string(id), ":")
+	if len(parts) != 4 && len(parts) != 5 {
+		return ""
+	}
+	return parts[2]
+}
+
+func (id InstrumentID) Settlement() string {
+	parts := strings.Split(string(id), ":")
+	if len(parts) != 5 {
+		return ""
+	}
+	return parts[3]
+}
+
 func (id CommandID) Validate() error      { return validateUUIDv7("command id", string(id)) }
 func (id GatewayOrderID) Validate() error { return validateUUIDv7("gateway order id", string(id)) }
 func (id EventID) Validate() error        { return validateUUIDv7("event id", string(id)) }

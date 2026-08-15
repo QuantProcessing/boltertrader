@@ -788,6 +788,42 @@ func fundingBoardLoaderForConfig(configName string, settings settings) exchange.
 	}
 }
 
+// fundingHistoryLoaderForConfig is the per-instrument counterpart of
+// fundingBoardLoaderForConfig.
+//
+// It covers nine of the board's ten configs. Nado is deliberately absent: it
+// publishes the current funding rate and nothing before it, so there is no
+// loader to build rather than one that answers with an empty series. A caller
+// gets nil and the connector turns that into a configuration error, which is
+// the difference between "this venue keeps no history" and "this instrument was
+// paid nothing" — indistinguishable to the reader of an empty chart, and the
+// first is permanent where the second is news.
+func fundingHistoryLoaderForConfig(configName string, settings settings) exchange.FundingHistoryLoader {
+	switch configName {
+	case "binance-usd-perp":
+		return factoryclient.NewBinanceFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "okx-usdt-perp":
+		return factoryclient.NewOKXFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "lighter-perp":
+		return factoryclient.NewLighterFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "hyperliquid-perp":
+		return factoryclient.NewHyperliquidFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "bybit-usdt-perp", "bybit-usdc-perp":
+		// One constructor for both settlements, where the board needed two:
+		// Bybit's history endpoint is addressed by symbol inside a single
+		// linear category, so there is no mixed surface left to filter.
+		return factoryclient.NewBybitFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	case "bitget-usdt-perp":
+		return factoryclient.NewBitgetFundingHistoryLoader("USDT-FUTURES", factorySettingsForConfig(configName, settings))
+	case "bitget-usdc-perp":
+		return factoryclient.NewBitgetFundingHistoryLoader("USDC-FUTURES", factorySettingsForConfig(configName, settings))
+	case "gate-usdt-perp":
+		return factoryclient.NewGateFundingHistoryLoader(factorySettingsForConfig(configName, settings))
+	default:
+		return nil
+	}
+}
+
 func factorySettings(settings settings) factoryclient.Settings {
 	catalog := settings.catalog
 	if catalog == nil {

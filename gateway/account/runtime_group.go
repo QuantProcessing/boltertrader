@@ -1191,6 +1191,27 @@ func (manager *Manager) activeRouteLocked(accountID domain.AccountID, product, s
 	return matched, matchedRoute, runtime.activeGroup, nil
 }
 
+// productClient resolves the client handle a caller should use for one
+// product. A named settlement selects exactly one active route; an empty one
+// falls back to the whole-account lookup, which by design refuses to guess
+// when the account runs more than one route for the product.
+func (manager *Manager) productClient(accountID domain.AccountID, product exchange.Product, settlement string) (CandidateClientRoute, error) {
+	if settlement == "" {
+		return manager.activeProductClient(accountID, product)
+	}
+	manager.groupMu.Lock()
+	defer manager.groupMu.Unlock()
+	_, route, _, err := manager.activeRouteLocked(accountID, string(product), settlement)
+	if err != nil {
+		return nil, err
+	}
+	clientRoute, ok := route.Handle.(CandidateClientRoute)
+	if !ok {
+		return nil, ErrProductMismatch
+	}
+	return clientRoute, nil
+}
+
 func (manager *Manager) activeProductClient(accountID domain.AccountID, product exchange.Product) (CandidateClientRoute, error) {
 	manager.groupMu.Lock()
 	defer manager.groupMu.Unlock()

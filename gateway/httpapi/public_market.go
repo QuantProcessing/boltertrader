@@ -37,6 +37,7 @@ const (
 type publicMarketSelection struct {
 	accountID    domain.AccountID
 	instrumentID domain.InstrumentID
+	settlement   string
 	status       account.Status
 	instrument   exchange.Instrument
 }
@@ -192,7 +193,7 @@ func (handler *Handler) getMarkPrice(w http.ResponseWriter, r *http.Request) {
 		handler.fail(w, account.ErrProductMismatch)
 		return
 	}
-	client, err := handler.accounts.Perp(selection.accountID)
+	client, err := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -301,7 +302,7 @@ func (handler *Handler) listFundingRateHistory(w http.ResponseWriter, r *http.Re
 		handler.invalidOrFail(w, err)
 		return
 	}
-	if err := handler.requireFundingCapability(selection.accountID); err != nil {
+	if err := handler.requireFundingCapability(selection); err != nil {
 		handler.fail(w, err)
 		return
 	}
@@ -324,7 +325,7 @@ func (handler *Handler) listFundingRateHistory(w http.ResponseWriter, r *http.Re
 		handler.invalid(w)
 		return
 	}
-	client, err := handler.accounts.Perp(selection.accountID)
+	client, err := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -389,7 +390,7 @@ func (handler *Handler) startOrderBookStream(w http.ResponseWriter, r *http.Requ
 	var subscription exchange.Subscription[exchange.BookEvent]
 	switch selection.status.Product {
 	case exchange.ProductSpot:
-		spot, clientErr := handler.accounts.Spot(selection.accountID)
+		spot, clientErr := handler.accounts.SpotRoute(selection.accountID, selection.settlement)
 		if clientErr != nil {
 			handler.fail(w, clientErr)
 			return
@@ -401,7 +402,7 @@ func (handler *Handler) startOrderBookStream(w http.ResponseWriter, r *http.Requ
 		}
 		subscription, err = socket.WatchOrderBook(r.Context(), request)
 	case exchange.ProductPerp:
-		perp, clientErr := handler.accounts.Perp(selection.accountID)
+		perp, clientErr := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 		if clientErr != nil {
 			handler.fail(w, clientErr)
 			return
@@ -464,7 +465,7 @@ func (handler *Handler) startBBOStream(w http.ResponseWriter, r *http.Request, s
 	var subscription exchange.Subscription[exchange.BBOEvent]
 	switch selection.status.Product {
 	case exchange.ProductSpot:
-		spot, clientErr := handler.accounts.Spot(selection.accountID)
+		spot, clientErr := handler.accounts.SpotRoute(selection.accountID, selection.settlement)
 		if clientErr != nil {
 			handler.fail(w, clientErr)
 			return
@@ -476,7 +477,7 @@ func (handler *Handler) startBBOStream(w http.ResponseWriter, r *http.Request, s
 		}
 		subscription, err = socket.WatchBBO(r.Context(), request)
 	case exchange.ProductPerp:
-		perp, clientErr := handler.accounts.Perp(selection.accountID)
+		perp, clientErr := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 		if clientErr != nil {
 			handler.fail(w, clientErr)
 			return
@@ -534,7 +535,7 @@ func (handler *Handler) startMarkPriceStream(w http.ResponseWriter, r *http.Requ
 		handler.fail(w, account.ErrProductMismatch)
 		return
 	}
-	client, err := handler.accounts.Perp(selection.accountID)
+	client, err := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -567,7 +568,7 @@ func (handler *Handler) startMarkPriceStream(w http.ResponseWriter, r *http.Requ
 }
 
 func (handler *Handler) startFundingRateStream(w http.ResponseWriter, r *http.Request, selection publicMarketSelection) {
-	if err := handler.requireFundingCapability(selection.accountID); err != nil {
+	if err := handler.requireFundingCapability(selection); err != nil {
 		handler.fail(w, err)
 		return
 	}
@@ -575,7 +576,7 @@ func (handler *Handler) startFundingRateStream(w http.ResponseWriter, r *http.Re
 		handler.fail(w, account.ErrProductMismatch)
 		return
 	}
-	client, err := handler.accounts.Perp(selection.accountID)
+	client, err := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	if err != nil {
 		handler.fail(w, err)
 		return
@@ -764,33 +765,45 @@ func (handler *Handler) selectPublicMarket(r *http.Request) (publicMarketSelecti
 	if err != nil {
 		return publicMarketSelection{}, err
 	}
-	if instrument.Identity.Product != status.Product || instrument.Identity.Venue != status.Venue {
+	if instrument.Identity.Venue != status.Venue {
+		return publicMarketSelection{}, fmt.Errorf("%w: resolved instrument scope mismatch", exchange.ErrInvalidRequest)
+	}
+	// The instrument names the route, and only the route can answer for it. An
+	// account that settles perpetuals in two assets has two routes, and asking
+	// by account alone collapses them into a status carrying no product at all
+	// — which then failed the scope check above for a reason that had nothing
+	// to do with the request. RouteStatus refuses on a genuine product or
+	// settlement mismatch, which is the same complaint, so it is reported the
+	// same way.
+	routeStatus, err := handler.accounts.RouteStatus(accountID, string(instrument.Identity.Product), instrument.Identity.SettleAsset)
+	if err != nil {
 		return publicMarketSelection{}, fmt.Errorf("%w: resolved instrument scope mismatch", exchange.ErrInvalidRequest)
 	}
 	return publicMarketSelection{
-		accountID: accountID, instrumentID: instrumentID, status: status, instrument: instrument,
+		accountID: accountID, instrumentID: instrumentID, settlement: instrument.Identity.SettleAsset,
+		status: routeStatus, instrument: instrument,
 	}, nil
 }
 
 func (handler *Handler) publicRESTClient(selection publicMarketSelection) (exchange.MarketREST, error) {
 	switch selection.status.Product {
 	case exchange.ProductSpot:
-		return handler.accounts.Spot(selection.accountID)
+		return handler.accounts.SpotRoute(selection.accountID, selection.settlement)
 	case exchange.ProductPerp:
-		return handler.accounts.Perp(selection.accountID)
+		return handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	default:
 		return nil, account.ErrProductMismatch
 	}
 }
 
 func (handler *Handler) currentFunding(ctx context.Context, selection publicMarketSelection) (exchange.FundingRate, error) {
-	if err := handler.requireFundingCapability(selection.accountID); err != nil {
+	if err := handler.requireFundingCapability(selection); err != nil {
 		return exchange.FundingRate{}, err
 	}
 	if selection.status.Product != exchange.ProductPerp {
 		return exchange.FundingRate{}, account.ErrProductMismatch
 	}
-	client, err := handler.accounts.Perp(selection.accountID)
+	client, err := handler.accounts.PerpRoute(selection.accountID, selection.settlement)
 	if err != nil {
 		return exchange.FundingRate{}, err
 	}
@@ -804,8 +817,10 @@ func (handler *Handler) currentFunding(ctx context.Context, selection publicMark
 	return rate, nil
 }
 
-func (handler *Handler) requireFundingCapability(accountID domain.AccountID) error {
-	row, err := handler.accounts.Capability(accountID)
+func (handler *Handler) requireFundingCapability(selection publicMarketSelection) error {
+	row, err := handler.accounts.RouteCapability(
+		selection.accountID, string(selection.instrument.Identity.Product), selection.settlement,
+	)
 	if err != nil {
 		return err
 	}

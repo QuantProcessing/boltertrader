@@ -22,6 +22,20 @@ import (
 
 var ErrBoardUnavailable = errors.New("funding board unavailable")
 
+// The three ways a history read can fail before a venue is ever called. They
+// are separate sentinels because each is a different sentence next to a leg
+// that did not draw, and the arbitrage chart puts two legs side by side:
+// "this venue publishes no history" (nado, permanently), "this venue does not
+// list this instrument" (a pair that only one leg trades), and "that window is
+// wider than one call" (a caller asking past the product's two presets). A
+// single error would collapse the first two into a blank line that reads as
+// "nothing was paid here".
+var (
+	ErrHistoryUnsupported       = errors.New("funding history unsupported")
+	ErrHistoryUnknownInstrument = errors.New("funding history instrument unknown")
+	ErrHistoryWindow            = errors.New("funding history window unsupported")
+)
+
 const (
 	// One refresh per half-minute, retained for two, matching publicconn's
 	// ratio rather than its absolute values: funding settles hourly at the
@@ -35,6 +49,16 @@ const (
 	// rather than the whole table. Every venue answers its bulk funding call in
 	// well under this.
 	defaultVenueTimeout = 10 * time.Second
+
+	// The widest history window a single call may ask for.
+	//
+	// The product offers 7d and 30d, and the loaders were sized against those:
+	// each is one venue call, or one bounded walk, on every chartable venue.
+	// Past a month the venues with row caps start answering short, and a series
+	// that silently stops early is a chart claiming funding was never paid. So
+	// the request is refused here — the gateway is where the loaders' extent is
+	// known — rather than served truncated.
+	maxHistorySpan = 31 * 24 * time.Hour
 )
 
 // Connector is one venue's funding surface. It matches
@@ -49,6 +73,37 @@ type Connector interface {
 // has no funding surface at all.
 type Factory interface {
 	Build(routeprofile.Profile) (Connector, error)
+}
+
+// HistoryConnector is one venue's settled-funding series for one instrument at
+// a time. It matches exchangefactory.PublicFundingHistoryConnector.
+type HistoryConnector interface {
+	Load(context.Context, exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error)
+	Close() error
+}
+
+// HistoryFactory is an optional capability of a Factory.
+//
+// It is a second interface rather than a second method on Factory because
+// history is genuinely optional: a Factory that only builds board connectors is
+// still a complete Factory, and every column that cannot be charted still has
+// to appear on the board. Folding the two together would also make every
+// existing test double a compile error for a capability none of them exercise.
+type HistoryFactory interface {
+	BuildHistory(routeprofile.Profile) (HistoryConnector, error)
+}
+
+// HistoryQuery names one instrument on one charted venue, plus the window.
+//
+// A struct rather than positional arguments for the same reason
+// authorityCandlesQuery is one: three of the fields are strings in a row and
+// nothing in the type system would catch a transposition.
+type HistoryQuery struct {
+	Venue       string
+	Environment string
+	Symbol      string
+	Since       time.Time
+	Until       time.Time
 }
 
 // Snapshot is the whole board: one column per funding-capable route profile.
@@ -106,6 +161,30 @@ func (factory *ExchangeFactory) Build(profile routeprofile.Profile) (Connector, 
 	return connector, nil
 }
 
+// BuildHistory opens the same profile's history surface, or reports that the
+// profile has none.
+//
+// The error is ErrHistoryUnsupported rather than ErrBoardUnavailable because
+// the caller is newSource, which uses it to decide whether a column is
+// chartable — and a venue that publishes rates but no history is not a broken
+// board, it is Nado.
+func (factory *ExchangeFactory) BuildHistory(profile routeprofile.Profile) (HistoryConnector, error) {
+	if factory == nil || factory.httpClient == nil {
+		return nil, ErrBoardUnavailable
+	}
+	connector, err := exchangefactory.NewPublicFundingHistoryConnector(
+		exchange.Venue(profile.Venue),
+		exchange.Product(profile.Product),
+		profile.SettlementAsset,
+		exchangefactory.Environment(profile.NativeEnvironment),
+		factory.httpClient,
+	)
+	if err != nil {
+		return nil, ErrHistoryUnsupported
+	}
+	return connector, nil
+}
+
 type Source struct {
 	mu           sync.Mutex
 	columns      []*column
@@ -124,6 +203,11 @@ type Source struct {
 type column struct {
 	profile   routeprofile.Profile
 	connector Connector
+
+	// nil on a venue that publishes rates but no settled series. Set once at
+	// construction and never reassigned, so History may read it without the
+	// mutex; entries below is the part that changes.
+	history HistoryConnector
 
 	// Guarded by Source.mu.
 	entries    []exchange.FundingBoardEntry
@@ -173,16 +257,39 @@ func newSource(factory Factory, trusted *routeprofile.Registry, mode routeprofil
 	if len(profiles) == 0 {
 		return nil, ErrBoardUnavailable
 	}
+	// One column per exchange market, not per route profile. bybit is registered
+	// under both `demo` and `testnet` and both resolve in test mode, so the
+	// unguarded enumeration stands two columns labelled "bybit · USDT" side by
+	// side carrying different numbers — precisely the plausible-looking table
+	// this source exists to prevent. The registry's order is stable, so which
+	// environment survives is stable too, and the claim is staked only after a
+	// connector is built so a venue whose first environment cannot be reached
+	// still gets its second.
+	type market struct{ venue, product, settlement string }
+	claimed := make(map[market]struct{}, len(profiles))
 	columns := make([]*column, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile.Product != routeprofile.ProductPerp {
+			continue
+		}
+		key := market{
+			venue:      profile.Venue,
+			product:    string(profile.Product),
+			settlement: profile.SettlementAsset,
+		}
+		if _, taken := claimed[key]; taken {
 			continue
 		}
 		connector, err := factory.Build(profile)
 		if err != nil || connector == nil {
 			continue
 		}
-		columns = append(columns, &column{profile: profile, connector: connector})
+		claimed[key] = struct{}{}
+		columns = append(columns, &column{
+			profile:   profile,
+			connector: connector,
+			history:   buildHistory(factory, profile),
+		})
 	}
 	if len(columns) == 0 {
 		// Every supported mode has funding venues. None means the profile
@@ -198,6 +305,25 @@ func newSource(factory Factory, trusted *routeprofile.Registry, mode routeprofil
 		venueTimeout: options.venueTimeout,
 		now:          options.now,
 	}, nil
+}
+
+// buildHistory opens a column's history surface when the factory has one to
+// give, and returns nil otherwise.
+//
+// Every outcome here is nil rather than an error on purpose: the column is
+// already built, and a venue whose series cannot be opened still belongs on the
+// board. The absence surfaces later as ErrHistoryUnsupported, next to the leg
+// that did draw.
+func buildHistory(factory Factory, profile routeprofile.Profile) HistoryConnector {
+	histories, ok := factory.(HistoryFactory)
+	if !ok {
+		return nil
+	}
+	history, err := histories.BuildHistory(profile)
+	if err != nil || history == nil {
+		return nil
+	}
+	return history
 }
 
 // Snapshot returns the board, refreshing first when the cached one has aged past
@@ -302,6 +428,112 @@ func (source *Source) refreshAll(ctx context.Context, targets []*column) []venue
 	return results
 }
 
+// History returns one instrument's settled funding series from one charted
+// venue.
+//
+// The canonical-to-native translation happens here and nowhere above. Every
+// venue's history endpoint is addressed by its own identifier — BTCUSDT, an
+// integer market id, a bare coin — while a caller comparing two legs of a
+// spread only knows BTC-USDT. The board already holds that mapping on the row
+// it refreshed, so the read borrows it instead of standing up a second resolver
+// that could disagree with the table the user is looking at.
+//
+// This deliberately does not touch the refresh clock or the single-flight slot.
+// A chart being opened is not a reason to age the board, and the board's cadence
+// is not a reason to make a chart wait.
+func (source *Source) History(ctx context.Context, query HistoryQuery) (exchange.FundingHistorySnapshot, error) {
+	if source == nil || ctx == nil || ctx.Err() != nil {
+		return exchange.FundingHistorySnapshot{}, ErrBoardUnavailable
+	}
+	if query.Venue == "" || query.Environment == "" || query.Symbol == "" {
+		return exchange.FundingHistorySnapshot{}, ErrHistoryUnsupported
+	}
+	if query.Since.IsZero() || !query.Until.After(query.Since) || query.Until.Sub(query.Since) > maxHistorySpan {
+		return exchange.FundingHistorySnapshot{}, ErrHistoryWindow
+	}
+
+	target, entry, warm, err := source.resolveHistory(query)
+	if errors.Is(err, ErrHistoryUnknownInstrument) && !warm {
+		// The mapping lives in a column that has never been read — the very
+		// first chart after startup, or one opened while a venue is down. One
+		// refresh is worth attempting before telling the caller the instrument
+		// is unlisted, because those two states are indistinguishable from here
+		// and only one of them is true. A column that *is* warm and still lacks
+		// the symbol genuinely does not list it, and refreshing ten venues over
+		// a mistyped symbol would be the wrong trade.
+		if _, refreshErr := source.Snapshot(ctx); refreshErr != nil {
+			return exchange.FundingHistorySnapshot{}, refreshErr
+		}
+		target, entry, _, err = source.resolveHistory(query)
+	}
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+
+	venueCtx, cancel := context.WithTimeout(ctx, source.venueTimeout)
+	defer cancel()
+	return target.history.Load(venueCtx, exchange.FundingHistoryRequest{
+		Symbol:       entry.Symbol,
+		NativeSymbol: entry.NativeSymbol,
+		NativeID:     entry.NativeID,
+		Since:        query.Since,
+		Until:        query.Until,
+	})
+}
+
+// resolveHistory finds the charted column for a venue and the board row for a
+// symbol on it.
+//
+// warm reports whether every candidate column has been read at least once. It
+// is returned separately from the error because "the board has not loaded this
+// venue yet" and "this venue does not list this instrument" arrive at the same
+// place and only the first is worth a refresh.
+func (source *Source) resolveHistory(query HistoryQuery) (*column, exchange.FundingBoardEntry, bool, error) {
+	var missing exchange.FundingBoardEntry
+
+	source.mu.Lock()
+	defer source.mu.Unlock()
+	if source.closed {
+		return nil, missing, false, ErrBoardUnavailable
+	}
+	// Every matching column is searched, not the first one. A venue and an
+	// environment do not name a column: bybit and bitget each stand two, one per
+	// settlement asset, and the registry's ordering puts USDC ahead of USDT.
+	// Stopping at the first match reported every USDT instrument on those two
+	// venues as absent from a board that was carrying it one column over.
+	var (
+		matched bool // some column answers for this venue and environment
+		charted bool // at least one of them has a history surface
+		cold    bool // at least one of them has never been read
+	)
+	for _, current := range source.columns {
+		if current.profile.Venue != query.Venue || string(current.profile.NativeEnvironment) != query.Environment {
+			continue
+		}
+		matched = true
+		if current.history == nil {
+			continue
+		}
+		charted = true
+		if len(current.entries) == 0 {
+			cold = true
+			continue
+		}
+		for _, candidate := range current.entries {
+			if candidate.Symbol == query.Symbol {
+				return current, candidate, true, nil
+			}
+		}
+	}
+	if !matched || !charted {
+		// Warm either way: no refresh adds a column, and the caller only
+		// consults warmth to decide whether an unknown instrument is worth
+		// re-reading the board for.
+		return nil, missing, true, ErrHistoryUnsupported
+	}
+	return nil, missing, !cold, ErrHistoryUnknownInstrument
+}
+
 func (source *Source) needsRefreshLocked() bool {
 	if source.lastAttempt.IsZero() {
 		return true
@@ -356,6 +588,12 @@ func (source *Source) Close() error {
 	var closeErr error
 	for _, current := range columns {
 		if err := current.connector.Close(); err != nil {
+			closeErr = errors.Join(closeErr, ErrBoardUnavailable)
+		}
+		if current.history == nil {
+			continue
+		}
+		if err := current.history.Close(); err != nil {
 			closeErr = errors.Join(closeErr, ErrBoardUnavailable)
 		}
 	}

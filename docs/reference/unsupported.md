@@ -18,9 +18,9 @@ They are named here because the words still circulate.
 
 | Removed | What replaced it |
 | --- | --- |
-| The strategy runtime — a long-running process that owned a bus, a cache, and strategy orchestration | Product services over the gateway's HTTP surface. The trading service is the manual-trading one |
+| The strategy runtime — a long-running process that owned a bus, a cache, and strategy orchestration | Product services over the gateway's HTTP surface. The trading service hosts two of them |
 | Backtesting | Nothing. There is no historical simulation surface anywhere in this tree |
-| The funding product — a service that traded funding-rate spreads | Nothing yet. Funding *data* is still read per row; the product is a future rewrite |
+| The funding product — a service that traded funding-rate spreads | The rewrite landed. A credential-free funding board reads the rates, and the arbitrage product in [the trading service](../guides/trading-service.md) trades the spread as a two-leg cross-venue hedge |
 
 If you find a page, comment, or issue that mentions a strategy `Context`, a
 `runtime/` package, or a per-venue `adapter/` package, it predates the current
@@ -54,9 +54,14 @@ Twenty product rows exist, all of them spot or perp.
 - **Gate USDC-linear perp** is deferred; Gate's perp row is USDT-linear.
 - **Aster perp (`ATP`) has no funding surface.** It is the only perp row without
   one.
+- **Nado perp (`NDP`) has no funding-rate history.** It quotes a current rate and
+  no past ones, so it is the one funding-board column whose history series is
+  reported unavailable rather than empty. Every other perp column resolves one.
 - **Account funding payments** — the per-account history of what funding
   actually cost — resolve on four rows only: `BNP`, `LIP`, `BYU`, `GTU`. The
-  other perp rows expose the funding rate without the payment history.
+  other perp rows expose the funding rate without the payment history. This is a
+  different surface from the credential-free rate history above: one is what an
+  account was charged, the other is what the venue published.
 
 Do not infer a product from an enum, an SDK model, or a venue's public catalog.
 A row exists when it is in the matrix.

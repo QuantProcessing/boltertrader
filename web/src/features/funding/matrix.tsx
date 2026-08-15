@@ -1,8 +1,10 @@
+import { Link } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
 import { SearchX } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import type { FundingBoardRow, FundingBoardSnapshot } from "@/api/types";
+import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { inputClass } from "@/components/ui/field";
@@ -546,5 +548,31 @@ function buildColumns(
     meta: { numeric: true, width: "176px" },
   };
 
-  return [instrument, openInterest, ...venues, spread];
+  const hedge: ColumnDef<MatrixEntry, unknown> = {
+    id: "hedge",
+    header: "",
+    enableSorting: false,
+    cell: (context) => {
+      const { row, spread: best } = context.row.original;
+      // Nothing to hand over when one venue is the only one quoting this
+      // underlying: the arbitrage page would open on a pair that does not exist.
+      if (best === null) return null;
+      return (
+        // A link rather than a click handler, so the row's destination is a real
+        // address: it can be opened in a new tab, and it carries the operator's
+        // orientation instead of leaving the next screen to guess it.
+        <Button asChild size="sm" variant="outline">
+          <Link
+            to="/funding/arbitrage"
+            search={{ symbol: row.symbol, long: best.long.venue, short: best.short.venue }}
+          >
+            Hedge
+          </Link>
+        </Button>
+      );
+    },
+    meta: { width: "88px" },
+  };
+
+  return [instrument, openInterest, ...venues, spread, hedge];
 }

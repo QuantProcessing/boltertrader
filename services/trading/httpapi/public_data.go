@@ -43,6 +43,15 @@ type FundingBoardProjection interface {
 	BudgetStatus() marketdata.BudgetStatus
 }
 
+// FundingHistoryProjection is its own interface rather than a second method on
+// FundingBoardProjection: the board answers one parameterless question about
+// every venue at once, this answers a windowed question about one symbol at one
+// venue, and the two are backed by services with different caching rules.
+type FundingHistoryProjection interface {
+	Get(context.Context, marketdata.FundingHistoryQuery) (marketdata.FundingHistorySeries, error)
+	BudgetStatus(string) marketdata.BudgetStatus
+}
+
 type ReadinessProjection interface {
 	Status() platformsystem.Snapshot
 	Readiness() platformsystem.Snapshot
@@ -54,19 +63,20 @@ type RealtimeProjection interface {
 }
 
 type PublicDataDependencies struct {
-	Catalog      CatalogProjection
-	MarketData   MarketDataProjection
-	Candles      CandlesProjection
-	FundingBoard FundingBoardProjection
-	Readiness    ReadinessProjection
-	Realtime     RealtimeProjection
-	Principal    func(*http.Request) (principalID, mode string, err error)
+	Catalog        CatalogProjection
+	MarketData     MarketDataProjection
+	Candles        CandlesProjection
+	FundingBoard   FundingBoardProjection
+	FundingHistory FundingHistoryProjection
+	Readiness      ReadinessProjection
+	Realtime       RealtimeProjection
+	Principal      func(*http.Request) (principalID, mode string, err error)
 }
 
 type PublicDataAPI struct{ dependencies PublicDataDependencies }
 
 func NewPublicDataAPI(dependencies PublicDataDependencies) (*PublicDataAPI, error) {
-	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Candles == nil || dependencies.FundingBoard == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
+	if dependencies.Catalog == nil || dependencies.MarketData == nil || dependencies.Candles == nil || dependencies.FundingBoard == nil || dependencies.FundingHistory == nil || dependencies.Readiness == nil || dependencies.Realtime == nil || dependencies.Principal == nil {
 		return nil, httpx.ConfigErr("public-data dependencies are incomplete")
 	}
 	return &PublicDataAPI{dependencies: dependencies}, nil
@@ -86,6 +96,7 @@ func (api *PublicDataAPI) Register(mux *http.ServeMux) error {
 		"GET /api/v1/market-data",
 		"GET /api/v1/candles",
 		"GET /api/v1/funding-board",
+		"GET /api/v1/funding-history",
 		"GET /api/v1/realtime/stream",
 	} {
 		route := route
@@ -111,6 +122,8 @@ func (api *PublicDataAPI) Handle(w http.ResponseWriter, r *http.Request, route s
 		api.candles(w, r)
 	case "GET /api/v1/funding-board":
 		api.fundingBoard(w, r)
+	case "GET /api/v1/funding-history":
+		api.fundingHistory(w, r)
 	case "GET /api/v1/realtime/stream":
 		api.realtime(w, r)
 	default:
@@ -253,6 +266,65 @@ func (api *PublicDataAPI) fundingBoard(w http.ResponseWriter, r *http.Request) {
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"meta": httpx.Meta(r), "data": snapshot, "rateLimit": api.dependencies.FundingBoard.BudgetStatus(),
+	})
+}
+
+// fundingHistory serves one leg of a spread over a named window.
+//
+// The window is a name rather than a pair of instants because every venue's
+// history endpoint is paginated, and "7d" and "30d" are the two spans that fit
+// in a single page everywhere on the board. Accepting an arbitrary range would
+// mean silently truncating the answer, and a funding chart missing its middle
+// looks exactly like a funding chart that is complete.
+func (api *PublicDataAPI) fundingHistory(w http.ResponseWriter, r *http.Request) {
+	err := validateQuery(r, []string{"venue", "environment", "symbol", "window"})
+	var window marketdata.FundingWindow
+	if err == nil {
+		window, err = marketdata.ParseFundingWindow(r.URL.Query().Get("window"))
+	}
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "VALIDATION_ERROR", "request is invalid", map[string]any{"query": err.Error()}, false, httpx.RequestID(r))
+		return
+	}
+	query := marketdata.FundingHistoryQuery{
+		Venue:       strings.TrimSpace(r.URL.Query().Get("venue")),
+		Environment: strings.TrimSpace(r.URL.Query().Get("environment")),
+		Symbol:      strings.TrimSpace(r.URL.Query().Get("symbol")),
+		Window:      window,
+	}
+	series, err := api.dependencies.FundingHistory.Get(r.Context(), query)
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		code := "PUBLIC_DATA_NOT_READY"
+		retryable := true
+		switch {
+		case errors.Is(err, marketdata.ErrRateLimited):
+			status = http.StatusTooManyRequests
+			code = "RATE_LIMITED"
+		// A venue with no history endpoint is a permanent answer, and it has to
+		// arrive as one: the arbitrage chart draws two legs, and a leg that
+		// cannot be drawn should say so beside the one that can rather than
+		// retry behind a spinner for the life of the page.
+		case errors.Is(err, marketdata.ErrFundingHistoryUnsupported):
+			status = http.StatusNotFound
+			code = "FUNDING_HISTORY_UNSUPPORTED"
+			retryable = false
+		// Also permanent for as long as the board is carrying what it carries,
+		// and kept apart from the line above because it is a fact about the
+		// symbol rather than about the venue. A chart that reported "bybit
+		// publishes no funding history" on the strength of one unlisted symbol
+		// would be telling the operator something false and checkable.
+		case errors.Is(err, marketdata.ErrFundingHistoryUnknownInstrument):
+			status = http.StatusNotFound
+			code = "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"
+			retryable = false
+		}
+		httpx.WriteError(w, status, code, "funding-history projection is unavailable",
+			map[string]any{"venue": query.Venue, "symbol": query.Symbol}, retryable, httpx.RequestID(r))
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"meta": httpx.Meta(r), "data": series, "rateLimit": api.dependencies.FundingHistory.BudgetStatus(query.Venue),
 	})
 }
 

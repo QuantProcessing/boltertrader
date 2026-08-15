@@ -27,6 +27,25 @@ type ManualMarketAuthority interface {
 	Get(context.Context, marketdata.Query) (marketdata.Fact, error)
 }
 
+// ArbitrageExecutor is ManualExecutor's shape because the two products dispatch
+// through the same Gateway channel. It is named separately rather than reusing
+// the manual interface so that wiring one product does not silently satisfy the
+// other's field: a deployment that has manual but not arbitrage should mount
+// manual's routes and nothing else.
+type ArbitrageExecutor interface {
+	Execute(context.Context, orders.Command) (orders.Command, error)
+	Cancel(context.Context, orders.Command) (orders.Command, error)
+	Ready() bool
+}
+
+// FundingBoardAuthority is the cross-venue funding matrix, which the arbitrage
+// product reads for two different purposes: to rank the pairs worth opening,
+// and to price the one being opened with the same numbers the operator just
+// read off the board.
+type FundingBoardAuthority interface {
+	Get(context.Context) (marketdata.BoardSnapshot, error)
+}
+
 type TradingOptions struct {
 	Reservations      *reservations.Service
 	Commands          *orders.Service
@@ -36,6 +55,8 @@ type TradingOptions struct {
 	Manual            ManualExecutor
 	ManualAccounts    ManualAccountAuthority
 	ManualMarketData  ManualMarketAuthority
+	Arbitrage         ArbitrageExecutor
+	FundingBoard      FundingBoardAuthority
 	Principal         func(*http.Request) (principalID, mode string, err error)
 	AuthorizeMutation func(*http.Request) error
 	Activity          ActivityPublisher
@@ -56,6 +77,9 @@ func RegisterTradingRoutes(mux *http.ServeMux, options TradingOptions) error {
 	mux.HandleFunc("GET /api/v1/pnl", handler.pnl)
 	if options.Catalog != nil && options.Manual != nil {
 		registerManualProductRoutes(mux, handler)
+	}
+	if options.Catalog != nil && options.Arbitrage != nil && options.FundingBoard != nil {
+		registerArbitrageProductRoutes(mux, handler)
 	}
 	return nil
 }
@@ -159,7 +183,7 @@ func (handler *tradingHandler) createCommand(w http.ResponseWriter, r *http.Requ
 		tradingError(w, http.StatusBadRequest, "VALIDATION_ERROR")
 		return
 	}
-	if request.ProductID == "manual" {
+	if request.ProductID == "manual" || request.ProductID == "arbitrage" {
 		if request.Mode == string(orders.ModeLive) {
 			tradingError(w, http.StatusForbidden, "LIVE_PRIVATE_WRITE_DISABLED")
 			return

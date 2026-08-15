@@ -42,6 +42,26 @@ Environment selection is mandatory:
 
 A constructor rejects an environment that the selected row does not admit.
 
+## Credential-free public reads
+
+Two reads need no credential and therefore do not go through a client.
+`exchange.FundingBoardLoader` and `exchange.FundingHistoryLoader` are separate
+one-method interfaces: the first answers the current funding row for a venue's
+whole product surface, the second answers one instrument's past funding points
+within the bounds carried by `exchange.FundingHistoryRequest`.
+
+`factory.NewPublicFundingConnector` and
+`factory.NewPublicFundingHistoryConnector` build them from an
+`exchange.CatalogScope` alone — venue, product, and environment, no key and no
+secret. A caller that reads only public funding never presents a credential and
+never holds an account.
+
+Each snapshot carries a `Validate` method that rejects an answer whose identity
+does not match the request, so a loader cannot quietly return another venue's
+row. A venue that publishes no history at all still admits the interface and
+returns `exchange.ErrUnsupported`, which keeps the absence a documented answer
+rather than an empty series.
+
 ## Typed product surfaces
 
 The public interfaces encode the Spot/Perp intersection directly:

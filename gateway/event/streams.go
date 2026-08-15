@@ -18,6 +18,12 @@ import (
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 )
 
+// errAccountRuntimeUnavailable marks an account that has no installed runtime
+// group and therefore cannot carry a private stream yet. It is deliberately
+// unexported and never reaches a caller outside this package: Start treats it
+// as "skip this account", and every other path treats it as a plain error.
+var errAccountRuntimeUnavailable = errors.New("account runtime is unavailable")
+
 type StreamAccounts interface {
 	Status(domain.AccountID) (account.Status, error)
 	Instruments(domain.AccountID) (catalog.Snapshot, error)
@@ -187,10 +193,26 @@ func (manager *StreamManager) Start(ctx context.Context, accountIDs []domain.Acc
 	}
 	manager.lifecycleMu.Unlock()
 	for _, accountID := range registered {
-		if err := manager.startAccount(accountID, runGeneration); err != nil {
-			manager.rollbackStart(runGeneration, cancel)
-			return err
+		startErr := manager.startAccount(accountID, runGeneration)
+		if startErr == nil {
+			continue
 		}
+		if !errors.Is(startErr, errAccountRuntimeUnavailable) {
+			manager.rollbackStart(runGeneration, cancel)
+			return startErr
+		}
+		// An account whose runtime group is not installed yet cannot host a
+		// private stream, but that is a provisioning state rather than a stream
+		// fault: AccountIDs() reports every desired runtime, including ones the
+		// account manager has not promoted. Aborting the whole start for one of
+		// them means a single half-provisioned account keeps the process from
+		// booting at all, while every healthy account loses its stream too. The
+		// reconciler already suspended this account's writes above, and
+		// notifyRuntimePromoted registers the stream once the runtime lands, so
+		// skipping is both safe and self-healing. Same isolation the order
+		// coordinator applies to its own per-account recovery failures.
+		slog.Warn("private stream not installed at startup; account writes suspended",
+			"account_id", string(accountID), "reason", "account_runtime_unavailable")
 	}
 	return nil
 }
@@ -318,6 +340,9 @@ func (manager *StreamManager) prepareAndInstallAccount(
 		return fmt.Errorf("suspend account before private stream failed")
 	}
 	if err := manager.accounts.SetPrivateStreamState(accountID, false, account.ReasonPrivateStreamStarting); err != nil {
+		if errors.Is(err, account.ErrUnknownAccount) {
+			return errAccountRuntimeUnavailable
+		}
 		return fmt.Errorf("mark private stream starting failed")
 	}
 

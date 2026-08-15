@@ -44,12 +44,19 @@ like a dead feed.
 | --- | --- |
 | `/login` | The only route reachable without a session |
 | `/trade` | Ticker strip, chart, order book, order ticket, blotter |
+| `/funding` | The cross-venue funding matrix, one column per venue |
+| `/funding/arbitrage` | Ranked spreads, the funding-history chart, the hedge ticket, open pairs |
 | `/portfolio` | Positions, balances, PnL |
 | `/activity` | The command chain with timestamps |
 | `/settings` | Accounts, credentials, runtime readiness |
 
-The top navigation carries these four; everything the operator does is one click
+The top navigation carries all six; everything the operator does is one click
 from anywhere. Without a session, every route redirects to `/login`.
+
+`/funding` is the one page that renders before any account exists — the board is
+public data and needs no credential — so it is readable on a fresh install.
+`/funding/arbitrage` is not: it ranks pairs across the accounts the operator
+selects, and with none selected it has nothing to rank.
 
 There is one command palette over the whole shell for jumping between
 instruments and routes.

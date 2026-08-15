@@ -157,6 +157,36 @@ from a fresh snapshot. A venue gap, malformed update, oversized payload, or
 upstream error emits a bounded `resync_required` event and closes with
 WebSocket policy violation; the client reconnects and receives a new snapshot.
 
+Two reads on the internal listener are the exception to the account rule.
+`GET /internal/v1/funding-board` and `GET /internal/v1/funding-history` take no
+`account_id`, because the gateway answers them from venue clients it builds
+without credentials. They resolve on a deployment where no account has been
+declared yet, which is what makes a funding matrix readable on a fresh install.
+They are still authenticated — the internal listener has its own bearer token —
+and they still refuse to emit a native symbol, a native ID, or a raw venue
+error.
+
+The board is the whole table for the gateway's mode in one response: one column
+per venue, product, and settlement asset, each carrying its rates, its
+settlement interval, and whether that venue publishes history at all. It takes
+no parameters, because there is nothing a caller could ask for that would make
+one column right and another wrong. A column that cannot be read degrades to an
+unavailable column with a reason rather than failing the response — one
+unreachable venue must not blank out the other nine.
+
+The history read takes a venue, an environment, a symbol, and an explicit
+`since`/`until` pair, and returns one series of funding points with the
+settlement interval measured between them. The canonical symbol is resolved to
+the venue's native identifier out of the board's own cached column, so the
+native form never crosses the boundary here either. A venue with no history
+surface answers with a code that says so rather than an empty series, and a
+symbol that is not on that column answers with a different one: "this venue
+keeps no history" and "this venue does not list this instrument" are different
+facts, and a caller that cannot tell them apart will retry the wrong one. The
+bound is the caller's to choose and the caller's to keep sane — the trading
+service admits two fixed windows precisely so that one read is one venue call
+with no pagination.
+
 ## Private events
 
 Connect to:

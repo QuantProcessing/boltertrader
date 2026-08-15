@@ -554,8 +554,16 @@ function RotateCredential({
   );
 }
 
-/** The gateway accepts exactly this and nothing else, so it is not a control. */
-const PRODUCT_POLICY = ["manual"];
+/**
+ * Both products the gateway recognises, and not a control.
+ *
+ * An account is entitled to the whole terminal or it is not worth adding: the
+ * entitlement exists so a product service can refuse an account it was never
+ * meant to route, not so an operator can hide half of their own screen. An
+ * account created before arbitrage existed carries only `manual` and will not
+ * appear in the hedge picker until it is added again.
+ */
+const PRODUCT_POLICY = ["manual", "arbitrage"];
 
 function CreateAccount({ venues, onCreated }: { venues: Venue[]; onCreated: (account: Account) => void }) {
   const toast = useToast();

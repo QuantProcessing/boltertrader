@@ -2,9 +2,12 @@
 
 > 英文为规范版本。[English](../../guides/trading-service.md)
 
-Trading 服务就是手动交易这个产品。它持有命令账本、下单票流程、portfolio 与
-ledger 投影，以及那个把命令带向终态的 reconciler。它不持有任何 venue 凭证，也不
-建立任何 venue 连接：每一次写都经过[交易所网关](exchange-gateway.md)。
+Trading 服务是装产品的地方。目前有两个：**手动交易**，一次下一笔；以及**资金费套利**，
+一次在两家交易所各下一笔。两者站在同一套命令账本、同一套预留、同一个 reconciler 和同一
+组投影之上——所谓一个产品，是一组端点加一种意图形状，而不是把这套机器再抄一份。
+
+服务不持有任何 venue 凭证，也不建立任何 venue 连接：每一次写都经过
+[交易所网关](exchange-gateway.md)。
 
 它从不直接面向浏览器。请求由 [auth edge](auth-edge.md) 转发而来，携带服务令牌和
 已认证的 principal。
@@ -59,6 +62,50 @@ Gateway 在接受这次下单时会铸造**它自己的** command 标识，以�
 预留是独立资源（`/api/v1/reservations`），可以创建、消费或释放。没有被消费的预留会被
 释放，而不是继续占着额度。
 
+## 套利产品
+
+第二个产品交易的是资金费价差，而不是价格。它取一个标的在两家交易所上的两条腿，在资金费
+最便宜的那家做多、最贵的那家做空，持有一个 delta 中性的对儿去赚这个差。它就是跨所永续
+对冲，除此之外什么都不是：没有单所基差，没有现货腿，没有交割合约。
+
+各家公布出来的费率是不能直接比的。每家按自己的节奏结算资金费——这家四小时，那家八小时
+——所以一个原始费率在被归一之前什么都说明不了。所有费率先换算成日率（`rate × 24 ÷
+intervalHours`）再两两相比，价差是 `shortDaily − longDaily`，标题上的 APR 就是这个价差
+乘 365。一家说不出自己结算周期的交易所是排不了名的，服务会直说，而不是默认按八小时算。
+
+`GET /api/v1/products/arbitrage/opportunities` 在请求点名的那些 account 之间给这些对儿
+排名。每个对儿带着自己的 `blockers`，只要有一条就不可执行：`funding_interval_unknown`、
+`account_unreachable`、`instrument_unlisted`、`board_stale`。只有空列表才会让下单票活过来。
+
+下单完全复用手动那套形状。`POST /api/v1/products/arbitrage/execution-previews` 返回一份
+封签预览——同一种封签、同一个有效期——只不过它给两条腿都定价、也向两个 account 都取预留。
+它还带着 `warnings`，这些不是 blocker、也拦不住确认：`fees_excluded` 表示报出来的价差是
+毛的，`negative_spread` 表示排名在读取和预览之间翻了过来，`funding_rate_unavailable` 与
+`board_stale` 表示某条腿的数字比它看上去的更旧。
+
+`POST /api/v1/products/arbitrage/commands` 接过这份预览，并且承载全部三个动词，靠
+`action` 区分：
+
+| Action | 做什么 |
+| --- | --- |
+| `open` | 按封签预览一次请求下出两条腿 |
+| `close` | 一次请求把两条腿都 reduce-only 平掉 |
+| `cancel` | 撤掉指名的那一条挂着的腿 |
+
+三者都要求一个 `lineageId`，以及一个与 body 相符的 `Idempotency-Key`。**lineage** 就是这
+个对儿的身份：两家交易所上的两笔订单、两行命令，被一个标识拴在一起。正是它让「平掉这个
+对儿」成为一次操作，而不是要操作者自己按对顺序去撤两次；也正是它，是
+`GET /api/v1/products/arbitrage/positions` 用来分组的东西。一个读不回腿载荷的对儿会报
+`leg_payload_unreadable` 并拒绝平仓——它描述不出来的平仓，就是它证明不了的平仓。
+
+两条腿仍然是一条一条过账本的。这里没有跨两家的原子写，服务也不假装有：一个对儿完全可能
+一条腿成交、另一条腿 `uncertain`，而这正是账本存在要兜住的状态。Reconciliation 会各自
+对着各自的交易所把每条腿解决掉，对儿最终是什么样，取决于它的腿最终是什么样。
+
+Live 写被直接拒绝。`open`、`close`、`cancel` 在 live 模式下一律返回
+`403 LIVE_PRIVATE_WRITE_DISABLED`；在拿到它目前还没有的证据之前，这个产品只在 test 模式
+下存在。
+
 ## Reconciliation
 
 一个由 ticker 驱动的 reconciler 在租约下认领到期任务，并向 gateway 索取权威答案。它每
@@ -84,10 +131,22 @@ Gateway 在它自己那一层、对它自己的持久订单，也跑着自己的
 - `/api/v1/accounts/{accountId}/runtimes`——界面在每个 account 上显示的读写就绪。
 - `/api/v1/catalog/venues`、`/api/v1/catalog/instruments`——可交易的东西。
 - `/api/v1/market-data`、`/api/v1/candles`——行情条与 K 线图。
+- `/api/v1/products/arbitrage/opportunities`、
+  `/api/v1/products/arbitrage/positions`——排过名的价差，和已开的对儿。
 - `/api/v1/realtime/stream`——界面持有的那一条 server-sent 流。
+
+有两个读不是投影，也不假装是。`/api/v1/funding-board` 与 `/api/v1/funding-history` 由
+gateway 那条免凭证的公共面提供，它不需要任何 account 就能回答。看板是整张矩阵，每个
+venue-product-settlement 一列；历史是某家交易所上某个标的在一个有界窗口内的序列，只有
+`7d` 和 `30d` 两档、别的都不接——开放区间意味着要对交易所接口翻页，而这个读正是为了避开
+翻页才这么设计的。没有历史 surface 的交易所会被报成「不可用」，而不是报成「空」。参见
+[市场与参考数据](market-reference-data.md)。
 
 集合响应的包封是 `{"data":{"items":[…]}}`，`data` 旁边还有一个 `meta` 对象。单资源响应把
 资源直接放在 `data` 里。在单资源上读 `data.items`、或在集合上读 `data`，读的都是错的形状。
+按这条规则，看板和历史都是单资源而不是集合：`data` 就是那份快照或那条序列本身，它的列在
+`venues` 下，它的读数在 `points` 下。这两个响应还各带第三个顶层键 `rateLimit`，也就是这次
+读花掉之后、该交易所预算还剩多少。
 
 ## 存储
 

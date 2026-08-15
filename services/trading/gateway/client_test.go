@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	gatewayhttp "github.com/QuantProcessing/boltertrader/gateway/httpapi"
 	"github.com/QuantProcessing/boltertrader/services/trading/catalog"
 	tradinghttp "github.com/QuantProcessing/boltertrader/services/trading/httpapi"
@@ -830,7 +831,7 @@ func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
 		case "/v1/orders/gateway-order":
 			_, _ = w.Write([]byte(`{"command_id":"gateway-command","gateway_order_id":"gateway-order","client_order_id":"client-order","state":"filled","resource_version":2}`))
 		case "/v1/fills":
-			_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","fill":{"fill_id":"fill-1","side":"buy","price":"100","quantity":"1","fee":"0.1","fee_asset":"BNB","time":"2026-08-05T00:00:00Z"}}]}`))
+			_, _ = w.Write([]byte(`{"items":[{"account_id":"account-a","instrument_id":"BTC-USDT","settlement_asset":"USDT","fill":{"native_symbol":"BTCUSDT","native_id":"11","order_id":"venue-order","client_order_id":"1","liquidity":"taker","fill_id":"fill-1","side":"buy","price":"100","quantity":"1","fee":"0.1","fee_asset":"BNB","time":"2026-08-05T00:00:00Z"}}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -848,6 +849,36 @@ func TestGatewayAdapterReconcilesCanonicalOrderAndFillEvidence(t *testing.T) {
 	raw, err := json.Marshal(result.Evidence.Fills[0])
 	if err != nil || !strings.Contains(string(raw), `"settlementCurrency":"USDT"`) || !strings.Contains(string(raw), `"feeCurrency":"BNB"`) {
 		t.Fatalf("fill evidence=%s err=%v", raw, err)
+	}
+}
+
+// TestFillPageNamesEveryGatewayFillField pins the pairing that let a filled
+// order stall forever: the Gateway serialises exchange.Fill verbatim, this
+// client decodes with DisallowUnknownFields, and a field named on one side but
+// not the other makes the whole page unreadable. The fixtures above cannot
+// catch that on their own — they are hand-written, so they only ever contain
+// the fields this decoder already knows. Comparing the two shapes directly is
+// what fails the moment exchange.Fill grows a field.
+func TestFillPageNamesEveryGatewayFillField(t *testing.T) {
+	jsonNames := func(structType reflect.Type) map[string]struct{} {
+		names := make(map[string]struct{}, structType.NumField())
+		for index := 0; index < structType.NumField(); index++ {
+			name, _, _ := strings.Cut(structType.Field(index).Tag.Get("json"), ",")
+			if name == "" || name == "-" {
+				t.Fatalf("%s.%s carries no json name", structType, structType.Field(index).Name)
+			}
+			names[name] = struct{}{}
+		}
+		return names
+	}
+	fillField, found := reflect.TypeOf(fillCollection{}).Field(0).Type.Elem().FieldByName("Fill")
+	if !found {
+		t.Fatal("fillCollection item has no Fill field")
+	}
+	wire := jsonNames(reflect.TypeOf(exchange.Fill{}))
+	decoded := jsonNames(fillField.Type)
+	if !reflect.DeepEqual(wire, decoded) {
+		t.Fatalf("gateway fill fields %v, decoder fields %v", wire, decoded)
 	}
 }
 
@@ -869,5 +900,92 @@ func TestGatewayAdapterRejectsAllZeroOrderFenceBeforeHandoff(t *testing.T) {
 	})
 	if err == nil || result.Outcome != orders.HandoffNotAttempted || requests != 0 {
 		t.Fatalf("result=%+v err=%v requests=%d", result, err, requests)
+	}
+}
+
+// The funding-history read is the one place the client reads a status code and
+// an error code rather than only its own body.
+//
+// The internal plane spends 404 on two different permanent facts — a venue that
+// publishes no series at all, and a venue that publishes plenty but not for this
+// symbol — and only the first is a claim about the venue. Flattening them was a
+// real defect: the arbitrage page printed "this venue publishes no funding
+// history" under bybit, which publishes it for hundreds of pairs, because one
+// symbol resolved to the wrong column of the board. Everything else is
+// transient, and has to stay transient or a pair page would stop retrying a
+// chart that is one refresh away from existing.
+func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTransientFailure(t *testing.T) {
+	const token = "gateway-adapter-token-with-at-least-32-bytes"
+	var seen string
+	// The refusal bodies are the internal plane's real shape, correlation id
+	// and all. A parser strict enough to reject the unknown field would read
+	// every refusal as codeless and answer all of them the same way.
+	refuse := func(w http.ResponseWriter, code string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","correlation_id":"req_1","message":"no","retryable":false}}`))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.URL.RequestURI()
+		switch r.URL.Query().Get("venue") {
+		case "binance":
+			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"demo","symbol":"BTC-USDT","since":"2026-08-07T12:00:00Z","until":"2026-08-14T12:00:00Z","observedAt":"2026-08-14T12:00:01Z","points":[{"fundingTime":"2026-08-14T08:00:00Z","rate":"0.0001","intervalHours":8}]}}`))
+		case "nado":
+			refuse(w, "FUNDING_HISTORY_UNSUPPORTED")
+		case "bybit":
+			refuse(w, "FUNDING_HISTORY_INSTRUMENT_UNKNOWN")
+		case "gate":
+			http.Error(w, "no history", http.StatusNotFound)
+		default:
+			http.Error(w, "upstream down", http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	adapter, err := newClient(server.URL, []byte(token), server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := adapter.FundingHistory()
+	read := marketdata.FundingHistoryRead{
+		Venue: "binance", Environment: "demo", Symbol: "BTC-USDT",
+		Since: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC),
+		Until: time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC),
+	}
+	series, err := source.FetchFundingHistory(context.Background(), read)
+	if err != nil {
+		t.Fatalf("FetchFundingHistory: %v", err)
+	}
+	if want := "/internal/v1/funding-history?environment=demo&since=2026-08-07T12%3A00%3A00Z&symbol=BTC-USDT&until=2026-08-14T12%3A00%3A00Z&venue=binance"; seen != want {
+		t.Errorf("request = %q, want %q", seen, want)
+	}
+	if len(series.Points) != 1 || series.Points[0].Rate != "0.0001" || series.Points[0].IntervalHours != 8 {
+		t.Errorf("series = %+v", series)
+	}
+
+	for _, refusal := range []struct {
+		venue string
+		want  error
+	}{
+		{venue: "nado", want: marketdata.ErrFundingHistoryUnsupported},
+		{venue: "bybit", want: marketdata.ErrFundingHistoryUnknownInstrument},
+		// A 404 that carried no code at all is read as the narrower claim.
+		// Saying "not listed here" about a venue that publishes nothing costs
+		// the operator one look at another pair; the reverse prints a false and
+		// checkable statement about the venue.
+		{venue: "gate", want: marketdata.ErrFundingHistoryUnknownInstrument},
+	} {
+		refused := read
+		refused.Venue = refusal.venue
+		if _, err := source.FetchFundingHistory(context.Background(), refused); !errors.Is(err, refusal.want) {
+			t.Errorf("%s 404 err = %v, want %v", refusal.venue, err, refusal.want)
+		}
+	}
+
+	transient := read
+	transient.Venue = "okx"
+	_, err = source.FetchFundingHistory(context.Background(), transient)
+	if err == nil || errors.Is(err, marketdata.ErrFundingHistoryUnsupported) ||
+		errors.Is(err, marketdata.ErrFundingHistoryUnknownInstrument) {
+		t.Errorf("503 err = %v, want a plain transient failure", err)
 	}
 }

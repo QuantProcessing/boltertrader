@@ -32,7 +32,8 @@ var (
 	publicDataRoutes = []string{
 		"GET /api/v1/system/status", "GET /api/v1/system/readiness",
 		"GET /api/v1/catalog/venues", "GET /api/v1/catalog/instruments",
-		"GET /api/v1/market-data", "GET /api/v1/candles", "GET /api/v1/funding-board", "GET /api/v1/realtime/stream",
+		"GET /api/v1/market-data", "GET /api/v1/candles", "GET /api/v1/funding-board",
+		"GET /api/v1/funding-history", "GET /api/v1/realtime/stream",
 	}
 
 	tradingRoutes = []string{
@@ -45,6 +46,11 @@ var (
 		"GET /api/v1/products/manual/venues", "POST /api/v1/products/manual/execution-previews",
 		"POST /api/v1/products/manual/commands", "GET /api/v1/products/manual/orders",
 		"GET /api/v1/products/manual/orders/{orderId}",
+	}
+
+	arbitrageRoutes = []string{
+		"GET /api/v1/products/arbitrage/opportunities", "POST /api/v1/products/arbitrage/execution-previews",
+		"POST /api/v1/products/arbitrage/commands", "GET /api/v1/products/arbitrage/positions",
 	}
 
 	projectionRoutes = []string{
@@ -61,6 +67,7 @@ func Routes() []string {
 	all = append(all, publicDataRoutes...)
 	all = append(all, tradingRoutes...)
 	all = append(all, manualRoutes...)
+	all = append(all, arbitrageRoutes...)
 	all = append(all, projectionRoutes...)
 	return all
 }
@@ -94,6 +101,12 @@ func Register(mux *http.ServeMux, options Options) ([]string, error) {
 		// ownership list has to agree with it or a mounted route goes unclaimed.
 		if options.Trading.Catalog != nil && options.Trading.Manual != nil {
 			owned = append(owned, manualRoutes...)
+		}
+		// Arbitrage rides on the same registration under its own condition: it
+		// needs the board as well, because a hedge nobody can price is a hedge
+		// nobody should be offered a button for.
+		if options.Trading.Catalog != nil && options.Trading.Arbitrage != nil && options.Trading.FundingBoard != nil {
+			owned = append(owned, arbitrageRoutes...)
 		}
 	}
 	if options.Projections != nil {

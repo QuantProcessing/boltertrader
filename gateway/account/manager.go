@@ -296,6 +296,13 @@ func newManager(ctx context.Context, accounts []config.AccountConfig, options Op
 }
 
 func (manager *Manager) Spot(accountID domain.AccountID) (exchange.SpotClient, error) {
+	return manager.SpotRoute(accountID, "")
+}
+
+// SpotRoute resolves the spot client for one named route. An empty settlement
+// asks for "the account's only spot route" and stays hostile to ambiguity the
+// way Spot always has; naming one picks it out exactly.
+func (manager *Manager) SpotRoute(accountID domain.AccountID, settlement string) (exchange.SpotClient, error) {
 	manager.mu.RLock()
 	if manager.closed {
 		manager.mu.RUnlock()
@@ -311,7 +318,7 @@ func (manager *Manager) Spot(accountID domain.AccountID) (exchange.SpotClient, e
 		return client, nil
 	}
 	manager.mu.RUnlock()
-	route, err := manager.activeProductClient(accountID, exchange.ProductSpot)
+	route, err := manager.productClient(accountID, exchange.ProductSpot, settlement)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +330,15 @@ func (manager *Manager) Spot(accountID domain.AccountID) (exchange.SpotClient, e
 }
 
 func (manager *Manager) Perp(accountID domain.AccountID) (exchange.PerpClient, error) {
+	return manager.PerpRoute(accountID, "")
+}
+
+// PerpRoute resolves the perpetual client for one named route. Callers that
+// already hold a Resource — every reader that walks Accounts() — have its
+// settlement and should pass it: an account may run several perpetual routes
+// at once (bybit settles in both USDT and USDC), and asking by account alone
+// is then an ambiguous question this refuses to answer.
+func (manager *Manager) PerpRoute(accountID domain.AccountID, settlement string) (exchange.PerpClient, error) {
 	manager.mu.RLock()
 	if manager.closed {
 		manager.mu.RUnlock()
@@ -338,7 +354,7 @@ func (manager *Manager) Perp(accountID domain.AccountID) (exchange.PerpClient, e
 		return client, nil
 	}
 	manager.mu.RUnlock()
-	route, err := manager.activeProductClient(accountID, exchange.ProductPerp)
+	route, err := manager.productClient(accountID, exchange.ProductPerp, settlement)
 	if err != nil {
 		return nil, err
 	}
@@ -460,6 +476,38 @@ func (manager *Manager) Capability(accountID domain.AccountID) (capability.Row, 
 		return capability.Row{}, ErrProductMismatch
 	}
 	return rows[0], nil
+}
+
+// RouteCapability answers the same question as Capability for one route of an
+// account rather than for the account as a whole. The distinction only matters
+// where an account runs more than one route — bybit settles perpetuals in both
+// USDT and USDC under a single set of credentials — but there Capability cannot
+// answer at all: it sees two rows and reports ErrProductMismatch, which turned
+// every funding read on such an account into a 400. Either hint may be empty,
+// so a single-route account is still answerable without knowing its shape.
+func (manager *Manager) RouteCapability(accountID domain.AccountID, product, settlement string) (capability.Row, error) {
+	rows, err := manager.Capabilities(accountID)
+	if err != nil {
+		return capability.Row{}, err
+	}
+	var matched capability.Row
+	found := false
+	for _, row := range rows {
+		if product != "" && row.Product != product {
+			continue
+		}
+		if settlement != "" && row.Settlement != settlement {
+			continue
+		}
+		if found {
+			return capability.Row{}, ErrProductMismatch
+		}
+		matched, found = row, true
+	}
+	if !found {
+		return capability.Row{}, ErrProductMismatch
+	}
+	return matched, nil
 }
 
 func (manager *Manager) Capabilities(accountID domain.AccountID) ([]capability.Row, error) {

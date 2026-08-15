@@ -62,6 +62,7 @@ var routes = []Route{
 	{Method: http.MethodGet, Path: "/api/v1/market-data", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/candles", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/funding-board", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/funding-history", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/realtime/stream", Upstream: Trading, Stream: true},
 	{Method: http.MethodPost, Path: "/api/v1/reservations", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/reservations", Upstream: Trading},
@@ -80,6 +81,11 @@ var routes = []Route{
 	{Method: http.MethodPost, Path: "/api/v1/products/manual/commands", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders", Upstream: Trading},
 	{Method: http.MethodGet, Path: "/api/v1/products/manual/orders/{orderId}", Upstream: Trading},
+
+	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/opportunities", Upstream: Trading},
+	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/execution-previews", Upstream: Trading},
+	{Method: http.MethodPost, Path: "/api/v1/products/arbitrage/commands", Upstream: Trading},
+	{Method: http.MethodGet, Path: "/api/v1/products/arbitrage/positions", Upstream: Trading},
 
 	// Gateway: the account lifecycle, rewritten onto the internal plane.
 	{Method: http.MethodGet, Path: "/api/v1/accounts", Upstream: Gateway, Target: "/internal/v1/accounts"},

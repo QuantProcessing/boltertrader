@@ -37,6 +37,24 @@ resource，并且在尚未建立连接时调用也是安全的。
 
 如果所选 row 不接纳某个 environment，constructor 会拒绝它。
 
+## Credential-free public read
+
+有两个 read 不需要 credential，因此也不经过 client。
+`exchange.FundingBoardLoader` 与 `exchange.FundingHistoryLoader` 是两个各自独立
+的单 method interface：前者回答某个 venue 整个 product surface 的当前 funding
+row，后者在 `exchange.FundingHistoryRequest` 携带的 bound 之内，回答某一个
+instrument 过去的 funding point。
+
+`factory.NewPublicFundingConnector` 与
+`factory.NewPublicFundingHistoryConnector` 只凭一个 `exchange.CatalogScope`
+构造它们——venue、product 与 environment，没有 key，也没有 secret。只读取
+public funding 的调用方从不出示 credential，也从不持有 account。
+
+每个 snapshot 都带一个 `Validate` method，用来拒绝 identity 与 request 对不上的
+答案，所以 loader 无法悄悄返回另一个 venue 的 row。完全不发布 history 的 venue
+仍然接纳该 interface，并返回 `exchange.ErrUnsupported`——这让「没有」成为一个
+被记录在案的答案，而不是一条空 series。
+
 ## Typed product surface
 
 Public interface 直接编码 Spot/Perp 交集：

@@ -78,7 +78,7 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 		}}, nil
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions, httpapi.AuthorityRuntimeUncertain,
 		httpapi.AuthorityRuntimeEvents, httpapi.AuthorityPrivateEvents, httpapi.AuthorityMarketData,
-		httpapi.AuthorityCandles, httpapi.AuthorityFundingBoard:
+		httpapi.AuthorityCandles, httpapi.AuthorityFundingBoard, httpapi.AuthorityFundingHistory:
 		return httpapi.AuthorityResponse{Body: []any{}}, nil
 	default:
 		return httpapi.AuthorityResponse{}, httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "GATEWAY_WRITES_NOT_READY", Retryable: true}
@@ -186,9 +186,9 @@ type authorityMarketData struct {
 	Asks              []authorityLevel        `json:"asks"`
 	MarkPrice         string                  `json:"markPrice,omitempty"`
 	FundingRate       string                  `json:"fundingRate,omitempty"`
-	FundingObservedAt time.Time               `json:"fundingObservedAt,omitempty"`
-	FundingTime       time.Time               `json:"fundingTime,omitempty"`
-	NextFundingTime   time.Time               `json:"nextFundingTime,omitempty"`
+	FundingObservedAt time.Time               `json:"fundingObservedAt,omitzero"`
+	FundingTime       time.Time               `json:"fundingTime,omitzero"`
+	NextFundingTime   time.Time               `json:"nextFundingTime,omitzero"`
 	FundingHistory    []authorityFundingPoint `json:"fundingHistory,omitempty"`
 	OpenInterest      string                  `json:"openInterest,omitempty"`
 	ObservedAt        time.Time               `json:"observedAt"`
@@ -235,7 +235,7 @@ type authorityCandle struct {
 
 type authorityFundingPoint struct {
 	Rate        string    `json:"rate"`
-	ObservedAt  time.Time `json:"observedAt,omitempty"`
+	ObservedAt  time.Time `json:"observedAt,omitzero"`
 	FundingTime time.Time `json:"fundingTime"`
 }
 
@@ -306,6 +306,50 @@ type authorityFundingRow struct {
 	OpenInterest    string    `json:"openInterest,omitempty"`
 }
 
+// authorityFundingHistoryQuery is a struct for the same reason
+// authorityCandlesQuery is: three adjacent strings that the type system cannot
+// tell apart, in an order nothing enforces.
+//
+// The window is a pair of instants rather than a preset name because the
+// gateway is the capability layer. Which two windows the product offers is a
+// product decision that belongs to the service above; what the gateway knows,
+// and the service cannot, is how far back a single venue call actually reaches.
+type authorityFundingHistoryQuery struct {
+	Venue       string
+	Environment string
+	Symbol      string
+	Since       time.Time
+	Until       time.Time
+}
+
+// authorityFundingSeries is one instrument's settled funding on one venue.
+//
+// It echoes the requested identity back for the same reason authorityCandles
+// does: two of these are drawn on one chart as the legs of a spread, and a
+// response that arrived under the wrong label would render as a real number
+// against the wrong venue rather than as a gap.
+type authorityFundingSeries struct {
+	Venue       string                        `json:"venue"`
+	Environment string                        `json:"environment"`
+	Symbol      string                        `json:"symbol"`
+	Since       time.Time                     `json:"since"`
+	Until       time.Time                     `json:"until"`
+	ObservedAt  time.Time                     `json:"observedAt"`
+	Points      []authorityFundingSeriesPoint `json:"points"`
+}
+
+// authorityFundingSeriesPoint is one settlement.
+//
+// Separate from authorityFundingPoint, which carries the venue's own
+// observedAt for a single live rate embedded in a market-data fact. A settled
+// point has no such stamp — it has the interval it accrued over, which is what
+// makes two venues on different clocks comparable at all.
+type authorityFundingSeriesPoint struct {
+	FundingTime   time.Time `json:"fundingTime"`
+	Rate          string    `json:"rate"`
+	IntervalHours int64     `json:"intervalHours,omitempty"`
+}
+
 func authorityPublicRuntimes(runtimes []account.RuntimeAccount) []authorityPublicRuntimeAccount {
 	result := make([]authorityPublicRuntimeAccount, 0, len(runtimes))
 	for _, runtime := range runtimes {
@@ -343,6 +387,7 @@ type authorityReadSource interface {
 	MarketData(context.Context, string, string, string, string) (authorityMarketData, error)
 	Candles(context.Context, authorityCandlesQuery) (authorityCandles, error)
 	FundingBoard(context.Context) (authorityFundingBoard, error)
+	FundingHistory(context.Context, authorityFundingHistoryQuery) (authorityFundingSeries, error)
 	Runtime(string) (authorityRuntimeProjection, error)
 }
 
@@ -352,6 +397,13 @@ type authorityAccountSource interface {
 	Resolve(context.Context, domain.AccountID, domain.InstrumentID) (exchange.Instrument, error)
 	Spot(domain.AccountID) (exchange.SpotClient, error)
 	Perp(domain.AccountID) (exchange.PerpClient, error)
+	// The route-scoped pair is what every reader below actually wants. These
+	// readers walk Accounts(), which emits one Resource per route, so they have
+	// already chosen a route by the time they need a client; asking for one by
+	// bare account id throws that choice away and cannot be answered at all for
+	// an account running two routes of the same product.
+	SpotRoute(domain.AccountID, string) (exchange.SpotClient, error)
+	PerpRoute(domain.AccountID, string) (exchange.PerpClient, error)
 	Capability(domain.AccountID) (capability.Row, error)
 	Runtime(domain.AccountID) (account.RuntimeAccount, error)
 	RouteStatus(domain.AccountID, string, string) (account.Status, error)
@@ -701,6 +753,29 @@ func (authority *gatewayAuthority) Execute(ctx context.Context, request httpapi.
 		// whole table for the gateway's mode, so there is nothing a caller could
 		// ask for that would make one column right and another wrong.
 		response.Body, err = authority.reads.FundingBoard(ctx)
+	case httpapi.AuthorityFundingHistory:
+		query := authorityFundingHistoryQuery{
+			Venue:       strings.TrimSpace(request.Query.Get("venue")),
+			Environment: strings.TrimSpace(request.Query.Get("environment")),
+			Symbol:      strings.TrimSpace(request.Query.Get("symbol")),
+		}
+		if query.Venue == "" || query.Environment == "" || query.Symbol == "" {
+			err = errors.New("funding history composite identity is required")
+			break
+		}
+		if query.Since, err = authorityHistoryBound(request.Query.Get("since")); err != nil {
+			break
+		}
+		if query.Until, err = authorityHistoryBound(request.Query.Get("until")); err != nil {
+			break
+		}
+		var series authorityFundingSeries
+		series, err = authority.reads.FundingHistory(ctx, query)
+		if err == nil && (series.Venue != query.Venue || series.Environment != query.Environment || series.Symbol != query.Symbol) {
+			err = errors.New("funding history composite identity mismatch")
+		} else {
+			response.Body = series
+		}
 	case httpapi.AuthorityRuntimeOpenOrders, httpapi.AuthorityRuntimePositions,
 		httpapi.AuthorityRuntimeUncertain, httpapi.AuthorityRuntimeEvents,
 		httpapi.AuthorityPrivateEvents:
@@ -1323,6 +1398,40 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 	return board, nil
 }
 
+// FundingHistory serves one instrument's settled series from the same public
+// source the board is served from.
+//
+// It deliberately does not walk reads.manager.Accounts() the way MarketData and
+// Candles do. Those read a venue through a configured account's authenticated
+// client; this reads the same public endpoints the board already polls, so a
+// chart draws on a gateway with no accounts at all — which is the state an
+// operator comparing venues before funding one is actually in.
+func (reads managerAuthorityReads) FundingHistory(ctx context.Context, query authorityFundingHistoryQuery) (authorityFundingSeries, error) {
+	if reads.board == nil {
+		return authorityFundingSeries{}, fundingboard.ErrBoardUnavailable
+	}
+	snapshot, err := reads.board.History(ctx, fundingboard.HistoryQuery{
+		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
+		Since: query.Since, Until: query.Until,
+	})
+	if err != nil {
+		return authorityFundingSeries{}, err
+	}
+	series := authorityFundingSeries{
+		Venue: query.Venue, Environment: query.Environment, Symbol: query.Symbol,
+		Since: query.Since, Until: query.Until, ObservedAt: snapshot.ObservedAt,
+		Points: make([]authorityFundingSeriesPoint, 0, len(snapshot.Points)),
+	}
+	for _, point := range snapshot.Points {
+		converted := authorityFundingSeriesPoint{FundingTime: point.FundingTime, Rate: point.Rate.String()}
+		if point.IntervalHours.Valid {
+			converted.IntervalHours = point.IntervalHours.Value
+		}
+		series.Points = append(series.Points, converted)
+	}
+	return series, nil
+}
+
 func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, environment, product, instrumentID string) (authorityMarketData, error) {
 	venue = strings.TrimSpace(venue)
 	environment = strings.TrimSpace(environment)
@@ -1339,14 +1448,17 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 		if err != nil {
 			continue
 		}
+		if !routeSettlesInstrument(resource, instrument) {
+			continue
+		}
 		result := authorityMarketData{Venue: venue, Environment: environment, Product: product, InstrumentID: instrumentID}
 		var market exchange.MarketREST
 		switch resource.Product {
 		case exchange.ProductSpot:
-			market, err = reads.manager.Spot(resource.AccountID)
+			market, err = reads.manager.SpotRoute(resource.AccountID, resource.Settlement)
 		case exchange.ProductPerp:
 			var client exchange.PerpClient
-			client, err = reads.manager.Perp(resource.AccountID)
+			client, err = reads.manager.PerpRoute(resource.AccountID, resource.Settlement)
 			market = client
 			if err == nil {
 				row, capabilityErr := routeCapabilityForMarketData(reads.manager, resource)
@@ -1373,8 +1485,18 @@ func (reads managerAuthorityReads) MarketData(ctx context.Context, venue, enviro
 					result.FundingObservedAt = funding.ObservedAt.UTC()
 					result.FundingTime = funding.FundingTime.UTC()
 					result.NextFundingTime = funding.NextFundingTime.UTC()
-					if result.FundingObservedAt.IsZero() || result.FundingTime.IsZero() || result.NextFundingTime.IsZero() {
-						return authorityMarketData{}, errors.New("current funding timestamps are unavailable")
+					// Only the observation instant is required. The two schedule
+					// timestamps are omitempty in exchange.FundingRate because a
+					// venue is allowed not to send them, and most do not: of the
+					// nine perp venues only OKX returns a last-funding time at
+					// all, and Hyperliquid and Lighter return neither. Demanding
+					// all three made this read fail permanently for eight of the
+					// nine — a fact about those endpoints' response shapes, not
+					// about the market. Same reasoning as the order book's
+					// optional venue clock below; a missing schedule stays zero
+					// and travels as "unknown".
+					if result.FundingObservedAt.IsZero() {
+						return authorityMarketData{}, errors.New("current funding observation time is unavailable")
 					}
 					if funding.ObservedAt.After(result.ObservedAt) {
 						result.ObservedAt = funding.ObservedAt.UTC()
@@ -1478,13 +1600,16 @@ func (reads managerAuthorityReads) Candles(ctx context.Context, query authorityC
 		if err != nil {
 			continue
 		}
+		if !routeSettlesInstrument(resource, instrument) {
+			continue
+		}
 		var market exchange.MarketREST
 		switch resource.Product {
 		case exchange.ProductSpot:
-			market, err = reads.manager.Spot(resource.AccountID)
+			market, err = reads.manager.SpotRoute(resource.AccountID, resource.Settlement)
 		case exchange.ProductPerp:
 			var client exchange.PerpClient
-			client, err = reads.manager.Perp(resource.AccountID)
+			client, err = reads.manager.PerpRoute(resource.AccountID, resource.Settlement)
 			market = client
 		default:
 			continue
@@ -1543,6 +1668,43 @@ func authorityCandleLimit(raw string) (int, error) {
 		return 0, errors.New("candles limit is invalid")
 	}
 	return limit, nil
+}
+
+// authorityHistoryBound parses one end of a funding-history window.
+//
+// RFC 3339 with an explicit offset, not epoch milliseconds, because this bound
+// is written by a browser, narrowed by a product service, and finally handed to
+// a venue in whatever unit that venue wants. A bare integer that lost its unit
+// somewhere along the way still parses — into a different decade — and the only
+// symptom is an empty chart.
+func authorityHistoryBound(raw string) (time.Time, error) {
+	bound, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}, errors.New("funding history since and until must be RFC 3339 timestamps")
+	}
+	return bound.UTC(), nil
+}
+
+// routeSettlesInstrument reports whether a route can trade an instrument at
+// all. Accounts() emits one Resource per route and the catalog resolves an
+// instrument for the whole account, so a venue that settles one product in
+// several assets — bybit lists both USDT and USDC perpetuals — hands every
+// route every instrument. Pairing them blindly asks a USDC route for a USDT
+// contract, which the exchange layer rejects outright ("instrument quote must
+// match USDC settlement"), and because that rejection is fatal rather than
+// skipped it took the whole venue down instead of the one wrong route.
+//
+// Registration already guarantees the two agree when both are known: the
+// catalog only files an instrument under a scope whose settlement equals the
+// instrument's settle asset. An unknown settlement on either side is left
+// alone — it carries no information to disqualify the route with, so the read
+// tries it exactly as it always has.
+func routeSettlesInstrument(resource account.Resource, instrument exchange.Instrument) bool {
+	settleAsset := instrument.Identity.SettleAsset
+	if resource.Settlement == "" || settleAsset == "" {
+		return true
+	}
+	return resource.Settlement == settleAsset
 }
 
 func routeCapabilityForMarketData(manager authorityAccountSource, resource account.Resource) (capability.Row, error) {
@@ -1695,6 +1857,16 @@ func authorityError(err error) error {
 		// closed. That is a gateway configuration fault the caller may retry
 		// through, not a 500 the caller caused.
 		return httpapi.AuthorityError{Status: http.StatusServiceUnavailable, Code: "FUNDING_BOARD_UNAVAILABLE", Retryable: true}
+	case errors.Is(err, fundingboard.ErrHistoryUnsupported):
+		// Not retryable and not a 503: nado publishes no settled series and
+		// never will, and neither does a venue the board does not carry. A
+		// retryable code here would have the caller poll forever for a chart
+		// that cannot exist, instead of saying so beside the leg that drew.
+		return httpapi.AuthorityError{Status: http.StatusNotFound, Code: "FUNDING_HISTORY_UNSUPPORTED"}
+	case errors.Is(err, fundingboard.ErrHistoryUnknownInstrument):
+		return httpapi.AuthorityError{Status: http.StatusNotFound, Code: "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"}
+	case errors.Is(err, fundingboard.ErrHistoryWindow):
+		return httpapi.AuthorityError{Status: http.StatusBadRequest, Code: "FUNDING_HISTORY_WINDOW_UNSUPPORTED"}
 	default:
 		return httpapi.AuthorityError{Status: http.StatusInternalServerError, Code: "INTERNAL_ERROR", Retryable: true}
 	}

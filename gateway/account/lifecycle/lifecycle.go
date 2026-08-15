@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -252,13 +253,19 @@ func validationError(err error) error {
 	return fmt.Errorf("%w: %v", ErrValidation, err)
 }
 
+// durableProducts is the closed set of product rows an account may be entitled
+// to. It is a whitelist rather than a free-form label because the entitlement
+// is what every product service checks before it will route an order for this
+// account: an unrecognised string here would be a policy nobody enforces.
+var durableProducts = []string{"manual", "arbitrage"}
+
 func validateDurableProductPolicy(policy []string) error {
 	if len(policy) == 0 {
 		return errors.New("product policy is required")
 	}
 	seen := make(map[string]struct{}, len(policy))
 	for _, product := range policy {
-		if product != "manual" {
+		if !slices.Contains(durableProducts, product) {
 			return errors.New("product policy is invalid")
 		}
 		if _, duplicate := seen[product]; duplicate {

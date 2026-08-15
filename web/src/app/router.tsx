@@ -20,6 +20,7 @@ import type { SessionStore } from "@/app/session";
 import { AppShell } from "@/app/shell/app-shell";
 import { ActivityPage } from "@/routes/activity";
 import { FundingPage } from "@/routes/funding";
+import { ArbitragePage } from "@/routes/funding.arbitrage";
 import { LoginPage } from "@/routes/login";
 import { PortfolioPage } from "@/routes/portfolio";
 import { SettingsPage } from "@/routes/settings";
@@ -45,10 +46,18 @@ const loginRoute = createRoute({
    * Only same-origin absolute paths survive validation. `redirect` comes out of
    * the address bar, and passing it to `navigate` unchecked would turn this
    * form into an open redirect: sign in here, land on someone else's page.
+   *
+   * A target pointing back at this route is dropped for a different reason: it
+   * is never a destination, only a bounce, and one carrying its own `redirect`
+   * is a stack of them. Dropping it costs the operator the return trip and
+   * nothing else, and keeps a stale or hand-typed URL from unwrapping itself
+   * one navigation at a time.
    */
   validateSearch: (search: Record<string, unknown>): LoginSearch => {
     const value = search.redirect;
-    return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? { redirect: value } : {};
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return {};
+    if (value === "/login" || value.startsWith("/login?") || value.startsWith("/login/")) return {};
+    return { redirect: value };
   },
   beforeLoad: async ({ context, search }) => {
     const snapshot = await context.session.ensure();
@@ -83,13 +92,48 @@ const indexRoute = createRoute({
 
 const tradeRoute = createRoute({ getParentRoute: () => appRoute, path: "/trade", component: TradePage });
 const fundingRoute = createRoute({ getParentRoute: () => appRoute, path: "/funding", component: FundingPage });
+
+/**
+ * Which pair, and which way round.
+ *
+ * All three are optional and all three are hints: the page ranks the spreads
+ * itself and falls back to the best executable one, so a bare `/funding/arbitrage`
+ * is a valid arrival. `long`/`short` exist because the server's orientation is
+ * the profitable one and an operator is allowed to disagree — putting the choice
+ * in the URL is what keeps a fifteen-second poll from undoing it.
+ */
+interface ArbitrageSearch {
+  symbol?: string;
+  long?: string;
+  short?: string;
+}
+
+const arbitrageRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/funding/arbitrage",
+  validateSearch: (search: Record<string, unknown>): ArbitrageSearch => ({
+    symbol: typeof search.symbol === "string" && search.symbol !== "" ? search.symbol : undefined,
+    long: typeof search.long === "string" && search.long !== "" ? search.long : undefined,
+    short: typeof search.short === "string" && search.short !== "" ? search.short : undefined,
+  }),
+  component: ArbitragePage,
+});
+
 const portfolioRoute = createRoute({ getParentRoute: () => appRoute, path: "/portfolio", component: PortfolioPage });
 const activityRoute = createRoute({ getParentRoute: () => appRoute, path: "/activity", component: ActivityPage });
 const settingsRoute = createRoute({ getParentRoute: () => appRoute, path: "/settings", component: SettingsPage });
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
-  appRoute.addChildren([indexRoute, tradeRoute, fundingRoute, portfolioRoute, activityRoute, settingsRoute]),
+  appRoute.addChildren([
+    indexRoute,
+    tradeRoute,
+    fundingRoute,
+    arbitrageRoute,
+    portfolioRoute,
+    activityRoute,
+    settingsRoute,
+  ]),
 ]);
 
 export function createAppRouter(context: RouterContext) {

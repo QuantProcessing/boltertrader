@@ -104,11 +104,13 @@ Anything more than one product would need lives in the gateway: credential
 storage, account lifecycle, catalog, capability and limit resolution, durable
 order identity, reconciliation, and private event delivery.
 
-A product service owns only its own product's decisions — for the manual
-trading product, the command ledger, previews, reservations, and the
-projections its interface needs. When a product service grows a capability that
-a second product would also need, that is a signal to move it down into the
-gateway, not to duplicate it.
+A product service owns only its own products' decisions — the command ledger,
+previews, reservations, and the projections its interface needs. Two products
+can share one service and all of that machinery: manual trading and funding
+arbitrage both live in `services/trading`, and they differ in their endpoints
+and in the shape of the intent they seal, not in a second copy of the ledger.
+When a product service grows a capability that a second product would also
+need, that is a signal to move it down into the gateway, not to duplicate it.
 
 ## Boundary checks for contributors
 

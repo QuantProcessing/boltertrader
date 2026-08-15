@@ -46,9 +46,9 @@ type Fact struct {
 	Asks              []Level        `json:"asks"`
 	MarkPrice         string         `json:"markPrice,omitempty"`
 	FundingRate       string         `json:"fundingRate,omitempty"`
-	FundingObservedAt time.Time      `json:"fundingObservedAt,omitempty"`
-	FundingTime       time.Time      `json:"fundingTime,omitempty"`
-	NextFundingTime   time.Time      `json:"nextFundingTime,omitempty"`
+	FundingObservedAt time.Time      `json:"fundingObservedAt,omitzero"`
+	FundingTime       time.Time      `json:"fundingTime,omitzero"`
+	NextFundingTime   time.Time      `json:"nextFundingTime,omitzero"`
 	FundingHistory    []FundingPoint `json:"fundingHistory,omitempty"`
 	OpenInterest      string         `json:"openInterest,omitempty"`
 	ObservedAt        time.Time      `json:"observedAt"`
@@ -61,7 +61,7 @@ type Level struct {
 
 type FundingPoint struct {
 	Rate        string    `json:"rate"`
-	ObservedAt  time.Time `json:"observedAt,omitempty"`
+	ObservedAt  time.Time `json:"observedAt,omitzero"`
 	FundingTime time.Time `json:"fundingTime"`
 }
 
@@ -232,8 +232,14 @@ func validateFact(query Query, fact Fact) error {
 			return fmt.Errorf("Gateway market-data level is invalid")
 		}
 	}
+	// A rate needs the instant it was read at, and nothing more. The funding
+	// schedule is optional in the Gateway's own contract because most venues do
+	// not publish a last-funding time on their current-rate endpoint — of the
+	// nine perp venues only OKX does, and two publish no schedule at all.
+	// Demanding all three here mirrored the same over-assertion the Gateway used
+	// to make, and rejected every perp fact it produced.
 	if fact.FundingRate != "" {
-		if _, err := decimal.NewFromString(fact.FundingRate); err != nil || fact.FundingObservedAt.IsZero() || fact.FundingTime.IsZero() || fact.NextFundingTime.IsZero() {
+		if _, err := decimal.NewFromString(fact.FundingRate); err != nil || fact.FundingObservedAt.IsZero() {
 			return fmt.Errorf("Gateway current funding fact is invalid")
 		}
 	} else if !fact.FundingObservedAt.IsZero() || !fact.FundingTime.IsZero() || !fact.NextFundingTime.IsZero() || len(fact.FundingHistory) != 0 {

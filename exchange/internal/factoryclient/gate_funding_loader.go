@@ -86,3 +86,47 @@ func (loader gateFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 	}
 	return fundingBoardSnapshot(scope, entries), nil
 }
+
+type gateFundingHistoryLoader struct {
+	settings Settings
+}
+
+func NewGateFundingHistoryLoader(settings Settings) exchange.FundingHistoryLoader {
+	return gateFundingHistoryLoader{settings: settings}
+}
+
+// LoadFundingHistory reads one USDT-settled contract's funding_rate series.
+//
+// Gate is the one venue whose SDK takes the window as time.Time rather than as
+// epoch milliseconds, and it is the reason the shared window helper hands back
+// both forms: the request keeps the times, the helper validates them, and only
+// the six millisecond venues consume its return.
+//
+// The settle currency is the same literal the board uses. Gate scopes futures
+// by settlement in the path, and USDT is the only settlement configured here.
+func (loader gateFundingHistoryLoader) LoadFundingHistory(ctx context.Context, request exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error) {
+	if _, _, err := fundingHistoryWindow(request); err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+	sdk, _ := newGateSDK("", "", loader.settings)
+	meta := clientMeta{venue: exchange.VenueGate, product: exchange.ProductPerp}
+
+	records, err := sdk.ListFuturesFundingRateHistory(ctx, gate.SettleUSDT, fundingHistoryNative(request), request.Since, request.Until, fundingHistoryLimit(request, gateFundingHistoryMax))
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, gateNormalizeErr(meta, fundingHistoryOperation, err)
+	}
+
+	points := make([]exchange.FundingHistoryPoint, 0, len(records))
+	for _, record := range records {
+		rate, err := decimalOrSkip(record.Rate)
+		if err != nil {
+			continue
+		}
+		points = append(points, exchange.FundingHistoryPoint{
+			// Gate stamps in seconds where the other nine use milliseconds.
+			FundingTime: fundingHistorySecondsTime(record.Time),
+			Rate:        rate,
+		})
+	}
+	return fundingHistorySnapshot(request, points), nil
+}

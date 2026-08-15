@@ -4,8 +4,6 @@ import (
 	"context"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
-	bybit "github.com/QuantProcessing/boltertrader/sdk/bybit"
 )
 
 type bybitFundingBoardLoader struct {
@@ -29,20 +27,7 @@ func NewBybitFundingBoardLoader(settlement string, settings Settings) exchange.F
 // USDT- and USDC-margined contracts, and a USDC row filed under the USDT scope
 // would collide with a real USDT symbol on the board.
 func (loader bybitFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	profile := bybit.MainnetEnvironmentProfile()
-	switch loader.settings.Environment {
-	case string(exchange.EnvironmentDemo):
-		profile = bybit.DemoEnvironmentProfile()
-	case string(exchange.EnvironmentTestnet):
-		profile = bybit.TestnetEnvironmentProfile()
-	}
-	if loader.settings.Endpoint != "" {
-		profile.RESTBaseURL = loader.settings.Endpoint
-	}
-	sdk := bybit.NewClient().WithEnvironmentProfile(profile)
-	if loader.settings.HTTPClient != nil {
-		sdk.WithHTTPClient(loader.settings.HTTPClient)
-	}
+	sdk := newBybitPublicSDK(loader.settings)
 
 	rows, err := sdk.GetTickers(ctx, "linear")
 	if err != nil {
@@ -98,17 +83,7 @@ func NewBitgetFundingBoardLoader(productType string, settings Settings) exchange
 // without an interval is still a board, while a board that failed to load is
 // not.
 func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	profile := bitget.MainnetEnvironmentProfile()
-	if loader.settings.Environment == string(exchange.EnvironmentDemo) {
-		profile = bitget.DemoEnvironmentProfile()
-	}
-	if loader.settings.Endpoint != "" {
-		profile.RESTBaseURL = loader.settings.Endpoint
-	}
-	sdk := bitget.NewClient().WithEnvironmentProfile(profile)
-	if loader.settings.HTTPClient != nil {
-		sdk.WithHTTPClient(loader.settings.HTTPClient)
-	}
+	sdk := newBitgetPublicSDK(loader.settings)
 
 	rows, err := sdk.GetTickers(ctx, loader.productType)
 	if err != nil {
@@ -149,4 +124,113 @@ func (loader bitgetFundingBoardLoader) LoadFundingBoard(ctx context.Context, sco
 		})
 	}
 	return fundingBoardSnapshot(scope, entries), nil
+}
+
+type bybitFundingHistoryLoader struct {
+	settings Settings
+}
+
+func NewBybitFundingHistoryLoader(settings Settings) exchange.FundingHistoryLoader {
+	return bybitFundingHistoryLoader{settings: settings}
+}
+
+// LoadFundingHistory reads one linear contract's settled rates.
+//
+// The category is the same literal the board uses: Bybit files both the USDT-
+// and the USDC-margined perpetuals under linear, and inverse contracts are not
+// a configured product here. There is therefore no settlement argument to take,
+// where the board needed one to split a mixed ticker surface.
+//
+// Two hundred rows is Bybit's ceiling and the tightest of the venues that
+// accept a window at all, so a thirty-day request against an hourly-settling
+// contract comes back short. The series then starts later than asked, which the
+// chart states by where its line begins.
+func (loader bybitFundingHistoryLoader) LoadFundingHistory(ctx context.Context, request exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error) {
+	since, until, err := fundingHistoryWindow(request)
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+	sdk := newBybitPublicSDK(loader.settings)
+
+	rows, err := sdk.GetFundingHistory(ctx, "linear", fundingHistoryNative(request), since, until, fundingHistoryLimit(request, bybitFundingHistoryMax))
+	if err != nil {
+		meta := clientMeta{venue: exchange.VenueBybit, product: exchange.ProductPerp}
+		return exchange.FundingHistorySnapshot{}, normErr(meta, fundingHistoryOperation, err)
+	}
+
+	points := make([]exchange.FundingHistoryPoint, 0, len(rows))
+	for _, row := range rows {
+		rate, err := decimalOrSkip(row.FundingRate)
+		if err != nil {
+			continue
+		}
+		points = append(points, exchange.FundingHistoryPoint{
+			FundingTime: fundingUnixMillis(row.FundingRateTimestamp),
+			Rate:        rate,
+		})
+	}
+	return fundingHistorySnapshot(request, points), nil
+}
+
+type bitgetFundingHistoryLoader struct {
+	productType string
+	settings    Settings
+}
+
+func NewBitgetFundingHistoryLoader(productType string, settings Settings) exchange.FundingHistoryLoader {
+	return bitgetFundingHistoryLoader{productType: productType, settings: settings}
+}
+
+// LoadFundingHistory walks Bitget's history pages back to the requested start.
+//
+// Bitget is the only one of the seven that takes no window: history-fund-rate
+// pages backwards from the newest settlement and offers no way to say where to
+// begin. Paging is therefore not an optimisation here but the only way to reach
+// a start date, and the loop stops on the first page that reaches back past it.
+//
+// Rows older than the window are kept and handed to the finaliser rather than
+// dropped in this loop. That is what lets the first in-window point measure its
+// own interval against the settlement immediately before it, instead of being
+// the one point on the chart with no interval.
+//
+// The page ceiling is a guard, not a budget: it bounds the walk if Bitget ever
+// stops advancing the cursor, which would otherwise loop until the context
+// expires.
+func (loader bitgetFundingHistoryLoader) LoadFundingHistory(ctx context.Context, request exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error) {
+	if _, _, err := fundingHistoryWindow(request); err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+	sdk := newBitgetPublicSDK(loader.settings)
+	native := fundingHistoryNative(request)
+
+	points := []exchange.FundingHistoryPoint{}
+	for page := 1; page <= bitgetFundingHistoryMaxPages; page++ {
+		rows, err := sdk.GetHistoryFundRate(ctx, native, loader.productType, bitgetFundingHistoryPage, page)
+		if err != nil {
+			meta := clientMeta{venue: exchange.VenueBitget, product: exchange.ProductPerp}
+			return exchange.FundingHistorySnapshot{}, normErr(meta, fundingHistoryOperation, err)
+		}
+		if len(rows) == 0 {
+			break
+		}
+		reachedStart := false
+		for _, row := range rows {
+			settled := fundingUnixMillis(row.FundingTime)
+			if settled.IsZero() {
+				continue
+			}
+			if !settled.After(request.Since) {
+				reachedStart = true
+			}
+			rate, err := decimalOrSkip(row.FundingRate)
+			if err != nil {
+				continue
+			}
+			points = append(points, exchange.FundingHistoryPoint{FundingTime: settled, Rate: rate})
+		}
+		if reachedStart || len(rows) < bitgetFundingHistoryPage {
+			break
+		}
+	}
+	return fundingHistorySnapshot(request, points), nil
 }

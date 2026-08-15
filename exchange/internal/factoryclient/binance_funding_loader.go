@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/exchange"
-	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 )
 
 type binanceFundingBoardLoader struct {
@@ -30,17 +29,9 @@ func NewBinanceFundingBoardLoader(settlement string, settings Settings) exchange
 // a time, and paying several hundred requests for one column is not a trade a
 // board should make.
 func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	sdk := binanceperp.NewClient()
-	profile, err := binanceperp.EndpointProfileForEnvironment(binanceperp.Environment(loader.settings.Environment))
+	sdk, err := newBinancePerpPublicSDK(fundingBoardOperation, loader.settings)
 	if err != nil {
-		return exchange.FundingBoardSnapshot{}, binancePerpInvalidRequest(fundingBoardOperation, err.Error())
-	}
-	sdk.WithEndpointProfile(profile)
-	if loader.settings.Endpoint != "" {
-		sdk.WithBaseURL(loader.settings.Endpoint)
-	}
-	if loader.settings.HTTPClient != nil {
-		sdk.HTTPClient = loader.settings.HTTPClient
+		return exchange.FundingBoardSnapshot{}, err
 	}
 
 	rows, err := sdk.GetAllFundingRates(ctx)
@@ -103,4 +94,49 @@ func binanceSplitPerpSymbol(symbol string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+type binanceFundingHistoryLoader struct {
+	settings Settings
+}
+
+func NewBinanceFundingHistoryLoader(settings Settings) exchange.FundingHistoryLoader {
+	return binanceFundingHistoryLoader{settings: settings}
+}
+
+// LoadFundingHistory reads /fapi/v1/fundingRate for one symbol.
+//
+// No settlement filter, unlike the board: the caller names one contract by its
+// native symbol, and the symbol itself already decides what it settles in.
+//
+// Binance is the most generous of the ten here — a thousand rows in one call
+// covers thirty days even at hourly settlement — so this is the venue where the
+// single-call premise is never in doubt.
+func (loader binanceFundingHistoryLoader) LoadFundingHistory(ctx context.Context, request exchange.FundingHistoryRequest) (exchange.FundingHistorySnapshot, error) {
+	since, until, err := fundingHistoryWindow(request)
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+	sdk, err := newBinancePerpPublicSDK(fundingHistoryOperation, loader.settings)
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, err
+	}
+
+	rows, err := sdk.GetFundingRateHistory(ctx, fundingHistoryNative(request), since, until, fundingHistoryLimit(request, binanceFundingHistoryMax))
+	if err != nil {
+		return exchange.FundingHistorySnapshot{}, binancePerpNormalizeError(fundingHistoryOperation, err)
+	}
+
+	points := make([]exchange.FundingHistoryPoint, 0, len(rows))
+	for _, row := range rows {
+		rate, err := decimalOrSkip(row.FundingRate)
+		if err != nil {
+			continue
+		}
+		points = append(points, exchange.FundingHistoryPoint{
+			FundingTime: fundingHistoryMillisTime(row.FundingTime),
+			Rate:        rate,
+		})
+	}
+	return fundingHistorySnapshot(request, points), nil
 }

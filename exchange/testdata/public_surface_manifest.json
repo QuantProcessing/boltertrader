@@ -6895,6 +6895,97 @@
       "tests": [
         "TestFundingBoardSourceDegradesPerVenue"
       ]
+    },
+    {
+      "id": "exchange.FundingHistoryPoint",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingHistoryRequest",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape",
+        "TestFundingHistoryWindowIsBounded"
+      ]
+    },
+    {
+      "id": "exchange.FundingHistorySnapshot",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingHistorySnapshot.Validate",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape"
+      ]
+    },
+    {
+      "id": "exchange.FundingHistoryLoader",
+      "kind": "interface",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape",
+        "TestFundingHistoryWindowIsBounded"
+      ]
+    },
+    {
+      "id": "exchange.FundingHistoryLoader.LoadFundingHistory",
+      "kind": "interface_method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryLoaderPerVenueShape",
+        "TestFundingHistoryWindowIsBounded"
+      ]
+    },
+    {
+      "id": "exchange/factory.NewPublicFundingHistoryConnector",
+      "kind": "func",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryRejectsUnsupportedVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingHistoryConnector",
+      "kind": "type",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryRejectsUnsupportedVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingHistoryConnector.Load",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryRejectsUnsupportedVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingHistoryConnector.Scope",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryRejectsUnsupportedVenue"
+      ]
+    },
+    {
+      "id": "exchange/factory.PublicFundingHistoryConnector.Close",
+      "kind": "method",
+      "coverage": "unit",
+      "tests": [
+        "TestFundingHistoryRejectsUnsupportedVenue"
+      ]
     }
   ]
 }

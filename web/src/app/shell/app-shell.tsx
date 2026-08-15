@@ -25,11 +25,18 @@ export function AppShell() {
    * that expires while the operator sits on one screen, which surfaces as a 401
    * on whatever query happens to fire next. Without this the shell would keep
    * rendering stale numbers behind a single failed panel.
+   *
+   * The pathname check is what stops the effect eating its own output. This
+   * shell stays mounted until the login route's `beforeLoad` resolves, so
+   * `location.href` is already `/login?redirect=…` while the effect is still
+   * live; since that href is a dependency, the next run wraps the wrapper, once
+   * per render, and signing out lands on a multi-kilobyte address that has to
+   * bounce a few dozen times to unwrap itself.
    */
   useEffect(() => {
-    if (status !== "anonymous") return;
+    if (status !== "anonymous" || location.pathname === "/login") return;
     void navigate({ to: "/login", search: { redirect: location.href }, replace: true });
-  }, [status, navigate, location.href]);
+  }, [status, navigate, location.href, location.pathname]);
 
   if (status !== "authenticated") {
     return <div className="h-dvh bg-bg" aria-busy="true" />;
