@@ -398,17 +398,17 @@ func TestOKXPublicWSBackendStartsCandlesOnBusinessSocket(t *testing.T) {
 	}
 }
 
-func TestNewOKXDemoClientsWireBusinessSocketForCandles(t *testing.T) {
-	spotClient := NewOKXSpot("", "", "", Settings{Environment: "demo"}).(*okxSpotClient)
+func TestNewOKXClientsWireBusinessSocketForCandles(t *testing.T) {
+	spotClient := NewOKXSpot("", "", "", Settings{}).(*okxSpotClient)
 	spotSocket := spotClient.ws.(*spotWebSocket)
-	assertOKXDemoBusinessSocket(t, "spot", spotSocket.publicWebSocket.backend.(*okxPublicWSBackend))
+	assertOKXBusinessSocket(t, "spot", spotSocket.publicWebSocket.backend.(*okxPublicWSBackend))
 
-	perpClient := NewOKXUSDTPerp("", "", "", Settings{Environment: "demo"}).(*okxPerpClient)
+	perpClient := NewOKXUSDTPerp("", "", "", Settings{}).(*okxPerpClient)
 	perpSocket := perpClient.ws.(*perpWebSocket)
-	assertOKXDemoBusinessSocket(t, "perp", perpSocket.backend.(*okxPublicWSBackend))
+	assertOKXBusinessSocket(t, "perp", perpSocket.backend.(*okxPublicWSBackend))
 }
 
-func assertOKXDemoBusinessSocket(t *testing.T, product string, backend *okxPublicWSBackend) {
+func assertOKXBusinessSocket(t *testing.T, product string, backend *okxPublicWSBackend) {
 	t.Helper()
 	if backend.candleWS == nil {
 		t.Fatalf("%s candle websocket is nil", product)
@@ -417,8 +417,8 @@ func assertOKXDemoBusinessSocket(t *testing.T, product string, backend *okxPubli
 	if !ok {
 		t.Fatalf("%s candle websocket type = %T", product, backend.candleWS)
 	}
-	if client.URL != okx.WSDemoBusinessBaseURL {
-		t.Fatalf("%s candle websocket URL = %q, want %q", product, client.URL, okx.WSDemoBusinessBaseURL)
+	if client.URL != okx.WSBusinessBaseURL {
+		t.Fatalf("%s candle websocket URL = %q, want %q", product, client.URL, okx.WSBusinessBaseURL)
 	}
 }
 

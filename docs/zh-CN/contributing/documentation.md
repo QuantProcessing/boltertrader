@@ -84,17 +84,19 @@ artifact。绝不能为了保存 traceability 而发布 artifact 本身。
 
 使用精确的[状态语义](../reference/glossary.md)。写明 venue、product、environment
 与具体 command/report/stream surface。避免单独使用 “supported”、不加限定的
-“market stream”，或缺少 candidate、date、scope、target、zero-skip result 与
-terminal assertion 的 “certified”。
+“market stream”，以及单独使用 “certified”——“supported” 和 “certified” 都不是
+status。一条 Offline-conformant 断言需要 candidate、date、scope、target、
+zero-skip result 与 terminal assertion。
 
 当 static capability row、dynamic configuration、concrete method、test 与现有
 页面不一致时，将 mismatch 视为 defect。记录由 code 与 test 证明的最窄当前
 behavior，修正拥有该事实的 source，不要平均冲突声明，也不要选择最宽的那个。
-Demo/Testnet evidence 永远不代表 production readiness。
+离线证据永远不代表 production readiness——本仓库没有任何套件会碰到交易所，
+因此它们都给不出后半截。
 
-公开 validation summary 仅包含 candidate/date、具名 Demo/Testnet environment
-与 product、精确 target、zero-skip result、scoped terminal assertion 和 material
-limitation。不要粘贴 raw log 或 account state。
+公开 validation summary 仅包含 candidate/date、具名 product 范围、精确 target、
+zero-skip result、scoped terminal assertion 和 material limitation。不要粘贴
+raw log 或 account state。
 
 ## Review checklist
 

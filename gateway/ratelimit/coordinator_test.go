@@ -10,7 +10,7 @@ import (
 func TestCoordinatorAtomicallyReservesHierarchicalBudgets(t *testing.T) {
 	now := time.Unix(100, 0)
 	coordinator := NewCoordinator(func() time.Time { return now })
-	profile := Key{Kind: VenueProfile, Value: "binance/test/binance.perp.usdt.demo.v1"}
+	profile := Key{Kind: VenueProfile, Value: "binance/test/binance.perp.usdt.v1"}
 	principal := Key{Kind: AuthenticatedPrincipal, Value: "binance/principal-fingerprint"}
 	if err := coordinator.Configure(profile, Quota{Limit: 2, Interval: time.Minute}); err != nil {
 		t.Fatal(err)

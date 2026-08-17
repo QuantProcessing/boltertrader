@@ -445,8 +445,8 @@ func TestCandidatePromotesSpotAndPerpAsOneGeneration(t *testing.T) {
 func TestPromotedRuntimeExposesActiveRouteClientsAndResources(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -519,8 +519,8 @@ func TestRuntimePositionBlockersUsesAuthoritativeActivePerpRoutesAndRedactsFailu
 func TestPromotedRuntimePrivateStreamBarrierControlsDynamicWriteReadiness(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -561,8 +561,8 @@ func TestPromotedRuntimePrivateStreamBarrierControlsDynamicWriteReadiness(t *tes
 func TestPromotedRuntimePrivateStreamReadinessIsolatedByGenerationAndRoute(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -619,8 +619,8 @@ func TestPromotedRuntimePrivateStreamReadinessIsolatedByGenerationAndRoute(t *te
 func TestPromotedRuntimeResolvesSharedPublicCatalog(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -650,8 +650,8 @@ func TestPromotedRuntimeResolvesSharedPublicCatalog(t *testing.T) {
 func TestSelectOrderRouteKeepsActiveAndRecoveryGenerationTuplesCoherent(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -663,7 +663,7 @@ func TestSelectOrderRouteKeepsActiveAndRecoveryGenerationTuplesCoherent(t *testi
 		t.Fatalf("promote first: %v", err)
 	}
 
-	selected, err := manager.SelectOrderRoute(context.Background(), first.AccountID, "binance:demo:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
+	selected, err := manager.SelectOrderRoute(context.Background(), first.AccountID, "binance:live:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
 	if err != nil || !selected.Dynamic || selected.Fence != first.Fence || selected.RouteID != "spot" || selected.Admission != firstGroup.Admission {
 		t.Fatalf("first selection=%+v err=%v", selected, err)
 	}
@@ -683,11 +683,11 @@ func TestSelectOrderRouteKeepsActiveAndRecoveryGenerationTuplesCoherent(t *testi
 		t.Fatalf("promote second: %v", err)
 	}
 
-	active, err := manager.SelectOrderRoute(context.Background(), second.AccountID, "binance:demo:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
+	active, err := manager.SelectOrderRoute(context.Background(), second.AccountID, "binance:live:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
 	if err != nil || active.Fence != second.Fence || active.Admission != secondGroup.Admission {
 		t.Fatalf("active selection=%+v err=%v", active, err)
 	}
-	recovery, err := manager.SelectOrderRoute(context.Background(), first.AccountID, "binance:demo:spot:BTC-USDT", OrderRouteRecovery, OrderRouteSelector{RouteID: "spot", Fence: first.Fence})
+	recovery, err := manager.SelectOrderRoute(context.Background(), first.AccountID, "binance:live:spot:BTC-USDT", OrderRouteRecovery, OrderRouteSelector{RouteID: "spot", Fence: first.Fence})
 	if err != nil || recovery.Fence != first.Fence || recovery.Admission != firstGroup.Admission || recovery.Orders != firstOrders {
 		t.Fatalf("recovery selection=%+v err=%v", recovery, err)
 	}
@@ -718,7 +718,7 @@ func TestSelectOrderRouteDoesNotHoldGroupLockAcrossResolveAndRetriesGenerationCh
 	}
 	selected := make(chan selectionResult, 1)
 	go func() {
-		result, selectErr := manager.SelectOrderRoute(ctx, first.AccountID, "binance:demo:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
+		result, selectErr := manager.SelectOrderRoute(ctx, first.AccountID, "binance:live:spot:BTC-USDT", OrderRouteWrite, OrderRouteSelector{})
 		selected <- selectionResult{selected: result, err: selectErr}
 	}()
 	select {
@@ -768,8 +768,8 @@ func TestSelectOrderRouteDoesNotHoldGroupLockAcrossResolveAndRetriesGenerationCh
 func TestRuntimeObserverRegistersExistingAndNewGenerationsBeforeWritesResume(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -816,8 +816,8 @@ func TestRuntimeObserverRegistersExistingAndNewGenerationsBeforeWritesResume(t *
 func TestRuntimeObserverBootstrapBlocksAllAccountsAndRollsBackForRetry(t *testing.T) {
 	manager := newRuntimeGroupTestManager(candidateClientBuilderStub{})
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -1788,8 +1788,8 @@ func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(
 	}}
 	manager := newRuntimeGroupTestManager(builder)
 	registry, err := publicconn.NewRegistry(runtimePublicFactory{instruments: map[routeprofile.Key]exchange.Instrument{
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
-		{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
+		{Venue: "binance", RouteProfileID: "binance.spot.v1"}:      accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "BTC-USDT", "BTCUSDT", ""),
+		{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}: accountTestInstrument(exchange.VenueBinance, exchange.ProductPerp, "BTC-USDT", "BTCUSDT", "USDT"),
 	}}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
@@ -1828,7 +1828,7 @@ func TestRestoreRehydratesRetiringGenerationForExactRecoveryWithAdmissionClosed(
 		t.Fatalf("restore rehydrated %d retiring groups", localRetiring)
 	}
 	recovery, err := manager.SelectOrderRoute(
-		context.Background(), active.AccountID, "binance:demo:spot:BTC-USDT", OrderRouteRecovery,
+		context.Background(), active.AccountID, "binance:live:spot:BTC-USDT", OrderRouteRecovery,
 		OrderRouteSelector{RouteID: "spot", Fence: retiring.Fence},
 	)
 	if err != nil || recovery.Fence != retiring.Fence || recovery.RouteID != "spot" {
@@ -2158,11 +2158,11 @@ func runtimeGroupPending(t *testing.T) store.PendingSnapshot {
 	fence := domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1}
 	return store.PendingSnapshot{DesiredSnapshot: store.DesiredSnapshot{
 		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c35"), OperationID: op,
-		AccountID: fence.AccountID, Venue: "binance", NativeEnvironment: "demo", SecretRef: ref,
+		AccountID: fence.AccountID, Venue: "binance", NativeEnvironment: "live", SecretRef: ref,
 		Fence: fence, RequestedState: store.DesiredActive,
 		Routes: []store.RouteDefinition{
-			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive},
-			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: store.RouteActive},
+			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive},
+			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: store.RouteActive},
 		},
 	}, OperationState: store.OperationCandidateReady}
 }

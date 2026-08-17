@@ -21,15 +21,7 @@ import (
 
 const (
 	MainnetAPIURL  = "https://mainnet.zklighter.elliot.ai"
-	TestnetAPIURL  = "https://testnet.zklighter.elliot.ai"
 	ExplorerAPIURL = "https://explorer.elliot.ai/api"
-)
-
-type Environment string
-
-const (
-	EnvironmentMainnet Environment = "mainnet"
-	EnvironmentTestnet Environment = "testnet"
 )
 
 type Client struct {
@@ -59,18 +51,6 @@ func NewClient() *Client {
 		ChainId:    MainnetChainID,
 		now:        time.Now,
 	}
-}
-
-func (c *Client) WithEnvironment(env Environment) *Client {
-	switch env {
-	case EnvironmentTestnet:
-		c.BaseURL = TestnetAPIURL
-		c.ChainId = TestnetChainID
-	default:
-		c.BaseURL = MainnetAPIURL
-		c.ChainId = MainnetChainID
-	}
-	return c
 }
 
 func (c *Client) WithBaseURL(baseURL string) *Client {

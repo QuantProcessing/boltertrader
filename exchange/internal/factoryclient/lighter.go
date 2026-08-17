@@ -22,11 +22,6 @@ type lighterSpotClient struct {
 
 func NewLighterSpot(privateKey string, accountIndex int64, keyIndex uint8, settings Settings) exchange.SpotClient {
 	sdkClient := lighter.NewClient().WithCredentials(privateKey, accountIndex, keyIndex)
-	if settings.Environment == "testnet" {
-		sdkClient.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		sdkClient.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
@@ -62,11 +57,6 @@ type lighterPerpClient struct {
 
 func NewLighterPerp(privateKey string, accountIndex int64, keyIndex uint8, settings Settings) exchange.PerpClient {
 	sdkClient := lighter.NewClient().WithCredentials(privateKey, accountIndex, keyIndex)
-	if settings.Environment == "testnet" {
-		sdkClient.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		sdkClient.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}

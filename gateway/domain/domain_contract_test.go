@@ -40,7 +40,7 @@ func TestTypedResourceIDsValidateShape(t *testing.T) {
 				value = validUUIDv7
 			}
 			if name == "instrument_id" {
-				value = "binance:demo:spot:BTC-USDT"
+				value = "binance:live:spot:BTC-USDT"
 			}
 			if err := run(value); err != nil {
 				t.Fatalf("valid %s rejected: %v", name, err)
@@ -65,14 +65,14 @@ func TestTypedResourceIDsValidateShape(t *testing.T) {
 }
 
 func TestStableInstrumentIDIsGatewayOwnedAndDoesNotUseNativeSymbols(t *testing.T) {
-	id, err := NewInstrumentID("binance", "demo", "perp", "USDT", "BTC-USDT")
+	id, err := NewInstrumentID("binance", "live", "perp", "USDT", "BTC-USDT")
 	if err != nil {
 		t.Fatalf("NewInstrumentID: %v", err)
 	}
-	if got, want := id.String(), "binance:demo:perp:USDT:BTC-USDT"; got != want {
+	if got, want := id.String(), "binance:live:perp:USDT:BTC-USDT"; got != want {
 		t.Fatalf("instrument id = %q, want %q", got, want)
 	}
-	if _, err := NewInstrumentID("binance", "demo", "perp", "BTCUSDT", "BTCUSDT"); err == nil {
+	if _, err := NewInstrumentID("binance", "live", "perp", "BTCUSDT", "BTCUSDT"); err == nil {
 		t.Fatal("native-style symbol/settlement accepted as stable gateway identity")
 	}
 }
@@ -94,9 +94,9 @@ func TestClientOrderIDRequiresPositiveUint48Decimal(t *testing.T) {
 }
 
 func TestCanonicalPayloadHashIsStableAndSemantic(t *testing.T) {
-	left := json.RawMessage(`{"instrument_id":"binance:demo:spot:BTC-USDT","account_id":"binance-main","quantity":"0.001"}`)
-	right := json.RawMessage(`{"quantity":"0.001","account_id":"binance-main","instrument_id":"binance:demo:spot:BTC-USDT"}`)
-	changed := json.RawMessage(`{"quantity":"0.002","account_id":"binance-main","instrument_id":"binance:demo:spot:BTC-USDT"}`)
+	left := json.RawMessage(`{"instrument_id":"binance:live:spot:BTC-USDT","account_id":"binance-main","quantity":"0.001"}`)
+	right := json.RawMessage(`{"quantity":"0.001","account_id":"binance-main","instrument_id":"binance:live:spot:BTC-USDT"}`)
+	changed := json.RawMessage(`{"quantity":"0.002","account_id":"binance-main","instrument_id":"binance:live:spot:BTC-USDT"}`)
 
 	hashLeft, err := CanonicalPayloadHash(left)
 	if err != nil {

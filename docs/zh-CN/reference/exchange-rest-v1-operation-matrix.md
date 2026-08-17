@@ -18,31 +18,33 @@ Matrix-Review: `APPROVE`
 
 ## Product 行
 
-| Row | Venue | Product | Factory config | Non-production environment | Live environment |
-| --- | --- | --- | --- | --- | --- |
-| BNS | Binance | Spot | `BinanceSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BNP | Binance | USD-M Perp | `BinanceUSDPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| OXS | OKX | Spot | `OKXSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| OXP | OKX | USDT-linear SWAP | `OKXUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| LIS | Lighter | Spot | `LighterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| LIP | Lighter | Perp | `LighterPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| BYS | Bybit | Spot | `BybitSpotConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BGS | Bitget | Spot | `BitgetSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| GTS | Gate | Spot | `GateSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| ATS | Aster | Spot | `AsterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| NDS | Nado | USDT0 Spot | `NadoSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| Row | Venue | Product | Factory config |
+| --- | --- | --- | --- |
+| BNS | Binance | Spot | `BinanceSpotConfig` |
+| BNP | Binance | USD-M Perp | `BinanceUSDPerpConfig` |
+| OXS | OKX | Spot | `OKXSpotConfig` |
+| OXP | OKX | USDT-linear SWAP | `OKXUSDTPerpConfig` |
+| LIS | Lighter | Spot | `LighterSpotConfig` |
+| LIP | Lighter | Perp | `LighterPerpConfig` |
+| HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` |
+| HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` |
+| BYS | Bybit | Spot | `BybitSpotConfig` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` |
+| GTS | Gate | Spot | `GateSpotConfig` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` |
+| ATS | Aster | Spot | `AsterSpotConfig` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` |
 
-`factory.New` 要求一个显式 environment，本地验证 credential 和 endpoint
-option，格式化时 redacts credential，并且构造期间不执行 network I/O。
+每一行都连向交易所的 production endpoint。`factory.EnvironmentLive` 是唯一的
+environment，也是默认值，因此 `factory.WithEnvironment` 可选。`factory.New`
+在本地验证 credential 和 endpoint option，格式化时 redacts credential，
+并且构造期间不执行 network I/O。
 
 ## REST Operation Matrix
 
@@ -144,44 +146,17 @@ code/message 与 retry-after duration。Credential、signature、auth token、si
 payload、native SDK response 与 raw request body 都不属于 public error
 contract。
 
-## Demo/Testnet 验收
+## 验收
 
-Offline exchange test 是常规 documentation 与 contract gate：
+Offline exchange test 是 documentation 与 contract gate：
 
 ```sh
 make test-exchange-offline
 ```
 
-Demo/Testnet acceptance 是可选的，需要 credential，并依赖具体 environment。
-Read-only call 只验证实际调用的 method。`PlaceOrder`、`CancelOrder`、
-`SetLeverage` 与 WebSocket order command 会修改真实的 non-production exchange
-state。External validation 必须串行执行，并使用显式 symbol、显式 notional
-bound、专用 non-production credential 与 cleanup evidence。
-
-本 matrix 中的 capability cell 表示 implemented/admitted support，不等于
-external environment certification。当前 acceptance certification 如下：
-
-| Row | Acceptance status | Reason |
-| --- | --- | --- |
-| BNS | Passed | Binance Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| BNP | Passed | Binance Demo USD-M perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| OXS | Passed | OKX Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| OXP | Passed | OKX Demo USDT-linear SWAP 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| LIS | Waived | Lighter Testnet Spot 的结构就是单边盘口。用户已明确批准 live-write waiver：串行 target 会验证 REST 读取、账户访问、单边订单簿流、其余公共/私有订阅激活和非法请求边界，且不会发送 live order mutation；WatchBBO、exact lookup 与写路径保持显式豁免或只由 fixture 证明，网关继续保持该行 not write-ready。 |
-| LIP | Passed | Lighter Testnet perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| HLS | Passed | Hyperliquid Testnet spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| HLP | Passed | Hyperliquid Testnet standard perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
-| BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
-| BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
-| BGS | Passed | Bitget Demo Spot row 已通过 full external acceptance。 |
-| BGU | Passed | Bitget Demo USDT-linear Perp row 已通过 full external acceptance。 |
-| BGC | Passed | Bitget Demo USDC-linear Perp row 使用原生 `BTCPERP` 通过 full external acceptance。 |
-| GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
-| GTU | Passed | Gate Testnet USDT-settled Perp row 已通过 full external acceptance。 |
-| ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
-| ATP | Passed | Aster Perp row 使用 Testnet 写操作与私有流，并结合 production 只读 funding REST 与 WebSocket reference data 通过验收。 |
-| NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
-| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，并且 `WatchMarkPrice` 返回 `ErrUnsupported`。 |
-
-除 acceptance status table 外，本 matrix 不声称 live validation 已通过。
+本 matrix 中的 capability cell 表示 implemented/admitted support，并不证明该
+venue 今天仍然可用。已经没有可供认证的 non-production environment：每一次带
+credential 的调用都直达真实 venue，`PlaceOrder`、`CancelOrder`、`SetLeverage`
+与 WebSocket order command 都会花掉真金白银。对 production 的验证只能使用专用
+账户、显式 symbol、显式 notional bound、串行执行与 terminal cleanup evidence。
+如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock。

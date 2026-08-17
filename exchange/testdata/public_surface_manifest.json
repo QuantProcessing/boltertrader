@@ -39,12 +39,7 @@
         "exchange/internal/factoryclient/exact_lookup_binance_test.go",
         "exchange/internal/factoryclient/binance_public_websocket_test.go",
         "exchange/internal/factoryclient/binance_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-binance-demo-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Binance Demo spot external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "BNP",
@@ -91,12 +86,7 @@
         "exchange/internal/factoryclient/exact_lookup_binance_test.go",
         "exchange/internal/factoryclient/binance_public_websocket_test.go",
         "exchange/internal/factoryclient/binance_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-binance-demo-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "OXS",
@@ -136,12 +126,7 @@
         "exchange/internal/factoryclient/exact_lookup_okx_test.go",
         "exchange/internal/factoryclient/okx_public_websocket_test.go",
         "exchange/internal/factoryclient/okx_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-okx-demo-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "OXP",
@@ -188,12 +173,7 @@
         "exchange/internal/factoryclient/exact_lookup_okx_test.go",
         "exchange/internal/factoryclient/okx_public_websocket_test.go",
         "exchange/internal/factoryclient/okx_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-okx-demo-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "LIS",
@@ -233,12 +213,7 @@
         "exchange/internal/factoryclient/exact_lookup_lighter_test.go",
         "exchange/internal/factoryclient/lighter_public_websocket_test.go",
         "exchange/internal/factoryclient/lighter_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-lighter-testnet-spot",
-      "acceptance": {
-        "status": "waived",
-        "reason": "Lighter Testnet Spot is structurally one-sided. The user authorized a live-write waiver: the serial target verifies REST reads, account access, the one-sided order-book stream, remaining public/private subscription activation, and invalid-request boundaries with zero live order mutations; WatchBBO, exact lookup, and write paths remain explicitly waived or fixture-only, and the gateway keeps the row not write-ready."
-      }
+      ]
     },
     {
       "code": "LIP",
@@ -285,12 +260,7 @@
         "exchange/internal/factoryclient/exact_lookup_lighter_test.go",
         "exchange/internal/factoryclient/lighter_public_websocket_test.go",
         "exchange/internal/factoryclient/lighter_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-lighter-testnet-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "HLS",
@@ -330,12 +300,7 @@
         "exchange/internal/factoryclient/exact_lookup_hyperliquid_test.go",
         "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
         "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-hyperliquid-testnet-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "HLP",
@@ -382,12 +347,7 @@
         "exchange/internal/factoryclient/exact_lookup_hyperliquid_test.go",
         "exchange/internal/factoryclient/hyperliquid_public_websocket_test.go",
         "exchange/internal/factoryclient/hyperliquid_private_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-hyperliquid-testnet-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row."
-      }
+      ]
     },
     {
       "code": "BYS",
@@ -426,12 +386,7 @@
         "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bybit-demo-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bybit Demo spot row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "BYU",
@@ -477,12 +432,7 @@
         "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bybit-demo-usdt-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bybit Demo USDT-linear perp row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "BYC",
@@ -528,12 +478,7 @@
         "exchange/internal/factoryclient/exact_lookup_bybit_test.go",
         "exchange/internal/factoryclient/bybit_openapi_test.go",
         "exchange/internal/factoryclient/bybit_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bybit-demo-usdc-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bybit Demo USDC-linear perp row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "BGS",
@@ -570,12 +515,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/bitget_openapi_test.go",
         "exchange/internal/factoryclient/bitget_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bitget-demo-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bitget Demo spot row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "BGU",
@@ -619,12 +559,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/bitget_openapi_test.go",
         "exchange/internal/factoryclient/bitget_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bitget-demo-usdt-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bitget Demo USDT-linear perp row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "BGC",
@@ -668,12 +603,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/bitget_openapi_test.go",
         "exchange/internal/factoryclient/bitget_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-bitget-demo-usdc-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Bitget Demo USDC-linear perp row passed full external acceptance with native BTCPERP."
-      }
+      ]
     },
     {
       "code": "GTS",
@@ -710,12 +640,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/gate_openapi_test.go",
         "exchange/internal/factoryclient/gate_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-gate-testnet-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Gate Testnet spot row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "GTU",
@@ -759,12 +684,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/gate_openapi_test.go",
         "exchange/internal/factoryclient/gate_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-gate-testnet-usdt-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Gate Testnet USDT-settled perp row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "ATS",
@@ -801,12 +721,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/aster_openapi_test.go",
         "exchange/internal/factoryclient/aster_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-aster-testnet-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Aster Testnet spot row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "ATP",
@@ -850,12 +765,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/aster_openapi_test.go",
         "exchange/internal/factoryclient/aster_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-aster-testnet-usdt-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Aster perp row passed with Testnet writes and private streams plus production read-only funding REST and WebSocket reference data."
-      }
+      ]
     },
     {
       "code": "NDS",
@@ -892,12 +802,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/nado_openapi_test.go",
         "exchange/internal/factoryclient/nado_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-nado-testnet-spot",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Nado Testnet USDT0 spot row passed full external acceptance."
-      }
+      ]
     },
     {
       "code": "NDP",
@@ -941,12 +846,7 @@
       "fixtures": [
         "exchange/internal/factoryclient/nado_openapi_test.go",
         "exchange/internal/factoryclient/nado_websocket_test.go"
-      ],
-      "acceptance_target": "test-exchange-nado-testnet-usdt0-perp",
-      "acceptance": {
-        "status": "passed",
-        "reason": "Nado Testnet USDT0 perp row passed full external acceptance; SetLeverage returned the documented backend-managed Effective=0 and WatchMarkPrice returned ErrUnsupported."
-      }
+      ]
     }
   ],
   "rest_methods": [
@@ -4239,128 +4139,6 @@
     "Rejected",
     "Resting"
   ],
-  "acceptance_targets": [
-    {
-      "target": "test-exchange-binance-demo-spot",
-      "env": "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBinanceSpotDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-binance-demo-perp",
-      "env": "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBinancePerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-okx-demo-spot",
-      "env": "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeOKXSpotDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-okx-demo-perp",
-      "env": "BOLTER_ENABLE_OKX_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeOKXPerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-lighter-testnet-spot",
-      "env": "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeLighterSpotTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-lighter-testnet-perp",
-      "env": "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeLighterPerpTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-hyperliquid-testnet-spot",
-      "env": "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeHyperliquidSpotTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-hyperliquid-testnet-perp",
-      "env": "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeHyperliquidPerpTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-bybit-demo-spot",
-      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBybitSpotDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-bybit-demo-usdt-perp",
-      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBybitUSDTPerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-bybit-demo-usdc-perp",
-      "env": "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBybitUSDCPerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-bitget-demo-spot",
-      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBitgetSpotDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-bitget-demo-usdt-perp",
-      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBitgetUSDTPerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-bitget-demo-usdc-perp",
-      "env": "BOLTER_ENABLE_BITGET_DEMO_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeBitgetUSDCPerpDemoAcceptance$"
-    },
-    {
-      "target": "test-exchange-gate-testnet-spot",
-      "env": "BOLTER_ENABLE_GATE_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeGateSpotTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-gate-testnet-usdt-perp",
-      "env": "BOLTER_ENABLE_GATE_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeGateUSDTPerpTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-aster-testnet-spot",
-      "env": "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeAsterSpotTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-aster-testnet-usdt-perp",
-      "env": "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeAsterUSDTPerpTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-nado-testnet-spot",
-      "env": "BOLTER_ENABLE_NADO_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeNadoSpotTestnetAcceptance$"
-    },
-    {
-      "target": "test-exchange-nado-testnet-usdt0-perp",
-      "env": "BOLTER_ENABLE_NADO_TESTNET_WRITES=1",
-      "package": "./exchange/...",
-      "test_selector": "^TestExchangeNadoUSDT0PerpTestnetAcceptance$"
-    }
-  ],
   "symbols": [
     {
       "id": "exchange.AckAcceptedPending",
@@ -4542,23 +4320,7 @@
       ]
     },
     {
-      "id": "exchange.EnvironmentDemo",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestVenueEnvironmentValidation"
-      ]
-    },
-    {
       "id": "exchange.EnvironmentLive",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestVenueEnvironmentValidation"
-      ]
-    },
-    {
-      "id": "exchange.EnvironmentTestnet",
       "kind": "const",
       "coverage": "contract",
       "tests": [
@@ -6616,23 +6378,7 @@
       ]
     },
     {
-      "id": "exchange/factory.EnvironmentDemo",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
       "id": "exchange/factory.EnvironmentLive",
-      "kind": "const",
-      "coverage": "contract",
-      "tests": [
-        "TestTwentyKnownConfigsInferAndConstructProductClients"
-      ]
-    },
-    {
-      "id": "exchange/factory.EnvironmentTestnet",
       "kind": "const",
       "coverage": "contract",
       "tests": [

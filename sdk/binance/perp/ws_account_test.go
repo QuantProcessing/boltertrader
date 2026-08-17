@@ -429,22 +429,6 @@ func wsAccountJSONResponse(request *http.Request, status int, body string) *http
 	}
 }
 
-func TestWSAccountCompanion_NewDemoWsAccountClientUsesDemoRESTAndWS(t *testing.T) {
-	client := NewDemoWsAccountClient(context.Background(), "demo-key", "demo-secret")
-	if client.Client == nil || client.WsClient == nil {
-		t.Fatalf("unexpected nil client: %+v", client)
-	}
-	if client.Client.BaseURL != DemoBaseURL {
-		t.Fatalf("expected Demo REST base URL %s, got %s", DemoBaseURL, client.Client.BaseURL)
-	}
-	if client.Client.APIKey != "demo-key" || client.Client.SecretKey != "demo-secret" {
-		t.Fatalf("unexpected Demo credentials: key=%q secret=%q", client.Client.APIKey, client.Client.SecretKey)
-	}
-	if client.BaseURL != DemoWSPrivateBaseURL || client.WsClient.URL != DemoWSPrivateBaseURL {
-		t.Fatalf("expected Demo private stream URL %s, got base=%s ws=%s", DemoWSPrivateBaseURL, client.BaseURL, client.WsClient.URL)
-	}
-}
-
 func TestWSAccountCompanion_WithEndpointProfileUsesRESTAndPrivateWS(t *testing.T) {
 	profile := EndpointProfile{
 		RESTBaseURL:      "https://profile.test/rest",

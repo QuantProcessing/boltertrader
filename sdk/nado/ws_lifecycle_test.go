@@ -29,49 +29,37 @@ func wsURLFromHTTP(rawURL string) string {
 	return u.String()
 }
 
-func newWsTestnetRESTClient(t *testing.T, handler http.Handler) *Client {
+func newWsRESTClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return newNadoClientForServer(t, server)
 }
 
-func TestWsMarketClientUsesTestnetProfileURL(t *testing.T) {
-	t.Parallel()
-
-	profile, err := NewProfile(EnvironmentTestnet)
+// A separate test used to pin the market client's URL to the testnet hosts by
+// asserting it contained ".test." and not ".prod.", which was how it caught a
+// constructor that ignored the profile and reached for production anyway. With
+// one host set that phrasing cannot fail, so the market client is checked here
+// alongside the other two constructors against the profile it was handed.
+func TestWsConstructorsUseProfileEndpoints(t *testing.T) {
+	profile, err := NewProfile()
 	require.NoError(t, err)
-	client, err := NewWsMarketClient(context.Background(), profile)
+	restClient, err := NewClient(profile)
+	require.NoError(t, err)
+	restClient, err = restClient.WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 
-	require.Equal(t, profile.SubscriptionsWSURL(), client.url)
-	require.Contains(t, client.url, ".test.")
-	require.NotContains(t, client.url, ".prod.")
-}
+	market, err := NewWsMarketClient(context.Background(), profile)
+	require.NoError(t, err)
+	require.Equal(t, profile.SubscriptionsWSURL(), market.url)
 
-func TestWsConstructorsUseSelectedProfileEndpoints(t *testing.T) {
-	for _, environment := range []Environment{EnvironmentMainnet, EnvironmentTestnet} {
-		t.Run(string(environment), func(t *testing.T) {
-			profile, err := NewProfile(environment)
-			require.NoError(t, err)
-			restClient, err := NewClient(profile)
-			require.NoError(t, err)
-			restClient, err = restClient.WithCredentials(wsTestPrivateKey, "default")
-			require.NoError(t, err)
+	account, err := NewWsAccountClient(context.Background(), restClient)
+	require.NoError(t, err)
+	require.Equal(t, profile.SubscriptionsWSURL(), account.url)
 
-			market, err := NewWsMarketClient(context.Background(), profile)
-			require.NoError(t, err)
-			require.Equal(t, profile.SubscriptionsWSURL(), market.url)
-
-			account, err := NewWsAccountClient(context.Background(), restClient)
-			require.NoError(t, err)
-			require.Equal(t, profile.SubscriptionsWSURL(), account.url)
-
-			gateway, err := NewWsApiClient(context.Background(), restClient)
-			require.NoError(t, err)
-			require.Equal(t, profile.GatewayWSURL(), gateway.baseWsClient.url)
-		})
-	}
+	gateway, err := NewWsApiClient(context.Background(), restClient)
+	require.NoError(t, err)
+	require.Equal(t, profile.GatewayWSURL(), gateway.baseWsClient.url)
 }
 
 func TestWsAPIReconnectRetainsProfileURL(t *testing.T) {
@@ -94,7 +82,7 @@ func TestWsAPIReconnectRetainsProfileURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsApiClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -127,7 +115,7 @@ func TestSubscriptionConnectIsIdempotent(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	require.NoError(t, err)
 
 	market, err := NewWsMarketClient(context.Background(), profile)
@@ -175,7 +163,7 @@ func TestWsMarketReconnectRetainsURLAndResubscribesOnce(t *testing.T) {
 	}))
 	defer server.Close()
 
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	require.NoError(t, err)
 	client, err := NewWsMarketClient(context.Background(), profile)
 	require.NoError(t, err)
@@ -204,16 +192,16 @@ func TestWsMarketReconnectRetainsURLAndResubscribesOnce(t *testing.T) {
 	}
 }
 
-func TestWsAccountAuthDiscoversTestnetEndpointAndSubscribes(t *testing.T) {
+func TestWsAccountAuthDiscoversEndpointAndSubscribes(t *testing.T) {
 	t.Parallel()
 
 	contractsSeen := atomic.Int32{}
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/query", r.URL.Path)
 		require.NotContains(t, r.Host, "prod.nado.xyz")
 		require.Equal(t, "contracts", r.URL.Query().Get("type"))
 		contractsSeen.Add(1)
-		_, _ = io.WriteString(w, `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"}}`)
+		_, _ = io.WriteString(w, `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x4444444444444444444444444444444444444444"}}`)
 	}))
 	restClient, err := restClient.WithCredentials(wsTestPrivateKey, "arb")
 	require.NoError(t, err)
@@ -258,7 +246,7 @@ func TestWsAccountAuthDiscoversTestnetEndpointAndSubscribes(t *testing.T) {
 func TestWsAccountConnectFailsWhenSubscriptionIsRejected(t *testing.T) {
 	t.Parallel()
 
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "contracts", r.URL.Query().Get("type"))
 		_, _ = io.WriteString(w, nadoFixtureBody(t, "contracts.json"))
 	}))
@@ -321,7 +309,7 @@ func TestWsAccountConnectFailsWhenSubscriptionIsRejected(t *testing.T) {
 func TestWsAccountReconnectReauthenticatesAndResubscribesOnce(t *testing.T) {
 	t.Parallel()
 
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "contracts", r.URL.Query().Get("type"))
 		_, _ = io.WriteString(w, nadoFixtureBody(t, "contracts.json"))
 	}))
@@ -414,7 +402,7 @@ func TestWsFixtureRoutingPublicAndPrivateStreams(t *testing.T) {
 	market.handleMessage([]byte(nadoFixtureBody(t, "funding_rate_stream.json")))
 	require.Equal(t, "50000000000000000", (<-funding).FundingRateX18)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "arb")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "arb")
 	require.NoError(t, err)
 	account, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -444,7 +432,7 @@ func TestWsFixtureRoutingPublicAndPrivateStreams(t *testing.T) {
 func TestPreparedOrderCarriesSpotLeverageFalseAndExecutesExactRequest(t *testing.T) {
 	t.Parallel()
 
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/query", r.URL.Path)
 		require.NotContains(t, r.Host, "prod.nado.xyz")
 		switch r.URL.Query().Get("type") {
@@ -577,7 +565,7 @@ func TestWsApiExecuteCorrelatesWriteResponsesByNestedRequestID(t *testing.T) {
 }
 
 func TestWsApiWriteMethodsCorrelateByIDWithoutResponseSignature(t *testing.T) {
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/v1/query", r.URL.Path)
 		require.NotContains(t, r.Host, "prod.nado.xyz")
 		switch r.URL.Query().Get("type") {

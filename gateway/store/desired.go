@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/domain"
 	"github.com/QuantProcessing/boltertrader/secretstore"
 	"github.com/google/uuid"
@@ -98,9 +99,12 @@ func (snapshot DesiredSnapshot) Validate() error {
 	if err := validateOpaqueValue("venue", snapshot.Venue, 128); err != nil {
 		return err
 	}
-	switch snapshot.NativeEnvironment {
-	case "demo", "testnet", "live":
-	default:
+	// Live is the only environment the platform still has endpoints for; demo
+	// and testnet were the other two members of this allow-list. A stored
+	// snapshot naming either was written before the collapse, and it is refused
+	// rather than quietly read as live: nothing here can tell whether the
+	// credentials behind it were ever pointed at a real venue.
+	if snapshot.NativeEnvironment != string(exchange.EnvironmentLive) {
 		return fmt.Errorf("native environment is invalid")
 	}
 	if _, err := secretstore.ParseOpaqueRef(snapshot.SecretRef.RawForTrustedBoundary()); err != nil {
@@ -561,9 +565,9 @@ func (desired DesiredAccount) Validate() error {
 	if err := validateOpaqueValue("venue", desired.Venue, 128); err != nil {
 		return err
 	}
-	switch desired.VenueEnvironment {
-	case "demo", "testnet", "live":
-	default:
+	// One environment left, for the reason the native-environment check above
+	// records. A pre-collapse row naming demo or testnet fails here.
+	if desired.VenueEnvironment != string(exchange.EnvironmentLive) {
 		return fmt.Errorf("venue environment is invalid")
 	}
 	if err := validateOpaqueValue("secret reference", desired.SecretRef, 512); err != nil {

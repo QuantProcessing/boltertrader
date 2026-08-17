@@ -226,7 +226,6 @@ func newTestLighterWSBackendForMarket(
 
 func TestNewLighterWSBackendsHonorDedicatedWebSocketEndpointWithoutIO(t *testing.T) {
 	settings := Settings{
-		Environment:       "testnet",
 		WebSocketEndpoint: "ws://127.0.0.1:43210/stream",
 	}
 	for _, backend := range []*lighterWSBackend{
@@ -248,7 +247,6 @@ func TestNewLighterWSBackendsHonorDedicatedWebSocketEndpointWithoutIO(t *testing
 
 func TestNewLighterClientsWireLazyWebSocketExchanges(t *testing.T) {
 	settings := Settings{
-		Environment:       "testnet",
 		WebSocketEndpoint: "ws://127.0.0.1:43210/stream",
 	}
 	spot := NewLighterSpot("", 0, 0, settings).(*lighterSpotClient)
@@ -630,11 +628,11 @@ func TestLighterBookEventAcceptsInitialSnapshotBeginNonceZero(t *testing.T) {
 		meta,
 	)
 	if err != nil {
-		t.Fatalf("initial Testnet order-book snapshot: %v", err)
+		t.Fatalf("initial order-book snapshot: %v", err)
 	}
 	if event.Sequence != "18349502" || event.Previous != "0" ||
 		len(event.Bids) != 1 || len(event.Asks) != 1 {
-		t.Fatalf("initial Testnet order-book snapshot = %+v", event)
+		t.Fatalf("initial order-book snapshot = %+v", event)
 	}
 }
 

@@ -2,13 +2,15 @@
 
 > 英文为规范版本。[English](../../getting-started/first-order.md)
 
-本页在浏览器里走完整个闭环：登录、注册 venue account、向非生产 venue 下一笔挂着
-的限价单、撤单、确认终态。前提是栈已经跑起来了——见
+本页在浏览器里走完整个闭环：登录、注册 venue account、下一笔挂着的限价单、撤单、
+确认终态。前提是栈已经跑起来了——见
 [运行本地栈](local-stack.md)。
 
-**这会在真实 venue 上下真实订单。** 只使用 Demo 或 Testnet 凭证，用专用且刻意
-限制资金的 account，并确保你即将触及的 product scope 中没有无关订单或持仓。
-如果还没读，先读[前置条件](prerequisites.md)。
+**这会在真实 venue 上下真实订单，花的是真钱。** 已经没有 demo 或 testnet 环境
+可以退守了。请使用专用、刻意限制资金的 account，它的凭证不要带提现权限，并确保
+你即将触及的 product scope 中没有无关订单或持仓。下面那一单的定价是为了挂住而
+不是成交，第 8 步会把它撤掉。如果你只想看这个闭环、不想接交易所，改跑
+`npm --prefix web run dev:mock`。如果还没读，先读[前置条件](prerequisites.md)。
 
 ## 1. 打开界面
 
@@ -34,7 +36,7 @@ auth edge。正因如此，会话 cookie 才能保持 `HttpOnly` 与 `SameSite=S
 
 进入 **Settings**，选择 **Add account**。你需要提供：
 
-- venue 及其非生产环境，
+- venue 以及该 account 可以使用的 route profile，
 - product policy——该 account 允许交易哪些 product 行，
 - venue 的凭证字段，其标签来自 gateway 而不是前端，因为各 venue 各不相同。
 
@@ -105,7 +107,7 @@ version。下面的 **Runtime** 面板报告 trading 服务给出的两个独立
 
 它没有证明该 venue 已可用于生产，没有证明相邻的 product 行可用，也没有证明其他
 account mode 行为相同。那些声明各有各的证据，
-[测试与认证](../reference/testing.md)说明了每一条由什么来确立。
+[测试与证据](../reference/testing.md)说明了每一条由什么来确立。
 
 ## 后续
 

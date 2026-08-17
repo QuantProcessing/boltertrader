@@ -45,7 +45,7 @@ func TestPerpClientErrorsRedactCallerEndpointQuery(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			profile, err := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+			profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 			if err != nil {
 				t.Fatal(err)
 			}

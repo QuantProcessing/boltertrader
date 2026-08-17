@@ -98,8 +98,10 @@ part of the twenty-row guarantee, and Nado additionally requires a lowercase
 
 Nineteen of the twenty rows accept writes by default. **Lighter spot (`LIS`)**
 does not: it is registered, readable, and excluded from default write
-promotion, pending demo/testnet evidence of two-sided liquidity and an exact
-lookup. Treat it as a read row until that evidence exists.
+promotion, pending live evidence of two-sided liquidity and an exact lookup.
+That evidence was once collectable on demo or testnet; with those environments
+gone it can only be gathered against the live book, at real cost. Treat it as a
+read row until that evidence exists.
 
 ## Streams
 

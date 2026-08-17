@@ -5,13 +5,6 @@ import (
 	"net/url"
 )
 
-type Environment string
-
-const (
-	EnvironmentMainnet Environment = "mainnet"
-	EnvironmentTestnet Environment = "testnet"
-)
-
 type EndpointKind string
 
 const (
@@ -35,21 +28,22 @@ var endpointKinds = []EndpointKind{
 }
 
 type Profile struct {
-	environment   Environment
 	chainID       int64
 	endpoints     map[EndpointKind]string
 	allowOverride bool
 }
 
-func NewProfile(environment Environment) (Profile, error) {
-	profile, err := officialProfile(environment)
-	if err != nil {
-		return Profile{}, err
-	}
+// NewProfile is nado's mainnet hosts.
+//
+// It used to take an environment. The testnet arm it selected carried its own
+// chain ID (763373 against mainnet's 57073), which is why Validate still checks
+// the chain ID: a profile reaching the wrong chain produces signatures the venue
+// rejects as malformed rather than a transport error, so the check stays even
+// though there is now only one chain to be on.
+func NewProfile() (Profile, error) {
+	profile := officialProfile()
 	return profile, profile.Validate()
 }
-
-func (p Profile) Environment() Environment { return p.environment }
 
 func (p Profile) ChainID() int64 { return p.chainID }
 
@@ -93,12 +87,9 @@ func (p Profile) WithEndpointOverrides(overrides map[EndpointKind]string) (Profi
 }
 
 func (p Profile) Validate() error {
-	official, err := officialProfile(p.environment)
-	if err != nil {
-		return err
-	}
+	official := officialProfile()
 	if p.chainID != official.chainID {
-		return fmt.Errorf("nado profile: chain id %d does not match %s", p.chainID, p.environment)
+		return fmt.Errorf("nado profile: chain id %d does not match the official profile", p.chainID)
 	}
 	if p.allowOverride {
 		for _, kind := range endpointKinds {
@@ -126,7 +117,7 @@ func (p Profile) ValidateEndpoint(kind EndpointKind, rawURL string) error {
 		return fmt.Errorf("nado profile: invalid %s endpoint", kind)
 	}
 	if rawURL != expected {
-		return fmt.Errorf("nado profile: %s endpoint override is not allowed for %s", kind, p.environment)
+		return fmt.Errorf("nado profile: %s endpoint override is not allowed", kind)
 	}
 	return nil
 }
@@ -140,40 +131,20 @@ func validateEndpointURL(kind EndpointKind, rawURL string) error {
 }
 
 func (p Profile) String() string {
-	return fmt.Sprintf("nado profile{%s}", p.environment)
+	return fmt.Sprintf("nado profile{chain=%d}", p.chainID)
 }
 
-func officialProfile(environment Environment) (Profile, error) {
-	switch environment {
-	case EnvironmentMainnet:
-		return Profile{
-			environment: environment,
-			chainID:     57073,
-			endpoints: map[EndpointKind]string{
-				EndpointGatewayV1:       "https://gateway.prod.nado.xyz/v1",
-				EndpointGatewayV2:       "https://gateway.prod.nado.xyz/v2",
-				EndpointArchiveV1:       "https://archive.prod.nado.xyz/v1",
-				EndpointArchiveV2:       "https://archive.prod.nado.xyz/v2",
-				EndpointGatewayWS:       "wss://gateway.prod.nado.xyz/v1/ws",
-				EndpointSubscriptionsWS: "wss://gateway.prod.nado.xyz/v1/subscribe",
-				EndpointTrigger:         "https://trigger.prod.nado.xyz/v1",
-			},
-		}, nil
-	case EnvironmentTestnet:
-		return Profile{
-			environment: environment,
-			chainID:     763373,
-			endpoints: map[EndpointKind]string{
-				EndpointGatewayV1:       "https://gateway.test.nado.xyz/v1",
-				EndpointGatewayV2:       "https://gateway.test.nado.xyz/v2",
-				EndpointArchiveV1:       "https://archive.test.nado.xyz/v1",
-				EndpointArchiveV2:       "https://archive.test.nado.xyz/v2",
-				EndpointGatewayWS:       "wss://gateway.test.nado.xyz/v1/ws",
-				EndpointSubscriptionsWS: "wss://gateway.test.nado.xyz/v1/subscribe",
-				EndpointTrigger:         "https://trigger.test.nado.xyz/v1",
-			},
-		}, nil
-	default:
-		return Profile{}, fmt.Errorf("nado profile: unsupported environment %q", environment)
+func officialProfile() Profile {
+	return Profile{
+		chainID: 57073,
+		endpoints: map[EndpointKind]string{
+			EndpointGatewayV1:       "https://gateway.prod.nado.xyz/v1",
+			EndpointGatewayV2:       "https://gateway.prod.nado.xyz/v2",
+			EndpointArchiveV1:       "https://archive.prod.nado.xyz/v1",
+			EndpointArchiveV2:       "https://archive.prod.nado.xyz/v2",
+			EndpointGatewayWS:       "wss://gateway.prod.nado.xyz/v1/ws",
+			EndpointSubscriptionsWS: "wss://gateway.prod.nado.xyz/v1/subscribe",
+			EndpointTrigger:         "https://trigger.prod.nado.xyz/v1",
+		},
 	}
 }

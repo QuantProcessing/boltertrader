@@ -30,13 +30,13 @@ func lifecycleTestAccount(t *testing.T) lifecycle.Account {
 	return lifecycle.Account{
 		ID:               string(testAccountID(t)),
 		Venue:            "binance",
-		VenueEnvironment: lifecycle.EnvironmentTestnet,
+		VenueEnvironment: lifecycle.EnvironmentLive,
 		Mode:             secretstore.ModeTest,
-		DisplayName:      "Binance Testnet",
+		DisplayName:      "Binance Primary",
 		ProductIDs:       []string{"manual"},
 		Routes: []lifecycle.AccountRoute{
-			{ID: "route-spot", Product: lifecycle.ProductSpot, RouteProfileID: "binance-spot-testnet", RequestedState: lifecycle.RouteActive},
-			{ID: "route-perp", Product: lifecycle.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance-perp-testnet", RequestedState: lifecycle.RouteDisabled},
+			{ID: "route-spot", Product: lifecycle.ProductSpot, RouteProfileID: "binance.spot.v1", RequestedState: lifecycle.RouteActive},
+			{ID: "route-perp", Product: lifecycle.ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: lifecycle.RouteDisabled},
 		},
 		DesiredStateRevision: 1,
 		RuntimeGeneration:    1,

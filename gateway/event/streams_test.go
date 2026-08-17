@@ -22,7 +22,7 @@ func TestStreamManagerPublishesPrivateResourcesAndRecoversAfterGap(t *testing.T)
 	first := newFakeStreamGeneration()
 	second := newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	instrument := streamTestInstrument(exchange.ProductSpot)
 	accounts := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{
@@ -136,7 +136,7 @@ func TestStreamManagerPublishesPerpPositionsWithMonotonicVersions(t *testing.T) 
 	hub := newTestHub(t, 16, 8)
 	generation := newFakeStreamGeneration()
 	socket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{generation}}}
-	instrumentID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	instrument := streamTestInstrument(exchange.ProductPerp)
 	accounts := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{
@@ -202,7 +202,7 @@ func TestStreamManagerIgnoresExternalOrdersButResyncsOnOwnedOrderPersistenceFail
 			hub := newTestHub(t, 16, 8)
 			first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 			socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-			instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+			instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 			accounts := &fakeStreamAccounts{
 				status: account.Status{Resource: account.Resource{
 					AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true, WriteReady: true,
@@ -263,9 +263,9 @@ func TestStreamManagerOpensDynamicRoutesFromAtomicSelectionsAndDeduplicatesBalan
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpGeneration}}}
 	spotClient := &fakeStreamSpotClient{socket: spotSocket}
 	perpClient := &fakeStreamPerpClient{socket: perpSocket}
-	spotBTC := domain.InstrumentID("binance:demo:spot:BTC-USDT")
-	spotETH := domain.InstrumentID("binance:demo:spot:ETH-USDT")
-	perpBTC := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	spotBTC := domain.InstrumentID("binance:live:spot:BTC-USDT")
+	spotETH := domain.InstrumentID("binance:live:spot:ETH-USDT")
+	perpBTC := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
 		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
 	}
@@ -368,8 +368,8 @@ func TestStreamManagerFailsClosedWhenDynamicRouteSelectionsCrossGenerations(t *t
 	hub := newTestHub(t, 16, 8)
 	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{newFakeStreamGeneration()}}
 	spotClient := &fakeStreamSpotClient{socket: spotSocket}
-	firstID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
-	secondID := domain.InstrumentID("binance:demo:spot:ETH-USDT")
+	firstID := domain.InstrumentID("binance:live:spot:BTC-USDT")
+	secondID := domain.InstrumentID("binance:live:spot:ETH-USDT")
 	firstFence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1}
 	secondFence := firstFence
 	secondFence.RuntimeGeneration = 2
@@ -404,7 +404,7 @@ func TestStreamManagerReconnectRequiresFreshPrivateActivationBarrier(t *testing.
 	hub := newTestHub(t, 32, 16)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	base := &fakeStreamAccounts{
 		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
 		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
@@ -452,8 +452,8 @@ func TestStreamManagerDynamicRoutesRequireIndependentActivationBarriers(t *testi
 	perpFirst := newFakeStreamGeneration()
 	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
-	spotID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
-	perpID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
+	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
 		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
 	}
@@ -511,8 +511,8 @@ func TestStreamManagerDynamicRouteGapDoesNotRestartOrDegradeUnrelatedRoute(t *te
 	perpFirst := newFakeStreamGeneration()
 	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
-	spotID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
-	perpID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
+	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{
 		AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3,
 	}
@@ -564,8 +564,8 @@ func TestStreamManagerProcessesSiblingFaultWhileAnotherRouteReconnectIsBlocked(t
 	perpFirst := newFakeStreamGeneration()
 	spotSocket := &fakeSpotSocket{generations: []*fakeStreamGeneration{spotFirst, spotSecond}}
 	perpSocket := &fakePerpSocket{spot: fakeSpotSocket{generations: []*fakeStreamGeneration{perpFirst}}}
-	spotID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
-	perpID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	spotID := domain.InstrumentID("binance:live:spot:BTC-USDT")
+	perpID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
 	base := &fakeStreamAccounts{
 		status: account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
@@ -618,7 +618,7 @@ func TestStreamManagerReconnectsRouteAfterBarrierCallbackFailure(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
 	base := &fakeStreamAccounts{
 		status:   account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
@@ -656,7 +656,7 @@ func TestStreamManagerReconnectsDynamicRouteAfterFaultBeforeInitialActivation(t 
 	hub := newTestHub(t, 16, 8)
 	first, second := newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second}}
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	fence := domain.AccountFence{AccountID: "acct-dynamic", DesiredStateRevision: 1, RuntimeGeneration: 7, CredentialVersion: 3}
 	base := &fakeStreamAccounts{
 		status:   account.Status{Resource: account.Resource{AccountID: fence.AccountID, ReadReady: true}},
@@ -696,7 +696,7 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 	hub := newTestHub(t, 16, 8)
 	first, second, third := newFakeStreamGeneration(), newFakeStreamGeneration(), newFakeStreamGeneration()
 	socket := &fakeSpotSocket{generations: []*fakeStreamGeneration{first, second, third}}
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	accounts := &fakeStreamAccounts{
 		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
 		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
@@ -760,7 +760,7 @@ func TestStreamManagerRegistersAccountsBeforeAndDuringStartIdempotently(t *testi
 func TestStreamManagerUnregisterDoesNotBlockIndependentRegistrationWhileSupervisorStops(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	generation := newFakeStreamGeneration()
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	accounts := &fakeStreamAccounts{
 		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
 		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},
@@ -816,7 +816,7 @@ func TestStreamManagerUnregisterDoesNotBlockIndependentRegistrationWhileSupervis
 func TestStreamManagerStartFailureRollsBackForRealRetry(t *testing.T) {
 	hub := newTestHub(t, 16, 8)
 	generation := newFakeStreamGeneration()
-	instrumentID := domain.InstrumentID("binance:demo:spot:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:spot:BTC-USDT")
 	accounts := &fakeStreamAccounts{
 		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Product: exchange.ProductSpot, ReadReady: true}},
 		snapshot:   catalog.Snapshot{Instruments: []catalog.Instrument{{ID: instrumentID}}},

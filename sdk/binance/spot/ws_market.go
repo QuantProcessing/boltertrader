@@ -19,11 +19,7 @@ type WsMarketClient struct {
 }
 
 func NewWsMarketClient(ctx context.Context) *WsMarketClient {
-	return NewWsMarketClientWithEndpointProfile(ctx, ProductionEndpoints)
-}
-
-func NewDemoWsMarketClient(ctx context.Context) *WsMarketClient {
-	return NewWsMarketClientWithEndpointProfile(ctx, DemoEndpoints)
+	return NewWsMarketClientWithEndpointProfile(ctx, MainnetEndpointProfile())
 }
 
 func NewWsMarketClientWithEndpointProfile(ctx context.Context, profile EndpointProfile) *WsMarketClient {

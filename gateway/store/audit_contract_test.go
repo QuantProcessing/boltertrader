@@ -14,7 +14,7 @@ func TestAuditRecordRequiresStableSafeIdentity(t *testing.T) {
 		Outcome:       AuditRequested,
 		CorrelationID: "018f0000-0000-7000-8000-000000000003",
 		AccountID:     "acct-a",
-		InstrumentID:  "binance:demo:spot:BTC-USDT",
+		InstrumentID:  "binance:live:spot:BTC-USDT",
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid audit record: %v", err)

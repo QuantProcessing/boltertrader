@@ -37,7 +37,7 @@ func TestMatrixHasTwentyRowsNineteenPromotedAndLISReadOnly(t *testing.T) {
 			if row.ExactLookup != "fixture_only" || row.ExactFixture != "passed" {
 				t.Fatalf("live-blocked row %s lost its fixture-only evidence state: %+v", row.RowID, row)
 			}
-			if row.PromotionEvidenceRequired != "demo_testnet_two_sided_liquidity_and_exact_lookup" {
+			if row.PromotionEvidenceRequired != "live_two_sided_liquidity_and_exact_lookup" {
 				t.Fatalf("live-blocked row %s promotion evidence = %q", row.RowID, row.PromotionEvidenceRequired)
 			}
 		}

@@ -94,7 +94,7 @@ func TestClientMetaResolveInstrumentValidatesContextAndSymbol(t *testing.T) {
 
 func TestClientMetaResolveInstrumentQueriesCanonicalSymbolFirst(t *testing.T) {
 	ctx := context.Background()
-	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	instrument := newInstrument(
 		exchange.VenueAster,
 		exchange.ProductSpot,
@@ -127,7 +127,7 @@ func TestClientMetaResolveInstrumentQueriesCanonicalSymbolFirst(t *testing.T) {
 
 func TestClientMetaResolveInstrumentFallsBackToNativeSymbolOnlyWhenCanonicalMissing(t *testing.T) {
 	ctx := context.Background()
-	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	instrument := newInstrument(
 		exchange.VenueAster,
 		exchange.ProductSpot,
@@ -172,7 +172,7 @@ func TestClientMetaResolveInstrumentFallsBackToNativeSymbolOnlyWhenCanonicalMiss
 
 func TestClientMetaResolveInstrumentDoesNotMaskAmbiguityOrOtherErrors(t *testing.T) {
 	ctx := context.Background()
-	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	scope := exchange.CatalogScope{Venue: exchange.VenueAster, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	tests := []struct {
 		name    string
 		err     error
@@ -219,7 +219,7 @@ func TestClientMetaRefreshInstrumentsReturnsLastKnownGoodWithSurfacedError(t *te
 	ctx := context.Background()
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueBinance,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	}
 	descriptor := exchange.SourceDescriptor{

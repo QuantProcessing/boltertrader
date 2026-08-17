@@ -3,6 +3,7 @@ package account
 import (
 	"fmt"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/store"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 )
@@ -18,19 +19,28 @@ func NewProfileRegistry(trusted *routeprofile.Registry) *ProfileRegistry {
 	return &ProfileRegistry{trusted: trusted}
 }
 
-func (registry *ProfileRegistry) Validate(mode RuntimeMode, snapshot store.DesiredSnapshot) error {
-	profileMode := routeprofile.ModeTest
-	if mode == RuntimeModeLive {
-		profileMode = routeprofile.ModeLive
-	} else if mode != RuntimeModeTest {
-		return fmt.Errorf("runtime profile mode is invalid")
+// Validate checks a desired snapshot's routes against the trusted registry
+// before anything is built from them.
+//
+// The snapshot arrives from the store, so every field in it was written by an
+// earlier version of this binary and has to be re-proved rather than trusted:
+// a route naming a profile the registry no longer carries, or carrying a
+// product or settlement asset that profile does not, would otherwise be built
+// into a runtime that then talks to the wrong market.
+func (registry *ProfileRegistry) Validate(snapshot store.DesiredSnapshot) error {
+	// The stored environment is re-proved for the same reason. Only live
+	// endpoints exist; a row still asking for demo describes a runtime nothing
+	// can dial, and it has to be refused here rather than fail later as an
+	// unreachable venue.
+	if snapshot.NativeEnvironment != string(exchange.EnvironmentLive) {
+		return fmt.Errorf("runtime native environment is invalid")
 	}
 	for _, route := range snapshot.Routes {
-		profile, err := registry.trusted.Resolve(profileMode, snapshot.Venue, route.RouteProfileID)
+		profile, err := registry.trusted.Resolve(snapshot.Venue, route.RouteProfileID)
 		if err != nil {
 			return fmt.Errorf("runtime route profile is invalid")
 		}
-		if string(profile.NativeEnvironment) != snapshot.NativeEnvironment || string(profile.Product) != route.Product || profile.SettlementAsset != route.SettlementAsset {
+		if string(profile.Product) != route.Product || profile.SettlementAsset != route.SettlementAsset {
 			return fmt.Errorf("runtime route profile conflicts with desired route")
 		}
 	}

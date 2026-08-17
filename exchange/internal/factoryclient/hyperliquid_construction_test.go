@@ -34,7 +34,6 @@ func TestHyperliquidConstructionBindsExplicitOwnerToRESTAndPrivateWebSocket(t *t
 	})
 	settings := Settings{
 		Endpoint:       "https://openapi.invalid",
-		Environment:    "testnet",
 		HTTPClient:     &http.Client{Transport: transport},
 		AccountAddress: hyperliquidConstructionOwner,
 	}
@@ -60,7 +59,7 @@ func TestHyperliquidConstructionBindsExplicitOwnerToRESTAndPrivateWebSocket(t *t
 }
 
 func TestHyperliquidConstructionDefaultsAccountIdentityToSigner(t *testing.T) {
-	settings := Settings{Environment: "testnet"}
+	settings := Settings{}
 	spot := NewHyperliquidSpot(hyperliquidConstructionPrivateKey, settings).(*hyperliquidSpotClient)
 	if spot.sdk.AccountAddr == "" || spot.sdk.AccountAddr == hyperliquidConstructionOwner {
 		t.Fatalf("spot default account=%q, want derived signer", spot.sdk.AccountAddr)

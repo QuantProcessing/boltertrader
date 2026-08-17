@@ -24,7 +24,6 @@ func (loader nadoInstrumentLoader) LoadInstruments(ctx context.Context, scope ex
 		Endpoint:          loader.settings.Endpoint,
 		WebSocketEndpoint: loader.settings.WebSocketEndpoint,
 		HTTPClient:        loader.settings.HTTPClient,
-		Environment:       loader.settings.Environment,
 	})
 	products, err := base.discover(ctx, "InstrumentCatalog.Load")
 	if err != nil {

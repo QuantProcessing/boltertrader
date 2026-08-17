@@ -796,9 +796,9 @@ func TestBinancePrivateWSConstructorsWirePrivateBackends(t *testing.T) {
 }
 
 func TestBinanceSpotConstructorSeparatesCommandAndAccountWSConnections(t *testing.T) {
-	client, ok := NewBinanceSpot("key", "secret", Settings{Environment: "demo"}).(*binanceSpotClient)
+	client, ok := NewBinanceSpot("key", "secret", Settings{}).(*binanceSpotClient)
 	if !ok {
-		t.Fatalf("spot client type = %T", NewBinanceSpot("key", "secret", Settings{Environment: "demo"}))
+		t.Fatalf("spot client type = %T", NewBinanceSpot("key", "secret", Settings{}))
 	}
 	if client.commandWSAPI == nil || client.accountWSAPI == nil {
 		t.Fatalf("spot websocket API clients are not wired: command=%p account=%p", client.commandWSAPI, client.accountWSAPI)
@@ -806,8 +806,8 @@ func TestBinanceSpotConstructorSeparatesCommandAndAccountWSConnections(t *testin
 	if client.commandWSAPI == client.accountWSAPI {
 		t.Fatal("spot order commands and account events share one websocket API connection")
 	}
-	if client.commandWSAPI.URL != binancespot.DemoWSAPIBaseURL || client.accountWSAPI.URL != binancespot.DemoWSAPIBaseURL {
-		t.Fatalf("spot demo websocket API endpoints = command:%q account:%q", client.commandWSAPI.URL, client.accountWSAPI.URL)
+	if client.commandWSAPI.URL != binancespot.WSAPIBaseURL || client.accountWSAPI.URL != binancespot.WSAPIBaseURL {
+		t.Fatalf("spot websocket API endpoints = command:%q account:%q", client.commandWSAPI.URL, client.accountWSAPI.URL)
 	}
 }
 

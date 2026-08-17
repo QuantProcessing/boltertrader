@@ -47,9 +47,8 @@ func TestNadoLocalMetadataPathsHonorContextBeforeIO(t *testing.T) {
 	}
 
 	noCatalogSettings := Settings{
-		Environment: "testnet",
-		Endpoint:    settings.Endpoint,
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   settings.Endpoint,
+		HTTPClient: &http.Client{Transport: transport},
 	}
 	noCatalogClient := NewNadoUSDT0Perp(testAsterPrivateKey, "default", noCatalogSettings)
 
@@ -178,9 +177,8 @@ func TestNadoOpenAPIFixtureFileCoversRESTMatrix(t *testing.T) {
 
 func TestNadoMinSizeIsQuoteDenominatedMinNotional(t *testing.T) {
 	client := NewNadoSpot(testAsterPrivateKey, "default", Settings{
-		Environment: "testnet",
-		Endpoint:    "https://nado-fixture.invalid/v1",
-		HTTPClient:  &http.Client{Transport: newNadoOpenAPIRouter(t)},
+		Endpoint:   "https://nado-fixture.invalid/v1",
+		HTTPClient: &http.Client{Transport: newNadoOpenAPIRouter(t)},
 	})
 	instruments, err := client.Instruments(context.Background())
 	if err != nil {
@@ -359,7 +357,7 @@ func TestNadoSubscriptionCloseTreatsDisconnectedSocketAsAlreadyClosed(t *testing
 }
 
 func TestNadoPerpAccountDoesNotFabricateAvailable(t *testing.T) {
-	client := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{Environment: "testnet", Endpoint: "https://nado-fixture.invalid/v1", HTTPClient: &http.Client{Transport: newNadoOpenAPIRouter(t)}})
+	client := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{Endpoint: "https://nado-fixture.invalid/v1", HTTPClient: &http.Client{Transport: newNadoOpenAPIRouter(t)}})
 	account, err := client.PerpAccount(context.Background())
 	if err != nil {
 		t.Fatalf("PerpAccount: %v", err)
@@ -474,7 +472,7 @@ func TestNadoTargetedPositionsSkipKnownNonRequestedProducts(t *testing.T) {
 	descriptor := exchange.SourceDescriptor{Name: "nado-targeted-positions", Endpoint: "https://nado-fixture.invalid/v1", Transport: "nado-targeted-positions"}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueNado,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             exchange.ProductPerp,
 		Settlement:          "USDT0",
 		EndpointFingerprint: descriptor.Fingerprint(),
@@ -508,7 +506,6 @@ func TestNadoTargetedPositionsSkipKnownNonRequestedProducts(t *testing.T) {
 		return newNadoOpenAPIRouter(t).RoundTrip(request)
 	})
 	settings := Settings{
-		Environment:       "testnet",
 		Endpoint:          "https://nado-fixture.invalid/v1",
 		HTTPClient:        &http.Client{Transport: transport},
 		CatalogScope:      scope,
@@ -581,8 +578,7 @@ func TestNadoAccountWideKnownProductRowsUseRawIdentities(t *testing.T) {
 func TestNadoMutationRejectsMalformedResponseDigest(t *testing.T) {
 	router := newNadoOpenAPIRouter(t)
 	client := NewNadoSpot(testAsterPrivateKey, "default", Settings{
-		Environment: "testnet",
-		Endpoint:    "https://nado-fixture.invalid/v1",
+		Endpoint: "https://nado-fixture.invalid/v1",
 		HTTPClient: &http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			response, err := router.RoundTrip(request)
 			if err != nil || request.URL.Path != "/v1/execute" {
@@ -609,8 +605,8 @@ func nadoCatalogSettings(t *testing.T, product exchange.Product, router http.Rou
 	t.Helper()
 	endpoint := "https://nado-fixture.invalid/v1"
 	descriptor := exchange.SourceDescriptor{Name: "nado-openapi-" + string(product), Endpoint: endpoint, WebSocketEndpoint: "wss://nado-fixture.invalid/ws", Transport: "nado-openapi-fixture"}
-	scope := exchange.CatalogScope{Venue: exchange.VenueNado, Environment: exchange.EnvironmentTestnet, Product: product, EndpointFingerprint: descriptor.Fingerprint()}
-	settings := Settings{Environment: "testnet", Endpoint: endpoint, WebSocketEndpoint: descriptor.WebSocketEndpoint, HTTPClient: &http.Client{Transport: router}, SourceDescriptor: descriptor, CatalogScope: scope}
+	scope := exchange.CatalogScope{Venue: exchange.VenueNado, Environment: exchange.EnvironmentLive, Product: product, EndpointFingerprint: descriptor.Fingerprint()}
+	settings := Settings{Endpoint: endpoint, WebSocketEndpoint: descriptor.WebSocketEndpoint, HTTPClient: &http.Client{Transport: router}, SourceDescriptor: descriptor, CatalogScope: scope}
 	catalog := exchange.NewDefaultMemoryCatalog()
 	settings.InstrumentCatalog = catalog
 	if err := catalog.RegisterSource(scope, descriptor, NewNadoInstrumentLoader(product, settings)); err != nil {
@@ -721,7 +717,7 @@ func nadoUnknownPositionsTransport(t *testing.T) http.RoundTripper {
 }
 
 func TestNadoCancelAcceptsNativeLowercaseDigest(t *testing.T) {
-	client := NewNadoSpot(testAsterPrivateKey, "default", Settings{Environment: "testnet", Endpoint: "https://nado-fixture.invalid/v1", HTTPClient: &http.Client{Transport: newNadoOpenAPIRouter(t)}})
+	client := NewNadoSpot(testAsterPrivateKey, "default", Settings{Endpoint: "https://nado-fixture.invalid/v1", HTTPClient: &http.Client{Transport: newNadoOpenAPIRouter(t)}})
 	ack, err := client.CancelOrder(context.Background(), exchange.CancelOrderRequest{Instrument: nadoTestInstrument(exchange.ProductSpot), OrderID: "0x1111111111111111111111111111111111111111111111111111111111111111"})
 	if err != nil {
 		t.Fatalf("CancelOrder native digest: %v", err)

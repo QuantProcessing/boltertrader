@@ -65,11 +65,6 @@ func newLighterSpotWSBackend(
 	ws := lighter.NewWebsocketClientWithConfig(context.Background(), lighter.WSConfig{
 		ReadOnly: true,
 	})
-	if settings.Environment == "testnet" {
-		ws.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		ws.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		ws.WithURL(settings.WebSocketEndpoint)
 	}
@@ -84,11 +79,6 @@ func newLighterPerpWSBackend(
 	ws := lighter.NewWebsocketClientWithConfig(context.Background(), lighter.WSConfig{
 		ReadOnly: true,
 	})
-	if settings.Environment == "testnet" {
-		ws.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		ws.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		ws.WithURL(settings.WebSocketEndpoint)
 	}

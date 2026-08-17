@@ -76,12 +76,6 @@ func NewBybitLinearPerp(apiKey, secretKey, settleCoin string, settings Settings)
 
 func newBybitBase(apiKey, secretKey string, settings Settings, product exchange.Product, category, settleCoin string) *bybitBase {
 	profile := bybit.MainnetEnvironmentProfile()
-	switch strings.ToLower(settings.Environment) {
-	case "demo":
-		profile = bybit.DemoEnvironmentProfile()
-	case "testnet":
-		profile = bybit.TestnetEnvironmentProfile()
-	}
 	if settings.Endpoint != "" {
 		profile.RESTBaseURL = settings.Endpoint
 	}
@@ -93,7 +87,6 @@ func newBybitBase(apiKey, secretKey string, settings Settings, product exchange.
 		}
 		profile.PrivateWSURL = settings.WebSocketEndpoint
 		profile.TradeWSURL = settings.WebSocketEndpoint
-		profile.SupportsWSTrade = true
 	}
 	sdk := bybit.NewClient().WithCredentials(apiKey, secretKey).WithEnvironmentProfile(profile)
 	if settings.HTTPClient != nil {
@@ -123,9 +116,6 @@ func NewBitgetPerp(apiKey, secretKey, passphrase, productType string, settings S
 
 func newBitgetBase(apiKey, secretKey, passphrase string, settings Settings, product exchange.Product, category, productType, marginCoin string) *bitgetBase {
 	profile := bitget.MainnetEnvironmentProfile()
-	if strings.ToLower(settings.Environment) == "demo" {
-		profile = bitget.DemoEnvironmentProfile()
-	}
 	if settings.Endpoint != "" {
 		profile.RESTBaseURL = settings.Endpoint
 	}
@@ -2607,9 +2597,6 @@ func newBitgetPrivateWSBackend(client *bitgetBase) *bitgetPrivateWSBackend {
 }
 
 func (b *bybitPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error) {
-	if !b.client.profile.SupportsWSTrade {
-		return b.client.PlaceOrder(ctx, req)
-	}
 	if err := ctxErr(ctx, b.client.meta, "PlaceOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -2641,9 +2628,6 @@ func (b *bybitPrivateWSBackend) PlaceOrder(ctx context.Context, req exchange.Pla
 	return ack, ack.Validate()
 }
 func (b *bybitPrivateWSBackend) CancelOrder(ctx context.Context, req exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error) {
-	if !b.client.profile.SupportsWSTrade {
-		return b.client.CancelOrder(ctx, req)
-	}
 	if err := ctxErr(ctx, b.client.meta, "CancelOrder"); err != nil {
 		return exchange.OrderAcknowledgement{}, err
 	}
@@ -3191,11 +3175,7 @@ func (b *bitgetWSBackend) StartOrderBook(ctx context.Context, instrument exchang
 		return nil, err
 	}
 	ws := bitget.NewPublicWSClientWithProfile(b.client.profile)
-	topic := "books5"
-	if b.client.profile.PAPTrading {
-		topic = "books1"
-	}
-	arg := bitget.WSArg{InstType: b.client.bitgetPublicWSInstType(), Topic: topic, Symbol: native}
+	arg := bitget.WSArg{InstType: b.client.bitgetPublicWSInstType(), Topic: "books5", Symbol: native}
 	if err := ws.Subscribe(ctx, arg, func(payload json.RawMessage) {
 		msg, err := bitget.DecodeOrderBookMessage(payload)
 		if err != nil || len(msg.Data) == 0 {

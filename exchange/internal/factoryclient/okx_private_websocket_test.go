@@ -524,7 +524,7 @@ func okxPrivateTestMeta(product exchange.Product) clientMeta {
 	instrument := okxPrivateTestInstrument(product)
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     product,
 		Settlement:  instrument.Identity.SettleAsset,
 	}

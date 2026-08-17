@@ -45,13 +45,15 @@ func New[C any](cfg Config[C]) (C, error) {
 }
 
 // Environment selects the venue environment used for local SDK construction.
+//
+// There is one value. The type survives its own collapse because it is what
+// gateway/account/factory.go's factoryEnvironment converts a stored
+// venue_environment string into: a row still saying "demo" has to be refused
+// somewhere, and a typed target is what makes the refusal a conversion failure
+// rather than a string that happens not to match.
 type Environment string
 
-const (
-	EnvironmentLive    Environment = "live"
-	EnvironmentDemo    Environment = "demo"
-	EnvironmentTestnet Environment = "testnet"
-)
+const EnvironmentLive Environment = "live"
 
 // Option configures local construction of an exchange client. Options are sealed
 // so new option kinds must be added in this package with validation.
@@ -113,15 +115,18 @@ func WithWebSocketEndpoint(endpoint string) Option {
 
 // WithEnvironment selects the venue environment. Callers must choose an
 // environment explicitly; omitted or zero environments are invalid.
+//
+// The explicitness is worth more now than when there were three values to
+// choose between. A caller that drops the option gets "environment is required"
+// from validate(), which is a far better failure than silently constructing a
+// client against whatever the zero value happened to mean.
 func WithEnvironment(environment Environment) Option {
 	return Option{apply: func(settings *settings) error {
-		switch environment {
-		case EnvironmentLive, EnvironmentDemo, EnvironmentTestnet:
-			settings.environment = environment
-			return nil
-		default:
+		if environment != EnvironmentLive {
 			return invalidConfig("unknown environment")
 		}
+		settings.environment = environment
+		return nil
 	}}
 }
 
@@ -171,9 +176,6 @@ func WithAccountAddress(accountAddress string) Option {
 // BinanceSpotConfig returns a typed ticket for a Binance Spot client.
 func BinanceSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("binance-spot", options, func(settings settings) error {
-		if err := requireEnvironment("binance spot", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -186,9 +188,6 @@ func BinanceSpotConfig(apiKey, secretKey string, options ...Option) Config[excha
 // BinanceUSDPerpConfig returns a typed ticket for a Binance USD-M Perp client.
 func BinanceUSDPerpConfig(apiKey, secretKey string, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("binance-usd-perp", options, func(settings settings) error {
-		if err := requireEnvironment("binance usd perp", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -201,9 +200,6 @@ func BinanceUSDPerpConfig(apiKey, secretKey string, options ...Option) Config[ex
 // OKXSpotConfig returns a typed ticket for an OKX Spot client.
 func OKXSpotConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("okx-spot", options, func(settings settings) error {
-		if err := requireEnvironment("okx spot", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -216,9 +212,6 @@ func OKXSpotConfig(apiKey, secretKey, passphrase string, options ...Option) Conf
 // OKXUSDTPerpConfig returns a typed ticket for an OKX USDT-linear SWAP client.
 func OKXUSDTPerpConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("okx-usdt-perp", options, func(settings settings) error {
-		if err := requireEnvironment("okx usdt perp", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -231,9 +224,6 @@ func OKXUSDTPerpConfig(apiKey, secretKey, passphrase string, options ...Option) 
 // LighterSpotConfig returns a typed ticket for a Lighter Spot client.
 func LighterSpotConfig(privateKey string, accountIndex int64, keyIndex uint8, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("lighter-spot", options, func(settings settings) error {
-		if err := requireEnvironment("lighter spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -252,9 +242,6 @@ func LighterSpotConfig(privateKey string, accountIndex int64, keyIndex uint8, op
 // LighterPerpConfig returns a typed ticket for a Lighter Perp client.
 func LighterPerpConfig(privateKey string, accountIndex int64, keyIndex uint8, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("lighter-perp", options, func(settings settings) error {
-		if err := requireEnvironment("lighter perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -273,9 +260,6 @@ func LighterPerpConfig(privateKey string, accountIndex int64, keyIndex uint8, op
 // HyperliquidSpotConfig returns a typed ticket for a Hyperliquid Spot client.
 func HyperliquidSpotConfig(privateKey string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("hyperliquid-spot", options, func(settings settings) error {
-		if err := requireEnvironment("hyperliquid spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		return requireHyperliquidPrivateKey("hyperliquid spot", privateKey)
 	}, func(settings settings) exchange.SpotClient {
 		return factoryclient.NewHyperliquidSpot(privateKey, factorySettingsForConfig("hyperliquid-spot", settings))
@@ -285,9 +269,6 @@ func HyperliquidSpotConfig(privateKey string, options ...Option) Config[exchange
 // HyperliquidPerpConfig returns a typed ticket for a Hyperliquid standard Perp client.
 func HyperliquidPerpConfig(privateKey string, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("hyperliquid-perp", options, func(settings settings) error {
-		if err := requireEnvironment("hyperliquid perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		return requireHyperliquidPrivateKey("hyperliquid perp", privateKey)
 	}, func(settings settings) exchange.PerpClient {
 		return factoryclient.NewHyperliquidPerp(privateKey, factorySettingsForConfig("hyperliquid-perp", settings))
@@ -297,9 +278,6 @@ func HyperliquidPerpConfig(privateKey string, options ...Option) Config[exchange
 // BybitSpotConfig returns a typed ticket for a Bybit Spot client.
 func BybitSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("bybit-spot", options, func(settings settings) error {
-		if err := requireEnvironment("bybit spot", settings.environment, EnvironmentLive, EnvironmentDemo, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -321,9 +299,6 @@ func BybitUSDCPerpConfig(apiKey, secretKey string, options ...Option) Config[exc
 
 func bybitPerpConfig(name, settleCoin, apiKey, secretKey string, options []Option) Config[exchange.PerpClient] {
 	return perpConfig(name, options, func(settings settings) error {
-		if err := requireEnvironment(name, settings.environment, EnvironmentLive, EnvironmentDemo, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -336,9 +311,6 @@ func bybitPerpConfig(name, settleCoin, apiKey, secretKey string, options []Optio
 // BitgetSpotConfig returns a typed ticket for a Bitget Spot client.
 func BitgetSpotConfig(apiKey, secretKey, passphrase string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("bitget-spot", options, func(settings settings) error {
-		if err := requireEnvironment("bitget spot", settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -360,9 +332,6 @@ func BitgetUSDCPerpConfig(apiKey, secretKey, passphrase string, options ...Optio
 
 func bitgetPerpConfig(name, productType, apiKey, secretKey, passphrase string, options []Option) Config[exchange.PerpClient] {
 	return perpConfig(name, options, func(settings settings) error {
-		if err := requireEnvironment(name, settings.environment, EnvironmentLive, EnvironmentDemo); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -375,9 +344,6 @@ func bitgetPerpConfig(name, productType, apiKey, secretKey, passphrase string, o
 // GateSpotConfig returns a typed ticket for a Gate Spot client.
 func GateSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("gate-spot", options, func(settings settings) error {
-		if err := requireEnvironment("gate spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -390,9 +356,6 @@ func GateSpotConfig(apiKey, secretKey string, options ...Option) Config[exchange
 // GateUSDTPerpConfig returns a typed ticket for a Gate USDT-settled Perp client.
 func GateUSDTPerpConfig(apiKey, secretKey string, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("gate-usdt-perp", options, func(settings settings) error {
-		if err := requireEnvironment("gate usdt perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -405,9 +368,6 @@ func GateUSDTPerpConfig(apiKey, secretKey string, options ...Option) Config[exch
 // AsterSpotConfig returns a typed ticket for an Aster Spot client.
 func AsterSpotConfig(userAddress, apiWalletPrivateKey, expectedSigner string, options ...Option) Config[exchange.SpotClient] {
 	return spotConfig("aster-spot", options, func(settings settings) error {
-		if err := requireEnvironment("aster spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -420,9 +380,6 @@ func AsterSpotConfig(userAddress, apiWalletPrivateKey, expectedSigner string, op
 // AsterUSDTPerpConfig returns a typed ticket for an Aster USDT-linear Perp client.
 func AsterUSDTPerpConfig(userAddress, apiWalletPrivateKey, expectedSigner string, options ...Option) Config[exchange.PerpClient] {
 	return perpConfig("aster-usdt-perp", options, func(settings settings) error {
-		if err := requireEnvironment("aster usdt perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -436,9 +393,6 @@ func AsterUSDTPerpConfig(userAddress, apiWalletPrivateKey, expectedSigner string
 func NadoSpotConfig(privateKey, subaccount string, options ...Option) Config[exchange.SpotClient] {
 	subaccount = strings.TrimSpace(subaccount)
 	return spotConfig("nado-spot", options, func(settings settings) error {
-		if err := requireEnvironment("nado spot", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -452,9 +406,6 @@ func NadoSpotConfig(privateKey, subaccount string, options ...Option) Config[exc
 func NadoUSDT0PerpConfig(privateKey, subaccount string, options ...Option) Config[exchange.PerpClient] {
 	subaccount = strings.TrimSpace(subaccount)
 	return perpConfig("nado-usdt0-perp", options, func(settings settings) error {
-		if err := requireEnvironment("nado usdt0 perp", settings.environment, EnvironmentLive, EnvironmentTestnet); err != nil {
-			return err
-		}
 		if err := rejectUnsupportedAccountAddress(settings); err != nil {
 			return err
 		}
@@ -507,15 +458,6 @@ func rejectUnsupportedAccountAddress(settings settings) error {
 		return invalidConfig("account address is only supported by Hyperliquid configs")
 	}
 	return nil
-}
-
-func requireEnvironment(scope string, environment Environment, allowed ...Environment) error {
-	for _, candidate := range allowed {
-		if environment == candidate {
-			return nil
-		}
-	}
-	return invalidConfig(fmt.Sprintf("%s does not support %s environment", scope, environment))
 }
 
 func requireLighterPrivateKey(scope, privateKey string) error {
@@ -646,7 +588,7 @@ func catalogSourceForConfig(configName string, settings settings) (exchange.Cata
 		WebSocketEndpoint: settings.webSocketEndpoint,
 		Transport:         "default",
 	}
-	factoryclient.ApplyDefaultCatalogEndpoints(configName, string(settings.environment), &descriptor)
+	factoryclient.ApplyDefaultCatalogEndpoints(configName, &descriptor)
 	if settings.httpClient != nil {
 		descriptor.Transport = "custom-http-client"
 	}
@@ -833,7 +775,6 @@ func factorySettings(settings settings) factoryclient.Settings {
 		Endpoint:          settings.endpoint,
 		WebSocketEndpoint: settings.webSocketEndpoint,
 		HTTPClient:        settings.httpClient,
-		Environment:       string(settings.environment),
 		AccountAddress:    settings.accountAddress,
 		InstrumentCatalog: catalog,
 	}

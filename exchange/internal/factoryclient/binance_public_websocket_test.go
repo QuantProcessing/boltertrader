@@ -350,57 +350,6 @@ func TestBinancePerpPublicWSBackendNormalizesStreamsAndReference(t *testing.T) {
 	}
 }
 
-func TestBinancePerpDemoOrderBookUsesDiffDepthPayload(t *testing.T) {
-	ws := newFakeBinancePerpPublicWSClient()
-	backend := newBinancePerpDemoWSBackendWithClient(ws)
-	var got exchange.BookEvent
-	stop, err := backend.StartOrderBook(context.Background(), binancePerpETHUSDTInstrument(), streamCallbacks[exchange.BookEvent]{
-		Event: func(event exchange.BookEvent) { got = event },
-	})
-	if err != nil {
-		t.Fatalf("StartOrderBook: %v", err)
-	}
-	if ws.incrementBookSymbol != "ETHUSDT" || ws.incrementBookInterval != "100ms" {
-		t.Fatalf(
-			"diff depth args = (%s, %s), want (ETHUSDT, 100ms)",
-			ws.incrementBookSymbol,
-			ws.incrementBookInterval,
-		)
-	}
-	if ws.bookSymbol != "" {
-		t.Fatalf("partial depth subscription = %q, want none", ws.bookSymbol)
-	}
-	ws.emitIncrementDepth(&binanceperp.WsDepthEvent{
-		EventType:         "depthUpdate",
-		EventTime:         1700000000000,
-		TransactionTime:   1700000000001,
-		Symbol:            "ETHUSDT",
-		FirstUpdateID:     10,
-		FinalUpdateID:     12,
-		FinalUpdateIDLast: 9,
-		Bids:              [][]interface{}{{"100.1", "0"}},
-	})
-	if got.Kind != exchange.EventDelta ||
-		got.Instrument.Identity.NativeSymbol != "ETHUSDT" ||
-		got.Sequence != "12" ||
-		got.Previous != "9" ||
-		len(got.Bids) != 1 ||
-		!got.Bids[0].Quantity.IsZero() ||
-		len(got.Asks) != 0 {
-		t.Fatalf("diff depth event = %+v", got)
-	}
-	if err := stop(); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if ws.unsubIncrementBookSymbol != "ETHUSDT" || ws.unsubIncrementBookInterval != "100ms" {
-		t.Fatalf(
-			"diff depth unsubscribe args = (%s, %s)",
-			ws.unsubIncrementBookSymbol,
-			ws.unsubIncrementBookInterval,
-		)
-	}
-}
-
 func TestNewBinanceClientsWirePublicWebSockets(t *testing.T) {
 	spot := NewBinanceSpot("", "", Settings{WebSocketEndpoint: "ws://127.0.0.1:1/ws"})
 	if spot.WebSocket() == nil {
@@ -409,18 +358,6 @@ func TestNewBinanceClientsWirePublicWebSockets(t *testing.T) {
 	perp := NewBinanceUSDPerp("", "", Settings{WebSocketEndpoint: "ws://127.0.0.1:1/ws"})
 	if perp.WebSocket() == nil {
 		t.Fatalf("perp websocket is nil")
-	}
-}
-
-func TestNewBinanceUSDPerpDemoSelectsDiffDepthBackend(t *testing.T) {
-	client := NewBinanceUSDPerp("", "", Settings{
-		Environment:       "demo",
-		WebSocketEndpoint: "ws://127.0.0.1:1/ws",
-	}).(*binancePerpClient)
-	socket := client.ws.(*perpWebSocket)
-	backend := socket.backend.(*binancePerpPublicWSBackend)
-	if !backend.diffDepth {
-		t.Fatal("Binance Demo perp backend must use diff-depth payloads")
 	}
 }
 
@@ -600,11 +537,6 @@ type fakeBinancePerpPublicWSClient struct {
 	bookDepth                          int
 	bookInterval                       string
 	bookHandler                        func(*binanceperp.WsDepthEvent) error
-	incrementBookSymbol                string
-	incrementBookInterval              string
-	incrementBookHandler               func(*binanceperp.WsDepthEvent) error
-	unsubIncrementBookSymbol           string
-	unsubIncrementBookInterval         string
 	bboHandler                         func(*binanceperp.WsBookTickerEvent) error
 	tradeHandler                       func(*binanceperp.WsAggTradeEvent) error
 	candleSymbol, candleInterval       string
@@ -638,12 +570,6 @@ func (ws *fakeBinancePerpPublicWSClient) SubscribeLimitOrderBook(symbol string, 
 	return nil
 }
 
-func (ws *fakeBinancePerpPublicWSClient) SubscribeIncrementOrderBook(symbol string, interval string, handler func(*binanceperp.WsDepthEvent) error) error {
-	ws.incrementBookSymbol, ws.incrementBookInterval = symbol, interval
-	ws.incrementBookHandler = handler
-	return nil
-}
-
 func (ws *fakeBinancePerpPublicWSClient) SubscribeBookTicker(symbol string, handler func(*binanceperp.WsBookTickerEvent) error) error {
 	ws.bboSymbol = symbol
 	ws.bboHandler = handler
@@ -672,11 +598,6 @@ func (ws *fakeBinancePerpPublicWSClient) UnsubscribeLimitOrderBook(string, int, 
 	return nil
 }
 
-func (ws *fakeBinancePerpPublicWSClient) UnsubscribeIncrementOrderBook(symbol string, interval string) error {
-	ws.unsubIncrementBookSymbol, ws.unsubIncrementBookInterval = symbol, interval
-	return nil
-}
-
 func (ws *fakeBinancePerpPublicWSClient) UnsubscribeBookTicker(string) error {
 	return nil
 }
@@ -697,12 +618,6 @@ func (ws *fakeBinancePerpPublicWSClient) UnsubscribeMarkPrice(symbol string, int
 func (ws *fakeBinancePerpPublicWSClient) emitDepth(row *binanceperp.WsDepthEvent) {
 	if ws.bookHandler != nil {
 		_ = ws.bookHandler(row)
-	}
-}
-
-func (ws *fakeBinancePerpPublicWSClient) emitIncrementDepth(row *binanceperp.WsDepthEvent) {
-	if ws.incrementBookHandler != nil {
-		_ = ws.incrementBookHandler(row)
 	}
 }
 

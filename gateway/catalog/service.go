@@ -47,9 +47,7 @@ func (scope Scope) validate() error {
 	default:
 		return fmt.Errorf("%w: unknown venue", ErrInvalidSnapshot)
 	}
-	switch scope.Environment {
-	case exchange.EnvironmentLive, exchange.EnvironmentDemo, exchange.EnvironmentTestnet:
-	default:
+	if scope.Environment != exchange.EnvironmentLive {
 		return fmt.Errorf("%w: unknown environment", ErrInvalidSnapshot)
 	}
 	if scope.Product != exchange.ProductSpot && scope.Product != exchange.ProductPerp {

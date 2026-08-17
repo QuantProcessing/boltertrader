@@ -30,7 +30,7 @@ func newPublicDataHandler(t *testing.T) (*http.ServeMux, *realtime.Hub) {
 	t.Helper()
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	catalogProjection, err := catalog.NewProjection(catalogSourceFunc(func(context.Context) (catalog.Snapshot, error) {
-		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}, nil
+		return catalog.Snapshot{Revision: "gateway-1", ObservedAt: now, Venues: []catalog.Venue{{Venue: "binance", Environment: "live", Ready: true}}, Instruments: []catalog.Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}, nil
 	}), time.Minute, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
@@ -67,32 +67,32 @@ func TestPublicDataRoutesUseStrictGatewayBackedDTOs(t *testing.T) {
 	}{
 		{path: "/api/v1/catalog/venues", want: http.StatusOK, body: `"revision":"gateway-1"`},
 		{path: "/api/v1/catalog/instruments?accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
-		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
-		{path: "/api/v1/market-data?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/market-data?venue=binance&environment=live&product=perp&instrumentId=btc-usdt", want: http.StatusOK, body: `"markPrice":"100.00"`},
+		{path: "/api/v1/market-data?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&gatewayUrl=http://internal", want: http.StatusBadRequest, body: "unknown query field"},
 		{path: "/api/v1/market-data?venue=binance&instrumentId=btc-usdt", want: http.StatusBadRequest, body: "request is invalid"},
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m", want: http.StatusOK, body: `"interval":"1m"`},
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=100", want: http.StatusOK, body: `"interval":"1m"`},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&interval=1m", want: http.StatusOK, body: `"interval":"1m"`},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&interval=1m&limit=100", want: http.StatusOK, body: `"interval":"1m"`},
 		// limit is the one optional field, so it must be rejected on its own
 		// terms rather than by the required-field sweep.
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=0", want: http.StatusBadRequest, body: "must be between 1 and 500"},
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&limit=501", want: http.StatusBadRequest, body: "must be between 1 and 500"},
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt", want: http.StatusBadRequest, body: `field \"interval\" is required`},
-		{path: "/api/v1/candles?venue=binance&environment=testnet&product=perp&instrumentId=btc-usdt&interval=1m&accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
-		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=7d", want: http.StatusOK, body: `"intervalHours":8`},
-		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=30d", want: http.StatusOK, body: `"symbol":"BTC-USDT"`},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&interval=1m&limit=0", want: http.StatusBadRequest, body: "must be between 1 and 500"},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&interval=1m&limit=501", want: http.StatusBadRequest, body: "must be between 1 and 500"},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt", want: http.StatusBadRequest, body: `field \"interval\" is required`},
+		{path: "/api/v1/candles?venue=binance&environment=live&product=perp&instrumentId=btc-usdt&interval=1m&accountId=secret-scope", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/funding-history?venue=binance&environment=live&symbol=BTC-USDT&window=7d", want: http.StatusOK, body: `"intervalHours":8`},
+		{path: "/api/v1/funding-history?venue=binance&environment=live&symbol=BTC-USDT&window=30d", want: http.StatusOK, body: `"symbol":"BTC-USDT"`},
 		// The window is a closed set, not a duration: a span this surface will
 		// not fetch in one page has to be refused here rather than truncated
 		// silently at a venue.
-		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=90d", want: http.StatusBadRequest, body: `must be \"7d\" or \"30d\"`},
-		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT", want: http.StatusBadRequest, body: `field \"window\" is required`},
-		{path: "/api/v1/funding-history?venue=binance&environment=demo&symbol=BTC-USDT&window=7d&since=2026-01-01T00:00:00Z", want: http.StatusBadRequest, body: "unknown query field"},
+		{path: "/api/v1/funding-history?venue=binance&environment=live&symbol=BTC-USDT&window=90d", want: http.StatusBadRequest, body: `must be \"7d\" or \"30d\"`},
+		{path: "/api/v1/funding-history?venue=binance&environment=live&symbol=BTC-USDT", want: http.StatusBadRequest, body: `field \"window\" is required`},
+		{path: "/api/v1/funding-history?venue=binance&environment=live&symbol=BTC-USDT&window=7d&since=2026-01-01T00:00:00Z", want: http.StatusBadRequest, body: "unknown query field"},
 		// A venue with no history endpoint answers permanently, so the browser
 		// stops asking instead of retrying a chart that cannot exist.
-		{path: "/api/v1/funding-history?venue=nado&environment=testnet&symbol=BTC-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_UNSUPPORTED"},
+		{path: "/api/v1/funding-history?venue=nado&environment=live&symbol=BTC-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_UNSUPPORTED"},
 		// Equally permanent and deliberately not the same code. A venue that
 		// simply does not list one pair must not be reported as publishing no
 		// funding history, which is false for every other pair it does list.
-		{path: "/api/v1/funding-history?venue=bybit&environment=demo&symbol=NOTLISTED-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"},
+		{path: "/api/v1/funding-history?venue=bybit&environment=live&symbol=NOTLISTED-USDT&window=7d", want: http.StatusNotFound, body: "FUNDING_HISTORY_INSTRUMENT_UNKNOWN"},
 		{path: "/api/v1/system/readiness", want: http.StatusOK, body: `"accounts"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
@@ -218,8 +218,8 @@ func (*fundingBoardStub) Get(context.Context) (marketdata.BoardSnapshot, error) 
 	return marketdata.BoardSnapshot{
 		Mode: "test",
 		Venues: []marketdata.BoardVenue{{
-			Venue: "binance", Environment: "demo", Product: "perp",
-			RouteProfileID: "binance.perp.usdt.demo.v1",
+			Venue: "binance", Environment: "live", Product: "perp",
+			RouteProfileID: "binance.perp.usdt.v1",
 			Rows:           []marketdata.BoardRow{{Symbol: "BTC-USDT", Rate: "0.0001"}},
 		}},
 	}, nil

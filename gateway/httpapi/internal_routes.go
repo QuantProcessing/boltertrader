@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/capability"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"github.com/QuantProcessing/boltertrader/secretstore"
@@ -317,7 +318,7 @@ func (handler *InternalHandler) applyDesired(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var desired DesiredApplyRequest
-	if err := decodeStrictJSON(w, r, handler.bodyLimit, &desired); err != nil || desired.validate(mode, r.PathValue("accountId"), r.PathValue("operationId")) != nil {
+	if err := decodeStrictJSON(w, r, handler.bodyLimit, &desired); err != nil || desired.validate(r.PathValue("accountId"), r.PathValue("operationId")) != nil {
 		handler.writeError(w, r, http.StatusBadRequest, "VALIDATION_ERROR", false)
 		return
 	}
@@ -407,7 +408,7 @@ func (handler *InternalHandler) execute(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, status, map[string]any{"data": response.Body})
 }
 
-func (desired DesiredApplyRequest) validate(mode, accountID, operationID string) error {
+func (desired DesiredApplyRequest) validate(accountID, operationID string) error {
 	parsedOperation, err := secretstore.ParseOperationID(desired.OperationID)
 	if err != nil || string(parsedOperation) != operationID || desired.AccountID != accountID || strings.TrimSpace(accountID) == "" {
 		return errors.New("invalid desired operation identity")
@@ -417,6 +418,14 @@ func (desired DesiredApplyRequest) validate(mode, accountID, operationID string)
 	}
 	if strings.TrimSpace(desired.Venue) == "" || desired.Venue != strings.TrimSpace(desired.Venue) || len(desired.Venue) > 64 || desired.DesiredStateRevision < 1 || desired.RuntimeGeneration < 1 || desired.CredentialVersion < 1 || !validRequestedState(desired.RequestedState) || len(desired.Routes) < 1 || len(desired.Routes) > 32 {
 		return errors.New("invalid desired account")
+	}
+	// A route profile no longer names an environment, but the request still
+	// does, because it is stored beside the account and re-read on every
+	// restart. Only live endpoints exist, so a request naming anything else
+	// describes a runtime nothing can dial and is refused at the edge rather
+	// than persisted and failed later.
+	if desired.NativeEnvironment != string(exchange.EnvironmentLive) {
+		return errors.New("invalid desired native environment")
 	}
 	seen := make(map[string]struct{}, len(desired.Routes))
 	active := 0
@@ -428,8 +437,8 @@ func (desired DesiredApplyRequest) validate(mode, accountID, operationID string)
 			return errors.New("duplicate desired route")
 		}
 		seen[route.RouteID] = struct{}{}
-		profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.Mode(mode), desired.Venue, route.RouteProfileID)
-		if err != nil || string(profile.NativeEnvironment) != desired.NativeEnvironment || string(profile.Product) != route.Product || profile.SettlementAsset != route.SettlementAsset {
+		profile, err := routeprofile.DefaultRegistry().Resolve(desired.Venue, route.RouteProfileID)
+		if err != nil || string(profile.Product) != route.Product || profile.SettlementAsset != route.SettlementAsset {
 			return errors.New("desired route profile conflict")
 		}
 		switch route.RequestedState {

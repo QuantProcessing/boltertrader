@@ -15,16 +15,15 @@ import (
 )
 
 type publicSurfaceManifest struct {
-	SchemaVersion     int                        `json:"schema_version"`
-	Symbols           []publicSurfaceSymbol      `json:"symbols"`
-	ProductRows       []exchangeProductRow       `json:"product_rows"`
-	RESTMethods       []exchangeMethodSupport    `json:"rest_methods"`
-	WebSocketMethods  []exchangeMethodSupport    `json:"websocket_methods"`
-	Operations        []exchangeOperation        `json:"operations"`
-	ParameterCases    []exchangeParameterCase    `json:"parameter_cases"`
-	Deferred          []string                   `json:"deferred"`
-	Acknowledgements  []string                   `json:"acknowledgements"`
-	AcceptanceTargets []exchangeAcceptanceTarget `json:"acceptance_targets"`
+	SchemaVersion    int                     `json:"schema_version"`
+	Symbols          []publicSurfaceSymbol   `json:"symbols"`
+	ProductRows      []exchangeProductRow    `json:"product_rows"`
+	RESTMethods      []exchangeMethodSupport `json:"rest_methods"`
+	WebSocketMethods []exchangeMethodSupport `json:"websocket_methods"`
+	Operations       []exchangeOperation     `json:"operations"`
+	ParameterCases   []exchangeParameterCase `json:"parameter_cases"`
+	Deferred         []string                `json:"deferred"`
+	Acknowledgements []string                `json:"acknowledgements"`
 }
 
 type publicSurfaceSymbol struct {
@@ -35,33 +34,19 @@ type publicSurfaceSymbol struct {
 }
 
 type exchangeProductRow struct {
-	Code             string                   `json:"code"`
-	Venue            string                   `json:"venue"`
-	Product          string                   `json:"product"`
-	FactoryConfig    string                   `json:"factory_config"`
-	RESTMethods      []string                 `json:"rest_methods"`
-	WebSocketMethods []string                 `json:"websocket_methods"`
-	Fixtures         []string                 `json:"fixtures"`
-	AcceptanceTarget string                   `json:"acceptance_target"`
-	Acceptance       exchangeAcceptanceStatus `json:"acceptance"`
+	Code             string   `json:"code"`
+	Venue            string   `json:"venue"`
+	Product          string   `json:"product"`
+	FactoryConfig    string   `json:"factory_config"`
+	RESTMethods      []string `json:"rest_methods"`
+	WebSocketMethods []string `json:"websocket_methods"`
+	Fixtures         []string `json:"fixtures"`
 }
 
 type exchangeMethodSupport struct {
 	Method string `json:"method"`
 	Spot   bool   `json:"spot"`
 	Perp   bool   `json:"perp"`
-}
-
-type exchangeAcceptanceStatus struct {
-	Status string `json:"status"`
-	Reason string `json:"reason"`
-}
-
-type exchangeAcceptanceTarget struct {
-	Target       string `json:"target"`
-	Env          string `json:"env"`
-	Package      string `json:"package"`
-	TestSelector string `json:"test_selector"`
 }
 
 type exchangeOperation struct {

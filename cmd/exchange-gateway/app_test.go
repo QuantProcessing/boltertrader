@@ -51,8 +51,8 @@ func TestAccountMetricSnapshotProjectsEachRouteStatus(t *testing.T) {
 	loadedAt := time.Date(2026, 8, 10, 1, 2, 3, 0, time.UTC)
 	source := &metricAccountSourceStub{
 		resources: []account.Resource{
-			{AccountID: "multi", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot},
-			{AccountID: "multi", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDT"},
+			{AccountID: "multi", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot},
+			{AccountID: "multi", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"},
 		},
 		statuses: map[[3]string]account.Status{
 			{"multi", "spot", ""}:     {Resource: account.Resource{ReadReady: true, WriteReady: false}, Catalog: catalog.Status{LoadedAt: loadedAt, Generation: 3}},

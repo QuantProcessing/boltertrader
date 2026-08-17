@@ -13,7 +13,7 @@ func TestServiceRejectsCrossProductScopeConflictAndReleasesOwnership(t *testing.
 	request := CreateRequest{
 		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen,
 		IdempotencyKey: "reserve-a",
-		Scope:          NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT-PERP", VenueEnvironment: "testnet"},
+		Scope:          NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT-PERP", VenueEnvironment: "live"},
 		Quantity:       "0.01",
 	}
 	first, err := service.Create(context.Background(), request)
@@ -44,7 +44,7 @@ func TestServiceFencesPrincipalModeAndProductOnConsume(t *testing.T) {
 	held, err := service.Create(context.Background(), CreateRequest{
 		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindHedge,
 		IdempotencyKey: "reserve-a",
-		Scope:          NettingScope{AccountID: "account-a", Venue: "okx", InstrumentID: "ETH-USDT-SWAP", VenueEnvironment: "demo"},
+		Scope:          NettingScope{AccountID: "account-a", Venue: "okx", InstrumentID: "ETH-USDT-SWAP", VenueEnvironment: "live"},
 		Notional:       "50", Currency: "USDT",
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func TestServiceReplaysReservationAndRejectsChangedIdempotentBody(t *testing.T) 
 	service := NewService(NewMemoryStore(), time.Now)
 	request := CreateRequest{
 		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
-		Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "demo"}, Quantity: "1",
+		Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "live"}, Quantity: "1",
 	}
 	first, err := service.Create(context.Background(), request)
 	if err != nil {
@@ -88,15 +88,25 @@ func TestServiceReplaysReservationAndRejectsChangedIdempotentBody(t *testing.T) 
 	}
 }
 
-func TestServiceRejectsCrossModeVenueEnvironment(t *testing.T) {
+// TestServiceRejectsNonLiveVenueEnvironment keeps the refusal that outlived the
+// rule it belonged to. This used to pin a cross-check — a Test reservation could
+// not name a live venue, a Live one could not name anything else — but with demo
+// and testnet gone there is no longer a second environment for a mode to
+// disagree with, so the cross-check went and the allow-list is all that remains.
+// A reservation naming an environment the platform cannot route to is still
+// refused, which is the half of the old rule that still has work to do.
+func TestServiceRejectsNonLiveVenueEnvironment(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
-	request := CreateRequest{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "a", Scope: NettingScope{AccountID: "a", Venue: "v", InstrumentID: "i", VenueEnvironment: "live"}, Quantity: "1"}
-	if _, err := service.Create(context.Background(), request); err == nil {
-		t.Fatal("Test reservation accepted Live environment")
+	request := CreateRequest{PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "a", Scope: NettingScope{AccountID: "a", Venue: "v", InstrumentID: "i"}, Quantity: "1"}
+	for _, environment := range []string{"demo", "testnet", ""} {
+		request.Scope.VenueEnvironment = environment
+		if _, err := service.Create(context.Background(), request); err == nil {
+			t.Fatalf("reservation accepted venue environment %q", environment)
+		}
 	}
-	request.Mode, request.Scope.VenueEnvironment = ModeLive, "testnet"
-	if _, err := service.Create(context.Background(), request); err == nil {
-		t.Fatal("Live reservation accepted Test environment")
+	request.Scope.VenueEnvironment = "live"
+	if _, err := service.Create(context.Background(), request); err != nil {
+		t.Fatalf("reservation refused the only surviving environment: %v", err)
 	}
 }
 
@@ -104,7 +114,7 @@ func TestServiceRejectsQuantityAndNotionalTogether(t *testing.T) {
 	service := NewService(NewMemoryStore(), time.Now)
 	request := CreateRequest{
 		PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: "reserve-a",
-		Scope:    NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "demo"},
+		Scope:    NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: "BTC-USDT", VenueEnvironment: "live"},
 		Quantity: "0.5", Notional: "50", Currency: "USDT",
 	}
 	if _, err := service.Create(context.Background(), request); err == nil {
@@ -118,7 +128,7 @@ func TestFreshServicesGenerateDistinctReservationIDs(t *testing.T) {
 		t.Helper()
 		item, err := service.Create(context.Background(), CreateRequest{
 			PrincipalID: "principal-a", Mode: ModeTest, ProductID: "manual", Kind: KindOpen, IdempotencyKey: key,
-			Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: instrument, VenueEnvironment: "demo"}, Quantity: "1",
+			Scope: NettingScope{AccountID: "account-a", Venue: "binance", InstrumentID: instrument, VenueEnvironment: "live"}, Quantity: "1",
 		})
 		if err != nil {
 			t.Fatal(err)

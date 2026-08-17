@@ -41,7 +41,7 @@ func TestBinanceCatalogMetadataObservesMemoryCatalogRefreshWithoutSDKFallback(t 
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueBinance,
-		Environment:         exchange.EnvironmentDemo,
+		Environment:         exchange.EnvironmentLive,
 		Product:             exchange.ProductSpot,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
@@ -65,7 +65,6 @@ func TestBinanceCatalogMetadataObservesMemoryCatalogRefreshWithoutSDKFallback(t 
 	httpCalls := 0
 	client := NewBinanceSpot("key", "secret", Settings{
 		Endpoint:          "https://binance.invalid",
-		Environment:       "demo",
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,
 		HTTPClient: &http.Client{Transport: binanceCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
@@ -134,13 +133,12 @@ func TestBinanceInstrumentLoaderUsesPublicExchangeInfoOnly(t *testing.T) {
 	})
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueBinance,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	}
 	loader := NewBinanceInstrumentLoader(exchange.ProductSpot, Settings{
-		Endpoint:    "https://binance.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://binance.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	snapshot, err := loader.LoadInstruments(context.Background(), scope)
@@ -157,8 +155,7 @@ func TestBinanceInstrumentLoaderUsesPublicExchangeInfoOnly(t *testing.T) {
 
 func TestBinancePerpInstrumentLoaderFiltersExactSettlementScope(t *testing.T) {
 	loader := NewBinanceInstrumentLoader(exchange.ProductPerp, Settings{
-		Endpoint:    "https://binance.invalid",
-		Environment: "demo",
+		Endpoint: "https://binance.invalid",
 		HTTPClient: &http.Client{Transport: binanceCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 			if request.URL.Path != "/fapi/v1/exchangeInfo" {
 				t.Fatalf("path = %q, want public USD-M exchangeInfo", request.URL.Path)
@@ -211,7 +208,7 @@ func TestBinancePerpInstrumentLoaderFiltersExactSettlementScope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			scope := exchange.CatalogScope{
 				Venue:       exchange.VenueBinance,
-				Environment: exchange.EnvironmentDemo,
+				Environment: exchange.EnvironmentLive,
 				Product:     exchange.ProductPerp,
 				Settlement:  test.settlement,
 			}

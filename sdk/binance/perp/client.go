@@ -68,10 +68,6 @@ func NewCoinMClient() *Client {
 	return NewClient().WithCoinM()
 }
 
-func NewDemoClient() *Client {
-	return NewClient().WithUSDMMDemo()
-}
-
 func (c *Client) WithCredentials(apiKey, secretKey string) *Client {
 	c.APIKey = apiKey
 	c.SecretKey = secretKey
@@ -94,10 +90,6 @@ func (c *Client) WithEndpointProfile(profile EndpointProfile) *Client {
 		c.AccountVersion = profile.AccountVersion
 	}
 	return c
-}
-
-func (c *Client) WithUSDMMDemo() *Client {
-	return c.WithEndpointProfile(USDMMDemoEndpoints)
 }
 
 func (c *Client) WithCoinM() *Client {

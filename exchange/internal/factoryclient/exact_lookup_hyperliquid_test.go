@@ -120,7 +120,7 @@ func newHyperliquidExactLookupClient(
 	instrument := hyperliquidCatalogInstrument(exchange.ProductSpot, "PURR-USDC", "@1", "10001", "", 3)
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueHyperliquid,
-		Environment: exchange.EnvironmentTestnet,
+		Environment: exchange.EnvironmentLive,
 		Product:     product,
 	}
 	if product == exchange.ProductPerp {
@@ -130,7 +130,6 @@ func newHyperliquidExactLookupClient(
 	}
 	settings := Settings{
 		Endpoint:          "https://exact.invalid",
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: transport},
 		InstrumentCatalog: exchange.NewMemoryCatalog(exchange.StaticInstrumentLoader{Snapshot: exchange.InstrumentSnapshot{SchemaVersion: 1, Scope: scope, Instruments: []exchange.Instrument{instrument}}}, nil),
 		CatalogScope:      scope,

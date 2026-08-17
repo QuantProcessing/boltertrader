@@ -126,7 +126,7 @@ func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"demo"},"quantity":"1","notional":null,"currency":null,"mode":"test","unknown":true}`
+	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test","unknown":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-a")
 	response := httptest.NewRecorder()
@@ -134,7 +134,7 @@ func TestTradingRoutesRejectUnknownFieldsAndCreateReservation(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
 		t.Fatalf("unknown field response=%d %s", response.Code, response.Body.String())
 	}
-	body = `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"demo"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
+	body = `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-a")
 	response = httptest.NewRecorder()
@@ -158,7 +158,7 @@ func TestTradingRoutesRequireExactlyOneReservationSizing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	scope := `"nettingScope":{"accountId":"account-long","venue":"venue-a","instrumentId":"btc-a","positionMode":null,"settlementScope":null,"venueEnvironment":"testnet"}`
+	scope := `"nettingScope":{"accountId":"account-long","venue":"venue-a","instrumentId":"btc-a","positionMode":null,"settlementScope":null,"venueEnvironment":"live"}`
 	both := `{"accountId":"account-long","productId":"manual","reservationKind":"close",` + scope + `,"quantity":"0.5","notional":"50","currency":"USDT","mode":"test"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(both))
 	request.Header.Set("Idempotency-Key", "close-long-both")
@@ -210,7 +210,7 @@ func TestTradingMutationRejectsMissingCSRFAheadOfSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"demo"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
+	body := `{"accountId":"account-a","productId":"manual","reservationKind":"open","nettingScope":{"accountId":"account-a","venue":"binance","instrumentId":"BTC-USDT","positionMode":null,"settlementScope":null,"venueEnvironment":"live"},"quantity":"1","notional":null,"currency":null,"mode":"test"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/reservations", strings.NewReader(body))
 	request.Header.Set("Idempotency-Key", "reserve-csrf")
 	response := httptest.NewRecorder()

@@ -8,7 +8,7 @@ point of the design.
 | Surface | Who writes it | What it holds |
 | --- | --- | --- |
 | `.env.stack` | `make up`, on every run | Ports, uids, and paths to generated secret files |
-| `.env` | You, by hand | Venue API credentials for the acceptance suites |
+| `.env` | You, by hand | Venue API credentials for the credentialed tests |
 | The command line | You, per invocation | Execution gates |
 
 They never meet. `make up` does not read `.env`, `make test` does not read
@@ -57,45 +57,45 @@ by `root`, which a container running as your uid could not write to.
 
 ## `.env` — venue credentials
 
-Only the acceptance suites read this file, through
-`internal/testenv.LoadRepoEnv`. It is optional: a suite that cannot find its
-credentials names the variable it wanted. A variable already set in your shell
-always wins. Start from [`.env.example`](../../.env.example).
+Only tests read this file, through `internal/testenv.LoadRepoEnv`, and no Make
+target runs those tests. It is optional: a read test that cannot find its
+credentials skips, naming the variable it wanted. A variable already set in your
+shell always wins. Start from [`.env.example`](../../.env.example).
 
-| Environment | Required for writes |
+Every name here reaches production. There is no demo or testnet tier behind
+them — the venues implemented those too differently to keep working, and the
+suites that used them were removed along with their credentials. To exercise the
+product without a venue, use the offline mock described in [Testing](testing.md).
+
+| Venue | Credentials |
 | --- | --- |
-| Binance Demo | `BINANCE_DEMO_API_KEY`, `BINANCE_DEMO_API_SECRET` |
-| OKX Demo | `OKX_DEMO_API_KEY`, `OKX_DEMO_API_SECRET`, `OKX_DEMO_API_PASSPHRASE` |
-| Bybit Demo | `BYBIT_DEMO_API_KEY`, `BYBIT_DEMO_API_SECRET` |
-| Bybit Testnet | `BYBIT_TESTNET_API_KEY`, `BYBIT_TESTNET_API_SECRET` |
-| Bitget Demo | `BITGET_DEMO_API_KEY`, `BITGET_DEMO_SECRET_KEY`, `BITGET_DEMO_PASSPHRASE` |
-| Gate Testnet | `GATE_TESTNET_API_KEY`, `GATE_TESTNET_API_SECRET` |
-| Hyperliquid Testnet | `HYPERLIQUID_TESTNET_PK` |
-| Lighter Testnet | `LIGHTER_TESTNET_PRIVATE_KEY`, `LIGHTER_TESTNET_ACCOUNT_INDEX`, `LIGHTER_TESTNET_API_KEY_INDEX` |
-| Aster Testnet | `ASTER_TESTNET_USER_ADDRESS`, `ASTER_TESTNET_SIGNER_PRIVATE_KEY` |
-| Nado Testnet | `NADO_TESTNET_PRIVATE_KEY` |
+| Binance | `BINANCE_API_KEY`, `BINANCE_SECRET_KEY` |
+| OKX | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE` |
+| Bybit | `BYBIT_API_KEY`, `BYBIT_SECRET_KEY` |
+| Bitget | `BITGET_API_KEY`, `BITGET_SECRET_KEY`, `BITGET_PASSPHRASE` |
+| Hyperliquid | `HYPERLIQUID_PRIVATE_KEY`, `HYPERLIQUID_ACCOUNT_ADDR` |
+| Lighter | `LIGHTER_PRIVATE_KEY`, `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_KEY_INDEX` |
+| Nado | `NADO_PRIVATE_KEY` |
+| EdgeX | `EDGEX_STARK_PRIVATE_KEY`, `EDGEX_ACCOUNT_ID` |
+| GRVT | `GRVT_PRIVATE_KEY`, `GRVT_API_KEY`, `GRVT_SUB_ACCOUNT_ID` |
+| StandX | `STANDX_PRIVATE_KEY` |
 
-Each block is all-or-nothing. Bybit Demo and Bybit Testnet are two different
-environments with two different credential pairs, and one is explicitly rejected
-as a substitute for the other.
+Each block is all-or-nothing. Five of these are wallet keys, not API keys:
+anything they sign for is spendable, and there is no testnet wallet to hold
+instead. Give a key only the permissions the tests use, withhold withdrawal, and
+bind it to your own IP where the venue offers that.
 
-Four of these are wallet keys, not API keys. Anything they sign for is spendable,
-so use a wallet funded only with testnet assets. Never put a production
-credential in any of these names.
+Identity fields are boundaries, not labels. Hyperliquid's
+`HYPERLIQUID_ACCOUNT_ADDR` identifies the owner when an agent or API-wallet key
+signs, so it is not interchangeable with the key. Nado's optional
+`NADO_SUBACCOUNT_NAME` is part of unified-margin identity, not a currency-level
+balance partition. Lighter needs both index variables in addition to the private
+key.
 
-Identity fields are boundaries, not labels:
-
-- Aster separates the user address, the signing key, and an optional
-  `ASTER_TESTNET_EXPECTED_SIGNER_ADDRESS` that verifies the two agree.
-- Nado's `NADO_TESTNET_SUBACCOUNT_NAME` is part of unified-margin identity, not
-  a currency-level balance partition.
-- Hyperliquid's `HYPERLIQUID_ACCOUNT_ADDRESS` identifies the owner when an agent
-  or API-wallet key signs. `HYPERLIQUID_TESTNET_VAULT` parses, but the Vault and
-  SubAccount user roles are rejected on the acceptance path.
-- Lighter needs both index variables in addition to the private key.
-
-Bitget's `BITGET_TESTNET_*` names are compatibility aliases for the `BITGET_DEMO_*`
-names above, not a second environment. The canonical name wins when both are set.
+A few older spellings still resolve: `OKX_SECRET_KEY`, `OKX_PASSPHRASE`,
+`EDGEX_PRIVATE_KEY`, and `NADO_SUB_ACCOUNT_NAME` are aliases for the canonical
+names above. The canonical name wins when both are set, including when it is set
+to an empty string — blanking a variable is an instruction, not an omission.
 
 ## Gates — command line only
 
@@ -108,72 +108,49 @@ a venue.
 Pass them inline, where they appear in the command that used them:
 
 ```sh
-BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 make test-exchange-binance-demo-spot
+BINANCE_ENABLE_LIVE_WRITE_TESTS=1 go test ./sdk/binance/spot/ -run TestClient_PlaceOrder
 ```
 
-Normally you don't type these at all — every external Make target sets its own.
+No Make target sets any of these, and none ever will:
+`TestMakefileRecipesNeverEnableCredentialedWrites` reads every recipe in the
+Makefile and fails if one does. You type a gate yourself or it is not set.
 
 | Gate | Effect |
 | --- | --- |
-| `BOLTER_ENABLE_LIVE_READ_TESTS` | Allows credentialed reads against a venue |
-| `BOLTER_ENABLE_BINANCE_DEMO_WRITES` | Allows Binance Demo writes |
-| `BOLTER_ENABLE_OKX_DEMO_WRITES` | Allows OKX Demo writes |
-| `BOLTER_ENABLE_BYBIT_DEMO_WRITES` | Allows Bybit Demo writes |
-| `BOLTER_ENABLE_BYBIT_TESTNET_WRITES` | Allows Bybit Testnet writes |
-| `BOLTER_ENABLE_BITGET_DEMO_WRITES` | Allows Bitget Demo writes |
-| `BOLTER_ENABLE_GATE_TESTNET_WRITES` | Allows Gate Testnet writes |
-| `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES` | Allows Hyperliquid Testnet writes |
-| `BOLTER_ENABLE_LIGHTER_TESTNET_WRITES` | Allows Lighter Testnet writes |
-| `BOLTER_ENABLE_ASTER_TESTNET_WRITES` | Allows Aster Testnet writes |
-| `BOLTER_ENABLE_NADO_TESTNET_WRITES` | Allows Nado Testnet writes |
-| `BOLTER_ALLOW_OKX_DEMO_CUSTOM_WRITES` | Additionally allows a custom OKX endpoint profile to write |
-| `BOLTER_ALLOW_BITGET_DEMO_CUSTOM_WRITES` | Additionally allows a custom Bitget endpoint profile to write |
-| `BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES` | Allows a raw Nado SDK write that bypasses the harness's bounds |
+| `BOLTER_ENABLE_LIVE_READ_TESTS` | Allows reads against a venue, credentialed or public |
+| `BINANCE_ENABLE_LIVE_WRITE_TESTS` | Allows Binance spot, margin, and sub-account writes |
+| `BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS` | Allows Binance perpetual writes |
+| `OKX_ENABLE_LIVE_WRITE_TESTS` | Allows OKX writes |
+| `BYBIT_ENABLE_LIVE_WRITE_TESTS` | Allows Bybit writes |
+| `BITGET_ENABLE_LIVE_WRITE_TESTS` | Allows Bitget writes |
+| `HYPERLIQUID_ENABLE_LIVE_WRITE_TESTS` | Allows Hyperliquid writes |
+| `LIGHTER_ENABLE_LIVE_WRITE_TESTS` | Allows Lighter writes |
+| `BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES` | Allows a raw Nado SDK write with no harness around it |
+| `RUN_FULL` | Runs the extended verification tests |
+| `RUN_SOAK` | Runs the long-running stream tests |
 
-The last one is named the way it is on purpose.
+The write gates behave differently from the read gate in one way worth knowing:
+with a write gate on and a credential missing, the test fails rather than skips.
+You asked for the write explicitly, and a silent skip would read as a passing
+write test.
 
-## Bounds and selectors
+The Nado gate is named the way it is on purpose.
 
-Every venue has a max-notional ceiling with a small built-in default —
-`BINANCE_DEMO_MAX_NOTIONAL_USDT`, `HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC`,
-`NADO_TESTNET_MAX_NOTIONAL_USDT0`, and so on. The quote asset is part of the
-name and differs per venue.
+## Selectors
 
-A ceiling is a safety bound, not a requested size. It is the last thing between a
-mistyped quantity and an order the venue fills, so raise it deliberately and put
-it back.
+Several write tests act on an order you already placed, or on a size you choose,
+rather than on a default: `BINANCE_SPOT_TEST_ORDER_ID`, `OKX_TEST_ORDER_PRICE`,
+`BINANCE_PERP_TEST_ORDER_QTY` and their siblings. Each belongs to one test, so
+this page does not list them. Run the test with its gate on and it fails naming
+exactly the variables it wanted.
 
-Most venues also accept symbol overrides. An unset symbol usually means the
-harness picks a suitable discovered instrument. `internal/testenv/testenv.go`
-lists every one beside the default it falls back to, and that file is the
-authority — this page does not restate it.
-
-## Endpoint profiles
-
-Endpoint variables are advanced safety inputs. Never point a Demo or Testnet
-write target at production.
-
-**Fixed.** Binance, Bybit, Hyperliquid, and Lighter select built-in
-non-production profiles and expose no acceptance override.
-
-**Exact-official-only.** Aster accepts `ASTER_TESTNET_SPOT_REST_URL`,
-`ASTER_TESTNET_SPOT_WS_URL`, `ASTER_TESTNET_SPOT_USER_WS_URL`, and their
-`PERP` equivalents — but only when each value exactly matches the built-in
-official Testnet endpoint. Nado applies the same rule to
-`NADO_TESTNET_GATEWAY_URL`, `NADO_TESTNET_GATEWAY_V2_URL`,
-`NADO_TESTNET_ARCHIVE_URL`, `NADO_TESTNET_ARCHIVE_V2_URL`,
-`NADO_TESTNET_GATEWAY_WS_URL`, `NADO_TESTNET_WS_URL`, and
-`NADO_TESTNET_TRIGGER_URL`. Gate reads accept `GATE_TESTNET_REST_BASE_URL`,
-`GATE_TESTNET_SPOT_WS_URL`, and `GATE_TESTNET_USDT_FUTURES_WS_URL`, but a
-credentialed write requires all three to resolve to the official Testnet profile.
-
-**Guarded custom.** `OKX_DEMO_HOST_PROFILE` takes `global` (default), `eea`, or
-`custom`. The official profiles forbid overrides outright; `custom` requires both
-`OKX_DEMO_REST_BASE_URL` and `OKX_DEMO_WS_BASE_URL`, plus the command-local
-allowance above, and a credentialed write additionally requires HTTPS and WSS and
-rejects recognizable website and production WebSocket hosts. Bitget works the
-same way through `BITGET_DEMO_REST_BASE_URL`, `BITGET_DEMO_PUBLIC_WS_URL`, and
-`BITGET_DEMO_PRIVATE_WS_URL`, which must be supplied together.
+Two safety mechanisms that used to sit here are gone, and their absence is the
+point rather than an oversight. There is no longer a max-notional ceiling per
+venue: the bounds existed to cap orders on a demo exchange, and capping an order
+you consciously armed against production is not the same protection. There is no
+longer an endpoint override either — every one of those variables selected a
+demo or testnet host, so with those hosts gone there is nothing left to point
+somewhere else. The size you pass is the size that trades.
 
 ## Two more
 
@@ -183,10 +160,22 @@ skip. `make test-compose-postgres` provisions a throwaway cluster and sets it fo
 you.
 
 `PROXY` accepts an `http`, `https`, or `socks5` URL and may carry credentials,
-which are redacted everywhere they could surface. When it is set, the acceptance
-HTTP clients use it; when it is not, they disable inherited `HTTP_PROXY`,
-`HTTPS_PROXY`, and `ALL_PROXY` rather than silently honoring them. WebSocket
-routing is venue-specific and does not follow from this rule.
+which are redacted everywhere they could surface. Binance, OKX, Aster, and EdgeX
+consult it on REST; Binance, OKX, Aster, Bybit, Bitget, Gate, Hyperliquid, and
+Nado consult it on WebSocket. Backpack, GRVT, Lighter, and StandX ignore it
+entirely.
+
+Its precedence is not uniform, and the difference matters when you have a proxy
+set system-wide. On REST, `PROXY` wins: a client that sees it installs its own
+transport. Unset, that client falls through to Go's default transport, which
+honors an inherited `HTTP_PROXY` or `HTTPS_PROXY` — so an ambient proxy still
+applies even when `PROXY` says nothing. On WebSocket most venues reverse this and
+let the ambient variable win, Gate reverses it back, `ALL_PROXY` is consulted as
+a last resort, and every venue bypasses the proxy for loopback hosts.
+
+The practical consequence: an ambient proxy that cannot reach an exchange will
+fail tests in packages that never mention a proxy anywhere. Clear the variables
+for the run rather than looking for the bug in the venue.
 
 ## Keeping secrets out
 

@@ -170,14 +170,14 @@ func TestLighterMetaDecimalsUsesSupportedValueThenLegacyValue(t *testing.T) {
 func TestLighterCatalogMetadataObservesMemoryCatalogRefresh(t *testing.T) {
 	ctx := context.Background()
 	descriptor := exchange.SourceDescriptor{
-		Name:              "lighter-testnet",
+		Name:              "lighter-live",
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://ws.invalid",
 		Transport:         "openapi",
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueLighter,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             exchange.ProductSpot,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
@@ -199,7 +199,6 @@ func TestLighterCatalogMetadataObservesMemoryCatalogRefresh(t *testing.T) {
 	httpCalls := 0
 	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:          "https://openapi.invalid",
-		Environment:       "testnet",
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,
 		HTTPClient: &http.Client{Transport: lighterOpenAPIRoundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -243,7 +242,7 @@ func TestLighterCatalogMetadataReturnsCatalogErrorWithoutSDKFallback(t *testing.
 	ctx := context.Background()
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueLighter,
-		Environment: exchange.EnvironmentTestnet,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	}
 	catalog := exchange.NewMemoryCatalog(exchange.StaticInstrumentLoader{
@@ -256,7 +255,6 @@ func TestLighterCatalogMetadataReturnsCatalogErrorWithoutSDKFallback(t *testing.
 	httpCalls := 0
 	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:          "https://openapi.invalid",
-		Environment:       "testnet",
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,
 		HTTPClient: &http.Client{Transport: lighterOpenAPIRoundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -276,14 +274,14 @@ func TestLighterCatalogMetadataReturnsCatalogErrorWithoutSDKFallback(t *testing.
 func TestLighterPositionsResolveMarketIDsFromCatalogSnapshot(t *testing.T) {
 	ctx := context.Background()
 	descriptor := exchange.SourceDescriptor{
-		Name:              "lighter-testnet",
+		Name:              "lighter-live",
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://ws.invalid",
 		Transport:         "openapi",
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueLighter,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             exchange.ProductPerp,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
@@ -306,7 +304,6 @@ func TestLighterPositionsResolveMarketIDsFromCatalogSnapshot(t *testing.T) {
 	httpCalls := 0
 	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
 		Endpoint:          "https://openapi.invalid",
-		Environment:       "testnet",
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,
 		HTTPClient: &http.Client{Transport: lighterOpenAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {

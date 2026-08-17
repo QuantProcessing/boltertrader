@@ -29,11 +29,7 @@ type WsMarketClient struct {
 }
 
 func NewWsMarketClient(ctx context.Context) *WsMarketClient {
-	return NewWsMarketClientWithEndpointProfile(ctx, USDMMProductionEndpoints)
-}
-
-func NewDemoWsMarketClient(ctx context.Context) *WsMarketClient {
-	return NewWsMarketClientWithEndpointProfile(ctx, USDMMDemoEndpoints)
+	return NewWsMarketClientWithEndpointProfile(ctx, MainnetEndpointProfile())
 }
 
 func NewCoinMWsMarketClient(ctx context.Context) *WsMarketClient {

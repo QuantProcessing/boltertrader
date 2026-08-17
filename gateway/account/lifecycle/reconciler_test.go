@@ -147,7 +147,7 @@ func TestReconcilerCompletesCASFromExactGatewayTruthAfterLostApplyResponse(t *te
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: account.ID,
 		DesiredStateRevision: account.DesiredStateRevision, RuntimeGeneration: account.RuntimeGeneration,
 		CredentialVersion: account.CredentialVersion, RequestedState: account.State, Active: true,
-		Routes: []GatewayRuntimeRoute{{RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive, Ready: true}},
+		Routes: []GatewayRuntimeRoute{{RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive, Ready: true}},
 	}
 	reconciler, err := NewReconciler(store, writer, gateway, nil)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestExactGatewayActiveTruthRejectsOperationAndRouteMismatch(t *testing.T) {
 		OperationID: operationID, AccountID: account.ID, DesiredStateRevision: account.DesiredStateRevision,
 		RuntimeGeneration: account.RuntimeGeneration, CredentialVersion: account.CredentialVersion,
 		RequestedState: account.State, Active: true,
-		Routes: []GatewayRuntimeRoute{{RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive, Ready: true}},
+		Routes: []GatewayRuntimeRoute{{RouteID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive, Ready: true}},
 	}
 	if !exactGatewayActiveTruth(operationID, account, base) {
 		t.Fatal("exact runtime truth rejected")
@@ -182,7 +182,7 @@ func TestExactGatewayActiveTruthRejectsOperationAndRouteMismatch(t *testing.T) {
 		"different operation": func(truth *GatewayRuntimeTruth) { truth.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c34" },
 		"missing route":       func(truth *GatewayRuntimeTruth) { truth.Routes = nil },
 		"extra route": func(truth *GatewayRuntimeTruth) {
-			truth.Routes = append(truth.Routes, GatewayRuntimeRoute{RouteID: "extra", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteDisabled})
+			truth.Routes = append(truth.Routes, GatewayRuntimeRoute{RouteID: "extra", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteDisabled})
 		},
 		"duplicate route":  func(truth *GatewayRuntimeTruth) { truth.Routes = append(truth.Routes, truth.Routes[0]) },
 		"field mismatch":   func(truth *GatewayRuntimeTruth) { truth.Routes[0].RouteProfileID = "different" },
@@ -382,7 +382,7 @@ func TestRotateAndRemoveRecoverCleanupWindows(t *testing.T) {
 	store := NewMemoryStore()
 	ids := []secretstore.OperationID{"018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "018f47a8-2578-7d3c-9d7d-5e4f4a445c34", "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"}
 	service, _ := New(Options{Store: store, Secrets: writer, Audit: &auditWriter{}, Gateway: gateway, ID: func() string { return "acct_1" }, OperationID: func() secretstore.OperationID { id := ids[0]; ids = ids[1:]; return id }})
-	created, err := service.Create(context.Background(), CreateRequest{Venue: "binance", VenueEnvironment: EnvironmentDemo, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret")}, "principal_1")
+	created, err := service.Create(context.Background(), CreateRequest{Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret")}, "principal_1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +438,7 @@ func TestRotateReplayFromCleanupPendingReturnsCurrentAccountWithoutReapplying(t 
 		t.Fatal(err)
 	}
 	created, err := service.Create(context.Background(), CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentDemo, DisplayName: "Primary",
+		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary",
 		ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret"),
 	}, "principal_1")
 	if err != nil {
@@ -481,7 +481,7 @@ func TestRotationCleanupBlocksSecondRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := service.Create(context.Background(), CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentDemo, DisplayName: "Primary",
+		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary",
 		ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret"),
 	}, "principal_1")
 	if err != nil {
@@ -541,7 +541,7 @@ func TestRemoveRecoversAfterProviderDeleteResponseWasLost(t *testing.T) {
 	gateway := &lifecycleGateway{}
 	ids := []secretstore.OperationID{"018f47a8-2578-7d3c-9d7d-5e4f4a445c33", "018f47a8-2578-7d3c-9d7d-5e4f4a445c34"}
 	service, _ := New(Options{Store: NewMemoryStore(), Secrets: writer, Audit: &auditWriter{}, Gateway: gateway, ID: func() string { return "acct_2" }, OperationID: func() secretstore.OperationID { id := ids[0]; ids = ids[1:]; return id }})
-	created, _ := service.Create(context.Background(), CreateRequest{Venue: "binance", VenueEnvironment: EnvironmentDemo, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret")}, "principal_1")
+	created, _ := service.Create(context.Background(), CreateRequest{Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret")}, "principal_1")
 	active, _ := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "principal_1")
 	service.Hooks.AfterProviderDelete = func() error { return errCrash }
 	if _, err := service.Remove(context.Background(), active.ID, active.DesiredStateRevision, "principal_1", "remove-2"); !errors.Is(err, errCrash) {
@@ -567,7 +567,7 @@ func TestReconcilerKeepsRetirementPendingWhenSecretDeletionFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	created, err := service.Create(context.Background(), CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentDemo, DisplayName: "Primary",
+		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary",
 		ProductIDs: []string{"manual"}, SecretMaterial: []byte("legacy-secret"),
 	}, "principal_1")
 	if err != nil {
@@ -898,7 +898,7 @@ func assertRotationCleanupComplete(t *testing.T, store *MemoryStore, accountID s
 }
 
 func durableCreateRequest() CreateRequest {
-	return CreateRequest{Venue: "binance", DisplayName: "Primary", ProductPolicy: []string{"manual"}, Routes: []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}}, CredentialBundle: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)}
+	return CreateRequest{Venue: "binance", DisplayName: "Primary", ProductPolicy: []string{"manual"}, Routes: []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive}}, CredentialBundle: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)}
 }
 
 func TestRotateAndRemoveRejectMissingIdempotencyKeysWithoutEffects(t *testing.T) {
@@ -940,7 +940,7 @@ func TestRotateAndRemoveRejectMissingIdempotencyKeysWithoutEffects(t *testing.T)
 func TestDurableCreateRejectsInvalidPolicyAndRoutesBeforeEffects(t *testing.T) {
 	thirtyThreeRoutes := make([]AccountRoute, 33)
 	for index := range thirtyThreeRoutes {
-		thirtyThreeRoutes[index] = AccountRoute{ID: fmt.Sprintf("perp-usdt-%02d", index), Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}
+		thirtyThreeRoutes[index] = AccountRoute{ID: fmt.Sprintf("perp-usdt-%02d", index), Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive}
 	}
 	tests := []struct {
 		name   string
@@ -1020,7 +1020,7 @@ func TestCreateRecoversReferenceAfterPutResponseWasLost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := CreateRequest{Venue: "binance", DisplayName: "Primary", ProductPolicy: []string{"manual"}, Routes: []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}}, CredentialBundle: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)}
+	request := CreateRequest{Venue: "binance", DisplayName: "Primary", ProductPolicy: []string{"manual"}, Routes: []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive}}, CredentialBundle: []byte(`{"schemaVersion":1,"venue":"binance","authKind":"api_key_secret","metadata":{},"secrets":{"apiKey":"key","apiSecret":"secret"}}`)}
 	_, err = service.Create(context.Background(), request, "principal_1", "create-1")
 	if !errors.Is(err, errCrash) {
 		t.Fatalf("err=%v", err)

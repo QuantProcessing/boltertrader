@@ -14,7 +14,7 @@ func validDesiredAccount() DesiredAccount {
 	return DesiredAccount{
 		AccountID:            "account-a",
 		Venue:                "venue-a",
-		VenueEnvironment:     "testnet",
+		VenueEnvironment:     "live",
 		SecretRef:            "opaque://account-a/1",
 		DesiredStateRevision: 1,
 		RuntimeGeneration:    1,
@@ -107,13 +107,13 @@ func TestDesiredSnapshotDigestIsRouteOrderIndependentAndRejectsDuplicateRoutes(t
 		OperationID:       op,
 		AccountID:         "account-a",
 		Venue:             "binance",
-		NativeEnvironment: "demo",
+		NativeEnvironment: "live",
 		SecretRef:         ref,
 		Fence:             domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 2, RuntimeGeneration: 2, CredentialVersion: 1},
 		RequestedState:    DesiredActive,
 		Routes: []RouteDefinition{
-			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive},
-			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive},
+			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive},
+			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: RouteActive},
 		},
 	}
 	digest, err := snapshot.CanonicalDigest()

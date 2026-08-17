@@ -6,9 +6,8 @@ This page owns BolterTrader's normative vocabulary. Other pages use these
 meanings and link here instead of defining a term locally.
 
 Most of these words mean something looser elsewhere. They are narrow here on
-purpose, because the distance between "we implemented it" and "we watched it
-work against a testnet" is the distance between a claim you can publish and one
-you cannot.
+purpose, because the distance between "we implemented it" and "a recorded run
+proved it" is the distance between a claim you can publish and one you cannot.
 
 ## Naming something to trade
 
@@ -17,7 +16,7 @@ Five words compose into one identifier, in this order.
 | Term | Meaning | Values |
 | --- | --- | --- |
 | Venue | An exchange | `binance`, `okx`, `lighter`, `hyperliquid`, `bybit`, `bitget`, `gate`, `aster`, `nado` |
-| Environment | Which of that venue's networks | `live`, `demo`, `testnet` |
+| Environment | Which of that venue's networks | `live` |
 | Product | The instrument family | `spot`, `perp` |
 | Settlement asset | What a contract settles in, where a venue runs more than one | `USDT`, `USDC`, `USDT0` |
 | Canonical symbol | The venue-neutral pair | `BTC-USDT` |
@@ -34,21 +33,28 @@ venue:environment:product:symbol
 venue:environment:product:settlement:symbol
 ```
 
-`binance:demo:spot:BTC-USDT` and `nado:testnet:perp:USDT0:BTC-USDT` are both well
+`binance:live:spot:BTC-USDT` and `nado:live:perp:USDT0:BTC-USDT` are both well
 formed. The settlement segment appears only where a venue needs it to
 disambiguate. The last segment must be a canonical symbol, which is why the
 validator insists on the hyphen: it is the cheapest way to catch a native symbol
 that leaked upward.
 
-A **route profile** is the resolved combination of venue, product, settlement,
-and environment, named by an ID like `binance.spot.demo.v1` or
-`nado.perp.usdt0.testnet.v1`. A **route** is a profile bound to one account's
-credentials, and a **route ID** names it inside a write.
+The environment segment has one legal value. It once took `demo` and `testnet`
+as well, and the venues implemented those differently enough that the tier was
+removed. The segment itself stayed, because the ID is positional: removing it
+would reinterpret every identifier already written down rather than shorten it.
 
-**Mode** is coarser than environment, and exists for one reason: `test` covers
-`demo` and `testnet`, `live` covers `live`, and a process running in one mode
-cannot resolve a profile belonging to the other. Environment says which network;
-mode says which class of consequence.
+A **route profile** is the resolved combination of venue, product, and
+settlement, named by an ID like `binance.spot.v1` or `nado.perp.usdt0.v1`. A
+**route** is a profile bound to one account's credentials, and a **route ID**
+names it inside a write.
+
+**Mode** is a deployment attribute, not a market one. It used to be coarser than
+environment — `test` covered `demo` and `testnet`, `live` covered `live`, and a
+process running in one mode could not resolve a profile belonging to the other.
+With the non-production tier gone, a route profile carries no mode at all. What
+survives is a `test` or `live` label on the database, secret namespace, and
+principal that one deployment runs under.
 
 ## Product rows
 
@@ -99,8 +105,8 @@ Ranked, roughly, by how much each one lets you claim.
 | Implemented | Code for the named surface exists in the current tree | That anything ran, or that a venue accepted it |
 | Admitted | The operation is present on that product row at compile time — `A` in the operation matrices | That the venue honors it, or that it has been exercised |
 | Write-ready | The capability matrix marks that row as accepting writes by default | Anything about one specific account's readiness |
-| Demo/Testnet-certified | One named non-production target passed with zero skips, for a named product scope, on a named date | Mainnet behavior, account-wide cleanliness, or that it still passes today |
-| Production-ready | Separate operational evidence supports the stated production scope | Anything inferable from the three rows above |
+| Offline-conformant | A recorded zero-skip run of the deterministic, credential-free suite passed for a named product scope, on a named target, on a named date | That the venue answers today, that mainnet behaves the same way, or that it still passes now |
+| Production-ready | Separate operational evidence supports the stated production scope. This repository never claims it | Anything inferable from the three rows above |
 | Deferred | Deliberately outside the current slice, for a stated reason | That the venue lacks it, or that it was rejected permanently |
 | Unsupported | The normalized surface is absent, or returns an unsupported error | That the venue's own API lacks the feature |
 | SDK-only | Low-level venue code exists with no product row above it | Normalized coverage of any kind |
@@ -112,7 +118,7 @@ and the surface, then pick one of the words above.
 
 | Term | Meaning |
 | --- | --- |
-| Acceptance harness | An opt-in test that performs one bounded real interaction with a named non-production environment. It is not a reusable trading application |
+| Acceptance harness | An opt-in test that performs one bounded real interaction with a venue, behind a named write gate. The interaction is real — there is no non-production target behind it. It is not a reusable trading application |
 | Zero-skip | The run executed at least one test and skipped none. A skip is a failure, because a missing credential must not read as a pass |
 | Clean final state | A terminal assertion within the exact symbol, product, account, and harness-owned-order scope — not a statement about the account |
 | Ambiguous outcome | The venue may have received the write, but no authoritative result proves it. Automatic retry is unsafe |

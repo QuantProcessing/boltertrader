@@ -28,7 +28,7 @@ func (factory *ExchangeFactory) Build(ctx context.Context, key routeprofile.Key)
 	if factory == nil || factory.httpClient == nil || ctx == nil || ctx.Err() != nil {
 		return nil, ErrConnectorUnavailable
 	}
-	profile, err := factory.trusted.Resolve(key.Mode, key.Venue, key.RouteProfileID)
+	profile, err := factory.trusted.Resolve(key.Venue, key.RouteProfileID)
 	if err != nil {
 		return nil, ErrConnectorUnavailable
 	}
@@ -36,7 +36,7 @@ func (factory *ExchangeFactory) Build(ctx context.Context, key routeprofile.Key)
 		exchange.Venue(profile.Venue),
 		exchange.Product(profile.Product),
 		profile.SettlementAsset,
-		exchangefactory.Environment(profile.NativeEnvironment),
+		exchangefactory.EnvironmentLive,
 		factory.httpClient,
 	)
 	if err != nil {

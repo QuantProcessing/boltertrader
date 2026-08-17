@@ -13,7 +13,7 @@ explicitly.
   module boundary, construction lifecycle, normalized products, and account
   dimensions.
 - Follow the [Unified exchange API quickstart](../guides/exchange-rest-quickstart.md)
-  for typed construction and safe non-production examples.
+  for typed construction and its credential-free public examples.
 - If callers should use a resident remote service instead of owning clients,
   caching, credentials, and restart recovery in-process, choose the
   [Exchange Gateway](../guides/exchange-gateway.md). The two are peer entry
@@ -36,15 +36,17 @@ leverage, and order-caveat summary.
 
 - [Configuration](../reference/configuration.md) owns exact environment,
   credential-name, selector, and endpoint-profile rules.
-- [Testing and evidence](../reference/testing.md) owns offline gates and the
-  Demo/Testnet command inventory.
+- [Testing and evidence](../reference/testing.md) owns the offline gates, the
+  container gates, and what a green run is allowed to claim.
 
 ## Boundary and source of truth
 
 Exchange behavior claims must be grounded in the public exchange contracts,
-factory, manifest, exchange tests, and exchange-specific acceptance evidence.
-Gateway and product-service documentation may provide background, but it does
-not define this module's behavior.
+factory, manifest, and exchange tests. There is no external acceptance evidence
+to appeal to any more: the tier that produced it was deleted with the
+Demo/Testnet environments it ran against. Gateway and product-service
+documentation may provide background, but it does not define this module's
+behavior.
 
 - [Exchange contracts](../../exchange/contract.go)
 - [Factory API](../../exchange/factory/factory.go)

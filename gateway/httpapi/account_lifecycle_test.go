@@ -189,7 +189,7 @@ func TestAccountLifecycleRoutesReachTheService(t *testing.T) {
 	}{
 		{"list", http.MethodGet, "/internal/v1/accounts", "", http.StatusOK, "List"},
 		{"get", http.MethodGet, "/internal/v1/accounts/acct_1", "", http.StatusOK, "Get"},
-		{"create", http.MethodPost, "/internal/v1/accounts", `{"venue":"binance","displayName":"Main","productPolicy":["perp"],"routes":[{"routeId":"perp-usdt","product":"perp","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}],"credentialBundle":` + validCredentialBundle + `}`, http.StatusCreated, "Create"},
+		{"create", http.MethodPost, "/internal/v1/accounts", `{"venue":"binance","displayName":"Main","productPolicy":["perp"],"routes":[{"routeId":"perp-usdt","product":"perp","routeProfileId":"binance.perp.usdt.v1","requestedState":"active"}],"credentialBundle":` + validCredentialBundle + `}`, http.StatusCreated, "Create"},
 		{"update", http.MethodPatch, "/internal/v1/accounts/acct_1", `{"displayName":"Renamed","productIds":["perp"]}`, http.StatusOK, "UpdateMetadata"},
 		{"validate", http.MethodPost, "/internal/v1/accounts/acct_1/validate", "", http.StatusOK, "MarkValidated"},
 		{"rotate", http.MethodPost, "/internal/v1/accounts/acct_1/rotate", `{"credentialBundle":` + validCredentialBundle + `}`, http.StatusOK, "Rotate"},

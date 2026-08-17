@@ -19,7 +19,6 @@ import (
 
 type WebsocketClient struct {
 	URL     string
-	Env     Environment
 	Conn    *websocket.Conn
 	Mu      sync.RWMutex
 	WriteMu sync.Mutex
@@ -74,15 +73,11 @@ type WebsocketClient struct {
 }
 
 func NewWebsocketClient(ctx context.Context) *WebsocketClient {
-	env := EnvironmentMainnet
-	wsURL := wsURLForEnvironment(env)
-
 	// Create cancellable context from parent
 	ctx, cancel := context.WithCancel(ctx)
 
 	c := &WebsocketClient{
-		URL:                    wsURL,
-		Env:                    env,
+		URL:                    MainnetWSURL,
 		subscriptions:          make(map[string]map[string]func(WsMessage)),
 		subscriptionPayloads:   make(map[string]map[string]any),
 		subscriptionRevisions:  make(map[string]map[string]uint64),
@@ -102,18 +97,8 @@ func NewWebsocketClient(ctx context.Context) *WebsocketClient {
 	return c
 }
 
-func (c *WebsocketClient) WithEnvironment(env Environment) *WebsocketClient {
-	c.Env = normalizeEnvironment(env)
-	c.URL = wsURLForEnvironment(c.Env)
-	return c
-}
-
-func (c *WebsocketClient) IsMainnet() bool {
-	return normalizeEnvironment(c.Env) == EnvironmentMainnet
-}
-
 func (c *WebsocketClient) SignL1Action(action any, nonce int64) (SignatureResult, error) {
-	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil, c.IsMainnet())
+	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, nil)
 }
 
 func (c *WebsocketClient) WithCredentials(privateKey string, vault *string) *WebsocketClient {

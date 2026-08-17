@@ -10,25 +10,21 @@ type envSignAction struct {
 	Type string `msgpack:"type"`
 }
 
-func TestClientWithEnvironmentSelectsTestnetRESTEndpoint(t *testing.T) {
-	client := NewClient().WithEnvironment(EnvironmentTestnet)
+// Mainnet is the only endpoint pair left, so the constructor is the single
+// place that can get it wrong.
+func TestNewClientCarriesMainnetRESTEndpoint(t *testing.T) {
+	client := NewClient()
 
-	if client.BaseURL != TestnetAPIURL {
-		t.Fatalf("BaseURL=%q, want %q", client.BaseURL, TestnetAPIURL)
-	}
-	if client.IsMainnet() {
-		t.Fatal("testnet client must not sign as mainnet")
+	if client.BaseURL != MainnetAPIURL {
+		t.Fatalf("BaseURL=%q, want %q", client.BaseURL, MainnetAPIURL)
 	}
 }
 
-func TestWebsocketClientWithEnvironmentSelectsTestnetEndpoint(t *testing.T) {
-	client := NewWebsocketClient(context.Background()).WithEnvironment(EnvironmentTestnet)
+func TestNewWebsocketClientCarriesMainnetEndpoint(t *testing.T) {
+	client := NewWebsocketClient(context.Background())
 
-	if client.URL != TestnetWSURL {
-		t.Fatalf("URL=%q, want %q", client.URL, TestnetWSURL)
-	}
-	if client.IsMainnet() {
-		t.Fatal("testnet websocket client must not sign as mainnet")
+	if client.URL != MainnetWSURL {
+		t.Fatalf("URL=%q, want %q", client.URL, MainnetWSURL)
 	}
 }
 
@@ -61,62 +57,48 @@ func TestClientsWithCredentialsAcceptHexPrefixedPrivateKey(t *testing.T) {
 	}
 }
 
-func TestClientSignL1ActionUsesEnvironmentSource(t *testing.T) {
+// The client methods are thin delegations to the package-level signer, and the
+// arguments they forward — vault and expiry — are hashed into the signature.
+// These assert the delegation is faithful, which is what the environment
+// comparison used to prove indirectly.
+func TestClientSignL1ActionMatchesDirectSigning(t *testing.T) {
 	action := envSignAction{Type: "noop"}
 	nonce := int64(123456789)
 	privateKey := strings.Repeat("01", 32)
 
-	client := NewClient().
-		WithEnvironment(EnvironmentTestnet).
-		WithCredentials(privateKey, nil)
+	client := NewClient().WithCredentials(privateKey, nil)
 
 	got, err := client.SignL1Action(action, nonce)
 	if err != nil {
 		t.Fatalf("SignL1Action: %v", err)
 	}
-	wantTestnet, err := SignL1Action(client.PrivateKey, action, "", nonce, nil, false)
+	want, err := SignL1Action(client.PrivateKey, action, client.Vault, nonce, client.ExpiresAfter)
 	if err != nil {
-		t.Fatalf("direct testnet SignL1Action: %v", err)
-	}
-	wantMainnet, err := SignL1Action(client.PrivateKey, action, "", nonce, nil, true)
-	if err != nil {
-		t.Fatalf("direct mainnet SignL1Action: %v", err)
+		t.Fatalf("direct SignL1Action: %v", err)
 	}
 
-	if got != wantTestnet {
-		t.Fatalf("client signature=%#v, want testnet signature %#v", got, wantTestnet)
-	}
-	if got == wantMainnet {
-		t.Fatal("testnet client signature matched mainnet source")
+	if got != want {
+		t.Fatalf("client signature=%#v, want %#v", got, want)
 	}
 }
 
-func TestWebsocketClientSignL1ActionUsesEnvironmentSource(t *testing.T) {
+func TestWebsocketClientSignL1ActionMatchesDirectSigning(t *testing.T) {
 	action := envSignAction{Type: "noop"}
 	nonce := int64(123456789)
 	privateKey := strings.Repeat("01", 32)
 
-	client := NewWebsocketClient(context.Background()).
-		WithEnvironment(EnvironmentTestnet).
-		WithCredentials(privateKey, nil)
+	client := NewWebsocketClient(context.Background()).WithCredentials(privateKey, nil)
 
 	got, err := client.SignL1Action(action, nonce)
 	if err != nil {
 		t.Fatalf("SignL1Action: %v", err)
 	}
-	wantTestnet, err := SignL1Action(client.PrivateKey, action, "", nonce, nil, false)
+	want, err := SignL1Action(client.PrivateKey, action, client.Vault, nonce, nil)
 	if err != nil {
-		t.Fatalf("direct testnet SignL1Action: %v", err)
-	}
-	wantMainnet, err := SignL1Action(client.PrivateKey, action, "", nonce, nil, true)
-	if err != nil {
-		t.Fatalf("direct mainnet SignL1Action: %v", err)
+		t.Fatalf("direct SignL1Action: %v", err)
 	}
 
-	if got != wantTestnet {
-		t.Fatalf("client signature=%#v, want testnet signature %#v", got, wantTestnet)
-	}
-	if got == wantMainnet {
-		t.Fatal("testnet websocket client signature matched mainnet source")
+	if got != want {
+		t.Fatalf("websocket client signature=%#v, want %#v", got, want)
 	}
 }

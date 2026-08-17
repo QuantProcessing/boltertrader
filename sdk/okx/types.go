@@ -16,14 +16,6 @@ const (
 	MethodPost Method = "POST"
 )
 
-// Environment type
-type Environment string
-
-const (
-	Production Environment = "0"
-	Simulated  Environment = "1"
-)
-
 // --- Account ---
 
 type BalanceDetail struct {

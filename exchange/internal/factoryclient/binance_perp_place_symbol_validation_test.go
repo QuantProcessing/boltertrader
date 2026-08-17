@@ -14,8 +14,7 @@ import (
 func TestBinancePerpRESTPlaceOrderRejectsMalformedInstrumentBeforeSend(t *testing.T) {
 	sends := 0
 	client := NewBinanceUSDPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			sends++
 			return openAPIJSONResponse(`{"symbol":"","orderId":1,"clientOrderId":"1001","status":"NEW","type":"MARKET","side":"BUY","origQty":"1","executedQty":"0","avgPrice":"0","positionSide":"BOTH","reduceOnly":false}`), nil

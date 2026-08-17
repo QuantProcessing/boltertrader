@@ -40,7 +40,7 @@ func TestPendingSnapshotSerializationStrictlyMatchesInternalOpenAPI(t *testing.T
 				RuntimeGeneration: 3, CredentialVersion: 4, RequestedState: "rotating",
 				Routes: []gatewayhttp.RuntimeRouteView{{
 					RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
-					RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active", Ready: true,
+					RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active", Ready: true,
 				}},
 			},
 			State: "candidate_ready",

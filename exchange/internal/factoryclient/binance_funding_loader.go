@@ -29,10 +29,7 @@ func NewBinanceFundingBoardLoader(settlement string, settings Settings) exchange
 // a time, and paying several hundred requests for one column is not a trade a
 // board should make.
 func (loader binanceFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope exchange.CatalogScope) (exchange.FundingBoardSnapshot, error) {
-	sdk, err := newBinancePerpPublicSDK(fundingBoardOperation, loader.settings)
-	if err != nil {
-		return exchange.FundingBoardSnapshot{}, err
-	}
+	sdk := newBinancePerpPublicSDK(loader.settings)
 
 	rows, err := sdk.GetAllFundingRates(ctx)
 	if err != nil {
@@ -117,10 +114,7 @@ func (loader binanceFundingHistoryLoader) LoadFundingHistory(ctx context.Context
 	if err != nil {
 		return exchange.FundingHistorySnapshot{}, err
 	}
-	sdk, err := newBinancePerpPublicSDK(fundingHistoryOperation, loader.settings)
-	if err != nil {
-		return exchange.FundingHistorySnapshot{}, err
-	}
+	sdk := newBinancePerpPublicSDK(loader.settings)
 
 	rows, err := sdk.GetFundingRateHistory(ctx, fundingHistoryNative(request), since, until, fundingHistoryLimit(request, binanceFundingHistoryMax))
 	if err != nil {

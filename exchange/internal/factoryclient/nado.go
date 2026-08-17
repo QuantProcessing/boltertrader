@@ -64,11 +64,7 @@ func NewNadoUSDT0Perp(privateKey, subaccount string, settings Settings) exchange
 }
 
 func newNadoBase(product exchange.Product, privateKey, subaccount string, settings Settings) *nadoBase {
-	env := nadosdk.EnvironmentMainnet
-	if strings.EqualFold(settings.Environment, "testnet") || strings.EqualFold(settings.Environment, "demo") {
-		env = nadosdk.EnvironmentTestnet
-	}
-	profile, err := nadosdk.NewProfile(env)
+	profile, err := nadosdk.NewProfile()
 	if err != nil {
 		return &nadoBase{meta: clientMeta{venue: exchange.VenueNado, product: product}}
 	}

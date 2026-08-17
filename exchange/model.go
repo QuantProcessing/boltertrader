@@ -68,13 +68,15 @@ type OptionalInt struct {
 	Valid bool  `json:"valid"`
 }
 
+// Environment names the endpoint family a venue client talks to. There is one:
+// every venue's demo and testnet endpoints were removed because no two of them
+// agreed on what a demo was, and maintaining nine dialects of "not real" cost
+// more than it proved. The type is kept rather than the field being deleted
+// because it is what a stored account's environment is validated against — a
+// row still asking for demo has to be rejected, and something has to reject it.
 type Environment string
 
-const (
-	EnvironmentLive    Environment = "live"
-	EnvironmentDemo    Environment = "demo"
-	EnvironmentTestnet Environment = "testnet"
-)
+const EnvironmentLive Environment = "live"
 
 type Instrument struct {
 	Identity InstrumentIdentity `json:"identity"`

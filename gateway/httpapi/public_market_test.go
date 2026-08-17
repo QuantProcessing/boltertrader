@@ -535,7 +535,7 @@ func newPublicMarketFixtureWithCapability(
 	capabilityRow capability.Row,
 ) (domain.InstrumentID, exchange.Instrument, *fakePublicPerpClient, http.Handler) {
 	t.Helper()
-	instrumentID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	instrument := exchange.Instrument{
 		Identity: exchange.InstrumentIdentity{
 			Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
@@ -544,7 +544,7 @@ func newPublicMarketFixtureWithCapability(
 		},
 	}
 	public := catalog.Instrument{
-		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 		Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT",
 		BaseAsset: "BTC", QuoteAsset: "USDT",
 	}
@@ -587,11 +587,11 @@ func newPublicMarketFixtureWithCapability(
 	accounts := &fakeHTTPAccounts{
 		resource: account.Resource{
 			AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
-			Environment: exchange.EnvironmentDemo, Settlement: "USDT", ReadReady: true, WriteReady: true,
+			Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
 		},
 		status: account.Status{Resource: account.Resource{
 			AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
-			Environment: exchange.EnvironmentDemo, Settlement: "USDT", ReadReady: true, WriteReady: true,
+			Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
 		}},
 		instrument: instrument, public: public, capability: capabilityRow, perp: client,
 	}

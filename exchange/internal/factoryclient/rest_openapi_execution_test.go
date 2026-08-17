@@ -44,7 +44,7 @@ func hyperliquidOpenAPICatalogSettings(t *testing.T, settings Settings, product 
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueHyperliquid,
-		Environment:         exchange.Environment(settings.Environment),
+		Environment:         exchange.EnvironmentLive,
 		Product:             product,
 		Settlement:          settlement,
 		EndpointFingerprint: descriptor.Fingerprint(),
@@ -165,7 +165,7 @@ func (router *binanceOpenAPIRouter) RoundTrip(request *http.Request) (*http.Resp
 func TestOpenAPIBinanceRESTExecutionMatrix(t *testing.T) {
 	router := newBinanceOpenAPIRouter()
 	httpClient := &http.Client{Transport: router}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: httpClient}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: httpClient}
 	ctx := context.Background()
 
 	spot := NewBinanceSpot("key", "secret", settings)
@@ -190,7 +190,7 @@ func TestOpenAPIBinanceRESTExecutionMatrix(t *testing.T) {
 func TestOpenAPIBinanceFillsCursorAdvancesPastInclusiveFromID(t *testing.T) {
 	router := newBinanceOpenAPIRouter()
 	httpClient := &http.Client{Transport: router}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: httpClient}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: httpClient}
 	ctx := context.Background()
 
 	spot := NewBinanceSpot("key", "secret", settings)
@@ -231,7 +231,7 @@ func TestOpenAPIBinanceFillsCursorAdvancesPastInclusiveFromID(t *testing.T) {
 func TestOpenAPIBinanceFillsCursorDoesNotOverflowAndPerpRejectsNonPositiveCursor(t *testing.T) {
 	router := newBinanceOpenAPIRouter()
 	httpClient := &http.Client{Transport: router}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: httpClient}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: httpClient}
 	ctx := context.Background()
 
 	spot := NewBinanceSpot("key", "secret", settings)
@@ -442,9 +442,8 @@ func TestOpenAPIBinancePerpOrderHistoryRejectsMismatchedInstrument(t *testing.T)
 		return router.RoundTrip(request)
 	})
 	client := NewBinanceUSDPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 	instrument := assertPerpReadMatrix(t, context.Background(), client, "BTC-USDT")
 
@@ -529,7 +528,7 @@ func stringValue(value any) string {
 
 func TestOpenAPIOKXRESTExecutionMatrix(t *testing.T) {
 	router := &okxOpenAPIRouter{}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: &http.Client{Transport: router}}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: router}}
 	ctx := context.Background()
 
 	spot := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, settings))
@@ -592,9 +591,8 @@ func TestOpenAPIOKXSetLeverageRejectsMarginScopeMismatch(t *testing.T) {
 		return router.RoundTrip(request)
 	})
 	client := NewOKXUSDTPerp("key", "secret", "passphrase", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductPerp)
@@ -613,9 +611,8 @@ func TestOpenAPIOKXSetLeverageAcceptsBlankResponsePositionSideForNetScope(t *tes
 		return router.RoundTrip(request)
 	})
 	client := NewOKXUSDTPerp("key", "secret", "passphrase", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductPerp)
@@ -634,7 +631,7 @@ func TestOpenAPIOKXSetLeverageAcceptsBlankResponsePositionSideForNetScope(t *tes
 func okxOpenAPICatalogSettings(product exchange.Product, settings Settings) Settings {
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     product,
 	}
 	if product == exchange.ProductPerp {
@@ -736,9 +733,8 @@ func TestLighterSpotBalancesIgnoresPerpPositionsFromUnifiedAccountEnvelope(t *te
 		spotIncludesPosition: true,
 	}
 	client := NewLighterSpot(openAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})
 
 	balances, err := client.Balances(context.Background())
@@ -753,7 +749,7 @@ func TestLighterSpotBalancesIgnoresPerpPositionsFromUnifiedAccountEnvelope(t *te
 func TestOpenAPILighterRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 	spotRouter := &lighterOpenAPIRouter{product: exchange.ProductSpot, marketID: 1, instrument: "BTC-USDC"}
-	spotSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: spotRouter}}
+	spotSettings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: spotRouter}}
 	spot := NewLighterSpot(openAPILighterPrivateKey, 7, 2, spotSettings)
 	spotInstrument := assertSpotReadMatrix(t, ctx, spot, spotRouter.instrument)
 	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
@@ -763,7 +759,7 @@ func TestOpenAPILighterRESTExecutionMatrix(t *testing.T) {
 	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
 	perpRouter := &lighterOpenAPIRouter{product: exchange.ProductPerp, marketID: 2, instrument: "BTC-USDC"}
-	perpSettings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}
+	perpSettings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: perpRouter}}
 	perp := NewLighterPerp(openAPILighterPrivateKey, 7, 2, perpSettings)
 	perpInstrument := assertPerpReadMatrix(t, ctx, perp, perpRouter.instrument)
 	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
@@ -896,7 +892,7 @@ func TestOpenAPIHyperliquidRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
 
 	spotRouter := &hyperliquidOpenAPIRouter{product: exchange.ProductSpot, coin: "@1"}
-	spotSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: spotRouter}}, exchange.ProductSpot)
+	spotSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: spotRouter}}, exchange.ProductSpot)
 	spot := NewHyperliquidSpot(openAPITestPrivateKey, spotSettings)
 	spotInstrument := assertSpotReadMatrix(t, ctx, spot, "PURR-USDC")
 	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductSpot, spot, spotInstrument)
@@ -906,7 +902,7 @@ func TestOpenAPIHyperliquidRESTExecutionMatrix(t *testing.T) {
 	assertSpotLifecycleMatrix(t, ctx, spot, spotInstrument)
 
 	perpRouter := &hyperliquidOpenAPIRouter{product: exchange.ProductPerp, coin: "BTC"}
-	perpSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: perpRouter}}, exchange.ProductPerp)
+	perpSettings := hyperliquidOpenAPICatalogSettings(t, Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: perpRouter}}, exchange.ProductPerp)
 	perp := NewHyperliquidPerp(openAPITestPrivateKey, perpSettings)
 	perpInstrument := assertPerpReadMatrix(t, ctx, perp, "BTC-USDC")
 	exerciseOpenAPIOrderBranches(t, ctx, exchange.ProductPerp, perp, perpInstrument)
@@ -942,9 +938,8 @@ func TestOpenAPIHyperliquidRESTRejectsInexactPricesForEveryLimitPolicy(t *testin
 			coin:    "@1",
 			newClient: func(t *testing.T, router *hyperliquidOpenAPIRouter) (any, exchange.Instrument) {
 				settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-					Endpoint:    "https://openapi.invalid",
-					Environment: "testnet",
-					HTTPClient:  &http.Client{Transport: router},
+					Endpoint:   "https://openapi.invalid",
+					HTTPClient: &http.Client{Transport: router},
 				}, exchange.ProductSpot)
 				client := NewHyperliquidSpot(openAPITestPrivateKey, settings)
 				return client, assertSpotReadMatrix(t, ctx, client, "PURR-USDC")
@@ -956,9 +951,8 @@ func TestOpenAPIHyperliquidRESTRejectsInexactPricesForEveryLimitPolicy(t *testin
 			coin:    "BTC",
 			newClient: func(t *testing.T, router *hyperliquidOpenAPIRouter) (any, exchange.Instrument) {
 				settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-					Endpoint:    "https://openapi.invalid",
-					Environment: "testnet",
-					HTTPClient:  &http.Client{Transport: router},
+					Endpoint:   "https://openapi.invalid",
+					HTTPClient: &http.Client{Transport: router},
 				}, exchange.ProductPerp)
 				client := NewHyperliquidPerp(openAPITestPrivateKey, settings)
 				return client, assertPerpReadMatrix(t, ctx, client, "BTC-USDC")
@@ -1056,9 +1050,8 @@ func TestOpenAPIHyperliquidSetLeveragePostSendFailureUsesSetLeverageBoundary(t *
 		return router.RoundTrip(request)
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(openAPITestPrivateKey, settings)
 	instrument := assertPerpReadMatrix(t, context.Background(), client, "BTC-USDC")

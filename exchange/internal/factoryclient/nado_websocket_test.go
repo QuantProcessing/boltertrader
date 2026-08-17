@@ -26,7 +26,7 @@ func TestNadoWebSocketFixtureFileCoversEveryMethod(t *testing.T) {
 
 func TestNadoWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	fixture := newNadoWSFixture(t)
-	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL}
+	settings := Settings{Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL}
 
 	spot := NewNadoSpot(testAsterPrivateKey, "default", settings).WebSocket()
 	exerciseNadoSpotWebSocketFixture(t, spot, fixture, nadoTestInstrument(exchange.ProductSpot), int64(1))
@@ -37,7 +37,7 @@ func TestNadoWebSocketExercisesEveryExposedMethod(t *testing.T) {
 }
 
 func TestNadoClientCachesAndClosesWebSocketFacet(t *testing.T) {
-	client := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{Environment: "testnet"})
+	client := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{})
 	if client.WebSocket() != client.WebSocket() {
 		t.Fatal("Nado WebSocket returned different facets")
 	}
@@ -56,7 +56,7 @@ func TestNadoClientCachesAndClosesWebSocketFacet(t *testing.T) {
 }
 
 func TestNadoWSSetupUsesCallerContext(t *testing.T) {
-	settings := Settings{Environment: "testnet", Endpoint: "https://nado-fixture.invalid/v1", WebSocketEndpoint: "ws://127.0.0.1:1"}
+	settings := Settings{Endpoint: "https://nado-fixture.invalid/v1", WebSocketEndpoint: "ws://127.0.0.1:1"}
 	base := newNadoBase(exchange.ProductSpot, testAsterPrivateKey, "default", settings)
 	backend := &nadoSpotWSBackend{base: base}
 
@@ -106,7 +106,7 @@ func TestNadoWatchBalancesRefreshUsesSubscriptionContext(t *testing.T) {
 			return response, nil
 		}
 	})
-	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL, HTTPClient: &http.Client{Transport: router}}
+	settings := Settings{Endpoint: fixture.restURL + "/v1", WebSocketEndpoint: fixture.wsURL, HTTPClient: &http.Client{Transport: router}}
 	base := newNadoBase(exchange.ProductSpot, testAsterPrivateKey, "default", settings)
 	account, err := nadosdk.NewWsAccountClient(context.Background(), base.sdk)
 	if err != nil {

@@ -356,7 +356,7 @@ func (router *gateExactLookupHTTPRouter) requestAt(index int) string {
 }
 
 func gateExactLookupSettings(router *gateExactLookupHTTPRouter) Settings {
-	return Settings{Endpoint: "https://openapi.invalid/api/v4", Environment: "testnet", HTTPClient: &http.Client{Transport: router}}
+	return Settings{Endpoint: "https://openapi.invalid/api/v4", HTTPClient: &http.Client{Transport: router}}
 }
 
 func gateExactLookupInstrument(product exchange.Product) exchange.Instrument {

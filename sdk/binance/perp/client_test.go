@@ -57,20 +57,6 @@ func TestClient_WithBaseURL(t *testing.T) {
 	}
 }
 
-func TestClient_WithUSDMMDemoUsesDemoFAPI(t *testing.T) {
-	client := NewClient().WithUSDMMDemo()
-
-	if client.BaseURL != DemoBaseURL {
-		t.Fatalf("expected Demo REST base URL %s, got %s", DemoBaseURL, client.BaseURL)
-	}
-	if client.EndpointPrefix != "/fapi" {
-		t.Fatalf("expected USD-M endpoint prefix /fapi, got %s", client.EndpointPrefix)
-	}
-	if client.AccountVersion != "v2" {
-		t.Fatalf("expected USD-M account version v2, got %s", client.AccountVersion)
-	}
-}
-
 func TestClient_CoinMRoutesRESTMethodsToDAPI(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dapi/v1/depth", func(w http.ResponseWriter, r *http.Request) {

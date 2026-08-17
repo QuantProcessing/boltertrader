@@ -14,26 +14,26 @@ func TestPublicSurfaceManifestDefinesTwentyProductRows(t *testing.T) {
 	rows := productRowsByCode(t, manifest.ProductRows)
 
 	want := map[string]exchangeProductRow{
-		"BNS": {Venue: "Binance", Product: "Spot", FactoryConfig: "BinanceSpotConfig", AcceptanceTarget: "test-exchange-binance-demo-spot"},
-		"BNP": {Venue: "Binance", Product: "USD-M Perp", FactoryConfig: "BinanceUSDPerpConfig", AcceptanceTarget: "test-exchange-binance-demo-perp"},
-		"OXS": {Venue: "OKX", Product: "Spot", FactoryConfig: "OKXSpotConfig", AcceptanceTarget: "test-exchange-okx-demo-spot"},
-		"OXP": {Venue: "OKX", Product: "USDT-linear SWAP", FactoryConfig: "OKXUSDTPerpConfig", AcceptanceTarget: "test-exchange-okx-demo-perp"},
-		"LIS": {Venue: "Lighter", Product: "Spot", FactoryConfig: "LighterSpotConfig", AcceptanceTarget: "test-exchange-lighter-testnet-spot"},
-		"LIP": {Venue: "Lighter", Product: "Perp", FactoryConfig: "LighterPerpConfig", AcceptanceTarget: "test-exchange-lighter-testnet-perp"},
-		"HLS": {Venue: "Hyperliquid", Product: "Spot", FactoryConfig: "HyperliquidSpotConfig", AcceptanceTarget: "test-exchange-hyperliquid-testnet-spot"},
-		"HLP": {Venue: "Hyperliquid", Product: "Standard Perp", FactoryConfig: "HyperliquidPerpConfig", AcceptanceTarget: "test-exchange-hyperliquid-testnet-perp"},
-		"BYS": {Venue: "Bybit", Product: "Spot", FactoryConfig: "BybitSpotConfig", AcceptanceTarget: "test-exchange-bybit-demo-spot"},
-		"BYU": {Venue: "Bybit", Product: "USDT-linear Perp", FactoryConfig: "BybitUSDTPerpConfig", AcceptanceTarget: "test-exchange-bybit-demo-usdt-perp"},
-		"BYC": {Venue: "Bybit", Product: "USDC-linear Perp", FactoryConfig: "BybitUSDCPerpConfig", AcceptanceTarget: "test-exchange-bybit-demo-usdc-perp"},
-		"BGS": {Venue: "Bitget", Product: "Spot", FactoryConfig: "BitgetSpotConfig", AcceptanceTarget: "test-exchange-bitget-demo-spot"},
-		"BGU": {Venue: "Bitget", Product: "USDT-linear Perp", FactoryConfig: "BitgetUSDTPerpConfig", AcceptanceTarget: "test-exchange-bitget-demo-usdt-perp"},
-		"BGC": {Venue: "Bitget", Product: "USDC-linear Perp", FactoryConfig: "BitgetUSDCPerpConfig", AcceptanceTarget: "test-exchange-bitget-demo-usdc-perp"},
-		"GTS": {Venue: "Gate", Product: "Spot", FactoryConfig: "GateSpotConfig", AcceptanceTarget: "test-exchange-gate-testnet-spot"},
-		"GTU": {Venue: "Gate", Product: "USDT-settled Perp", FactoryConfig: "GateUSDTPerpConfig", AcceptanceTarget: "test-exchange-gate-testnet-usdt-perp"},
-		"ATS": {Venue: "Aster", Product: "Spot", FactoryConfig: "AsterSpotConfig", AcceptanceTarget: "test-exchange-aster-testnet-spot"},
-		"ATP": {Venue: "Aster", Product: "USDT-linear Perp", FactoryConfig: "AsterUSDTPerpConfig", AcceptanceTarget: "test-exchange-aster-testnet-usdt-perp"},
-		"NDS": {Venue: "Nado", Product: "USDT0 Spot", FactoryConfig: "NadoSpotConfig", AcceptanceTarget: "test-exchange-nado-testnet-spot"},
-		"NDP": {Venue: "Nado", Product: "USDT0-settled Perp", FactoryConfig: "NadoUSDT0PerpConfig", AcceptanceTarget: "test-exchange-nado-testnet-usdt0-perp"},
+		"BNS": {Venue: "Binance", Product: "Spot", FactoryConfig: "BinanceSpotConfig"},
+		"BNP": {Venue: "Binance", Product: "USD-M Perp", FactoryConfig: "BinanceUSDPerpConfig"},
+		"OXS": {Venue: "OKX", Product: "Spot", FactoryConfig: "OKXSpotConfig"},
+		"OXP": {Venue: "OKX", Product: "USDT-linear SWAP", FactoryConfig: "OKXUSDTPerpConfig"},
+		"LIS": {Venue: "Lighter", Product: "Spot", FactoryConfig: "LighterSpotConfig"},
+		"LIP": {Venue: "Lighter", Product: "Perp", FactoryConfig: "LighterPerpConfig"},
+		"HLS": {Venue: "Hyperliquid", Product: "Spot", FactoryConfig: "HyperliquidSpotConfig"},
+		"HLP": {Venue: "Hyperliquid", Product: "Standard Perp", FactoryConfig: "HyperliquidPerpConfig"},
+		"BYS": {Venue: "Bybit", Product: "Spot", FactoryConfig: "BybitSpotConfig"},
+		"BYU": {Venue: "Bybit", Product: "USDT-linear Perp", FactoryConfig: "BybitUSDTPerpConfig"},
+		"BYC": {Venue: "Bybit", Product: "USDC-linear Perp", FactoryConfig: "BybitUSDCPerpConfig"},
+		"BGS": {Venue: "Bitget", Product: "Spot", FactoryConfig: "BitgetSpotConfig"},
+		"BGU": {Venue: "Bitget", Product: "USDT-linear Perp", FactoryConfig: "BitgetUSDTPerpConfig"},
+		"BGC": {Venue: "Bitget", Product: "USDC-linear Perp", FactoryConfig: "BitgetUSDCPerpConfig"},
+		"GTS": {Venue: "Gate", Product: "Spot", FactoryConfig: "GateSpotConfig"},
+		"GTU": {Venue: "Gate", Product: "USDT-settled Perp", FactoryConfig: "GateUSDTPerpConfig"},
+		"ATS": {Venue: "Aster", Product: "Spot", FactoryConfig: "AsterSpotConfig"},
+		"ATP": {Venue: "Aster", Product: "USDT-linear Perp", FactoryConfig: "AsterUSDTPerpConfig"},
+		"NDS": {Venue: "Nado", Product: "USDT0 Spot", FactoryConfig: "NadoSpotConfig"},
+		"NDP": {Venue: "Nado", Product: "USDT0-settled Perp", FactoryConfig: "NadoUSDT0PerpConfig"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("manifest product rows = %d, want %d: %v", len(rows), len(want), mapKeys(rows))
@@ -44,8 +44,8 @@ func TestPublicSurfaceManifestDefinesTwentyProductRows(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing product row %s", code)
 			}
-			if got.Venue != wantRow.Venue || got.Product != wantRow.Product || got.FactoryConfig != wantRow.FactoryConfig || got.AcceptanceTarget != wantRow.AcceptanceTarget {
-				t.Fatalf("row %s metadata = %#v, want venue/product/config/target %#v", code, got, wantRow)
+			if got.Venue != wantRow.Venue || got.Product != wantRow.Product || got.FactoryConfig != wantRow.FactoryConfig {
+				t.Fatalf("row %s metadata = %#v, want venue/product/config %#v", code, got, wantRow)
 			}
 			assertSameStrings(t, got.RESTMethods, expectedRESTMethodsForRow(code, wantRow.Product))
 			assertSameStrings(t, got.WebSocketMethods, expectedWebSocketMethodsForProduct(wantRow.Product))
@@ -98,144 +98,6 @@ func TestPublicSurfaceManifestDefinesRESTAndWebSocketMethodMatrix(t *testing.T) 
 		"WatchFundingRate":  {false, true},
 		"Close":             {true, true},
 	})
-}
-
-func TestPublicSurfaceManifestDefinesAcceptanceTargets(t *testing.T) {
-	manifest := loadPublicSurfaceManifest(t, repositoryRoot(t))
-	got := make(map[string]exchangeAcceptanceTarget, len(manifest.AcceptanceTargets))
-	for _, target := range manifest.AcceptanceTargets {
-		if _, duplicate := got[target.Target]; duplicate {
-			t.Fatalf("duplicate acceptance target %s", target.Target)
-		}
-		got[target.Target] = target
-	}
-	want := map[string]exchangeAcceptanceTarget{
-		"test-exchange-binance-demo-spot":        {Env: "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBinanceSpotDemoAcceptance$"},
-		"test-exchange-binance-demo-perp":        {Env: "BOLTER_ENABLE_BINANCE_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBinancePerpDemoAcceptance$"},
-		"test-exchange-okx-demo-spot":            {Env: "BOLTER_ENABLE_OKX_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeOKXSpotDemoAcceptance$"},
-		"test-exchange-okx-demo-perp":            {Env: "BOLTER_ENABLE_OKX_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeOKXPerpDemoAcceptance$"},
-		"test-exchange-lighter-testnet-spot":     {Env: "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeLighterSpotTestnetAcceptance$"},
-		"test-exchange-lighter-testnet-perp":     {Env: "BOLTER_ENABLE_LIGHTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeLighterPerpTestnetAcceptance$"},
-		"test-exchange-hyperliquid-testnet-spot": {Env: "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeHyperliquidSpotTestnetAcceptance$"},
-		"test-exchange-hyperliquid-testnet-perp": {Env: "BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeHyperliquidPerpTestnetAcceptance$"},
-		"test-exchange-bybit-demo-spot":          {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitSpotDemoAcceptance$"},
-		"test-exchange-bybit-demo-usdt-perp":     {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitUSDTPerpDemoAcceptance$"},
-		"test-exchange-bybit-demo-usdc-perp":     {Env: "BOLTER_ENABLE_BYBIT_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBybitUSDCPerpDemoAcceptance$"},
-		"test-exchange-bitget-demo-spot":         {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetSpotDemoAcceptance$"},
-		"test-exchange-bitget-demo-usdt-perp":    {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetUSDTPerpDemoAcceptance$"},
-		"test-exchange-bitget-demo-usdc-perp":    {Env: "BOLTER_ENABLE_BITGET_DEMO_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeBitgetUSDCPerpDemoAcceptance$"},
-		"test-exchange-gate-testnet-spot":        {Env: "BOLTER_ENABLE_GATE_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeGateSpotTestnetAcceptance$"},
-		"test-exchange-gate-testnet-usdt-perp":   {Env: "BOLTER_ENABLE_GATE_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeGateUSDTPerpTestnetAcceptance$"},
-		"test-exchange-aster-testnet-spot":       {Env: "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeAsterSpotTestnetAcceptance$"},
-		"test-exchange-aster-testnet-usdt-perp":  {Env: "BOLTER_ENABLE_ASTER_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeAsterUSDTPerpTestnetAcceptance$"},
-		"test-exchange-nado-testnet-spot":        {Env: "BOLTER_ENABLE_NADO_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeNadoSpotTestnetAcceptance$"},
-		"test-exchange-nado-testnet-usdt0-perp":  {Env: "BOLTER_ENABLE_NADO_TESTNET_WRITES=1", Package: "./exchange/...", TestSelector: "^TestExchangeNadoUSDT0PerpTestnetAcceptance$"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("acceptance target count = %d, want %d: %v", len(got), len(want), mapKeys(got))
-	}
-	for target, wantTarget := range want {
-		t.Run(target, func(t *testing.T) {
-			gotTarget, ok := got[target]
-			if !ok {
-				t.Fatalf("missing acceptance target %s", target)
-			}
-			wantTarget.Target = target
-			if gotTarget != wantTarget {
-				t.Fatalf("acceptance target = %#v, want %#v", gotTarget, wantTarget)
-			}
-		})
-	}
-}
-
-func TestPublicSurfaceManifestDefinesAcceptanceStatus(t *testing.T) {
-	manifest := loadPublicSurfaceManifest(t, repositoryRoot(t))
-	rows := productRowsByCode(t, manifest.ProductRows)
-
-	wantStatus := map[string]string{
-		"BNS": "passed",
-		"BNP": "passed",
-		"OXS": "passed",
-		"OXP": "passed",
-		"LIS": "waived",
-		"LIP": "passed",
-		"HLS": "passed",
-		"HLP": "passed",
-		"BYS": "passed",
-		"BYU": "passed",
-		"BYC": "passed",
-		"BGS": "passed",
-		"BGU": "passed",
-		"BGC": "passed",
-		"GTS": "passed",
-		"GTU": "passed",
-		"ATS": "passed",
-		"ATP": "passed",
-		"NDS": "passed",
-		"NDP": "passed",
-	}
-	allowedStatus := map[string]bool{
-		"passed":         true,
-		"waived":         true,
-		"not_applicable": true,
-		"pending":        true,
-		"blocked":        true,
-	}
-	requiredLISReason := []string{
-		"Lighter Testnet Spot is structurally one-sided",
-		"user authorized a live-write waiver",
-		"zero live order mutations",
-		"WatchBBO",
-		"fixture-only",
-		"not write-ready",
-	}
-
-	for code, want := range wantStatus {
-		t.Run(code, func(t *testing.T) {
-			row, ok := rows[code]
-			if !ok {
-				t.Fatalf("missing product row %s", code)
-			}
-			got := row.Acceptance
-			if !allowedStatus[got.Status] {
-				t.Fatalf("row %s acceptance status %q is not recognized", code, got.Status)
-			}
-			if got.Status != want {
-				t.Fatalf("row %s acceptance status = %q, want %q", code, got.Status, want)
-			}
-			if strings.TrimSpace(got.Reason) == "" {
-				t.Fatalf("row %s acceptance reason must be non-empty", code)
-			}
-			if code == "LIS" {
-				for _, required := range requiredLISReason {
-					if !strings.Contains(got.Reason, required) {
-						t.Fatalf("row LIS acceptance reason %q does not contain %q", got.Reason, required)
-					}
-				}
-				if row.AcceptanceTarget != "test-exchange-lighter-testnet-spot" {
-					t.Fatalf("row LIS acceptance target = %q, want test-exchange-lighter-testnet-spot", row.AcceptanceTarget)
-				}
-				assertSameStrings(t, row.RESTMethods, expectedRESTMethodsForRow(code, row.Product))
-				assertSameStrings(t, row.WebSocketMethods, expectedWebSocketMethodsForProduct(row.Product))
-			}
-		})
-	}
-}
-
-func TestAcceptanceTargetsResolveToConcreteTestFunctions(t *testing.T) {
-	root := repositoryRoot(t)
-	manifest := loadPublicSurfaceManifest(t, root)
-	tests := discoverExchangeTests(t, root)
-	for _, target := range manifest.AcceptanceTargets {
-		selector := strings.TrimSuffix(strings.TrimPrefix(target.TestSelector, "^"), "$")
-		if selector == target.TestSelector || !strings.HasPrefix(selector, "TestExchange") {
-			t.Errorf("acceptance target %s has non-exact selector %q", target.Target, target.TestSelector)
-			continue
-		}
-		if !tests[selector] {
-			t.Errorf("acceptance target %s references missing test function %s", target.Target, selector)
-		}
-	}
 }
 
 func TestPublicSurfaceManifestDefinesOperationsForEveryInterfaceMethod(t *testing.T) {

@@ -37,8 +37,7 @@ func TestBinancePerpPositionsRejectsUnsupportedNonzeroQuantityRows(t *testing.T)
 
 func newBinancePerpPositionsTestClient(response string) *binancePerpClient {
 	return NewBinanceUSDPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return openAPIJSONResponse(response), nil
 		})},

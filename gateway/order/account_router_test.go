@@ -51,7 +51,7 @@ func TestAccountRouterUsesCatalogIdentityAndRequiresPromotedExactLookup(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := router.Route(context.Background(), "binance-main", "binance:demo:spot:BTC-USDT")
+	route, err := router.Route(context.Background(), "binance-main", "binance:live:spot:BTC-USDT")
 	if err != nil {
 		t.Fatalf("Route: %v", err)
 	}
@@ -66,11 +66,11 @@ func TestAccountRouterUsesCatalogIdentityAndRequiresPromotedExactLookup(t *testi
 	}
 
 	registry.status.WriteReady = false
-	route, err = router.Route(context.Background(), "binance-main", "binance:demo:spot:BTC-USDT")
+	route, err = router.Route(context.Background(), "binance-main", "binance:live:spot:BTC-USDT")
 	if err != nil || route.WriteReady {
 		t.Fatalf("unpromoted route=%+v err=%v", route, err)
 	}
-	recoveryRoute, err := router.RouteForRecovery(context.Background(), "binance-main", "binance:demo:spot:BTC-USDT")
+	recoveryRoute, err := router.RouteForRecovery(context.Background(), "binance-main", "binance:live:spot:BTC-USDT")
 	if err != nil || !recoveryRoute.WriteReady {
 		t.Fatalf("recovery route=%+v err=%v", recoveryRoute, err)
 	}
@@ -98,7 +98,7 @@ func TestAccountRouterUsesSettlementSpecificActiveRouteClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	route, err := router.Route(context.Background(), "bybit-main", "bybit:demo:perp:USDC:BTC-USDC")
+	route, err := router.Route(context.Background(), "bybit-main", "bybit:live:perp:USDC:BTC-USDC")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,11 +128,11 @@ func TestAccountRouterUsesRouteRecoveryStatusForDynamicRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeRoute, err := router.Route(context.Background(), "binance-dynamic", "binance:demo:spot:BTC-USDT")
+	writeRoute, err := router.Route(context.Background(), "binance-dynamic", "binance:live:spot:BTC-USDT")
 	if err != nil || writeRoute.WriteReady {
 		t.Fatalf("normal route=%+v err=%v", writeRoute, err)
 	}
-	recoveryRoute, err := router.RouteForRecovery(context.Background(), "binance-dynamic", "binance:demo:spot:BTC-USDT")
+	recoveryRoute, err := router.RouteForRecovery(context.Background(), "binance-dynamic", "binance:live:spot:BTC-USDT")
 	if err != nil || !recoveryRoute.WriteReady {
 		t.Fatalf("recovery route=%+v err=%v", recoveryRoute, err)
 	}

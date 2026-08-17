@@ -12,7 +12,6 @@ type Settings struct {
 	Endpoint          string
 	WebSocketEndpoint string
 	HTTPClient        *http.Client
-	Environment       string
 	AccountAddress    string
 	InstrumentCatalog exchange.InstrumentCatalog
 	CatalogScope      exchange.CatalogScope

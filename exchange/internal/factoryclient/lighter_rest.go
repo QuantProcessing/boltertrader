@@ -44,11 +44,6 @@ func NewLighterInstrumentLoader(product exchange.Product, settings Settings) exc
 
 func (loader lighterInstrumentLoader) LoadInstruments(ctx context.Context, scope exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
 	sdk := lighter.NewClient()
-	if loader.settings.Environment == "testnet" {
-		sdk.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		sdk.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if loader.settings.Endpoint != "" {
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}

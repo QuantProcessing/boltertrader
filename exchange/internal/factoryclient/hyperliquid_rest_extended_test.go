@@ -56,9 +56,8 @@ func TestHyperliquidOrderHistoryFailsClosedOnUnfilteredUnknownCoin(t *testing.T)
 		{"order":`+hyperliquidHistoricalOrderJSON("BTC", "41", "101")+`,"status":"filled","statusTimestamp":1720000002000}
 	]`)
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 
@@ -74,9 +73,8 @@ func TestHyperliquidOrderHistoryFiltersRequestedInstrumentBeforeUnknownRows(t *t
 		{"order":`+hyperliquidHistoricalOrderJSON("BTC", "41", "101")+`,"status":"filled","statusTimestamp":1720000002000}
 	]`)
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")
@@ -139,9 +137,8 @@ func TestHyperliquidFundingRateHistoryAllowsOptionalZeroBounds(t *testing.T) {
 		}
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(openAPITestPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")
@@ -200,9 +197,8 @@ func TestHyperliquidSpotFillsFiltersRequestedInstrumentBeforeValidatingOtherProd
 		}
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductSpot)
 	client := NewHyperliquidSpot(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "PURR-USDC")
@@ -244,9 +240,8 @@ func TestHyperliquidPerpFillsFiltersRequestedInstrumentBeforeValidatingOtherProd
 		}
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")
@@ -302,9 +297,8 @@ func TestHyperliquidFilteredAccountRowsSkipUnrelatedNativeCoinsBeforeMetadataVal
 		t.Run(test.name, func(t *testing.T) {
 			transport := hyperliquidFilteredRowsTransport(t, true)
 			settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-				Endpoint:    "https://openapi.invalid",
-				Environment: "testnet",
-				HTTPClient:  &http.Client{Transport: transport},
+				Endpoint:   "https://openapi.invalid",
+				HTTPClient: &http.Client{Transport: transport},
 			}, exchange.ProductPerp)
 			client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 			instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")
@@ -344,9 +338,8 @@ func TestHyperliquidSpotOpenOrdersFiltersRequestedInstrumentBeforeUnknownRows(t 
 		}
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductSpot)
 	client := NewHyperliquidSpot(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "PURR-USDC")
@@ -369,9 +362,8 @@ func TestHyperliquidSpotOpenOrdersFiltersRequestedInstrumentBeforeUnknownRows(t 
 func TestHyperliquidPositionsDeriveMarkPriceFromClearinghousePositionValue(t *testing.T) {
 	transport := hyperliquidFilteredRowsTransport(t, false)
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")
@@ -410,9 +402,8 @@ func TestHyperliquidPositionsRejectMissingPositionValueForNonzeroPosition(t *tes
 		}
 	})
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}, exchange.ProductPerp)
 	client := NewHyperliquidPerp(hyperliquidConstructionPrivateKey, settings)
 	instrument, err := client.ResolveInstrument(context.Background(), "BTC-USDC")

@@ -34,8 +34,7 @@ func (fn okxCatalogRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 func TestOKXInstrumentLoaderUsesPublicInstrumentsOnly(t *testing.T) {
 	requests := make([]*http.Request, 0, 1)
 	loader := NewOKXInstrumentLoader(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
+		Endpoint: "https://okx.invalid",
 		HTTPClient: &http.Client{Transport: okxCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 			requests = append(requests, request.Clone(request.Context()))
 			if request.URL.Path != "/api/v5/public/instruments" || request.URL.Query().Get("instType") != okxSpotType {
@@ -55,7 +54,7 @@ func TestOKXInstrumentLoaderUsesPublicInstrumentsOnly(t *testing.T) {
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	})
 	if err != nil {
@@ -81,8 +80,7 @@ func TestOKXInstrumentLoaderUsesPublicInstrumentsOnly(t *testing.T) {
 
 func TestOKXPerpInstrumentLoaderFiltersUSDTLiveSwapAndEncodesContracts(t *testing.T) {
 	loader := NewOKXInstrumentLoader(exchange.ProductPerp, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
+		Endpoint: "https://okx.invalid",
 		HTTPClient: &http.Client{Transport: okxCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 			if request.URL.Path != "/api/v5/public/instruments" || request.URL.Query().Get("instType") != okxSwapType {
 				t.Fatalf("request = %s, want public SWAP instruments", request.URL.String())
@@ -97,7 +95,7 @@ func TestOKXPerpInstrumentLoaderFiltersUSDTLiveSwapAndEncodesContracts(t *testin
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductPerp,
 		Settlement:  "USDT",
 	})
@@ -130,8 +128,7 @@ func TestOKXPerpInstrumentLoaderFiltersUSDTLiveSwapAndEncodesContracts(t *testin
 
 func TestOKXInstrumentLoaderFailsClosedForMalformedLiveSupportedRows(t *testing.T) {
 	_, err := NewOKXInstrumentLoader(exchange.ProductPerp, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
+		Endpoint: "https://okx.invalid",
 		HTTPClient: &http.Client{Transport: okxCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 			return okxJSONResponse(`{"code":"0","msg":"","data":[
 				{"instType":"SWAP","instId":"ETH-USDT-SWAP","settleCcy":"USDT","ctValCcy":"ETH","ctVal":"0.01","tickSz":"","lotSz":"1","minSz":"1","state":"live","instIdCode":2001}
@@ -139,7 +136,7 @@ func TestOKXInstrumentLoaderFailsClosedForMalformedLiveSupportedRows(t *testing.
 		})},
 	}).LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductPerp,
 		Settlement:  "USDT",
 	})
@@ -150,8 +147,7 @@ func TestOKXInstrumentLoaderFailsClosedForMalformedLiveSupportedRows(t *testing.
 
 func TestOKXSpotInstrumentLoaderFailsClosedWhenNativePartsMismatchMetadata(t *testing.T) {
 	_, err := NewOKXInstrumentLoader(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
+		Endpoint: "https://okx.invalid",
 		HTTPClient: &http.Client{Transport: okxCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 			return okxJSONResponse(`{"code":"0","msg":"","data":[
 				{"instType":"SPOT","instId":"ETH-USDT","baseCcy":"BTC","quoteCcy":"USDT","tickSz":"0.01","lotSz":"0.0001","minSz":"0.0001","state":"live","instIdCode":1001}
@@ -159,7 +155,7 @@ func TestOKXSpotInstrumentLoaderFailsClosedWhenNativePartsMismatchMetadata(t *te
 		})},
 	}).LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueOKX,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	})
 	if err == nil {
@@ -177,7 +173,7 @@ func TestOKXCatalogMetadataObservesMemoryCatalogRefreshWithoutSDKFallback(t *tes
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueOKX,
-		Environment:         exchange.EnvironmentDemo,
+		Environment:         exchange.EnvironmentLive,
 		Product:             exchange.ProductPerp,
 		Settlement:          "USDT",
 		EndpointFingerprint: descriptor.Fingerprint(),
@@ -203,7 +199,6 @@ func TestOKXCatalogMetadataObservesMemoryCatalogRefreshWithoutSDKFallback(t *tes
 	httpCalls := 0
 	client := NewOKXUSDTPerp("key", "secret", "passphrase", Settings{
 		Endpoint:          "https://okx.invalid",
-		Environment:       "demo",
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,
 		HTTPClient: &http.Client{Transport: okxCatalogRoundTripper(func(*http.Request) (*http.Response, error) {

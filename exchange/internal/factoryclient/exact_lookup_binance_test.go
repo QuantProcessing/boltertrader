@@ -238,8 +238,7 @@ func (router *binanceExactLookupHTTPRouter) calls() int {
 
 func binanceExactLookupSettings(router *binanceExactLookupHTTPRouter) Settings {
 	return Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	}
 }

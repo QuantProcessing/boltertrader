@@ -108,8 +108,8 @@ func newFundingHistoryFixture(t *testing.T, pages map[string][]string) *fundingH
 	return fixture
 }
 
-func (fixture *fundingHistoryFixture) settings(environment string) Settings {
-	return Settings{Endpoint: fixture.server.URL, Environment: environment, HTTPClient: fixture.server.Client()}
+func (fixture *fundingHistoryFixture) settings() Settings {
+	return Settings{Endpoint: fixture.server.URL, HTTPClient: fixture.server.Client()}
 }
 
 func (fixture *fundingHistoryFixture) callsFor(path string) []fundingHistoryCall {
@@ -229,11 +229,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBinance, exchange.EnvironmentLive, "USDT"),
+					Scope:        fundingBoardScope(exchange.VenueBinance, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
-				return NewBinanceFundingHistoryLoader(fixture.settings("live")), request, fixture
+				return NewBinanceFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: []wantHistoryPoint{
 				{millis: fundingHistoryStamp(0), rate: "0.0001"},
@@ -271,11 +271,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				})
 				request := exchange.FundingHistoryRequest{
 					Symbol: "BTC-USDT-SWAP",
-					Scope:  fundingBoardScope(exchange.VenueOKX, exchange.EnvironmentLive, "USDT"),
+					Scope:  fundingBoardScope(exchange.VenueOKX, "USDT"),
 					Since:  fundingHistoryTime(0),
 					Until:  fundingHistoryTime(24),
 				}
-				return NewOKXFundingHistoryLoader(fixture.settings("live")), request, fixture
+				return NewOKXFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: []wantHistoryPoint{
 				{millis: fundingHistoryStamp(0), rate: "0.00011"},
@@ -311,11 +311,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBybit, exchange.EnvironmentLive, "USDT"),
+					Scope:        fundingBoardScope(exchange.VenueBybit, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
-				return NewBybitFundingHistoryLoader(fixture.settings("live")), request, fixture
+				return NewBybitFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: []wantHistoryPoint{
 				{millis: fundingHistoryStamp(0), rate: "0.00005"},
@@ -353,11 +353,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTCUSDT",
-					Scope:        fundingBoardScope(exchange.VenueBitget, exchange.EnvironmentLive, "USDT"),
+					Scope:        fundingBoardScope(exchange.VenueBitget, "USDT"),
 					Since:        fundingHistoryTime(-960),
 					Until:        fundingHistoryTime(0),
 				}
-				return NewBitgetFundingHistoryLoader("USDT-FUTURES", fixture.settings("live")), request, fixture
+				return NewBitgetFundingHistoryLoader("USDT-FUTURES", fixture.settings()), request, fixture
 			},
 			want: func() []wantHistoryPoint {
 				points := make([]wantHistoryPoint, 0, 120)
@@ -403,11 +403,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
 					NativeSymbol: "BTC_USDT",
-					Scope:        fundingBoardScope(exchange.VenueGate, exchange.EnvironmentLive, "USDT"),
+					Scope:        fundingBoardScope(exchange.VenueGate, "USDT"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
-				return NewGateFundingHistoryLoader(fixture.settings("live")), request, fixture
+				return NewGateFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: []wantHistoryPoint{
 				{millis: fundingHistoryStamp(0), rate: "0.00005"},
@@ -445,11 +445,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 				request := exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDC",
 					NativeSymbol: "BTC",
-					Scope:        fundingBoardScope(exchange.VenueHyperliquid, exchange.EnvironmentLive, "USDC"),
+					Scope:        fundingBoardScope(exchange.VenueHyperliquid, "USDC"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(600),
 				}
-				return NewHyperliquidFundingHistoryLoader(fixture.settings("mainnet")), request, fixture
+				return NewHyperliquidFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: func() []wantHistoryPoint {
 				points := make([]wantHistoryPoint, 0, 601)
@@ -516,11 +516,11 @@ func TestFundingHistoryLoaderPerVenueShape(t *testing.T) {
 					Symbol:       "BTC-USDC",
 					NativeSymbol: "BTC",
 					NativeID:     "1",
-					Scope:        fundingBoardScope(exchange.VenueLighter, exchange.EnvironmentLive, "USDC"),
+					Scope:        fundingBoardScope(exchange.VenueLighter, "USDC"),
 					Since:        fundingHistoryTime(0),
 					Until:        fundingHistoryTime(24),
 				}
-				return NewLighterFundingHistoryLoader(fixture.settings("mainnet")), request, fixture
+				return NewLighterFundingHistoryLoader(fixture.settings()), request, fixture
 			},
 			want: []wantHistoryPoint{
 				{millis: fundingHistoryStamp(0), rate: "0.000012"},
@@ -591,24 +591,22 @@ func (transport *fundingHistoryDeniedTransport) RoundTrip(*http.Request) (*http.
 }
 
 func fundingHistoryLoaderBuilders() []struct {
-	name        string
-	environment string
-	build       func(Settings) exchange.FundingHistoryLoader
+	name  string
+	build func(Settings) exchange.FundingHistoryLoader
 } {
 	return []struct {
-		name        string
-		environment string
-		build       func(Settings) exchange.FundingHistoryLoader
+		name  string
+		build func(Settings) exchange.FundingHistoryLoader
 	}{
-		{name: "binance", environment: "live", build: NewBinanceFundingHistoryLoader},
-		{name: "okx", environment: "live", build: NewOKXFundingHistoryLoader},
-		{name: "bybit", environment: "live", build: NewBybitFundingHistoryLoader},
-		{name: "bitget", environment: "live", build: func(settings Settings) exchange.FundingHistoryLoader {
+		{name: "binance", build: NewBinanceFundingHistoryLoader},
+		{name: "okx", build: NewOKXFundingHistoryLoader},
+		{name: "bybit", build: NewBybitFundingHistoryLoader},
+		{name: "bitget", build: func(settings Settings) exchange.FundingHistoryLoader {
 			return NewBitgetFundingHistoryLoader("USDT-FUTURES", settings)
 		}},
-		{name: "gate", environment: "live", build: NewGateFundingHistoryLoader},
-		{name: "hyperliquid", environment: "mainnet", build: NewHyperliquidFundingHistoryLoader},
-		{name: "lighter", environment: "mainnet", build: NewLighterFundingHistoryLoader},
+		{name: "gate", build: NewGateFundingHistoryLoader},
+		{name: "hyperliquid", build: NewHyperliquidFundingHistoryLoader},
+		{name: "lighter", build: NewLighterFundingHistoryLoader},
 	}
 }
 
@@ -670,9 +668,8 @@ func TestFundingHistoryWindowIsBounded(t *testing.T) {
 				t.Parallel()
 				transport := &fundingHistoryDeniedTransport{}
 				loader := venue.build(Settings{
-					Endpoint:    "https://funding-history.test",
-					Environment: venue.environment,
-					HTTPClient:  &http.Client{Transport: transport},
+					Endpoint:   "https://funding-history.test",
+					HTTPClient: &http.Client{Transport: transport},
 				})
 				request := mutation.mutate(exchange.FundingHistoryRequest{
 					Symbol:       "BTC-USDT",
@@ -706,9 +703,8 @@ func TestLighterFundingHistoryRequiresNumericMarketID(t *testing.T) {
 			t.Parallel()
 			transport := &fundingHistoryDeniedTransport{}
 			loader := NewLighterFundingHistoryLoader(Settings{
-				Endpoint:    "https://funding-history.test",
-				Environment: "mainnet",
-				HTTPClient:  &http.Client{Transport: transport},
+				Endpoint:   "https://funding-history.test",
+				HTTPClient: &http.Client{Transport: transport},
 			})
 
 			_, err := loader.LoadFundingHistory(context.Background(), exchange.FundingHistoryRequest{

@@ -109,18 +109,17 @@ func actionHash(action any, vaultAddress string, nonce int64, expiresAfter *int6
 	return hash
 }
 
-func constructPhantomAgent(hash []byte, isMainnet bool) map[string]any {
-	source := "b" // testnet
-	if isMainnet {
-		source = "a" // mainnet
-	}
+// The phantom agent's source letter is the only thing that ever distinguished a
+// mainnet signature from a testnet one at the L1 layer. With testnet gone, "a"
+// is the only correct value.
+func constructPhantomAgent(hash []byte) map[string]any {
 	return map[string]any{
-		"source":       source,
+		"source":       "a",
 		"connectionId": hash,
 	}
 }
 
-func l1Payload(phantomAgent map[string]any, isMainnet bool) apitypes.TypedData {
+func l1Payload(phantomAgent map[string]any) apitypes.TypedData {
 	// Note: chainId is 1337 for both mainnet and testnet - it's just a signing domain identifier
 	chainId := math.HexOrDecimal256(*big.NewInt(1337))
 
@@ -256,16 +255,14 @@ func SignUserSignedAction(
 	action map[string]any,
 	payloadTypes []apitypes.Type,
 	primaryType string,
-	isMainnet bool,
 ) (SignatureResult, error) {
-	// Add signatureChainId based on environment
 	// signatureChainId is the chain used by the wallet to sign.
-	// hyperliquidChain determines the environment and prevents replay attacks.
+	// hyperliquidChain names the environment the action is valid on, which is
+	// what stops a signature from being replayed onto a different one. Mainnet
+	// is now the only environment the SDK can address, so it is the only value
+	// this can carry.
 	action["signatureChainId"] = "0x66eee"
 	action["hyperliquidChain"] = "Mainnet"
-	if !isMainnet {
-		action["hyperliquidChain"] = "Testnet"
-	}
 
 	// Create typed data
 	// Note: chainId is hardcoded to 421614 just like the Python SDK
@@ -301,16 +298,15 @@ func SignL1Action(
 	vaultAddress string,
 	timestamp int64,
 	expiresAfter *int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	// Step 1: Create action hash
 	hash := actionHash(action, vaultAddress, timestamp, expiresAfter)
 
 	// Step 2: Construct phantom agent
-	phantomAgent := constructPhantomAgent(hash, isMainnet)
+	phantomAgent := constructPhantomAgent(hash)
 
 	// Step 3: Create l1 payload
-	typedData := l1Payload(phantomAgent, isMainnet)
+	typedData := l1Payload(phantomAgent)
 
 	// Step 4: Sign using EIP-712
 	return signInner(privateKey, typedData)
@@ -328,7 +324,6 @@ func SignUsdClassTransferAction(
 	amount float64,
 	toPerp bool,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signUsdClassTransferAction{
 		Type:   "usdClassTransfer",
@@ -336,7 +331,7 @@ func SignUsdClassTransferAction(
 		ToPerp: toPerp,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signSpotTransferAction struct {
@@ -352,7 +347,6 @@ func SignSpotTransferAction(
 	amount float64,
 	destination, token string,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signSpotTransferAction{
 		Type:        "spotTransfer",
@@ -361,7 +355,7 @@ func SignSpotTransferAction(
 		Token:       token,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signUsdTransferAction struct {
@@ -376,7 +370,6 @@ func SignUsdTransferAction(
 	amount float64,
 	destination string,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signUsdTransferAction{
 		Type:        "usdTransfer",
@@ -384,7 +377,7 @@ func SignUsdTransferAction(
 		Destination: destination,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signPerpDexClassTransferAction struct {
@@ -402,7 +395,6 @@ func SignPerpDexClassTransferAction(
 	amount float64,
 	toPerp bool,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signPerpDexClassTransferAction{
 		Type:   "perpDexClassTransfer",
@@ -412,7 +404,7 @@ func SignPerpDexClassTransferAction(
 		ToPerp: toPerp,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signTokenDelegateAction struct {
@@ -429,7 +421,6 @@ func SignTokenDelegateAction(
 	amount float64,
 	validatorAddress string,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signTokenDelegateAction{
 		Type:             "tokenDelegate",
@@ -438,7 +429,7 @@ func SignTokenDelegateAction(
 		ValidatorAddress: validatorAddress,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signWithdrawFromBridgeAction struct {
@@ -454,7 +445,6 @@ func SignWithdrawFromBridgeAction(
 	destination string,
 	amount, fee float64,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signWithdrawFromBridgeAction{
 		Type:        "withdrawFromBridge",
@@ -463,7 +453,7 @@ func SignWithdrawFromBridgeAction(
 		Fee:         fee,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 // signApproveAgentAction is the struct used for signing agent approval
@@ -481,7 +471,6 @@ func SignAgent(
 	privateKey *ecdsa.PrivateKey,
 	agentAddress, agentName string,
 	nonce int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := map[string]any{
 		"type":         "approveAgent",
@@ -505,7 +494,6 @@ func SignAgent(
 		action,
 		payloadTypes,
 		"HyperliquidTransaction:ApproveAgent",
-		isMainnet,
 	)
 }
 
@@ -523,7 +511,6 @@ func SignApproveBuilderFee(
 	builderAddress string,
 	maxFeeRate float64,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signApproveBuilderFee{
 		Type:           "approveBuilderFee",
@@ -531,7 +518,7 @@ func SignApproveBuilderFee(
 		MaxFeeRate:     maxFeeRate,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signConvertToMultiSigUserAction struct {
@@ -546,7 +533,6 @@ func SignConvertToMultiSigUserAction(
 	signers []string,
 	threshold int,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signConvertToMultiSigUserAction{
 		Type:      "convertToMultiSigUser",
@@ -554,7 +540,7 @@ func SignConvertToMultiSigUserAction(
 		Threshold: threshold,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 type signMultiSigAction struct {
@@ -571,7 +557,6 @@ func SignMultiSigAction(
 	signers []string,
 	signatures []string,
 	timestamp int64,
-	isMainnet bool,
 ) (SignatureResult, error) {
 	action := signMultiSigAction{
 		Type:       "multiSig",
@@ -580,7 +565,7 @@ func SignMultiSigAction(
 		Signatures: signatures,
 	}
 
-	return SignL1Action(privateKey, action, "", timestamp, nil, isMainnet)
+	return SignL1Action(privateKey, action, "", timestamp, nil)
 }
 
 // FloatToUsdInt converts float to USD integer representation

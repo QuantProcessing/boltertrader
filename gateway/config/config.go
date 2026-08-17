@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/QuantProcessing/boltertrader/exchange"
 	"github.com/QuantProcessing/boltertrader/gateway/secret"
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 	"gopkg.in/yaml.v3"
@@ -66,24 +67,25 @@ type AccountConfig struct {
 
 // ValidateRuntimeIdentity validates the product-agnostic portion of a dynamic
 // account request. Product and settlement stay runtime-discovered facts.
-func ValidateRuntimeIdentity(processMode, accountID, venue, environment string) error {
+//
+// The environment check survives the removal of demo and testnet rather than
+// being dropped with them: requests carrying an environment still arrive from
+// stored accounts, and one asking for an endpoint family the platform no longer
+// has must be refused here. Accepting it would route a demo account's orders to
+// the real venue, which is the one failure this check exists to prevent.
+func ValidateRuntimeIdentity(accountID, venue, environment string) error {
 	if strings.TrimSpace(accountID) == "" {
 		return fmt.Errorf("account_id is required")
 	}
-	mode := routeprofile.Mode(strings.ToLower(strings.TrimSpace(processMode)))
-	if mode != routeprofile.ModeTest && mode != routeprofile.ModeLive {
-		return fmt.Errorf("process mode must be test or live")
-	}
 	venue = strings.ToLower(strings.TrimSpace(venue))
 	environment = strings.ToLower(strings.TrimSpace(environment))
-	registry := routeprofile.DefaultRegistry()
-	if !registry.KnowsVenue(venue) {
+	if !routeprofile.DefaultRegistry().KnowsVenue(venue) {
 		return fmt.Errorf("unknown venue %q", venue)
 	}
-	if registry.SupportsEnvironment(mode, venue, routeprofile.NativeEnvironment(environment)) {
-		return nil
+	if environment != string(exchange.EnvironmentLive) {
+		return fmt.Errorf("unknown environment %q for venue %q", environment, venue)
 	}
-	return fmt.Errorf("unknown environment %q for venue %q", environment, venue)
+	return nil
 }
 
 type APIKeySecretCredentials struct {

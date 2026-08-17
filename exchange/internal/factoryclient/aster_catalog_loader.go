@@ -79,11 +79,7 @@ func (loader asterInstrumentLoader) loadPerp(ctx context.Context) ([]exchange.In
 }
 
 func asterProfileForSettings(product astercommon.Product, settings Settings) (astercommon.Profile, error) {
-	env := astercommon.EnvironmentProduction
-	if settings.Environment == "testnet" || settings.Environment == "demo" {
-		env = astercommon.EnvironmentTestnet
-	}
-	profile, err := astercommon.NewProfile(env, product)
+	profile, err := astercommon.NewProfile(product)
 	if err != nil {
 		return astercommon.Profile{}, err
 	}

@@ -209,13 +209,17 @@ func (request CreateRequest) validate() error {
 	if request.Scope.AccountID == "" || request.Scope.Venue == "" || request.Scope.InstrumentID == "" {
 		return fmt.Errorf("netting scope is incomplete")
 	}
-	switch request.Scope.VenueEnvironment {
-	case "demo", "testnet", "live":
-	default:
+	// Live is the only environment left; demo and testnet were the other two
+	// members and the platform no longer has endpoints for either. The literal
+	// mirrors exchange.EnvironmentLive rather than importing it: the value
+	// arrives here as a wire string, and nothing else under services/ depends
+	// on the exchange layer.
+	//
+	// The mode-versus-environment cross-check that used to follow went with
+	// them. It refused a Test reservation naming a live venue, which is now the
+	// only reservation anyone can make.
+	if request.Scope.VenueEnvironment != "live" {
 		return fmt.Errorf("invalid venue environment")
-	}
-	if (request.Mode == ModeTest && request.Scope.VenueEnvironment == "live") || (request.Mode == ModeLive && request.Scope.VenueEnvironment != "live") {
-		return fmt.Errorf("venue environment does not match mode")
 	}
 	hasQuantity := request.Quantity != ""
 	hasNotional := request.Notional != ""

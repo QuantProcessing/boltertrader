@@ -9,74 +9,74 @@ import (
 	"github.com/QuantProcessing/boltertrader/routeprofile"
 )
 
-func TestRegistryDerivesNativeEnvironmentFromTrustedProfile(t *testing.T) {
-	profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.ModeTest, "binance", "binance.perp.usdt.demo.v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if profile.NativeEnvironment != routeprofile.EnvironmentDemo {
-		t.Fatalf("environment=%s", profile.NativeEnvironment)
-	}
-	if _, err := routeprofile.DefaultRegistry().Resolve(routeprofile.ModeTest, "binance", "binance.perp.usdt.live.v1"); !errors.Is(err, routeprofile.ErrModeConflict) {
-		t.Fatalf("err=%v", err)
-	}
-}
-
+// The table the gateway routes by, spelled out independently of the registry so
+// that a row silently disappearing from `defaultRows` fails here rather than
+// showing up as a venue that quietly stops being tradable.
 func TestRegistryCoversEveryLegacyGatewayProfile(t *testing.T) {
-	tests := []struct {
-		venue, product, settlement string
-		environments               []routeprofile.NativeEnvironment
-	}{
-		{"binance", "spot", "", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"binance", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"okx", "spot", "", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"okx", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"lighter", "spot", "", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"lighter", "perp", "USDC", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"hyperliquid", "spot", "", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"hyperliquid", "perp", "USDC", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"bybit", "spot", "", []routeprofile.NativeEnvironment{"live", "demo", "testnet"}},
-		{"bybit", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "demo", "testnet"}},
-		{"bybit", "perp", "USDC", []routeprofile.NativeEnvironment{"live", "demo", "testnet"}},
-		{"bitget", "spot", "", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"bitget", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"bitget", "perp", "USDC", []routeprofile.NativeEnvironment{"live", "demo"}},
-		{"gate", "spot", "", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"gate", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"aster", "spot", "", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"aster", "perp", "USDT", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"nado", "spot", "USDT0", []routeprofile.NativeEnvironment{"live", "testnet"}},
-		{"nado", "perp", "USDT0", []routeprofile.NativeEnvironment{"live", "testnet"}},
+	tests := []struct{ venue, product, settlement string }{
+		{"binance", "spot", ""},
+		{"binance", "perp", "USDT"},
+		{"okx", "spot", ""},
+		{"okx", "perp", "USDT"},
+		{"lighter", "spot", ""},
+		{"lighter", "perp", "USDC"},
+		{"hyperliquid", "spot", ""},
+		{"hyperliquid", "perp", "USDC"},
+		{"bybit", "spot", ""},
+		{"bybit", "perp", "USDT"},
+		{"bybit", "perp", "USDC"},
+		{"bitget", "spot", ""},
+		{"bitget", "perp", "USDT"},
+		{"bitget", "perp", "USDC"},
+		{"gate", "spot", ""},
+		{"gate", "perp", "USDT"},
+		{"aster", "spot", ""},
+		{"aster", "perp", "USDT"},
+		{"nado", "spot", "USDT0"},
+		{"nado", "perp", "USDT0"},
 	}
 	registry := routeprofile.DefaultRegistry()
 	for _, test := range tests {
-		for _, environment := range test.environments {
-			mode := routeprofile.ModeTest
-			if environment == routeprofile.EnvironmentLive {
-				mode = routeprofile.ModeLive
-			}
-			id := fmt.Sprintf("%s.%s", test.venue, test.product)
-			if test.settlement != "" {
-				id += "." + strings.ToLower(test.settlement)
-			}
-			id += "." + string(environment) + ".v1"
-			profile, err := registry.Resolve(mode, test.venue, id)
-			if err != nil {
-				t.Fatalf("Resolve(%s,%s,%s): %v", mode, test.venue, id, err)
-			}
-			if string(profile.Product) != test.product || profile.SettlementAsset != test.settlement || profile.NativeEnvironment != environment {
-				t.Fatalf("profile=%+v", profile)
-			}
+		id := fmt.Sprintf("%s.%s", test.venue, test.product)
+		if test.settlement != "" {
+			id += "." + strings.ToLower(test.settlement)
 		}
+		id += ".v1"
+
+		profile, err := registry.Resolve(test.venue, id)
+		if err != nil {
+			t.Fatalf("Resolve(%s,%s): %v", test.venue, id, err)
+		}
+		if string(profile.Product) != test.product || profile.SettlementAsset != test.settlement {
+			t.Fatalf("profile=%+v", profile)
+		}
+
+		// The same profile, reached from the parts a legacy caller carries.
+		legacy, err := registry.ResolveLegacy(test.venue, test.product, test.settlement)
+		if err != nil {
+			t.Fatalf("ResolveLegacy(%s,%s,%s): %v", test.venue, test.product, test.settlement, err)
+		}
+		if legacy != profile {
+			t.Fatalf("legacy=%+v profile=%+v", legacy, profile)
+		}
+	}
+	if got := len(registry.Profiles()); got != len(tests) {
+		t.Fatalf("registry holds %d profiles, table has %d", got, len(tests))
 	}
 }
 
-func TestRegistryRejectsUnknownAndCrossModeProfiles(t *testing.T) {
+func TestRegistryRejectsUnknownProfiles(t *testing.T) {
 	registry := routeprofile.DefaultRegistry()
-	if _, err := registry.Resolve(routeprofile.ModeLive, "binance", "binance.spot.demo.v1"); !errors.Is(err, routeprofile.ErrModeConflict) {
-		t.Fatalf("live/demo err=%v", err)
-	}
-	if _, err := registry.Resolve(routeprofile.ModeTest, "unknown", "unknown.spot.demo.v1"); !errors.Is(err, routeprofile.ErrUnknownProfile) {
-		t.Fatalf("unknown err=%v", err)
+	for name, key := range map[string]routeprofile.Key{
+		"unknown venue":        {Venue: "unknown", RouteProfileID: "unknown.spot.v1"},
+		"unknown product":      {Venue: "binance", RouteProfileID: "binance.option.v1"},
+		"wrong settlement":     {Venue: "binance", RouteProfileID: "binance.perp.usdc.v1"},
+		"retired environment":  {Venue: "binance", RouteProfileID: "binance.spot.demo.v1"},
+		"uppercased venue":     {Venue: "Binance", RouteProfileID: "binance.spot.v1"},
+		"untrimmed profile id": {Venue: "binance", RouteProfileID: " binance.spot.v1"},
+	} {
+		if _, err := registry.Resolve(key.Venue, key.RouteProfileID); !errors.Is(err, routeprofile.ErrUnknownProfile) {
+			t.Fatalf("%s: err=%v", name, err)
+		}
 	}
 }

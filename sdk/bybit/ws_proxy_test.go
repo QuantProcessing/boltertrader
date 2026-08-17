@@ -53,7 +53,7 @@ func TestWebSocketProxyFromEnvironmentUsesAllProxyFallback(t *testing.T) {
 	t.Setenv("PROXY", "")
 	t.Setenv("ALL_PROXY", "http://proxy.example:10900")
 
-	req, err := http.NewRequest(http.MethodGet, "wss://stream-demo.bybit.com/v5/private", nil)
+	req, err := http.NewRequest(http.MethodGet, "wss://stream.bybit.com/v5/private", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}

@@ -7,7 +7,7 @@
 | 面 | 谁来写 | 里面装什么 |
 | --- | --- | --- |
 | `.env.stack` | `make up`，每次都写 | 端口、uid，以及生成出来的密钥文件的路径 |
-| `.env` | 你手写 | 供验收套件使用的交易所 API 凭证 |
+| `.env` | 你手写 | 供带凭证的测试使用的交易所 API 凭证 |
 | 命令行 | 你，每次调用时 | 执行闸门 |
 
 它们永不相交。`make up` 不读 `.env`，`make test` 不读 `.env.stack`，而任何闸门都不能从这两个
@@ -53,40 +53,38 @@ Bootstrap 还会写下它生成的那些文件的路径——`GATEWAY_AUTH_TOKEN
 
 ## `.env` —— 交易所凭证
 
-只有验收套件会读这个文件，经由 `internal/testenv.LoadRepoEnv`。它是可选的：找不到凭证的套件
-会说出它想要的那个变量名。你 shell 里已经设过的变量始终优先。从
-[`.env.example`](../../../.env.example) 开始抄。
+只有测试会读这个文件，经由 `internal/testenv.LoadRepoEnv`，而没有任何 Make target 会跑那些
+测试。它是可选的：找不到凭证的读测试会跳过，并说出它想要的那个变量名。你 shell 里已经设过的
+变量始终优先。从 [`.env.example`](../../../.env.example) 开始抄。
 
-| 环境 | 写入所需 |
+这里的每一个名字都通向生产。它们背后没有 demo 也没有 testnet 层了——各交易所实现这两者的方式
+差异太大，维持不住，用它们的那些套件已随凭证一起删除。想在不接交易所的情况下把产品点着走，
+用[测试](testing.md)里描述的那套离线 mock。
+
+| 交易所 | 凭证 |
 | --- | --- |
-| Binance Demo | `BINANCE_DEMO_API_KEY`、`BINANCE_DEMO_API_SECRET` |
-| OKX Demo | `OKX_DEMO_API_KEY`、`OKX_DEMO_API_SECRET`、`OKX_DEMO_API_PASSPHRASE` |
-| Bybit Demo | `BYBIT_DEMO_API_KEY`、`BYBIT_DEMO_API_SECRET` |
-| Bybit Testnet | `BYBIT_TESTNET_API_KEY`、`BYBIT_TESTNET_API_SECRET` |
-| Bitget Demo | `BITGET_DEMO_API_KEY`、`BITGET_DEMO_SECRET_KEY`、`BITGET_DEMO_PASSPHRASE` |
-| Gate Testnet | `GATE_TESTNET_API_KEY`、`GATE_TESTNET_API_SECRET` |
-| Hyperliquid Testnet | `HYPERLIQUID_TESTNET_PK` |
-| Lighter Testnet | `LIGHTER_TESTNET_PRIVATE_KEY`、`LIGHTER_TESTNET_ACCOUNT_INDEX`、`LIGHTER_TESTNET_API_KEY_INDEX` |
-| Aster Testnet | `ASTER_TESTNET_USER_ADDRESS`、`ASTER_TESTNET_SIGNER_PRIVATE_KEY` |
-| Nado Testnet | `NADO_TESTNET_PRIVATE_KEY` |
+| Binance | `BINANCE_API_KEY`、`BINANCE_SECRET_KEY` |
+| OKX | `OKX_API_KEY`、`OKX_API_SECRET`、`OKX_API_PASSPHRASE` |
+| Bybit | `BYBIT_API_KEY`、`BYBIT_SECRET_KEY` |
+| Bitget | `BITGET_API_KEY`、`BITGET_SECRET_KEY`、`BITGET_PASSPHRASE` |
+| Hyperliquid | `HYPERLIQUID_PRIVATE_KEY`、`HYPERLIQUID_ACCOUNT_ADDR` |
+| Lighter | `LIGHTER_PRIVATE_KEY`、`LIGHTER_ACCOUNT_INDEX`、`LIGHTER_KEY_INDEX` |
+| Nado | `NADO_PRIVATE_KEY` |
+| EdgeX | `EDGEX_STARK_PRIVATE_KEY`、`EDGEX_ACCOUNT_ID` |
+| GRVT | `GRVT_PRIVATE_KEY`、`GRVT_API_KEY`、`GRVT_SUB_ACCOUNT_ID` |
+| StandX | `STANDX_PRIVATE_KEY` |
 
-每一块都是全有或全无。Bybit Demo 与 Bybit Testnet 是两个不同的环境、两对不同的凭证，其中一个
-被显式拒绝作为另一个的替代。
+每一块都是全有或全无。其中五个是钱包私钥，不是 API key：它们签得动的东西就是花得出去的，而且
+再也没有一个 testnet 钱包可以拿来代替。key 只给测试用得到的那些权限，不给提币权限，并在交易所
+提供这个选项的地方把它绑到你自己的 IP。
 
-这里有四个是钱包私钥，不是 API key。它们签得动的东西就是花得出去的，所以请用一个只装了测试网
-资产的钱包。绝不要把生产凭证放进上面任何一个名字里。
+身份字段是边界，不是标签。Hyperliquid 的 `HYPERLIQUID_ACCOUNT_ADDR` 在由 agent 或 API 钱包私钥
+签名时标识所有者，因此它与那把 key 不可互换。Nado 可选的 `NADO_SUBACCOUNT_NAME` 属于统一保证金
+的身份，不是币种层面的余额分区。Lighter 除私钥外还需要那两个 index 变量。
 
-身份字段是边界，不是标签：
-
-- Aster 把用户地址、签名私钥，以及可选的 `ASTER_TESTNET_EXPECTED_SIGNER_ADDRESS`（用来核对
-  两者一致）分开。
-- Nado 的 `NADO_TESTNET_SUBACCOUNT_NAME` 属于统一保证金的身份，不是币种层面的余额分区。
-- Hyperliquid 的 `HYPERLIQUID_ACCOUNT_ADDRESS` 在由 agent 或 API 钱包私钥签名时标识所有者。
-  `HYPERLIQUID_TESTNET_VAULT` 能被解析，但 Vault 与 SubAccount 这两种用户角色在验收路径上被拒绝。
-- Lighter 除私钥外还需要那两个 index 变量。
-
-Bitget 的 `BITGET_TESTNET_*` 是上面 `BITGET_DEMO_*` 的兼容别名，不是第二个环境。两者都设时以
-规范名为准。
+有几个旧拼法仍然可解析：`OKX_SECRET_KEY`、`OKX_PASSPHRASE`、`EDGEX_PRIVATE_KEY` 与
+`NADO_SUB_ACCOUNT_NAME` 是上面那些规范名的别名。两者都设时以规范名为准，包括规范名被设成空串
+的情况——把一个变量清空是一条指令，不是一次遗漏。
 
 ## 闸门 —— 只走命令行
 
@@ -97,63 +95,43 @@ Bitget 的 `BITGET_TESTNET_*` 是上面 `BITGET_DEMO_*` 的兼容别名，不是
 把它们内联传进来，让它们出现在用到它们的那条命令里：
 
 ```sh
-BOLTER_ENABLE_BINANCE_DEMO_WRITES=1 make test-exchange-binance-demo-spot
+BINANCE_ENABLE_LIVE_WRITE_TESTS=1 go test ./sdk/binance/spot/ -run TestClient_PlaceOrder
 ```
 
-通常你根本不用自己敲——每个外部 Make target 都设了自己的那个。
+没有任何 Make target 会设置它们中的任何一个，将来也不会：
+`TestMakefileRecipesNeverEnableCredentialedWrites` 会读 Makefile 里的每一条 recipe，一旦有一条
+设置了就失败。闸门要么是你自己敲的，要么就没设。
 
 | 闸门 | 效果 |
 | --- | --- |
-| `BOLTER_ENABLE_LIVE_READ_TESTS` | 允许带凭证读取交易所 |
-| `BOLTER_ENABLE_BINANCE_DEMO_WRITES` | 允许 Binance Demo 写入 |
-| `BOLTER_ENABLE_OKX_DEMO_WRITES` | 允许 OKX Demo 写入 |
-| `BOLTER_ENABLE_BYBIT_DEMO_WRITES` | 允许 Bybit Demo 写入 |
-| `BOLTER_ENABLE_BYBIT_TESTNET_WRITES` | 允许 Bybit Testnet 写入 |
-| `BOLTER_ENABLE_BITGET_DEMO_WRITES` | 允许 Bitget Demo 写入 |
-| `BOLTER_ENABLE_GATE_TESTNET_WRITES` | 允许 Gate Testnet 写入 |
-| `BOLTER_ENABLE_HYPERLIQUID_TESTNET_WRITES` | 允许 Hyperliquid Testnet 写入 |
-| `BOLTER_ENABLE_LIGHTER_TESTNET_WRITES` | 允许 Lighter Testnet 写入 |
-| `BOLTER_ENABLE_ASTER_TESTNET_WRITES` | 允许 Aster Testnet 写入 |
-| `BOLTER_ENABLE_NADO_TESTNET_WRITES` | 允许 Nado Testnet 写入 |
-| `BOLTER_ALLOW_OKX_DEMO_CUSTOM_WRITES` | 额外允许一个自定义 OKX endpoint profile 写入 |
-| `BOLTER_ALLOW_BITGET_DEMO_CUSTOM_WRITES` | 额外允许一个自定义 Bitget endpoint profile 写入 |
+| `BOLTER_ENABLE_LIVE_READ_TESTS` | 允许读取交易所，带凭证或公开皆可 |
+| `BINANCE_ENABLE_LIVE_WRITE_TESTS` | 允许 Binance 现货、杠杆与子账户写入 |
+| `BINANCE_PERP_ENABLE_LIVE_WRITE_TESTS` | 允许 Binance 永续写入 |
+| `OKX_ENABLE_LIVE_WRITE_TESTS` | 允许 OKX 写入 |
+| `BYBIT_ENABLE_LIVE_WRITE_TESTS` | 允许 Bybit 写入 |
+| `BITGET_ENABLE_LIVE_WRITE_TESTS` | 允许 Bitget 写入 |
+| `HYPERLIQUID_ENABLE_LIVE_WRITE_TESTS` | 允许 Hyperliquid 写入 |
+| `LIGHTER_ENABLE_LIVE_WRITE_TESTS` | 允许 Lighter 写入 |
 | `BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES` | 允许一次绕开装置边界的裸 Nado SDK 写入 |
+| `RUN_FULL` | 跑扩展验证测试 |
+| `RUN_SOAK` | 跑长时间的流测试 |
 
-最后那个的名字是故意起成那样的。
+写闸门与读闸门有一处不同，值得知道：写闸门开着而凭证缺失时，测试是失败，不是跳过。你是显式
+要求写的，而一次静默的跳过看上去就像一个通过了的写测试。
 
-## 边界与选择器
+最后那个 Nado 闸门的名字是故意起成那样的。
 
-每个交易所都有一个最大名义额上限，且自带一个不大的默认值——`BINANCE_DEMO_MAX_NOTIONAL_USDT`、
-`HYPERLIQUID_TESTNET_MAX_NOTIONAL_USDC`、`NADO_TESTNET_MAX_NOTIONAL_USDT0`，以此类推。计价资产
-是名字的一部分，各交易所并不相同。
+## 选择器
 
-上限是一个安全边界，不是你要下的数量。它是「打错的数量」和「交易所真会成交的单」之间的最后一道
-东西，所以要有意识地调高，也要记得调回来。
+有几个写测试作用在一笔你已经挂出去的单上，或者作用在一个由你选定的数量上，而不是作用在某个
+默认值上：`BINANCE_SPOT_TEST_ORDER_ID`、`OKX_TEST_ORDER_PRICE`、`BINANCE_PERP_TEST_ORDER_QTY`
+以及它们的同类。每一个都只属于一个测试，所以本页不列举它们。带着闸门跑那个测试，它会失败并
+准确说出它想要的那些变量。
 
-多数交易所还接受 symbol 覆盖。不设 symbol 通常意味着装置会从发现到的 instrument 里挑一个合适的。
-`internal/testenv/testenv.go` 把每一个变量连同它回落到的默认值一起列了出来，那个文件是权威
-——本页不重述它。
-
-## Endpoint profile
-
-Endpoint 变量是高级安全输入。绝不要把一个 Demo 或 Testnet 的写 target 指向生产。
-
-**固定。** Binance、Bybit、Hyperliquid 与 Lighter 选用内置的非生产 profile，不暴露验收用的覆盖变量。
-
-**只接受与官方完全一致的值。** Aster 接受 `ASTER_TESTNET_SPOT_REST_URL`、
-`ASTER_TESTNET_SPOT_WS_URL`、`ASTER_TESTNET_SPOT_USER_WS_URL` 及其 `PERP` 对应项——但只在每个值
-都与内置的官方 Testnet endpoint 完全一致时才接受。Nado 对
-`NADO_TESTNET_GATEWAY_URL`、`NADO_TESTNET_GATEWAY_V2_URL`、`NADO_TESTNET_ARCHIVE_URL`、
-`NADO_TESTNET_ARCHIVE_V2_URL`、`NADO_TESTNET_GATEWAY_WS_URL`、`NADO_TESTNET_WS_URL` 与
-`NADO_TESTNET_TRIGGER_URL` 应用同一条规则。Gate 的读接受 `GATE_TESTNET_REST_BASE_URL`、
-`GATE_TESTNET_SPOT_WS_URL` 与 `GATE_TESTNET_USDT_FUTURES_WS_URL`，但带凭证的写要求这三个都解析
-到官方 Testnet profile。
-
-**有守卫的自定义。** `OKX_DEMO_HOST_PROFILE` 取 `global`（默认）、`eea` 或 `custom`。官方 profile
-直接禁止覆盖；`custom` 需要同时给出 `OKX_DEMO_REST_BASE_URL` 与 `OKX_DEMO_WS_BASE_URL`，加上前面
-那个命令内联的允许开关，而带凭证的写还额外要求 HTTPS 与 WSS，并拒绝可识别的官网与生产 WebSocket
-主机。Bitget 经由 `BITGET_DEMO_REST_BASE_URL`、`BITGET_DEMO_PUBLIC_WS_URL` 与
-`BITGET_DEMO_PRIVATE_WS_URL` 走同样的逻辑，这三个必须一起给出。
+原本在这里的两道安全机制已经没有了，而它们的缺席是刻意的，不是疏漏。**不再有按交易所的最大
+名义额上限**：那些边界的存在是为了给 demo 交易所上的单封顶，而给一笔你有意识地对着生产开闸的
+单封顶，并不是同一种保护。**也不再有 endpoint 覆盖**：那些变量每一个选的都是一个 demo 或
+testnet 主机，主机没了，也就没有什么还能被指向别处。你传进去的数量就是会成交的数量。
 
 ## 还有两个
 
@@ -162,9 +140,17 @@ Endpoint 变量是高级安全输入。绝不要把一个 Demo 或 Testnet 的�
 的集群并替你设好。
 
 `PROXY` 接受 `http`、`https` 或 `socks5` URL，可以带凭证，而那些凭证在任何可能露出来的地方都会被
-脱敏。设了它时，验收用的 HTTP 客户端就用它；没设时，它们会禁用继承来的 `HTTP_PROXY`、
-`HTTPS_PROXY` 与 `ALL_PROXY`，而不是默默照单全收。WebSocket 的路由是各交易所各自的事，不能由这条
-规则推断。
+脱敏。Binance、OKX、Aster 与 EdgeX 在 REST 上读它；Binance、OKX、Aster、Bybit、Bitget、Gate、
+Hyperliquid 与 Nado 在 WebSocket 上读它。Backpack、GRVT、Lighter 与 StandX 完全不理它。
+
+它的优先级并不统一，而当你在系统层面设了代理时，这个差别是要紧的。在 REST 上 `PROXY` 优先：
+看见它的客户端会装上自己的 transport。没设时，那个客户端会落到 Go 的默认 transport，而后者
+是认继承来的 `HTTP_PROXY` 与 `HTTPS_PROXY` 的——所以即便 `PROXY` 什么都没说，一个环境里的代理
+依然会生效。在 WebSocket 上多数交易所把这个顺序反过来，让继承来的变量优先，Gate 又把它反回去，
+`ALL_PROXY` 作为最后的兜底被读取，而每个交易所都会对 loopback 主机绕开代理。
+
+由此带来的实际后果是：一个连不上交易所的环境代理，会让一些从头到尾没提过代理的包测试失败。
+把那些变量为这次运行清掉，而不是去交易所那边找 bug。
 
 ## 把密钥挡在外面
 

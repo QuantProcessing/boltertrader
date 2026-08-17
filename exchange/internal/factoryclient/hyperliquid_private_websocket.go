@@ -274,11 +274,6 @@ func newHyperliquidPerpPrivateWSBackend(
 }
 
 func hlConfigureWSBase(base *hyperliquid.WebsocketClient, settings Settings) {
-	if settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquid.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquid.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		base.WithURL(settings.WebSocketEndpoint)
 	}

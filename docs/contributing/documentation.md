@@ -96,19 +96,20 @@ artifact itself to preserve traceability.
 
 Use the exact [status ontology](../reference/glossary.md). Name the venue,
 product, environment, and concrete command/report/stream surface. Avoid bare
-“supported,” an unqualified “market stream,” or “certified” without a candidate,
-date, scope, target, zero-skip result, and terminal assertion.
+“supported,” an unqualified “market stream,” and bare “certified” — neither
+“supported” nor “certified” is a status. An Offline-conformant claim needs a
+candidate, date, scope, target, zero-skip result, and terminal assertion.
 
 When a static capability row, dynamic configuration, concrete method, test, and
 existing page disagree, treat the mismatch as a defect. Document the narrowest
 current behavior proven by code and tests, correct the owning source, and do not
-average conflicting claims or select the broadest one. Demo/Testnet evidence
-never implies production readiness.
+average conflicting claims or select the broadest one. Offline evidence never
+implies production readiness — no suite in this repository reaches a venue, so
+none of them can supply that half.
 
-A public validation summary contains only the candidate/date, named
-Demo/Testnet environment and product, exact target, zero-skip result, scoped
-terminal assertion, and material limitation. Do not paste raw logs or account
-state.
+A public validation summary contains only the candidate/date, named product
+scope, exact target, zero-skip result, scoped terminal assertion, and material
+limitation. Do not paste raw logs or account state.
 
 ## Review checklist
 

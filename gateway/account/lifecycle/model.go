@@ -9,12 +9,15 @@ import (
 	"github.com/QuantProcessing/boltertrader/secretstore"
 )
 
+// Environment is the venue endpoint family an account talks to. The demo and
+// testnet members are gone with the endpoints they named, so the type now has
+// one member — it stays a type rather than collapsing into a bare string
+// because it is persisted and served, and a string there would let any value
+// through.
 type Environment string
 
 const (
-	EnvironmentDemo    Environment = "demo"
-	EnvironmentTestnet Environment = "testnet"
-	EnvironmentLive    Environment = "live"
+	EnvironmentLive Environment = "live"
 )
 
 type Product = routeprofile.Product
@@ -104,6 +107,12 @@ func (account Account) Validate() error {
 	if account.ID == "" || account.ID != strings.TrimSpace(account.ID) || account.Venue == "" || account.Mode == "" {
 		return errors.New("account identity is invalid")
 	}
+	// Read back from storage, these are just strings, so a row written before
+	// the demo and testnet endpoints were removed has to be rejected rather
+	// than silently routed at the live venue.
+	if account.VenueEnvironment != EnvironmentLive || account.NativeEnvironment != EnvironmentLive {
+		return errors.New("account environment is invalid")
+	}
 	seen := make(map[string]struct{}, len(account.Routes))
 	active := 0
 	for _, route := range account.Routes {
@@ -117,8 +126,8 @@ func (account Account) Validate() error {
 		if route.SettlementAsset != strings.ToUpper(route.SettlementAsset) {
 			return errors.New("route settlement asset is invalid")
 		}
-		profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.Mode(account.Mode), account.Venue, route.RouteProfileID)
-		if err != nil || profile.Product != route.Product || profile.SettlementAsset != route.SettlementAsset || string(profile.NativeEnvironment) != string(account.NativeEnvironment) {
+		profile, err := routeprofile.DefaultRegistry().Resolve(account.Venue, route.RouteProfileID)
+		if err != nil || profile.Product != route.Product || profile.SettlementAsset != route.SettlementAsset {
 			return errors.New("route profile is invalid")
 		}
 		switch route.RequestedState {
@@ -177,9 +186,7 @@ func validateCreate(request CreateRequest) error {
 	if strings.TrimSpace(request.Venue) == "" || request.Venue != strings.TrimSpace(request.Venue) || len(request.Venue) > 64 {
 		return errors.New("venue is invalid")
 	}
-	switch request.VenueEnvironment {
-	case EnvironmentDemo, EnvironmentTestnet, EnvironmentLive:
-	default:
+	if request.VenueEnvironment != EnvironmentLive {
 		return errors.New("venue environment is invalid")
 	}
 	if err := validateMetadata(request.DisplayName, request.ProductIDs); err != nil {

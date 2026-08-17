@@ -89,7 +89,7 @@ func TestCoordinatorRealPostgresProcessCrashWindows(t *testing.T) {
 			accountID := domain.AccountID(fmt.Sprintf("crash-%d-%s", index, strings.ReplaceAll(test.phase, "_", "-")))
 			postgresStore := gatewaypostgres.NewStore(pool)
 			if _, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
-				AccountID: accountID, Venue: "binance", VenueEnvironment: "demo",
+				AccountID: accountID, Venue: "binance", VenueEnvironment: "live",
 				SecretRef:            strings.Repeat("A", 43),
 				DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 				RequestedState: store.DesiredCreating,
@@ -157,11 +157,11 @@ func prepareCrashActiveRuntime(t *testing.T, ctx context.Context, postgresStore 
 	}
 	snapshot := store.DesiredSnapshot{
 		SnapshotID: uuid.New(), OperationID: operationID, AccountID: accountID,
-		Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+		Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
 		Fence:          domain.AccountFence{AccountID: accountID, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 		RequestedState: store.DesiredActive,
 		Routes: []store.RouteDefinition{{
-			RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive,
+			RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive,
 		}},
 	}
 	if _, err := postgresStore.PreparePending(ctx, snapshot); err != nil {
@@ -236,7 +236,7 @@ func runCoordinatorCrashChild(t *testing.T) {
 	_, err = coordinator.Place(context.Background(), PlaceRequest{
 		PrincipalID: "crash-principal", AccountID: accountID,
 		RouteID:        "spot",
-		InstrumentID:   "binance:demo:spot:BTC-USDT",
+		InstrumentID:   "binance:live:spot:BTC-USDT",
 		IdempotencyKey: domain.IdempotencyKey("idem-" + strings.ReplaceAll(phase, "_", "-")),
 		Side:           exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),

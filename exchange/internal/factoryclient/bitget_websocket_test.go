@@ -22,7 +22,6 @@ func TestBitgetWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: wsURL,
-		Environment:       "demo",
 		HTTPClient:        &http.Client{Transport: transport},
 	}
 	spotSettings := settings
@@ -58,7 +57,6 @@ func TestBitgetPublicWebSocketSubscriptionCloseClosesDedicatedSDKClient(t *testi
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: wsURL,
-		Environment:       "demo",
 		HTTPClient:        &http.Client{Transport: bitgetOpenAPIRouter{}},
 	}
 	client := NewBitgetSpot("key", "secret", "passphrase", settings)
@@ -352,7 +350,7 @@ func newBitgetLifecycleWSServer(t *testing.T) (string, func(string), func()) {
 
 func bitgetExpectedV3WSArg(instType, topic, symbol string) bool {
 	switch topic {
-	case "books1", "ticker", "publicTrade", "kline":
+	case "books5", "ticker", "publicTrade", "kline":
 		return (instType == "spot" || instType == "usdt-futures" || instType == "usdc-futures") && symbol != ""
 	case "order", "fill", "account", "position":
 		return instType == "UTA" && symbol == ""
@@ -367,7 +365,7 @@ func bitgetWSEvent(instType, topic, symbol, interval string) string {
 		symbol = "BTCUSDT"
 	}
 	switch topic {
-	case "books1":
+	case "books5":
 		return `{"arg":` + arg + `,"action":"snapshot","data":[{"b":[["99","1"]],"a":[["101","2"]],"seq":2,"pseq":1,"ts":"1720000000000"}]}`
 	case "ticker":
 		return `{"arg":` + arg + `,"ts":1720000000000,"data":[{"symbol":"` + symbol + `","bid1Price":"99","bid1Size":"1","ask1Price":"101","ask1Size":"2","markPrice":"100","fundingRate":"0.0001","nextFundingTime":"1720003600000"}]}`

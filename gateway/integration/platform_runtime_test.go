@@ -109,7 +109,7 @@ func TestPlatformRuntimeAbsentRouteDeniesOrderBeforePrivateIO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = router.Route(t.Context(), pending.AccountID, "binance:demo:perp:BTC-USDT")
+	_, err = router.Route(t.Context(), pending.AccountID, "binance:live:perp:BTC-USDT")
 	if err == nil {
 		t.Fatal("absent Perp route was accepted")
 	}
@@ -264,9 +264,8 @@ func TestPlatformRuntimeRestorePublishesActiveBeforePending(t *testing.T) {
 func TestPlatformRuntimeLiveWritesRemainDenied(t *testing.T) {
 	harness := newPlatformHarness(t, account.RuntimeModeLive)
 	pending := platformSnapshot(t, "live-denied", "account-live", 1, 1, rawOpaqueRef, store.RouteDefinition{
-		RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.live.v1", RequestedState: store.RouteActive,
+		RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive,
 	})
-	pending.NativeEnvironment = "live"
 	harness.promote(t, pending)
 	fence := account.WriteFence{
 		AccountID: pending.AccountID, DesiredStateRevision: pending.Fence.DesiredStateRevision,
@@ -681,17 +680,17 @@ func platformSnapshot(t *testing.T, seed string, accountID domain.AccountID, rev
 	fence := domain.AccountFence{AccountID: accountID, DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: generation}
 	return store.PendingSnapshot{DesiredSnapshot: store.DesiredSnapshot{
 		SnapshotID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("snapshot-"+seed)), OperationID: operation,
-		AccountID: accountID, Venue: "binance", NativeEnvironment: "demo", SecretRef: ref,
+		AccountID: accountID, Venue: "binance", NativeEnvironment: "live", SecretRef: ref,
 		Fence: fence, RequestedState: store.DesiredActive, Routes: routes, CreatedAt: time.Now().UTC(),
 	}, OperationState: store.OperationCandidateReady}
 }
 
 func spotRoute() store.RouteDefinition {
-	return store.RouteDefinition{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive}
+	return store.RouteDefinition{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive}
 }
 
 func perpRoute() store.RouteDefinition {
-	return store.RouteDefinition{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: store.RouteActive}
+	return store.RouteDefinition{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: store.RouteActive}
 }
 
 func alternateOpaqueRef() secretstore.OpaqueRef {
@@ -920,7 +919,7 @@ func (factory *countingPublicFactory) Build(_ context.Context, key routeprofile.
 	if strings.Contains(key.RouteProfileID, ".perp.") {
 		product, settlement = exchange.ProductPerp, "USDT"
 	}
-	return &offlinePublicConnector{instrument: platformInstrument(key.Mode, product, settlement), refreshes: &factory.refreshes}, nil
+	return &offlinePublicConnector{instrument: platformInstrument(product, settlement), refreshes: &factory.refreshes}, nil
 }
 
 type offlinePublicConnector struct {
@@ -934,7 +933,7 @@ func (connector *offlinePublicConnector) Refresh(context.Context) ([]exchange.In
 }
 func (*offlinePublicConnector) Close() error { return nil }
 
-func platformInstrument(mode routeprofile.Mode, product exchange.Product, settlement string) exchange.Instrument {
+func platformInstrument(product exchange.Product, settlement string) exchange.Instrument {
 	return exchange.Instrument{
 		Identity: exchange.InstrumentIdentity{
 			Venue: exchange.VenueBinance, Product: product, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
@@ -943,7 +942,6 @@ func platformInstrument(mode routeprofile.Mode, product exchange.Product, settle
 		Rules: exchange.InstrumentRules{
 			PriceIncrement: decimal.RequireFromString("0.01"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001"),
 		},
-		Revision: string(mode),
 	}
 }
 

@@ -2,9 +2,9 @@
 
 > Canonical language: English. [Chinese mirror](../zh-CN/reference/testing.md)
 
-This page is the inventory of what you can run and what a green run proves. The
-default path is offline, credential-free, and deterministic; everything that
-touches a venue is a separate, explicitly named target.
+This page is the inventory of what you can run and what a green run proves.
+Every target is offline, credential-free, and deterministic. No target reaches a
+venue, and none places an order.
 
 ## The default path
 
@@ -30,8 +30,9 @@ Docker, and no network. This is the gate to run before every commit.
 | `make test-gateway` | offline, then race, then security |
 | `make test-browser` | The web app: install, build, Vitest, Playwright |
 
-`go test ./...` without `-short` is not the safe default. Tests that can reach a
-venue inspect the environment when short mode is off.
+`go test ./...` without `-short` is not the safe default. A handful of `sdk/`
+tests read a venue's public endpoints when short mode is off. No Make target
+runs them.
 
 Two gateway targets need a real PostgreSQL and read `GATEWAY_TEST_POSTGRES_DSN`
 from the environment; they fail fast when it is unset rather than skipping.
@@ -61,88 +62,73 @@ Each of these builds its own Compose project with generated credentials and
 kernel-assigned ports. None of them requires `make up` to have run, and none of
 them disturbs a stack that is already up.
 
-## External acceptance
+## What happened to external acceptance
 
-Everything below places real orders on a real non-production venue. Every target
-sets its write gate command-locally — that is the only way a write gate should
-ever be set. See [Configuration](configuration.md).
+There used to be a third tier here: nine per-venue acceptance aggregates, twenty
+gateway product-row targets, and the `BOLTER_ENABLE_<VENUE>_<ENV>_WRITES`
+variables that armed them. All of it placed real orders on a venue's demo or
+testnet environment.
 
-### Exchange layer
+It is gone, along with the environments it ran against. Every venue implemented
+demo and testnet differently — a separate WebSocket backend here, a request
+header there, a different signing domain or chain ID elsewhere — so the suite
+cost more to keep working than the evidence it produced was worth. Nothing in
+Go replaced it, because a replacement would have to spend real money.
 
-Nine venues, aggregated as `make test-exchange-acceptance`.
+Two paths remain, and neither is a test target:
 
-| Environment | Aggregate | Product targets |
-| --- | --- | --- |
-| Binance Demo | `test-exchange-binance-demo-acceptance` | `-spot`, `-perp` |
-| OKX Demo | `test-exchange-okx-demo-acceptance` | `-spot`, `-perp` |
-| Bybit Demo | `test-exchange-bybit-demo-acceptance` | `-spot`, `-usdt-perp`, `-usdc-perp` |
-| Bitget Demo | `test-exchange-bitget-demo-acceptance` | `-spot`, `-usdt-perp`, `-usdc-perp` |
-| Gate Testnet | `test-exchange-gate-testnet-acceptance` | `-spot`, `-usdt-perp` |
-| Aster Testnet | `test-exchange-aster-testnet-acceptance` | `-spot`, `-usdt-perp` |
-| Nado Testnet | `test-exchange-nado-testnet-acceptance` | `-spot`, `-usdt0-perp` |
-| Hyperliquid Testnet | `test-exchange-hyperliquid-testnet-acceptance` | `-spot`, `-perp` |
-| Lighter Testnet | `test-exchange-lighter-testnet-acceptance` | `-spot`, `-perp` |
+- The offline mock under `web/src/mocks/` answers the whole API surface in the
+  browser. `npm --prefix web run dev:mock` gives you a click-through app with no
+  venue, no credential, and no backend.
+- A real venue, with your own credentials, through the running stack. That is
+  production. This repository claims nothing about it.
 
-Product target names are the aggregate's prefix plus the suffix, so Bybit's USDC
-perpetual is `make test-exchange-bybit-demo-usdc-perp`.
+## Gates and serial execution
 
-### Gateway product rows
-
-Twenty targets, one per gateway product row, aggregated as
-`make test-gateway-demo-testnet`:
-
-| Venue | Targets |
-| --- | --- |
-| Binance | `test-gateway-binance-spot-demo`, `test-gateway-binance-usd-perp-demo` |
-| OKX | `test-gateway-okx-spot-demo`, `test-gateway-okx-usdt-perp-demo` |
-| Lighter | `test-gateway-lighter-spot-testnet`, `test-gateway-lighter-perp-testnet` |
-| Hyperliquid | `test-gateway-hyperliquid-spot-testnet`, `test-gateway-hyperliquid-perp-testnet` |
-| Bybit | `test-gateway-bybit-spot-demo`, `test-gateway-bybit-usdt-perp-demo`, `test-gateway-bybit-usdc-perp-demo` |
-| Bitget | `test-gateway-bitget-spot-demo`, `test-gateway-bitget-usdt-perp-demo`, `test-gateway-bitget-usdc-perp-demo` |
-| Gate | `test-gateway-gate-spot-testnet`, `test-gateway-gate-usdt-perp-testnet` |
-| Aster | `test-gateway-aster-spot-testnet`, `test-gateway-aster-usdt-perp-testnet` |
-| Nado | `test-gateway-nado-spot-testnet`, `test-gateway-nado-usdt0-perp-testnet` |
-
-These are named for the product rows the gateway exposes, and each one runs the
-exchange-layer acceptance test for that row. The naming exists so that a claim
-about a gateway product row maps to exactly one command — not so that the same
-test can be counted twice.
-
-## Gates, skips, and serial execution
-
-**Write gates are command-local.** Each external target prefixes its own
-`BOLTER_ENABLE_<VENUE>_<ENV>_WRITES=1`. Exporting one into your shell profile or
-a `.env` file turns every subsequent `go test` into a potential venue write.
-Don't.
-
-**A skip is a failure.** External targets run through
-`internal/testenv/cmd/noskipgotest`, which fails when zero tests executed and
-fails when any test skipped. A missing credential, an unavailable product, or a
-selector that matched nothing therefore cannot be mistaken for a pass.
+**No recipe arms a credentialed write.** `TestMakefileRecipesNeverEnableCredentialedWrites`
+reads every recipe in the Makefile and fails if one sets a write-enabling
+variable or exports credential material. The default path is offline by
+construction rather than by convention, which is what makes `make test` safe to
+run without reading it first.
 
 **Runs are serial.** The Makefile declares `.NOTPARALLEL`, which serializes
 prerequisites within one invocation. It does not serialize separate `make`
-processes. Run one live-write target at a time and wait for terminal
-verification before starting the next.
+processes.
 
 ## What a green run proves
 
-A zero exit proves the product, symbol, and account scope that harness encodes,
-and nothing wider. It does not prove account-wide emptiness, mainnet behavior,
-or continued production readiness.
+A zero exit proves the normalized implementation still agrees with the fixtures
+the suite carries, and nothing wider. It does not prove that a venue answers the
+same way today, that an endpoint still exists, or that a credential would be
+accepted. Every fixture is a photograph of a past response.
 
-A nonzero result, a timeout, a skip, or an ambiguous submission does not prove
-cleanup ran. Inspect the harness-owned order IDs and the exact product scope
-before remediating, and never blind-cancel unrelated orders or flatten an
-unconfirmed position. See
+The PostgreSQL and Compose suites are the exception: they run against a real
+database and real containers, so what they assert about those, they prove.
+
+If something does go wrong against a real venue, the recovery rules did not
+change with the harness. See
 [Operations and recovery](../guides/operations-recovery.md).
 
 ## Publishing evidence
 
-A Demo/Testnet-certified claim — the term is defined in the
-[Glossary](glossary.md) — must name the environment and exact product scope, the
-exact Make target, the zero-skip result and its date, and any limitation that
-narrows it.
+An Offline-conformant claim — the term is defined in the
+[Glossary](glossary.md) — must name the exact product scope, the exact Make
+target, the zero-skip result and its date, and any limitation that narrows it.
+
+The zero-skip half is not something a green run tells you: `go test` exits zero
+for a skipped test as readily as for a passed one, and exits zero when a `-run`
+pattern matches nothing at all. `internal/testenv/cmd/noskipgotest` reads the
+`-json` stream and fails on both — pass it the body of the target you are
+claiming:
+
+```bash
+go run ./internal/testenv/cmd/noskipgotest -- -short ./exchange/... -count=1
+```
+
+That command is `make test-exchange-offline`. The wrapper used to run the
+external acceptance targets, where a skip meant an absent credential; it now
+serves the offline claim, where a skip means the evidence is narrower than the
+target name suggests.
 
 Publish that summary and nothing else. No credentials, no raw logs, no account
 residuals, no local paths. Implementation, capability, and external evidence stay

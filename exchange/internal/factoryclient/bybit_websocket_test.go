@@ -26,7 +26,6 @@ func TestBybitWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: wsURL,
-		Environment:       "demo",
 		HTTPClient:        &http.Client{Transport: transport},
 	}
 
@@ -55,48 +54,12 @@ func TestBybitWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	}
 }
 
-func TestBybitDemoWebSocketOrderCommandsUseRESTBridge(t *testing.T) {
-	client := NewBybitSpot("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: bybitOpenAPIRouter{}},
-	})
-
-	placed, err := client.WebSocket().PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
-		Instrument:    bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT"),
-		ClientOrderID: "401",
-		Side:          exchange.SideBuy,
-		Type:          exchange.OrderTypeLimit,
-		Quantity:      decimal.NewFromInt(1),
-		LimitPrice:    decimal.NewFromInt(99),
-		LimitPolicy:   exchange.LimitPolicyResting,
-	})
-	if err != nil {
-		t.Fatalf("PlaceOrder REST bridge: %v", err)
-	}
-	if placed.OrderID != "11" || placed.ClientOrderID != "401" {
-		t.Fatalf("PlaceOrder REST bridge ack = %+v", placed)
-	}
-
-	canceled, err := client.WebSocket().CancelOrder(context.Background(), exchange.CancelOrderRequest{
-		Instrument: bybitBitgetTestInstrument(exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT"),
-		OrderID:    placed.OrderID,
-	})
-	if err != nil {
-		t.Fatalf("CancelOrder REST bridge: %v", err)
-	}
-	if canceled.OrderID != placed.OrderID || canceled.State != exchange.AckCanceled {
-		t.Fatalf("CancelOrder REST bridge ack = %+v", canceled)
-	}
-}
-
 func TestBybitPublicWebSocketSubscriptionCloseClosesDedicatedSDKClient(t *testing.T) {
 	wsURL, waitClosed, closeServer := newBybitLifecycleWSServer(t)
 	defer closeServer()
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: wsURL,
-		Environment:       "demo",
 		HTTPClient:        &http.Client{Transport: bybitOpenAPIRouter{}},
 	}
 	client := NewBybitSpot("key", "secret", settings)
@@ -122,7 +85,6 @@ func TestBybitPrivateWebSocketReusesAllInOneOrderTopicAcrossInstruments(t *testi
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: wsURL,
-		Environment:       "demo",
 		HTTPClient:        &http.Client{Transport: bybitOpenAPIRouter{}},
 	}
 	client := NewBybitLinearPerp("key", "secret", "USDT", settings)

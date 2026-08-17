@@ -15,7 +15,6 @@ type EnvironmentProfile struct {
 	PublicOptionWSURL  string
 	PrivateWSURL       string
 	TradeWSURL         string
-	SupportsWSTrade    bool
 }
 
 func MainnetEnvironmentProfile() EnvironmentProfile {
@@ -27,32 +26,6 @@ func MainnetEnvironmentProfile() EnvironmentProfile {
 		PublicOptionWSURL:  publicWSURLOption,
 		PrivateWSURL:       "wss://stream.bybit.com/v5/private",
 		TradeWSURL:         "wss://stream.bybit.com/v5/trade",
-		SupportsWSTrade:    true,
-	}
-}
-
-func DemoEnvironmentProfile() EnvironmentProfile {
-	return EnvironmentProfile{
-		RESTBaseURL:        "https://api-demo.bybit.com",
-		PublicSpotWSURL:    publicWSURLSpot,
-		PublicLinearWSURL:  publicWSURLLinear,
-		PublicInverseWSURL: publicWSURLInverse,
-		PublicOptionWSURL:  publicWSURLOption,
-		PrivateWSURL:       "wss://stream-demo.bybit.com/v5/private",
-		SupportsWSTrade:    false,
-	}
-}
-
-func TestnetEnvironmentProfile() EnvironmentProfile {
-	return EnvironmentProfile{
-		RESTBaseURL:        "https://api-testnet.bybit.com",
-		PublicSpotWSURL:    "wss://stream-testnet.bybit.com/v5/public/spot",
-		PublicLinearWSURL:  "wss://stream-testnet.bybit.com/v5/public/linear",
-		PublicInverseWSURL: "wss://stream-testnet.bybit.com/v5/public/inverse",
-		PublicOptionWSURL:  "wss://stream-testnet.bybit.com/v5/public/option",
-		PrivateWSURL:       "wss://stream-testnet.bybit.com/v5/private",
-		TradeWSURL:         "wss://stream-testnet.bybit.com/v5/trade",
-		SupportsWSTrade:    true,
 	}
 }
 
@@ -86,8 +59,8 @@ func NewPrivateWSClientWithProfile(profile EnvironmentProfile) *PrivateWSClient 
 }
 
 func NewTradeWSClientWithProfile(profile EnvironmentProfile) (*TradeWSClient, error) {
-	if !profile.SupportsWSTrade || profile.TradeWSURL == "" {
-		return nil, fmt.Errorf("bybit trade ws: environment profile does not support WS Trade")
+	if profile.TradeWSURL == "" {
+		return nil, fmt.Errorf("bybit trade ws: environment profile has no trade WS URL")
 	}
 	client := NewTradeWSClient()
 	client.url = profile.TradeWSURL

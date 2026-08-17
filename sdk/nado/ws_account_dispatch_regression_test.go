@@ -35,7 +35,7 @@ func TestWsAccountConnectDoesNotPublishSocketBeforeSubscriptionTransaction(t *te
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -103,7 +103,7 @@ func TestWsAccountCallbackOverflowReconnectsInLifecycleOrder(t *testing.T) {
 		server.Close()
 	})
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -197,7 +197,7 @@ func TestWsAccountCloseDropsQueuedCallbacks(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -299,7 +299,7 @@ func TestWsAccountFailedReplacementDropsBufferedData(t *testing.T) {
 		server.Close()
 	})
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)

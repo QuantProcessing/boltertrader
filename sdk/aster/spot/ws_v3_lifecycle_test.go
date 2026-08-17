@@ -415,7 +415,7 @@ func TestWsReconnectCallbacksRemainGenerationOrdered(t *testing.T) {
 }
 
 func newTestWsMarketClientWithURL(ctx context.Context, rawURL string) *WsMarketClient {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, _ := astercommon.NewProfile(astercommon.ProductSpot)
 	transport := newWSClient(ctx, rawURL)
 	client := &WsMarketClient{WsClient: transport, profile: profile}
 	transport.Handler = client.handleMessage

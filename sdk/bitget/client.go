@@ -27,7 +27,6 @@ type Client struct {
 	apiKey     string
 	secretKey  string
 	passphrase string
-	papTrading bool
 }
 
 func NewClient() *Client {
@@ -99,7 +98,6 @@ func (c *Client) getInternal(ctx context.Context, path string, query map[string]
 	if signed {
 		c.signHeaders(req, u.RawQuery, "")
 	}
-	c.applyEnvironmentHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -130,7 +128,6 @@ func (c *Client) postPrivate(ctx context.Context, path string, body any, out any
 		return err
 	}
 	c.signHeaders(req, "", string(payload))
-	c.applyEnvironmentHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -210,11 +207,5 @@ func applySDKRequestOptsString(params map[string]string, opts sdkcore.RequestOpt
 	}
 	if opts.ClientRequestID != "" {
 		params["clientOid"] = opts.ClientRequestID
-	}
-}
-
-func (c *Client) applyEnvironmentHeaders(req *http.Request) {
-	if c.papTrading {
-		req.Header.Set("paptrading", "1")
 	}
 }

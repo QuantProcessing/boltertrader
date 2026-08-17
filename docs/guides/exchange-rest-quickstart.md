@@ -14,15 +14,16 @@ indices, contract counts, or scaled integers. Every network method accepts
 `exchange.SpotClient` or `exchange.PerpClient` locally. Construction performs no
 exchange I/O; the first client method performs the first network request.
 
-Environment selection is mandatory. Pass `factory.EnvironmentLive`,
-`factory.EnvironmentDemo`, or `factory.EnvironmentTestnet` explicitly. This
-guide does not provide a production-write command and does not claim live
-validation has passed.
+Every client reaches the venue's production endpoints. `factory.EnvironmentLive`
+is the only environment, and it is the default, so `factory.WithEnvironment` is
+optional and accepts nothing else. Demo and testnet profiles were removed
+because each venue implemented them differently; the offline mock in `web/`
+replaces them for click-through work.
 
-## Construct a read-only Demo client
+## Construct a read-only client
 
-This complete example constructs Binance Spot with the built-in Demo profile and
-performs only public instrument discovery:
+This complete example constructs Binance Spot and performs only public
+instrument discovery, which needs no credentials to be valid:
 
 <!-- exchange-doc-example:compile -->
 ```go
@@ -40,9 +41,8 @@ import (
 
 func main() {
 	client, err := factory.New(factory.BinanceSpotConfig(
-		os.Getenv("BINANCE_DEMO_API_KEY"),
-		os.Getenv("BINANCE_DEMO_API_SECRET"),
-		factory.WithEnvironment(factory.EnvironmentDemo),
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_API_SECRET"),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -71,8 +71,8 @@ owned by [Configuration](../reference/configuration.md).
 Choose one typed construction ticket and pass it to `factory.New`. Generic
 inference preserves the Spot or Perp method set at compile time. The
 [REST operation matrix](../reference/exchange-rest-v1-operation-matrix.md)
-owns the exact twenty product rows, factory constructors, environment profiles,
-REST methods, acknowledgement states, and external acceptance status.
+owns the exact twenty product rows, factory constructors, REST methods, and
+acknowledgement states.
 
 Account identity, position mode, margin mode, leverage behavior, and
 venue-specific order caveats differ by exchange. Read
@@ -82,8 +82,9 @@ imply that every venue exposes a native setter for every account dimension.
 
 `factory.WithEndpoint` and `factory.WithWebSocketEndpoint` override REST and
 WebSocket endpoints. `factory.WithHTTPClient` installs the HTTP client used by
-REST methods. These options are advanced test/construction hooks; never redirect
-a non-production write to a production endpoint.
+REST methods. These options are advanced test/construction hooks; a redirected
+endpoint still carries production credentials, so point them only at a fixture
+server you control.
 
 ## Use the WebSocket facet
 
@@ -147,15 +148,15 @@ postOnlyReduce := exchange.PlaceOrderRequest{
 
 ## Binance and Lighter orders
 
-This example shows simultaneous construction of a Binance Spot Demo client and a
-Lighter Perp Testnet client, then submits one order to each. It is intended for
-type-checking and controlled non-production acceptance only; executing it sends
-real non-production orders.
+This example shows simultaneous construction of a Binance Spot client and a
+Lighter Perp client, then submits one order to each. **Both venues are
+production.** Executing it spends real funds; it is written here to be
+type-checked, not run casually.
 
-Set `BINANCE_DEMO_SPOT_SYMBOL` to the exchange-normalized instrument form, for
+Set `BINANCE_SPOT_SYMBOL` to the exchange-normalized instrument form, for
 example `ETH-USDT`, not the native Binance form `ETHUSDT`. Set
-`LIGHTER_TESTNET_PERP_SYMBOL` explicitly to a known testnet market symbol for
-the configured account.
+`LIGHTER_PERP_SYMBOL` explicitly to a known market symbol for the configured
+account.
 
 <!-- exchange-doc-example:compile -->
 ```go
@@ -175,9 +176,8 @@ import (
 
 func main() {
 	binance, err := factory.New(factory.BinanceSpotConfig(
-		os.Getenv("BINANCE_DEMO_API_KEY"),
-		os.Getenv("BINANCE_DEMO_API_SECRET"),
-		factory.WithEnvironment(factory.EnvironmentDemo),
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_API_SECRET"),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -185,10 +185,9 @@ func main() {
 	defer binance.Close()
 
 	lighter, err := factory.New(factory.LighterPerpConfig(
-		os.Getenv("LIGHTER_TESTNET_PRIVATE_KEY"),
-		int64Env("LIGHTER_TESTNET_ACCOUNT_INDEX"),
-		uint8(int64Env("LIGHTER_TESTNET_API_KEY_INDEX")),
-		factory.WithEnvironment(factory.EnvironmentTestnet),
+		os.Getenv("LIGHTER_PRIVATE_KEY"),
+		int64Env("LIGHTER_ACCOUNT_INDEX"),
+		uint8(int64Env("LIGHTER_API_KEY_INDEX")),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -198,11 +197,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	binanceInstrument, err := binance.ResolveInstrument(ctx, requiredEnv("BINANCE_DEMO_SPOT_SYMBOL"))
+	binanceInstrument, err := binance.ResolveInstrument(ctx, requiredEnv("BINANCE_SPOT_SYMBOL"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	lighterInstrument, err := lighter.ResolveInstrument(ctx, requiredEnv("LIGHTER_TESTNET_PERP_SYMBOL"))
+	lighterInstrument, err := lighter.ResolveInstrument(ctx, requiredEnv("LIGHTER_PERP_SYMBOL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -292,7 +291,7 @@ compensating order, or assume that an error means no write reached the venue.
 Freeze replacement writes and reconcile the original correlation identifiers.
 See [Operations and recovery](operations-recovery.md).
 
-## Demo/Testnet acceptance
+## Acceptance
 
 Offline exchange conformance is deterministic and credential-free:
 
@@ -301,21 +300,21 @@ make test-exchange-offline
 ```
 
 Passing offline tests proves the normalized implementation and fixture contract;
-it does not prove current external availability. Demo/Testnet validation is
-optional, credentialed, environment-specific, and bounded by the exact method
-invoked. `PlaceOrder` and `CancelOrder`, including WebSocket commands, mutate
-real non-production exchange state even when they target Demo or Testnet.
+it does not prove current external availability. There is no non-production
+environment left to validate against: every credentialed call reaches the real
+venue and `PlaceOrder` and `CancelOrder`, including WebSocket commands, spend
+real funds.
 
-Capability support and external environment certification are separate. The
-REST and WebSocket matrices own the current per-row acceptance status and
-reason; capability cells alone do not certify that the current Demo/Testnet
-environment passed.
+Capability support and external availability are separate. A capability cell in
+the REST or WebSocket matrix records admitted support at compile time; it does
+not certify that the venue answers today.
 
-Use Demo/Testnet only with dedicated credentials, explicit symbols, explicit
-notional bounds, serial execution, and terminal cleanup evidence. A Demo/Testnet
-success does not imply production readiness. Follow
-[Testing and evidence](../reference/testing.md) and
-[Configuration](../reference/configuration.md) before external validation.
+Validate against production only with a dedicated account, explicit symbols,
+explicit notional bounds, serial execution, and terminal cleanup evidence.
+Follow [Testing and evidence](../reference/testing.md) and
+[Configuration](../reference/configuration.md) first. For click-through work
+that must not touch a venue at all, run the frontend against its offline mock
+instead of reaching for credentials.
 
 - [Exchange contracts](../../exchange/contract.go)
 - [Factory API](../../exchange/factory/factory.go)

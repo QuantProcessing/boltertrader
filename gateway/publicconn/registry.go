@@ -111,7 +111,7 @@ func (registry *Registry) Acquire(ctx context.Context, key routeprofile.Key) (Le
 	if ctx == nil || ctx.Err() != nil {
 		return nil, ErrConnectorUnavailable
 	}
-	profile, err := registry.trusted.Resolve(key.Mode, key.Venue, key.RouteProfileID)
+	profile, err := registry.trusted.Resolve(key.Venue, key.RouteProfileID)
 	if err != nil {
 		return nil, ErrConnectorUnavailable
 	}
@@ -150,7 +150,7 @@ func (registry *Registry) Acquire(ctx context.Context, key routeprofile.Key) (Le
 		}
 		accountID := domain.AccountID(id)
 		scope := catalog.Scope{
-			Venue: exchange.Venue(profile.Venue), Environment: exchange.Environment(profile.NativeEnvironment),
+			Venue: exchange.Venue(profile.Venue), Environment: exchange.EnvironmentLive,
 			Product: exchange.Product(profile.Product), Settlement: profile.SettlementAsset,
 		}
 		if err := service.RegisterAccount(accountID, scope); err != nil {
@@ -344,6 +344,6 @@ func (registry *Registry) finishEntryClose(current *entry, refreshDone <-chan st
 }
 
 func connectorID(key routeprofile.Key) string {
-	sum := sha256.Sum256([]byte(string(key.Mode) + "\x00" + key.Venue + "\x00" + key.RouteProfileID))
+	sum := sha256.Sum256([]byte(key.Venue + "\x00" + key.RouteProfileID))
 	return fmt.Sprintf("public-%s", hex.EncodeToString(sum[:8]))
 }

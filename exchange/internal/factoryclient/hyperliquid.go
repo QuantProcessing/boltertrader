@@ -22,11 +22,6 @@ func NewHyperliquidSpot(privateKey string, settings Settings) exchange.SpotClien
 	if settings.AccountAddress != "" {
 		base.WithAccount(settings.AccountAddress)
 	}
-	if settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquidbase.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquidbase.EnvironmentMainnet)
-	}
 	if settings.Endpoint != "" {
 		base.BaseURL = settings.Endpoint
 	}
@@ -52,11 +47,6 @@ func NewHyperliquidPerp(privateKey string, settings Settings) exchange.PerpClien
 	base := hyperliquidbase.NewClient().WithCredentials(privateKey, nil)
 	if settings.AccountAddress != "" {
 		base.WithAccount(settings.AccountAddress)
-	}
-	if settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquidbase.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquidbase.EnvironmentMainnet)
 	}
 	if settings.Endpoint != "" {
 		base.BaseURL = settings.Endpoint

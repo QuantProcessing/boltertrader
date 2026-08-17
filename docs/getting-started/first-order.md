@@ -3,14 +3,17 @@
 > Canonical language: English. [Chinese mirror](../zh-CN/getting-started/first-order.md)
 
 This page walks the full loop in the browser: sign in, register a venue account,
-place one resting limit order against a non-production venue, cancel it, and
-confirm the terminal state. It assumes the stack is already up — see
+place one resting limit order, cancel it, and confirm the terminal state. It
+assumes the stack is already up — see
 [Running the local stack](local-stack.md).
 
-**This places a real order on a real venue.** Use Demo or Testnet credentials
-only, on a dedicated and deliberately underfunded account, with no unrelated
-order or position in the product scope you are about to touch. Read
-[Prerequisites](prerequisites.md) first if you have not.
+**This places a real order on a real venue, with real money.** There is no demo
+or testnet environment to fall back on any more. Use a dedicated, deliberately
+underfunded account whose credential has no withdrawal rights, and hold no
+unrelated order or position in the product scope you are about to touch. The
+order below is priced to rest rather than fill, and step 8 cancels it. To see
+the same loop without a venue behind it, run `npm --prefix web run dev:mock`
+instead. Read [Prerequisites](prerequisites.md) first if you have not.
 
 ## 1. Open the interface
 
@@ -37,7 +40,7 @@ After sign-in the header carries the four routes: **Trade**, **Portfolio**,
 
 Go to **Settings** and choose **Add account**. You supply:
 
-- the venue and its non-production environment,
+- the venue and the route profiles this account may use,
 - the product policy — which product rows this account may trade,
 - the venue's credential fields, whose labels come from the gateway rather than
   from the frontend, because they differ per venue.
@@ -122,7 +125,7 @@ assumed.
 It did not prove that the venue is production-ready, that neighbouring product
 rows work, or that any other account mode behaves the same way. Those claims
 have their own evidence, and
-[Testing and certification](../reference/testing.md) states what establishes
+[Testing and evidence](../reference/testing.md) states what establishes
 each.
 
 ## Next

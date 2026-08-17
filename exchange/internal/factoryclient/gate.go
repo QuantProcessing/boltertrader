@@ -70,9 +70,6 @@ func NewGateUSDTPerp(apiKey, secretKey string, settings Settings) exchange.PerpC
 
 func newGateSDK(apiKey, secretKey string, settings Settings) (*gate.Client, gate.EnvironmentProfile) {
 	profile := gate.MainnetEnvironmentProfile()
-	if settings.Environment == "demo" || settings.Environment == "testnet" {
-		profile = gate.TestnetEnvironmentProfile()
-	}
 	if settings.Endpoint != "" {
 		profile.RESTBaseURL = strings.TrimRight(settings.Endpoint, "/")
 	}

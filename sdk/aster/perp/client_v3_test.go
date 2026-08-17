@@ -24,7 +24,7 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 }
 
 func TestClientSignsV3RequestsWithoutLegacyHeader(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	security, err := astercommon.NewSecurityContext(astercommon.CredentialConfig{
 		User:       "0x1111111111111111111111111111111111111111",
 		PrivateKey: fmt.Sprintf("%064x", 1),
@@ -72,7 +72,7 @@ func TestClientSignsV3RequestsWithoutLegacyHeader(t *testing.T) {
 }
 
 func TestClientFailsBeforeTransportWithoutCredentials(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	var calls atomic.Int64
 	client, err := NewClient(profile, nil)
 	if err != nil {
@@ -90,36 +90,43 @@ func TestClientFailsBeforeTransportWithoutCredentials(t *testing.T) {
 	}
 }
 
-func TestClientRejectsNormalizedTestSymbolBeforeTransport(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
-	var calls atomic.Int64
+// The symbol reaches the wire normalized. This was previously asserted by its
+// failure half — a "testasset" symbol was rejected under the testnet profile
+// before any transport call — but the interesting part is that the client runs
+// symbols through NormalizeSymbol at all rather than forwarding them verbatim,
+// and that outlives testnet.
+func TestClientNormalizesSymbolBeforeTransport(t *testing.T) {
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	client, err := NewClient(profile, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var captured *http.Request
 	client.WithHTTPClient(&http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		calls.Add(1)
-		return nil, fmt.Errorf("unexpected transport call")
+		captured = request.Clone(request.Context())
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
 	})})
-	err = client.Get(context.Background(), "/fapi/v3/depth", map[string]any{"symbol": "  testasset  "}, false, nil)
-	var unsafe *astercommon.UnsafeSymbolError
-	if !errors.As(err, &unsafe) {
-		t.Fatalf("error = %T %v", err, err)
+	if err := client.Get(context.Background(), "/fapi/v3/depth", map[string]any{"symbol": "  asterusdt  "}, false, nil); err != nil {
+		t.Fatalf("Get: %v", err)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("transport calls = %d, want 0", calls.Load())
+	if got := captured.URL.Query().Get("symbol"); got != "ASTERUSDT" {
+		t.Fatalf("wire symbol = %q, want ASTERUSDT", got)
 	}
 }
 
 func TestClientRejectsSpotProfile(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, _ := astercommon.NewProfile(astercommon.ProductSpot)
 	if _, err := NewClient(profile, nil); err == nil {
 		t.Fatal("perp client accepted spot profile")
 	}
 }
 
 func TestClientRedactsRateLimitVenueMessage(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	client, err := NewClient(profile, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +165,7 @@ func newTestSecurity(t *testing.T) *astercommon.SecurityContext {
 
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentProduction, astercommon.ProductPerp)
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +178,7 @@ func newTestClient(t *testing.T) *Client {
 
 func newClientForServer(t *testing.T, server *httptest.Server, security *astercommon.SecurityContext) *Client {
 	t.Helper()
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +203,7 @@ func newClientForServer(t *testing.T, server *httptest.Server, security *asterco
 
 func newTestWSMarketClient(t *testing.T, ctx context.Context) *WsMarketClient {
 	t.Helper()
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 	if err != nil {
 		t.Fatal(err)
 	}

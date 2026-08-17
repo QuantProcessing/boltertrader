@@ -50,7 +50,7 @@ func TestCredentialLifecycleUsesCASAndNeverSerializesSecretMaterial(t *testing.T
 	const canary = "credential-canary-never-return"
 	ctx := WithRequestID(context.Background(), "req-create")
 	created, err := service.Create(ctx, CreateRequest{
-		Venue: "binance", VenueEnvironment: EnvironmentTestnet, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte(canary),
+		Venue: "binance", VenueEnvironment: EnvironmentLive, DisplayName: "Primary", ProductIDs: []string{"manual"}, SecretMaterial: []byte(canary),
 	}, "browser-session")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -153,7 +153,7 @@ func TestUpdateMetadataRejectsInvalidProductPolicyWithoutMutation(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			store := NewMemoryStore()
 			account := validRoutedAccount()
-			account.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.demo.v1", RequestedState: RouteActive}}
+			account.Routes = []AccountRoute{{ID: "spot", Product: ProductSpot, RouteProfileID: "binance.spot.v1", RequestedState: RouteActive}}
 			if err := store.Create(context.Background(), account); err != nil {
 				t.Fatal(err)
 			}
@@ -177,7 +177,7 @@ func TestDrainDisableRemoveTransitionsFailClosed(t *testing.T) {
 		Store: NewMemoryStore(), Secrets: &secretWriter{ref: "opaque-ref"}, Audit: &auditWriter{},
 		ID: func() string { return "acct_2" },
 	})
-	created, _ := service.Create(context.Background(), CreateRequest{Venue: "okx", VenueEnvironment: EnvironmentDemo, DisplayName: "Demo", ProductIDs: []string{"manual"}, SecretMaterial: []byte("secret")}, "browser-session")
+	created, _ := service.Create(context.Background(), CreateRequest{Venue: "okx", VenueEnvironment: EnvironmentLive, DisplayName: "Secondary", ProductIDs: []string{"manual"}, SecretMaterial: []byte("secret")}, "browser-session")
 	active, _ := service.Activate(context.Background(), created.ID, created.DesiredStateRevision, "gateway-adapter")
 
 	if _, err := service.removeLegacy(context.Background(), active.ID, active.DesiredStateRevision, "browser-session"); !errors.Is(err, ErrInvalidTransition) {

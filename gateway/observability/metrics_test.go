@@ -12,11 +12,11 @@ import (
 func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 	metrics := NewMetrics()
 	metrics.SetAccountSnapshot([]AccountState{
-		{Venue: "binance", Product: "spot", Environment: "demo", ReadReady: true, WriteReady: true},
-		{Venue: "binance", Product: "spot", Environment: "demo", ReadReady: true, WriteReady: false},
+		{Venue: "binance", Product: "spot", Environment: "live", ReadReady: true, WriteReady: true},
+		{Venue: "binance", Product: "spot", Environment: "live", ReadReady: true, WriteReady: false},
 	})
 	metrics.SetCatalogSnapshot([]CatalogState{{
-		Venue: "binance", Product: "spot", Environment: "demo",
+		Venue: "binance", Product: "spot", Environment: "live",
 		LoadedAt: time.Unix(100, 0), Generation: 7,
 	}}, time.Unix(130, 0))
 	metrics.SetReconciliation(2, 45*time.Second)
@@ -50,10 +50,10 @@ func TestMetricsExposeRequiredBoundedOperationalSignals(t *testing.T) {
 			t.Errorf("metrics output missing %q", required)
 		}
 	}
-	if !strings.Contains(body, `gateway_account_read_ready{environment="demo",product="spot",venue="binance"} 2`) {
+	if !strings.Contains(body, `gateway_account_read_ready{environment="live",product="spot",venue="binance"} 2`) {
 		t.Fatalf("aggregated read readiness missing:\n%s", body)
 	}
-	if !strings.Contains(body, `gateway_account_write_ready{environment="demo",product="spot",venue="binance"} 1`) {
+	if !strings.Contains(body, `gateway_account_write_ready{environment="live",product="spot",venue="binance"} 1`) {
 		t.Fatalf("aggregated write readiness missing:\n%s", body)
 	}
 }

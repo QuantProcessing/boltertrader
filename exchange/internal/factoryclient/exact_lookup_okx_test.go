@@ -47,9 +47,8 @@ func (router *okxExactLookupRouter) requestAt(index int) string {
 func TestOKXExactOrderLookupFindsSpotByClientOrderID(t *testing.T) {
 	router := &okxExactLookupRouter{}
 	client := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://okx.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})).(exchange.ExactOrderLookup)
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductSpot)
 
@@ -82,9 +81,8 @@ func TestOKXExactOrderLookupFindsPerpByVenueOrderIDWithContractMultiplier(t *tes
 		return okxOpenAPIData(`[{"instType":"SWAP","instId":"BTC-USDT-SWAP","ordId":"42","clOrdId":"102","side":"sell","ordType":"limit","sz":"10","px":"99","accFillSz":"2","state":"partially_filled","cTime":"1720000000000","uTime":"1720000000000","reduceOnly":"true"}]`)
 	}}
 	client := NewOKXUSDTPerp("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductPerp, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://okx.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})).(exchange.ExactOrderLookup)
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductPerp)
 
@@ -114,9 +112,8 @@ func TestOKXExactOrderLookupMaps51603ToAuthoritativeNotFound(t *testing.T) {
 		return openAPIJSONResponse(`{"code":"51603","msg":"SECRET-not-found-message","data":[]}`)
 	}}
 	client := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://okx.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})).(exchange.ExactOrderLookup)
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductSpot)
 
@@ -168,9 +165,8 @@ func TestOKXExactOrderLookupRejectsMalformedEvidence(t *testing.T) {
 				return openAPIJSONResponse(test.body)
 			}}
 			client := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, Settings{
-				Endpoint:    "https://okx.invalid",
-				Environment: "demo",
-				HTTPClient:  &http.Client{Transport: router},
+				Endpoint:   "https://okx.invalid",
+				HTTPClient: &http.Client{Transport: router},
 			})).(exchange.ExactOrderLookup)
 			instrument := okxOpenAPIFixtureInstrument(exchange.ProductSpot)
 			_, err := client.LookupExactOrder(context.Background(), exchange.ExactOrderLookupRequest{
@@ -187,9 +183,8 @@ func TestOKXExactOrderLookupRejectsMalformedEvidence(t *testing.T) {
 func TestOKXExactOrderLookupInvalidRequestDoesNotSend(t *testing.T) {
 	router := &okxExactLookupRouter{}
 	client := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://okx.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})).(exchange.ExactOrderLookup)
 
 	_, err := client.LookupExactOrder(context.Background(), exchange.ExactOrderLookupRequest{
@@ -209,9 +204,8 @@ func TestOKXExactOrderLookupNormalizesErrorsWithoutLeakingVenueMessages(t *testi
 		return openAPIJSONResponse(`{"code":"50111","msg":"` + canary + `","data":[{"detail":"` + canary + `"}]}`)
 	}}
 	client := NewOKXSpot("key", "secret", "passphrase", okxOpenAPICatalogSettings(exchange.ProductSpot, Settings{
-		Endpoint:    "https://okx.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://okx.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})).(exchange.ExactOrderLookup)
 	instrument := okxOpenAPIFixtureInstrument(exchange.ProductSpot)
 

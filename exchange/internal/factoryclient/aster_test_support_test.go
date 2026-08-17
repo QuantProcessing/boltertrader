@@ -25,13 +25,12 @@ func asterOpenAPITestSettings(t *testing.T, router http.RoundTripper, product ex
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueAster,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             product,
 		Settlement:          settlement,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
 	settings := Settings{
-		Environment:       "testnet",
 		Endpoint:          endpoint,
 		WebSocketEndpoint: descriptor.WebSocketEndpoint,
 		HTTPClient:        &http.Client{Transport: router},

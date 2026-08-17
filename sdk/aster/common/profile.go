@@ -5,13 +5,6 @@ import (
 	"net/url"
 )
 
-type Environment string
-
-const (
-	EnvironmentProduction Environment = "production"
-	EnvironmentTestnet    Environment = "testnet"
-)
-
 type Product string
 
 const (
@@ -28,7 +21,6 @@ const (
 )
 
 type Profile struct {
-	environment   Environment
 	product       Product
 	restURL       string
 	publicWSURL   string
@@ -37,60 +29,35 @@ type Profile struct {
 	allowOverride bool
 }
 
-func NewProfile(environment Environment, product Product) (Profile, error) {
-	switch environment {
-	case EnvironmentProduction:
-		switch product {
-		case ProductSpot:
-			return Profile{
-				environment: environment,
-				product:     product,
-				restURL:     "https://sapi.asterdex.com",
-				publicWSURL: "wss://sstream.asterdex.com",
-				userWSURL:   "wss://sstream.asterdex.com",
-				chainID:     1666,
-			}, nil
-		case ProductPerp:
-			return Profile{
-				environment: environment,
-				product:     product,
-				restURL:     "https://fapi.asterdex.com",
-				publicWSURL: "wss://fstream.asterdex.com",
-				userWSURL:   "wss://fstream.asterdex.com",
-				chainID:     1666,
-			}, nil
-		default:
-			return Profile{}, fmt.Errorf("aster profile: unsupported product %q", product)
-		}
-	case EnvironmentTestnet:
-		switch product {
-		case ProductSpot:
-			return Profile{
-				environment: environment,
-				product:     product,
-				restURL:     "https://sapi.asterdex-testnet.com",
-				publicWSURL: "wss://sstream.asterdex-testnet.com",
-				userWSURL:   "wss://sstream.asterdex-testnet.com",
-				chainID:     714,
-			}, nil
-		case ProductPerp:
-			return Profile{
-				environment: environment,
-				product:     product,
-				restURL:     "https://fapi.asterdex-testnet.com",
-				publicWSURL: "wss://fstream5.asterdex-testnet.com",
-				userWSURL:   "wss://fstream.asterdex-testnet.com",
-				chainID:     714,
-			}, nil
-		default:
-			return Profile{}, fmt.Errorf("aster profile: unsupported product %q", product)
-		}
+// NewProfile is aster's production hosts for one product.
+//
+// It used to take an environment as well. The testnet arm it selected carried
+// its own chain ID (714 against production's 1666), which is the reason the
+// chain ID is still checked in Validate: an override that reaches the wrong
+// chain produces signatures the venue silently rejects rather than a transport
+// error, so the check stays even though there is now only one chain to be on.
+func NewProfile(product Product) (Profile, error) {
+	switch product {
+	case ProductSpot:
+		return Profile{
+			product:     product,
+			restURL:     "https://sapi.asterdex.com",
+			publicWSURL: "wss://sstream.asterdex.com",
+			userWSURL:   "wss://sstream.asterdex.com",
+			chainID:     1666,
+		}, nil
+	case ProductPerp:
+		return Profile{
+			product:     product,
+			restURL:     "https://fapi.asterdex.com",
+			publicWSURL: "wss://fstream.asterdex.com",
+			userWSURL:   "wss://fstream.asterdex.com",
+			chainID:     1666,
+		}, nil
 	default:
-		return Profile{}, fmt.Errorf("aster profile: unsupported environment %q", environment)
+		return Profile{}, fmt.Errorf("aster profile: unsupported product %q", product)
 	}
 }
-
-func (p Profile) Environment() Environment { return p.environment }
 
 func (p Profile) Product() Product { return p.product }
 
@@ -126,7 +93,7 @@ func (p Profile) WithEndpointOverrides(restURL, publicWSURL, userWSURL string) (
 }
 
 func (p Profile) Validate() error {
-	official, err := NewProfile(p.environment, p.product)
+	official, err := NewProfile(p.product)
 	if err != nil {
 		return err
 	}
@@ -152,7 +119,7 @@ func (p Profile) Validate() error {
 		}
 	}
 	if p.chainID != official.chainID {
-		return fmt.Errorf("aster profile: chain id %d does not match %s", p.chainID, p.environment)
+		return fmt.Errorf("aster profile: chain id %d does not match %s", p.chainID, p.product)
 	}
 	return nil
 }
@@ -174,7 +141,7 @@ func (p Profile) ValidateEndpoint(kind EndpointKind, rawURL string) error {
 		return fmt.Errorf("aster profile: invalid %s endpoint", kind)
 	}
 	if rawURL != expected {
-		return fmt.Errorf("aster profile: %s endpoint override is not allowed for %s/%s", kind, p.environment, p.product)
+		return fmt.Errorf("aster profile: %s endpoint override is not allowed for %s", kind, p.product)
 	}
 	return nil
 }
@@ -188,5 +155,5 @@ func validateEndpointURL(kind EndpointKind, rawURL string) error {
 }
 
 func (p Profile) String() string {
-	return fmt.Sprintf("aster profile{%s/%s}", p.environment, p.product)
+	return fmt.Sprintf("aster profile{%s}", p.product)
 }

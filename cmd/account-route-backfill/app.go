@@ -463,7 +463,11 @@ func buildAccountPlans(mode string, accounts []legacyAccount, artifact mappingAr
 	plans := make([]accountPlan, 0, len(accounts))
 	seenAccounts := make(map[string]struct{}, len(accounts))
 	for _, account := range accounts {
-		if account.Mode != mode || (mode == "test" && account.NativeEnvironment == "live") {
+		// The second half of this guard used to refuse a live-environment row
+		// during a test-mode backfill. Every row is live now, so that clause would
+		// refuse all of them; what is left to check is that the row belongs to the
+		// mode being backfilled.
+		if account.Mode != mode {
 			return nil, fmt.Errorf("CROSS_MODE_ACCOUNT")
 		}
 		if _, duplicate := seenAccounts[account.AccountID]; duplicate {
@@ -678,16 +682,18 @@ func decodeMapping(data []byte) (mappingArtifact, error) {
 	seenLegacy := make(map[string]struct{}, len(artifact.Mappings))
 	seenRoute := make(map[string]struct{}, len(artifact.Mappings))
 	for _, item := range artifact.Mappings {
-		mode := routeprofile.ModeTest
-		if item.NativeEnvironment == string(routeprofile.EnvironmentLive) {
-			mode = routeprofile.ModeLive
-		}
-		profile, err := registry.Resolve(mode, item.Venue, item.RouteProfileID)
+		profile, err := registry.Resolve(item.Venue, item.RouteProfileID)
 		expectedProduct := routeprofile.ProductSpot
 		if strings.HasPrefix(item.LegacyProduct, "perp") {
 			expectedProduct = routeprofile.ProductPerp
 		}
-		if err != nil || profile.Product != expectedProduct || string(profile.NativeEnvironment) != item.NativeEnvironment || profile.SettlementAsset != item.SettlementAsset {
+		// The environment used to be read off the resolved profile and compared
+		// with the artifact's. Profiles no longer carry one, so a mapping that
+		// names anything but live names endpoints this binary cannot reach.
+		if item.NativeEnvironment != "live" {
+			return mappingArtifact{}, fmt.Errorf("ROUTE_PROFILE_CONFLICT")
+		}
+		if err != nil || profile.Product != expectedProduct || profile.SettlementAsset != item.SettlementAsset {
 			return mappingArtifact{}, fmt.Errorf("ROUTE_PROFILE_CONFLICT")
 		}
 		if !safeToken(item.LegacyProduct) || !safeToken(item.RouteID) || item.SettlementAsset != strings.ToUpper(item.SettlementAsset) {

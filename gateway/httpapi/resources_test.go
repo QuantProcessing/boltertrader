@@ -22,7 +22,7 @@ import (
 )
 
 func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *testing.T) {
-	instrumentID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	instrumentID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	instrument := exchange.Instrument{
 		Identity: exchange.InstrumentIdentity{
 			Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
@@ -31,7 +31,7 @@ func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *t
 		},
 	}
 	public := catalog.Instrument{
-		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 		Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT",
 		BaseAsset: "BTC", QuoteAsset: "USDT",
 	}
@@ -41,11 +41,11 @@ func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *t
 	accounts := &fakeHTTPAccounts{
 		resource: account.Resource{
 			AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
-			Environment: exchange.EnvironmentDemo, Settlement: "USDT", ReadReady: true, WriteReady: true,
+			Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
 		},
 		status: account.Status{Resource: account.Resource{
 			AccountID: "acct-p", Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
-			Environment: exchange.EnvironmentDemo, Settlement: "USDT", ReadReady: true, WriteReady: true,
+			Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
 		}},
 		instrument: instrument, public: public, capability: capability.StaticMatrix().Rows[1], perp: perp,
 	}
@@ -112,21 +112,21 @@ func TestHandlerPerpPrivateResourcesUseResolvedInstrumentAndCapabilityGates(t *t
 	}
 }
 
-// TestHandlerServesEveryRouteOfAMultiRouteAccount pins the shape bybit takes in
-// the demo environment: one set of credentials settling perpetuals in both USDT
-// and USDC, which the account manager reports as two resources sharing a single
-// account id. Reading such an account by id used to be impossible — every
-// lookup stopped at the first route it found and then rejected the request as
-// ambiguous, so balances, positions, fills and order books all answered 400 no
-// matter which of the two routes was meant.
+// TestHandlerServesEveryRouteOfAMultiRouteAccount pins the shape bybit takes:
+// one set of credentials settling perpetuals in both USDT and USDC, which the
+// account manager reports as two resources sharing a single account id. Reading
+// such an account by id used to be impossible — every lookup stopped at the
+// first route it found and then rejected the request as ambiguous, so balances,
+// positions, fills and order books all answered 400 no matter which of the two
+// routes was meant.
 func TestHandlerServesEveryRouteOfAMultiRouteAccount(t *testing.T) {
 	const accountID = domain.AccountID("acct-multi")
-	usdtInstrumentID := domain.InstrumentID("bybit:demo:perp:USDT:SIREN-USDT")
-	usdcInstrumentID := domain.InstrumentID("bybit:demo:perp:USDC:SIREN-USDC")
+	usdtInstrumentID := domain.InstrumentID("bybit:live:perp:USDT:SIREN-USDT")
+	usdcInstrumentID := domain.InstrumentID("bybit:live:perp:USDC:SIREN-USDC")
 	route := func(settlement string) account.Resource {
 		return account.Resource{
 			AccountID: accountID, Venue: exchange.VenueBybit, Product: exchange.ProductPerp,
-			Environment: exchange.EnvironmentDemo, Settlement: settlement, ReadReady: true, WriteReady: true,
+			Environment: exchange.EnvironmentLive, Settlement: settlement, ReadReady: true, WriteReady: true,
 		}
 	}
 	resolve := func(settlement, symbol, native string) exchange.Instrument {
@@ -138,7 +138,7 @@ func TestHandlerServesEveryRouteOfAMultiRouteAccount(t *testing.T) {
 	}
 	list := func(id domain.InstrumentID, settlement, symbol string) catalog.Instrument {
 		return catalog.Instrument{
-			ID: id, Venue: exchange.VenueBybit, Environment: exchange.EnvironmentDemo,
+			ID: id, Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive,
 			Product: exchange.ProductPerp, Settlement: settlement, Symbol: symbol,
 			BaseAsset: "SIREN", QuoteAsset: settlement,
 		}
@@ -264,7 +264,7 @@ func TestHandlerRejectsPerpOnlyResourcesForSpotBeforeClientIO(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	for _, path := range []string{
 		"/v1/positions?account_id=acct-a",
-		"/v1/funding-rates?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT",
+		"/v1/funding-rates?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Authorization", "Bearer test-token")

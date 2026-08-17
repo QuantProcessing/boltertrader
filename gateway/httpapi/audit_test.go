@@ -19,7 +19,7 @@ import (
 
 func TestHandlerPassesCorrelationIntoAtomicPlaceAudit(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-audit","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-audit","side":"buy","type":"market","quantity":"0.001"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -44,7 +44,7 @@ func TestHandlerAuditFailureBlocksCancelAndLeverageBeforeVenueIO(t *testing.T) {
 		body   string
 	}{
 		{http.MethodDelete, "/v1/orders/018f0000-0000-7000-8000-000000000002", ""},
-		{http.MethodPut, "/v1/accounts/acct-p/instruments/binance:demo:perp:USDT:BTC-USDT/leverage", `{"leverage":5}`},
+		{http.MethodPut, "/v1/accounts/acct-p/instruments/binance:live:perp:USDT:BTC-USDT/leverage", `{"leverage":5}`},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(test.method, test.path, bytes.NewBufferString(test.body))
@@ -73,7 +73,7 @@ func TestHandlerAuditsCancelLeverageAndUnsupportedAmendWithSafeFields(t *testing
 		status int
 	}{
 		{http.MethodDelete, "/v1/orders/018f0000-0000-7000-8000-000000000002", "", http.StatusAccepted},
-		{http.MethodPut, "/v1/accounts/acct-p/instruments/binance:demo:perp:USDT:BTC-USDT/leverage", `{"leverage":5}`, http.StatusNotImplemented},
+		{http.MethodPut, "/v1/accounts/acct-p/instruments/binance:live:perp:USDT:BTC-USDT/leverage", `{"leverage":5}`, http.StatusNotImplemented},
 		{http.MethodPatch, "/v1/orders/018f0000-0000-7000-8000-000000000002", `{}`, http.StatusNotImplemented},
 	}
 	for _, test := range tests {
@@ -110,7 +110,7 @@ func TestHandlerFailsClosedBeforeCallingNonDurableLeverageBackend(t *testing.T) 
 	fixture.perp.leverageErr = exchange.ErrAmbiguousOutcome
 	request := httptest.NewRequest(
 		http.MethodPut,
-		"/v1/accounts/acct-p/instruments/binance:demo:perp:USDT:BTC-USDT/leverage",
+		"/v1/accounts/acct-p/instruments/binance:live:perp:USDT:BTC-USDT/leverage",
 		bytes.NewBufferString(`{"leverage":5}`),
 	)
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -141,7 +141,7 @@ func TestHandlerAuditsUnsupportedLeverageBeforeReturning(t *testing.T) {
 
 	request := httptest.NewRequest(
 		http.MethodPut,
-		"/v1/accounts/acct-p/instruments/binance:demo:perp:USDT:BTC-USDT/leverage",
+		"/v1/accounts/acct-p/instruments/binance:live:perp:USDT:BTC-USDT/leverage",
 		bytes.NewBufferString(`{"leverage":5}`),
 	)
 	request.Header.Set("Authorization", "Bearer test-token")
@@ -177,7 +177,7 @@ func newAuditedHTTPFixture(t *testing.T, auditErr error) auditedHTTPFixture {
 	base.accounts.resource.AccountID = "acct-p"
 	base.accounts.resource.Product = exchange.ProductPerp
 	base.accounts.status.Resource = base.accounts.resource
-	base.accounts.public.ID = "binance:demo:perp:USDT:BTC-USDT"
+	base.accounts.public.ID = "binance:live:perp:USDT:BTC-USDT"
 	base.accounts.public.Product = exchange.ProductPerp
 	base.accounts.public.Settlement = "USDT"
 	base.accounts.instrument.Identity.Product = exchange.ProductPerp

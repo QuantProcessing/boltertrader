@@ -46,11 +46,6 @@ func newHyperliquidSpotWSBackend(
 ) *hyperliquidSpotWSBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	base := hyperliquid.NewWebsocketClient(ctx).WithCredentials(privateKey, nil)
-	if settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquid.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquid.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		base.WithURL(settings.WebSocketEndpoint)
 	}
@@ -91,11 +86,6 @@ func newHyperliquidPerpWSBackend(
 ) *hyperliquidPerpWSBackend {
 	ctx, cancel := context.WithCancel(context.Background())
 	base := hyperliquid.NewWebsocketClient(ctx).WithCredentials(privateKey, nil)
-	if settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquid.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquid.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		base.WithURL(settings.WebSocketEndpoint)
 	}

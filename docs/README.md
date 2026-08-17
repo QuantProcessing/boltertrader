@@ -72,7 +72,7 @@ Operating:
 - [Exchange REST V1 operation matrix](reference/exchange-rest-v1-operation-matrix.md)
 - [Exchange WebSocket V1 operation matrix](reference/exchange-ws-v1-operation-matrix.md)
 - [Unsupported, deferred, and SDK-only surfaces](reference/unsupported.md)
-- [Testing and certification](reference/testing.md)
+- [Testing and evidence](reference/testing.md)
 - [Configuration](reference/configuration.md)
 - [Glossary](reference/glossary.md)
 

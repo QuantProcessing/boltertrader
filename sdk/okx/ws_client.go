@@ -33,8 +33,6 @@ type WSClient struct {
 	WriteMu         sync.Mutex
 	IsPrivate       bool
 	URL             string
-	Environment     Environment
-	DemoHostProfile DemoHostProfile
 	ApiKey          string
 	SecretKey       string
 	Passphrase      string
@@ -44,7 +42,6 @@ type WSClient struct {
 	Dialer          *websocket.Dialer
 	urlRole         wsURLRole
 	explicitURL     bool
-	endpointErr     error
 	dispatcher      *wsdispatch.Dispatcher
 	callbacks       *okxWebsocketCallbackDispatcher
 
@@ -105,8 +102,6 @@ func NewWSClient(ctx context.Context) *WSClient {
 		Dialer:               dialer,
 		Logger:               zap.NewNop().Sugar().Named("okx"),
 		Connected:            make(chan bool, 1),
-		Environment:          Production,
-		DemoHostProfile:      DemoHostProfileGlobal,
 		urlRole:              wsURLRolePublic,
 		dispatcher:           wsdispatch.NewDispatcher(),
 		callbacks:            newOKXWebsocketCallbackDispatcher(),
@@ -142,22 +137,9 @@ func (c *WSClient) WithBusinessURL() *WSClient {
 	return c
 }
 
-func (c *WSClient) WithEnvironment(env Environment) *WSClient {
-	c.Environment = defaultEnvironment(env)
-	c.applyEndpointURL()
-	return c
-}
-
-func (c *WSClient) WithDemoHostProfile(profile DemoHostProfile) *WSClient {
-	c.DemoHostProfile = defaultDemoHostProfile(profile)
-	c.applyEndpointURL()
-	return c
-}
-
 func (c *WSClient) WithURL(rawURL string) *WSClient {
 	c.URL = rawURL
 	c.explicitURL = true
-	c.endpointErr = nil
 	return c
 }
 
@@ -172,16 +154,9 @@ func (c *WSClient) SetReconnectHooks(started func(error), recovered func()) {
 
 func (c *WSClient) applyEndpointURL() {
 	if c.explicitURL {
-		c.endpointErr = nil
 		return
 	}
-	endpoints, err := DefaultEndpointURLs(c.Environment, c.DemoHostProfile)
-	if err != nil {
-		c.URL = ""
-		c.endpointErr = err
-		return
-	}
-	c.endpointErr = nil
+	endpoints := DefaultEndpointURLs()
 	switch c.urlRole {
 	case wsURLRolePrivate:
 		c.URL = endpoints.WSPrivate
@@ -244,11 +219,6 @@ func (c *WSClient) connectAndLogin(lifecycleCtx context.Context, lifecycleRevisi
 		conn := c.Conn
 		c.mu.Unlock()
 		return conn, false, nil
-	}
-	if c.endpointErr != nil {
-		err := c.endpointErr
-		c.mu.Unlock()
-		return nil, false, err
 	}
 	if c.URL == "" {
 		c.mu.Unlock()

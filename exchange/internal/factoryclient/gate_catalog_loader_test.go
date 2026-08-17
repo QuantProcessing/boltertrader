@@ -14,12 +14,11 @@ func TestGateInstrumentLoaderLoadsSpotAndUSDTPerpCatalogMetadata(t *testing.T) {
 	ctx := context.Background()
 	router := &gateOpenAPIRouter{}
 	settings := Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	}
 
-	spotScope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot}
+	spotScope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	spotSnapshot, err := NewGateInstrumentLoader(exchange.ProductSpot, settings).LoadInstruments(ctx, spotScope)
 	if err != nil {
 		t.Fatalf("spot LoadInstruments: %v", err)
@@ -43,7 +42,7 @@ func TestGateInstrumentLoaderLoadsSpotAndUSDTPerpCatalogMetadata(t *testing.T) {
 		t.Fatalf("spot metadata = rules:%+v encoding:%+v", spot.Rules, spot.Encoding)
 	}
 
-	perpScope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, Settlement: "USDT"}
+	perpScope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}
 	perpSnapshot, err := NewGateInstrumentLoader(exchange.ProductPerp, settings).LoadInstruments(ctx, perpScope)
 	if err != nil {
 		t.Fatalf("perp LoadInstruments: %v", err)
@@ -73,12 +72,11 @@ func TestGateCatalogBackedInstrumentsAndResolveUseRegisteredSource(t *testing.T)
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://ws.invalid/v4/ws/spot",
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: router},
 		InstrumentCatalog: catalog,
 		CatalogScope: exchange.CatalogScope{
 			Venue:       exchange.VenueGate,
-			Environment: exchange.EnvironmentTestnet,
+			Environment: exchange.EnvironmentLive,
 			Product:     exchange.ProductSpot,
 		},
 		SourceDescriptor: exchange.SourceDescriptor{Name: "gate-spot", Endpoint: "https://openapi.invalid", WebSocketEndpoint: "wss://ws.invalid/v4/ws/spot", Transport: "custom-http-client"},
@@ -112,9 +110,8 @@ func TestGatePerpPlaceOrderRequiresCatalogMultiplierBeforeTransport(t *testing.T
 	ctx := context.Background()
 	router := &gateOpenAPIRouter{}
 	client := NewGateUSDTPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})
 	inst := gateTestInstrument(exchange.ProductPerp)
 	inst.Encoding.ContractMultiplier = exchange.OptionalDecimal{}
@@ -248,7 +245,7 @@ func gateTestSettings(product exchange.Product, transport http.RoundTripper) Set
 	catalog := exchange.NewDefaultMemoryCatalog()
 	scope := exchange.CatalogScope{
 		Venue:       exchange.VenueGate,
-		Environment: exchange.EnvironmentTestnet,
+		Environment: exchange.EnvironmentLive,
 		Product:     product,
 	}
 	if product == exchange.ProductPerp {
@@ -272,7 +269,6 @@ func gateTestSettings(product exchange.Product, transport http.RoundTripper) Set
 	return Settings{
 		Endpoint:          descriptor.Endpoint,
 		WebSocketEndpoint: descriptor.WebSocketEndpoint,
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: transport},
 		InstrumentCatalog: catalog,
 		CatalogScope:      scope,

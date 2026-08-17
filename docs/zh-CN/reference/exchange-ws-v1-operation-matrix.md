@@ -142,7 +142,7 @@ stream，下单和撤单通过签名 REST endpoint 完成，因此 Aster 的 Web
 方法会有意复用同一个 credentialed REST command path。其他产品行在交易所提供
 原生 WebSocket trade command 时使用该原生能力。
 
-## Demo/Testnet 验收
+## 验收
 
 Offline WebSocket contract test 包含在：
 
@@ -150,35 +150,10 @@ Offline WebSocket contract test 包含在：
 make test-exchange-offline
 ```
 
-Public stream smoke test 可在 caller 提供显式 environment configuration 时连接
-non-production 或 public endpoint。Private stream 与 order command 需要
-credential。`PlaceOrder` 与 `CancelOrder` 会在 Demo/Testnet 修改真实的
-non-production exchange state，其中包括 Aster 官方 REST command fallback。
+Public stream smoke test 可以连接 public endpoint。Private stream 与 order
+command 需要 credential，并且直达该 venue 的 production environment，其中包括
+Aster 官方 REST command fallback，因此 `PlaceOrder` 与 `CancelOrder` 都会花掉
+真金白银。
 
-本 matrix 中的 capability cell 表示 implemented/admitted support，不等于
-external environment certification。当前 acceptance certification 如下：
-
-| Row | Acceptance status | Reason |
-| --- | --- | --- |
-| BNS | Passed | Binance Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| BNP | Passed | Binance Demo USD-M perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| OXS | Passed | OKX Demo spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| OXP | Passed | OKX Demo USDT-linear SWAP 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| LIS | Waived | Lighter Testnet Spot 的结构就是单边盘口。用户已明确批准 live-write waiver：串行 target 会验证 REST 读取、账户访问、单边订单簿流、其余公共/私有订阅激活和非法请求边界，且不会发送 live order mutation；WatchBBO、exact lookup 与写路径保持显式豁免或只由 fixture 证明，网关继续保持该行 not write-ready。 |
-| LIP | Passed | Lighter Testnet perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| HLS | Passed | Hyperliquid Testnet spot 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| HLP | Passed | Hyperliquid Testnet standard perp 已针对声明的 REST 与 WebSocket exchange row 通过 external acceptance。 |
-| BYS | Passed | Bybit Demo Spot row 已通过 full external acceptance。 |
-| BYU | Passed | Bybit Demo USDT-linear Perp row 已通过 full external acceptance。 |
-| BYC | Passed | Bybit Demo USDC-linear Perp row 已通过 full external acceptance。 |
-| BGS | Passed | Bitget Demo Spot row 已通过 full external acceptance。 |
-| BGU | Passed | Bitget Demo USDT-linear Perp row 已通过 full external acceptance。 |
-| BGC | Passed | Bitget Demo USDC-linear Perp row 使用原生 `BTCPERP` 通过 full external acceptance。 |
-| GTS | Passed | Gate Testnet Spot row 已通过 full external acceptance。 |
-| GTU | Passed | Gate Testnet USDT-settled Perp row 已通过 full external acceptance。 |
-| ATS | Passed | Aster Testnet Spot row 已通过 full external acceptance。 |
-| ATP | Passed | Aster Perp row 使用 Testnet 写操作与私有流，并结合 production 只读 funding REST 与 WebSocket reference data 通过验收。 |
-| NDS | Passed | Nado Testnet USDT0 Spot row 已通过 full external acceptance。 |
-| NDP | Passed | Nado Testnet USDT0 Perp row 已通过 full external acceptance；`SetLeverage` 返回文档约定的后端管理 `Effective=0`，并且 `WatchMarkPrice` 返回 `ErrUnsupported`。 |
-
-除 acceptance status table 外，本 matrix 不声称 live validation 已通过。
+本 matrix 中的 capability cell 表示 implemented/admitted support，并不证明该
+venue 今天仍然可用。如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock。

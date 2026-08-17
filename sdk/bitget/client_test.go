@@ -110,37 +110,30 @@ func TestClient_HasCredentials(t *testing.T) {
 	}
 }
 
-func TestEnvironmentProfiles(t *testing.T) {
-	demo := DemoEnvironmentProfile()
-	if demo.RESTBaseURL != "https://api.bitget.com" {
-		t.Fatalf("demo rest=%q", demo.RESTBaseURL)
+func TestMainnetEnvironmentProfileIsFullyPopulated(t *testing.T) {
+	mainnet := MainnetEnvironmentProfile()
+	if mainnet.RESTBaseURL != defaultBaseURL {
+		t.Fatalf("rest=%q, want %q", mainnet.RESTBaseURL, defaultBaseURL)
 	}
-	if demo.PublicWSURL != "wss://wspap.bitget.com/v3/ws/public" {
-		t.Fatalf("demo public ws=%q", demo.PublicWSURL)
+	if mainnet.PublicWSURL != publicWSURL {
+		t.Fatalf("public ws=%q, want %q", mainnet.PublicWSURL, publicWSURL)
 	}
-	if demo.PrivateWSURL != "wss://wspap.bitget.com/v3/ws/private" {
-		t.Fatalf("demo private ws=%q", demo.PrivateWSURL)
-	}
-	if !demo.PAPTrading {
-		t.Fatalf("demo profile must set paptrading: %+v", demo)
-	}
-
-	testnet, err := NewTestnetEnvironmentProfile("https://testnet-api.bitget.example", "wss://testnet.bitget.example/public", "wss://testnet.bitget.example/private")
-	if err != nil {
-		t.Fatalf("testnet profile: %v", err)
-	}
-	if !testnet.OfficialTestnet || testnet.PAPTrading {
-		t.Fatalf("testnet profile should be official and non-demo: %+v", testnet)
+	if mainnet.PrivateWSURL != privateWSURL {
+		t.Fatalf("private ws=%q, want %q", mainnet.PrivateWSURL, privateWSURL)
 	}
 }
 
-func TestClient_WithEnvironmentProfileAddsPAPTradingHeader(t *testing.T) {
-	var seenHeader string
+// The signed GET and signed POST paths build their headers separately, so each
+// needs its own proof that credentials actually reach the transport. A request
+// that goes out unsigned comes back as a bitget auth error rather than anything
+// that names the missing header.
+func TestClient_SignsGET(t *testing.T) {
+	var seen http.Header
 	client := NewClient().
 		WithCredentials("key", "secret", "passphrase").
-		WithEnvironmentProfile(DemoEnvironmentProfile()).
+		WithEnvironmentProfile(MainnetEnvironmentProfile()).
 		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
-			seenHeader = req.Header.Get("paptrading")
+			seen = req.Header.Clone()
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{"userId":"u1","permType":"read","permissions":["uta"]}}`)),
@@ -151,20 +144,26 @@ func TestClient_WithEnvironmentProfileAddsPAPTradingHeader(t *testing.T) {
 	if _, err := client.GetAccountInfo(context.Background()); err != nil {
 		t.Fatalf("GetAccountInfo: %v", err)
 	}
-	if seenHeader != "1" {
-		t.Fatalf("paptrading header=%q, want 1", seenHeader)
+	if seen.Get("ACCESS-KEY") != "key" {
+		t.Fatalf("ACCESS-KEY=%q, want key", seen.Get("ACCESS-KEY"))
+	}
+	if seen.Get("ACCESS-SIGN") == "" || seen.Get("ACCESS-TIMESTAMP") == "" {
+		t.Fatalf("request went out unsigned: %v", seen)
+	}
+	if got := seen.Get("ACCESS-SIGN"); strings.Contains(got, "secret") {
+		t.Fatalf("signature leaked the secret key: %q", got)
 	}
 }
 
-func TestClient_WithEnvironmentProfileAddsPAPTradingHeaderToSignedPOST(t *testing.T) {
-	var seenHeader string
+func TestClient_SignsPOST(t *testing.T) {
+	var seen http.Header
 	var seenMethod string
 	client := NewClient().
 		WithCredentials("key", "secret", "passphrase").
-		WithEnvironmentProfile(DemoEnvironmentProfile()).
+		WithEnvironmentProfile(MainnetEnvironmentProfile()).
 		WithHTTPClient(&http.Client{Transport: rawRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 			seenMethod = req.Method
-			seenHeader = req.Header.Get("paptrading")
+			seen = req.Header.Clone()
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(strings.NewReader(`{"code":"00000","msg":"success","data":{}}`)),
@@ -179,21 +178,27 @@ func TestClient_WithEnvironmentProfileAddsPAPTradingHeaderToSignedPOST(t *testin
 	if seenMethod != http.MethodPost {
 		t.Fatalf("method=%q, want POST", seenMethod)
 	}
-	if seenHeader != "1" {
-		t.Fatalf("paptrading header=%q, want 1", seenHeader)
+	if seen.Get("ACCESS-KEY") != "key" {
+		t.Fatalf("ACCESS-KEY=%q, want key", seen.Get("ACCESS-KEY"))
+	}
+	if seen.Get("ACCESS-SIGN") == "" || seen.Get("ACCESS-TIMESTAMP") == "" {
+		t.Fatalf("request went out unsigned: %v", seen)
 	}
 }
 
 func TestWSClientsUseEnvironmentProfiles(t *testing.T) {
-	demo := DemoEnvironmentProfile()
+	profile := EnvironmentProfile{
+		PublicWSURL:  "wss://public.test/ws",
+		PrivateWSURL: "wss://private.test/ws",
+	}
 
-	public := NewPublicWSClientWithProfile(demo)
-	if public.url != "wss://wspap.bitget.com/v3/ws/public" {
+	public := NewPublicWSClientWithProfile(profile)
+	if public.url != profile.PublicWSURL {
 		t.Fatalf("public ws url=%q", public.url)
 	}
 
-	private := NewPrivateWSClientWithProfile(demo)
-	if private.url != "wss://wspap.bitget.com/v3/ws/private" {
+	private := NewPrivateWSClientWithProfile(profile)
+	if private.url != profile.PrivateWSURL {
 		t.Fatalf("private ws url=%q", private.url)
 	}
 }

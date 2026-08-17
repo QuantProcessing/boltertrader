@@ -57,9 +57,9 @@ func TestBindCredentialReferenceTransitionsStoredAtomically(t *testing.T) {
 func validRoutedAccount() Account {
 	return Account{
 		ID: "acct_1", Venue: "binance", Mode: secretstore.ModeTest,
-		NativeEnvironment: EnvironmentDemo, DisplayName: "Primary",
+		NativeEnvironment: EnvironmentLive, DisplayName: "Primary",
 		ProductPolicy: []string{"manual"}, ProductIDs: []string{"manual"},
-		Routes:               []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: RouteActive}},
+		Routes:               []AccountRoute{{ID: "perp-usdt", Product: ProductPerp, SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: RouteActive}},
 		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 		State: StateCreating, UpdatedAt: time.Unix(1, 0).UTC(),
 	}

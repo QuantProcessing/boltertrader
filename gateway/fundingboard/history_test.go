@@ -28,7 +28,7 @@ import (
 func TestFundingHistoryResolvesNativeIdentifierFromBoard(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	histories := &fakeHistoryFactory{}
-	source, err := newSource(histories, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(histories, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -68,8 +68,8 @@ func TestFundingHistoryResolvesNativeIdentifierFromBoard(t *testing.T) {
 	}
 }
 
-// TestFundingHistorySearchesEveryColumnOfAVenue pins the fact that a venue and
-// an environment do not name a column.
+// TestFundingHistorySearchesEveryColumnOfAVenue pins the fact that a venue does
+// not name a column.
 //
 // Bybit and bitget each stand two, one per settlement asset, and the registry
 // orders USDC ahead of USDT. A resolver that stopped at the first column
@@ -84,7 +84,7 @@ func TestFundingHistoryResolvesNativeIdentifierFromBoard(t *testing.T) {
 func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	histories := &fakeHistoryFactory{}
-	source, err := newSource(histories, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(histories, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -138,7 +138,7 @@ func TestFundingHistorySearchesEveryColumnOfAVenue(t *testing.T) {
 func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	histories := &fakeHistoryFactory{}
-	source, err := newSource(histories, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(histories, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -183,7 +183,7 @@ func TestFundingHistoryWarmsColdColumnOnce(t *testing.T) {
 func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	histories := &fakeHistoryFactory{}
-	source, err := newSource(histories, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(histories, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -213,8 +213,10 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 			want:  ErrHistoryUnsupported,
 		},
 		{
-			// The board follows the gateway's mode, so a live-mode source has
-			// no testnet column to read and must not fall back to the live one.
+			// Only live endpoints exist now, but the query still carries an
+			// environment because it arrives from the browser. Anything else
+			// names endpoints this board cannot reach and must be refused
+			// rather than quietly answered from the live column.
 			name:  "environment is not the one the board tracks",
 			query: HistoryQuery{Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Since: since, Until: until},
 			want:  ErrHistoryUnsupported,
@@ -268,7 +270,7 @@ func TestFundingHistoryRefusesUnchartableRead(t *testing.T) {
 
 	// A factory with no history capability at all is still a Factory: every
 	// column stays on the board and every chart says so.
-	plain, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	plain, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {

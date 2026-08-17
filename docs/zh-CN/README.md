@@ -70,7 +70,7 @@ Exchange 模块：
 - [Exchange REST V1 operation matrix](reference/exchange-rest-v1-operation-matrix.md)
 - [Exchange WebSocket V1 operation matrix](reference/exchange-ws-v1-operation-matrix.md)
 - [Unsupported、Deferred（延期）和 SDK-only surface](reference/unsupported.md)
-- [测试与认证](reference/testing.md)
+- [测试与证据](reference/testing.md)
 - [配置](reference/configuration.md)
 - [术语表](reference/glossary.md)
 

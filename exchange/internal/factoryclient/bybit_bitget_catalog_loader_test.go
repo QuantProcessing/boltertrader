@@ -31,8 +31,7 @@ func (fn bybitBitgetCatalogRoundTripper) RoundTrip(request *http.Request) (*http
 
 func TestBybitInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *testing.T) {
 	loader := NewBybitInstrumentLoader(exchange.ProductPerp, Settings{
-		Endpoint:    "https://bybit.invalid",
-		Environment: "testnet",
+		Endpoint: "https://bybit.invalid",
 		HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 			if request.URL.Path != "/v5/market/instruments-info" ||
 				request.URL.Query().Get("category") != "linear" ||
@@ -62,7 +61,7 @@ func TestBybitInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *t
 		t.Run(test.name, func(t *testing.T) {
 			snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 				Venue:       exchange.VenueBybit,
-				Environment: exchange.EnvironmentTestnet,
+				Environment: exchange.EnvironmentLive,
 				Product:     exchange.ProductPerp,
 				Settlement:  test.settlement,
 			})
@@ -83,8 +82,7 @@ func TestBybitInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *t
 func TestBitgetInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *testing.T) {
 	requests := make([]*http.Request, 0, 2)
 	loader := NewBitgetInstrumentLoader(exchange.ProductPerp, "USDC-FUTURES", Settings{
-		Endpoint:    "https://bitget.invalid",
-		Environment: "demo",
+		Endpoint: "https://bitget.invalid",
 		HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(request *http.Request) (*http.Response, error) {
 			requests = append(requests, request.Clone(request.Context()))
 			if request.URL.Path != "/api/v3/market/instruments" ||
@@ -105,7 +103,7 @@ func TestBitgetInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueBitget,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductPerp,
 		Settlement:  "USDC",
 	})
@@ -126,8 +124,7 @@ func TestBitgetInstrumentLoaderUsesPublicInstrumentsOnlyAndFiltersSettlement(t *
 
 func TestBitgetInstrumentLoaderFallsBackToPublishedPrecisions(t *testing.T) {
 	loader := NewBitgetInstrumentLoader(exchange.ProductSpot, "", Settings{
-		Endpoint:    "https://bitget.invalid",
-		Environment: "demo",
+		Endpoint: "https://bitget.invalid",
 		HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 			return bitgetData(`[
 				{"symbol":"GOATUSDT","category":"spot","baseCoin":"GOAT","quoteCoin":"USDT","minOrderQty":"0.01","minOrderAmount":"5","pricePrecision":"5","quantityPrecision":"2","priceMultiplier":"","quantityMultiplier":"","status":"online"}
@@ -137,7 +134,7 @@ func TestBitgetInstrumentLoaderFallsBackToPublishedPrecisions(t *testing.T) {
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueBitget,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	})
 	if err != nil {
@@ -157,8 +154,7 @@ func TestBitgetInstrumentLoaderFallsBackToPublishedPrecisions(t *testing.T) {
 
 func TestBitgetInstrumentLoaderAcceptsCaseDistinctNativeSymbols(t *testing.T) {
 	loader := NewBitgetInstrumentLoader(exchange.ProductSpot, "", Settings{
-		Endpoint:    "https://bitget.invalid",
-		Environment: "demo",
+		Endpoint: "https://bitget.invalid",
 		HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 			return bitgetData(`[
 				{"symbol":"RPBRUSDT","category":"spot","baseCoin":"rPBR","quoteCoin":"USDT","minOrderQty":"0.0001","minOrderAmount":"5","pricePrecision":"2","quantityPrecision":"4","status":"online"}
@@ -168,7 +164,7 @@ func TestBitgetInstrumentLoaderAcceptsCaseDistinctNativeSymbols(t *testing.T) {
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueBitget,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	})
 	if err != nil {
@@ -187,8 +183,7 @@ func TestBitgetInstrumentLoaderAcceptsCaseDistinctNativeSymbols(t *testing.T) {
 
 func TestBitgetInstrumentLoaderSkipsNonCryptoSpotProducts(t *testing.T) {
 	loader := NewBitgetInstrumentLoader(exchange.ProductSpot, "", Settings{
-		Endpoint:    "https://bitget.invalid",
-		Environment: "demo",
+		Endpoint: "https://bitget.invalid",
 		HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 			return bitgetData(`[
 				{"symbol":"BTCUSDT","category":"spot","baseCoin":"BTC","quoteCoin":"USDT","symbolType":"crypto","minOrderQty":"0.0001","minOrderAmount":"5","pricePrecision":"2","quantityPrecision":"4","status":"online"},
@@ -199,7 +194,7 @@ func TestBitgetInstrumentLoaderSkipsNonCryptoSpotProducts(t *testing.T) {
 
 	snapshot, err := loader.LoadInstruments(context.Background(), exchange.CatalogScope{
 		Venue:       exchange.VenueBitget,
-		Environment: exchange.EnvironmentDemo,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 	})
 	if err != nil {
@@ -220,14 +215,14 @@ func TestBybitBitgetCatalogMetadataObservesRefreshWithoutSDKFallback(t *testing.
 		{
 			name: "bybit",
 			client: func(catalog exchange.InstrumentCatalog, scope exchange.CatalogScope, transport http.RoundTripper) exchange.SpotClient {
-				return NewBybitSpot("key", "secret", Settings{Endpoint: "https://catalog.invalid", Environment: "testnet", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: transport}})
+				return NewBybitSpot("key", "secret", Settings{Endpoint: "https://catalog.invalid", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: transport}})
 			},
 			venue: exchange.VenueBybit,
 		},
 		{
 			name: "bitget",
 			client: func(catalog exchange.InstrumentCatalog, scope exchange.CatalogScope, transport http.RoundTripper) exchange.SpotClient {
-				return NewBitgetSpot("key", "secret", "passphrase", Settings{Endpoint: "https://catalog.invalid", Environment: "demo", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: transport}})
+				return NewBitgetSpot("key", "secret", "passphrase", Settings{Endpoint: "https://catalog.invalid", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: transport}})
 			},
 			venue: exchange.VenueBitget,
 		},
@@ -235,10 +230,7 @@ func TestBybitBitgetCatalogMetadataObservesRefreshWithoutSDKFallback(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			descriptor := exchange.SourceDescriptor{Name: string(test.venue) + "-spot", Endpoint: "https://catalog.invalid", WebSocketEndpoint: "wss://catalog.invalid/ws", Transport: "test"}
-			scope := exchange.CatalogScope{Venue: test.venue, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot, EndpointFingerprint: descriptor.Fingerprint()}
-			if test.venue == exchange.VenueBybit {
-				scope.Environment = exchange.EnvironmentTestnet
-			}
+			scope := exchange.CatalogScope{Venue: test.venue, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, EndpointFingerprint: descriptor.Fingerprint()}
 			loader := &mutableBybitBitgetInstrumentLoader{snapshot: exchange.InstrumentSnapshot{
 				SchemaVersion: 1,
 				Scope:         scope,
@@ -290,14 +282,13 @@ func TestBybitBitgetCatalogMetadataObservesRefreshWithoutSDKFallback(t *testing.
 func TestBybitBitgetLoadersFailClosedForMalformedSupportedRows(t *testing.T) {
 	t.Run("bybit native symbol mismatch", func(t *testing.T) {
 		_, err := NewBybitInstrumentLoader(exchange.ProductSpot, Settings{
-			Endpoint:    "https://bybit.invalid",
-			Environment: "testnet",
+			Endpoint: "https://bybit.invalid",
 			HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 				return openAPIJSONResponse(`{"retCode":0,"retMsg":"OK","result":{"category":"spot","list":[
 					{"symbol":"ETHUSDT","baseCoin":"BTC","quoteCoin":"USDT","settleCoin":"","status":"Trading","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"basePrecision":"0.001","minOrderQty":"0.001","minOrderAmt":"5"}}
 				],"nextPageCursor":""},"time":1720000000000}`), nil
 			})},
-		}).LoadInstruments(context.Background(), exchange.CatalogScope{Venue: exchange.VenueBybit, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot})
+		}).LoadInstruments(context.Background(), exchange.CatalogScope{Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot})
 		if err == nil {
 			t.Fatal("malformed supported Bybit row was published")
 		}
@@ -305,12 +296,11 @@ func TestBybitBitgetLoadersFailClosedForMalformedSupportedRows(t *testing.T) {
 
 	t.Run("bitget missing increment", func(t *testing.T) {
 		_, err := NewBitgetInstrumentLoader(exchange.ProductSpot, "", Settings{
-			Endpoint:    "https://bitget.invalid",
-			Environment: "demo",
+			Endpoint: "https://bitget.invalid",
 			HTTPClient: &http.Client{Transport: bybitBitgetCatalogRoundTripper(func(*http.Request) (*http.Response, error) {
 				return bitgetData(`[{"symbol":"ETHUSDT","category":"spot","baseCoin":"ETH","quoteCoin":"USDT","minOrderQty":"0.001","priceMultiplier":"","quantityMultiplier":"","status":"online"}]`), nil
 			})},
-		}).LoadInstruments(context.Background(), exchange.CatalogScope{Venue: exchange.VenueBitget, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot})
+		}).LoadInstruments(context.Background(), exchange.CatalogScope{Venue: exchange.VenueBitget, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot})
 		if err == nil {
 			t.Fatal("malformed supported Bitget row was published")
 		}
@@ -364,7 +354,7 @@ func bybitBitgetStaticCatalogSettings(t *testing.T, settings Settings, venue exc
 	}
 	scope := exchange.CatalogScope{
 		Venue:               venue,
-		Environment:         exchange.Environment(settings.Environment),
+		Environment:         exchange.EnvironmentLive,
 		Product:             product,
 		Settlement:          instrument.Identity.SettleAsset,
 		EndpointFingerprint: descriptor.Fingerprint(),

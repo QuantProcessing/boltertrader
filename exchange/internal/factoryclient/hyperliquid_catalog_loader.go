@@ -81,11 +81,6 @@ func (loader hyperliquidInstrumentLoader) loadPerp(ctx context.Context) ([]excha
 
 func (loader hyperliquidInstrumentLoader) publicBaseClient() *hyperliquidbase.Client {
 	base := hyperliquidbase.NewClient()
-	if loader.settings.Environment == "testnet" {
-		base.WithEnvironment(hyperliquidbase.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquidbase.EnvironmentMainnet)
-	}
 	if loader.settings.Endpoint != "" {
 		base.BaseURL = loader.settings.Endpoint
 	}

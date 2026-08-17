@@ -94,28 +94,28 @@ func TestExpandedConfigsValidateCredentialsAndEnvironmentLocally(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"bybit spot demo", func() error {
-			_, err := New(BybitSpotConfig("key", "secret", WithEnvironment(EnvironmentDemo)))
+		{"bybit spot", func() error {
+			_, err := New(BybitSpotConfig("key", "secret", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
-		{"bybit usdc perp testnet", func() error {
-			_, err := New(BybitUSDCPerpConfig("key", "secret", WithEnvironment(EnvironmentTestnet)))
+		{"bybit usdc perp", func() error {
+			_, err := New(BybitUSDCPerpConfig("key", "secret", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
-		{"bitget spot demo", func() error {
-			_, err := New(BitgetSpotConfig("key", "secret", "passphrase", WithEnvironment(EnvironmentDemo)))
+		{"bitget spot", func() error {
+			_, err := New(BitgetSpotConfig("key", "secret", "passphrase", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
-		{"gate perp testnet", func() error {
-			_, err := New(GateUSDTPerpConfig("key", "secret", WithEnvironment(EnvironmentTestnet)))
+		{"gate perp", func() error {
+			_, err := New(GateUSDTPerpConfig("key", "secret", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
-		{"aster spot testnet", func() error {
-			_, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, WithEnvironment(EnvironmentTestnet)))
+		{"aster spot", func() error {
+			_, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, testEVMAddress, WithEnvironment(EnvironmentLive)))
 			return err
 		}},
-		{"nado perp testnet", func() error {
-			_, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, "default", WithEnvironment(EnvironmentTestnet)))
+		{"nado perp", func() error {
+			_, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, "default", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 	}
@@ -131,36 +131,28 @@ func TestExpandedConfigsValidateCredentialsAndEnvironmentLocally(t *testing.T) {
 		name string
 		run  func() error
 	}{
-		{"bitget rejects testnet label", func() error {
-			_, err := New(BitgetSpotConfig("key", "secret", "passphrase", WithEnvironment(EnvironmentTestnet)))
-			return err
-		}},
-		{"gate rejects demo label", func() error {
-			_, err := New(GateSpotConfig("key", "secret", WithEnvironment(EnvironmentDemo)))
-			return err
-		}},
 		{"aster signer mismatch", func() error {
-			_, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, "0x1111111111111111111111111111111111111111", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(AsterSpotConfig(testEVMAddress, testEVMPrivateKey, "0x1111111111111111111111111111111111111111", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 		{"aster zero user", func() error {
-			_, err := New(AsterUSDTPerpConfig("0x0000000000000000000000000000000000000000", testEVMPrivateKey, "", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(AsterUSDTPerpConfig("0x0000000000000000000000000000000000000000", testEVMPrivateKey, "", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 		{"nado long subaccount", func() error {
-			_, err := New(NadoSpotConfig(testEVMPrivateKey, "thirteen-bytes", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(NadoSpotConfig(testEVMPrivateKey, "thirteen-bytes", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 		{"nado empty subaccount", func() error {
-			_, err := New(NadoSpotConfig(testEVMPrivateKey, "", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(NadoSpotConfig(testEVMPrivateKey, "", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 		{"nado whitespace subaccount", func() error {
-			_, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, " \t ", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(NadoUSDT0PerpConfig(testEVMPrivateKey, " \t ", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 		{"nado invalid key", func() error {
-			_, err := New(NadoUSDT0PerpConfig("not-a-key", "default", WithEnvironment(EnvironmentTestnet)))
+			_, err := New(NadoUSDT0PerpConfig("not-a-key", "default", WithEnvironment(EnvironmentLive)))
 			return err
 		}},
 	}

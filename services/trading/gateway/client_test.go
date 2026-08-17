@@ -27,7 +27,7 @@ func TestGatewayAdapterPreservesCompleteBrowserRuntimeLifecycle(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(ModeHeader, "test")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
+		_, _ = w.Write([]byte(`{"data":{"accountId":"account-a","tombstoned":false,"desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"runtimeVersion":9,"readiness":{"ready":true},"writeReadiness":{"ready":true},"lastAppliedDesiredStateRevision":7,"lastAppliedRuntimeGeneration":3,"blockedReason":null,"active":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c33","desiredStateRevision":7,"runtimeGeneration":3,"credentialVersion":2,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active","ready":true}]},"pending":{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c34","desiredStateRevision":8,"runtimeGeneration":4,"credentialVersion":3,"requestedState":"rotating","state":"candidate_ready","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active","ready":false,"reason":"building"}]},"retiring":[{"operationId":"018f47a8-2578-7d3c-9d7d-5e4f4a445c35","desiredStateRevision":6,"runtimeGeneration":2,"credentialVersion":1,"requestedState":"draining","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"disabled","ready":false,"reason":"draining"}]}],"capabilities":[{"rowId":"binance:perp:USDT","venue":"binance","product":"perp","settlement":"USDT","writeReady":true,"operations":{"cancel":true}}],"observedAt":"2026-08-05T01:03:04Z"}}`))
 	}))
 	defer server.Close()
 	adapter, err := NewClientForMode(server.URL, false, []byte(token), orders.ModeTest, false, server.Client())
@@ -105,15 +105,15 @@ func (authority *adapterContractAuthority) Execute(_ context.Context, request ga
 	case gatewayhttp.AuthorityRuntimeReadiness:
 		return gatewayhttp.AuthorityResponse{Body: gatewayhttp.RuntimeReadiness{Ready: true}}, nil
 	case gatewayhttp.AuthorityCatalogVenues:
-		return gatewayhttp.AuthorityResponse{Body: []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: true}}}, nil
+		return gatewayhttp.AuthorityResponse{Body: []catalog.Venue{{Venue: "binance", Environment: "live", Ready: true}}}, nil
 	case gatewayhttp.AuthorityCatalogInstruments:
-		return gatewayhttp.AuthorityResponse{Body: map[string]any{"revision": "gateway-catalog-1", "observedAt": time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC), "instruments": []catalog.Instrument{{InstrumentID: "BTC-USDT", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}}, nil
+		return gatewayhttp.AuthorityResponse{Body: map[string]any{"revision": "gateway-catalog-1", "observedAt": time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC), "instruments": []catalog.Instrument{{InstrumentID: "BTC-USDT", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: true}}}}, nil
 	case gatewayhttp.AuthorityMarketData:
-		if request.Query.Get("venue") != "binance" || request.Query.Get("environment") != "demo" || request.Query.Get("product") != "perp" || request.Query.Get("instrumentId") != "BTC-USDT" {
+		if request.Query.Get("venue") != "binance" || request.Query.Get("environment") != "live" || request.Query.Get("product") != "perp" || request.Query.Get("instrumentId") != "BTC-USDT" {
 			return gatewayhttp.AuthorityResponse{}, errors.New("unexpected market-data query")
 		}
 		return gatewayhttp.AuthorityResponse{Body: marketdata.Fact{
-			Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.05",
+			Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.05",
 			ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC),
 		}}, nil
 	case gatewayhttp.AuthorityGetRuntimeAccount:
@@ -177,7 +177,7 @@ func TestConfiguredGatewayAdapterConsumesRealInternalHandlerContract(t *testing.
 		len(snapshot.Instruments) != 1 || snapshot.Instruments[0].InstrumentID != "BTC-USDT" {
 		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
 	}
-	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" || !fact.ObservedAt.Equal(time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)) {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
@@ -211,11 +211,11 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 		}
 		switch r.URL.RequestURI() {
 		case "/internal/v1/catalog/venues":
-			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"demo","ready":true}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"live","ready":true}]}`))
 		case "/internal/v1/catalog/instruments":
-			_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-old","observedAt":"2026-08-04T01:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
-		case "/internal/v1/market-data?environment=demo&instrumentId=BTC-USDT&product=perp&venue=binance":
-			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"demo","product":"perp","instrumentId":"BTC-USDT","markPrice":"100.05","observedAt":"2026-08-05T01:02:03Z"}}`))
+			_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-old","observedAt":"2026-08-04T01:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+		case "/internal/v1/market-data?environment=live&instrumentId=BTC-USDT&product=perp&venue=binance":
+			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"live","product":"perp","instrumentId":"BTC-USDT","markPrice":"100.05","observedAt":"2026-08-05T01:02:03Z"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -239,7 +239,7 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 	if _, err := projection.Snapshot(context.Background()); err == nil {
 		t.Fatal("old Gateway catalog became fresh after Platform fetch")
 	}
-	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT"})
+	fact, err := adapter.MarketData().Fetch(context.Background(), marketdata.Query{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "BTC-USDT"})
 	if err != nil || fact.MarkPrice != "100.05" {
 		t.Fatalf("fact=%+v err=%v", fact, err)
 	}
@@ -247,7 +247,7 @@ func TestConfiguredGatewayAdapterFetchesStrictAuthenticatedReadSources(t *testin
 
 func TestGatewayAdapterMarketDataProbeRequiresCatalogIdentityAndReadyInstrument(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":"","observedAt":"0001-01-01T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+		_, _ = w.Write([]byte(`{"data":{"revision":"","observedAt":"0001-01-01T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
 	}))
 	defer server.Close()
 	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
@@ -313,7 +313,7 @@ func TestGatewayAdapterMarketDataProbeRejectsWhitespaceEmptyCatalogRevision(t *t
 
 func TestGatewayAdapterMarketDataProbeRejectsNonEmptyCatalogWithoutReadyInstrument(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-unready","observedAt":"2026-08-11T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":false}]}}`))
+		_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-unready","observedAt":"2026-08-11T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":false}]}}`))
 	}))
 	defer server.Close()
 	adapter, err := newClient(server.URL, []byte("gateway-adapter-token-with-at-least-32-bytes"), server.Client())
@@ -360,7 +360,7 @@ func TestGatewayAdapterReadsACatalogLargerThanAnAuthorityEnvelope(t *testing.T) 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/internal/v1/catalog/venues":
-			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"demo","ready":true}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"venue":"binance","environment":"live","ready":true}]}`))
 		case "/internal/v1/catalog/instruments":
 			_, _ = w.Write(catalogBody)
 		default:
@@ -390,7 +390,7 @@ func bulkInstruments(count int) []catalog.Instrument {
 	for index := range count {
 		symbol := fmt.Sprintf("SYM%04d-USDT", index)
 		built = append(built, catalog.Instrument{
-			InstrumentID: strings.ToLower(symbol), Venue: "binance", Environment: "demo", Product: "spot",
+			InstrumentID: strings.ToLower(symbol), Venue: "binance", Environment: "live", Product: "spot",
 			Symbol: symbol, BaseAsset: fmt.Sprintf("SYM%04d", index), QuoteAsset: "USDT", Ready: true,
 			Rules: catalog.TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001", MinNotional: "5"},
 		})
@@ -437,7 +437,7 @@ func TestConfiguredGatewayAdapterProjectsRuntimeCapabilitiesWithoutBrowserGatewa
 
 func TestConfiguredGatewayAdapterRejectsInvalidReadSourceResponses(t *testing.T) {
 	for _, body := range []string{
-		`{"data":[{"venue":"binance","environment":"demo","ready":true,"secret":"leak"}]}`,
+		`{"data":[{"venue":"binance","environment":"live","ready":true,"secret":"leak"}]}`,
 		`{"data":[]} {}`,
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
@@ -486,7 +486,7 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	}
 
 	manualResult, err := adapter.Execute(context.Background(), manual.GatewayRequest{
-		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:demo:spot:BTC-USDT",
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:live:spot:BTC-USDT",
 		RouteID:        "spot",
 		IdempotencyKey: "ignored-in-favor-of-command", Side: "buy", Quantity: "2", OrderType: "market", Mode: orders.ModeTest,
 		DesiredStateRevision: 11, RuntimeGeneration: 4, CredentialVersion: 3,
@@ -494,7 +494,7 @@ func TestConfiguredGatewayAdapterHandlesManualAndNormalizedCommands(t *testing.T
 	if err != nil || manualResult.State != manual.GatewayStateSubmitted || manualResult.Handoff.Outcome != orders.HandoffAccepted || manualResult.Handoff.Evidence.GatewayOrderID == "" {
 		t.Fatalf("Manual Execute() result=%+v err=%v", manualResult, err)
 	}
-	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:demo:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
+	normalizedPayload := json.RawMessage(`{"accountId":"account-long","instrumentId":"binance:live:perp:BTC-USDT","side":"buy","quantity":"1","orderType":"market","routeId":"perp","desiredStateRevision":11,"runtimeGeneration":4,"credentialVersion":3}`)
 	if _, err := adapter.Handoff(context.Background(), orders.Command{CommandID: "command_child_1", Mode: orders.ModeTest, ProductID: "manual", Payload: normalizedPayload}); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestConfiguredGatewayAdapterCancelsManualOrderByGatewayIdentity(t *testing.
 	}
 
 	result, err := adapter.Cancel(context.Background(), manual.GatewayCancelRequest{
-		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:demo:spot:BTC-USDT", Mode: orders.ModeTest,
+		CommandID: "command_manual_1", AccountID: "account-a", InstrumentID: "binance:live:spot:BTC-USDT", Mode: orders.ModeTest,
 		GatewayOrderID: "018f0000-0000-7000-8000-000000000002",
 	})
 	if err != nil || result.State != manual.GatewayStateCanceled || result.Handoff.Outcome != orders.HandoffAccepted || result.Handoff.Evidence.ResourceVersion != 2 {
@@ -804,7 +804,7 @@ func TestGatewayAdapterRequiresExactModeAttestationOnReads(t *testing.T) {
 				if test.responseMode != "" {
 					w.Header().Set(ModeHeader, test.responseMode)
 				}
-				_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-1","observedAt":"2026-08-09T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"demo","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
+				_, _ = w.Write([]byte(`{"data":{"revision":"gateway-catalog-1","observedAt":"2026-08-09T00:00:00Z","instruments":[{"instrumentId":"BTC-USDT","venue":"binance","environment":"live","product":"perp","symbol":"BTC-USDT","baseAsset":"BTC","quoteAsset":"USDT","rules":{"priceIncrement":"0.1","quantityIncrement":"0.001","minQuantity":"0.001"},"ready":true}]}}`))
 			}))
 			defer server.Close()
 
@@ -929,7 +929,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 		seen = r.URL.RequestURI()
 		switch r.URL.Query().Get("venue") {
 		case "binance":
-			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"demo","symbol":"BTC-USDT","since":"2026-08-07T12:00:00Z","until":"2026-08-14T12:00:00Z","observedAt":"2026-08-14T12:00:01Z","points":[{"fundingTime":"2026-08-14T08:00:00Z","rate":"0.0001","intervalHours":8}]}}`))
+			_, _ = w.Write([]byte(`{"data":{"venue":"binance","environment":"live","symbol":"BTC-USDT","since":"2026-08-07T12:00:00Z","until":"2026-08-14T12:00:00Z","observedAt":"2026-08-14T12:00:01Z","points":[{"fundingTime":"2026-08-14T08:00:00Z","rate":"0.0001","intervalHours":8}]}}`))
 		case "nado":
 			refuse(w, "FUNDING_HISTORY_UNSUPPORTED")
 		case "bybit":
@@ -947,7 +947,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	}
 	source := adapter.FundingHistory()
 	read := marketdata.FundingHistoryRead{
-		Venue: "binance", Environment: "demo", Symbol: "BTC-USDT",
+		Venue: "binance", Environment: "live", Symbol: "BTC-USDT",
 		Since: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC),
 		Until: time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC),
 	}
@@ -955,7 +955,7 @@ func TestConfiguredGatewayAdapterSeparatesPermanentFundingHistoryRefusalsFromTra
 	if err != nil {
 		t.Fatalf("FetchFundingHistory: %v", err)
 	}
-	if want := "/internal/v1/funding-history?environment=demo&since=2026-08-07T12%3A00%3A00Z&symbol=BTC-USDT&until=2026-08-14T12%3A00%3A00Z&venue=binance"; seen != want {
+	if want := "/internal/v1/funding-history?environment=live&since=2026-08-07T12%3A00%3A00Z&symbol=BTC-USDT&until=2026-08-14T12%3A00%3A00Z&venue=binance"; seen != want {
 		t.Errorf("request = %q, want %q", seen, want)
 	}
 	if len(series.Points) != 1 || series.Points[0].Rate != "0.0001" || series.Points[0].IntervalHours != 8 {

@@ -102,7 +102,7 @@ func TestPostgresCoordinatorConvergesAfterGatewayCommitPlatformFailure(t *testin
 		INSERT INTO gateway_runtime_snapshots(
 			snapshot_id,account_id,operation_id,request_digest,venue,native_environment,
 			secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state
-		) VALUES($1,$2,$3,$4,'binance','demo','opaque://existing',2,2,2,'active')
+		) VALUES($1,$2,$3,$4,'binance','live','opaque://existing',2,2,2,'active')
 	`, conflictingSnapshot, conflictPlan.AccountID, conflictingOperation, strings.Repeat("c", 64)); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func seedExistingDesiredOperation(t *testing.T, ctx context.Context, gateway *pg
 			INSERT INTO gateway_runtime_snapshots(
 				snapshot_id,account_id,operation_id,request_digest,venue,native_environment,
 				secret_ref,desired_state_revision,runtime_generation,credential_version,requested_state
-			) VALUES($1,$2,$3,$4,'binance','demo','opaque://existing',1,1,1,'active')
+			) VALUES($1,$2,$3,$4,'binance','live','opaque://existing',1,1,1,'active')
 		`, snapshotID, accountID, operationID, digest)
 		return err
 	}
@@ -207,7 +207,7 @@ func integrationAccountPlan(accountID, digestByte string) accountPlan {
 	return accountPlan{
 		AccountID:         accountID,
 		Venue:             "binance",
-		NativeEnvironment: "demo",
+		NativeEnvironment: "live",
 		Mode:              "test",
 		OpaqueReference:   "opaque://" + accountID,
 		RequestedState:    "active",
@@ -219,7 +219,7 @@ func integrationAccountPlan(accountID, digestByte string) accountPlan {
 		RequestDigest:     strings.Repeat(digestByte, 64),
 		Routes: []plannedRoute{{
 			RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
-			RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active",
+			RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active",
 		}},
 	}
 }

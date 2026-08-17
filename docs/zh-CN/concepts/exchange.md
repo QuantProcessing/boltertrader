@@ -29,13 +29,10 @@ method set；调用方无需执行 runtime feature discovery。
 watch/command 才执行第一次 exchange I/O。`Close` 释放 client-owned WebSocket
 resource，并且在尚未建立连接时调用也是安全的。
 
-必须显式选择 environment：
-
-- `factory.EnvironmentLive` 选择 production endpoint。
-- `factory.EnvironmentDemo` 选择 venue 支持的 Demo profile。
-- `factory.EnvironmentTestnet` 选择 venue 支持的 Testnet profile。
-
-如果所选 row 不接纳某个 environment，constructor 会拒绝它。
+Environment 是可选的。`factory.EnvironmentLive` 选择 production endpoint，它是
+唯一的 environment，也是默认值，因此 constructor 会拒绝任何其他取值。demo 与
+testnet profile 已被删除——各交易所的实现差异过大；需要点着看的场景由 `web/`
+的离线 mock 承担。
 
 ## Credential-free public read
 
@@ -145,5 +142,5 @@ signature、native payload 与 raw request body 不属于 public error contract�
   维护精确的 WebSocket inventory。
 - [Venue 与 account-mode 差异](../reference/exchange-venues-and-account-modes.md)
   维护 exchange-specific identity 与 mode caveat。
-- [配置](../reference/configuration.md)维护 environment 与 credential-name rule。
+- [配置](../reference/configuration.md)维护 credential-name rule 与执行闸门。
 - [测试与证据](../reference/testing.md)维护 certification semantics。

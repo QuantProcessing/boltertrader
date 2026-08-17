@@ -84,16 +84,18 @@ surface at decode time, not at dispatch time.
 
 ## 5. Route profiles
 
-`routeprofile` owns which combinations exist: venue, product, settlement asset,
-and the native environments the venue actually operates. The settlement asset is
-empty for most spot rows, `USDT`, `USDC`, or `USDT0` elsewhere, and it is part of
-the row's identity rather than a detail of it.
+`routeprofile` owns which combinations exist: venue, product, and settlement
+asset. The settlement asset is empty for most spot rows, `USDT`, `USDC`, or
+`USDT0` elsewhere, and it is part of the row's identity rather than a detail of
+it.
 
-Native environments differ per venue and are not interchangeable. Some venues
-offer a demo environment, some a testnet, one offers both, and every venue offers
-live. The registry folds them into two modes — live maps to the live mode, and
-everything else to the test mode — so a route is never a guess about which set of
-credentials it meant.
+There is no environment in a route profile. Each row used to expand into one
+profile per environment the venue offered — a venue with both a demo endpoint
+and a testnet produced three — and the registry folded those back into a mode so
+that a route was never a guess about which set of credentials it meant. The
+endpoints those extra profiles pointed at are gone, so a row is now exactly one
+profile and its ID carries no environment segment: `binance.spot.v1`,
+`nado.perp.usdt0.v1`.
 
 ## 6. Gateway construction
 
@@ -120,7 +122,11 @@ ambiguous:
   unconfirmed rather than proven.
 - **Write-ready default** — whether the row accepts placements at all.
 - **Promotion evidence** — what a row must show before that default may change,
-  which for most rows is fixture coverage plus a demo or testnet exact lookup.
+  which for every row but one is `fixture_and_live_exact_lookup`. Lighter Spot
+  must additionally show two-sided liquidity. The evidence used to be
+  collectable on demo or testnet; with those gone it can only be gathered
+  against the live book, which raises the cost of promotion without changing
+  what promotion requires.
 
 One field is not negotiable per venue: no row claims that pagination proves
 absence, including the promoted ones. A new venue does not get to set it because
@@ -149,21 +155,20 @@ and let them tell you what the pages must say.
 
 ## 9. Acceptance targets
 
-Two ladders, and their names read in different orders. This catches people:
+There are none, and adding one is not part of landing a venue. Two ladders used
+to live here, and their names read in opposite orders, which caught people:
+`test-exchange-<venue>-<env>-<product>` aggregating into
+`test-exchange-acceptance`, and `test-gateway-<venue>-<product>-<env>`
+aggregating into `test-gateway-demo-testnet`. Both placed real orders on the
+venue's demo or testnet environment, and both were deleted along with those
+environments. Nothing replaced them, because a replacement would spend real
+money.
 
-| Layer | Target shape | Example |
-| --- | --- | --- |
-| Exchange | `test-exchange-<venue>-<env>-<product>` | `test-exchange-binance-demo-spot` |
-| Gateway | `test-gateway-<venue>-<product>-<env>` | `test-gateway-binance-spot-demo` |
-
-Per-venue exchange targets aggregate into `test-exchange-<venue>-<env>-acceptance`
-and then into `test-exchange-acceptance`. Gateway row targets aggregate into
-`test-gateway-demo-testnet`.
-
-Write gates stay inline on the command that needs them and never become ambient
-configuration; [Configuration](../reference/configuration.md) owns their exact
-names, and [Testing](../reference/testing.md) owns the full ladder and what a
-green run proves.
+No recipe arms a credentialed write any more, and
+`TestMakefileRecipesNeverEnableCredentialedWrites` fails the one that tries.
+[Configuration](../reference/configuration.md) owns the exact environment-variable
+names, and [Testing](../reference/testing.md) owns the targets that remain and
+what a green run proves.
 
 ## What "done" means
 
@@ -172,12 +177,10 @@ green run proves.
   tests, not by reading.
 - The row appears in `routeprofile`, in the gateway construction switch, and in
   the capability matrix, with the same settlement asset in all three.
-- External acceptance has been run against the venue's demo or testnet with the
-  write gate inline, and the result is stated with venue, product, environment,
-  target, and date.
 - Write readiness is claimed only with the evidence the row's promotion
-  requirement names. Demo or testnet evidence never implies production
-  readiness — see the [glossary](../reference/glossary.md).
+  requirement names; until the row has it, the write-ready default stands.
+  Offline evidence never implies production readiness — see the
+  [glossary](../reference/glossary.md).
 
 ## Related
 

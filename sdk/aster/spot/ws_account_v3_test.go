@@ -19,7 +19,7 @@ import (
 )
 
 func TestSpotPrivateStreamFixturesDecodeAndRoute(t *testing.T) {
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, err := astercommon.NewProfile(astercommon.ProductSpot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSpotPrivateStreamFixturesDecodeAndRoute(t *testing.T) {
 }
 
 func TestSpotExecutionReportLifecycleFixtures(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, _ := astercommon.NewProfile(astercommon.ProductSpot)
 	client, err := NewWsAccountClient(context.Background(), profile, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestSpotExecutionReportLifecycleFixtures(t *testing.T) {
 }
 
 func TestSpotExecutionReportSupportsMultipleSubscribers(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, _ := astercommon.NewProfile(astercommon.ProductSpot)
 	client, err := NewWsAccountClient(context.Background(), profile, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestWsAccountClientReconnectsWithRenewedListenKey(t *testing.T) {
 	var restMu sync.Mutex
 	postCount := 0
 	putCount := 0
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductSpot)
+	profile, _ := astercommon.NewProfile(astercommon.ProductSpot)
 	security := newSpotFixtureClient(t, func(request *http.Request) (*http.Response, error) {
 		restMu.Lock()
 		defer restMu.Unlock()

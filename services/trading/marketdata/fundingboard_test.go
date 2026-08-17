@@ -20,8 +20,8 @@ func healthyBoard(observedAt time.Time) BoardSnapshot {
 		ObservedAt: observedAt,
 		Venues: []BoardVenue{
 			{
-				Venue: "binance", Environment: "demo", Product: "perp",
-				RouteProfileID: "binance.perp.usdt.demo.v1", Settlement: "USDT",
+				Venue: "binance", Environment: "live", Product: "perp",
+				RouteProfileID: "binance.perp.usdt.v1", Settlement: "USDT",
 				ObservedAt: observedAt,
 				Rows: []BoardRow{{
 					Symbol: "BTC-USDT", Rate: "0.0001", IntervalHours: 8,
@@ -29,8 +29,8 @@ func healthyBoard(observedAt time.Time) BoardSnapshot {
 				}},
 			},
 			{
-				Venue: "okx", Environment: "demo", Product: "perp",
-				RouteProfileID: "okx.perp.usdt.demo.v1", Settlement: "USDT",
+				Venue: "okx", Environment: "live", Product: "perp",
+				RouteProfileID: "okx.perp.usdt.v1", Settlement: "USDT",
 				Unavailable: true, Rows: []BoardRow{},
 			},
 		},

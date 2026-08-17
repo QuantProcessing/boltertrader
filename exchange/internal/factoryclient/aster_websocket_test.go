@@ -20,7 +20,7 @@ import (
 
 func TestAsterWebSocketFixtureFileCoversOrderBridge(t *testing.T) {
 	router := newAsterCatalogRouter()
-	settings := Settings{Environment: "testnet", Endpoint: "https://aster-fixture.invalid", HTTPClient: &http.Client{Transport: router}}
+	settings := Settings{Endpoint: "https://aster-fixture.invalid", HTTPClient: &http.Client{Transport: router}}
 	socket := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings).WebSocket()
 
 	ack, err := socket.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
@@ -43,7 +43,7 @@ func TestAsterWebSocketFixtureFileCoversOrderBridge(t *testing.T) {
 
 func TestAsterWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	fixture := newAsterWSFixture(t)
-	settings := Settings{Environment: "testnet", Endpoint: fixture.restURL, WebSocketEndpoint: fixture.wsURL}
+	settings := Settings{Endpoint: fixture.restURL, WebSocketEndpoint: fixture.wsURL}
 
 	spot := NewAsterSpot(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
 	spotInstrument := asterTestInstrument(exchange.ProductSpot, "ASTER-USDT")
@@ -55,7 +55,7 @@ func TestAsterWebSocketExercisesEveryExposedMethod(t *testing.T) {
 }
 
 func TestAsterClientCachesAndClosesWebSocketFacet(t *testing.T) {
-	client := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, Settings{Environment: "testnet"})
+	client := NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, Settings{})
 	if client.WebSocket() != client.WebSocket() {
 		t.Fatal("Aster WebSocket returned different facets")
 	}

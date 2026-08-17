@@ -138,7 +138,7 @@ func TestTwoAccountsShareOnePublicConnector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	one, err := registry.Acquire(context.Background(), key)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestTwoAccountsShareOnePublicConnector(t *testing.T) {
 }
 
 func TestRegistryPeriodicRefreshMarksStaleFailureAndRecovers(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	connector := &periodicRefreshConnector{
 		called:     make(chan int, 8),
 		recovering: make(chan struct{}),
@@ -216,7 +216,7 @@ func TestRegistryPeriodicRefreshMarksStaleFailureAndRecovers(t *testing.T) {
 }
 
 func TestRegistrySharesAndCancelsOnePeriodicRefreshLifecyclePerEntry(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	connector := &periodicRefreshConnector{
 		called:     make(chan int, 8),
 		recovering: make(chan struct{}),
@@ -283,7 +283,7 @@ func awaitRefreshCall(t *testing.T, calls <-chan int) int {
 }
 
 func TestAcquireWaitsForFinalReleaseCleanupBeforeBuildingReplacement(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	closing := &blockingCloseConnector{entered: make(chan struct{}), release: make(chan struct{})}
 	builtFirst := false
 	factory := &connectorFactoryStub{next: func(routeprofile.Key) Connector {
@@ -353,7 +353,7 @@ func TestAcquireWaitsForFinalReleaseCleanupBeforeBuildingReplacement(t *testing.
 }
 
 func TestLeaseResolvesCanonicalInstrumentFromSharedSnapshot(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	canonical := publicTestInstrument(exchange.ProductPerp, "USDT")
 	connector := &scriptedConnector{instruments: []exchange.Instrument{canonical}}
 	registry, err := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
@@ -380,8 +380,8 @@ func TestLeaseResolvesCanonicalInstrumentFromSharedSnapshot(t *testing.T) {
 }
 
 func TestRegistryCoalescesConcurrentRefreshesAndKeepsSiblingProfilesIsolated(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
-	otherKey := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
+	otherKey := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &refreshConnector{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
@@ -481,10 +481,19 @@ func TestRegistryCoalescesConcurrentRefreshesAndKeepsSiblingProfilesIsolated(t *
 	}
 }
 
-func TestRegistryRejectsUntrustedModeProfileBeforeFactory(t *testing.T) {
+// TestRegistryRejectsUntrustedProfileBeforeFactory pins the ordering that makes
+// the trusted registry worth consulting: a key it does not carry must be refused
+// before the factory is asked to build anything.
+//
+// The key below was once a test-mode key naming a `.live.` profile id — an
+// untrusted mode/profile pairing. Modes are gone, so the untrusted thing is now
+// simply a profile id the registry has no row for. Either way the factory must
+// see zero build calls, because reaching it means an unvetted key decided which
+// endpoints get dialed.
+func TestRegistryRejectsUntrustedProfileBeforeFactory(t *testing.T) {
 	factory := &connectorFactoryStub{}
 	registry, _ := NewRegistry(factory, routeprofile.DefaultRegistry())
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.live.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdc.v1"}
 	if _, err := registry.Acquire(context.Background(), key); err == nil || factory.BuildCalls(key) != 0 {
 		t.Fatalf("err=%v builds=%d", err, factory.BuildCalls(key))
 	}
@@ -562,7 +571,7 @@ func (factory scriptedFactory) Build(_ context.Context, key routeprofile.Key) (C
 }
 
 func TestConcurrentRefreshesCoalescePerProfile(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	connector := &scriptedConnector{instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductPerp, "USDT")}, entered: make(chan struct{}), release: make(chan struct{})}
 	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
 	lease, err := registry.Acquire(context.Background(), key)
@@ -596,8 +605,8 @@ func TestConcurrentRefreshesCoalescePerProfile(t *testing.T) {
 }
 
 func TestStaleConnectorAffectsOnlyItsProfile(t *testing.T) {
-	spotKey := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
-	perpKey := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.perp.usdt.demo.v1"}
+	spotKey := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
+	perpKey := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.perp.usdt.v1"}
 	factory := scriptedFactory{
 		spotKey: {err: errors.New("public canary failure")},
 		perpKey: {instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductPerp, "USDT")}},
@@ -622,7 +631,7 @@ func TestStaleConnectorAffectsOnlyItsProfile(t *testing.T) {
 }
 
 func TestRegistryCloseClosesLeasedConnectorOnce(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &scriptedConnector{}
 	registry, _ := NewRegistry(scriptedFactory{key: connector}, routeprofile.DefaultRegistry())
 	lease, err := registry.Acquire(context.Background(), key)
@@ -641,7 +650,7 @@ func TestRegistryCloseClosesLeasedConnectorOnce(t *testing.T) {
 }
 
 func TestRegistryRejectsAcquireAndRefreshAfterClose(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &scriptedConnector{}
 	factory := scriptedFactory{key: connector}
 	registry, _ := NewRegistry(factory, routeprofile.DefaultRegistry())
@@ -662,7 +671,7 @@ func TestRegistryRejectsAcquireAndRefreshAfterClose(t *testing.T) {
 }
 
 func TestLastLeaseReleaseWaitsForInflightRefreshBeforeClosingConnector(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &scriptedConnector{
 		entered: make(chan struct{}), release: make(chan struct{}),
 		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},
@@ -694,7 +703,7 @@ func TestLastLeaseReleaseWaitsForInflightRefreshBeforeClosingConnector(t *testin
 }
 
 func TestRegistryCloseWaitsForInflightRefreshAndIsIdempotent(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &scriptedConnector{
 		entered: make(chan struct{}), release: make(chan struct{}),
 		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},
@@ -740,7 +749,7 @@ func TestRegistryCloseWaitsForInflightRefreshAndIsIdempotent(t *testing.T) {
 }
 
 func TestRegistryCloseJoinsCleanupAlreadyOwnedByLastRelease(t *testing.T) {
-	key := routeprofile.Key{Venue: "binance", Mode: routeprofile.ModeTest, RouteProfileID: "binance.spot.demo.v1"}
+	key := routeprofile.Key{Venue: "binance", RouteProfileID: "binance.spot.v1"}
 	connector := &scriptedConnector{
 		entered: make(chan struct{}), release: make(chan struct{}),
 		instruments: []exchange.Instrument{publicTestInstrument(exchange.ProductSpot, "")},

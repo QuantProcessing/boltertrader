@@ -1258,7 +1258,10 @@ func TestSpotFeeToleranceAcceptsGateUntradableCommissionDust(t *testing.T) {
 	}
 }
 
-func TestAcceptanceSubscriptionTimeoutAllowsBitgetDemoDepthRecovery(t *testing.T) {
+// Bitget's order book is the slow one, and the extra allowance stays. Demo is
+// out of the name because the allowance was never demo's: it is what a Bitget
+// depth subscription costs, measured wherever it is measured.
+func TestAcceptanceSubscriptionTimeoutAllowsBitgetDepthRecovery(t *testing.T) {
 	if got := acceptanceSubscriptionTimeout("BGS/WatchOrderBook"); got != 120*time.Second {
 		t.Fatalf("Bitget order book timeout = %s, want 120s", got)
 	}

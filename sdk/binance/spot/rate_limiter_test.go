@@ -77,7 +77,7 @@ func TestClientWithGatewayTransportDisablesSpotSDKLocalLimiter(t *testing.T) {
 	transport, err := ratelimit.NewTransport(
 		ratelimit.NewCoordinator(time.Now),
 		vectorProviderFunc(func(*http.Request, ratelimit.RequestScope) []ratelimit.Key {
-			return []ratelimit.Key{{Kind: ratelimit.VenueProfile, Value: "binance/test/binance.spot.demo.v1"}}
+			return []ratelimit.Key{{Kind: ratelimit.VenueProfile, Value: "binance/test/binance.spot.v1"}}
 		}),
 		ratelimit.PublicScope,
 		roundTripFunc(func(*http.Request) (*http.Response, error) {

@@ -146,5 +146,6 @@ state is unconfirmed — belong to
 
 ## Next
 
-[Your first order](first-order.md) walks the full browser loop against a
-non-production venue account.
+[Your first order](first-order.md) walks the full browser loop against a real
+venue account, with real money. To walk the same loop with no venue behind it,
+run `npm --prefix web run dev:mock` instead.

@@ -1,7 +1,6 @@
 package factoryclient
 
 import (
-	"github.com/QuantProcessing/boltertrader/exchange"
 	binanceperp "github.com/QuantProcessing/boltertrader/sdk/binance/perp"
 	bitget "github.com/QuantProcessing/boltertrader/sdk/bitget"
 	bybit "github.com/QuantProcessing/boltertrader/sdk/bybit"
@@ -13,39 +12,32 @@ import (
 // Credential-free SDK construction, shared by the funding board and funding
 // history loaders.
 //
-// Each venue spells "point this client at the demo endpoints and give it my
-// HTTP client" differently, and each spelling is about ten lines. Two loader
-// families times seven venues is fourteen copies of that, which is exactly the
-// drift the board's shared helpers were introduced to prevent: the failure mode
-// is not a compile error but a history loader quietly reading mainnet while the
-// board beside it reads testnet.
+// These used to also select an environment, and the reason to share them was
+// that a history loader could otherwise end up quietly reading mainnet while the
+// board beside it read testnet. That failure is gone with the environments, but
+// the sharing is still worth keeping: every venue spells "use my HTTP client"
+// and "override the base URL" differently, and two loader families times six
+// venues is twelve places for a settings field to be silently dropped. Lighter
+// is the clearest case — its HTTP client must go through
+// lighterTrackedHTTPClient or the venue's request budget stops being counted.
 //
 // Gate is absent because it already has newGateSDK, which takes empty
 // credentials for precisely this purpose.
 
-func newBinancePerpPublicSDK(operation string, settings Settings) (*binanceperp.Client, error) {
+func newBinancePerpPublicSDK(settings Settings) *binanceperp.Client {
 	sdk := binanceperp.NewClient()
-	profile, err := binanceperp.EndpointProfileForEnvironment(binanceperp.Environment(settings.Environment))
-	if err != nil {
-		return nil, binancePerpInvalidRequest(operation, err.Error())
-	}
-	sdk.WithEndpointProfile(profile)
+	sdk.WithEndpointProfile(binanceperp.MainnetEndpointProfile())
 	if settings.Endpoint != "" {
 		sdk.WithBaseURL(settings.Endpoint)
 	}
 	if settings.HTTPClient != nil {
 		sdk.HTTPClient = settings.HTTPClient
 	}
-	return sdk, nil
+	return sdk
 }
 
 func newOKXPublicSDK(settings Settings) *okx.Client {
 	sdk := okx.NewClient()
-	if settings.Environment == string(exchange.EnvironmentDemo) {
-		sdk.WithEnvironment(okx.Simulated)
-	} else {
-		sdk.WithEnvironment(okx.Production)
-	}
 	if settings.Endpoint != "" {
 		sdk.WithBaseURL(settings.Endpoint)
 	}
@@ -57,12 +49,6 @@ func newOKXPublicSDK(settings Settings) *okx.Client {
 
 func newBybitPublicSDK(settings Settings) *bybit.Client {
 	profile := bybit.MainnetEnvironmentProfile()
-	switch settings.Environment {
-	case string(exchange.EnvironmentDemo):
-		profile = bybit.DemoEnvironmentProfile()
-	case string(exchange.EnvironmentTestnet):
-		profile = bybit.TestnetEnvironmentProfile()
-	}
 	if settings.Endpoint != "" {
 		profile.RESTBaseURL = settings.Endpoint
 	}
@@ -75,9 +61,6 @@ func newBybitPublicSDK(settings Settings) *bybit.Client {
 
 func newBitgetPublicSDK(settings Settings) *bitget.Client {
 	profile := bitget.MainnetEnvironmentProfile()
-	if settings.Environment == string(exchange.EnvironmentDemo) {
-		profile = bitget.DemoEnvironmentProfile()
-	}
 	if settings.Endpoint != "" {
 		profile.RESTBaseURL = settings.Endpoint
 	}
@@ -90,11 +73,6 @@ func newBitgetPublicSDK(settings Settings) *bitget.Client {
 
 func newHyperliquidPublicSDK(settings Settings) *hyperliquidbase.Client {
 	base := hyperliquidbase.NewClient()
-	if settings.Environment == string(exchange.EnvironmentTestnet) {
-		base.WithEnvironment(hyperliquidbase.EnvironmentTestnet)
-	} else {
-		base.WithEnvironment(hyperliquidbase.EnvironmentMainnet)
-	}
 	if settings.Endpoint != "" {
 		base.BaseURL = settings.Endpoint
 	}
@@ -106,11 +84,6 @@ func newHyperliquidPublicSDK(settings Settings) *hyperliquidbase.Client {
 
 func newLighterPublicSDK(settings Settings) *lighter.Client {
 	sdk := lighter.NewClient()
-	if settings.Environment == string(exchange.EnvironmentTestnet) {
-		sdk.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		sdk.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.Endpoint != "" {
 		sdk.WithBaseURL(settings.Endpoint)
 	}

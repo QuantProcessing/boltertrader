@@ -20,7 +20,7 @@ import (
 )
 
 func TestPerpPrivateStreamFixturesDecodeAndRoute(t *testing.T) {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	client, err := NewWsAccountClient(context.Background(), profile, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +570,7 @@ func TestPerpWsAccountClientReconnectsOnListenKeyExpiredAndDeletesFinalKey(t *te
 	var restMu sync.Mutex
 	postCount := 0
 	deleteCount := 0
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	security := newTestSecurity(t)
 	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		restMu.Lock()
@@ -648,7 +648,7 @@ func TestPerpWsAccountClientReconnectsOnListenKeyExpiredAndDeletesFinalKey(t *te
 }
 
 func newTestPerpMarketClientWithURL(ctx context.Context, rawURL string) *WsMarketClient {
-	profile, _ := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, _ := astercommon.NewProfile(astercommon.ProductPerp)
 	transport := newWSClient(ctx, rawURL)
 	client := &WsMarketClient{WsClient: transport, profile: profile}
 	transport.Handler = client.handleMessage

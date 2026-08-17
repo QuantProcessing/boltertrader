@@ -23,11 +23,6 @@ func (client *okxSpotClient) Close() error { return closeSpotWebSocket(client.ws
 
 func NewOKXSpot(apiKey, secretKey, passphrase string, settings Settings) exchange.SpotClient {
 	sdkClient := okx.NewClient().WithCredentials(apiKey, secretKey, passphrase)
-	if settings.Environment == "demo" {
-		sdkClient.WithEnvironment(okx.Simulated)
-	} else {
-		sdkClient.WithEnvironment(okx.Production)
-	}
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
@@ -39,29 +34,14 @@ func NewOKXSpot(apiKey, secretKey, passphrase string, settings Settings) exchang
 		sdk:        sdkClient,
 	}
 	wsClient := okx.NewWSClient(context.Background())
-	if settings.Environment == "demo" {
-		wsClient.WithEnvironment(okx.Simulated)
-	} else {
-		wsClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		wsClient.WithURL(settings.WebSocketEndpoint)
 	}
 	businessWSClient := okx.NewWSClient(context.Background()).WithBusinessURL()
-	if settings.Environment == "demo" {
-		businessWSClient.WithEnvironment(okx.Simulated)
-	} else {
-		businessWSClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		businessWSClient.WithURL(settings.WebSocketEndpoint)
 	}
 	privateWSClient := okx.NewWSClient(context.Background()).WithCredentials(apiKey, secretKey, passphrase)
-	if settings.Environment == "demo" {
-		privateWSClient.WithEnvironment(okx.Simulated)
-	} else {
-		privateWSClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		privateWSClient.WithURL(settings.WebSocketEndpoint)
 	}
@@ -87,11 +67,6 @@ func (client *okxPerpClient) Close() error { return closePerpWebSocket(client.ws
 
 func NewOKXUSDTPerp(apiKey, secretKey, passphrase string, settings Settings) exchange.PerpClient {
 	sdkClient := okx.NewClient().WithCredentials(apiKey, secretKey, passphrase)
-	if settings.Environment == "demo" {
-		sdkClient.WithEnvironment(okx.Simulated)
-	} else {
-		sdkClient.WithEnvironment(okx.Production)
-	}
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
@@ -103,29 +78,14 @@ func NewOKXUSDTPerp(apiKey, secretKey, passphrase string, settings Settings) exc
 		sdk:        sdkClient,
 	}
 	wsClient := okx.NewWSClient(context.Background())
-	if settings.Environment == "demo" {
-		wsClient.WithEnvironment(okx.Simulated)
-	} else {
-		wsClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		wsClient.WithURL(settings.WebSocketEndpoint)
 	}
 	businessWSClient := okx.NewWSClient(context.Background()).WithBusinessURL()
-	if settings.Environment == "demo" {
-		businessWSClient.WithEnvironment(okx.Simulated)
-	} else {
-		businessWSClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		businessWSClient.WithURL(settings.WebSocketEndpoint)
 	}
 	privateWSClient := okx.NewWSClient(context.Background()).WithCredentials(apiKey, secretKey, passphrase)
-	if settings.Environment == "demo" {
-		privateWSClient.WithEnvironment(okx.Simulated)
-	} else {
-		privateWSClient.WithEnvironment(okx.Production)
-	}
 	if settings.WebSocketEndpoint != "" {
 		privateWSClient.WithURL(settings.WebSocketEndpoint)
 	}

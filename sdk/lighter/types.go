@@ -50,7 +50,6 @@ const (
 	IsolatedMarginMode = 1
 
 	MainnetChainID = 304
-	TestnetChainID = 300
 )
 
 type OrderStatus string

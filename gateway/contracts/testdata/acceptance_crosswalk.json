@@ -99,7 +99,7 @@
     {
       "id": "GW-AC20",
       "tests": ["TestMatrixHasTwentyRowsNineteenPromotedAndLISReadOnly", "TestExternalAcceptanceLedgerBuildsExpectedCellTotals"],
-      "evidence": ["make test-gateway-demo-testnet", ".omx/evidence/exchange-gateway/g008-first-venue-promotion.md", ".omx/evidence/exchange-gateway/g009-remaining-venue-promotion.md"]
+      "evidence": ["make test-gateway-contract", "make test-exchange-offline", ".omx/evidence/exchange-gateway/g008-first-venue-promotion.md", ".omx/evidence/exchange-gateway/g009-remaining-venue-promotion.md"]
     },
     {
       "id": "GW-AC21",

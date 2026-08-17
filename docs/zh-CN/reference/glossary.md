@@ -4,8 +4,8 @@
 
 本页拥有 BolterTrader 的规范术语。其他页面使用这里的含义并链接过来，而不在本地另立定义。
 
-这些词在别处大多含义更宽松，在这里被刻意收窄。因为「我们实现了它」与「我们看着它在测试网上
-真的跑通了」之间的距离，正是一条可以发布的断言与一条不可以之间的距离。
+这些词在别处大多含义更宽松，在这里被刻意收窄。因为「我们实现了它」与「有一次记录在案的运行
+证明了它」之间的距离，正是一条可以发布的断言与一条不可以之间的距离。
 
 ## 怎么指认一个可交易的东西
 
@@ -14,7 +14,7 @@
 | 术语 | 含义 | 取值 |
 | --- | --- | --- |
 | Venue（交易所） | 一家交易所 | `binance`、`okx`、`lighter`、`hyperliquid`、`bybit`、`bitget`、`gate`、`aster`、`nado` |
-| Environment（环境） | 该交易所的哪一张网 | `live`、`demo`、`testnet` |
+| Environment（环境） | 该交易所的哪一张网 | `live` |
 | Product（产品） | instrument 族 | `spot`、`perp` |
 | Settlement asset（结算资产） | 合约以什么结算，用于一家交易所跑着不止一种的情况 | `USDT`、`USDC`、`USDT0` |
 | Canonical symbol（规范 symbol） | 与交易所无关的交易对写法 | `BTC-USDT` |
@@ -30,17 +30,22 @@ venue:environment:product:symbol
 venue:environment:product:settlement:symbol
 ```
 
-`binance:demo:spot:BTC-USDT` 与 `nado:testnet:perp:USDT0:BTC-USDT` 都是合法的。结算段只在某个
+`binance:live:spot:BTC-USDT` 与 `nado:live:perp:USDT0:BTC-USDT` 都是合法的。结算段只在某个
 交易所需要它来消歧时才出现。最后一段必须是规范 symbol——校验器坚持要那个连字符，正是因为
 它是抓住「一个原生 symbol 漏到了上层」最便宜的办法。
 
-**Route profile** 是 venue、product、settlement 与 environment 解析之后的组合，用形如
-`binance.spot.demo.v1` 或 `nado.perp.usdt0.testnet.v1` 的 ID 命名。**Route** 是绑定了某个账户
-凭证的 profile，而 **route ID** 在一次写入里点名它。
+Environment 那一段只有一个合法取值。它曾经也收 `demo` 与 `testnet`，而各交易所实现这两者的
+方式差异大到那一层被整体删除。这一段本身留了下来，因为这个 ID 是按位置解析的：删掉它不是把
+标识符变短，而是把每一个已经写下来的标识符重新解释一遍。
 
-**Mode（模式）** 比 environment 粗，存在的理由只有一条：`test` 覆盖 `demo` 与 `testnet`，`live`
-覆盖 `live`，而跑在其中一种模式下的进程解析不出另一种的 profile。Environment 说的是哪张网，
-mode 说的是哪一类后果。
+**Route profile** 是 venue、product 与 settlement 解析之后的组合，用形如 `binance.spot.v1` 或
+`nado.perp.usdt0.v1` 的 ID 命名。**Route** 是绑定了某个账户凭证的 profile，而 **route ID** 在
+一次写入里点名它。
+
+**Mode（模式）** 是一个部署属性，不是市场属性。它曾经比 environment 粗：`test` 覆盖 `demo` 与
+`testnet`，`live` 覆盖 `live`，而跑在其中一种模式下的进程解析不出另一种的 profile。非生产那
+一层没有了之后，route profile 根本不再携带 mode。留下来的，是一个部署所用的数据库、密钥命名
+空间与 principal 上的 `test` 或 `live` 标签。
 
 ## Product 行
 
@@ -88,8 +93,8 @@ product 行的断言，指的就是这二十行中的恰好一行——不是整
 | Implemented（已实现） | 当前代码树里存在所指 surface 的代码 | 有任何东西跑过，或者某个交易所接受过它 |
 | Admitted（已接纳） | 该操作在编译期出现在那个 product 行上——即操作矩阵里的 `A` | 交易所会兑现它，或者它被真正执行过 |
 | Write-ready（可写） | 能力矩阵标记该行默认接受写入 | 关于某一个具体账户是否就绪的任何事 |
-| Demo/Testnet-certified（已认证） | 某个具名的非生产 target 以 zero-skip 通过，针对具名的 product 范围，在具名的日期 | 主网行为、账户整体干净，或者它今天仍然通过 |
-| Production-ready（生产就绪） | 有独立的运维证据支持所述的生产范围 | 任何能从上面三行推出来的东西 |
+| Offline-conformant | 确定性、免凭证的离线套件有一次记录在案的零跳过运行通过，针对具名的 product 范围、具名的 target、具名的日期 | 该交易所今天仍然可用、主网行为相同，或者它现在仍然通过 |
+| Production-ready（生产就绪） | 有独立的运维证据支持所述的生产范围。本仓库从不声明它 | 任何能从上面三行推出来的东西 |
 | Deferred（推迟） | 出于明确理由，刻意排除在当前切片之外 | 交易所没有它，或者它被永久否决 |
 | Unsupported（不支持） | Normalized surface 不存在，或返回一个 unsupported 错误 | 交易所自己的 API 没有这个功能 |
 | SDK-only（仅 SDK） | 存在底层交易所代码，其上没有 product 行 | 任何形式的 normalized 覆盖 |
@@ -101,7 +106,7 @@ product 行的断言，指的就是这二十行中的恰好一行——不是整
 
 | 术语 | 含义 |
 | --- | --- |
-| Acceptance harness（验收装置） | 一个 opt-in 的测试，对某个具名非生产环境做一次有界的真实交互。它不是可复用的交易应用 |
+| Acceptance harness（验收装置） | 一个 opt-in 的测试，在一道具名写闸门之后，对交易所做一次有界的真实交互。这次交互是真的——它背后没有非生产 target 了。它不是可复用的交易应用 |
 | Zero-skip | 这次运行至少执行了一个测试，且一个都没跳过。skip 就是失败——缺凭证绝不能被读成通过 |
 | Clean final state（干净终态） | 在精确的 symbol、product、account 与装置自有订单范围内的终态断言，而不是关于整个账户的陈述 |
 | Ambiguous outcome（不明确的结果） | 交易所可能已经收到了这次写入，但没有权威结果能证明。自动重试不安全 |

@@ -25,7 +25,7 @@ import (
 
 func TestHandlerAuthenticatesBeforeDisclosureAndPlacesStrictDecimalOrder(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"limit","quantity":"0.001","limit_price":"100","limit_policy":"resting","desired_state_revision":1,"runtime_generation":2,"credential_version":3}`
 
 	unauthorized := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/v1/orders", bytes.NewBufferString(body)))
@@ -73,7 +73,7 @@ func TestHandlerRejectsMalformedBodiesAndUnsupportedOrForbiddenSurfacesBeforeBac
 		// forwarded: the coordinator validates the route before it resolves
 		// one, so an omitted route_id surfaces as an unclassified failure --
 		// a 500 -- instead of the caller error it is.
-		{"missing route", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`, http.StatusBadRequest},
+		{"missing route", http.MethodPost, "/v1/orders", `{"account_id":"acct-a","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`, http.StatusBadRequest},
 		{"amend unsupported", http.MethodPatch, "/v1/orders/018f0000-0000-7000-8000-000000000002", `{}`, http.StatusNotImplemented},
 		{"order book requires scope", http.MethodGet, "/v1/order-book", "", http.StatusBadRequest},
 		{"transfer absent", http.MethodPost, "/v1/transfers", `{}`, http.StatusNotFound},
@@ -110,12 +110,12 @@ func TestHandlerRegistersReferenceOrderAndPrivateAccountRESTInventory(t *testing
 		{http.MethodGet, "/v1/accounts/acct-a", 200},
 		{http.MethodGet, "/v1/capabilities", 200},
 		{http.MethodGet, "/v1/instruments?account_id=acct-a&pagination.limit=10", 200},
-		{http.MethodGet, "/v1/instruments/binance:demo:spot:BTC-USDT", 200},
+		{http.MethodGet, "/v1/instruments/binance:live:spot:BTC-USDT", 200},
 		{http.MethodGet, "/v1/rules?account_id=acct-a", 200},
 		{http.MethodGet, "/v1/risk-limits", 200},
 		{http.MethodGet, "/v1/orders?pagination.limit=10", 200},
 		{http.MethodGet, "/v1/open-orders?pagination.limit=10", 200},
-		{http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&pagination.limit=10", 200},
+		{http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&pagination.limit=10", 200},
 		{http.MethodGet, "/v1/balances?account_id=acct-a", 200},
 	}
 	for _, test := range tests {
@@ -151,7 +151,7 @@ func TestHandlerAccountReadinessIncludesCoordinatorWriteGate(t *testing.T) {
 
 func TestHandlerRejectsHostileJSONAndPaginationWithoutBackendIO(t *testing.T) {
 	fixture := newHTTPFixture(t)
-	valid := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	valid := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
 	tests := []struct {
 		name        string
 		contentType string
@@ -159,7 +159,7 @@ func TestHandlerRejectsHostileJSONAndPaginationWithoutBackendIO(t *testing.T) {
 	}{
 		{name: "missing content type", body: []byte(valid)},
 		{name: "wrong content type", contentType: "text/plain", body: []byte(valid)},
-		{name: "duplicate nested key", contentType: "application/json", body: []byte(`{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","extra":{"x":1,"x":2}}`)},
+		{name: "duplicate nested key", contentType: "application/json", body: []byte(`{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001","extra":{"x":1,"x":2}}`)},
 		{name: "trailing value", contentType: "application/json", body: []byte(valid + `{}`)},
 		{name: "invalid unicode", contentType: "application/json", body: append([]byte(`{"account_id":"`), 0xff, '"', '}')},
 		{name: "oversized body", contentType: "application/json", body: []byte(`{"account_id":"` + strings.Repeat("a", int(defaultBodyLimit)) + `"}`)},
@@ -198,7 +198,7 @@ func TestHandlerErrorEnvelopeNeverReflectsNativeErrorMaterial(t *testing.T) {
 	fixture.orders.placeErr = exchange.NewError(exchange.KindVenueRejected, exchange.ErrorDetails{
 		Operation: "PlaceOrder", Code: "51000", SafeMessage: canary,
 	})
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-1","side":"buy","type":"market","quantity":"0.001"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -276,7 +276,7 @@ func TestHandlerIdempotencyConflictReturnsExistingCommandAndRequestCorrelation(t
 		ClientOrderID:  "1", State: domain.StatePrepared,
 	}
 	fixture.orders.placeErr = order.ErrIdempotencyConflict
-	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:demo:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001"}`
+	body := `{"account_id":"acct-a","route_id":"spot","instrument_id":"binance:live:spot:BTC-USDT","idempotency_key":"idem-conflict","side":"buy","type":"market","quantity":"0.001"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/orders", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("Content-Type", "application/json")
@@ -308,7 +308,7 @@ func TestHandlerListFillsByGatewayOrderIDFiltersNativeOrderAndHidesVenueOrderID(
 	fixture.orders.getResult = order.Result{
 		GatewayOrderID: gatewayOrderID,
 		AccountID:      "acct-a",
-		InstrumentID:   "binance:demo:spot:BTC-USDT",
+		InstrumentID:   "binance:live:spot:BTC-USDT",
 		VenueOrderID:   "venue-2",
 	}
 	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
@@ -319,7 +319,7 @@ func TestHandlerListFillsByGatewayOrderIDFiltersNativeOrderAndHidesVenueOrderID(
 		Page: exchange.PageInfo{Cursor: "fill-2", HasMoreKnown: false, HasMore: false},
 	}}
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
 
@@ -353,14 +353,14 @@ func TestHandlerListFillsByGatewayOrderIDAllowsInstrumentScopeWithoutAccountID(t
 	fixture.orders.getResult = order.Result{
 		GatewayOrderID: gatewayOrderID,
 		AccountID:      "acct-a",
-		InstrumentID:   "binance:demo:spot:BTC-USDT",
+		InstrumentID:   "binance:live:spot:BTC-USDT",
 		VenueOrderID:   "venue-2",
 	}
 	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{
 		Fills: []exchange.Fill{{OrderID: "venue-2", FillID: "fill-2"}},
 	}}
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:live:spot:BTC-USDT&gateway_order_id="+string(gatewayOrderID), nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
 
@@ -370,7 +370,7 @@ func TestHandlerListFillsByGatewayOrderIDAllowsInstrumentScopeWithoutAccountID(t
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	ordinary := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:demo:spot:BTC-USDT", nil)
+	ordinary := httptest.NewRequest(http.MethodGet, "/v1/fills?instrument_id=binance:live:spot:BTC-USDT", nil)
 	ordinary.Header.Set("Authorization", "Bearer test-token")
 	ordinaryRecorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(ordinaryRecorder, ordinary)
@@ -391,9 +391,9 @@ func TestHandlerListFillsByGatewayOrderIDFailsClosedOnMissingVenueOrScopeMismatc
 			result: order.Result{
 				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
 				AccountID:      "acct-a",
-				InstrumentID:   "binance:demo:spot:BTC-USDT",
+				InstrumentID:   "binance:live:spot:BTC-USDT",
 			},
-			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
 			wantStatus: http.StatusNotFound,
 		},
 		{
@@ -401,10 +401,10 @@ func TestHandlerListFillsByGatewayOrderIDFailsClosedOnMissingVenueOrScopeMismatc
 			result: order.Result{
 				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
 				AccountID:      "acct-b",
-				InstrumentID:   "binance:demo:spot:BTC-USDT",
+				InstrumentID:   "binance:live:spot:BTC-USDT",
 				VenueOrderID:   "venue-2",
 			},
-			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
 			wantStatus: http.StatusNotFound,
 		},
 		{
@@ -412,10 +412,10 @@ func TestHandlerListFillsByGatewayOrderIDFailsClosedOnMissingVenueOrScopeMismatc
 			result: order.Result{
 				GatewayOrderID: "018f0000-0000-7000-8000-000000000099",
 				AccountID:      "acct-a",
-				InstrumentID:   "binance:demo:spot:ETH-USDT",
+				InstrumentID:   "binance:live:spot:ETH-USDT",
 				VenueOrderID:   "venue-2",
 			},
-			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
+			requestURL: "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&gateway_order_id=018f0000-0000-7000-8000-000000000099",
 			wantStatus: http.StatusNotFound,
 		},
 	}
@@ -465,7 +465,7 @@ func TestHandlerListFillsNextCursorRequiresKnownHasMore(t *testing.T) {
 		Page:  exchange.PageInfo{Cursor: "native-next", HasMoreKnown: false, HasMore: false},
 	}}
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT&pagination.limit=10", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT&pagination.limit=10", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
 
@@ -485,7 +485,7 @@ func TestHandlerListFillsProjectsSettlementAssetFromResolvedInstrument(t *testin
 		Fills: []exchange.Fill{{FillID: "fill-1", FeeAsset: "BNB"}},
 	}}
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(recorder, request)
@@ -528,7 +528,7 @@ func TestHandlerListFillsProjectsSettlementAssetWithoutInstrumentFilter(t *testi
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Items) != 1 || response.Items[0].InstrumentID != "binance:demo:spot:BTC-USDT" || response.Items[0].SettlementAsset != "USDT" {
+	if len(response.Items) != 1 || response.Items[0].InstrumentID != "binance:live:spot:BTC-USDT" || response.Items[0].SettlementAsset != "USDT" {
 		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
 	}
 }
@@ -537,7 +537,7 @@ func TestHandlerListFillsRejectsMissingSettlementAuthority(t *testing.T) {
 	fixture := newHTTPFixture(t)
 	fixture.accounts.instrument.Identity.QuoteAsset = ""
 	fixture.accounts.spot = recordingSpotClient{page: exchange.FillPage{Fills: []exchange.Fill{{FillID: "fill-1"}}}}
-	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:demo:spot:BTC-USDT", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/fills?account_id=acct-a&instrument_id=binance:live:spot:BTC-USDT", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	recorder := httptest.NewRecorder()
 	fixture.handler.ServeHTTP(recorder, request)
@@ -561,13 +561,13 @@ func newHTTPFixture(t *testing.T) httpFixture {
 		},
 	}
 	public := catalog.Instrument{
-		ID: "binance:demo:spot:BTC-USDT", Venue: exchange.VenueBinance,
-		Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot,
+		ID: "binance:live:spot:BTC-USDT", Venue: exchange.VenueBinance,
+		Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot,
 		Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 	}
 	accounts := &fakeHTTPAccounts{
-		resource:   account.Resource{AccountID: "acct-a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentDemo, ReadReady: true, WriteReady: true},
-		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentDemo, ReadReady: true, WriteReady: true}},
+		resource:   account.Resource{AccountID: "acct-a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentLive, ReadReady: true, WriteReady: true},
+		status:     account.Status{Resource: account.Resource{AccountID: "acct-a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentLive, ReadReady: true, WriteReady: true}},
 		instrument: instrument, public: public,
 	}
 	references := &fakeHTTPReferences{accounts: accounts}

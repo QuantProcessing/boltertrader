@@ -331,7 +331,7 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 	if err := pending.DesiredSnapshot.Validate(); err != nil {
 		return nil, ErrCandidateFailed
 	}
-	if manager.profileRegistry == nil || manager.profileRegistry.Validate(manager.runtimeMode, pending.DesiredSnapshot) != nil {
+	if manager.profileRegistry == nil || manager.profileRegistry.Validate(pending.DesiredSnapshot) != nil {
 		return nil, ErrCandidateFailed
 	}
 	if manager.requirePublicConnectors && manager.publicConnectors == nil {
@@ -391,11 +391,7 @@ func (manager *Manager) buildCandidate(ctx context.Context, pending store.Pendin
 		}
 		group.privateStreams[definition.RouteID] = state
 		if manager.publicConnectors != nil {
-			profileMode := routeprofile.ModeTest
-			if manager.runtimeMode == RuntimeModeLive {
-				profileMode = routeprofile.ModeLive
-			}
-			key := routeprofile.Key{Venue: pending.Venue, Mode: profileMode, RouteProfileID: definition.RouteProfileID}
+			key := routeprofile.Key{Venue: pending.Venue, RouteProfileID: definition.RouteProfileID}
 			lease, err := manager.publicConnectors.Acquire(ctx, key)
 			if err != nil || lease == nil {
 				group.destroy()

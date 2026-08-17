@@ -73,11 +73,7 @@ func NewAsterUSDTPerp(userAddress, apiWalletPrivateKey, expectedSigner string, s
 }
 
 func newAsterProfileAndSecurity(product astercommon.Product, user, key, signer string, settings Settings) (astercommon.Profile, *astercommon.SecurityContext, error) {
-	env := astercommon.EnvironmentProduction
-	if strings.EqualFold(settings.Environment, "testnet") || strings.EqualFold(settings.Environment, "demo") {
-		env = astercommon.EnvironmentTestnet
-	}
-	profile, err := astercommon.NewProfile(env, product)
+	profile, err := astercommon.NewProfile(product)
 	if err != nil {
 		return astercommon.Profile{}, nil, err
 	}

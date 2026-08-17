@@ -2,14 +2,12 @@ package perp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/QuantProcessing/boltertrader/internal/testenv"
-	astercommon "github.com/QuantProcessing/boltertrader/sdk/aster/common"
 )
 
 func requireRealtimeWS(t *testing.T) {
@@ -17,7 +15,12 @@ func requireRealtimeWS(t *testing.T) {
 	testenv.RequireLiveRead(t)
 }
 
-func TestPerpMarketSubscriptionsRejectNormalizedTestSymbolsBeforeRegistration(t *testing.T) {
+// Every subscribe entry point normalizes before it registers, so a symbol the
+// normalizer refuses leaves no subscription behind. The refused input used to be
+// a "TEST"-prefixed name under the testnet profile; that rule is gone, but an
+// empty symbol is still refused and exercises the same ordering — the check has
+// to happen before c.subs is touched, in all eleven methods.
+func TestPerpMarketSubscriptionsRejectUnnormalizableSymbolsBeforeRegistration(t *testing.T) {
 	client := newTestWSMarketClient(t, context.Background())
 	defer client.Close()
 	tests := []struct {
@@ -25,34 +28,32 @@ func TestPerpMarketSubscriptionsRejectNormalizedTestSymbolsBeforeRegistration(t 
 		call func() error
 	}{
 		{name: "mark price", call: func() error {
-			return client.SubscribeMarkPrice(" TeStAsset ", "1s", func(*WsMarkPriceEvent) error { return nil })
+			return client.SubscribeMarkPrice("   ", "1s", func(*WsMarkPriceEvent) error { return nil })
 		}},
 		{name: "incremental depth", call: func() error {
-			return client.SubscribeIncrementOrderBook(" TeStAsset ", "100ms", func(*WsDepthEvent) error { return nil })
+			return client.SubscribeIncrementOrderBook("   ", "100ms", func(*WsDepthEvent) error { return nil })
 		}},
 		{name: "partial depth", call: func() error {
-			return client.SubscribeLimitOrderBook(" TeStAsset ", 5, "100ms", func(*WsDepthEvent) error { return nil })
+			return client.SubscribeLimitOrderBook("   ", 5, "100ms", func(*WsDepthEvent) error { return nil })
 		}},
 		{name: "book ticker", call: func() error {
-			return client.SubscribeBookTicker(" TeStAsset ", func(*WsBookTickerEvent) error { return nil })
+			return client.SubscribeBookTicker("   ", func(*WsBookTickerEvent) error { return nil })
 		}},
 		{name: "aggregate trade", call: func() error {
-			return client.SubscribeAggTrade(" TeStAsset ", func(*WsAggTradeEvent) error { return nil })
+			return client.SubscribeAggTrade("   ", func(*WsAggTradeEvent) error { return nil })
 		}},
 		{name: "kline", call: func() error {
-			return client.SubscribeKline(" TeStAsset ", "1m", func(*WsKlineEvent) error { return nil })
+			return client.SubscribeKline("   ", "1m", func(*WsKlineEvent) error { return nil })
 		}},
-		{name: "unsubscribe", call: func() error { return client.UnsubscribeBookTicker(" TeStAsset ") }},
+		{name: "unsubscribe", call: func() error { return client.UnsubscribeBookTicker("   ") }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.call()
-			var unsafe *astercommon.UnsafeSymbolError
-			if !errors.As(err, &unsafe) {
-				t.Fatalf("error = %T %v", err, err)
+			if err := test.call(); err == nil {
+				t.Fatal("unnormalizable symbol accepted")
 			}
 			if len(client.subs) != 0 {
-				t.Fatalf("unsafe subscription registered: %+v", client.subs)
+				t.Fatalf("subscription registered for a refused symbol: %+v", client.subs)
 			}
 		})
 	}

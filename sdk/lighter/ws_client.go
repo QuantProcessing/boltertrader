@@ -18,7 +18,6 @@ import (
 
 const (
 	MainnetWSURL = "wss://mainnet.zklighter.elliot.ai/stream"
-	TestnetWSURL = "wss://testnet.zklighter.elliot.ai/stream"
 )
 
 type WSEncoding string
@@ -120,17 +119,6 @@ func NewWebsocketClientWithConfig(ctx context.Context, cfg WSConfig) *WebsocketC
 		cancel:             cancel,
 		config:             cfg,
 	}
-}
-
-func (c *WebsocketClient) WithEnvironment(env Environment) *WebsocketClient {
-	switch env {
-	case EnvironmentTestnet:
-		c.URL = TestnetWSURL
-	default:
-		c.URL = MainnetWSURL
-	}
-	c.config.URL = c.URL
-	return c
 }
 
 func (c *WebsocketClient) WithURL(url string) *WebsocketClient {

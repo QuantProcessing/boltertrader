@@ -85,32 +85,39 @@ make test-compose         # compose config, image builds, hardening, smoke, pers
 cd web && npm run build && npm test && npm run test:e2e
 ```
 
-The default suites are offline and deterministic. Exchange-backed reads and
-writes are opt-in: the documented Demo/Testnet Make targets set their write
-gates command-locally and fail if a selected acceptance test skips.
+Every suite above is offline, credential-free, and deterministic; none of them
+reaches a venue. There is no credentialed target left to opt into —
+`TestMakefileRecipesNeverEnableCredentialedWrites` reads every Makefile recipe
+and fails the one that arms a write. To click through the product without a
+venue, run `npm --prefix web run dev:mock`, which answers the whole API surface
+from `web/src/mocks/`.
 
 ## Current support
 
-The gateway's Demo/Testnet acceptance matrix (`make test-gateway-demo-testnet`)
-covers 20 product rows across Aster, Binance, Bitget, Bybit, Gate, Hyperliquid,
-Lighter, Nado, and OKX. `sdk/` additionally carries Backpack, EdgeX, GRVT, and
-StandX. Support is product-specific: an implemented row or a low-level SDK is
-not the same as current Demo/Testnet certification or production readiness.
+The exchange gateway implements 20 product rows across Aster, Binance, Bitget,
+Bybit, Gate, Hyperliquid, Lighter, Nado, and OKX. `sdk/` additionally carries
+Backpack, EdgeX, GRVT, and StandX, which is SDK-only and not a gateway product.
+Support is product-specific, and an implemented row is not production
+readiness: a green suite proves the normalized implementation still agrees with
+recorded fixtures, nothing wider. The statuses that may be claimed are defined
+in the [Glossary](docs/reference/glossary.md).
 
 - [Unified exchange API](docs/exchange/README.md)
 - [Exchange Gateway](docs/guides/exchange-gateway.md)
 - [Venue guides](docs/venues/README.md)
-- [Testing and certification semantics](docs/reference/testing.md)
+- [Testing and evidence semantics](docs/reference/testing.md)
 - [Documentation index](docs/README.md)
 
 ## Safety
 
-The canonical external walkthroughs use non-production environments and bounded
-orders, but they can still create exchange state. Run them serially with funded,
-clean Demo/Testnet accounts. Only a zero exit proves the terminal condition
-documented for that selected product. After a nonzero or ambiguous exit, inspect
-exact validation IDs and authoritative product-scoped state; never blindly
-cancel or flatten unrelated exposure.
+There is no non-production environment to fall back on. A credential configured
+here reaches the real venue, and the size you pass is the size that trades, so
+issue a dedicated key, withhold withdrawal rights, and start small. No test in
+this repository places an order — the walkthroughs that did were deleted along
+with the Demo/Testnet environments they ran against. Orders come from the
+running product, with your credentials. When one goes wrong, inspect exact
+validation IDs and authoritative product-scoped state; never blindly cancel or
+flatten unrelated exposure.
 
 Credentials are write-only end to end: submitted through the app, encrypted at
 rest by the gateway, and never returned by any read path.

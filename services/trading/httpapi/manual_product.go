@@ -97,11 +97,10 @@ type ManualAccountRoute struct {
 	RequestedState  string
 }
 
-// The states and environments the manual product tests for. They match the
-// gateway lifecycle vocabulary; anything else reads as not-ready.
+// The states the manual product tests for. They match the gateway lifecycle
+// vocabulary; anything else reads as not-ready.
 const (
 	manualAccountActive     = "active"
-	manualEnvironmentLive   = "live"
 	manualProductIdentifier = "manual"
 )
 
@@ -161,7 +160,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		return
 	}
 	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, request.AccountID)
-	if err != nil || account.ID != request.AccountID || !manualAccountReady(account, mode) {
+	if err != nil || account.ID != request.AccountID || !manualAccountReady(account) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
@@ -170,7 +169,7 @@ func (handler *manualProductHandler) createPreview(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	authority, ok := manualCatalogAuthority(snapshot, account, request.InstrumentID, mode)
+	authority, ok := manualCatalogAuthority(snapshot, account, request.InstrumentID)
 	if !ok {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -297,7 +296,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		return
 	}
 	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, authority.Request.AccountID)
-	if err != nil || authority.Request.AccountID != authority.AccountFence.AccountID || !manualAccountMatches(account, authority.AccountFence, mode) {
+	if err != nil || authority.Request.AccountID != authority.AccountFence.AccountID || !manualAccountMatches(account, authority.AccountFence) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
@@ -306,7 +305,7 @@ func (handler *manualProductHandler) createCommand(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	currentRoute, routeReady := manualCatalogAuthority(snapshot, account, authority.Request.InstrumentID, mode)
+	currentRoute, routeReady := manualCatalogAuthority(snapshot, account, authority.Request.InstrumentID)
 	if !routeReady || snapshot.Revision != authority.CatalogRevision || currentRoute.Venue != authority.Venue || currentRoute.VenueEnvironment != authority.VenueEnvironment || currentRoute.Product != authority.Product || currentRoute.RouteID != authority.RouteID {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -412,7 +411,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		return
 	}
 	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, position.AccountID)
-	if err != nil || !manualAccountReady(account, mode) {
+	if err != nil || !manualAccountReady(account) {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
 	}
@@ -421,7 +420,7 @@ func (handler *manualProductHandler) closePosition(w http.ResponseWriter, r *htt
 		tradingError(w, http.StatusServiceUnavailable, "GATEWAY_UNAVAILABLE")
 		return
 	}
-	authority, routeReady := manualCatalogAuthority(snapshot, account, position.InstrumentID, mode)
+	authority, routeReady := manualCatalogAuthority(snapshot, account, position.InstrumentID)
 	if !routeReady {
 		tradingError(w, http.StatusNotFound, "NOT_FOUND")
 		return
@@ -527,7 +526,7 @@ func (handler *manualProductHandler) submitPlace(w http.ResponseWriter, r *http.
 	httpx.WriteJSON(w, status, map[string]any{"meta": httpx.Meta(r), "data": command})
 }
 
-func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID, mode string) (manualPreviewAuthority, bool) {
+func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, instrumentID string) (manualPreviewAuthority, bool) {
 	venueID := ""
 	product := ""
 	settlement := ""
@@ -544,8 +543,13 @@ func manualCatalogAuthority(snapshot catalog.Snapshot, account ManualAccount, in
 		return manualPreviewAuthority{}, false
 	}
 	for _, venue := range snapshot.Venues {
-		live := venue.Environment == "live"
-		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready && live == (mode == string(orders.ModeLive)) {
+		// The environment clause is now only the agreement between two records
+		// written by different systems — the catalog's view of the venue and the
+		// account's. It used to be cross-checked against the mode as well, so a
+		// test-mode request could resolve only a non-live venue; with live the
+		// one environment left, that clause was false for every test-mode
+		// request and this loop resolved no authority at all.
+		if venue.Venue == venueID && venue.Venue == account.Venue && venue.Environment == account.VenueEnvironment && venue.Ready {
 			return manualPreviewAuthority{Venue: venue.Venue, VenueEnvironment: venue.Environment, Product: product, RouteID: routeID}, true
 		}
 	}
@@ -609,12 +613,15 @@ func manualTestNotionalAllowed(ctx context.Context, request manualPreviewRequest
 	return !quantity.Mul(price).GreaterThan(decimal.NewFromInt(manualTestMaxNotional)), nil
 }
 
-func manualAccountReady(account ManualAccount, mode string) bool {
+// manualAccountReady reports whether an account can carry a manual order.
+//
+// Mode is not one of the conditions, and the account's environment is no longer
+// read at all. The two were only ever cross-checked against each other — test
+// mode admitted a non-live account, live mode a live one — and with live the
+// one environment left, that check admitted nothing whatsoever in test mode.
+// Readiness is now the account's own state and its grant for this product.
+func manualAccountReady(account ManualAccount) bool {
 	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != manualAccountActive {
-		return false
-	}
-	live := account.VenueEnvironment == manualEnvironmentLive
-	if live != (mode == string(orders.ModeLive)) {
 		return false
 	}
 	for _, productID := range account.ProductIDs {
@@ -625,8 +632,8 @@ func manualAccountReady(account ManualAccount, mode string) bool {
 	return false
 }
 
-func manualAccountMatches(account ManualAccount, fence manualAccountFence, mode string) bool {
-	return manualAccountReady(account, mode) && account.ID == fence.AccountID &&
+func manualAccountMatches(account ManualAccount, fence manualAccountFence) bool {
+	return manualAccountReady(account) && account.ID == fence.AccountID &&
 		account.DesiredStateRevision == fence.DesiredStateRevision && account.RuntimeGeneration == fence.RuntimeGeneration &&
 		account.CredentialVersion == fence.CredentialVersion
 }

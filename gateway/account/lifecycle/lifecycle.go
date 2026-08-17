@@ -220,12 +220,14 @@ func (service *Service) normalizeDurableCreate(request CreateRequest) (Account, 
 	decoded.Clear()
 	routes := append([]AccountRoute(nil), request.Routes...)
 	sort.Slice(routes, func(i, j int) bool { return routes[i].ID < routes[j].ID })
-	profile, err := routeprofile.DefaultRegistry().Resolve(routeprofile.Mode(service.mode), request.Venue, routes[0].RouteProfileID)
-	if err != nil {
+	// The resolve is still the gate on the requested route even though nothing
+	// is read off the profile any more: it used to also supply the account's
+	// environment, which is now live by construction.
+	if _, err := routeprofile.DefaultRegistry().Resolve(request.Venue, routes[0].RouteProfileID); err != nil {
 		clear(material)
 		return Account{}, nil, "", validationError(errors.New("route profile is invalid"))
 	}
-	account := Account{Venue: request.Venue, VenueEnvironment: Environment(profile.NativeEnvironment), Mode: service.mode, NativeEnvironment: Environment(profile.NativeEnvironment), DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
+	account := Account{Venue: request.Venue, VenueEnvironment: EnvironmentLive, Mode: service.mode, NativeEnvironment: EnvironmentLive, DisplayName: request.DisplayName, ProductIDs: append([]string(nil), policy...), ProductPolicy: policy, Routes: routes, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, State: StateCreating}
 	validationAccount := account
 	validationAccount.ID = "pending"
 	if err := validationAccount.Validate(); err != nil {

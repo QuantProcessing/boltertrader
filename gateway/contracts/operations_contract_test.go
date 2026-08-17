@@ -100,28 +100,19 @@ func TestGatewayOperationsDocsAndMakeTargetsAreComplete(t *testing.T) {
 		t.Fatalf("read Makefile: %v", err)
 	}
 	text := string(makefile)
+	// Only credential-free targets remain. The twenty per-venue promotion targets
+	// and their aggregate drove writes at a venue's demo/testnet environment, which
+	// no longer exists; a gateway target that reached production would spend real
+	// funds, so `make` no longer offers one.
 	requiredTargets := []string{
 		"test-gateway-contract", "test-gateway-offline", "test-gateway-race",
 		"test-gateway-postgres", "test-gateway-restart", "test-gateway-security",
 		"test-gateway",
-		"test-gateway-binance-spot-demo", "test-gateway-binance-usd-perp-demo",
-		"test-gateway-okx-spot-demo", "test-gateway-okx-usdt-perp-demo",
-		"test-gateway-lighter-spot-testnet", "test-gateway-lighter-perp-testnet",
-		"test-gateway-hyperliquid-spot-testnet", "test-gateway-hyperliquid-perp-testnet",
-		"test-gateway-bybit-spot-demo", "test-gateway-bybit-usdt-perp-demo", "test-gateway-bybit-usdc-perp-demo",
-		"test-gateway-bitget-spot-demo", "test-gateway-bitget-usdt-perp-demo", "test-gateway-bitget-usdc-perp-demo",
-		"test-gateway-gate-spot-testnet", "test-gateway-gate-usdt-perp-testnet",
-		"test-gateway-aster-spot-testnet", "test-gateway-aster-usdt-perp-testnet",
-		"test-gateway-nado-spot-testnet", "test-gateway-nado-usdt0-perp-testnet",
-		"test-gateway-demo-testnet",
 	}
 	for _, target := range requiredTargets {
 		if !regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(target) + `:`).MatchString(text) {
 			t.Errorf("Makefile missing target %s", target)
 		}
-	}
-	if !strings.Contains(text, "test-gateway-demo-testnet: test-gateway-binance-spot-demo") {
-		t.Error("gateway live aggregate is not frozen in serial order")
 	}
 }
 

@@ -47,7 +47,7 @@ func TestFundingHistoryWindowIsBounded(t *testing.T) {
 		span   time.Duration
 	}{{FundingWindow7d, 7 * 24 * time.Hour}, {FundingWindow30d, 30 * 24 * time.Hour}} {
 		if _, err := service.Get(context.Background(), FundingHistoryQuery{
-			Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Window: test.window,
+			Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: test.window,
 		}); err != nil {
 			t.Fatalf("%s: %v", test.window, err)
 		}
@@ -80,7 +80,7 @@ func TestFundingHistoryResolvesWindowOnASecondBoundary(t *testing.T) {
 		}, nil
 	}))
 	if _, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +92,10 @@ func TestFundingHistoryResolvesWindowOnASecondBoundary(t *testing.T) {
 // Two of these series are drawn together as the legs of one spread, so a
 // response that arrived under the wrong identity or over the wrong span renders
 // as a plausible curve rather than as a visible gap.
+//
+// The wrong environment below is a decommissioned one rather than another live
+// one: with live the only environment the platform still has, an upstream
+// answering under the old name is what a misaddressed series now looks like.
 func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	good := func(read FundingHistoryRead) FundingHistorySeries {
@@ -106,7 +110,7 @@ func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 	}
 	for name, damage := range map[string]func(FundingHistorySeries) FundingHistorySeries{
 		"wrong venue":       func(s FundingHistorySeries) FundingHistorySeries { s.Venue = "okx"; return s },
-		"wrong environment": func(s FundingHistorySeries) FundingHistorySeries { s.Environment = "live"; return s },
+		"wrong environment": func(s FundingHistorySeries) FundingHistorySeries { s.Environment = "demo"; return s },
 		"wrong symbol":      func(s FundingHistorySeries) FundingHistorySeries { s.Symbol = "ETH-USDT"; return s },
 		"narrowed window": func(s FundingHistorySeries) FundingHistorySeries {
 			s.Since = s.Since.Add(time.Hour)
@@ -133,7 +137,7 @@ func TestFundingHistoryRefusesAMisansweredSeries(t *testing.T) {
 			return damage(good(read)), nil
 		}))
 		if _, err := service.Get(context.Background(), FundingHistoryQuery{
-			Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Window: FundingWindow7d,
+			Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
 		}); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
@@ -150,7 +154,7 @@ func TestFundingHistoryPropagatesUnsupportedVenue(t *testing.T) {
 		return FundingHistorySeries{}, ErrFundingHistoryUnsupported
 	}))
 	_, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "nado", Environment: "testnet", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		Venue: "nado", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
 	})
 	if !errors.Is(err, ErrFundingHistoryUnsupported) {
 		t.Fatalf("err = %v, want ErrFundingHistoryUnsupported", err)
@@ -170,7 +174,7 @@ func TestFundingHistoryNormalisesEveryTimeToUTC(t *testing.T) {
 		}, nil
 	}))
 	series, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +207,7 @@ func TestFundingHistorySpendsTheSharedVenueBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := FundingHistoryQuery{Venue: "binance", Environment: "demo", Symbol: "BTC-USDT", Window: FundingWindow7d}
+	query := FundingHistoryQuery{Venue: "binance", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d}
 	if _, err := service.Get(context.Background(), query); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +217,7 @@ func TestFundingHistorySpendsTheSharedVenueBudget(t *testing.T) {
 	// A different venue draws on its own allowance, so one busy pair cannot
 	// starve the other leg of the very spread it belongs to.
 	if _, err := service.Get(context.Background(), FundingHistoryQuery{
-		Venue: "bybit", Environment: "demo", Symbol: "BTC-USDT", Window: FundingWindow7d,
+		Venue: "bybit", Environment: "live", Symbol: "BTC-USDT", Window: FundingWindow7d,
 	}); err != nil {
 		t.Fatalf("second venue err = %v, want the read to succeed", err)
 	}

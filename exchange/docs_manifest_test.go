@@ -15,11 +15,6 @@ type documentedProductRow struct {
 	FactoryConfig string
 }
 
-type documentedAcceptance struct {
-	Status string
-	Reason string
-}
-
 type operationMatrix map[string]map[string]string
 
 func TestDocsMatchExchangeManifest(t *testing.T) {
@@ -27,23 +22,20 @@ func TestDocsMatchExchangeManifest(t *testing.T) {
 	surface := loadPublicSurfaceManifest(t, root)
 	wantRows := productRowsForDocs(t, surface.ProductRows)
 	documentPaths := []struct {
-		path      string
-		header    string
-		canonical bool
+		path   string
+		header string
 	}{
 		{
-			path:      filepath.Join(root, "docs", "reference", "exchange-rest-v1-operation-matrix.md"),
-			header:    "| Row | Venue | Product | Factory config | Non-production environment | Live environment |",
-			canonical: true,
+			path:   filepath.Join(root, "docs", "reference", "exchange-rest-v1-operation-matrix.md"),
+			header: "| Row | Venue | Product | Factory config |",
 		},
 		{
 			path:   filepath.Join(root, "docs", "zh-CN", "reference", "exchange-rest-v1-operation-matrix.md"),
-			header: "| Row | Venue | Product | Factory config | Non-production environment | Live environment |",
+			header: "| Row | Venue | Product | Factory config |",
 		},
 		{
-			path:      filepath.Join(root, "docs", "reference", "exchange-ws-v1-operation-matrix.md"),
-			header:    "| Row | Venue | Product | Factory config | WebSocket facet |",
-			canonical: true,
+			path:   filepath.Join(root, "docs", "reference", "exchange-ws-v1-operation-matrix.md"),
+			header: "| Row | Venue | Product | Factory config | WebSocket facet |",
 		},
 		{
 			path:   filepath.Join(root, "docs", "zh-CN", "reference", "exchange-ws-v1-operation-matrix.md"),
@@ -92,40 +84,6 @@ func TestDocsMatchExchangeManifest(t *testing.T) {
 		got := parseDocumentedAcknowledgements(t, path, string(data))
 		if !reflect.DeepEqual(got, wantAcknowledgements) {
 			t.Errorf("%s acknowledgement inventory = %v, want manifest %v", path, got, wantAcknowledgements)
-		}
-	}
-
-	wantAcceptance := acceptanceForDocs(surface.ProductRows)
-	for _, documentPath := range documentPaths {
-		data, err := os.ReadFile(documentPath.path)
-		if err != nil {
-			t.Fatalf("read exchange matrix %s: %v", documentPath.path, err)
-		}
-		got := parseDocumentedAcceptance(t, documentPath.path, string(data))
-		for code, want := range wantAcceptance {
-			row, ok := got[code]
-			if !ok {
-				t.Errorf("%s missing acceptance row %s", documentPath.path, code)
-				continue
-			}
-			if row.Status != want.Status {
-				t.Errorf("%s acceptance row %s status = %q, want %q", documentPath.path, code, row.Status, want.Status)
-			}
-			if row.Reason == "" {
-				t.Errorf("%s acceptance row %s has empty reason", documentPath.path, code)
-			}
-			if documentPath.canonical && normalizeMarkdownProse(row.Reason) != want.Reason {
-				t.Errorf(
-					"%s acceptance row %s reason = %q, want canonical manifest reason %q",
-					documentPath.path,
-					code,
-					row.Reason,
-					want.Reason,
-				)
-			}
-		}
-		if len(got) != len(wantAcceptance) {
-			t.Errorf("%s has %d acceptance rows, want %d: %#v", documentPath.path, len(got), len(wantAcceptance), got)
 		}
 	}
 }
@@ -297,31 +255,6 @@ func parseDocumentedAcknowledgements(t *testing.T, path, document string) []stri
 	return states
 }
 
-func parseDocumentedAcceptance(t *testing.T, path, document string) map[string]documentedAcceptance {
-	t.Helper()
-	rows := parseMarkdownTable(t, path, document, "| Row | Acceptance status | Reason |")
-	statuses := make(map[string]documentedAcceptance, len(rows))
-	for _, row := range rows {
-		if len(row) != 3 {
-			t.Fatalf("%s acceptance row has %d cells, want 3: %v", path, len(row), row)
-		}
-		code := markdownIdentifier(row[0])
-		if _, duplicate := statuses[code]; duplicate {
-			t.Fatalf("%s has duplicate acceptance row %s", path, code)
-		}
-		status := strings.ToLower(markdownIdentifier(row[1]))
-		if status == "" {
-			t.Fatalf("%s acceptance row %s has empty status", path, code)
-		}
-		reason := markdownIdentifier(row[2])
-		if reason == "" {
-			t.Fatalf("%s acceptance row %s has empty reason", path, code)
-		}
-		statuses[code] = documentedAcceptance{Status: status, Reason: reason}
-	}
-	return statuses
-}
-
 func parseMarkdownTable(t *testing.T, path, document, header string) [][]string {
 	t.Helper()
 	lines := strings.Split(document, "\n")
@@ -375,21 +308,6 @@ func productRowsForDocs(t *testing.T, rows []exchangeProductRow) map[string]docu
 		}
 	}
 	return manifest
-}
-
-func acceptanceForDocs(rows []exchangeProductRow) map[string]documentedAcceptance {
-	manifest := make(map[string]documentedAcceptance, len(rows))
-	for _, row := range rows {
-		manifest[row.Code] = documentedAcceptance{
-			Status: strings.ToLower(row.Acceptance.Status),
-			Reason: row.Acceptance.Reason,
-		}
-	}
-	return manifest
-}
-
-func normalizeMarkdownProse(value string) string {
-	return strings.ReplaceAll(value, "`", "")
 }
 
 func acknowledgementName(state OrderAckState) string {

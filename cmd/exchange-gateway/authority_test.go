@@ -40,15 +40,9 @@ func TestManagerAuthorityReadsPropagatesConfiguredCatalogFailure(t *testing.T) {
 }
 
 func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) {
-	for _, test := range []struct {
-		mode account.RuntimeMode
-		want func(string) bool
-	}{
-		{mode: account.RuntimeModeTest, want: func(environment string) bool { return environment == "demo" || environment == "testnet" }},
-		{mode: account.RuntimeModeLive, want: func(environment string) bool { return environment == "live" }},
-	} {
-		t.Run(string(test.mode), func(t *testing.T) {
-			authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, test.mode, newAuthorityLifecycle()), test.mode)
+	for _, mode := range []account.RuntimeMode{account.RuntimeModeTest, account.RuntimeModeLive} {
+		t.Run(string(mode), func(t *testing.T) {
+			authority, err := newGatewayAuthority(context.Background(), newMemoryDesiredStore(), newAuthorityManager(t, mode, newAuthorityLifecycle()), mode)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -62,8 +56,8 @@ func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) 
 			}
 			seen := make(map[string]struct{}, len(venues))
 			for _, venue := range venues {
-				if !test.want(venue.Environment) || venue.Ready {
-					t.Fatalf("mode=%s venue=%+v", test.mode, venue)
+				if venue.Environment != string(exchange.EnvironmentLive) || venue.Ready {
+					t.Fatalf("mode=%s venue=%+v", mode, venue)
 				}
 				key := venue.Venue + "\x00" + venue.Environment
 				if _, duplicate := seen[key]; duplicate {
@@ -85,9 +79,9 @@ func TestGatewayAuthorityCatalogEnumeratesProfilesWithoutAccounts(t *testing.T) 
 
 func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
 	accounts := &fakeAuthorityAccounts{
-		resources: []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true}},
+		resources: []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true}},
 		snapshot: catalog.Snapshot{Revision: "catalog-1", LoadedAt: time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC), Instruments: []catalog.Instrument{{
-			ID: "binance:testnet:perp:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, Settlement: "USDT",
+			ID: "binance:live:perp:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT",
 			Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.Rules{
 				PriceIncrement: decimal.RequireFromString("0.1"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001"),
 				MinNotional: exchange.OptionalDecimal{Value: decimal.RequireFromString("5"), Valid: true},
@@ -99,7 +93,7 @@ func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
 		t.Fatalf("Instruments() = %+v, %v", got, err)
 	}
 	instrument := got.Instruments[0]
-	if instrument.Environment != "testnet" || instrument.Product != "perp" || instrument.Symbol != "BTC-USDT" || instrument.BaseAsset != "BTC" || instrument.QuoteAsset != "USDT" || instrument.Rules.MinNotional != "5" {
+	if instrument.Environment != "live" || instrument.Product != "perp" || instrument.Symbol != "BTC-USDT" || instrument.BaseAsset != "BTC" || instrument.QuoteAsset != "USDT" || instrument.Rules.MinNotional != "5" {
 		t.Fatalf("instrument = %+v", instrument)
 	}
 }
@@ -107,12 +101,12 @@ func TestManagerAuthorityReadsPreservesCompositeCatalogFacts(t *testing.T) {
 func TestManagerAuthorityReadsAggregatesCatalogAuthorityDeterministically(t *testing.T) {
 	oldest := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	resources := []account.Resource{
-		{AccountID: "demo", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, ReadReady: true},
-		{AccountID: "live", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, ReadReady: true},
+		{AccountID: "binance-perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, ReadReady: true},
+		{AccountID: "binance-spot", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, ReadReady: true},
 	}
 	snapshots := map[domain.AccountID]catalog.Snapshot{
-		"demo": {Revision: "revision-b", LoadedAt: oldest.Add(time.Minute)},
-		"live": {Revision: "revision-a", LoadedAt: oldest},
+		"binance-perp": {Revision: "revision-b", LoadedAt: oldest.Add(time.Minute)},
+		"binance-spot": {Revision: "revision-a", LoadedAt: oldest},
 	}
 	first, err := (managerAuthorityReads{manager: &fakeAuthorityAccounts{resources: resources, snapshots: snapshots}}).Instruments()
 	if err != nil {
@@ -135,18 +129,18 @@ func TestManagerAuthorityReadsFetchesFundingOnlyWhenCapabilityAdvertisesIt(t *te
 		history: exchange.FundingRatePage{Rates: []exchange.FundingRate{{Rate: decimal.RequireFromString("0.0006"), ObservedAt: observedAt.Add(-8 * time.Hour), FundingTime: observedAt.Add(-7 * time.Hour)}}},
 	}
 	accounts := &fakeAuthorityAccounts{
-		resources:  []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, ReadReady: true}},
+		resources:  []account.Resource{{AccountID: "perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, ReadReady: true}},
 		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
 		perp:       perp, capability: capability.Row{Product: "perp", Operations: capability.Operations{Funding: true}},
 	}
-	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "testnet", "perp", "BTC-USDT")
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "live", "perp", "BTC-USDT")
 	if err != nil || fact.FundingRate != "0.0007" || fact.BestBidSize != "2.5" || fact.BestAskSize != "3.25" || len(fact.Bids) != 1 || len(fact.Asks) != 1 || len(fact.FundingHistory) != 1 || !fact.FundingObservedAt.Equal(observedAt.Add(time.Second)) || !fact.FundingTime.Equal(fundingTime) || !fact.NextFundingTime.Equal(nextFundingTime) || perp.fundingCalls != 1 || perp.historyCalls != 1 || perp.bookLimit != authorityDepthLimit || perp.historyLimit != authorityFundingHistoryLimit {
 		t.Fatalf("fact=%+v fundingCalls=%d historyCalls=%d err=%v", fact, perp.fundingCalls, perp.historyCalls, err)
 	}
 
 	accounts.capability.Operations.Funding = false
 	perp.fundingCalls = 0
-	if _, err = (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "testnet", "perp", "BTC-USDT"); err == nil || perp.fundingCalls != 0 {
+	if _, err = (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "live", "perp", "BTC-USDT"); err == nil || perp.fundingCalls != 0 {
 		t.Fatalf("unsupported fundingCalls=%d err=%v", perp.fundingCalls, err)
 	}
 }
@@ -172,8 +166,8 @@ func TestManagerAuthorityReadsPairsInstrumentWithTheRouteThatSettlesIt(t *testin
 	usdc, usdt := newPerp("USDC", "100"), newPerp("USDT", "200")
 	accounts := &fakeAuthorityAccounts{
 		resources: []account.Resource{
-			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDC", ReadReady: true},
-			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true},
+			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDC", ReadReady: true},
+			{AccountID: "bybit", Venue: exchange.VenueBybit, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true},
 		},
 		instrument:       exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBybit, Product: exchange.ProductPerp, Symbol: "SIREN-USDT", SettleAsset: "USDT"}},
 		perpBySettlement: map[string]exchange.PerpClient{"USDC": usdc, "USDT": usdt},
@@ -182,12 +176,16 @@ func TestManagerAuthorityReadsPairsInstrumentWithTheRouteThatSettlesIt(t *testin
 			{Product: "perp", Settlement: "USDT", Operations: capability.Operations{Funding: true}},
 		},
 	}
-	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "bybit", "demo", "perp", "SIREN-USDT")
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "bybit", "live", "perp", "SIREN-USDT")
 	if err != nil || fact.BestBid != "200" || accounts.perpRouteSettlement != "USDT" || usdc.fundingCalls != 0 {
 		t.Fatalf("fact=%+v settlement=%q usdcCalls=%d err=%v", fact, accounts.perpRouteSettlement, usdc.fundingCalls, err)
 	}
 }
 
+// The environment half of this selection is still compared, at
+// authority.go:1454, but it can no longer discriminate: both fixtures are live
+// because live is the only environment left. Product is what separates them
+// here, and an exact product lookup is the rule that has to keep holding.
 func TestManagerAuthorityReadsSelectsExactEnvironmentAndProduct(t *testing.T) {
 	observedAt := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
 	perp := &fakeAuthorityPerp{
@@ -196,14 +194,14 @@ func TestManagerAuthorityReadsSelectsExactEnvironmentAndProduct(t *testing.T) {
 	}
 	accounts := &fakeAuthorityAccounts{
 		resources: []account.Resource{
-			{AccountID: "live-spot", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, ReadReady: true},
-			{AccountID: "demo-perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, ReadReady: true},
+			{AccountID: "binance-spot", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, ReadReady: true},
+			{AccountID: "binance-perp", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, ReadReady: true},
 		},
 		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
 		perp:       perp, capability: capability.Row{Product: "perp", Operations: capability.Operations{Funding: true}},
 	}
-	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "demo", "perp", "BTC-USDT")
-	if err != nil || fact.Environment != "demo" || fact.Product != "perp" || accounts.resolvedAccount != "demo-perp" {
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "live", "perp", "BTC-USDT")
+	if err != nil || fact.Environment != "live" || fact.Product != "perp" || accounts.resolvedAccount != "binance-perp" {
 		t.Fatalf("fact=%+v resolved=%q err=%v", fact, accounts.resolvedAccount, err)
 	}
 }
@@ -216,7 +214,7 @@ func TestManagerAuthorityReadsSelectsCapabilityForExactRoute(t *testing.T) {
 	}
 	accounts := &fakeAuthorityAccounts{
 		resources: []account.Resource{{
-			AccountID: "multi-route", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+			AccountID: "multi-route", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 			Product: exchange.ProductPerp, Settlement: "USDT", ReadReady: true,
 		}},
 		instrument: exchange.Instrument{Identity: exchange.InstrumentIdentity{Venue: exchange.VenueBinance, Product: exchange.ProductPerp, Symbol: "BTC-USDT"}},
@@ -227,7 +225,7 @@ func TestManagerAuthorityReadsSelectsCapabilityForExactRoute(t *testing.T) {
 			{Product: "perp", Settlement: "USDT", Operations: capability.Operations{Funding: true}},
 		},
 	}
-	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "demo", "perp", "BTC-USDT")
+	fact, err := (managerAuthorityReads{manager: accounts}).MarketData(context.Background(), "binance", "live", "perp", "BTC-USDT")
 	if err != nil || fact.FundingRate != "0.0001" || perp.fundingCalls != 1 {
 		t.Fatalf("fact=%+v fundingCalls=%d err=%v", fact, perp.fundingCalls, err)
 	}
@@ -427,10 +425,10 @@ func TestGatewayAuthorityProjectsConfiguredCatalogAndMarketData(t *testing.T) {
 	}
 	observedAt := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
 	authority.reads = staticAuthorityReads{
-		venues:      []authorityVenue{{Venue: "binance", Environment: "demo", Ready: true}},
-		instruments: []authorityInstrument{{InstrumentID: "binance:demo:perp:BTC-USDT", Venue: "binance", Ready: true}},
+		venues:      []authorityVenue{{Venue: "binance", Environment: "live", Ready: true}},
+		instruments: []authorityInstrument{{InstrumentID: "binance:live:perp:BTC-USDT", Venue: "binance", Ready: true}},
 		marketData: authorityMarketData{
-			Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "binance:demo:perp:BTC-USDT", BestBid: "100", BestAsk: "101",
+			Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "binance:live:perp:BTC-USDT", BestBid: "100", BestAsk: "101",
 			MarkPrice: "100.5", FundingRate: "0.0001", ObservedAt: observedAt,
 		},
 	}
@@ -451,7 +449,7 @@ func TestGatewayAuthorityProjectsConfiguredCatalogAndMarketData(t *testing.T) {
 	}
 	market, err := authority.Execute(ctx, httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityMarketData,
-		Query:     map[string][]string{"venue": {"binance"}, "environment": {"demo"}, "product": {"perp"}, "instrumentId": {"binance:demo:perp:BTC-USDT"}},
+		Query:     map[string][]string{"venue": {"binance"}, "environment": {"live"}, "product": {"perp"}, "instrumentId": {"binance:live:perp:BTC-USDT"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -474,7 +472,13 @@ func TestMigrationValidationPublishesStaticTestCatalogWithoutPrivateRuntime(t *t
 	seen := make(map[string]struct{}, len(venues))
 	for _, venue := range venues {
 		key := venue.Venue + "\x00" + venue.Environment
-		if venue.Venue == "" || venue.Environment == "" || venue.Environment == "live" || venue.Ready {
+		// Ready is the assertion that carries the test now. It used to also check
+		// that no venue was labelled live, because a live label during migration
+		// validation meant a real-money endpoint; with demo and testnet gone every
+		// venue is live and the label proves nothing. What still has to hold is
+		// that validation publishes this catalog without a private runtime, so
+		// nothing in it is ready to be traded.
+		if venue.Venue == "" || venue.Environment == "" || venue.Ready {
 			t.Fatalf("unsafe validation venue=%+v", venue)
 		}
 		if _, exists := seen[key]; exists {
@@ -500,9 +504,9 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 		t.Fatal(err)
 	}
 	authority.reads = staticAuthorityReads{
-		venues:      []authorityVenue{{Venue: "binance", Environment: "demo", Ready: true}},
+		venues:      []authorityVenue{{Venue: "binance", Environment: "live", Ready: true}},
 		instruments: []authorityInstrument{{InstrumentID: "BTC-USDT", Venue: "binance", Ready: true}},
-		marketData:  authorityMarketData{Venue: "binance", Environment: "demo", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.5", ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)},
+		marketData:  authorityMarketData{Venue: "binance", Environment: "live", Product: "perp", InstrumentID: "BTC-USDT", MarkPrice: "100.5", ObservedAt: time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)},
 		runtime: authorityRuntimeProjection{
 			AccountID: "account-a", DesiredStateRevision: 7, RuntimeGeneration: 3, CredentialVersion: 2, RuntimeVersion: 9,
 			Readiness: authorityProjectionReadiness{Ready: true}, WriteReadiness: authorityProjectionReadiness{Ready: true},
@@ -536,7 +540,7 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 	}{
 		{path: "/internal/v1/catalog/venues", assert: func(t *testing.T, data json.RawMessage) {
 			var items []authorityVenue
-			if err := json.Unmarshal(data, &items); err != nil || len(items) != 1 || items[0].Environment != "demo" {
+			if err := json.Unmarshal(data, &items); err != nil || len(items) != 1 || items[0].Environment != "live" {
 				t.Fatalf("venues=%+v err=%v", items, err)
 			}
 		}},
@@ -546,7 +550,7 @@ func TestGatewayAuthorityInternalReadRoutesReturnStrictAuthenticatedPlatformDTOs
 				t.Fatalf("instruments=%+v err=%v", items, err)
 			}
 		}},
-		{path: "/internal/v1/market-data?venue=binance&environment=demo&product=perp&instrumentId=BTC-USDT", assert: func(t *testing.T, data json.RawMessage) {
+		{path: "/internal/v1/market-data?venue=binance&environment=live&product=perp&instrumentId=BTC-USDT", assert: func(t *testing.T, data json.RawMessage) {
 			var fact authorityMarketData
 			if err := json.Unmarshal(data, &fact); err != nil || fact.MarkPrice != "100.5" || fact.ObservedAt.IsZero() {
 				t.Fatalf("market data=%+v err=%v", fact, err)
@@ -585,7 +589,7 @@ func TestGatewayAuthorityRejectsUnavailableMarketDataProjection(t *testing.T) {
 	authority.reads = staticAuthorityReads{err: errors.New("read capability unavailable")}
 	_, err = authority.Execute(ctx, httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityMarketData,
-		Query:     map[string][]string{"venue": {"binance"}, "environment": {"demo"}, "product": {"perp"}, "instrumentId": {"BTC-USDT"}},
+		Query:     map[string][]string{"venue": {"binance"}, "environment": {"live"}, "product": {"perp"}, "instrumentId": {"BTC-USDT"}},
 	})
 	var authorityErr httpapi.AuthorityError
 	if !errors.As(err, &authorityErr) || authorityErr.Status != http.StatusInternalServerError || !authorityErr.Retryable {
@@ -684,7 +688,7 @@ func TestGatewayAuthorityFundingBoardWithoutSourceIsUnavailable(t *testing.T) {
 // depending on which venues the profile registry happens to carry.
 func newTestFundingBoardSource(t *testing.T, entry exchange.FundingBoardEntry) *fundingboard.Source {
 	t.Helper()
-	source, err := fundingboard.NewSource(constantFundingFactory{entry: entry}, routeprofile.DefaultRegistry(), routeprofile.ModeTest)
+	source, err := fundingboard.NewSource(constantFundingFactory{entry: entry}, routeprofile.DefaultRegistry())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -699,7 +703,10 @@ func (factory constantFundingFactory) Build(profile routeprofile.Profile) (fundi
 		scope: exchange.CatalogScope{
 			Venue:       exchange.Venue(profile.Venue),
 			Product:     exchange.Product(profile.Product),
-			Environment: exchange.Environment(profile.NativeEnvironment),
+			// The profile no longer carries an environment: every route is live.
+			// The scope field stays because a snapshot is labelled with the venue
+			// it came from and callers compare that label against their request.
+			Environment: exchange.EnvironmentLive,
 			Settlement:  profile.SettlementAsset,
 		},
 		entry: factory.entry,
@@ -739,7 +746,7 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 	}}
 	query := func(mutate func(map[string][]string)) map[string][]string {
 		values := map[string][]string{
-			"venue": {"binance"}, "environment": {"demo"}, "symbol": {"BTC-USDT"},
+			"venue": {"binance"}, "environment": {"live"}, "symbol": {"BTC-USDT"},
 			"since": {"2026-08-07T16:00:00+08:00"}, "until": {"2026-08-14T16:00:00+08:00"},
 		}
 		mutate(values)
@@ -758,7 +765,7 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 	// The offset is normalised away rather than carried, so two legs quoted by
 	// venues on different clocks land on one axis.
 	wantSince := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
-	if series.Venue != "binance" || series.Environment != "demo" || series.Symbol != "BTC-USDT" ||
+	if series.Venue != "binance" || series.Environment != "live" || series.Symbol != "BTC-USDT" ||
 		!series.Since.Equal(wantSince) || series.Since.Location() != time.UTC {
 		t.Fatalf("series identity=%+v", series)
 	}
@@ -809,7 +816,7 @@ func TestGatewayAuthorityFundingHistoryDispatchParsesBoundsAndLabelsItsAnswer(t 
 type relabelingFundingReads struct{ staticAuthorityReads }
 
 func (relabelingFundingReads) FundingHistory(context.Context, authorityFundingHistoryQuery) (authorityFundingSeries, error) {
-	return authorityFundingSeries{Venue: "bybit", Environment: "demo", Symbol: "BTC-USDT"}, nil
+	return authorityFundingSeries{Venue: "bybit", Environment: "live", Symbol: "BTC-USDT"}, nil
 }
 
 func TestGatewayAuthoritySeparatesRuntimeStatusAndReadinessDTOs(t *testing.T) {
@@ -965,11 +972,11 @@ func TestGatewayAuthorityRestoresActiveAndRotatingAccounts(t *testing.T) {
 	ctx := context.Background()
 	desiredStore := newMemoryDesiredStore()
 	desiredStore.items["active"] = store.DesiredAccount{
-		AccountID: "active", Venue: "binance", VenueEnvironment: "demo", SecretRef: "opaque-active",
+		AccountID: "active", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-active",
 		DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredActive,
 	}
 	desiredStore.items["rotating"] = store.DesiredAccount{
-		AccountID: "rotating", Venue: "binance", VenueEnvironment: "demo", SecretRef: "opaque-new", PreviousSecretRef: "opaque-old",
+		AccountID: "rotating", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-new", PreviousSecretRef: "opaque-old",
 		DesiredStateRevision: 3, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredRotating,
 		RotationFence: &store.RotationFence{ID: "rotate-1", State: store.RotationArmed, FromCredentialVersion: 1, ToCredentialVersion: 2, FromRuntimeGeneration: 1, ToRuntimeGeneration: 2, ArmedAt: time.Unix(1, 0)},
 	}
@@ -1050,7 +1057,7 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 		t.Fatal(err)
 	}
 	return account.DesiredRuntime{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", Mode: account.RuntimeModeTest,
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", Mode: account.RuntimeModeTest,
 		SecretRef: ref, DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 		RequestedState: account.RuntimeStateActive,
 	}
@@ -1063,7 +1070,7 @@ func authorityDesiredRuntime(t *testing.T, refValue string) account.DesiredRunti
 func seedActiveAuthorityAccount(t *testing.T, ctx context.Context, authority *gatewayAuthority, desiredStore *memoryDesiredStore) {
 	t.Helper()
 	desiredStore.items["dynamic"] = store.DesiredAccount{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", SecretRef: "opaque-initial",
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", SecretRef: "opaque-initial",
 		DesiredStateRevision: 2, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: store.DesiredActive,
 	}
 	if err := authority.restore(ctx); err != nil {
@@ -1334,9 +1341,9 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	apply := httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
 	}
 	if _, err := authority.Execute(context.Background(), apply); err != nil {
@@ -1386,9 +1393,9 @@ func TestGatewayAuthorityRetirementIsExplicitReplayableAndRedacted(t *testing.T)
 	reused := apply
 	reused.OperationID = "018f47a8-2578-7d3c-9d7d-5e4f4a445c35"
 	reused.DesiredApply = &httpapi.DesiredApplyRequest{
-		OperationID: reused.OperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+		OperationID: reused.OperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 		DesiredStateRevision: 3, RuntimeGeneration: 2, CredentialVersion: 1, RequestedState: "active",
-		Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+		Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 	}
 	_, err = authority.Execute(context.Background(), reused)
 	var retiredErr httpapi.AuthorityError
@@ -1435,10 +1442,10 @@ func TestProductionRuntimeLifecycleAllowsSnapshotRetirementWithoutInjectedCallba
 	if _, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: applyOperationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+			OperationID: applyOperationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
 			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
 	}); err != nil {
 		t.Fatalf("apply: %v", err)
@@ -1550,9 +1557,9 @@ func TestGatewayAuthorityRotationFinalizationIsScopedReplayableAndRedacted(t *te
 		_, err := authority.Execute(context.Background(), httpapi.AuthorityRequest{
 			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
-				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
 				DesiredStateRevision: revision, RuntimeGeneration: generation, CredentialVersion: credentialVersion, RequestedState: "active",
-				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 			},
 		})
 		if err != nil {
@@ -1650,10 +1657,10 @@ func TestAuthoritySnapshotApplyPromotesOnlyAfterDurableCAS(t *testing.T) {
 	secretRef, _ := secretstore.ParseOpaqueRef("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
 	desired := store.DesiredSnapshot{
 		SnapshotID: uuid.MustParse("018f47a8-2578-7d3c-9d7d-5e4f4a445c35"), OperationID: operationID,
-		AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: secretRef,
+		AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: secretRef,
 		Fence:          domain.AccountFence{AccountID: "account-a", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1},
 		RequestedState: store.DesiredActive,
-		Routes:         []store.RouteDefinition{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: store.RouteActive}},
+		Routes:         []store.RouteDefinition{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: store.RouteActive}},
 		CreatedAt:      time.Now(),
 	}
 	desired.RequestDigest, err = desired.CanonicalDigest()
@@ -1699,9 +1706,9 @@ func TestGatewayAuthorityApplyDesiredReplaysExactActiveAndRedactsReference(t *te
 		AccountID:   "account-a",
 		OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -1755,9 +1762,9 @@ func TestGatewayAuthorityRuntimeReadUsesDynamicSnapshotState(t *testing.T) {
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo", SecretRef: opaqueRef,
+			OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live", SecretRef: opaqueRef,
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
 	})
 	if err != nil {
@@ -1899,9 +1906,9 @@ func TestGatewayAuthorityRuntimeWriteReadinessHonorsCapabilityPolicy(t *testing.
 	_, err = authority.Execute(context.Background(), httpapi.AuthorityRequest{
 		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: operationID, AccountID: "account-a", Venue: "lighter", NativeEnvironment: "testnet",
+			OperationID: operationID, AccountID: "account-a", Venue: "lighter", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "lighter.spot.testnet.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "lighter.spot.v1", RequestedState: "active"}},
 		},
 	})
 	if err != nil {
@@ -1940,10 +1947,10 @@ func TestGatewayAuthorityCandidateFailurePreservesActiveAndPublishesRedactedPend
 		return httpapi.AuthorityRequest{
 			Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a", OperationID: operationID,
 			DesiredApply: &httpapi.DesiredApplyRequest{
-				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+				OperationID: operationID, AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
 				SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: revision,
 				RuntimeGeneration: generation, CredentialVersion: 1, RequestedState: "active",
-				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+				Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 			},
 		}
 	}
@@ -1994,10 +2001,10 @@ func TestGatewayAuthorityExactReplayRehydratesTransientActiveRestoreFailure(t *t
 		Operation: httpapi.AuthorityApplyDesired, Mode: "test", AccountID: "account-a",
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33",
 		DesiredApply: &httpapi.DesiredApplyRequest{
-			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", Venue: "binance", NativeEnvironment: "demo",
+			OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "account-a", Venue: "binance", NativeEnvironment: "live",
 			SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", DesiredStateRevision: 1,
 			RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active"}},
+			Routes: []httpapi.DesiredRoute{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active"}},
 		},
 	}
 	snapshotStore := newSnapshotAuthorityStore()

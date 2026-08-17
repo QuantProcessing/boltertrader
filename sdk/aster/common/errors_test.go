@@ -56,14 +56,14 @@ func TestTransportErrorRedactsSignedURL(t *testing.T) {
 	cause := errors.New("connection reset")
 	err := NewTransportError("POST", "/fapi/v3/order", &url.Error{
 		Op:  "Post",
-		URL: "https://fapi.asterdex-testnet.com/fapi/v3/order?symbol=ASTERUSDT&nonce=1&signature=0xabc",
+		URL: "https://fapi.asterdex.com/fapi/v3/order?symbol=ASTERUSDT&nonce=1&signature=0xabc",
 		Err: cause,
 	})
 	if !errors.Is(err, cause) {
 		t.Fatal("transport error does not unwrap to network cause")
 	}
 	rendered := err.Error()
-	for _, forbidden := range []string{"ASTERUSDT", "nonce=", "0xabc", "asterdex-testnet.com"} {
+	for _, forbidden := range []string{"ASTERUSDT", "nonce=", "0xabc", "asterdex.com"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("transport error leaked signed URL material %q: %q", forbidden, rendered)
 		}
@@ -179,7 +179,7 @@ func TestVenueErrorUsesOnlyFixedSafeMessages(t *testing.T) {
 }
 
 func TestRedactURLDropsSignedPreimage(t *testing.T) {
-	got := RedactURL("https://fapi.asterdex-testnet.com/fapi/v3/order?symbol=ASTERUSDT&nonce=1&signature=0xabc")
+	got := RedactURL("https://fapi.asterdex.com/fapi/v3/order?symbol=ASTERUSDT&nonce=1&signature=0xabc")
 	if strings.Contains(got, "ASTERUSDT") || strings.Contains(got, "nonce") || strings.Contains(got, "0xabc") {
 		t.Fatalf("signed URL was not redacted: %q", got)
 	}

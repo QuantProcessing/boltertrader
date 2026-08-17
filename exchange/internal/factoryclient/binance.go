@@ -18,17 +18,8 @@ type binanceSpotClient struct {
 
 func NewBinanceSpot(apiKey, secretKey string, settings Settings) exchange.SpotClient {
 	sdkClient := binancespot.NewClient().WithCredentials(apiKey, secretKey)
-	wsProfile := binancespot.ProductionEndpoints
-	switch settings.Environment {
-	case "demo":
-		profile, _ := binancespot.EndpointProfileForEnvironment(binancespot.EnvironmentDemo)
-		sdkClient.WithBaseURL(profile.RESTBaseURL)
-		wsProfile = profile
-	default:
-		profile, _ := binancespot.EndpointProfileForEnvironment(binancespot.EnvironmentLive)
-		sdkClient.WithBaseURL(profile.RESTBaseURL)
-		wsProfile = profile
-	}
+	wsProfile := binancespot.MainnetEndpointProfile()
+	sdkClient.WithBaseURL(wsProfile.RESTBaseURL)
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
@@ -70,17 +61,8 @@ type binancePerpClient struct {
 
 func NewBinanceUSDPerp(apiKey, secretKey string, settings Settings) exchange.PerpClient {
 	sdkClient := binanceperp.NewClient().WithCredentials(apiKey, secretKey)
-	wsProfile := binanceperp.USDMMProductionEndpoints
-	switch settings.Environment {
-	case "demo":
-		profile, _ := binanceperp.EndpointProfileForEnvironment(binanceperp.EnvironmentDemo)
-		sdkClient.WithEndpointProfile(profile)
-		wsProfile = profile
-	default:
-		profile, _ := binanceperp.EndpointProfileForEnvironment(binanceperp.EnvironmentLive)
-		sdkClient.WithEndpointProfile(profile)
-		wsProfile = profile
-	}
+	wsProfile := binanceperp.MainnetEndpointProfile()
+	sdkClient.WithEndpointProfile(wsProfile)
 	if settings.Endpoint != "" {
 		sdkClient.WithBaseURL(settings.Endpoint)
 	}
@@ -102,9 +84,6 @@ func NewBinanceUSDPerp(apiKey, secretKey string, settings Settings) exchange.Per
 	publicBackend := newBinancePerpWSBackend(
 		wsMarketClient,
 	)
-	if settings.Environment == "demo" {
-		publicBackend = newBinancePerpDemoWSBackendWithClient(wsMarketClient)
-	}
 	client.ws = newPerpWebSocket(
 		client.meta,
 		publicBackend,

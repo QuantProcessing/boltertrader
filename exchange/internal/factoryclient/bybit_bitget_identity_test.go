@@ -43,7 +43,7 @@ func TestBybitBitgetRESTLifecycleUnknownNativeResolution(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			catalog, scope := bybitBitgetIdentityCatalog(t, test.venue, exchange.ProductPerp)
-			client := test.client(Settings{Endpoint: "https://identity.invalid", Environment: "demo", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
+			client := test.client(Settings{Endpoint: "https://identity.invalid", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
 			btc := bybitBitgetTestInstrument(test.venue, exchange.ProductPerp, "BTC-USDT")
 			eth := bybitBitgetTestInstrument(test.venue, exchange.ProductPerp, "ETH-USDT")
 
@@ -111,7 +111,7 @@ func TestBybitBitgetRESTLifecycleUsesCatalogIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			catalog, scope := bybitBitgetIdentityCatalog(t, test.venue, exchange.ProductPerp)
-			client := test.client(Settings{Endpoint: "https://identity.invalid", Environment: "demo", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
+			client := test.client(Settings{Endpoint: "https://identity.invalid", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
 			instrument := bybitBitgetTestInstrument(test.venue, exchange.ProductPerp, "BTC-USDT")
 
 			orders, err := client.OpenOrders(ctx, exchange.OpenOrdersRequest{Instrument: &instrument, Limit: 10})
@@ -164,7 +164,7 @@ func TestBybitBitgetRESTLifecycleRequiresConfiguredCatalog(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			client := test.client(Settings{Endpoint: "https://identity.invalid", Environment: "demo", HTTPClient: &http.Client{Transport: test.transport}})
+			client := test.client(Settings{Endpoint: "https://identity.invalid", HTTPClient: &http.Client{Transport: test.transport}})
 
 			for _, run := range []struct {
 				name string
@@ -237,7 +237,7 @@ func TestBybitBitgetRESTAckIdentityBinding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			catalog, scope := bybitBitgetIdentityCatalog(t, test.venue, exchange.ProductSpot)
-			client := test.client(Settings{Endpoint: "https://ack.invalid", Environment: "demo", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
+			client := test.client(Settings{Endpoint: "https://ack.invalid", InstrumentCatalog: catalog, CatalogScope: scope, HTTPClient: &http.Client{Transport: test.transport}})
 			instrument := bybitBitgetTestInstrument(test.venue, exchange.ProductSpot, "BTC-USDT")
 			place := exchange.PlaceOrderRequest{Instrument: instrument, ClientOrderID: "401", Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: decimal.RequireFromString("1"), LimitPrice: decimal.RequireFromString("99"), LimitPolicy: exchange.LimitPolicyResting}
 			if test.operation == exchange.OrderOperationPlace {
@@ -269,7 +269,7 @@ func TestBybitBitgetPrivateWSAckIdentityBinding(t *testing.T) {
 			name:  "bybit",
 			venue: exchange.VenueBybit,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://ack-ws.invalid", WebSocketEndpoint: wsURL, Environment: "testnet", HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
+				return Settings{Endpoint: "https://ack-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
 			},
 			client: func(settings Settings) exchange.SpotClient { return NewBybitSpot("key", "secret", settings) },
 		},
@@ -277,7 +277,7 @@ func TestBybitBitgetPrivateWSAckIdentityBinding(t *testing.T) {
 			name:  "bitget",
 			venue: exchange.VenueBitget,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://ack-ws.invalid", WebSocketEndpoint: wsURL, Environment: "demo", HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
+				return Settings{Endpoint: "https://ack-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
 			},
 			client: func(settings Settings) exchange.SpotClient {
 				return NewBitgetSpot("key", "secret", "passphrase", settings)
@@ -314,7 +314,7 @@ func TestBybitBitgetPrivateWSLifecycleRequiresConfiguredCatalog(t *testing.T) {
 			name:  "bybit",
 			venue: exchange.VenueBybit,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, Environment: "demo", HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
+				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
 			},
 			client: func(settings Settings) exchange.PerpClient {
 				return NewBybitLinearPerp("key", "secret", "USDT", settings)
@@ -324,7 +324,7 @@ func TestBybitBitgetPrivateWSLifecycleRequiresConfiguredCatalog(t *testing.T) {
 			name:  "bitget",
 			venue: exchange.VenueBitget,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, Environment: "demo", HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
+				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
 			},
 			client: func(settings Settings) exchange.PerpClient {
 				return NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
@@ -372,7 +372,7 @@ func TestBybitBitgetPrivateWSLifecycleUnknownNativeResolution(t *testing.T) {
 			name:  "bybit",
 			venue: exchange.VenueBybit,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, Environment: "demo", HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
+				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bybitBitgetNoSendTransport{}}}
 			},
 			client: func(settings Settings) exchange.PerpClient {
 				return NewBybitLinearPerp("key", "secret", "USDT", settings)
@@ -382,7 +382,7 @@ func TestBybitBitgetPrivateWSLifecycleUnknownNativeResolution(t *testing.T) {
 			name:  "bitget",
 			venue: exchange.VenueBitget,
 			settings: func(wsURL string) Settings {
-				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, Environment: "demo", HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
+				return Settings{Endpoint: "https://lifecycle-ws.invalid", WebSocketEndpoint: wsURL, HTTPClient: &http.Client{Transport: &bitgetWSAuxTransport{}}}
 			},
 			client: func(settings Settings) exchange.PerpClient {
 				return NewBitgetPerp("key", "secret", "passphrase", "USDT-FUTURES", settings)
@@ -425,7 +425,7 @@ func TestBybitBitgetPrivateWSLifecycleUnknownNativeResolution(t *testing.T) {
 func bybitBitgetIdentityCatalog(t *testing.T, venue exchange.Venue, product exchange.Product) (exchange.InstrumentCatalog, exchange.CatalogScope) {
 	t.Helper()
 	descriptor := exchange.SourceDescriptor{Name: string(venue) + "-identity", Endpoint: "https://identity.invalid", WebSocketEndpoint: "wss://identity.invalid/ws", Transport: "test"}
-	scope := exchange.CatalogScope{Venue: venue, Environment: exchange.EnvironmentDemo, Product: product, EndpointFingerprint: descriptor.Fingerprint()}
+	scope := exchange.CatalogScope{Venue: venue, Environment: exchange.EnvironmentLive, Product: product, EndpointFingerprint: descriptor.Fingerprint()}
 	loader := &mutableBybitBitgetInstrumentLoader{snapshot: exchange.InstrumentSnapshot{SchemaVersion: 1, Scope: scope, Instruments: []exchange.Instrument{
 		bybitBitgetIdentityInstrument(venue, product, "BTC", "USDT", "catalog-native-id"),
 	}}}

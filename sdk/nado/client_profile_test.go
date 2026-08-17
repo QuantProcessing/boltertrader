@@ -16,7 +16,7 @@ func (f nadoRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, err
 }
 
 func TestClientRoutesEveryRESTSurfaceThroughProfile(t *testing.T) {
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestClientRoutesEveryRESTSurfaceThroughProfile(t *testing.T) {
 }
 
 func TestGetTradesUsesArchiveV2Endpoint(t *testing.T) {
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestGetTradesUsesArchiveV2Endpoint(t *testing.T) {
 }
 
 func TestClientRejectsRedirectWithoutFollowing(t *testing.T) {
-	profile, _ := NewProfile(EnvironmentTestnet)
+	profile, _ := NewProfile()
 	client, err := NewClient(profile)
 	if err != nil {
 		t.Fatal(err)

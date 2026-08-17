@@ -406,7 +406,6 @@ func TestHyperliquidWatchCandlesSeedsLatestRESTSnapshotWhenNativeStreamIsIdle(t 
 	settings := hyperliquidOpenAPICatalogSettings(t, Settings{
 		Endpoint:          server.URL,
 		WebSocketEndpoint: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",
-		Environment:       "testnet",
 		HTTPClient:        server.Client(),
 	}, exchange.ProductSpot)
 	client := NewHyperliquidSpot(openAPITestPrivateKey, settings).(*hyperliquidSpotClient)

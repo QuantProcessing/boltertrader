@@ -12,8 +12,7 @@ import (
 
 func TestBinancePerpRESTMarketNewAcknowledgementIsAcceptedPending(t *testing.T) {
 	client := NewBinanceUSDPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return openAPIJSONResponse(`{
 				"symbol":"ETHUSDT",
@@ -59,8 +58,7 @@ func TestBinancePerpRESTMarketNewAcknowledgementIsAcceptedPending(t *testing.T) 
 
 func TestBinancePerpRESTRejectsAcknowledgementOrderTypeMismatch(t *testing.T) {
 	client := NewBinanceUSDPerp("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return openAPIJSONResponse(`{
 				"symbol":"ETHUSDT",

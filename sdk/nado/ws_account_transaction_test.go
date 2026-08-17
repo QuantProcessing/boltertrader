@@ -13,7 +13,7 @@ import (
 )
 
 func TestWsAccountDisconnectedUnsubscribeRetainsSubscription(t *testing.T) {
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestWsAccountSocketCallbackCanUnsubscribeWithoutBlockingAckReader(t *testin
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -103,7 +103,7 @@ func TestWsAccountReplaySerializesWithPublicSubscriptionOperations(t *testing.T)
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestWsAccountWriteFailedUnsubscribeRetainsSubscription(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -207,7 +207,7 @@ func TestWsAccountRejectedUnsubscribeRetainsSubscription(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -261,7 +261,7 @@ func TestWsAccountPendingUnsubscribeWaitsForAckAndCannotDeleteNewerSubscription(
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -379,7 +379,7 @@ func TestWsAccountRejectedReplacementRestoresPriorSubscriptionForReconnect(t *te
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -455,7 +455,7 @@ func TestWsAccountReplacementOperationsCommitInWireOrder(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)

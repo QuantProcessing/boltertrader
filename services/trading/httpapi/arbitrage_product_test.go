@@ -40,12 +40,12 @@ func (source arbitrageCatalogSource) Fetch(context.Context) (catalog.Snapshot, e
 		Revision:   revision,
 		ObservedAt: time.Now(),
 		Venues: []catalog.Venue{
-			{Venue: "binance", Environment: "demo", Ready: true},
-			{Venue: "okx", Environment: "demo", Ready: true},
+			{Venue: "binance", Environment: "live", Ready: true},
+			{Venue: "okx", Environment: "live", Ready: true},
 		},
 		Instruments: []catalog.Instrument{
-			{InstrumentID: "BTC-USDT-BINANCE", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
-			{InstrumentID: "BTC-USDT-OKX", Venue: "okx", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
+			{InstrumentID: "BTC-USDT-BINANCE", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
+			{InstrumentID: "BTC-USDT-OKX", Venue: "okx", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: rules, Ready: true},
 		},
 	}, nil
 }
@@ -66,7 +66,7 @@ func (authority arbitrageAccounts) Get(_ context.Context, _, accountID string) (
 func readyArbitrageAccounts() arbitrageAccounts {
 	account := func(id, venue string) ManualAccount {
 		return ManualAccount{
-			ID: id, Venue: venue, VenueEnvironment: "demo",
+			ID: id, Venue: venue, VenueEnvironment: "live",
 			ProductIDs:           []string{arbitrage.ProductID},
 			DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1,
 			State:  manualAccountActive,
@@ -96,8 +96,8 @@ func (arbitrageBoardFixture) Get(context.Context) (marketdata.BoardSnapshot, err
 		Mode:       "test",
 		ObservedAt: time.Now(),
 		Venues: []marketdata.BoardVenue{
-			{Venue: "binance", Environment: "demo", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("-0.0001")}},
-			{Venue: "okx", Environment: "demo", Product: "perp", RouteProfileID: "okx-perp", Rows: []marketdata.BoardRow{row("0.0003")}},
+			{Venue: "binance", Environment: "live", Product: "perp", RouteProfileID: "binance-perp", Rows: []marketdata.BoardRow{row("-0.0001")}},
+			{Venue: "okx", Environment: "live", Product: "perp", RouteProfileID: "okx-perp", Rows: []marketdata.BoardRow{row("0.0003")}},
 		},
 	}, nil
 }
@@ -352,21 +352,25 @@ func TestArbitragePartialOpenIsNotAutoRolledBack(t *testing.T) {
 // TestArbitrageOpportunityNeverPairsAVenueWithItself pins the one property that
 // makes this product a hedge rather than a bet: two legs on two exchanges.
 //
-// Two routes lead to a self-pair, and a live board walks both. `compareRates`
-// declines to order legs that published no funding interval, so taking the min
-// and max of a group where only one venue dated its rate leaves both extremes
-// on the same leg — a pair reporting a zero spread between a venue and itself,
-// with no blocker to explain it. Separately, a venue the profile registry lists
-// under two native environments arrives as two columns, so bybit's demo sandbox
-// "hedges" bybit's testnet across an exchange boundary that does not exist.
+// The route that still reaches a self-pair is the ranking, not the input.
+// `compareRates` declines to order legs that published no funding interval, so
+// taking the min and max of a group where only one venue dated its rate leaves
+// both extremes on the same leg; the fallback rotates off it, and lands on
+// another exchange only because `buildOpportunity` has already reduced the legs
+// to one per venue. A second route used to exist — a venue the profile registry
+// listed under two native environments arrived as two columns, so bybit's demo
+// sandbox "hedged" bybit's testnet across an exchange boundary that did not
+// exist — and it went with the environments. The reduction stays: another
+// function groups these legs, and this one refuses a self-pair rather than
+// trusting it cannot be handed one.
 func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 	key := boardKey{base: "BTC", quote: "USDT"}
 
 	// One exchange dated its rate, the other did not. The pair is real and must
 	// survive — unranked, and saying so — because dropping it hides the venue.
 	opportunity, ok := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
-		{Venue: "binance", Environment: "demo", Rate: "0.0001", DailyRate: "0.0003"},
-		{Venue: "lighter", Environment: "testnet", Rate: "0.00007"},
+		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "lighter", Environment: "live", Rate: "0.00007"},
 	})
 	if !ok {
 		t.Fatal("an underlying two exchanges quote must still be offered, unranked")
@@ -381,17 +385,18 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 		t.Fatal("a pair nothing could rank reports itself executable")
 	}
 
-	// Two sandboxes of one exchange are one exchange.
+	// One exchange named twice is one exchange, whatever else differs, and
+	// whatever the ranking would have made of the two rates.
 	if _, offered := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
-		{Venue: "bybit", Environment: "demo", Rate: "0.0001", DailyRate: "0.0003"},
-		{Venue: "bybit", Environment: "testnet", Rate: "0.00042", DailyRate: "0.00126"},
+		{Venue: "bybit", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
 	}); offered {
-		t.Fatal("bybit's two native environments were offered as a cross-venue hedge")
+		t.Fatal("two columns of one exchange were offered as a cross-venue hedge")
 	}
 
 	// And an underlying only one exchange quotes is not an opportunity at all.
 	if _, offered := buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
-		{Venue: "binance", Environment: "demo", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 	}); offered {
 		t.Fatal("a single-venue underlying was offered as a hedge")
 	}
@@ -399,8 +404,8 @@ func TestArbitrageOpportunityNeverPairsAVenueWithItself(t *testing.T) {
 	// The ranking itself still holds when there is something to rank: long the
 	// venue paying least, short the venue paying most, spread the difference.
 	opportunity, ok = buildOpportunity(key, "BTC-USDT", []arbitrageOpportunityLeg{
-		{Venue: "bybit", Environment: "testnet", Rate: "0.00042", DailyRate: "0.00126"},
-		{Venue: "binance", Environment: "demo", Rate: "0.0001", DailyRate: "0.0003"},
+		{Venue: "bybit", Environment: "live", Rate: "0.00042", DailyRate: "0.00126"},
+		{Venue: "binance", Environment: "live", Rate: "0.0001", DailyRate: "0.0003"},
 	})
 	if !ok {
 		t.Fatal("a rankable cross-venue pair was dropped")

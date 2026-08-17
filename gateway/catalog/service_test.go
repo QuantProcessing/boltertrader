@@ -19,7 +19,7 @@ func TestServicePublishesStablePublicIdentityAndResolvesCanonicalInstrument(t *t
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, Settlement: "USDT"}
+	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDT"}
 	accountID := domain.AccountID("binance-perp")
 	if err := service.RegisterAccount(accountID, scope); err != nil {
 		t.Fatalf("RegisterAccount: %v", err)
@@ -37,7 +37,7 @@ func TestServicePublishesStablePublicIdentityAndResolvesCanonicalInstrument(t *t
 		t.Fatalf("instruments = %d, want 1", len(snapshot.Instruments))
 	}
 	public := snapshot.Instruments[0]
-	wantID := domain.InstrumentID("binance:demo:perp:USDT:BTC-USDT")
+	wantID := domain.InstrumentID("binance:live:perp:USDT:BTC-USDT")
 	if public.ID != wantID || public.Symbol != "BTC-USDT" || public.Settlement != "USDT" {
 		t.Fatalf("public instrument = %+v", public)
 	}
@@ -61,7 +61,7 @@ func TestServicePublishesStablePublicIdentityAndResolvesCanonicalInstrument(t *t
 func TestServiceUsesSettlementForNadoSpotStableIdentity(t *testing.T) {
 	service, _ := NewService(time.Minute, time.Now)
 	accountID := domain.AccountID("nado-spot")
-	scope := Scope{Venue: exchange.VenueNado, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot, Settlement: "USDT0"}
+	scope := Scope{Venue: exchange.VenueNado, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot, Settlement: "USDT0"}
 	if err := service.RegisterAccount(accountID, scope); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestServiceUsesSettlementForNadoSpotStableIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := snapshot.Instruments[0].ID.String(), "nado:testnet:spot:USDT0:BTC-USDT0"; got != want {
+	if got, want := snapshot.Instruments[0].ID.String(), "nado:live:spot:USDT0:BTC-USDT0"; got != want {
 		t.Fatalf("instrument id = %q, want %q", got, want)
 	}
 }
@@ -79,7 +79,7 @@ func TestServiceRejectsNonCanonicalSettlementBeforeRegistration(t *testing.T) {
 	service, _ := NewService(time.Minute, time.Now)
 	err := service.RegisterAccount("nado-spot", Scope{
 		Venue:       exchange.VenueNado,
-		Environment: exchange.EnvironmentTestnet,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductSpot,
 		Settlement:  "usdt0",
 	})
@@ -94,8 +94,8 @@ func TestServiceRejectsNonCanonicalSettlementBeforeRegistration(t *testing.T) {
 func TestServiceIsolatesScopesAndSharesEquivalentAccountSnapshots(t *testing.T) {
 	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
 	service, _ := NewService(time.Minute, func() time.Time { return now })
-	binanceScope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
-	okxScope := Scope{Venue: exchange.VenueOKX, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	binanceScope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
+	okxScope := Scope{Venue: exchange.VenueOKX, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	for _, registration := range []struct {
 		id    domain.AccountID
 		scope Scope
@@ -128,7 +128,7 @@ func TestServiceRetainsLastKnownGoodAndRejectsStaleCommandResolution(t *testing.
 	now := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
 	service, _ := NewService(time.Minute, func() time.Time { return now })
 	accountID := domain.AccountID("binance-spot")
-	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	if err := service.RegisterAccount(accountID, scope); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestServiceRejectsInvalidRefreshWithoutReplacingSnapshotAndReturnsDefensive
 	now := time.Now().UTC()
 	service, _ := NewService(time.Minute, func() time.Time { return now })
 	accountID := domain.AccountID("binance-spot")
-	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo, Product: exchange.ProductSpot}
+	scope := Scope{Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	if err := service.RegisterAccount(accountID, scope); err != nil {
 		t.Fatal(err)
 	}

@@ -62,11 +62,6 @@ func newLighterPrivateWSBackend(
 	settings Settings,
 ) *lighterPrivateWSBackend {
 	ws := lighter.NewWebsocketClientWithConfig(context.Background(), lighter.WSConfig{ReadOnly: false})
-	if settings.Environment == "testnet" {
-		ws.WithEnvironment(lighter.EnvironmentTestnet)
-	} else {
-		ws.WithEnvironment(lighter.EnvironmentMainnet)
-	}
 	if settings.WebSocketEndpoint != "" {
 		ws.WithURL(settings.WebSocketEndpoint)
 	}

@@ -460,8 +460,18 @@ func safeProduct(value string) string {
 	return safeFixed(strings.ToLower(value), []string{"spot", "perp"})
 }
 
+// safeEnvironment's allow-list is down to one member and still has work to do:
+// an account record written before the platform collapsed to live alone carries
+// demo or testnet, and this is what keeps that value out of the label set. Such
+// a record renders as "unknown" rather than as itself, which is both bounded
+// and visible.
+//
+// The literal mirrors exchange.EnvironmentLive. Like safeVenue's nine venues
+// and safeProduct's two products it is spelled out rather than imported: this
+// is a Prometheus label vocabulary, and nothing else under observability
+// depends on the exchange layer.
 func safeEnvironment(value string) string {
-	return safeFixed(strings.ToLower(value), []string{"live", "demo", "testnet"})
+	return safeFixed(strings.ToLower(value), []string{"live"})
 }
 
 func safeCommandOperation(value CommandOperation) CommandOperation {

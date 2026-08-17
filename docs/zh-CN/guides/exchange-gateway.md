@@ -68,8 +68,8 @@ postgres:
 监听、非回环的内部监听器或明文 secret，都会在 listener 打开前阻止启动。
 
 V1 为 Binance、OKX、Lighter、Hyperliquid、Bybit、Bitget、Gate、Aster、Nado
-建模共二十个产品行，其中十九行默认 write-ready；Lighter Testnet Spot 在外部
-环境证明双边流动性和 exact lookup 之前保持 read-only。不同交易所使用严格
+建模共二十个产品行，其中十九行默认 write-ready；Lighter Spot 在对着 live 盘口
+证明双边流动性和 exact lookup 之前保持 read-only。不同交易所使用严格
 类型化的 credential 字段，在账户声明时严格解码。
 
 启动：
@@ -84,7 +84,7 @@ go run ./cmd/exchange-gateway -config ./gateway.yaml
 
 ```sh
 curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
-  "http://127.0.0.1:8080/v1/instruments?account_id=binance-demo-spot"
+  "http://127.0.0.1:8080/v1/instruments?account_id=binance-spot"
 ```
 
 下单必须提供 account、Gateway instrument ID 和 idempotency key：
@@ -96,8 +96,8 @@ curl -X POST \
   -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
-    "account_id":"binance-demo-spot",
-    "instrument_id":"binance:demo:spot:BTC-USDT",
+    "account_id":"binance-spot",
+    "instrument_id":"binance:live:spot:BTC-USDT",
     "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
@@ -172,7 +172,7 @@ token），也仍然拒绝吐出 native symbol、native ID 或原始交易所错
 连接：
 
 ```text
-GET /v1/ws?account_id=binance-demo-spot
+GET /v1/ws?account_id=binance-spot
 Authorization: Bearer <token>
 ```
 
@@ -318,7 +318,8 @@ make test-gateway-race
 make test-gateway-security
 ```
 
-`make test-gateway-demo-testnet` 会使用凭证并改变非生产交易所状态，只能串行
-运行，且不属于默认离线测试。Lighter Testnet Spot 可能只有单边盘口；其明确
-waiver 只验证 read 与非法 command barrier，执行零次有效下单，且不会把该行
-标记为 write-ready。
+这下面过去还有第五条 target，`make test-gateway-demo-testnet`。它会使用凭证并改变
+交易所状态，在各交易所的 demo 或 testnet 环境下串行跑完二十个产品行，且不属于默认
+离线测试。它已经和那些环境一起删除，没有任何东西接替它——同一套跑法放到 live 上就是
+真实下单。上面这四条不会碰到任何交易所，因此它们都无法确立某一行 write-ready；那条
+断言需要[新增一个 venue](../contributing/venues.md)所指名的证据。

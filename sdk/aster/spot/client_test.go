@@ -10,7 +10,7 @@ import (
 
 func TestPublicEndpoints(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentProduction, astercommon.ProductSpot)
+	profile, err := astercommon.NewProfile(astercommon.ProductSpot)
 	if err != nil {
 		t.Fatal(err)
 	}

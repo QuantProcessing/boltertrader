@@ -91,17 +91,30 @@ func TestHashAndFormattingContainNoAccountOrCredentialInventory(t *testing.T) {
 	}
 }
 
-func TestValidateRuntimeIdentityUsesTrustedProcessMode(t *testing.T) {
-	for _, test := range []struct{ mode, venue, environment string }{
-		{mode: "test", venue: "binance", environment: "live"},
-		{mode: "live", venue: "binance", environment: "demo"},
-		{mode: "live", venue: "bybit", environment: "testnet"},
+// TestValidateRuntimeIdentityRejectsUnreachableEndpoints keeps the guard that
+// used to be a cross-mode check.
+//
+// It once proved a test-mode process would not adopt a live account and vice
+// versa. Modes are gone, but the half of that check which was never about modes
+// still matters: only live endpoints exist, so an account row naming demo or
+// testnet describes a venue nothing can dial. Such a row is written by an older
+// binary and read back by this one, so it has to be refused here rather than
+// surface later as an unreachable exchange.
+func TestValidateRuntimeIdentityRejectsUnreachableEndpoints(t *testing.T) {
+	for _, test := range []struct{ name, venue, environment string }{
+		{name: "demo", venue: "binance", environment: "demo"},
+		{name: "testnet", venue: "bybit", environment: "testnet"},
+		{name: "empty", venue: "binance", environment: ""},
+		{name: "unknown venue", venue: "notavenue", environment: "live"},
 	} {
-		t.Run(test.mode+"_rejects_"+test.environment, func(t *testing.T) {
-			if err := config.ValidateRuntimeIdentity(test.mode, "acct_1", test.venue, test.environment); err == nil {
-				t.Fatal("cross-mode runtime identity accepted")
+		t.Run("rejects_"+test.name, func(t *testing.T) {
+			if err := config.ValidateRuntimeIdentity("acct_1", test.venue, test.environment); err == nil {
+				t.Fatal("unreachable runtime identity accepted")
 			}
 		})
+	}
+	if err := config.ValidateRuntimeIdentity("acct_1", "binance", "live"); err != nil {
+		t.Fatalf("live runtime identity rejected: %v", err)
 	}
 }
 

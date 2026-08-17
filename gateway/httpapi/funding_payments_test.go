@@ -486,7 +486,7 @@ func authorizeFundingPaymentRequest(request *http.Request) {
 func newMultiFundingPaymentFixture(t *testing.T) (domain.InstrumentID, domain.InstrumentID, exchange.Instrument, exchange.Instrument, *fakeFundingPaymentPerpClient, http.Handler) {
 	t.Helper()
 	firstID, first, client, _ := newPublicMarketFixture(t)
-	secondID := domain.InstrumentID("binance:demo:perp:USDT:ETH-USDT")
+	secondID := domain.InstrumentID("binance:live:perp:USDT:ETH-USDT")
 	second := exchange.Instrument{Identity: exchange.InstrumentIdentity{
 		Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
 		Symbol: "ETH-USDT", BaseAsset: "ETH", QuoteAsset: "USDT", SettleAsset: "USDT",
@@ -501,7 +501,7 @@ func newMultiFundingPaymentFixture(t *testing.T) (domain.InstrumentID, domain.In
 		instruments: []catalog.Instrument{
 			fundingPaymentCatalogInstrument(firstID),
 			{
-				ID: secondID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+				ID: secondID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 				Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "ETH-USDT",
 				BaseAsset: "ETH", QuoteAsset: "USDT",
 			},
@@ -516,7 +516,7 @@ func newMultiFundingPaymentFixture(t *testing.T) (domain.InstrumentID, domain.In
 func fundingPaymentAccountResource(accountID domain.AccountID) account.Resource {
 	return account.Resource{
 		AccountID: accountID, Venue: exchange.VenueBinance, Product: exchange.ProductPerp,
-		Environment: exchange.EnvironmentDemo, Settlement: "USDT", ReadReady: true, WriteReady: true,
+		Environment: exchange.EnvironmentLive, Settlement: "USDT", ReadReady: true, WriteReady: true,
 	}
 }
 
@@ -526,7 +526,7 @@ func fundingPaymentAccountStatus(accountID domain.AccountID) account.Status {
 
 func fundingPaymentCatalogInstrument(instrumentID domain.InstrumentID) catalog.Instrument {
 	return catalog.Instrument{
-		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+		ID: instrumentID, Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 		Product: exchange.ProductPerp, Settlement: "USDT", Symbol: "BTC-USDT",
 		BaseAsset: "BTC", QuoteAsset: "USDT",
 	}

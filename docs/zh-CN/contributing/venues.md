@@ -74,13 +74,14 @@ Bundle 的解码是严格的：schema 版本、声明的 venue、声明的 kind 
 
 ## 5. Route profile
 
-`routeprofile` 拥有哪些组合存在：venue、product、结算资产，以及该交易所真正运营的原生环境。
-结算资产在多数现货行上为空，在别处是 `USDT`、`USDC` 或 `USDT0`，而且它是这一行**身份的一
-部分**，不是它的一个细节。
+`routeprofile` 拥有哪些组合存在：venue、product 与结算资产。结算资产在多数现货行上为空，
+在别处是 `USDT`、`USDC` 或 `USDT0`，而且它是这一行**身份的一部分**，不是它的一个细节。
 
-原生环境按 venue 而不同，且彼此不可互换。有的 venue 提供 demo，有的提供 testnet，有一个两者
-都有，而每个 venue 都有 live。注册表把它们折成两种模式——live 映射到 live 模式，其余一律映射
-到 test 模式——于是一条 route 永远不是一次「它指的是哪套凭证」的猜测。
+route profile 里没有环境这一维。每一行过去会按该 venue 提供的环境各展开一个 profile——一个
+既有 demo endpoint 又有 testnet 的 venue 会展开成三个——注册表再把它们折回一个 mode，于是
+一条 route 永远不是一次「它指的是哪套凭证」的猜测。那些多出来的 profile 所指向的 endpoint
+已经没有了，所以现在一行恰好就是一个 profile，它的 ID 也不带环境段：`binance.spot.v1`、
+`nado.perp.usdt0.v1`。
 
 ## 6. Gateway 构造
 
@@ -101,8 +102,10 @@ code、行身份、它所准入的操作，以及三个决定订单变得不明�
   ID 回读。Lighter 的两行扫描活动列表加第一页非活动记录，并把一次缺席报成「未被证明」而不是
   已证明。
 - **写入就绪默认值**——这一行到底接不接受下单。
-- **晋升所需证据**——在那个默认值可以改变之前，这一行必须拿出什么，多数行是 fixture 覆盖加一
-  次 demo 或 testnet 上的精确查询。
+- **晋升所需证据**——在那个默认值可以改变之前，这一行必须拿出什么。除一行外都是
+  `fixture_and_live_exact_lookup`，Lighter 现货那一行还必须证明双边流动性。这份证据过去可以
+  在 demo 或 testnet 上取得；那些环境没有了之后，它只能对着 live 盘口取得——晋升的成本因此
+  变高，但晋升要求的内容没有变。
 
 有一个字段不容各 venue 商量：没有任何一行声称翻页可以证明缺席，已晋升的行也不行。一个新
 venue 不会因为它的历史接口看起来很完整就获得这个权利——为什么一个缺席只是有时候才算答案，见
@@ -126,29 +129,23 @@ manifest，跑测试，让它们告诉你页面该怎么写。
 
 ## 9. 验收 target
 
-两条阶梯，而它们的名字读起来次序不同。这一点常绊人：
+没有了，而且新增一条也不属于落地一个 venue 的工作。这里过去有两条阶梯，它们的名字读起来
+次序相反，常绊人：`test-exchange-<venue>-<env>-<product>` 聚合成
+`test-exchange-acceptance`，`test-gateway-<venue>-<product>-<env>` 聚合成
+`test-gateway-demo-testnet`。两条都会在该交易所的 demo 或 testnet 环境下真实的单，也都已经
+和那些环境一起删除。没有任何东西接替它们，因为接替者必须花真钱。
 
-| 层 | Target 形状 | 例子 |
-| --- | --- | --- |
-| Exchange | `test-exchange-<venue>-<env>-<product>` | `test-exchange-binance-demo-spot` |
-| Gateway | `test-gateway-<venue>-<product>-<env>` | `test-gateway-binance-spot-demo` |
-
-按 venue 的 exchange target 聚合成 `test-exchange-<venue>-<env>-acceptance`，再聚合成
-`test-exchange-acceptance`。Gateway 的行 target 聚合成 `test-gateway-demo-testnet`。
-
-写闸门只内联在需要它的那条命令上，绝不变成常驻配置；它们的精确名字由
-[配置](../reference/configuration.md)拥有，完整阶梯与「一次绿跑到底证明了什么」由
-[测试](../reference/testing.md)拥有。
+现在没有任何 recipe 会为带凭证的写入开闸，`TestMakefileRecipesNeverEnableCredentialedWrites`
+会让试图这么做的那一条失败。精确的环境变量名由[配置](../reference/configuration.md)拥有，
+剩下的那些 target 以及「一次绿跑到底证明了什么」由[测试](../reference/testing.md)拥有。
 
 ## 「做完了」是什么意思
 
 - 离线阶梯零 skip 通过，包含新行的 fixture。
 - Manifest、两张矩阵、两棵语言树彼此一致——由测试证明，不是靠读出来的。
 - 这一行同时出现在 `routeprofile`、gateway 构造分支与能力矩阵里，且三处的结算资产相同。
-- 已对着该交易所的 demo 或 testnet 跑过外部验收，写闸门内联，并且结果连同 venue、product、
-  环境、target 与日期一起写明。
-- 写入就绪只在拿出该行晋升要求所指名的证据之后才声称。Demo 或 testnet 证据永远不代表
-  production readiness——见[术语表](../reference/glossary.md)。
+- 写入就绪只在拿出该行晋升要求所指名的证据之后才声称；在拿到之前，写入就绪默认值保持不变。
+  离线证据永远不代表 production readiness——见[术语表](../reference/glossary.md)。
 
 ## 相关
 

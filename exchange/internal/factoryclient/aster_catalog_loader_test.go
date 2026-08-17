@@ -154,7 +154,7 @@ func TestAsterInstrumentCodecRejectsMismatchedNativeBeforeIO(t *testing.T) {
 }
 
 func TestAsterWebSocketBackendsValidateInstrumentBeforeConnect(t *testing.T) {
-	client := NewAsterSpot(testAsterCatalogUserAddress, testAsterCatalogPrivateKey, testAsterCatalogUserAddress, Settings{Environment: "testnet"}).(*asterSpotClient)
+	client := NewAsterSpot(testAsterCatalogUserAddress, testAsterCatalogPrivateKey, testAsterCatalogUserAddress, Settings{}).(*asterSpotClient)
 	backend := &asterSpotWSBackend{client: client}
 	bad := newInstrument(
 		exchange.VenueAster,
@@ -575,13 +575,12 @@ func asterCatalogTestSettings(t *testing.T, product exchange.Product, settlement
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueAster,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             product,
 		Settlement:          settlement,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
 	return Settings{
-		Environment:       "testnet",
 		Endpoint:          endpoint,
 		WebSocketEndpoint: wsEndpoint,
 		HTTPClient:        &http.Client{Transport: router},

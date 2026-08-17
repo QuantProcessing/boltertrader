@@ -121,9 +121,12 @@ func row(code, venue, product, settlement string, operations Operations) Row {
 	if settlement != "" {
 		id += ":" + settlement
 	}
-	promotionEvidenceRequired := "fixture_and_demo_testnet_exact_lookup"
+	// The evidence used to be collectable on demo or testnet. With those gone it
+	// can only be gathered against the live book, which raises the cost of
+	// promotion without changing what promotion requires.
+	promotionEvidenceRequired := "fixture_and_live_exact_lookup"
 	if code == "LIS" {
-		promotionEvidenceRequired = "demo_testnet_two_sided_liquidity_and_exact_lookup"
+		promotionEvidenceRequired = "live_two_sided_liquidity_and_exact_lookup"
 	}
 	return Row{
 		Code:                           code,

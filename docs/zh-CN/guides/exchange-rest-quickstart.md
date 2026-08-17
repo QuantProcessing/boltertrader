@@ -13,14 +13,15 @@ venue-specific ID。每个 network method 都接受 `context.Context`。
 `exchange.PerpClient`。构造过程不执行 exchange I/O；第一次调用 client method
 时才会发出第一次 network request。
 
-environment 必须显式选择：`factory.EnvironmentLive`、
-`factory.EnvironmentDemo` 或 `factory.EnvironmentTestnet`。本指南不提供
-production-write command，也不声称 live validation 已通过。
+每个 client 都连向交易所的 production endpoint。`factory.EnvironmentLive` 是
+唯一的 environment，也是默认值，因此 `factory.WithEnvironment` 可选，且不接受
+其他取值。demo/testnet profile 已被删除——各交易所的实现差异过大；需要点着看
+的场景由 `web/` 的离线 mock 承担。
 
-## 构造只读 Demo client
+## 构造只读 client
 
-下面的完整示例使用内置 Demo profile 构造 Binance Spot，并且只执行 public
-instrument discovery：
+下面的完整示例构造 Binance Spot，并且只执行 public instrument discovery——
+这一步不需要凭据也成立：
 
 <!-- exchange-doc-example:compile -->
 ```go
@@ -38,9 +39,8 @@ import (
 
 func main() {
 	client, err := factory.New(factory.BinanceSpotConfig(
-		os.Getenv("BINANCE_DEMO_API_KEY"),
-		os.Getenv("BINANCE_DEMO_API_SECRET"),
-		factory.WithEnvironment(factory.EnvironmentDemo),
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_API_SECRET"),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -69,8 +69,8 @@ fixture 或 version control。精确的共享名称与 loading rule 由
 选择一个 typed construction ticket，并将其传给 `factory.New`。Generic
 inference 会在 compile time 保留 Spot 或 Perp method set。
 [REST operation matrix](../reference/exchange-rest-v1-operation-matrix.md)
-统一维护精确的二十个 product row、factory constructor、environment profile、
-REST method、acknowledgement state 与 external acceptance status。
+统一维护精确的二十个 product row、factory constructor、REST method 与
+acknowledgement state。
 
 不同 exchange 的 account identity、position mode、margin mode、leverage
 behavior 与 venue-specific order caveat 并不相同。发送 private request 前请阅读
@@ -80,8 +80,8 @@ behavior 与 venue-specific order caveat 并不相同。发送 private request �
 
 `factory.WithEndpoint` 与 `factory.WithWebSocketEndpoint` 分别覆盖 REST 与
 WebSocket endpoint。`factory.WithHTTPClient` 安装 REST method 使用的 HTTP
-client。这些 option 是高级 test/construction hook；绝不要把 non-production
-write 重定向到 production endpoint。
+client。这些 option 是高级 test/construction hook；被重定向的 endpoint 依然
+携带 production credential，因此只能指向你自己掌控的 fixture server。
 
 ## 使用 WebSocket facet
 
@@ -144,14 +144,13 @@ postOnlyReduce := exchange.PlaceOrderRequest{
 
 ## Binance 与 Lighter 下单
 
-下面的示例同时构造 Binance Spot Demo client 与 Lighter Perp Testnet client，
-并分别提交一个订单。它用于 type-checking 和受控 non-production acceptance；
-实际执行会发送真实的 non-production order。
+下面的示例同时构造 Binance Spot client 与 Lighter Perp client，并分别提交一个
+订单。**两个 venue 都是 production。** 实际执行会花掉真金白银；这段代码写在
+这里是为了通过 type-checking，而不是让你随手运行。
 
-`BINANCE_DEMO_SPOT_SYMBOL` 必须使用 exchange-normalized instrument form，例如
-`ETH-USDT`，不能使用 native Binance form `ETHUSDT`。
-`LIGHTER_TESTNET_PERP_SYMBOL` 必须显式设置为已知适用于当前 configured account
-的 testnet market symbol。
+`BINANCE_SPOT_SYMBOL` 必须使用 exchange-normalized instrument form，例如
+`ETH-USDT`，不能使用 native Binance form `ETHUSDT`。`LIGHTER_PERP_SYMBOL`
+必须显式设置为已知适用于当前 configured account 的 market symbol。
 
 <!-- exchange-doc-example:compile -->
 ```go
@@ -171,9 +170,8 @@ import (
 
 func main() {
 	binance, err := factory.New(factory.BinanceSpotConfig(
-		os.Getenv("BINANCE_DEMO_API_KEY"),
-		os.Getenv("BINANCE_DEMO_API_SECRET"),
-		factory.WithEnvironment(factory.EnvironmentDemo),
+		os.Getenv("BINANCE_API_KEY"),
+		os.Getenv("BINANCE_API_SECRET"),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -181,10 +179,9 @@ func main() {
 	defer binance.Close()
 
 	lighter, err := factory.New(factory.LighterPerpConfig(
-		os.Getenv("LIGHTER_TESTNET_PRIVATE_KEY"),
-		int64Env("LIGHTER_TESTNET_ACCOUNT_INDEX"),
-		uint8(int64Env("LIGHTER_TESTNET_API_KEY_INDEX")),
-		factory.WithEnvironment(factory.EnvironmentTestnet),
+		os.Getenv("LIGHTER_PRIVATE_KEY"),
+		int64Env("LIGHTER_ACCOUNT_INDEX"),
+		uint8(int64Env("LIGHTER_API_KEY_INDEX")),
 	))
 	if err != nil {
 		log.Fatal(err)
@@ -194,11 +191,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	binanceInstrument, err := binance.ResolveInstrument(ctx, requiredEnv("BINANCE_DEMO_SPOT_SYMBOL"))
+	binanceInstrument, err := binance.ResolveInstrument(ctx, requiredEnv("BINANCE_SPOT_SYMBOL"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	lighterInstrument, err := lighter.ResolveInstrument(ctx, requiredEnv("LIGHTER_TESTNET_PERP_SYMBOL"))
+	lighterInstrument, err := lighter.ResolveInstrument(ctx, requiredEnv("LIGHTER_PERP_SYMBOL"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -284,7 +281,7 @@ client order ID 与 transaction hash，再使用适合该 product 的 bounded
 write 没有到达 venue。冻结 replacement write，并对原始 correlation identifier
 执行 reconciliation。参见[运维与恢复](operations-recovery.md)。
 
-## Demo/Testnet 验收
+## 验收
 
 Exchange offline conformance suite 是 deterministic 且不需要 credential 的：
 
@@ -293,19 +290,18 @@ make test-exchange-offline
 ```
 
 通过 offline test 能够证明 normalized implementation 与 fixture contract；
-它不能证明当前 external availability。Demo/Testnet validation 是可选的，需要
-credential，依赖具体 environment，并受实际调用 method 的边界限制。
-`PlaceOrder` 与 `CancelOrder`，包括 WebSocket command，即使面向 Demo 或
-Testnet，也会修改真实的 non-production exchange state。
+它不能证明当前 external availability。现在已经没有可供验证的 non-production
+environment：每一次带 credential 的调用都直达真实 venue，`PlaceOrder` 与
+`CancelOrder`（包括 WebSocket command）都会花掉真金白银。
 
-Capability support 与 external environment certification 是两个独立概念。
-REST 与 WebSocket matrix 统一维护当前每个 product row 的 acceptance status
-与 reason；capability cell 本身不证明当前 Demo/Testnet environment 已通过验收。
+Capability support 与 external availability 是两个独立概念。REST 与 WebSocket
+matrix 中的 capability cell 记录的是 compile time 的 admitted support，
+它本身不证明该 venue 今天仍然可用。
 
-只使用专用 credential、显式 symbol、显式 notional bound、serial execution 与
-terminal cleanup evidence 来执行 Demo/Testnet。Demo/Testnet success 不代表
-production readiness。External validation 前请遵循
+只使用专用账户、显式 symbol、显式 notional bound、serial execution 与 terminal
+cleanup evidence 来对 production 做验证。开始之前请先遵循
 [测试与证据](../reference/testing.md)以及[配置](../reference/configuration.md)。
+如果只是需要点着看、完全不想碰 venue，请用前端的离线 mock，而不是去找 credential。
 
 - [Exchange contract](../../../exchange/contract.go)
 - [Factory API](../../../exchange/factory/factory.go)

@@ -967,11 +967,11 @@ func runtimeSnapshotFixture(t *testing.T, operationID, snapshotID string, genera
 	fence := domain.AccountFence{AccountID: "account-runtime", DesiredStateRevision: generation, RuntimeGeneration: generation, CredentialVersion: generation}
 	return storepkg.DesiredSnapshot{
 		SnapshotID: uuid.MustParse(snapshotID), OperationID: op, AccountID: fence.AccountID,
-		Venue: "binance", NativeEnvironment: "demo", SecretRef: ref, Fence: fence,
+		Venue: "binance", NativeEnvironment: "live", SecretRef: ref, Fence: fence,
 		RequestedState: storepkg.DesiredActive,
 		Routes: []storepkg.RouteDefinition{
-			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: storepkg.RouteActive},
-			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: storepkg.RouteActive},
+			{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: storepkg.RouteActive},
+			{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: storepkg.RouteActive},
 		},
 	}
 }

@@ -87,64 +87,82 @@ func TestClient_WithHTTPClient(t *testing.T) {
 	}
 }
 
-func TestEnvironmentProfiles(t *testing.T) {
-	demo := DemoEnvironmentProfile()
-	if demo.RESTBaseURL != "https://api-demo.bybit.com" {
-		t.Fatalf("demo rest=%q", demo.RESTBaseURL)
+func TestMainnetEnvironmentProfileIsFullyPopulated(t *testing.T) {
+	mainnet := MainnetEnvironmentProfile()
+	for name, got := range map[string]string{
+		"RESTBaseURL":  mainnet.RESTBaseURL,
+		"PrivateWSURL": mainnet.PrivateWSURL,
+		"TradeWSURL":   mainnet.TradeWSURL,
+	} {
+		if got == "" {
+			t.Fatalf("%s is empty", name)
+		}
 	}
-	if demo.PublicWSURL("linear") != "wss://stream.bybit.com/v5/public/linear" {
-		t.Fatalf("demo public linear ws=%q", demo.PublicWSURL("linear"))
+	if mainnet.RESTBaseURL != defaultBaseURL {
+		t.Fatalf("rest=%q, want %q", mainnet.RESTBaseURL, defaultBaseURL)
 	}
-	if demo.PrivateWSURL != "wss://stream-demo.bybit.com/v5/private" {
-		t.Fatalf("demo private ws=%q", demo.PrivateWSURL)
-	}
-	if demo.SupportsWSTrade || demo.TradeWSURL != "" {
-		t.Fatalf("demo must not expose trade ws: %+v", demo)
-	}
+}
 
-	testnet := TestnetEnvironmentProfile()
-	if testnet.RESTBaseURL != "https://api-testnet.bybit.com" {
-		t.Fatalf("testnet rest=%q", testnet.RESTBaseURL)
-	}
-	if testnet.PublicWSURL("spot") != "wss://stream-testnet.bybit.com/v5/public/spot" {
-		t.Fatalf("testnet spot ws=%q", testnet.PublicWSURL("spot"))
-	}
-	if !testnet.SupportsWSTrade || testnet.TradeWSURL != "wss://stream-testnet.bybit.com/v5/trade" {
-		t.Fatalf("testnet trade ws=%+v", testnet)
+// PublicWSURL routes by category rather than returning one URL, and linear is
+// the fallback for anything unrecognised. That dispatch is the part callers
+// depend on: bybit serves each product class on its own socket, and reading the
+// spot book off the linear stream produces an empty subscription, not an error.
+func TestPublicWSURLDispatchesByCategory(t *testing.T) {
+	mainnet := MainnetEnvironmentProfile()
+	for category, want := range map[string]string{
+		"spot":    publicWSURLSpot,
+		"linear":  publicWSURLLinear,
+		"inverse": publicWSURLInverse,
+		"option":  publicWSURLOption,
+		"":        publicWSURLLinear,
+	} {
+		if got := mainnet.PublicWSURL(category); got != want {
+			t.Fatalf("PublicWSURL(%q) = %q, want %q", category, got, want)
+		}
 	}
 }
 
 func TestClient_WithEnvironmentProfileUsesRESTBaseURL(t *testing.T) {
-	client := NewClient().WithEnvironmentProfile(DemoEnvironmentProfile())
+	client := NewClient().WithEnvironmentProfile(EnvironmentProfile{RESTBaseURL: "https://rest.test"})
 
-	if client.baseURL != "https://api-demo.bybit.com" {
+	if client.baseURL != "https://rest.test" {
 		t.Fatalf("client baseURL=%q", client.baseURL)
 	}
 }
 
 func TestWSClientsUseEnvironmentProfiles(t *testing.T) {
-	demo := DemoEnvironmentProfile()
+	profile := EnvironmentProfile{
+		PublicLinearWSURL: "wss://public.test/linear",
+		PrivateWSURL:      "wss://private.test",
+		TradeWSURL:        "wss://trade.test",
+	}
 
-	public := NewPublicWSClientWithProfile(demo, "linear")
-	if public.url != "wss://stream.bybit.com/v5/public/linear" {
+	public := NewPublicWSClientWithProfile(profile, "linear")
+	if public.url != profile.PublicLinearWSURL {
 		t.Fatalf("public ws url=%q", public.url)
 	}
 
-	private := NewPrivateWSClientWithProfile(demo)
-	if private.url != "wss://stream-demo.bybit.com/v5/private" {
+	private := NewPrivateWSClientWithProfile(profile)
+	if private.url != profile.PrivateWSURL {
 		t.Fatalf("private ws url=%q", private.url)
 	}
 
-	if _, err := NewTradeWSClientWithProfile(demo); err == nil {
-		t.Fatal("expected Demo profile to reject WS Trade client")
-	}
-
-	trade, err := NewTradeWSClientWithProfile(TestnetEnvironmentProfile())
+	trade, err := NewTradeWSClientWithProfile(profile)
 	if err != nil {
-		t.Fatalf("testnet trade ws: %v", err)
+		t.Fatalf("trade ws: %v", err)
 	}
-	if trade.url != "wss://stream-testnet.bybit.com/v5/trade" {
+	if trade.url != profile.TradeWSURL {
 		t.Fatalf("trade ws url=%q", trade.url)
+	}
+}
+
+// A caller may hand in a profile it assembled itself, and one with no trade URL
+// would otherwise produce a client that dials the empty string — a connection
+// error at order time rather than at construction. This is the one profile field
+// whose absence is still reachable, so the guard stays.
+func TestNewTradeWSClientWithProfileRejectsMissingTradeURL(t *testing.T) {
+	if _, err := NewTradeWSClientWithProfile(EnvironmentProfile{RESTBaseURL: defaultBaseURL}); err == nil {
+		t.Fatal("expected a profile with no trade WS URL to be rejected")
 	}
 }
 

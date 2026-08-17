@@ -13,7 +13,7 @@ func TestSubscribeBookDepth(t *testing.T) {
 
 	// Create a lifecycle context for the client
 	ctx := context.Background()
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -82,7 +82,7 @@ func registerTestAccount(t *testing.T, ctx context.Context, postgresStore *Store
 	_, err := postgresStore.CreateDesiredAccount(ctx, store.DesiredAccount{
 		AccountID:            testAccountID(t),
 		Venue:                "binance",
-		VenueEnvironment:     "demo",
+		VenueEnvironment:     "live",
 		SecretRef:            strings.Repeat("A", 43),
 		DesiredStateRevision: 1,
 		RuntimeGeneration:    1,
@@ -103,7 +103,7 @@ func reserveRequest(t *testing.T, payload json.RawMessage) store.ReserveCommandR
 	return store.ReserveCommandRequest{
 		PrincipalID:    domain.PrincipalID("principal-a"),
 		AccountID:      testAccountID(t),
-		InstrumentID:   domain.InstrumentID("binance:demo:spot:BTC-USDT"),
+		InstrumentID:   domain.InstrumentID("binance:live:spot:BTC-USDT"),
 		IdempotencyKey: domain.IdempotencyKey("strategy-a-1"),
 		CorrelationID:  domain.EventID("018f0000-0000-7000-8000-000000000003"),
 		PayloadHash:    hash,
@@ -324,7 +324,7 @@ func TestCommandStoreRealPostgresReservesIdempotentlyAndAtomically(t *testing.T)
 	}
 	if auditMetadata["correlation_id"] != "018f0000-0000-7000-8000-000000000003" ||
 		auditMetadata["account_id"] != string(testAccountID(t)) ||
-		auditMetadata["instrument_id"] != "binance:demo:spot:BTC-USDT" {
+		auditMetadata["instrument_id"] != "binance:live:spot:BTC-USDT" {
 		t.Fatalf("audit metadata=%v", auditMetadata)
 	}
 	for _, forbidden := range []string{"quantity", "0.001", "payload", "secret", "signature"} {
@@ -401,11 +401,11 @@ func TestAuditStoreRealPostgresAppendsOnlySafeStructuredFields(t *testing.T) {
 	record := store.AuditRecord{
 		PrincipalID:   "principal-a",
 		Action:        store.AuditSetLeverage,
-		ResourceID:    "binance:demo:perp:USDT:BTC-USDT",
+		ResourceID:    "binance:live:perp:USDT:BTC-USDT",
 		Outcome:       store.AuditRequested,
 		CorrelationID: "018f0000-0000-7000-8000-000000000003",
 		AccountID:     "acct-a",
-		InstrumentID:  "binance:demo:perp:USDT:BTC-USDT",
+		InstrumentID:  "binance:live:perp:USDT:BTC-USDT",
 	}
 	if err := postgresStore.AppendAudit(ctx, record); err != nil {
 		t.Fatalf("AppendAudit: %v", err)
@@ -442,7 +442,7 @@ func TestCommandStoreRealPostgresScopesOrderReadsToPrincipalAndFilters(t *testin
 		t.Fatal(err)
 	}
 	requestA.IdempotencyKey = "strategy-a-2"
-	requestA.InstrumentID = "binance:demo:spot:ETH-USDT"
+	requestA.InstrumentID = "binance:live:spot:ETH-USDT"
 	requestA.CorrelationID = "018f0000-0000-7000-8000-000000000004"
 	requestA.Payload = json.RawMessage(`{"quantity":"0.002"}`)
 	requestA.PayloadHash, _ = domain.CanonicalPayloadHash(requestA.Payload)
@@ -472,7 +472,7 @@ func TestCommandStoreRealPostgresScopesOrderReadsToPrincipalAndFilters(t *testin
 	}
 
 	filtered, err := postgresStore.ListOrders(ctx, store.ListOrdersRequest{
-		PrincipalID: "principal-a", InstrumentID: "binance:demo:spot:ETH-USDT", Limit: 10,
+		PrincipalID: "principal-a", InstrumentID: "binance:live:spot:ETH-USDT", Limit: 10,
 	})
 	if err != nil || len(filtered) != 1 || filtered[0].GatewayOrderID != second.GatewayOrderID {
 		t.Fatalf("instrument-filtered orders=%+v err=%v", filtered, err)
@@ -1120,7 +1120,7 @@ func TestRegisterTestAccountRealPostgresSeedsTheDesiredAccountAuthority(t *testi
 	if err != nil {
 		t.Fatalf("load desired account: %v", err)
 	}
-	if venue != "binance" || environment != "demo" || requestedState != string(store.DesiredCreating) {
+	if venue != "binance" || environment != "live" || requestedState != string(store.DesiredCreating) {
 		t.Fatalf("stored account metadata = %q/%q/%q", venue, environment, requestedState)
 	}
 }

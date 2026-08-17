@@ -40,33 +40,30 @@ type openAPIRow struct {
 
 func openAPIRows(transport http.RoundTripper) []openAPIRow {
 	settings := Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}
-	testnet := settings
-	testnet.Environment = "testnet"
 	return []openAPIRow{
 		{name: "binance/spot", venue: exchange.VenueBinance, product: exchange.ProductSpot, client: NewBinanceSpot("", "", settings)},
 		{name: "binance/perp", venue: exchange.VenueBinance, product: exchange.ProductPerp, client: NewBinanceUSDPerp("", "", settings)},
 		{name: "okx/spot", venue: exchange.VenueOKX, product: exchange.ProductSpot, client: NewOKXSpot("", "", "", settings)},
 		{name: "okx/perp", venue: exchange.VenueOKX, product: exchange.ProductPerp, client: NewOKXUSDTPerp("", "", "", settings)},
-		{name: "lighter/spot", venue: exchange.VenueLighter, product: exchange.ProductSpot, client: NewLighterSpot(openAPILighterPrivateKey, 7, 2, testnet)},
-		{name: "lighter/perp", venue: exchange.VenueLighter, product: exchange.ProductPerp, client: NewLighterPerp(openAPILighterPrivateKey, 7, 2, testnet)},
-		{name: "hyperliquid/spot", venue: exchange.VenueHyperliquid, product: exchange.ProductSpot, client: NewHyperliquidSpot(openAPITestPrivateKey, testnet)},
-		{name: "hyperliquid/perp", venue: exchange.VenueHyperliquid, product: exchange.ProductPerp, client: NewHyperliquidPerp(openAPITestPrivateKey, testnet)},
+		{name: "lighter/spot", venue: exchange.VenueLighter, product: exchange.ProductSpot, client: NewLighterSpot(openAPILighterPrivateKey, 7, 2, settings)},
+		{name: "lighter/perp", venue: exchange.VenueLighter, product: exchange.ProductPerp, client: NewLighterPerp(openAPILighterPrivateKey, 7, 2, settings)},
+		{name: "hyperliquid/spot", venue: exchange.VenueHyperliquid, product: exchange.ProductSpot, client: NewHyperliquidSpot(openAPITestPrivateKey, settings)},
+		{name: "hyperliquid/perp", venue: exchange.VenueHyperliquid, product: exchange.ProductPerp, client: NewHyperliquidPerp(openAPITestPrivateKey, settings)},
 		{name: "bybit/spot", venue: exchange.VenueBybit, product: exchange.ProductSpot, client: NewBybitSpot("", "", settings)},
 		{name: "bybit/usdt-perp", venue: exchange.VenueBybit, product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDT", settings)},
 		{name: "bybit/usdc-perp", venue: exchange.VenueBybit, product: exchange.ProductPerp, client: NewBybitLinearPerp("", "", "USDC", settings)},
 		{name: "bitget/spot", venue: exchange.VenueBitget, product: exchange.ProductSpot, client: NewBitgetSpot("", "", "", settings)},
 		{name: "bitget/usdt-perp", venue: exchange.VenueBitget, product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDT-FUTURES", settings)},
 		{name: "bitget/usdc-perp", venue: exchange.VenueBitget, product: exchange.ProductPerp, client: NewBitgetPerp("", "", "", "USDC-FUTURES", settings)},
-		{name: "gate/spot", venue: exchange.VenueGate, product: exchange.ProductSpot, client: NewGateSpot("", "", testnet)},
-		{name: "gate/usdt-perp", venue: exchange.VenueGate, product: exchange.ProductPerp, client: NewGateUSDTPerp("", "", testnet)},
-		{name: "aster/spot", venue: exchange.VenueAster, product: exchange.ProductSpot, client: NewAsterSpot("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
-		{name: "aster/usdt-perp", venue: exchange.VenueAster, product: exchange.ProductPerp, client: NewAsterUSDTPerp("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", testnet)},
-		{name: "nado/spot", venue: exchange.VenueNado, product: exchange.ProductSpot, client: NewNadoSpot(openAPITestPrivateKey, "default", testnet)},
-		{name: "nado/usdt0-perp", venue: exchange.VenueNado, product: exchange.ProductPerp, client: NewNadoUSDT0Perp(openAPITestPrivateKey, "default", testnet)},
+		{name: "gate/spot", venue: exchange.VenueGate, product: exchange.ProductSpot, client: NewGateSpot("", "", settings)},
+		{name: "gate/usdt-perp", venue: exchange.VenueGate, product: exchange.ProductPerp, client: NewGateUSDTPerp("", "", settings)},
+		{name: "aster/spot", venue: exchange.VenueAster, product: exchange.ProductSpot, client: NewAsterSpot("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", settings)},
+		{name: "aster/usdt-perp", venue: exchange.VenueAster, product: exchange.ProductPerp, client: NewAsterUSDTPerp("0x1111111111111111111111111111111111111111", openAPITestPrivateKey, "", settings)},
+		{name: "nado/spot", venue: exchange.VenueNado, product: exchange.ProductSpot, client: NewNadoSpot(openAPITestPrivateKey, "default", settings)},
+		{name: "nado/usdt0-perp", venue: exchange.VenueNado, product: exchange.ProductPerp, client: NewNadoUSDT0Perp(openAPITestPrivateKey, "default", settings)},
 	}
 }
 

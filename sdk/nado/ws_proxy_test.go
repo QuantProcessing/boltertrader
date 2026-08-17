@@ -8,7 +8,7 @@ import (
 
 func TestNadoWebSocketProxyUsesProjectProxyAndBypassesLoopback(t *testing.T) {
 	t.Setenv("PROXY", "http://user:secret@proxy.example:8080")
-	proxy, err := nadoProxyForURL("wss://gateway.test.nado.xyz/v1/ws")
+	proxy, err := nadoProxyForURL("wss://gateway.prod.nado.xyz/v1/ws")
 	if err != nil {
 		t.Fatalf("nadoProxyForURL: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestNadoWebSocketProxyUsesProjectProxyAndBypassesLoopback(t *testing.T) {
 
 func TestNadoWebSocketProxyErrorsDoNotLeakCredentials(t *testing.T) {
 	t.Setenv("PROXY", "nado+bad://user:secret@proxy.example:8080")
-	_, err := nadoProxyForURL("wss://gateway.test.nado.xyz/v1/ws")
+	_, err := nadoProxyForURL("wss://gateway.prod.nado.xyz/v1/ws")
 	if err == nil {
 		t.Fatal("expected unsupported proxy scheme")
 	}

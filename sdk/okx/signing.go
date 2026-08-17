@@ -23,7 +23,6 @@ func NewSigner(secretKey string) *Signer {
 // OK-ACCESS-SIGN
 // OK-ACCESS-TIMESTAMP
 // OK-ACCESS-PASSPHRASE
-// OK-ACCESS-SIMULATED-TRADING (if demo)
 func (s *Signer) SignRequest(req *http.Request, method, path, body string, apiKey, passphrase string) {
 	// 1. Timestamp (ISO8601) e.g. 2020-12-08T09:08:57.715Z
 	// For simplicity, we can use UTC format.

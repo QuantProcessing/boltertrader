@@ -18,51 +18,41 @@ import (
 // SDK endpoint profile that the corresponding product client uses by default.
 // It performs no network I/O; it only reads local SDK endpoint constants and
 // profile constructors.
-func ApplyDefaultCatalogEndpoints(configName string, environment string, descriptor *exchange.SourceDescriptor) {
+//
+// Each case used to branch on the environment first. Those branches are gone
+// with the endpoints they chose, and the descriptor a caller gets back is the
+// venue's real one — there is no longer an argument that could make it anything
+// else, which is the point.
+func ApplyDefaultCatalogEndpoints(configName string, descriptor *exchange.SourceDescriptor) {
 	if descriptor == nil {
 		return
 	}
 	switch configName {
 	case "binance-spot":
+		profile := binancespot.MainnetEndpointProfile()
 		if descriptor.Endpoint == "" {
-			profile, _ := binancespot.EndpointProfileForEnvironment(binancespot.Environment(environment))
 			descriptor.Endpoint = profile.RESTBaseURL
 		}
 		if descriptor.WebSocketEndpoint == "" {
-			profile, _ := binancespot.EndpointProfileForEnvironment(binancespot.Environment(environment))
 			descriptor.WebSocketEndpoint = profile.WSBaseURL
 		}
 	case "binance-usd-perp":
+		profile := binanceperp.MainnetEndpointProfile()
 		if descriptor.Endpoint == "" {
-			profile, _ := binanceperp.EndpointProfileForEnvironment(binanceperp.Environment(environment))
 			descriptor.Endpoint = profile.RESTBaseURL
 		}
 		if descriptor.WebSocketEndpoint == "" {
-			profile, _ := binanceperp.EndpointProfileForEnvironment(binanceperp.Environment(environment))
 			descriptor.WebSocketEndpoint = profile.WSPublicBaseURL
 		}
 	case "lighter-spot", "lighter-perp":
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = lighter.MainnetAPIURL
-			if environment == string(exchange.EnvironmentTestnet) {
-				descriptor.Endpoint = lighter.TestnetAPIURL
-			}
 		}
 		if descriptor.WebSocketEndpoint == "" {
 			descriptor.WebSocketEndpoint = lighter.MainnetWSURL
-			if environment == string(exchange.EnvironmentTestnet) {
-				descriptor.WebSocketEndpoint = lighter.TestnetWSURL
-			}
 		}
 	case "okx-spot", "okx-usdt-perp":
-		okxEnvironment := okx.Production
-		if environment == string(exchange.EnvironmentDemo) {
-			okxEnvironment = okx.Simulated
-		}
-		endpoints, err := okx.DefaultEndpointURLs(okxEnvironment, okx.DemoHostProfileGlobal)
-		if err != nil {
-			return
-		}
+		endpoints := okx.DefaultEndpointURLs()
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = endpoints.REST
 		}
@@ -72,24 +62,12 @@ func ApplyDefaultCatalogEndpoints(configName string, environment string, descrip
 	case "hyperliquid-spot", "hyperliquid-perp":
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = hyperliquid.MainnetAPIURL
-			if environment == string(exchange.EnvironmentTestnet) {
-				descriptor.Endpoint = hyperliquid.TestnetAPIURL
-			}
 		}
 		if descriptor.WebSocketEndpoint == "" {
 			descriptor.WebSocketEndpoint = hyperliquid.MainnetWSURL
-			if environment == string(exchange.EnvironmentTestnet) {
-				descriptor.WebSocketEndpoint = hyperliquid.TestnetWSURL
-			}
 		}
 	case "bybit-spot", "bybit-usdt-perp", "bybit-usdc-perp":
 		profile := bybit.MainnetEnvironmentProfile()
-		if environment == string(exchange.EnvironmentDemo) {
-			profile = bybit.DemoEnvironmentProfile()
-		}
-		if environment == string(exchange.EnvironmentTestnet) {
-			profile = bybit.TestnetEnvironmentProfile()
-		}
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = profile.RESTBaseURL
 		}
@@ -102,9 +80,6 @@ func ApplyDefaultCatalogEndpoints(configName string, environment string, descrip
 		}
 	case "bitget-spot", "bitget-usdt-perp", "bitget-usdc-perp":
 		profile := bitget.MainnetEnvironmentProfile()
-		if environment == string(exchange.EnvironmentDemo) {
-			profile = bitget.DemoEnvironmentProfile()
-		}
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = profile.RESTBaseURL
 		}
@@ -113,9 +88,6 @@ func ApplyDefaultCatalogEndpoints(configName string, environment string, descrip
 		}
 	case "gate-spot", "gate-usdt-perp":
 		profile := gate.MainnetEnvironmentProfile()
-		if environment == string(exchange.EnvironmentTestnet) {
-			profile = gate.TestnetEnvironmentProfile()
-		}
 		if descriptor.Endpoint == "" {
 			descriptor.Endpoint = profile.RESTBaseURL
 		}
@@ -126,27 +98,12 @@ func ApplyDefaultCatalogEndpoints(configName string, environment string, descrip
 				descriptor.WebSocketEndpoint = profile.FuturesUSDTWSURL
 			}
 		}
-	case "aster-spot":
-		asterEnvironment := astercommon.EnvironmentProduction
-		if environment == string(exchange.EnvironmentTestnet) || environment == string(exchange.EnvironmentDemo) {
-			asterEnvironment = astercommon.EnvironmentTestnet
+	case "aster-spot", "aster-usdt-perp":
+		product := astercommon.ProductSpot
+		if configName == "aster-usdt-perp" {
+			product = astercommon.ProductPerp
 		}
-		profile, err := astercommon.NewProfile(asterEnvironment, astercommon.ProductSpot)
-		if err != nil {
-			return
-		}
-		if descriptor.Endpoint == "" {
-			descriptor.Endpoint = profile.RESTURL()
-		}
-		if descriptor.WebSocketEndpoint == "" {
-			descriptor.WebSocketEndpoint = profile.PublicWSURL()
-		}
-	case "aster-usdt-perp":
-		asterEnvironment := astercommon.EnvironmentProduction
-		if environment == string(exchange.EnvironmentTestnet) || environment == string(exchange.EnvironmentDemo) {
-			asterEnvironment = astercommon.EnvironmentTestnet
-		}
-		profile, err := astercommon.NewProfile(asterEnvironment, astercommon.ProductPerp)
+		profile, err := astercommon.NewProfile(product)
 		if err != nil {
 			return
 		}
@@ -157,11 +114,7 @@ func ApplyDefaultCatalogEndpoints(configName string, environment string, descrip
 			descriptor.WebSocketEndpoint = profile.PublicWSURL()
 		}
 	case "nado-spot", "nado-usdt0-perp":
-		nadoEnvironment := nadosdk.EnvironmentMainnet
-		if environment == string(exchange.EnvironmentTestnet) || environment == string(exchange.EnvironmentDemo) {
-			nadoEnvironment = nadosdk.EnvironmentTestnet
-		}
-		profile, err := nadosdk.NewProfile(nadoEnvironment)
+		profile, err := nadosdk.NewProfile()
 		if err != nil {
 			return
 		}

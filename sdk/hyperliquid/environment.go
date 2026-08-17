@@ -5,38 +5,13 @@ import (
 	"net/url"
 )
 
-type Environment string
-
+// Hyperliquid's mainnet endpoints. These are the only endpoints the SDK can
+// reach: the testnet pair, the Environment enum that chose between them, and the
+// signing-domain switch that had to agree with that choice are all gone.
 const (
-	EnvironmentMainnet Environment = "mainnet"
-	EnvironmentTestnet Environment = "testnet"
-
 	MainnetAPIURL = "https://api.hyperliquid.xyz"
-	TestnetAPIURL = "https://api.hyperliquid-testnet.xyz"
 	MainnetWSURL  = "wss://api.hyperliquid.xyz/ws"
-	TestnetWSURL  = "wss://api.hyperliquid-testnet.xyz/ws"
 )
-
-func normalizeEnvironment(env Environment) Environment {
-	if env == EnvironmentTestnet {
-		return EnvironmentTestnet
-	}
-	return EnvironmentMainnet
-}
-
-func restURLForEnvironment(env Environment) string {
-	if normalizeEnvironment(env) == EnvironmentTestnet {
-		return TestnetAPIURL
-	}
-	return MainnetAPIURL
-}
-
-func wsURLForEnvironment(env Environment) string {
-	if normalizeEnvironment(env) == EnvironmentTestnet {
-		return TestnetWSURL
-	}
-	return MainnetWSURL
-}
 
 func deriveWSURL(baseURL string) string {
 	parsedURL, err := url.Parse(baseURL)

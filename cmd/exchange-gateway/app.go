@@ -141,7 +141,7 @@ func run(ctx context.Context, args []string, deps runtimeDeps) (returnErr error)
 	if !validationProfile {
 		boardFactory, boardErr := fundingboard.NewExchangeFactory(&http.Client{Timeout: 30 * time.Second})
 		if boardErr == nil {
-			fundingBoard, boardErr = fundingboard.NewSource(boardFactory, routeprofile.DefaultRegistry(), routeprofile.Mode(runtimeMode))
+			fundingBoard, boardErr = fundingboard.NewSource(boardFactory, routeprofile.DefaultRegistry())
 		}
 		if boardErr != nil {
 			fundingBoard = nil

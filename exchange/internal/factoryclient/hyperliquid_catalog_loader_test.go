@@ -55,12 +55,11 @@ func TestHyperliquidInstrumentLoaderUsesPublicMetadataOnlyAndPreservesNativeIDs(
 		}
 	})
 	settings := Settings{
-		Endpoint:    "https://hyperliquid.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://hyperliquid.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}
 
-	spotScope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot}
+	spotScope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	spotSnapshot, err := NewHyperliquidInstrumentLoader(exchange.ProductSpot, settings).LoadInstruments(ctx, spotScope)
 	if err != nil {
 		t.Fatalf("spot LoadInstruments: %v", err)
@@ -76,7 +75,7 @@ func TestHyperliquidInstrumentLoaderUsesPublicMetadataOnlyAndPreservesNativeIDs(
 		t.Fatalf("spot precision = rules:%+v encoding:%+v", spot.Rules, spot.Encoding)
 	}
 
-	perpScope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductPerp, Settlement: "USDC"}
+	perpScope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, Settlement: "USDC"}
 	perpSnapshot, err := NewHyperliquidInstrumentLoader(exchange.ProductPerp, settings).LoadInstruments(ctx, perpScope)
 	if err != nil {
 		t.Fatalf("perp LoadInstruments: %v", err)
@@ -147,7 +146,7 @@ func TestHyperliquidSpotCodecAcceptsCanonicalPairNativeCoin(t *testing.T) {
 
 func TestHyperliquidCatalogMetasObserveCatalogRefreshWithoutSDKFallback(t *testing.T) {
 	ctx := context.Background()
-	scope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot}
+	scope := exchange.CatalogScope{Venue: exchange.VenueHyperliquid, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	descriptor := exchange.SourceDescriptor{Name: "hyperliquid-spot-test", Endpoint: "https://hyperliquid.invalid", Transport: "test"}
 	scope.EndpointFingerprint = descriptor.Fingerprint()
 	loader := &hyperliquidMutableLoader{snapshot: exchange.InstrumentSnapshot{
@@ -194,7 +193,7 @@ func hyperliquidStaticTestMeta(t *testing.T, instrument exchange.Instrument) cli
 	t.Helper()
 	scope := exchange.CatalogScope{
 		Venue:       instrument.Identity.Venue,
-		Environment: exchange.EnvironmentTestnet,
+		Environment: exchange.EnvironmentLive,
 		Product:     instrument.Identity.Product,
 		Settlement:  instrument.Identity.SettleAsset,
 	}

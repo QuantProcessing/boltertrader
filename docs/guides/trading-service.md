@@ -211,5 +211,7 @@ make test-browser
 ```
 
 The offline suite covers the ledger's state machine, the preview seal, and the
-projections. External write coverage is per venue and per product row; what each
-target proves is in [Testing and certification](../reference/testing.md).
+projections. No test places an order: the external write ladder was deleted
+along with the Demo and Testnet environments it ran against. What the offline
+suite does and does not prove is in
+[Testing and evidence](../reference/testing.md).

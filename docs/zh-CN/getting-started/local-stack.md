@@ -132,5 +132,6 @@ make down-hard
 
 ## 后续
 
-[下第一笔订单](first-order.md)会带你走完针对非生产 venue account 的完整浏览器
-闭环。
+[下第一笔订单](first-order.md)会带你走完完整的浏览器闭环，用的是真实 venue account
+和真钱。如果想在完全不接 venue 的情况下走同一个闭环，改跑
+`npm --prefix web run dev:mock`。

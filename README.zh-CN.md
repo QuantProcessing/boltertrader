@@ -76,28 +76,31 @@ make test-compose         # compose 配置、镜像构建、加固、冒烟、�
 cd web && npm run build && npm test && npm run test:e2e
 ```
 
-默认套件离线且确定性。交易所读写均为显式启用：文档中的 Demo/Testnet Make
-target 会仅为对应命令设置写入 gate，并在选定的验收测试发生 skip 时失败。
+上面每一套都是离线的、不需要凭证的、确定性的，没有任何一套会碰到交易所。已经不存在
+可供显式启用的带凭证 target——`TestMakefileRecipesNeverEnableCredentialedWrites`
+会读 Makefile 里的每一条 recipe，一旦某条为写入开闸就失败。想不接交易所把产品点着走
+一遍，跑 `npm --prefix web run dev:mock`，它由 `web/src/mocks/` 应答整个 API 面。
 
 ## 当前支持
 
-gateway 的 Demo/Testnet 验收矩阵（`make test-gateway-demo-testnet`）覆盖
-Aster、Binance、Bitget、Bybit、Gate、Hyperliquid、Lighter、Nado 和 OKX 上的
-20 个 product 行。`sdk/` 另外还包含 Backpack、EdgeX、GRVT 和 StandX。支持以
-product 为单位：某一行处于 Implemented 状态或存在底层 SDK，不等同于当前已通过
-Demo/Testnet 认证，也不代表 production readiness。
+exchange gateway 实现了 20 个 product 行，覆盖 Aster、Binance、Bitget、Bybit、Gate、
+Hyperliquid、Lighter、Nado 和 OKX。`sdk/` 另外还包含 Backpack、EdgeX、GRVT 和 StandX，
+它们是 SDK-only，不是 gateway product。支持以 product 为单位，而某一行处于 Implemented
+状态并不等于 production readiness：套件跑绿只能证明规范化实现与所记录的 fixture 依然
+一致，不能更宽。可以被断言的那些状态，定义在[术语表](docs/zh-CN/reference/glossary.md)。
 
 - [统一交易所 API](docs/zh-CN/exchange/README.md)
 - [Exchange Gateway](docs/zh-CN/guides/exchange-gateway.md)
 - [Venue 指南](docs/zh-CN/venues/README.md)
-- [测试与认证语义](docs/zh-CN/reference/testing.md)
+- [测试与证据语义](docs/zh-CN/reference/testing.md)
 - [文档索引](docs/zh-CN/README.md)
 
 ## 安全
 
-规范的外部演练使用非生产环境和有界订单，但仍可能创建交易所状态。请使用有资金、
-干净的 Demo/Testnet account，并串行运行。只有退出码为零，才能证明选定 product
-所记录的终止条件。在非零或结果不明确的退出后，检查精确的 validation ID 和权威的
+已经没有非生产环境可以退守了。在这里配好的凭证直连真实交易所，你传进去的数量就是会
+成交的数量，所以请签发一把专用 key、不要给它提现权限、并从小额开始。本仓库里没有任何
+测试会下单——会下单的那些演练，已经和它们所依赖的 Demo/Testnet 环境一起删除了。订单来自
+运行中的产品，用的是你自己的凭证。一旦某一单出了问题，检查精确的 validation ID 和权威的
 product-scoped 状态；绝不要盲目取消或平掉无关 exposure。
 
 凭证在整条链路上只写不读：经应用提交、由 gateway 加密静态存储，任何读取路径都

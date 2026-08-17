@@ -147,7 +147,7 @@ REST endpoints, so the Aster WebSocket facet methods intentionally use the
 same credentialed REST command path. Other rows use their venue-native
 WebSocket trade command when one is available.
 
-## Demo/Testnet acceptance
+## Acceptance
 
 Offline WebSocket contract tests are included in:
 
@@ -155,37 +155,11 @@ Offline WebSocket contract tests are included in:
 make test-exchange-offline
 ```
 
-Public stream smoke tests may connect to non-production or public endpoints when
-the caller provides explicit environment configuration. Private streams and
-order commands are credentialed. `PlaceOrder` and `CancelOrder` mutate real
-non-production exchange state in Demo/Testnet, including Aster's documented
-REST command fallback.
+Public stream smoke tests may connect to public endpoints. Private streams and
+order commands are credentialed and reach the venue's production environment,
+including Aster's documented REST command fallback, so `PlaceOrder` and
+`CancelOrder` spend real funds.
 
-Capability cells in this matrix are implemented/admitted support, not external
-environment certification. Current acceptance certification is:
-
-| Row | Acceptance status | Reason |
-| --- | --- | --- |
-| BNS | Passed | Binance Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| BNP | Passed | Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| OXS | Passed | OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| OXP | Passed | OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row. |
-| LIS | Waived | Lighter Testnet Spot is structurally one-sided. The user authorized a live-write waiver: the serial target verifies REST reads, account access, the one-sided order-book stream, remaining public/private subscription activation, and invalid-request boundaries with zero live order mutations; WatchBBO, exact lookup, and write paths remain explicitly waived or fixture-only, and the gateway keeps the row not write-ready. |
-| LIP | Passed | Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| HLS | Passed | Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| HLP | Passed | Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| BYS | Passed | Bybit Demo spot row passed full external acceptance. |
-| BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
-| BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
-| BGS | Passed | Bitget Demo spot row passed full external acceptance. |
-| BGU | Passed | Bitget Demo USDT-linear perp row passed full external acceptance. |
-| BGC | Passed | Bitget Demo USDC-linear perp row passed full external acceptance with native `BTCPERP`. |
-| GTS | Passed | Gate Testnet spot row passed full external acceptance. |
-| GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
-| ATS | Passed | Aster Testnet spot row passed full external acceptance. |
-| ATP | Passed | Aster perp row passed with Testnet writes and private streams plus production read-only funding REST and WebSocket reference data. |
-| NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
-| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0` and `WatchMarkPrice` returned `ErrUnsupported`. |
-
-This matrix does not claim live validation has passed beyond the acceptance
-status table.
+Capability cells in this matrix are implemented/admitted support, not a claim
+that the venue answers today. For click-through work that must not touch a venue
+at all, run the frontend against its offline mock.

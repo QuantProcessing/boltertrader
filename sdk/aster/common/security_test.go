@@ -67,7 +67,7 @@ func TestSecurityContextMatchesIndependentEIP712Vector(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := NewProfile(EnvironmentTestnet, ProductPerp)
+	profile, err := NewProfile(ProductPerp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,10 +90,10 @@ func TestSecurityContextMatchesIndependentEIP712Vector(t *testing.T) {
 		t.Fatalf("decode signature: %v", err)
 	}
 	signatureHash := sha256.Sum256(signature)
-	if got, want := hex.EncodeToString(signatureHash[:]), "f00bb01aa0abe41390daa7815b3080f477ae0a9761b90cce19eef1a5b24ed4c0"; got != want {
+	if got, want := hex.EncodeToString(signatureHash[:]), "28288d5ae706ce63a12edbbab9b797e793db61701cb4be5a0c45d198e1afeda6"; got != want {
 		t.Fatalf("signature hash = %s, want %s", got, want)
 	}
-	if got, want := signed.Digest(), "0xa9b72c71134a5d03978f6f65757ef0f680ee553405f62829dafa92d7496afbc8"; got != want {
+	if got, want := signed.Digest(), "0xdbed7a064c735cc6cdb381cc7a4f099726c7287faaf83eab53fcf231d823ccdc"; got != want {
 		t.Fatalf("digest = %s, want %s", got, want)
 	}
 	if values.Get("user") != security.User() || values.Get("signer") != security.Signer() {
@@ -115,7 +115,7 @@ func TestSecurityContextRejectsCallerOwnedAuthFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, _ := NewProfile(EnvironmentTestnet, ProductSpot)
+	profile, _ := NewProfile(ProductSpot)
 	for _, field := range []string{"user", "signer", "nonce", "timestamp", "signature"} {
 		if _, err := security.Sign(profile, url.Values{field: {"caller-value"}}); err == nil {
 			t.Fatalf("reserved auth field %q accepted", field)
@@ -151,8 +151,8 @@ func TestNonceIsSharedAcrossSpotAndPerpSigning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spot, _ := NewProfile(EnvironmentTestnet, ProductSpot)
-	perp, _ := NewProfile(EnvironmentTestnet, ProductPerp)
+	spot, _ := NewProfile(ProductSpot)
+	perp, _ := NewProfile(ProductPerp)
 	profiles := []Profile{spot, perp}
 
 	const count = 200

@@ -47,11 +47,12 @@ func newClient(t *testing.T, authority httpapi.InternalAuthority) *authorityclie
 func validAccount() lifecycle.Account {
 	return lifecycle.Account{
 		ID: accountID, Venue: "binance", Mode: secretstore.ModeTest,
-		NativeEnvironment: lifecycle.EnvironmentDemo, DisplayName: "Primary",
+		VenueEnvironment:  lifecycle.EnvironmentLive,
+		NativeEnvironment: lifecycle.EnvironmentLive, DisplayName: "Primary",
 		ProductPolicy: []string{"manual"}, ProductIDs: []string{"manual"},
 		Routes: []lifecycle.AccountRoute{{
 			ID: "perp-usdt", Product: lifecycle.ProductPerp, SettlementAsset: "USDT",
-			RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: lifecycle.RouteActive,
+			RouteProfileID: "binance.perp.usdt.v1", RequestedState: lifecycle.RouteActive,
 		}},
 		SecretRef:            secretRef,
 		DesiredStateRevision: 3, RuntimeGeneration: 2, CredentialVersion: 4,
@@ -65,7 +66,7 @@ func activeView(mutate func(*httpapi.RuntimeSnapshotView)) httpapi.RuntimeView {
 		CredentialVersion: 4, RequestedState: "active",
 		Routes: []httpapi.RuntimeRouteView{{
 			RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
-			RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active", Ready: true,
+			RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active", Ready: true,
 		}},
 	}
 	if mutate != nil {
@@ -96,13 +97,13 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 	// is rejected as a stale write rather than applied to the wrong generation.
 	desired := *request.DesiredApply
 	if desired.AccountID != accountID || desired.OperationID != string(operationID) || desired.Venue != "binance" ||
-		desired.NativeEnvironment != "demo" || desired.SecretRef != secretRef || desired.RequestedState != "creating" ||
+		desired.NativeEnvironment != "live" || desired.SecretRef != secretRef || desired.RequestedState != "creating" ||
 		desired.DesiredStateRevision != 3 || desired.RuntimeGeneration != 2 || desired.CredentialVersion != 4 {
 		t.Fatalf("desired snapshot = %+v", desired)
 	}
 	if len(desired.Routes) != 1 || desired.Routes[0] != (httpapi.DesiredRoute{
 		RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT",
-		RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active",
+		RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active",
 	}) {
 		t.Fatalf("desired routes = %+v", desired.Routes)
 	}
@@ -114,7 +115,7 @@ func TestApplyDesiredCarriesTheWholeDesiredSnapshotAndReducesTheRuntimeView(t *t
 	}
 	if len(truth.Routes) != 1 || truth.Routes[0] != (lifecycle.GatewayRuntimeRoute{
 		RouteID: "perp-usdt", Product: lifecycle.ProductPerp, SettlementAsset: "USDT",
-		RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: lifecycle.RouteActive, Ready: true,
+		RouteProfileID: "binance.perp.usdt.v1", RequestedState: lifecycle.RouteActive, Ready: true,
 	}) {
 		t.Fatalf("truth routes = %+v", truth.Routes)
 	}

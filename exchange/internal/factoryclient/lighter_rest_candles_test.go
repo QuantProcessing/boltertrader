@@ -31,9 +31,8 @@ func TestLighterCandlesDerivesNativeWindowWhenPortableBoundsAreOmitted(t *testin
 		}
 	})
 	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	page, err := client.Candles(context.Background(), exchange.CandlesRequest{
@@ -85,9 +84,8 @@ func TestLighterOrderHistoryFiltersTriggerOrdersOutsideExchangeSubset(t *testing
 		}
 	})
 	client := NewLighterSpot(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	instrument := lighterTestInstrument(exchange.ProductSpot, "ETH-USDC", "ETH/USDC", "2048")
@@ -121,9 +119,8 @@ func TestLighterFundingRateHistoryDerivesNativeWindowWhenPortableBoundsAreOmitte
 		}
 	})
 	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{
@@ -169,9 +166,8 @@ func TestLighterFundingRateHistoryEnforcesPortableLimitWhenVenueOverReturns(t *t
 		}
 	})
 	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 
 	page, err := client.FundingRateHistory(context.Background(), exchange.FundingRateHistoryRequest{

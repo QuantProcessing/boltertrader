@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -704,4 +705,643 @@ func acceptanceCaseIDs(cases []acceptanceOrderCase) []string {
 		ids = append(ids, orderCase.ID)
 	}
 	return ids
+}
+
+type exchangeAcceptanceRow struct {
+	code                      string
+	product                   exchange.Product
+	instrumentHint            string
+	notional                  decimal.Decimal
+	maxNotional               decimal.Decimal
+	perpReference             exchangeAcceptancePerpReference
+	perpPublicWS              exchangeAcceptancePerpPublicWebSocket
+	watchMarkPriceUnsupported bool
+	oneSidedSpotWaiver        bool
+}
+
+type exchangeAcceptancePerpReference interface {
+	FundingRate(context.Context, exchange.FundingRateRequest) (exchange.FundingRate, error)
+	FundingRateHistory(context.Context, exchange.FundingRateHistoryRequest) (exchange.FundingRatePage, error)
+}
+
+type exchangeAcceptancePerpPublicWebSocket interface {
+	WatchMarkPrice(context.Context, exchange.WatchRequest) (exchange.Subscription[exchange.MarkPriceEvent], error)
+	WatchFundingRate(context.Context, exchange.WatchRequest) (exchange.Subscription[exchange.FundingRateEvent], error)
+}
+
+type exchangeAcceptanceREST interface {
+	exchange.MarketREST
+	exchange.OrderREST
+	Balances(context.Context) ([]exchange.Balance, error)
+}
+
+type exchangeAcceptanceCatalog interface {
+	ResolveInstrument(context.Context, string) (exchange.Instrument, error)
+	RefreshInstruments(context.Context) ([]exchange.Instrument, error)
+}
+
+type spotExposureCleanupClient interface {
+	Balances(context.Context) ([]exchange.Balance, error)
+	OrderBook(context.Context, exchange.OrderBookRequest) (exchange.OrderBook, error)
+	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
+}
+
+type perpExposureCleanupClient interface {
+	Positions(context.Context, exchange.PositionsRequest) ([]exchange.Position, error)
+	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
+}
+
+type spotAcceptanceCleanupClient interface {
+	orderCleanupClient
+	spotExposureCleanupClient
+}
+
+type perpAcceptanceCleanupClient interface {
+	orderCleanupClient
+	perpExposureCleanupClient
+}
+
+type exchangeAcceptanceOrderTransport interface {
+	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (exchange.OrderAcknowledgement, error)
+	CancelOrder(context.Context, exchange.CancelOrderRequest) (exchange.OrderAcknowledgement, error)
+}
+
+type acceptanceOrderTransport struct {
+	caseName       string
+	coverageName   string
+	orderTransport exchangeAcceptanceOrderTransport
+}
+
+type acceptanceSubscriptionWitness struct {
+	operation string
+	arm       func()
+	waitEvent func(context.Context) error
+	close     func() error
+}
+
+func (witness *acceptanceSubscriptionWitness) Arm() {
+	witness.arm()
+}
+
+func (witness *acceptanceSubscriptionWitness) WaitEvent(ctx context.Context) error {
+	return witness.waitEvent(ctx)
+}
+
+func (witness *acceptanceSubscriptionWitness) Close() error {
+	return witness.close()
+}
+
+var exchangeAcceptanceClientID atomic.Int64
+var exchangeAcceptanceClientIDSeed = uint64(time.Now().UnixNano()) & (1<<48 - 1)
+
+func validateAcceptanceTopOfBook(
+	row exchangeAcceptanceRow,
+	instrument exchange.Instrument,
+	book exchange.OrderBook,
+) error {
+	hasBid := len(book.Bids) != 0 && book.Bids[0].Price.IsPositive()
+	hasAsk := len(book.Asks) != 0 && book.Asks[0].Price.IsPositive()
+	if hasBid && hasAsk {
+		return nil
+	}
+	if row.oneSidedSpotWaiver && row.code == "LIS" && (hasBid || hasAsk) {
+		return nil
+	}
+	return fmt.Errorf("%s OrderBook has no positive two-sided top of book for %s", row.code, instrument.Identity.Symbol)
+}
+
+func acceptanceSubscriptionSkipped(row exchangeAcceptanceRow, operation string) bool {
+	return row.oneSidedSpotWaiver && row.code == "LIS" && operation == "WatchBBO"
+}
+
+func lighterSpotOneSidedCoverageWaiver() externalCoverageWaiver {
+	// The reason used to name Testnet, which is where the one-sided book was
+	// first seen. It reads as live now, and not because the environment was
+	// find-and-replaced out of it: capability/matrix.go holds LIS back from
+	// write promotion pending live evidence of two-sided liquidity, so the
+	// premise this waiver rests on is the platform's live-facing position and
+	// not an artefact of a sandbox that no longer exists.
+	const reason = "Lighter Spot is structurally one-sided; user authorized skipping live order mutations"
+	operation := func(transport, method string) externalCoverageMark {
+		return externalCoverageMark{Kind: "operation", RowCode: "LIS", Transport: transport, Method: method}
+	}
+	parameter := func(caseID string) externalCoverageMark {
+		return externalCoverageMark{Kind: "parameter_case", RowCode: "LIS", CaseID: caseID}
+	}
+	return newExternalCoverageWaiver(
+		reason,
+		operation("rest", "PlaceOrder"),
+		operation("rest", "CancelOrder"),
+		operation("rest", "LookupExactOrder"),
+		operation("websocket", "PlaceOrder"),
+		operation("websocket", "CancelOrder"),
+		operation("websocket", "WatchBBO"),
+		parameter("place_order.rest.market"),
+		parameter("place_order.rest.limit_resting"),
+		parameter("place_order.rest.limit_ioc"),
+		parameter("place_order.rest.limit_post_only"),
+		parameter("place_order.rest.client_order_id"),
+		parameter("place_order.ws.market"),
+		parameter("place_order.ws.limit_resting"),
+		parameter("place_order.ws.limit_ioc"),
+		parameter("place_order.ws.limit_post_only"),
+		parameter("place_order.ws.client_order_id"),
+		parameter("cancel_order.rest.order_id"),
+		parameter("cancel_order.ws.order_id"),
+	)
+}
+
+func refreshAcceptanceInstrument(
+	ctx context.Context,
+	client exchangeAcceptanceCatalog,
+	selected exchange.Instrument,
+) (exchange.Instrument, error) {
+	resolved, err := client.ResolveInstrument(ctx, selected.Identity.Symbol)
+	if err != nil {
+		return exchange.Instrument{}, fmt.Errorf("resolve %s: %w", selected.Identity.Symbol, err)
+	}
+	if resolved.Identity != selected.Identity {
+		return exchange.Instrument{}, fmt.Errorf(
+			"resolved identity mismatch for %s: got %+v want %+v",
+			selected.Identity.Symbol,
+			resolved.Identity,
+			selected.Identity,
+		)
+	}
+	refreshed, err := client.RefreshInstruments(ctx)
+	if err != nil {
+		return exchange.Instrument{}, fmt.Errorf("refresh instruments: %w", err)
+	}
+	for _, instrument := range refreshed {
+		if instrument.Identity == selected.Identity {
+			return instrument, nil
+		}
+	}
+	return exchange.Instrument{}, fmt.Errorf(
+		"refreshed catalog no longer contains %s (%s)",
+		selected.Identity.Symbol,
+		selected.Identity.NativeSymbol,
+	)
+}
+
+func placeTrackedAcceptanceOrder(
+	ctx context.Context,
+	transport exchangeAcceptanceOrderTransport,
+	request exchange.PlaceOrderRequest,
+	journal *ownedOrderJournal,
+) (exchange.OrderAcknowledgement, error) {
+	journal.TrackClientOrderID(request.ClientOrderID)
+	ack, err := transport.PlaceOrder(ctx, request)
+	if err == nil {
+		journal.TrackPlacement(ack)
+	}
+	return ack, err
+}
+
+func nextAcceptanceClientOrderID() string {
+	const maxPortableClientOrderID = uint64(1<<48 - 1)
+	sequence := uint64(exchangeAcceptanceClientID.Add(1))
+	value := (exchangeAcceptanceClientIDSeed + sequence) & maxPortableClientOrderID
+	if value == 0 {
+		value = 1
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func acceptanceRestingBuyPrice(instrument exchange.Instrument, book exchange.OrderBook) decimal.Decimal {
+	price := book.Bids[0].Price.Mul(decimal.RequireFromString("0.98"))
+	return acceptanceLimitPrice(instrument, price, false)
+}
+
+func acceptanceIOCPrice(instrument exchange.Instrument, book exchange.OrderBook, side exchange.Side) decimal.Decimal {
+	if instrument.Identity.Venue == exchange.VenueBybit && instrument.Identity.Product == exchange.ProductSpot {
+		if side == exchange.SideBuy {
+			return acceptanceLimitPrice(instrument, book.Asks[0].Price, true)
+		}
+		return acceptanceLimitPrice(instrument, book.Bids[0].Price, false)
+	}
+	if side == exchange.SideBuy {
+		return acceptanceLimitPrice(instrument, book.Asks[0].Price.Mul(decimal.RequireFromString("1.01")), true)
+	}
+	return acceptanceLimitPrice(instrument, book.Bids[0].Price.Mul(decimal.RequireFromString("0.99")), false)
+}
+
+func acceptanceLimitPrice(instrument exchange.Instrument, desired decimal.Decimal, roundUp bool) decimal.Decimal {
+	step := instrument.Rules.PriceIncrement
+	if instrument.Identity.Venue == exchange.VenueHyperliquid {
+		significantStep := hyperliquidAcceptanceSignificantStep(desired)
+		if significantStep.GreaterThan(step) {
+			step = significantStep
+		}
+	}
+	if roundUp {
+		return roundUpToStep(desired, step)
+	}
+	return roundDownToStep(desired, step)
+}
+
+func hyperliquidAcceptanceSignificantStep(value decimal.Decimal) decimal.Decimal {
+	value = value.Abs()
+	if value.IsZero() || value.Equal(value.Truncate(0)) {
+		return decimal.Zero
+	}
+	parts := strings.SplitN(value.String(), ".", 2)
+	integerDigits := len(strings.TrimLeft(parts[0], "0"))
+	if integerDigits > 0 {
+		return decimal.New(1, int32(integerDigits-5))
+	}
+	fraction := ""
+	if len(parts) == 2 {
+		fraction = parts[1]
+	}
+	leadingZeros := len(fraction) - len(strings.TrimLeft(fraction, "0"))
+	return decimal.New(1, int32(-(leadingZeros + 5)))
+}
+
+func perpRoundTripDirection(baseline decimal.Decimal) (exchange.Side, exchange.Side, decimal.Decimal) {
+	if baseline.IsNegative() {
+		return exchange.SideSell, exchange.SideBuy, decimal.NewFromInt(-1)
+	}
+	return exchange.SideBuy, exchange.SideSell, decimal.NewFromInt(1)
+}
+
+func positionMovedInDirection(
+	current decimal.Decimal,
+	baseline decimal.Decimal,
+	direction decimal.Decimal,
+	step decimal.Decimal,
+) bool {
+	return current.Sub(baseline).Mul(direction).GreaterThan(step.Div(decimal.NewFromInt(2)))
+}
+
+func acceptanceBalanceTotal(balances []exchange.Balance, asset string) decimal.Decimal {
+	for _, balance := range balances {
+		if strings.EqualFold(balance.Asset, asset) {
+			return balance.Total
+		}
+	}
+	return decimal.Zero
+}
+
+func signedAcceptancePosition(positions []exchange.Position, instrument exchange.Instrument) decimal.Decimal {
+	total := decimal.Zero
+	for _, position := range positions {
+		if !acceptancePositionMatchesInstrument(position, instrument) {
+			continue
+		}
+		switch position.Side {
+		case exchange.SideBuy:
+			total = total.Add(position.Quantity)
+		case exchange.SideSell:
+			total = total.Sub(position.Quantity)
+		}
+	}
+	return total
+}
+
+func acceptancePositionMatchesInstrument(position exchange.Position, instrument exchange.Instrument) bool {
+	if position.NativeID != "" && instrument.Identity.NativeID != "" {
+		return position.NativeID == instrument.Identity.NativeID
+	}
+	if position.NativeSymbol != "" && instrument.Identity.NativeSymbol != "" {
+		return normalizeAcceptanceSymbol(position.NativeSymbol) == normalizeAcceptanceSymbol(instrument.Identity.NativeSymbol)
+	}
+	return false
+}
+
+func cleanupSpotAcceptanceExposure(
+	ctx context.Context,
+	row exchangeAcceptanceRow,
+	rest spotExposureCleanupClient,
+	instrument exchange.Instrument,
+	baseline []exchange.Balance,
+	journal *ownedOrderJournal,
+) error {
+	balances, err := rest.Balances(ctx)
+	if err != nil {
+		return fmt.Errorf("%s cleanup Balances: %w", row.code, err)
+	}
+	delta := acceptanceBalanceTotal(balances, instrument.Identity.BaseAsset).Sub(acceptanceBalanceTotal(baseline, instrument.Identity.BaseAsset))
+	if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, decimal.Zero) {
+		return nil
+	}
+	book, err := rest.OrderBook(ctx, exchange.OrderBookRequest{Instrument: instrument, Limit: 1})
+	if err != nil {
+		return fmt.Errorf("%s cleanup OrderBook: %w", row.code, err)
+	}
+	side := exchange.SideSell
+	price, err := executablePrice(book, side)
+	if delta.IsNegative() {
+		side = exchange.SideBuy
+		price, err = executablePrice(book, side)
+	}
+	if err != nil {
+		return fmt.Errorf("%s cleanup executable price: %w", row.code, err)
+	}
+	if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, price) {
+		return nil
+	}
+	quantity := roundDownToStep(delta.Abs(), instrument.Rules.QuantityIncrement)
+	if !quantity.IsPositive() {
+		return fmt.Errorf("%s cleanup delta %s cannot be represented by quantity step %s", row.code, delta, instrument.Rules.QuantityIncrement)
+	}
+	if instrument.Rules.MinNotional.Valid && quantity.Mul(price).LessThan(instrument.Rules.MinNotional.Value) {
+		return nil
+	}
+	request := exchange.PlaceOrderRequest{
+		Instrument:    instrument,
+		ClientOrderID: nextAcceptanceClientOrderID(),
+		Side:          side,
+		Type:          exchange.OrderTypeMarket,
+		Quantity:      quantity,
+	}
+	journal.TrackClientOrderID(request.ClientOrderID)
+	ack, err := rest.PlaceOrder(ctx, request)
+	if err != nil {
+		return fmt.Errorf("%s cleanup spot delta %s %s: %w", row.code, quantity, instrument.Identity.BaseAsset, err)
+	}
+	journal.TrackPlacement(ack)
+	if err := validateAcceptanceCleanupAck(ack); err != nil {
+		return fmt.Errorf("%s cleanup spot acknowledgement: %w", row.code, err)
+	}
+	return waitSpotAcceptanceBaseline(ctx, row.code, rest, instrument, baseline, price)
+}
+
+func cleanupPerpAcceptanceExposure(
+	ctx context.Context,
+	row exchangeAcceptanceRow,
+	rest perpExposureCleanupClient,
+	instrument exchange.Instrument,
+	baseline decimal.Decimal,
+	journal *ownedOrderJournal,
+) error {
+	positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
+	if err != nil {
+		return fmt.Errorf("%s cleanup Positions: %w", row.code, err)
+	}
+	current := signedAcceptancePosition(positions, instrument)
+	delta := current.Sub(baseline)
+	if delta.Abs().LessThanOrEqual(instrument.Rules.QuantityIncrement.Div(decimal.NewFromInt(2))) {
+		return nil
+	}
+	quantity := roundDownToStep(delta.Abs(), instrument.Rules.QuantityIncrement)
+	if !quantity.IsPositive() {
+		return fmt.Errorf("%s cleanup position delta %s cannot be represented by quantity step %s", row.code, delta, instrument.Rules.QuantityIncrement)
+	}
+	side := exchange.SideSell
+	if delta.IsNegative() {
+		side = exchange.SideBuy
+	}
+	reduceOnly := baseline.IsZero() ||
+		current.Sign() == baseline.Sign() && current.Abs().GreaterThan(baseline.Abs())
+	request := exchange.PlaceOrderRequest{
+		Instrument:    instrument,
+		ClientOrderID: nextAcceptanceClientOrderID(),
+		Side:          side,
+		Type:          exchange.OrderTypeMarket,
+		Quantity:      quantity,
+		ReduceOnly:    reduceOnly,
+	}
+	journal.TrackClientOrderID(request.ClientOrderID)
+	ack, err := rest.PlaceOrder(ctx, request)
+	if err != nil {
+		return fmt.Errorf("%s cleanup perp delta %s: %w", row.code, delta, err)
+	}
+	journal.TrackPlacement(ack)
+	if err := validateAcceptanceCleanupAck(ack); err != nil {
+		return fmt.Errorf("%s cleanup perp acknowledgement: %w", row.code, err)
+	}
+	return waitPerpAcceptanceBaseline(ctx, row.code, rest, instrument, baseline)
+}
+
+func validateAcceptanceCleanupAck(ack exchange.OrderAcknowledgement) error {
+	if err := ack.Validate(); err != nil {
+		return err
+	}
+	if ack.State == exchange.AckRejected || ack.State == exchange.AckAmbiguous {
+		return fmt.Errorf("unsafe state %s: %s %s", ack.State, ack.VenueCode, ack.VenueMessage)
+	}
+	return nil
+}
+
+func spotBalanceWithinFeeTolerance(delta, step, price decimal.Decimal) bool {
+	delta = delta.Abs()
+	if delta.LessThanOrEqual(step.Mul(decimal.NewFromInt(2))) {
+		return true
+	}
+	return price.IsPositive() && delta.Mul(price).LessThanOrEqual(decimal.RequireFromString("0.50"))
+}
+
+func waitSpotAcceptanceBaseline(
+	ctx context.Context,
+	rowCode string,
+	rest interface {
+		Balances(context.Context) ([]exchange.Balance, error)
+	},
+	instrument exchange.Instrument,
+	baseline []exchange.Balance,
+	price decimal.Decimal,
+) error {
+	for {
+		balances, err := rest.Balances(ctx)
+		if err == nil {
+			delta := acceptanceBalanceTotal(balances, instrument.Identity.BaseAsset).
+				Sub(acceptanceBalanceTotal(baseline, instrument.Identity.BaseAsset))
+			if spotBalanceWithinFeeTolerance(delta, instrument.Rules.QuantityIncrement, price) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s %s balance did not return to baseline: %w", rowCode, instrument.Identity.BaseAsset, ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func waitPerpAcceptanceBaseline(
+	ctx context.Context,
+	rowCode string,
+	rest interface {
+		Positions(context.Context, exchange.PositionsRequest) ([]exchange.Position, error)
+	},
+	instrument exchange.Instrument,
+	baseline decimal.Decimal,
+) error {
+	tolerance := instrument.Rules.QuantityIncrement.Div(decimal.NewFromInt(2))
+	for {
+		positions, err := rest.Positions(ctx, exchange.PositionsRequest{Instrument: &instrument})
+		if err == nil {
+			current := signedAcceptancePosition(positions, instrument)
+			if current.Sub(baseline).Abs().LessThanOrEqual(tolerance) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s position did not return to baseline %s: %w", rowCode, baseline, ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func finalizeSpotAcceptance(
+	row exchangeAcceptanceRow,
+	rest spotAcceptanceCleanupClient,
+	instrument exchange.Instrument,
+	baseline []exchange.Balance,
+	journal *ownedOrderJournal,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	var cleanupErrors []error
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("cancel exact-owned orders: %w", err))
+	}
+	if err := cleanupSpotAcceptanceExposure(ctx, row, rest, instrument, baseline, journal); err != nil {
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	if err := journal.Cleanup(ctx, rest, instrument); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("verify exact-owned orders: %w", err))
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func acceptanceSubscriptionTimeout(operation string) time.Duration {
+	if strings.Contains(operation, "WatchCandles") {
+		return 75 * time.Second
+	}
+	if strings.HasPrefix(operation, "BG") && strings.Contains(operation, "WatchOrderBook") {
+		return 120 * time.Second
+	}
+	return 45 * time.Second
+}
+
+func startAcceptanceSubscriptionWitness[T any](
+	parent context.Context,
+	operation string,
+	start func(context.Context) (exchange.Subscription[T], error),
+) (*acceptanceSubscriptionWitness, error) {
+	subscription, err := start(parent)
+	if err != nil {
+		return nil, err
+	}
+	if subscription == nil || subscription.ID() == "" {
+		return nil, errors.New("returned an empty subscription")
+	}
+
+	activationCtx, cancel := context.WithTimeout(parent, 45*time.Second)
+	defer cancel()
+	statuses := subscription.Status()
+	streamErrors := subscription.Errors()
+	pendingEvent := false
+	for {
+		select {
+		case status, ok := <-statuses:
+			if !ok {
+				return nil, errors.New("status channel closed before activation")
+			}
+			if status.State == exchange.SubscriptionActive {
+				goto active
+			}
+		case _, ok := <-subscription.Events():
+			if !ok {
+				return nil, errors.New("event channel closed before activation")
+			}
+			pendingEvent = true
+		case streamErr, ok := <-streamErrors:
+			if !ok {
+				streamErrors = nil
+				continue
+			}
+			if streamErr != nil {
+				return nil, fmt.Errorf("stream error: %w", streamErr)
+			}
+		case <-activationCtx.Done():
+			return nil, fmt.Errorf("did not activate: %w", activationCtx.Err())
+		}
+	}
+
+active:
+	events := subscription.Events()
+	statuses = subscription.Status()
+	streamErrors = subscription.Errors()
+	return &acceptanceSubscriptionWitness{
+		operation: operation,
+		arm: func() {
+			pendingEvent = false
+			for {
+				select {
+				case _, ok := <-events:
+					if !ok {
+						return
+					}
+				default:
+					return
+				}
+			}
+		},
+		waitEvent: func(ctx context.Context) error {
+			if pendingEvent {
+				pendingEvent = false
+				return nil
+			}
+			for {
+				select {
+				case _, ok := <-events:
+					if !ok {
+						return errors.New("event channel closed before evidence")
+					}
+					return nil
+				case streamErr, ok := <-streamErrors:
+					if !ok {
+						streamErrors = nil
+						continue
+					}
+					if streamErr != nil {
+						return fmt.Errorf("stream error: %w", streamErr)
+					}
+				case _, ok := <-statuses:
+					if !ok {
+						statuses = nil
+					}
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		},
+		close: subscription.Close,
+	}, nil
+}
+
+func selectAcceptanceInstrument(
+	instruments []exchange.Instrument,
+	product exchange.Product,
+	hint string,
+) (exchange.Instrument, error) {
+	want := normalizeAcceptanceSymbol(hint)
+	for _, instrument := range instruments {
+		if instrument.Identity.Product != product {
+			continue
+		}
+		if normalizeAcceptanceSymbol(instrument.Identity.Symbol) == want {
+			return instrument, nil
+		}
+		if product == exchange.ProductPerp &&
+			strings.EqualFold(instrument.Identity.QuoteAsset, "USDC") &&
+			normalizeAcceptanceSymbol(instrument.Identity.BaseAsset+"PERP") == want {
+			return instrument, nil
+		}
+	}
+	return exchange.Instrument{}, fmt.Errorf(
+		"configured %s instrument %q is not admitted by the exchange (%d instruments returned)",
+		product,
+		hint,
+		len(instruments),
+	)
+}
+
+func normalizeAcceptanceSymbol(symbol string) string {
+	replacer := strings.NewReplacer("-", "", "_", "", "/", "", " ", "")
+	return strings.ToUpper(replacer.Replace(symbol))
 }

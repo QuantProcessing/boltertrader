@@ -32,11 +32,7 @@ type WsAPIClient struct {
 }
 
 func NewWsAPIClient(ctx context.Context) *WsAPIClient {
-	return NewWsAPIClientWithEndpointProfile(ctx, USDMMProductionEndpoints)
-}
-
-func NewDemoWsAPIClient(ctx context.Context) *WsAPIClient {
-	return NewWsAPIClientWithEndpointProfile(ctx, USDMMDemoEndpoints)
+	return NewWsAPIClientWithEndpointProfile(ctx, MainnetEndpointProfile())
 }
 
 func NewWsAPIClientWithEndpointProfile(ctx context.Context, profile EndpointProfile) *WsAPIClient {

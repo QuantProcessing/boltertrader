@@ -1,20 +1,5 @@
 package routeprofile
 
-type Mode string
-
-const (
-	ModeTest Mode = "test"
-	ModeLive Mode = "live"
-)
-
-type NativeEnvironment string
-
-const (
-	EnvironmentDemo    NativeEnvironment = "demo"
-	EnvironmentTestnet NativeEnvironment = "testnet"
-	EnvironmentLive    NativeEnvironment = "live"
-)
-
 type Product string
 
 const (
@@ -22,17 +7,21 @@ const (
 	ProductPerp Product = "perp"
 )
 
+// Key identifies a route profile the way callers hold it: the venue they are
+// talking to and the profile they picked on it.
+//
+// It used to carry a mode as well, back when the same venue published one
+// profile for its demo endpoints and another for its real ones. There is only
+// one endpoint family now, so a mode in the key would be a field with one
+// possible value that every caller still had to supply correctly.
 type Key struct {
 	Venue          string
-	Mode           Mode
 	RouteProfileID string
 }
 
 type Profile struct {
-	ID                string
-	Venue             string
-	Mode              Mode
-	NativeEnvironment NativeEnvironment
-	Product           Product
-	SettlementAsset   string
+	ID              string
+	Venue           string
+	Product         Product
+	SettlementAsset string
 }

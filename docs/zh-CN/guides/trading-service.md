@@ -166,5 +166,6 @@ make test
 make test-browser
 ```
 
-离线套件覆盖账本的状态机、预览封签和各个投影。外部写覆盖按 venue 和 product 行划分，每个
-target 证明什么见[测试与认证](../reference/testing.md)。
+离线套件覆盖账本的状态机、预览封签和各个投影。没有任何测试会下单：外部写入阶梯已经
+和它所依赖的 Demo、Testnet 环境一起删除。离线套件证明了什么、又没证明什么，
+见[测试与证据](../reference/testing.md)。

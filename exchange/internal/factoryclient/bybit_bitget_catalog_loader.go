@@ -22,12 +22,6 @@ func NewBybitInstrumentLoader(product exchange.Product, settings Settings) excha
 
 func (loader bybitInstrumentLoader) LoadInstruments(ctx context.Context, scope exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
 	profile := bybit.MainnetEnvironmentProfile()
-	switch loader.settings.Environment {
-	case string(exchange.EnvironmentDemo):
-		profile = bybit.DemoEnvironmentProfile()
-	case string(exchange.EnvironmentTestnet):
-		profile = bybit.TestnetEnvironmentProfile()
-	}
 	if loader.settings.Endpoint != "" {
 		profile.RESTBaseURL = loader.settings.Endpoint
 	}
@@ -121,9 +115,6 @@ func NewBitgetInstrumentLoader(product exchange.Product, productType string, set
 
 func (loader bitgetInstrumentLoader) LoadInstruments(ctx context.Context, scope exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
 	profile := bitget.MainnetEnvironmentProfile()
-	if loader.settings.Environment == string(exchange.EnvironmentDemo) {
-		profile = bitget.DemoEnvironmentProfile()
-	}
 	if loader.settings.Endpoint != "" {
 		profile.RESTBaseURL = loader.settings.Endpoint
 	}

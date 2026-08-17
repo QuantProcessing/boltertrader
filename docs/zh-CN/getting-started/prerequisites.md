@@ -4,7 +4,7 @@
 
 本页归属[运行本地栈](local-stack.md)之前需要安装和确定的内容。venue 凭证见
 [配置](../reference/configuration.md)；一次测试运行能证明什么、不能证明什么见
-[测试与认证](../reference/testing.md)。
+[测试与证据](../reference/testing.md)。
 
 ## 工具
 
@@ -58,21 +58,26 @@ Git 忽略。不要把两者合并，也不要在手工执行 compose 时省掉�
 生成的凭证位于 `.secrets/test/`，目录 `0700`，每个文件 `0600`。它们被 Git 忽略，
 缺失时由 `make up` 重新生成。
 
-## 非生产 account
+## Account 与凭证
 
-只能使用为文档所述 Demo 或 Testnet 环境签发的凭证。使用专用 account，刻意限制
-资金，并确保测试所触及的 product scope 中没有无关订单或持仓。
+已经没有非生产环境可以为之签发凭证了。在这里配好的 key 直连真实交易所，所以请
+签发一把专用的、不要给它提现权限、把 account 的资金刻意限制住，并确保你即将触及
+的 product scope 中没有无关订单或持仓。
 
 绝不要提交 `.env`，绝不要打印 credential value，也绝不要把 secret 放进命令参数。
-变量名及其所属环境见[配置](../reference/configuration.md)。
+变量名及其各自的用途见[配置](../reference/configuration.md)。
 
 ## 保持写入有界且串行
 
-外部写入测试是带闸门的。运行文档点名的那个精确 Make target：它的 recipe 只为该
-process 启用写闸门，并应用该 target 定义时的 timeout 与 no-skip 策略。不要把写
-闸门做成常驻的 shell 变量或文件配置，也不要并行运行两个外部写入 target。
+本仓库里没有任何测试会下单。外部写入阶梯已经和它所依赖的 Demo、Testnet 环境一起
+删除，`TestMakefileRecipesNeverEnableCredentialedWrites` 会让任何为写入开闸的
+recipe 失败。现在写入来自运行中的产品，一次一笔，用的是你自己的凭证。
 
-非零退出、超时或跳过的运行会使最终 venue 状态无法确认。再次写入前，先按产品自身
+让那条阶梯得以安全的那道切分依然成立：凭证可以放在文件里，因为文件本来就是放凭证
+的地方；花掉它的权限不可以，因为那样一来，一个被 checkout 出来的文件就决定了一次
+运行会做什么——这正是 `.env` 只被用来加载凭证、却拒绝导入执行闸门的原因。
+
+非零退出、超时或被中断的请求会使最终 venue 状态无法确认。再次写入前，先按产品自身
 的 identity 与 state check 处理——见[操作与恢复](../guides/operations-recovery.md)。
 绝不要为了回到干净状态而取消或平掉无关的 account state。
 

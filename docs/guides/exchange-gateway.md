@@ -75,9 +75,9 @@ secret value prevents startup before the listener opens.
 
 V1 models twenty venue/product rows across Binance, OKX, Lighter, Hyperliquid,
 Bybit, Bitget, Gate, Aster, and Nado. Nineteen rows are write-ready by default;
-Lighter Testnet Spot remains read-only until it proves two-sided liquidity and
-exact lookup in its external environment. The exact credential fields differ by
-venue and are strictly decoded on the account declaration.
+Lighter Spot remains read-only until it proves two-sided liquidity and exact
+lookup against the live book. The exact credential fields differ by venue and
+are strictly decoded on the account declaration.
 
 Start the service:
 
@@ -91,7 +91,7 @@ Resolve instruments from the service before placing an order:
 
 ```sh
 curl -H "Authorization: Bearer $GATEWAY_AUTH_TOKEN" \
-  "http://127.0.0.1:8080/v1/instruments?account_id=binance-demo-spot"
+  "http://127.0.0.1:8080/v1/instruments?account_id=binance-spot"
 ```
 
 Place an order with an account, gateway instrument ID, and idempotency key:
@@ -103,8 +103,8 @@ curl -X POST \
   -H "Idempotency-Key: manual-10001" \
   http://127.0.0.1:8080/v1/orders \
   -d '{
-    "account_id":"binance-demo-spot",
-    "instrument_id":"binance:demo:spot:BTC-USDT",
+    "account_id":"binance-spot",
+    "instrument_id":"binance:live:spot:BTC-USDT",
     "idempotency_key":"manual-10001",
     "side":"buy",
     "type":"limit",
@@ -192,7 +192,7 @@ with no pagination.
 Connect to:
 
 ```text
-GET /v1/ws?account_id=binance-demo-spot
+GET /v1/ws?account_id=binance-spot
 Authorization: Bearer <token>
 ```
 
@@ -353,8 +353,11 @@ make test-gateway-race
 make test-gateway-security
 ```
 
-`make test-gateway-demo-testnet` is credentialed and state-changing. It runs the
-twenty product rows serially and is never part of the default offline suite.
-Lighter Testnet Spot may be one-sided; its explicit certification waiver
-validates reads and invalid-command barriers, performs zero valid order
-mutations, and does not mark that row write-ready.
+A fifth target, `make test-gateway-demo-testnet`, used to sit under these. It
+was credentialed and state-changing, ran the twenty product rows serially
+against each venue's demo or testnet environment, and was never part of the
+default offline suite. It was deleted along with those environments, and
+nothing replaced it, because the same run against live would place real orders.
+The four targets above reach no venue, so none of them can establish that a row
+is write-ready; that claim needs the evidence named in
+[Adding a venue](../contributing/venues.md).

@@ -19,11 +19,6 @@ func NewOKXInstrumentLoader(product exchange.Product, settings Settings) exchang
 
 func (loader okxInstrumentLoader) LoadInstruments(ctx context.Context, scope exchange.CatalogScope) (exchange.InstrumentSnapshot, error) {
 	sdk := okx.NewClient()
-	if loader.settings.Environment == "demo" {
-		sdk.WithEnvironment(okx.Simulated)
-	} else {
-		sdk.WithEnvironment(okx.Production)
-	}
 	if loader.settings.Endpoint != "" {
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}

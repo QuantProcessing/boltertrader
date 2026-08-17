@@ -1,22 +1,21 @@
 package sdk
 
-import (
-	"fmt"
-	"net/url"
-	"strings"
-)
-
 const (
 	ProductTypeUSDTFutures = "USDT-FUTURES"
 	ProductTypeUSDCFutures = "USDC-FUTURES"
 )
 
+// EnvironmentProfile is the set of hosts one bitget client talks to.
+//
+// It used to also carry a PAPTrading flag, which turned on a `paptrading: 1`
+// request header and switched the public book topic to a shallower one that
+// bitget's paper environment was the only place to need. Both are gone with the
+// environment that asked for them; what remains is addresses, and a caller that
+// overrides one is pointing at a proxy, not at a different venue.
 type EnvironmentProfile struct {
-	RESTBaseURL     string
-	PublicWSURL     string
-	PrivateWSURL    string
-	PAPTrading      bool
-	OfficialTestnet bool
+	RESTBaseURL  string
+	PublicWSURL  string
+	PrivateWSURL string
 }
 
 func MainnetEnvironmentProfile() EnvironmentProfile {
@@ -27,40 +26,8 @@ func MainnetEnvironmentProfile() EnvironmentProfile {
 	}
 }
 
-func DemoEnvironmentProfile() EnvironmentProfile {
-	return EnvironmentProfile{
-		RESTBaseURL:  defaultBaseURL,
-		PublicWSURL:  "wss://wspap.bitget.com/v3/ws/public",
-		PrivateWSURL: "wss://wspap.bitget.com/v3/ws/private",
-		PAPTrading:   true,
-	}
-}
-
-func NewTestnetEnvironmentProfile(restBaseURL, publicWSURL, privateWSURL string) (EnvironmentProfile, error) {
-	for name, raw := range map[string]string{
-		"restBaseURL":  restBaseURL,
-		"publicWSURL":  publicWSURL,
-		"privateWSURL": privateWSURL,
-	} {
-		if strings.TrimSpace(raw) == "" {
-			return EnvironmentProfile{}, fmt.Errorf("bitget environment profile: %s is required", name)
-		}
-		parsed, err := url.Parse(raw)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			return EnvironmentProfile{}, fmt.Errorf("bitget environment profile: %s has invalid URL", name)
-		}
-	}
-	return EnvironmentProfile{
-		RESTBaseURL:     restBaseURL,
-		PublicWSURL:     publicWSURL,
-		PrivateWSURL:    privateWSURL,
-		OfficialTestnet: true,
-	}, nil
-}
-
 func (c *Client) WithEnvironmentProfile(profile EnvironmentProfile) *Client {
 	c.baseURL = profile.RESTBaseURL
-	c.papTrading = profile.PAPTrading
 	return c
 }
 

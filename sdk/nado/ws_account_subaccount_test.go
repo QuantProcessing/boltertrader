@@ -26,7 +26,7 @@ func TestWsAccountClientSubscribeOrdersUsesConfiguredSubaccount(t *testing.T) {
 	t.Parallel()
 
 	privateKey := "1111111111111111111111111111111111111111111111111111111111111111"
-	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(privateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestWsAccountClientSubscribeOrdersUsesConfiguredSubaccount(t *testing.T) {
 func TestWsAccountClientSetSubaccountRejectsLongNames(t *testing.T) {
 	t.Parallel()
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(wsTestPrivateKey, "default")
+	restClient, err := newNadoClient(t).WithCredentials(wsTestPrivateKey, "default")
 	require.NoError(t, err)
 	client, err := NewWsAccountClient(context.Background(), restClient)
 	require.NoError(t, err)

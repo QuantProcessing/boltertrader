@@ -19,7 +19,7 @@ import (
 )
 
 func TestAsterAndNadoBuildersSatisfyPublicContracts(t *testing.T) {
-	settings := Settings{Environment: "testnet"}
+	settings := Settings{}
 
 	var _ exchange.SpotClient = NewAsterSpot(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
 	var _ exchange.PerpClient = NewAsterUSDTPerp(testAsterUserAddress, testAsterPrivateKey, testAsterUserAddress, settings)
@@ -382,7 +382,7 @@ func (router *nadoOpenAPIRouter) nadoQuery(request *http.Request) (*http.Respons
 	case "symbols":
 		return router.file("sdk/nado/testdata/symbols.json"), nil
 	case "contracts":
-		return asterOpenAPIJSONResponse(`{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x1111111111111111111111111111111111111111"},"request_type":"contracts"}`), nil
+		return asterOpenAPIJSONResponse(`{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x1111111111111111111111111111111111111111"},"request_type":"contracts"}`), nil
 	case "subaccount_info":
 		return router.file("sdk/nado/testdata/subaccount_info.json"), nil
 	case "subaccount_orders", "orders":
@@ -490,7 +490,7 @@ func TestAsterWebSocketOrderCommandsUseRESTBridge(t *testing.T) {
 
 func TestOpenAPINadoRESTExecutionMatrix(t *testing.T) {
 	router := newNadoOpenAPIRouter(t)
-	settings := Settings{Environment: "testnet", Endpoint: "https://nado-fixture.invalid/v1", WebSocketEndpoint: "wss://nado-fixture.invalid/ws", HTTPClient: &http.Client{Transport: router}}
+	settings := Settings{Endpoint: "https://nado-fixture.invalid/v1", WebSocketEndpoint: "wss://nado-fixture.invalid/ws", HTTPClient: &http.Client{Transport: router}}
 	ctx := context.Background()
 
 	spot := NewNadoSpot(testAsterPrivateKey, "default", settings)
@@ -520,7 +520,7 @@ func TestOpenAPINadoRESTExecutionMatrix(t *testing.T) {
 }
 
 func TestNadoWebSocketSurfaceExposesEveryMethod(t *testing.T) {
-	ws := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{Environment: "testnet"}).WebSocket()
+	ws := NewNadoUSDT0Perp(testAsterPrivateKey, "default", Settings{}).WebSocket()
 	exercisePerpWebSocketSurface(t, ws)
 }
 

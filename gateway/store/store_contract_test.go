@@ -75,7 +75,7 @@ func TestReserveCommandRequestFreezesConflictScope(t *testing.T) {
 	request := ReserveCommandRequest{
 		PrincipalID:    domain.PrincipalID("principal-a"),
 		AccountID:      domain.AccountID("binance-main"),
-		InstrumentID:   domain.InstrumentID("binance:demo:spot:BTC-USDT"),
+		InstrumentID:   domain.InstrumentID("binance:live:spot:BTC-USDT"),
 		IdempotencyKey: domain.IdempotencyKey("strategy-a-1"),
 		CorrelationID:  domain.EventID("018f0000-0000-7000-8000-000000000003"),
 		PayloadHash:    payloadHash,

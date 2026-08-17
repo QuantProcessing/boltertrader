@@ -13,36 +13,37 @@ import (
 	"testing"
 )
 
-func TestSignerUsesSelectedProfileChainID(t *testing.T) {
+// The chain ID sits in the EIP-712 domain, so a signer on the wrong chain
+// produces a signature the venue rejects as malformed rather than a transport
+// error that names the mistake. This used to build its two signers from a
+// mainnet and a testnet profile, but the profile was only ever a way to obtain
+// two chain IDs — the property is the signer's, and it survives the profile
+// having only one chain to offer.
+func TestSignerChainIDReachesTheEIP712Domain(t *testing.T) {
 	privateKey := fmt.Sprintf("%064x", 1)
-	mainnet, _ := NewProfile(EnvironmentMainnet)
-	testnet, _ := NewProfile(EnvironmentTestnet)
-	mainnetSigner, err := NewSigner(privateKey, mainnet.ChainID())
+	signer, err := NewSigner(privateKey, 57073)
 	if err != nil {
 		t.Fatal(err)
 	}
-	testnetSigner, err := NewSigner(privateKey, testnet.ChainID())
+	otherChain, err := NewSigner(privateKey, 763373)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if mainnetSigner.ChainID() != 57073 || testnetSigner.ChainID() != 763373 {
-		t.Fatalf("chain ids = %d, %d", mainnetSigner.ChainID(), testnetSigner.ChainID())
 	}
 	order := TxOrder{
-		Sender: BuildSender(testnetSigner.GetAddress(), "default"), ProductId: 2,
+		Sender: BuildSender(signer.GetAddress(), "default"), ProductId: 2,
 		Amount: "100000000000000000", PriceX18: "2500000000000000000000",
 		Nonce: "1849300000000000000", Expiration: "4000000000", Appendix: "1",
 	}
-	_, mainnetDigest, err := mainnetSigner.SignOrder(order, GenOrderVerifyingContract(2))
+	_, digest, err := signer.SignOrder(order, GenOrderVerifyingContract(2))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, testnetDigest, err := testnetSigner.SignOrder(order, GenOrderVerifyingContract(2))
+	_, otherChainDigest, err := otherChain.SignOrder(order, GenOrderVerifyingContract(2))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainnetDigest == testnetDigest {
-		t.Fatal("different profile chain IDs produced the same EIP-712 digest")
+	if digest == otherChainDigest {
+		t.Fatal("different chain IDs produced the same EIP-712 digest")
 	}
 }
 
@@ -124,14 +125,14 @@ func TestEIP712SigningFixtures(t *testing.T) {
 }
 
 func TestCredentialsRejectSubaccountNameLongerThanBytes12(t *testing.T) {
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	if _, err := client.WithCredentials(fmt.Sprintf("%064x", 1), "thirteen-bytes"); err == nil {
 		t.Fatal("oversized subaccount name unexpectedly accepted")
 	}
 }
 
 func TestRESTWriteDiscoversContractsAndCarriesSpotLeverageFalse(t *testing.T) {
-	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+	client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ func TestRESTWriteDiscoversContractsAndCarriesSpotLeverageFalse(t *testing.T) {
 		var payload string
 		switch request.URL.Query().Get("type") {
 		case "contracts":
-			payload = `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
+			payload = `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
 		case "status":
 			payload = nadoFixtureBody(t, "status.json")
 		case "all_products":
@@ -193,14 +194,14 @@ func TestRESTWriteDiscoversContractsAndCarriesSpotLeverageFalse(t *testing.T) {
 }
 
 func TestRESTWriteRejectsWrongDiscoveredChainBeforeExecute(t *testing.T) {
-	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+	client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
 	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
-		payload := `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x05ec92d78ed421f3d3ada77ffde167106565974e"},"request_type":"query_contracts"}`
+		payload := `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x05ec92d78ed421f3d3ada77ffde167106565974e"},"request_type":"query_contracts"}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
 	})})
 	_, err = client.PlaceOrder(context.Background(), ClientOrderInput{
@@ -215,13 +216,13 @@ func TestRESTWriteRejectsWrongDiscoveredChainBeforeExecute(t *testing.T) {
 }
 
 func TestContractDiscoveryIsRevalidatedOnEveryWritePreparation(t *testing.T) {
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	calls := 0
 	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
-		chainID := "763373"
+		chainID := "57073"
 		if calls == 2 {
-			chainID = "57073"
+			chainID = "763373"
 		}
 		payload := fmt.Sprintf(`{"status":"success","data":{"chain_id":%q,"endpoint_addr":"0x4444444444444444444444444444444444444444"}}`, chainID)
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
@@ -238,7 +239,7 @@ func TestContractDiscoveryIsRevalidatedOnEveryWritePreparation(t *testing.T) {
 }
 
 func TestRESTWriteRejectsInactiveProductBeforeSigningOrExecute(t *testing.T) {
-	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+	client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +250,7 @@ func TestRESTWriteRejectsInactiveProductBeforeSigningOrExecute(t *testing.T) {
 		var payload string
 		switch request.URL.Query().Get("type") {
 		case "contracts":
-			payload = `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"}}`
+			payload = `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x4444444444444444444444444444444444444444"}}`
 		case "status":
 			payload = nadoFixtureBody(t, "status.json")
 		case "all_products":
@@ -323,7 +324,7 @@ func TestRESTWriteRejectsMismatchedDiscoveredProductBeforeExecute(t *testing.T) 
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+			client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -333,7 +334,7 @@ func TestRESTWriteRejectsMismatchedDiscoveredProductBeforeExecute(t *testing.T) 
 				if strings.HasSuffix(request.URL.Path, "/execute") {
 					t.Fatalf("mismatched discovered product reached execute: %v", requests)
 				}
-				payload := `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
+				payload := `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
 				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
 			})})
 			product := discovered
@@ -357,7 +358,7 @@ func TestRESTWriteRejectsMismatchedDiscoveredProductBeforeExecute(t *testing.T) 
 }
 
 func TestWSPrepareOrderRejectsMismatchedDiscoveredProduct(t *testing.T) {
-	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
+	client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +368,7 @@ func TestWSPrepareOrderRejectsMismatchedDiscoveredProduct(t *testing.T) {
 		if strings.HasSuffix(request.URL.Path, "/execute") {
 			t.Fatalf("mismatched WS prepared product reached execute: %v", requests)
 		}
-		payload := `{"status":"success","data":{"chain_id":"763373","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
+		payload := `{"status":"success","data":{"chain_id":"57073","endpoint_addr":"0x4444444444444444444444444444444444444444"},"request_type":"query_contracts"}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(payload)), Request: request}, nil
 	})})
 	ws, err := NewWsApiClient(context.Background(), client)
@@ -393,7 +394,7 @@ func TestWSPrepareOrderRejectsMismatchedDiscoveredProduct(t *testing.T) {
 }
 
 func TestResolveProductRejectsFailedSequencerBeforeMetadata(t *testing.T) {
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	var requests []string
 	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests = append(requests, request.URL.String())
@@ -411,7 +412,7 @@ func TestResolveProductRejectsFailedSequencerBeforeMetadata(t *testing.T) {
 }
 
 func TestResolveProductRefreshesTradingStatusEveryCall(t *testing.T) {
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	statusCalls := 0
 	symbolCalls := 0
 	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {

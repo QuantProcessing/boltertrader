@@ -41,9 +41,8 @@ func TestLighterPerpMarkPriceRESTNormalizesOrderBookDetailsMarkPrice(t *testing.
 		return nil, nil
 	})
 	client := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	})
 	markREST, ok := client.(exchange.PerpMarkPriceREST)
 	if !ok {
@@ -96,9 +95,8 @@ func TestLighterPerpMarkPriceRESTRejectsMalformedRows(t *testing.T) {
 				return lighterOpenAPIJSONResponse(test.markBody), nil
 			})
 			markREST := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-				Endpoint:    "https://openapi.invalid",
-				Environment: "testnet",
-				HTTPClient:  &http.Client{Transport: transport},
+				Endpoint:   "https://openapi.invalid",
+				HTTPClient: &http.Client{Transport: transport},
 			}).(exchange.PerpMarkPriceREST)
 
 			_, err := markREST.MarkPrice(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH", "0"))
@@ -143,9 +141,8 @@ func TestLighterPerpMarkPriceRESTNormalizesTransportAndHTTPMalformed(t *testing.
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			markREST := NewLighterPerp(lighterOpenAPILighterPrivateKey, 7, 2, Settings{
-				Endpoint:    "https://openapi.invalid",
-				Environment: "testnet",
-				HTTPClient:  &http.Client{Transport: test.rt},
+				Endpoint:   "https://openapi.invalid",
+				HTTPClient: &http.Client{Transport: test.rt},
 			}).(exchange.PerpMarkPriceREST)
 
 			_, err := markREST.MarkPrice(context.Background(), lighterTestInstrument(exchange.ProductPerp, "ETH-USDC", "ETH", "0"))

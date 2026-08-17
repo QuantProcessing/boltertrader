@@ -45,7 +45,7 @@ func TestPlatformRuntimeConcurrentReadsObserveWholeGenerations(t *testing.T) {
 					errorsFound <- fmt.Errorf("perp route absent: %+v", active.Routes)
 					return
 				}
-				if _, err := router.Route(t.Context(), first.AccountID, "binance:demo:spot:BTC-USDT"); err != nil {
+				if _, err := router.Route(t.Context(), first.AccountID, "binance:live:spot:BTC-USDT"); err != nil {
 					errorsFound <- fmt.Errorf("route during promotion: %w", err)
 					return
 				}

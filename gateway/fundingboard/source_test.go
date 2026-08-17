@@ -25,7 +25,7 @@ func TestBoardSourceIsolatesVenueFailures(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	factory := &fakeFactory{fail: map[string]bool{"okx": true}}
 
-	source, err := newSource(factory, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(factory, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -37,14 +37,11 @@ func TestBoardSourceIsolatesVenueFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if snapshot.Mode != string(routeprofile.ModeLive) {
-		t.Fatalf("Mode = %q, want %q", snapshot.Mode, routeprofile.ModeLive)
-	}
 
-	// Ten funding-capable perp profiles per mode: eleven perp rows in the
-	// profile registry minus aster, which the capability matrix records as
-	// publishing no funding at all. Asserting the count here is what keeps a
-	// venue from silently falling off the board when a profile row changes.
+	// Ten funding-capable perp profiles: eleven perp rows in the profile
+	// registry minus aster, which the capability matrix records as publishing no
+	// funding at all. Asserting the count here is what keeps a venue from
+	// silently falling off the board when a profile row changes.
 	if len(snapshot.Venues) != 10 {
 		t.Fatalf("got %d venue columns, want 10: %+v", len(snapshot.Venues), snapshot.Venues)
 	}
@@ -92,7 +89,7 @@ func TestBoardSourceIsolatesVenueFailures(t *testing.T) {
 func TestBoardSourceRefreshCadence(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	factory := &fakeFactory{}
-	source, err := newSource(factory, routeprofile.DefaultRegistry(), routeprofile.ModeTest, sourceOptions{
+	source, err := newSource(factory, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -156,7 +153,7 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
 	release := make(chan struct{})
 	factory := &fakeFactory{gate: release}
-	source, err := newSource(factory, routeprofile.DefaultRegistry(), routeprofile.ModeLive, sourceOptions{
+	source, err := newSource(factory, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -197,16 +194,17 @@ func TestBoardSourceSingleFlight(t *testing.T) {
 // TestBoardSourceKeepsOneColumnPerMarket pins that a column is an exchange
 // market, not a route profile.
 //
-// bybit is the one venue the profile registry lists under both `demo` and
-// `testnet`, and test mode resolves both, so an enumeration that trusts the
-// registry's shape stands two columns labelled "bybit · USDT" beside each other
+// The two used to come apart: bybit was registered under both `demo` and
+// `testnet`, test mode resolved both, and an enumeration that trusted the
+// registry's shape stood two columns labelled "bybit · USDT" beside each other
 // carrying different rates. That is the failure this board exists to prevent
-// wearing its most convincing disguise: a table is read by comparing one
+// wearing its most convincing disguise — a table is read by comparing one
 // venue's number against another's, so two columns with one name read as a
-// spread, and no trade can capture it.
+// spread, and no trade can capture it. The registry is now keyed so that a
+// market cannot resolve twice; this test is what keeps it that way.
 func TestBoardSourceKeepsOneColumnPerMarket(t *testing.T) {
 	clock := &testClock{now: time.Unix(1720000000, 0).UTC()}
-	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), routeprofile.ModeTest, sourceOptions{
+	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), sourceOptions{
 		interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second, now: clock.Now,
 	})
 	if err != nil {
@@ -227,10 +225,8 @@ func TestBoardSourceKeepsOneColumnPerMarket(t *testing.T) {
 		}
 		seen[market] = venue.RouteProfileID
 	}
-	// The same ten markets live mode shows: which sandbox a rate was read from
-	// is not something the board is a board of.
-	if len(snapshot.Venues) != 10 {
-		t.Fatalf("got %d columns in test mode, want the 10 live mode shows: %+v", len(snapshot.Venues), snapshot.Venues)
+	if len(seen) != 10 {
+		t.Fatalf("got %d distinct markets, want 10: %+v", len(seen), snapshot.Venues)
 	}
 }
 
@@ -241,27 +237,25 @@ func TestBoardSourceRejectsUnusableConfiguration(t *testing.T) {
 	cases := []struct {
 		name    string
 		factory Factory
-		mode    routeprofile.Mode
 		options sourceOptions
 	}{
-		{name: "nil factory", factory: nil, mode: routeprofile.ModeLive, options: valid},
-		{name: "unknown mode", factory: &fakeFactory{}, mode: routeprofile.Mode("staging"), options: valid},
+		{name: "nil factory", factory: nil, options: valid},
 		{
 			// A max age at or below the refresh interval would mark every
 			// column unavailable the instant it was written.
-			name: "max age does not exceed the refresh interval", factory: &fakeFactory{}, mode: routeprofile.ModeLive,
+			name: "max age does not exceed the refresh interval", factory: &fakeFactory{},
 			options: sourceOptions{interval: time.Minute, maxAge: time.Minute, venueTimeout: time.Second, now: clock.Now},
 		},
 		{
 			// Rejecting every profile leaves no columns, which would render as a
 			// market-wide outage rather than as the misconfiguration it is.
-			name: "factory builds nothing", factory: &fakeFactory{rejectAll: true}, mode: routeprofile.ModeLive, options: valid,
+			name: "factory builds nothing", factory: &fakeFactory{rejectAll: true}, options: valid,
 		},
-		{name: "no clock", factory: &fakeFactory{}, mode: routeprofile.ModeLive, options: sourceOptions{interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second}},
+		{name: "no clock", factory: &fakeFactory{}, options: sourceOptions{interval: 30 * time.Second, maxAge: 2 * time.Minute, venueTimeout: time.Second}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			source, err := newSource(testCase.factory, routeprofile.DefaultRegistry(), testCase.mode, testCase.options)
+			source, err := newSource(testCase.factory, routeprofile.DefaultRegistry(), testCase.options)
 			if source != nil || !errors.Is(err, ErrBoardUnavailable) {
 				t.Fatalf("source=%v err=%v", source, err)
 			}
@@ -276,7 +270,7 @@ func TestBoardSourceRejectsUnusableConfiguration(t *testing.T) {
 		t.Fatalf("Close on an unbuilt source: %v", err)
 	}
 
-	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), routeprofile.ModeLive, valid)
+	source, err := newSource(&fakeFactory{}, routeprofile.DefaultRegistry(), valid)
 	if err != nil {
 		t.Fatalf("newSource: %v", err)
 	}

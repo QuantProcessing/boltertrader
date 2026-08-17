@@ -48,11 +48,7 @@ type WsAccountClient struct {
 }
 
 func NewWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
-	return NewWsAccountClientWithEndpointProfile(ctx, apiKey, apiSecret, USDMMProductionEndpoints)
-}
-
-func NewDemoWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {
-	return NewWsAccountClientWithEndpointProfile(ctx, apiKey, apiSecret, USDMMDemoEndpoints)
+	return NewWsAccountClientWithEndpointProfile(ctx, apiKey, apiSecret, MainnetEndpointProfile())
 }
 
 func NewCoinMWsAccountClient(ctx context.Context, apiKey, apiSecret string) *WsAccountClient {

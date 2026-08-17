@@ -108,7 +108,6 @@ type HistoryQuery struct {
 
 // Snapshot is the whole board: one column per funding-capable route profile.
 type Snapshot struct {
-	Mode       string
 	ObservedAt time.Time
 	Venues     []VenueSnapshot
 }
@@ -152,7 +151,7 @@ func (factory *ExchangeFactory) Build(profile routeprofile.Profile) (Connector, 
 		exchange.Venue(profile.Venue),
 		exchange.Product(profile.Product),
 		profile.SettlementAsset,
-		exchangefactory.Environment(profile.NativeEnvironment),
+		exchangefactory.EnvironmentLive,
 		factory.httpClient,
 	)
 	if err != nil {
@@ -176,7 +175,7 @@ func (factory *ExchangeFactory) BuildHistory(profile routeprofile.Profile) (Hist
 		exchange.Venue(profile.Venue),
 		exchange.Product(profile.Product),
 		profile.SettlementAsset,
-		exchangefactory.Environment(profile.NativeEnvironment),
+		exchangefactory.EnvironmentLive,
 		factory.httpClient,
 	)
 	if err != nil {
@@ -188,7 +187,6 @@ func (factory *ExchangeFactory) BuildHistory(profile routeprofile.Profile) (Hist
 type Source struct {
 	mu           sync.Mutex
 	columns      []*column
-	mode         routeprofile.Mode
 	interval     time.Duration
 	maxAge       time.Duration
 	venueTimeout time.Duration
@@ -221,21 +219,14 @@ type sourceOptions struct {
 	now          func() time.Time
 }
 
-// NewSource enumerates the perpetual route profiles for a mode and opens one
+// NewSource enumerates the perpetual route profiles and opens one
 // credential-free connector per profile that has a funding surface.
-//
-// The board follows the gateway's runtime mode rather than always reading
-// mainnet. Live rates under a test-mode gateway would read as an ordinary
-// board while describing a market the arbitrage product cannot trade against,
-// which is the failure mode this codebase keeps designing out: plausible
-// numbers instead of a visible gap. A sparse testnet column shows up as
-// unavailable, which is the truth.
 //
 // A profile the factory rejects is not a column. That is how aster stays off
 // the board: the capability matrix records that it publishes no funding, so
 // "aster has no rates" and "aster is down" never become the same rendering.
-func NewSource(factory Factory, trusted *routeprofile.Registry, mode routeprofile.Mode) (*Source, error) {
-	return newSource(factory, trusted, mode, sourceOptions{
+func NewSource(factory Factory, trusted *routeprofile.Registry) (*Source, error) {
+	return newSource(factory, trusted, sourceOptions{
 		interval:     defaultRefreshInterval,
 		maxAge:       defaultMaxAge,
 		venueTimeout: defaultVenueTimeout,
@@ -243,7 +234,7 @@ func NewSource(factory Factory, trusted *routeprofile.Registry, mode routeprofil
 	})
 }
 
-func newSource(factory Factory, trusted *routeprofile.Registry, mode routeprofile.Mode, options sourceOptions) (*Source, error) {
+func newSource(factory Factory, trusted *routeprofile.Registry, options sourceOptions) (*Source, error) {
 	if factory == nil {
 		return nil, ErrBoardUnavailable
 	}
@@ -253,38 +244,27 @@ func newSource(factory Factory, trusted *routeprofile.Registry, mode routeprofil
 	if options.interval <= 0 || options.maxAge <= options.interval || options.venueTimeout <= 0 || options.now == nil {
 		return nil, ErrBoardUnavailable
 	}
-	profiles := trusted.Profiles(mode)
+	profiles := trusted.Profiles()
 	if len(profiles) == 0 {
 		return nil, ErrBoardUnavailable
 	}
-	// One column per exchange market, not per route profile. bybit is registered
-	// under both `demo` and `testnet` and both resolve in test mode, so the
-	// unguarded enumeration stands two columns labelled "bybit · USDT" side by
-	// side carrying different numbers — precisely the plausible-looking table
-	// this source exists to prevent. The registry's order is stable, so which
-	// environment survives is stable too, and the claim is staked only after a
-	// connector is built so a venue whose first environment cannot be reached
-	// still gets its second.
-	type market struct{ venue, product, settlement string }
-	claimed := make(map[market]struct{}, len(profiles))
+	// One profile is one column. This used to need a per-market claim: bybit was
+	// registered under both `demo` and `testnet` and both resolved in test mode,
+	// so the unguarded enumeration stood two columns labelled "bybit · USDT"
+	// side by side carrying different numbers. The registry is now keyed by a
+	// profile ID derived from venue, product and settlement, so two columns
+	// naming one market cannot be built in the first place. bybit and bitget
+	// still stand two columns each — one per settlement asset, which are
+	// different markets.
 	columns := make([]*column, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile.Product != routeprofile.ProductPerp {
-			continue
-		}
-		key := market{
-			venue:      profile.Venue,
-			product:    string(profile.Product),
-			settlement: profile.SettlementAsset,
-		}
-		if _, taken := claimed[key]; taken {
 			continue
 		}
 		connector, err := factory.Build(profile)
 		if err != nil || connector == nil {
 			continue
 		}
-		claimed[key] = struct{}{}
 		columns = append(columns, &column{
 			profile:   profile,
 			connector: connector,
@@ -292,14 +272,13 @@ func newSource(factory Factory, trusted *routeprofile.Registry, mode routeprofil
 		})
 	}
 	if len(columns) == 0 {
-		// Every supported mode has funding venues. None means the profile
-		// registry or the factory is misconfigured, and a board that silently
-		// served an empty table forever would look like a market-wide outage.
+		// The platform has funding venues. None means the profile registry or
+		// the factory is misconfigured, and a board that silently served an
+		// empty table forever would look like a market-wide outage.
 		return nil, ErrBoardUnavailable
 	}
 	return &Source{
 		columns:      columns,
-		mode:         mode,
 		interval:     options.interval,
 		maxAge:       options.maxAge,
 		venueTimeout: options.venueTimeout,
@@ -496,18 +475,26 @@ func (source *Source) resolveHistory(query HistoryQuery) (*column, exchange.Fund
 	if source.closed {
 		return nil, missing, false, ErrBoardUnavailable
 	}
-	// Every matching column is searched, not the first one. A venue and an
-	// environment do not name a column: bybit and bitget each stand two, one per
-	// settlement asset, and the registry's ordering puts USDC ahead of USDT.
-	// Stopping at the first match reported every USDT instrument on those two
-	// venues as absent from a board that was carrying it one column over.
+	// A column no longer carries an environment of its own — live is the only
+	// one the factory can build — but the query still names one, because it
+	// arrives from the browser alongside a venue and a symbol. A query naming
+	// anything else is asking about endpoints this board cannot reach, and is
+	// unsupported rather than silently answered from the live column.
+	if query.Environment != string(exchange.EnvironmentLive) {
+		return nil, missing, true, ErrHistoryUnsupported
+	}
+	// Every matching column is searched, not the first one. A venue does not
+	// name a column: bybit and bitget each stand two, one per settlement asset,
+	// and the registry's ordering puts USDC ahead of USDT. Stopping at the first
+	// match reported every USDT instrument on those two venues as absent from a
+	// board that was carrying it one column over.
 	var (
-		matched bool // some column answers for this venue and environment
+		matched bool // some column answers for this venue
 		charted bool // at least one of them has a history surface
 		cold    bool // at least one of them has never been read
 	)
 	for _, current := range source.columns {
-		if current.profile.Venue != query.Venue || string(current.profile.NativeEnvironment) != query.Environment {
+		if current.profile.Venue != query.Venue {
 			continue
 		}
 		matched = true
@@ -547,7 +534,7 @@ func (source *Source) projectLocked() Snapshot {
 	for _, current := range source.columns {
 		venue := VenueSnapshot{
 			Venue:          current.profile.Venue,
-			Environment:    string(current.profile.NativeEnvironment),
+			Environment:    string(exchange.EnvironmentLive),
 			Product:        string(current.profile.Product),
 			Settlement:     current.profile.SettlementAsset,
 			RouteProfileID: current.profile.ID,
@@ -563,7 +550,7 @@ func (source *Source) projectLocked() Snapshot {
 		}
 		venues = append(venues, venue)
 	}
-	return Snapshot{Mode: string(source.mode), ObservedAt: observedAt, Venues: venues}
+	return Snapshot{ObservedAt: observedAt, Venues: venues}
 }
 
 func (source *Source) clock() time.Time {

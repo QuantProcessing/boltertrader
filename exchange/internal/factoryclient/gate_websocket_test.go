@@ -150,7 +150,12 @@ func TestGatePerpReferencePayloadMatchesOfficialTickerArrayShape(t *testing.T) {
 	}
 }
 
-func TestGatePerpPublicTradePayloadMatchesTestnetArrayShape(t *testing.T) {
+// gatePerpPublicTradeEvents accepts a `result` that is either an array or a
+// single object, and this covers the array arm. The arm exists because Gate's
+// testnet sent arrays where the documented shape was one object; testnet is
+// gone but the tolerance is kept, since nothing was ever able to prove which
+// shape a given Gate deployment sends.
+func TestGatePerpPublicTradePayloadAcceptsTheArrayShape(t *testing.T) {
 	raw := json.RawMessage(`{
 		"channel": "futures.trades",
 		"event": "update",
@@ -289,7 +294,6 @@ func TestGateWebSocketCommandsUseRESTBridge(t *testing.T) {
 	client := NewGateSpot("key", "secret", Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://ws.invalid/v4/ws/spot",
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: router},
 	})
 	ack, err := client.WebSocket().PlaceOrder(context.Background(), exchange.PlaceOrderRequest{
@@ -347,7 +351,6 @@ func TestGateWebSocketExercisesEveryExposedMethod(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://ws.invalid/v4/ws/spot",
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: &gateOpenAPIRouter{}},
 	}
 	spot := NewGateSpot("key", "secret", settings).WebSocket()

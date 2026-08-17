@@ -70,7 +70,7 @@ func (authority validationSnapshotAuthority) Execute(ctx context.Context, reques
 	case httpapi.AuthorityRuntimeReadiness:
 		return httpapi.AuthorityResponse{Body: httpapi.RuntimeReadiness{Ready: true}}, nil
 	case httpapi.AuthorityCatalogVenues:
-		return httpapi.AuthorityResponse{Body: profileAuthorityVenues(authority.mode, nil)}, nil
+		return httpapi.AuthorityResponse{Body: profileAuthorityVenues(nil)}, nil
 	case httpapi.AuthorityCatalogInstruments:
 		revision := sha256.Sum256([]byte("[]"))
 		return httpapi.AuthorityResponse{Body: authorityCatalogInstruments{
@@ -917,7 +917,7 @@ func (authority *gatewayAuthority) applyDesired(ctx context.Context, request htt
 	if request.DesiredApply == nil || request.Mode != string(authority.mode) || request.AccountID != request.DesiredApply.AccountID || request.OperationID != request.DesiredApply.OperationID {
 		return httpapi.AuthorityResponse{}, errors.New("desired runtime request is invalid")
 	}
-	desired, err := desiredSnapshot(*request.DesiredApply, routeprofile.Mode(authority.mode))
+	desired, err := desiredSnapshot(*request.DesiredApply)
 	if err != nil {
 		return httpapi.AuthorityResponse{}, err
 	}
@@ -927,7 +927,7 @@ func (authority *gatewayAuthority) applyDesired(ctx context.Context, request htt
 	return authority.getRuntimeView(ctx, request.AccountID)
 }
 
-func desiredSnapshot(request httpapi.DesiredApplyRequest, mode routeprofile.Mode) (store.DesiredSnapshot, error) {
+func desiredSnapshot(request httpapi.DesiredApplyRequest) (store.DesiredSnapshot, error) {
 	operationID, err := secretstore.ParseOperationID(request.OperationID)
 	if err != nil {
 		return store.DesiredSnapshot{}, errors.New("desired operation id is invalid")
@@ -939,10 +939,18 @@ func desiredSnapshot(request httpapi.DesiredApplyRequest, mode routeprofile.Mode
 	if request.DesiredStateRevision < 1 || request.RuntimeGeneration < 1 || request.CredentialVersion < 1 {
 		return store.DesiredSnapshot{}, errors.New("desired runtime fence is invalid")
 	}
+	// A route profile no longer carries an environment of its own — live is the
+	// only one the factory can build — but the request still names one, because
+	// it is written into the snapshot and stored beside the account. A request
+	// naming anything else describes endpoints nothing can reach, and applying it
+	// would leave a row asking for demo behind a runtime that is live.
+	if request.NativeEnvironment != string(exchange.EnvironmentLive) {
+		return store.DesiredSnapshot{}, errors.New("desired native environment is invalid")
+	}
 	routes := make([]store.RouteDefinition, 0, len(request.Routes))
 	for _, requestedRoute := range request.Routes {
-		profile, err := routeprofile.DefaultRegistry().Resolve(mode, request.Venue, requestedRoute.RouteProfileID)
-		if err != nil || string(profile.NativeEnvironment) != request.NativeEnvironment || string(profile.Product) != requestedRoute.Product || profile.SettlementAsset != requestedRoute.SettlementAsset {
+		profile, err := routeprofile.DefaultRegistry().Resolve(request.Venue, requestedRoute.RouteProfileID)
+		if err != nil || string(profile.Product) != requestedRoute.Product || profile.SettlementAsset != requestedRoute.SettlementAsset {
 			return store.DesiredSnapshot{}, errors.New("desired route profile is invalid")
 		}
 		routes = append(routes, store.RouteDefinition{
@@ -1165,7 +1173,7 @@ func (authority *gatewayAuthority) activeRouteLifecycleState(accountID domain.Ac
 
 func (reads managerAuthorityReads) Venues() []authorityVenue {
 	resources := reads.manager.Accounts()
-	venues := profileAuthorityVenues(reads.mode, reads.profiles)
+	venues := profileAuthorityVenues(reads.profiles)
 	indexes := make(map[string]int, len(venues))
 	for index, venue := range venues {
 		indexes[venue.Venue+"\x00"+venue.Environment] = index
@@ -1179,31 +1187,29 @@ func (reads managerAuthorityReads) Venues() []authorityVenue {
 	return venues
 }
 
-func profileAuthorityVenues(runtimeMode account.RuntimeMode, registry *routeprofile.Registry) []authorityVenue {
+// profileAuthorityVenues enumerates the venues the registry knows, one entry
+// each.
+//
+// A venue used to appear once per environment it stood endpoints in, so the
+// dedup key carried the environment and the ordering broke ties on it. Only
+// live endpoints exist now, which makes a venue name the whole identity. The
+// environment stays on the emitted record because the readiness join below is
+// keyed on it and the resources it matches against still carry one.
+func profileAuthorityVenues(registry *routeprofile.Registry) []authorityVenue {
 	if registry == nil {
 		registry = routeprofile.DefaultRegistry()
 	}
-	mode := routeprofile.Mode(runtimeMode)
-	if mode == "" {
-		mode = routeprofile.ModeTest
-	}
-	profiles := registry.Profiles(mode)
+	profiles := registry.Profiles()
 	venues := make([]authorityVenue, 0, len(profiles))
 	indexes := make(map[string]int, len(profiles))
 	for _, profile := range profiles {
-		key := profile.Venue + "\x00" + string(profile.NativeEnvironment)
-		if _, exists := indexes[key]; exists {
+		if _, exists := indexes[profile.Venue]; exists {
 			continue
 		}
-		indexes[key] = len(venues)
-		venues = append(venues, authorityVenue{Venue: profile.Venue, Environment: string(profile.NativeEnvironment)})
+		indexes[profile.Venue] = len(venues)
+		venues = append(venues, authorityVenue{Venue: profile.Venue, Environment: string(exchange.EnvironmentLive)})
 	}
-	sort.Slice(venues, func(i, j int) bool {
-		if venues[i].Venue == venues[j].Venue {
-			return venues[i].Environment < venues[j].Environment
-		}
-		return venues[i].Venue < venues[j].Venue
-	})
+	sort.Slice(venues, func(i, j int) bool { return venues[i].Venue < venues[j].Venue })
 	return venues
 }
 
@@ -1362,7 +1368,11 @@ func (reads managerAuthorityReads) FundingBoard(ctx context.Context) (authorityF
 		return authorityFundingBoard{}, err
 	}
 	board := authorityFundingBoard{
-		Mode:       snapshot.Mode,
+		// The board itself no longer carries a mode: every column is live. The
+		// field stays on the wire because it names the gateway the reader is
+		// talking to, not the endpoints the columns came from, and that axis
+		// outlives this change.
+		Mode:       string(reads.mode),
 		ObservedAt: snapshot.ObservedAt,
 		Venues:     make([]authorityFundingVenue, 0, len(snapshot.Venues)),
 	}

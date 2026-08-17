@@ -17,7 +17,7 @@ import (
 )
 
 func TestAccountReconnectHooksRecoverAfterAuthenticationAndSubscriptions(t *testing.T) {
-	restClient := newWsTestnetRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	restClient := newWsRESTClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("type"); got != "contracts" {
 			t.Errorf("query type=%q, want contracts", got)
 		}

@@ -34,13 +34,11 @@ method or WebSocket watch/command performs the first exchange I/O. `Close`
 releases client-owned WebSocket resources and is safe before a connection was
 opened.
 
-Environment selection is mandatory:
-
-- `factory.EnvironmentLive` selects production endpoints.
-- `factory.EnvironmentDemo` selects a venue-supported Demo profile.
-- `factory.EnvironmentTestnet` selects a venue-supported Testnet profile.
-
-A constructor rejects an environment that the selected row does not admit.
+Environment selection is optional. `factory.EnvironmentLive` selects production
+endpoints, it is the only environment, and it is the default, so a constructor
+rejects any other value. Demo and testnet profiles were removed because each
+venue implemented them differently; `web/`'s offline mock replaces them for
+click-through work.
 
 ## Credential-free public reads
 
@@ -156,6 +154,6 @@ the public error contract.
   owns the exact WebSocket inventory.
 - [Venue and account-mode differences](../reference/exchange-venues-and-account-modes.md)
   owns exchange-specific identity and mode caveats.
-- [Configuration](../reference/configuration.md) owns environment and
-  credential-name rules.
+- [Configuration](../reference/configuration.md) owns credential-name rules and
+  the execution gates.
 - [Testing and evidence](../reference/testing.md) owns certification semantics.

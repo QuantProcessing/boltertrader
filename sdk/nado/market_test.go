@@ -18,26 +18,26 @@ import (
 
 func requireFullEnv(t *testing.T) {
 	t.Helper()
-	testenv.RequireLiveRead(t, "NADO_TESTNET_PRIVATE_KEY")
+	testenv.RequireLiveRead(t, "NADO_PRIVATE_KEY")
 }
 
 func requireWriteEnv(t *testing.T) {
 	t.Helper()
-	testenv.RequireLiveWrite(t, "BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES", "NADO_TESTNET_PRIVATE_KEY")
+	testenv.RequireLiveWrite(t, "BOLTER_ENABLE_NADO_UNSAFE_RAW_SDK_WRITES", "NADO_PRIVATE_KEY")
 }
 
 func GetEnv() (string, string) {
-	pk := os.Getenv("NADO_TESTNET_PRIVATE_KEY")
-	subaccount := os.Getenv("NADO_TESTNET_SUBACCOUNT_NAME")
+	pk := os.Getenv("NADO_PRIVATE_KEY")
+	subaccount := os.Getenv("NADO_SUBACCOUNT_NAME")
 	if strings.TrimSpace(subaccount) == "" {
 		subaccount = "default"
 	}
 	return pk, subaccount
 }
 
-func newNadoTestnetClient(t *testing.T) *Client {
+func newNadoClient(t *testing.T) *Client {
 	t.Helper()
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func newNadoTestnetClient(t *testing.T) *Client {
 func newNadoCredentialClient(t *testing.T) *Client {
 	t.Helper()
 	privateKey, subaccount := GetEnv()
-	client, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	client, err := newNadoClient(t).WithCredentials(privateKey, subaccount)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func newNadoCredentialClient(t *testing.T) *Client {
 
 func newNadoClientForServer(t *testing.T, server *httptest.Server) *Client {
 	t.Helper()
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestGetCandlesticks(t *testing.T) {
 
 func TestGetContracts(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	contracts, err := client.GetContracts(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestGetContracts(t *testing.T) {
 
 func TestGetTickers(t *testing.T) {
 	testenv.RequireLiveRead(t)
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	tickers, err := client.GetTickers(context.Background(), MarketTypePerp, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestGetTickers(t *testing.T) {
 func TestGetFundingRate(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	ctx := context.Background()
 
 	// Test with product ID 36 (commonly LIT-PERP in Nado)
@@ -177,7 +177,7 @@ func TestGetFundingRate(t *testing.T) {
 func TestGetAllFundingRates(t *testing.T) {
 	testenv.RequireLiveRead(t)
 
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	ctx := context.Background()
 
 	rates, err := client.GetAllFundingRates(ctx)

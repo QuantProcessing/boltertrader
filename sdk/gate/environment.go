@@ -1,17 +1,8 @@
 package sdk
 
-import (
-	"fmt"
-	"net/url"
-	"strings"
-)
-
 const (
-	defaultTestnetRESTBaseURL      = "https://api-testnet.gateapi.io/api/v4"
-	defaultSpotWSURL               = "wss://api.gateio.ws/ws/v4/"
-	defaultFuturesUSDTWSURL        = "wss://fx-ws.gateio.ws/v4/ws/usdt"
-	defaultTestnetSpotWSURL        = "wss://ws-testnet.gate.com/v4/ws/spot"
-	defaultTestnetFuturesUSDTWSURL = "wss://ws-testnet.gate.com/v4/ws/futures/usdt"
+	defaultSpotWSURL        = "wss://api.gateio.ws/ws/v4/"
+	defaultFuturesUSDTWSURL = "wss://fx-ws.gateio.ws/v4/ws/usdt"
 )
 
 const (
@@ -19,11 +10,16 @@ const (
 	ProductFuturesUSDT = "futures_usdt"
 )
 
+// EnvironmentProfile is the set of hosts one gate client talks to.
+//
+// It used to also carry an OfficialTestnet flag, so that callers could tell a
+// profile aimed at gate's own testnet apart from one aimed at a local stub. With
+// testnet gone there is only one venue to reach and the distinction has nothing
+// left to distinguish, so a profile is now addresses and nothing else.
 type EnvironmentProfile struct {
 	RESTBaseURL      string
 	SpotWSURL        string
 	FuturesUSDTWSURL string
-	OfficialTestnet  bool
 }
 
 func MainnetEnvironmentProfile() EnvironmentProfile {
@@ -32,33 +28,6 @@ func MainnetEnvironmentProfile() EnvironmentProfile {
 		SpotWSURL:        defaultSpotWSURL,
 		FuturesUSDTWSURL: defaultFuturesUSDTWSURL,
 	}
-}
-
-func TestnetEnvironmentProfile() EnvironmentProfile {
-	return EnvironmentProfile{
-		RESTBaseURL:      defaultTestnetRESTBaseURL,
-		SpotWSURL:        defaultTestnetSpotWSURL,
-		FuturesUSDTWSURL: defaultTestnetFuturesUSDTWSURL,
-		OfficialTestnet:  true,
-	}
-}
-
-func NewTestnetEnvironmentProfile(restBaseURL, spotWSURL, futuresUSDTWSURL string) (EnvironmentProfile, error) {
-	for name, raw := range map[string]string{
-		"restBaseURL":      restBaseURL,
-		"spotWSURL":        spotWSURL,
-		"futuresUSDTWSURL": futuresUSDTWSURL,
-	} {
-		if err := validateURL(name, raw); err != nil {
-			return EnvironmentProfile{}, err
-		}
-	}
-	return EnvironmentProfile{
-		RESTBaseURL:      strings.TrimRight(restBaseURL, "/"),
-		SpotWSURL:        spotWSURL,
-		FuturesUSDTWSURL: futuresUSDTWSURL,
-		OfficialTestnet:  true,
-	}, nil
 }
 
 func (c *Client) WithEnvironmentProfile(profile EnvironmentProfile) *Client {
@@ -77,15 +46,4 @@ func NewWSClientWithProfile(profile EnvironmentProfile, product string) (*WSClie
 		client.url = profile.FuturesUSDTWSURL
 	}
 	return client, nil
-}
-
-func validateURL(name, raw string) error {
-	if strings.TrimSpace(raw) == "" {
-		return fmt.Errorf("gate environment profile: %s is required", name)
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("gate environment profile: %s has invalid URL", name)
-	}
-	return nil
 }

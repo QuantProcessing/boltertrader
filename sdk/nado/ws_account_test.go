@@ -14,7 +14,7 @@ func TestOrderUpdate(t *testing.T) {
 	}
 	// Create a lifecycle context for the client
 	ctx := context.Background()
-	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	restClient, err := newNadoClient(t).WithCredentials(privateKey, subaccount)
 	if err != nil {
 		t.Fatal(err)
 	}

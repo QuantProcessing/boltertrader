@@ -23,7 +23,7 @@ func TestDesiredStateStoreRealPostgresCASRecoveryRotationAndRedaction(t *testing
 	desired := store.DesiredAccount{
 		AccountID:            testAccountID(t),
 		Venue:                "binance",
-		VenueEnvironment:     "testnet",
+		VenueEnvironment:     "live",
 		SecretRef:            "opaque://credential-canary/current",
 		DesiredStateRevision: 1,
 		RuntimeGeneration:    1,

@@ -376,6 +376,10 @@ func gatePerpPublicTradeEvents(raw json.RawMessage, instrument exchange.Instrume
 		return nil, gateNormalizeErr(meta, "WatchPublicTrades", err)
 	}
 	var rows []gate.FuturesTrade
+	// Both arms are load-bearing. Gate documents `result` as one object, and
+	// its testnet sent an array; that environment is gone, but nothing proved
+	// the array was the sandbox's rather than the endpoint's, so dropping
+	// either arm would be a guess made against a live stream.
 	if len(envelope.Result) > 0 && envelope.Result[0] == '[' {
 		if err := json.Unmarshal(envelope.Result, &rows); err != nil {
 			return nil, gateNormalizeErr(meta, "WatchPublicTrades", err)

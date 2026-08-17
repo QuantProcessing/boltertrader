@@ -27,7 +27,7 @@ func TestWsPlaceOrder(t *testing.T) {
 		subaccount = "default"
 	}
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	restClient, err := newNadoClient(t).WithCredentials(privateKey, subaccount)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestWsCancelAndPlace(t *testing.T) {
 		subaccount = "default"
 	}
 
-	restClient, err := newNadoTestnetClient(t).WithCredentials(privateKey, subaccount)
+	restClient, err := newNadoClient(t).WithCredentials(privateKey, subaccount)
 	if err != nil {
 		t.Fatal(err)
 	}

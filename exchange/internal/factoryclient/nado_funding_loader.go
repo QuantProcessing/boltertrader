@@ -35,7 +35,6 @@ func (loader nadoFundingBoardLoader) LoadFundingBoard(ctx context.Context, scope
 		Endpoint:          loader.settings.Endpoint,
 		WebSocketEndpoint: loader.settings.WebSocketEndpoint,
 		HTTPClient:        loader.settings.HTTPClient,
-		Environment:       loader.settings.Environment,
 	})
 
 	products, err := base.discover(ctx, fundingBoardOperation)

@@ -125,13 +125,12 @@ func nadoCatalogTestSettings(router http.RoundTripper, product exchange.Product)
 	}
 	scope := exchange.CatalogScope{
 		Venue:               exchange.VenueNado,
-		Environment:         exchange.EnvironmentTestnet,
+		Environment:         exchange.EnvironmentLive,
 		Product:             product,
 		Settlement:          settlement,
 		EndpointFingerprint: descriptor.Fingerprint(),
 	}
 	return Settings{
-		Environment:       "testnet",
 		Endpoint:          endpoint,
 		WebSocketEndpoint: descriptor.WebSocketEndpoint,
 		HTTPClient:        &http.Client{Transport: router},

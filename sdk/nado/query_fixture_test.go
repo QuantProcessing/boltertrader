@@ -23,9 +23,9 @@ func (f nadoQueryRoundTripFunc) RoundTrip(request *http.Request) (*http.Response
 	return f(request)
 }
 
-func newNadoQueryTestnetClient(t *testing.T) *Client {
+func newNadoQueryClient(t *testing.T) *Client {
 	t.Helper()
-	profile, err := NewProfile(EnvironmentTestnet)
+	profile, err := NewProfile()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func newNadoQueryTestnetClient(t *testing.T) *Client {
 
 func newNadoQueryClientForServer(t *testing.T, server *httptest.Server) *Client {
 	t.Helper()
-	client := newNadoQueryTestnetClient(t)
+	client := newNadoQueryClient(t)
 	target, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -316,13 +316,13 @@ func TestNadoContractAndDiscoveryFixtureValidation(t *testing.T) {
 	if err := json.Unmarshal(envelope.Data, &contract); err != nil {
 		t.Fatal(err)
 	}
-	client := newNadoQueryTestnetClient(t)
+	client := newNadoQueryClient(t)
 	if err := client.ValidateContractV1(contract); err != nil {
 		t.Fatal(err)
 	}
 
 	missingOfficialField := ContractV1{}
-	if err := json.Unmarshal([]byte(`{"chain_id":"763373","endpoint_address":"0x4444444444444444444444444444444444444444"}`), &missingOfficialField); err != nil {
+	if err := json.Unmarshal([]byte(`{"chain_id":"57073","endpoint_address":"0x4444444444444444444444444444444444444444"}`), &missingOfficialField); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.ValidateContractV1(missingOfficialField); !errors.Is(err, ErrNadoContractEndpointMalformed) {
@@ -330,7 +330,7 @@ func TestNadoContractAndDiscoveryFixtureValidation(t *testing.T) {
 	}
 
 	wrongChain := contract
-	wrongChain.ChainID = "57073"
+	wrongChain.ChainID = "763373"
 	if err := client.ValidateContractV1(wrongChain); !errors.Is(err, ErrNadoContractProfileMismatch) {
 		t.Fatalf("wrong chain err = %v", err)
 	}
@@ -464,7 +464,7 @@ func TestNadoAccountSnapshotUsesReceiptTimeForFreshness(t *testing.T) {
 }
 
 func TestNadoMatchesReportUsesArchiveProfileAndFixture(t *testing.T) {
-	client := newNadoTestnetClient(t)
+	client := newNadoClient(t)
 	client.WithHTTPClient(&http.Client{Transport: nadoRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodPost || request.URL.String() != client.Profile().ArchiveV1URL() {
 			return nil, fmt.Errorf("unexpected archive request: %s %s", request.Method, request.URL)

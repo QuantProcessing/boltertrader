@@ -26,12 +26,6 @@ type Client struct {
 
 	HTTPClient *http.Client
 	Signer     *Signer
-	// Environment selects production or OKX simulated trading. The zero value
-	// is treated as Production for compatibility with older tests.
-	Environment Environment
-	// DemoHostProfile selects the official Demo host family when Environment is
-	// Simulated. The zero value is treated as DemoHostProfileGlobal.
-	DemoHostProfile DemoHostProfile
 
 	// BaseURL overrides the default OKX base URL. Used in tests to point at
 	// an httptest server. Leave empty to use the package-level BaseURL constant.
@@ -51,11 +45,7 @@ func NewClient() *Client {
 		}
 	}
 
-	return &Client{
-		HTTPClient:      httpClient,
-		Environment:     Production,
-		DemoHostProfile: DemoHostProfileGlobal,
-	}
+	return &Client{HTTPClient: httpClient}
 }
 
 func (c *Client) WithCredentials(apiKey, secretKey, passphrase string) *Client {
@@ -71,30 +61,16 @@ func (c *Client) WithHTTPClient(httpClient *http.Client) *Client {
 	return c
 }
 
-func (c *Client) WithEnvironment(env Environment) *Client {
-	c.Environment = defaultEnvironment(env)
-	return c
-}
-
-func (c *Client) WithDemoHostProfile(profile DemoHostProfile) *Client {
-	c.DemoHostProfile = defaultDemoHostProfile(profile)
-	return c
-}
-
 func (c *Client) WithBaseURL(baseURL string) *Client {
 	c.BaseURL = baseURL
 	return c
 }
 
-func (c *Client) restBaseURL() (string, error) {
+func (c *Client) restBaseURL() string {
 	if c.BaseURL != "" {
-		return c.BaseURL, nil
+		return c.BaseURL
 	}
-	endpoints, err := DefaultEndpointURLs(c.Environment, c.DemoHostProfile)
-	if err != nil {
-		return "", err
-	}
-	return endpoints.REST, nil
+	return DefaultEndpointURLs().REST
 }
 
 // Do executes a generic HTTP request and returns the raw response body.
@@ -112,11 +88,7 @@ func (c *Client) Do(ctx context.Context, method Method, path string, payload int
 		bodyString = string(jsonBytes)
 	}
 
-	base, err := c.restBaseURL()
-	if err != nil {
-		return nil, err
-	}
-	fullURL := base + path
+	fullURL := c.restBaseURL() + path
 	req, err := http.NewRequestWithContext(ctx, string(method), fullURL, bodyReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -124,9 +96,6 @@ func (c *Client) Do(ctx context.Context, method Method, path string, payload int
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if defaultEnvironment(c.Environment) == Simulated {
-		req.Header.Set("x-simulated-trading", "1")
-	}
 
 	if auth {
 		if c.Signer == nil {

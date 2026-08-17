@@ -10,7 +10,7 @@ import (
 
 func TestOpenAPIBybitRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: bybitOpenAPIRouter{}}}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: bybitOpenAPIRouter{}}}
 
 	spotSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBybit, exchange.ProductSpot, "BTC-USDT")
 	spot := NewBybitSpot("key", "secret", spotSettings)
@@ -35,7 +35,6 @@ func TestBybitBuildersSatisfyExchangeContracts(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://stream.invalid",
-		Environment:       "demo",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			t.Fatalf("constructor performed network I/O: %s %s", request.Method, request.URL.String())
 			return nil, nil
@@ -49,8 +48,7 @@ func TestBybitBuildersSatisfyExchangeContracts(t *testing.T) {
 
 func TestBybitMalformedNumericFieldsReturnMalformedResponse(t *testing.T) {
 	client := NewBybitSpot("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return bybitData(`{"category":"spot","list":[{"symbol":"BTCUSDT","baseCoin":"BTC","quoteCoin":"USDT","status":"Trading","priceFilter":{"tickSize":"bad"},"lotSizeFilter":{"basePrecision":"0.001","qtyStep":"0.001","minOrderQty":"0.001"}}]}`), nil
 		})},
@@ -62,9 +60,8 @@ func TestBybitMalformedNumericFieldsReturnMalformedResponse(t *testing.T) {
 func TestBybitCancelAcceptsOfficialUUIDOrderID(t *testing.T) {
 	const orderID = "cf55eb56-0853-4d3f-945e-17ddd6059a89"
 	client := NewBybitLinearPerp("key", "secret", "USDT", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: bybitOpenAPIRouter{}},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: bybitOpenAPIRouter{}},
 	})
 
 	ack, err := client.CancelOrder(context.Background(), exchange.CancelOrderRequest{

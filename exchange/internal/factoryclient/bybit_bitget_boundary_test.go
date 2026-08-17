@@ -16,7 +16,7 @@ import (
 
 func TestBybitBitgetValidRESTRequestsRejectNilContextBeforeNetwork(t *testing.T) {
 	transport := &noSendTransport{}
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "testnet", HTTPClient: &http.Client{Transport: transport}}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: transport}}
 	spotClients := map[string]exchange.SpotClient{
 		"bybit":  NewBybitSpot("key", "secret", settings),
 		"bitget": NewBitgetSpot("key", "secret", "passphrase", settings),
@@ -80,7 +80,6 @@ func TestBybitBitgetPerpClientsRejectQuoteSettlementMismatch(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "ws://openapi.invalid",
-		Environment:       "testnet",
 		HTTPClient:        &http.Client{Transport: transport},
 	}
 	tests := []struct {
@@ -113,8 +112,7 @@ func TestBybitBitgetPerpClientsRejectQuoteSettlementMismatch(t *testing.T) {
 func TestBitgetFillsUsesVenueSymbolFilterBeforePagination(t *testing.T) {
 	instrument := bybitBitgetTestInstrument(exchange.VenueBitget, exchange.ProductPerp, "BTC-USDT")
 	settings := Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if request.URL.Path != "/api/v3/trade/fills" {
 				return bitgetData(`{}`), nil
@@ -143,7 +141,7 @@ func TestBitgetFillsUsesVenueSymbolFilterBeforePagination(t *testing.T) {
 
 func TestConvertBitgetPositionsPreservesNegativePnLAndSkipsZeroQuantity(t *testing.T) {
 	descriptor := exchange.SourceDescriptor{Name: "bitget-position-test", Endpoint: "https://identity.invalid", WebSocketEndpoint: "wss://identity.invalid/ws", Transport: "test"}
-	scope := exchange.CatalogScope{Venue: exchange.VenueBitget, Environment: exchange.EnvironmentDemo, Product: exchange.ProductPerp, EndpointFingerprint: descriptor.Fingerprint()}
+	scope := exchange.CatalogScope{Venue: exchange.VenueBitget, Environment: exchange.EnvironmentLive, Product: exchange.ProductPerp, EndpointFingerprint: descriptor.Fingerprint()}
 	catalog := exchange.NewDefaultMemoryCatalog()
 	if err := catalog.RegisterSource(scope, descriptor, exchange.StaticInstrumentLoader{Snapshot: exchange.InstrumentSnapshot{SchemaVersion: 1, Scope: scope, Instruments: []exchange.Instrument{{
 		Identity: exchange.InstrumentIdentity{

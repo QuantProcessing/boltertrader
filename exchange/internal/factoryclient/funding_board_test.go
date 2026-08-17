@@ -72,8 +72,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 					]`,
 					"/fapi/v1/fundingInfo": `[{"symbol":"BTCUSDT","fundingIntervalHours":4}]`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "live", HTTPClient: server.Client()}
-				return NewBinanceFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBinance, exchange.EnvironmentLive, "USDT")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewBinanceFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBinance, "USDT")
 			},
 			// ETHUSDC settles in the wrong asset for this loader and the
 			// quarterly has no quote suffix to split on; both are dropped.
@@ -93,8 +93,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"instType":"FUTURES","instId":"BTC-USDT-240628","fundingRate":"0.00001","fundingTime":"1720000000000","nextFundingTime":"1720028800000"}
 					]}`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "live", HTTPClient: server.Client()}
-				return NewOKXFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueOKX, exchange.EnvironmentLive, "USDT")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewOKXFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueOKX, "USDT")
 			},
 			// The blank-rate row is dropped rather than read as zero: OKX leaves
 			// the field empty when it has no rate to quote, and a 0.0000% cell
@@ -114,8 +114,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"symbol":"ETHPERP","markPrice":"3400","indexPrice":"3399","openInterest":"500","fundingRate":"0.0002","nextFundingTime":"1720000000000","fundingIntervalHour":"8"}
 					]}}`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "live", HTTPClient: server.Client()}
-				return NewBybitFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBybit, exchange.EnvironmentLive, "USDT")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewBybitFundingBoardLoader("USDT", settings), fundingBoardScope(exchange.VenueBybit, "USDT")
 			},
 			// Bybit serves every linear contract from one category, so the
 			// settlement filter here is the only thing keeping a USDC column's
@@ -137,8 +137,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"symbol":"BTCUSDT","baseCoin":"BTC","quoteCoin":"USDT","fundInterval":"8","status":"online"}
 					]}`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "live", HTTPClient: server.Client()}
-				return NewBitgetFundingBoardLoader("USDT-FUTURES", settings), fundingBoardScope(exchange.VenueBitget, exchange.EnvironmentLive, "USDT")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewBitgetFundingBoardLoader("USDT-FUTURES", settings), fundingBoardScope(exchange.VenueBitget, "USDT")
 			},
 			// The ticker's own interval is blank here, which is what forces the
 			// instruments call to be the source. That second call is best-effort
@@ -163,8 +163,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"name":"OLD_USDT","funding_interval":28800,"funding_next_apply":1720000000,"status":"delisting"}
 					]`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "live", HTTPClient: server.Client()}
-				return NewGateFundingBoardLoader(settings), fundingBoardScope(exchange.VenueGate, exchange.EnvironmentLive, "USDT")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewGateFundingBoardLoader(settings), fundingBoardScope(exchange.VenueGate, "USDT")
 			},
 			want: []wantEntry{
 				{
@@ -198,8 +198,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						]
 					]`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "mainnet", HTTPClient: server.Client()}
-				return NewHyperliquidFundingBoardLoader(settings), fundingBoardScope(exchange.VenueHyperliquid, exchange.EnvironmentLive, "USDC")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewHyperliquidFundingBoardLoader(settings), fundingBoardScope(exchange.VenueHyperliquid, "USDC")
 			},
 			// Hyperliquid quotes an hourly rate and publishes no interval field,
 			// so the 1 is asserted here rather than inferred. Comparing this
@@ -222,8 +222,8 @@ func TestFundingBoardLoaderPerVenueShape(t *testing.T) {
 						{"market_id":2,"exchange":"binance","symbol":"ETH","rate":0.0002}
 					]}`,
 				})
-				settings := Settings{Endpoint: server.URL, Environment: "mainnet", HTTPClient: server.Client()}
-				return NewLighterFundingBoardLoader(settings), fundingBoardScope(exchange.VenueLighter, exchange.EnvironmentLive, "USDC")
+				settings := Settings{Endpoint: server.URL, HTTPClient: server.Client()}
+				return NewLighterFundingBoardLoader(settings), fundingBoardScope(exchange.VenueLighter, "USDC")
 			},
 			// Lighter's endpoint is a comparison feed: it returns other venues'
 			// rates alongside its own. Filing a Binance rate in the Lighter
@@ -357,10 +357,10 @@ func assertFundingOptional(t *testing.T, symbol, field string, got exchange.Opti
 	}
 }
 
-func fundingBoardScope(venue exchange.Venue, environment exchange.Environment, settlement string) exchange.CatalogScope {
+func fundingBoardScope(venue exchange.Venue, settlement string) exchange.CatalogScope {
 	return exchange.CatalogScope{
 		Venue:       venue,
-		Environment: environment,
+		Environment: exchange.EnvironmentLive,
 		Product:     exchange.ProductPerp,
 		Settlement:  settlement,
 	}

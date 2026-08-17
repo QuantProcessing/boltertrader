@@ -23,7 +23,7 @@ import (
 func TestDecodeMappingValidatesTrustedProfiles(t *testing.T) {
 	artifact, err := decodeMapping([]byte(`{
 		"schemaVersion":1,
-		"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"perp-usdt"}]
+		"mappings":[{"venue":"binance","nativeEnvironment":"live","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","routeId":"perp-usdt"}]
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -51,8 +51,8 @@ func TestDecodeMappingAllowsDistinctSettlementRoutes(t *testing.T) {
 	artifact, err := decodeMapping([]byte(`{
 		"schemaVersion":1,
 		"mappings":[
-			{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"perp-usdt"},
-			{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDC","routeProfileId":"bybit.perp.usdc.demo.v1","routeId":"perp-usdc"}
+			{"venue":"bybit","nativeEnvironment":"live","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.v1","routeId":"perp-usdt"},
+			{"venue":"bybit","nativeEnvironment":"live","legacyProduct":"perp","settlementAsset":"USDC","routeProfileId":"bybit.perp.usdc.v1","routeId":"perp-usdc"}
 		]
 	}`))
 	if err != nil || len(artifact.Mappings) != 2 {
@@ -62,8 +62,8 @@ func TestDecodeMappingAllowsDistinctSettlementRoutes(t *testing.T) {
 
 func TestDecodeMappingRejectsDuplicateFourPartLegacyProfile(t *testing.T) {
 	_, err := decodeMapping([]byte(`{"schemaVersion":1,"mappings":[
-		{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"perp-usdt"},
-		{"venue":"bybit","nativeEnvironment":"demo","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.demo.v1","routeId":"other-usdt"}
+		{"venue":"bybit","nativeEnvironment":"live","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.v1","routeId":"perp-usdt"},
+		{"venue":"bybit","nativeEnvironment":"live","legacyProduct":"perp","settlementAsset":"USDT","routeProfileId":"bybit.perp.usdt.v1","routeId":"other-usdt"}
 	]}`))
 	if err == nil || !strings.Contains(err.Error(), "AMBIGUOUS_LEGACY_PROFILE") {
 		t.Fatalf("error=%v", err)
@@ -72,7 +72,7 @@ func TestDecodeMappingRejectsDuplicateFourPartLegacyProfile(t *testing.T) {
 
 func TestRunRejectsProfileProductMismatchBeforeExecution(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "account-route-v1.json")
-	data := []byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"spot","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"spot"}]}`)
+	data := []byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"live","legacyProduct":"spot","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","routeId":"spot"}]}`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -424,15 +424,15 @@ func TestReadMappingSnapshotRejectsSymlinkAndPermissiveMode(t *testing.T) {
 }
 
 func TestBuildAccountPlansRejectsMissingAmbiguousAndCrossModeRows(t *testing.T) {
-	artifact, err := decodeMapping([]byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"perp-usdt"}]}`))
+	artifact, err := decodeMapping([]byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"live","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","routeId":"perp-usdt"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := legacyAccount{AccountID: "acct_1", Venue: "binance", NativeEnvironment: "demo", Mode: "test", OpaqueReference: "opaque://reference", Products: []legacyProduct{{Product: "perp-usdt", SettlementAsset: "USDT"}}}
+	base := legacyAccount{AccountID: "acct_1", Venue: "binance", NativeEnvironment: "live", Mode: "test", OpaqueReference: "opaque://reference", Products: []legacyProduct{{Product: "perp-usdt", SettlementAsset: "USDT"}}}
 	for name, mutate := range map[string]func(*legacyAccount){
 		"missing":    func(row *legacyAccount) { row.Products[0].Product = "spot" },
 		"ambiguous":  func(row *legacyAccount) { row.Products = append(row.Products, row.Products[0]) },
-		"cross mode": func(row *legacyAccount) { row.Mode = "live"; row.NativeEnvironment = "live" },
+		"cross mode": func(row *legacyAccount) { row.Mode = "live" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			row := base
@@ -721,7 +721,7 @@ func functionBlock(t *testing.T, source, signature string) string {
 func writeMapping(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "account-route-v1.json")
-	data := []byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"demo","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","routeId":"perp-usdt"}]}`)
+	data := []byte(`{"schemaVersion":1,"mappings":[{"venue":"binance","nativeEnvironment":"live","legacyProduct":"perp-usdt","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","routeId":"perp-usdt"}]}`)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

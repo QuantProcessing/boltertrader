@@ -29,7 +29,7 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 		Status: http.StatusAccepted,
 		Body: map[string]any{
 			"accountId": "acct_1", "requestedState": "active",
-			"routes": []map[string]any{{"routeId": "perp-usdt", "product": "perp", "settlementAsset": "USDT", "routeProfileId": "binance.perp.usdt.demo.v1", "requestedState": "active"}},
+			"routes": []map[string]any{{"routeId": "perp-usdt", "product": "perp", "settlementAsset": "USDT", "routeProfileId": "binance.perp.usdt.v1", "requestedState": "active"}},
 		},
 	}}
 	handler, err := NewInternalHandler(InternalOptions{
@@ -44,7 +44,7 @@ func TestInternalAuthorityAppliesDesiredThroughStrictOperationIdentity(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := `{"operationId":"` + operationID + `","accountId":"acct_1","venue":"binance","nativeEnvironment":"demo","secretRef":"` + opaqueRef + `","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.demo.v1","requestedState":"active"}]}`
+	body := `{"operationId":"` + operationID + `","accountId":"acct_1","venue":"binance","nativeEnvironment":"live","secretRef":"` + opaqueRef + `","desiredStateRevision":2,"runtimeGeneration":3,"credentialVersion":4,"requestedState":"active","routes":[{"routeId":"perp-usdt","product":"perp","settlementAsset":"USDT","routeProfileId":"binance.perp.usdt.v1","requestedState":"active"}]}`
 	path := "/internal/v1/accounts/desired/acct_1/operations/" + operationID
 
 	for name, mutate := range map[string]func(*http.Request){
@@ -253,21 +253,31 @@ func TestInternalAuthorityRouteInventoryIsFrozen(t *testing.T) {
 	}
 }
 
-func TestDesiredApplyValidationRejectsModeConflictAndDuplicateRoutes(t *testing.T) {
+// TestDesiredApplyValidationRejectsUnreachableEnvironmentAndDuplicateRoutes keeps
+// both halves of what used to be a mode-conflict test.
+//
+// The first half once proved a live request would not carry a demo route
+// profile. Modes are gone and profiles no longer name an environment, but the
+// request still does — it is persisted beside the account and re-read on every
+// restart — and only live endpoints exist. A request naming demo describes a
+// runtime nothing can dial, so it is refused at the edge rather than stored.
+func TestDesiredApplyValidationRejectsUnreachableEnvironmentAndDuplicateRoutes(t *testing.T) {
 	desired := DesiredApplyRequest{
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", AccountID: "acct_1", Venue: "binance",
-		NativeEnvironment: "demo", SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		NativeEnvironment: "live", SecretRef: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		DesiredStateRevision: 1, RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-		Routes: []DesiredRoute{{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.demo.v1", RequestedState: "active"}},
+		Routes: []DesiredRoute{{RouteID: "perp-usdt", Product: "perp", SettlementAsset: "USDT", RouteProfileID: "binance.perp.usdt.v1", RequestedState: "active"}},
 	}
-	if err := desired.validate("test", desired.AccountID, desired.OperationID); err != nil {
+	if err := desired.validate(desired.AccountID, desired.OperationID); err != nil {
 		t.Fatalf("valid desired apply: %v", err)
 	}
-	if err := desired.validate("live", desired.AccountID, desired.OperationID); err == nil {
-		t.Fatal("live mode accepted a demo route profile")
+	unreachable := desired
+	unreachable.NativeEnvironment = "demo"
+	if err := unreachable.validate(desired.AccountID, desired.OperationID); err == nil {
+		t.Fatal("desired apply accepted endpoints that no longer exist")
 	}
 	desired.Routes = append(desired.Routes, desired.Routes[0])
-	if err := desired.validate("test", desired.AccountID, desired.OperationID); err == nil {
+	if err := desired.validate(desired.AccountID, desired.OperationID); err == nil {
 		t.Fatal("duplicate route id accepted")
 	}
 }
@@ -276,7 +286,7 @@ func TestRuntimeSnapshotViewPublishesSafeOperationIDWithoutSecrets(t *testing.T)
 	view := RuntimeSnapshotView{
 		OperationID: "018f47a8-2578-7d3c-9d7d-5e4f4a445c33", DesiredStateRevision: 1,
 		RuntimeGeneration: 1, CredentialVersion: 1, RequestedState: "active",
-		Routes: []RuntimeRouteView{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.demo.v1", RequestedState: "active", Ready: true}},
+		Routes: []RuntimeRouteView{{RouteID: "spot", Product: "spot", RouteProfileID: "binance.spot.v1", RequestedState: "active", Ready: true}},
 	}
 	encoded, err := json.Marshal(view)
 	if err != nil {

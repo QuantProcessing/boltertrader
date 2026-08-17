@@ -17,14 +17,14 @@ import (
 
 func TestServiceProjectsConfiguredCapabilitiesAndDeduplicatedReferenceData(t *testing.T) {
 	instrument := catalog.Instrument{
-		ID: "binance:demo:spot:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentDemo,
+		ID: "binance:live:spot:BTC-USDT", Venue: exchange.VenueBinance, Environment: exchange.EnvironmentLive,
 		Product: exchange.ProductSpot, Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 		Rules: catalog.Rules{PriceIncrement: decimal.RequireFromString("0.01"), QuantityIncrement: decimal.RequireFromString("0.001"), MinQuantity: decimal.RequireFromString("0.001")},
 	}
 	registry := &fakeRegistry{
 		accounts: []account.Resource{
-			{AccountID: "b", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentDemo, ReadReady: true},
-			{AccountID: "a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentDemo, ReadReady: true},
+			{AccountID: "b", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentLive, ReadReady: true},
+			{AccountID: "a", Venue: exchange.VenueBinance, Product: exchange.ProductSpot, Environment: exchange.EnvironmentLive, ReadReady: true},
 		},
 		rows: map[domain.AccountID]capability.Row{
 			"a": capability.StaticMatrix().Rows[0],
@@ -76,7 +76,7 @@ func TestServiceFiltersByAccountAndReportsUnknownAccount(t *testing.T) {
 		accounts: []account.Resource{{AccountID: "one"}},
 		rows:     map[domain.AccountID]capability.Row{"one": capability.StaticMatrix().Rows[0]},
 		snapshots: map[domain.AccountID]catalog.Snapshot{
-			"one": {Instruments: []catalog.Instrument{{ID: "binance:demo:spot:BTC-USDT"}}},
+			"one": {Instruments: []catalog.Instrument{{ID: "binance:live:spot:BTC-USDT"}}},
 		},
 	}
 	service, _ := NewService(registry)

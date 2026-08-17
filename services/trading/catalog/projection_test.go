@@ -26,9 +26,9 @@ func TestProjectionCoalescesGatewayFacts(t *testing.T) {
 	source := &countingSource{snapshot: Snapshot{
 		Revision:   "gateway-rev-1",
 		ObservedAt: now,
-		Venues:     []Venue{{Venue: "binance", Environment: "demo", Ready: true}},
+		Venues:     []Venue{{Venue: "binance", Environment: "live", Ready: true}},
 		Instruments: []Instrument{{
-			InstrumentID: "binance:demo:perp:btc-usdt", Venue: "binance", Environment: "demo", Product: "perp",
+			InstrumentID: "binance:live:perp:btc-usdt", Venue: "binance", Environment: "live", Product: "perp",
 			Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true,
 			Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5"},
 		}},
@@ -137,7 +137,7 @@ func TestRefreshRenewsBeforeTheProjectionCanGoStale(t *testing.T) {
 
 func TestProjectionRejectsUntrustedCatalogFacts(t *testing.T) {
 	source := &countingSource{snapshot: Snapshot{
-		Venues:      []Venue{{Venue: "binance", Environment: "testnet", Ready: true}},
+		Venues:      []Venue{{Venue: "binance", Environment: "live", Ready: true}},
 		Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "okx", Ready: true}},
 	}}
 	projection, err := NewProjection(source, time.Minute, time.Now)
@@ -157,12 +157,12 @@ func TestProjectionPreservesCompositeInstrumentIdentityAndExactRules(t *testing.
 	source := &countingSource{snapshot: Snapshot{
 		Revision: "gateway-rev-2", ObservedAt: now,
 		Venues: []Venue{
-			{Venue: "binance", Environment: "demo", Ready: true},
-			{Venue: "bybit", Environment: "testnet", Ready: true},
+			{Venue: "binance", Environment: "live", Ready: true},
+			{Venue: "bybit", Environment: "live", Ready: true},
 		},
 		Instruments: []Instrument{
-			{InstrumentID: "btc-usdt", Venue: "binance", Environment: "demo", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001"}},
-			{InstrumentID: "btc-usdt", Venue: "bybit", Environment: "testnet", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5"}},
+			{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.01", QuantityIncrement: "0.0001", MinQuantity: "0.0001"}},
+			{InstrumentID: "btc-usdt", Venue: "bybit", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001", MinNotional: "5"}},
 		},
 	}}
 	projection, err := NewProjection(source, time.Minute, func() time.Time { return now })
@@ -173,7 +173,11 @@ func TestProjectionPreservesCompositeInstrumentIdentityAndExactRules(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Instruments) != 2 || snapshot.Instruments[1].Rules.MinNotional != "5" || snapshot.Instruments[1].Environment != "testnet" || snapshot.Instruments[1].Product != "perp" {
+	// Venue is what separates these two now. They share an InstrumentID on
+	// purpose — the composite identity is the point — and environment used to be
+	// the third axis distinguishing them, with the second row on testnet. With
+	// one environment left, venue and product carry that alone.
+	if len(snapshot.Instruments) != 2 || snapshot.Instruments[1].Rules.MinNotional != "5" || snapshot.Instruments[1].Venue != "bybit" || snapshot.Instruments[1].Product != "perp" {
 		t.Fatalf("Snapshot() = %#v", snapshot)
 	}
 }
@@ -182,10 +186,10 @@ func TestProjectionDerivesBrowserVenueContractFromExecutableRegistries(t *testin
 	now := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	source := &countingSource{snapshot: Snapshot{
 		Revision: "gateway-browser-1", ObservedAt: now,
-		Venues: []Venue{{Venue: "binance", Environment: "demo", Ready: true}, {Venue: "bybit", Environment: "testnet", Ready: true}},
+		Venues: []Venue{{Venue: "binance", Environment: "live", Ready: true}, {Venue: "bybit", Environment: "live", Ready: true}},
 		Instruments: []Instrument{
-			{InstrumentID: "btc-binance", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}},
-			{InstrumentID: "btc-bybit", Venue: "bybit", Environment: "testnet", Product: "perp", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}},
+			{InstrumentID: "btc-binance", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}},
+			{InstrumentID: "btc-bybit", Venue: "bybit", Environment: "live", Product: "perp", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}},
 		},
 	}}
 	projection, _ := NewProjection(source, time.Minute, func() time.Time { return now })
@@ -211,33 +215,30 @@ func TestProjectionDerivesBrowserVenueContractFromExecutableRegistries(t *testin
 }
 
 func TestBrowserVenueProjectionCoversEverySupportedRegistryRow(t *testing.T) {
+	// One row per venue covers every registry row, because the registry is no
+	// longer keyed by environment: these IDs read `binance.spot.demo.v1` while
+	// demo and testnet existed, and each venue needed a row per environment to
+	// reach all of its profiles. `enrichBrowserVenues` resolves by venue,
+	// product and settlement alone, so the environment below is only the input
+	// that NativeEnvironment is asserted to echo.
+	const environment = "live"
 	tests := []struct {
-		venue, environment string
-		profiles           []string
+		venue    string
+		profiles []string
 	}{
-		{"binance", "demo", []string{"binance.spot.demo.v1", "binance.perp.usdt.demo.v1"}},
-		{"binance", "live", []string{"binance.spot.live.v1", "binance.perp.usdt.live.v1"}},
-		{"okx", "demo", []string{"okx.spot.demo.v1", "okx.perp.usdt.demo.v1"}},
-		{"okx", "live", []string{"okx.spot.live.v1", "okx.perp.usdt.live.v1"}},
-		{"lighter", "testnet", []string{"lighter.spot.testnet.v1", "lighter.perp.usdc.testnet.v1"}},
-		{"lighter", "live", []string{"lighter.spot.live.v1", "lighter.perp.usdc.live.v1"}},
-		{"hyperliquid", "testnet", []string{"hyperliquid.spot.testnet.v1", "hyperliquid.perp.usdc.testnet.v1"}},
-		{"hyperliquid", "live", []string{"hyperliquid.spot.live.v1", "hyperliquid.perp.usdc.live.v1"}},
-		{"bybit", "demo", []string{"bybit.spot.demo.v1", "bybit.perp.usdt.demo.v1", "bybit.perp.usdc.demo.v1"}},
-		{"bybit", "testnet", []string{"bybit.spot.testnet.v1", "bybit.perp.usdt.testnet.v1", "bybit.perp.usdc.testnet.v1"}},
-		{"bybit", "live", []string{"bybit.spot.live.v1", "bybit.perp.usdt.live.v1", "bybit.perp.usdc.live.v1"}},
-		{"bitget", "demo", []string{"bitget.spot.demo.v1", "bitget.perp.usdt.demo.v1", "bitget.perp.usdc.demo.v1"}},
-		{"bitget", "live", []string{"bitget.spot.live.v1", "bitget.perp.usdt.live.v1", "bitget.perp.usdc.live.v1"}},
-		{"gate", "testnet", []string{"gate.spot.testnet.v1", "gate.perp.usdt.testnet.v1"}},
-		{"gate", "live", []string{"gate.spot.live.v1", "gate.perp.usdt.live.v1"}},
-		{"aster", "testnet", []string{"aster.spot.testnet.v1", "aster.perp.usdt.testnet.v1"}},
-		{"aster", "live", []string{"aster.spot.live.v1", "aster.perp.usdt.live.v1"}},
-		{"nado", "testnet", []string{"nado.spot.usdt0.testnet.v1", "nado.perp.usdt0.testnet.v1"}},
-		{"nado", "live", []string{"nado.spot.usdt0.live.v1", "nado.perp.usdt0.live.v1"}},
+		{"binance", []string{"binance.spot.v1", "binance.perp.usdt.v1"}},
+		{"okx", []string{"okx.spot.v1", "okx.perp.usdt.v1"}},
+		{"lighter", []string{"lighter.spot.v1", "lighter.perp.usdc.v1"}},
+		{"hyperliquid", []string{"hyperliquid.spot.v1", "hyperliquid.perp.usdc.v1"}},
+		{"bybit", []string{"bybit.spot.v1", "bybit.perp.usdt.v1", "bybit.perp.usdc.v1"}},
+		{"bitget", []string{"bitget.spot.v1", "bitget.perp.usdt.v1", "bitget.perp.usdc.v1"}},
+		{"gate", []string{"gate.spot.v1", "gate.perp.usdt.v1"}},
+		{"aster", []string{"aster.spot.v1", "aster.perp.usdt.v1"}},
+		{"nado", []string{"nado.spot.usdt0.v1", "nado.perp.usdt0.v1"}},
 	}
 	for _, test := range tests {
-		t.Run(test.venue+"/"+test.environment, func(t *testing.T) {
-			snapshot, err := enrichBrowserVenues(Snapshot{Venues: []Venue{{Venue: test.venue, Environment: test.environment, Ready: true}}})
+		t.Run(test.venue, func(t *testing.T) {
+			snapshot, err := enrichBrowserVenues(Snapshot{Venues: []Venue{{Venue: test.venue, Environment: environment, Ready: true}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -246,7 +247,7 @@ func TestBrowserVenueProjectionCoversEverySupportedRegistryRow(t *testing.T) {
 			for _, profile := range venue.RouteProfiles {
 				got = append(got, profile.RouteProfileID)
 			}
-			if strings.Join(got, ",") != strings.Join(test.profiles, ",") || venue.NativeEnvironment != test.environment || len(venue.Products) != 1 {
+			if strings.Join(got, ",") != strings.Join(test.profiles, ",") || venue.NativeEnvironment != environment || len(venue.Products) != 1 {
 				t.Fatalf("venue=%+v profiles=%v", venue, got)
 			}
 		})
@@ -269,8 +270,8 @@ func TestBrowserCredentialProjectionCoversEveryExecutableVariant(t *testing.T) {
 
 func TestProjectionRejectsMissingOrInexactInstrumentFacts(t *testing.T) {
 	base := Snapshot{
-		Revision: "gateway-rev", Venues: []Venue{{Venue: "binance", Environment: "demo", Ready: true}},
-		Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}}},
+		Revision: "gateway-rev", Venues: []Venue{{Venue: "binance", Environment: "live", Ready: true}},
+		Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}}},
 	}
 	for name, mutate := range map[string]func(*Snapshot){
 		"missing product": func(snapshot *Snapshot) { snapshot.Instruments[0].Product = "" },
@@ -295,8 +296,8 @@ func TestProjectionRejectsMissingOrStaleObservationTime(t *testing.T) {
 	for name, observedAt := range map[string]time.Time{"missing": {}, "stale": now.Add(-2 * time.Minute), "future": now.Add(time.Second)} {
 		t.Run(name, func(t *testing.T) {
 			snapshot := Snapshot{
-				Revision: "gateway-rev", ObservedAt: observedAt, Venues: []Venue{{Venue: "binance", Environment: "demo", Ready: true}},
-				Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "demo", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}}},
+				Revision: "gateway-rev", ObservedAt: observedAt, Venues: []Venue{{Venue: "binance", Environment: "live", Ready: true}},
+				Instruments: []Instrument{{InstrumentID: "btc-usdt", Venue: "binance", Environment: "live", Product: "spot", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Ready: true, Rules: TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}}},
 			}
 			projection, _ := NewProjection(&countingSource{snapshot: snapshot}, time.Minute, func() time.Time { return now })
 			if _, err := projection.Snapshot(context.Background()); err == nil {

@@ -116,9 +116,8 @@ func newLighterExactLookupClient(
 	instrument := lighterExactInstrument(exchange.ProductSpot, "BTC-USDC", "BTC-USDC", "1")
 	transport := &lighterExactLookupTransport{marketID: marketID}
 	settings := Settings{
-		Endpoint:    "https://exact.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: transport},
+		Endpoint:   "https://exact.invalid",
+		HTTPClient: &http.Client{Transport: transport},
 	}
 	var raw any
 	if product == exchange.ProductPerp {

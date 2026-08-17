@@ -210,7 +210,7 @@ func TestCoordinatorRequiresFinalWriteFenceCheckerBeforeReservation(t *testing.T
 func TestCoordinatorRecoveryRejectsPreparedCommandWithoutCompleteFence(t *testing.T) {
 	fixture := newCoordinatorFixture(t)
 	payload, err := json.Marshal(durablePlacePayload{
-		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		AccountID: fixture.accountID, InstrumentID: "binance:live:spot:BTC-USDT",
 		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit, Quantity: "0.001",
 		LimitPrice: "100", LimitPolicy: exchange.LimitPolicyResting,
 	})
@@ -223,7 +223,7 @@ func TestCoordinatorRecoveryRejectsPreparedCommandWithoutCompleteFence(t *testin
 	}
 	if _, err := fixture.store.ReserveCommand(context.Background(), store.ReserveCommandRequest{
 		PrincipalID: "principal-a", AccountID: fixture.accountID,
-		InstrumentID: "binance:demo:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
+		InstrumentID: "binance:live:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
 		CorrelationID: "018f0000-0000-7000-8000-000000000001",
 		PayloadHash:   payloadHash, Payload: payload,
 	}); err != nil {
@@ -352,7 +352,7 @@ func TestCoordinatorPersistsOwnedPrivateOrderEventsBeforePublishing(t *testing.T
 	}
 	beforePublish := len(fixture.publisher.Commands())
 	observed, err := fixture.coordinator.ObserveVenueOrder(context.Background(), VenueOrderObservation{
-		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		AccountID: fixture.accountID, InstrumentID: "binance:live:spot:BTC-USDT",
 		Product: exchange.ProductSpot,
 		Order: exchange.Order{
 			NativeSymbol: "BTCUSDT", OrderID: "venue-1", ClientOrderID: placed.ClientOrderID,
@@ -378,7 +378,7 @@ func TestCoordinatorPersistsOwnedPrivateOrderEventsBeforePublishing(t *testing.T
 		t.Fatalf("REST snapshot=%+v event projection=%+v", snapshot, observed)
 	}
 	if duplicate, err := fixture.coordinator.ObserveVenueOrder(context.Background(), VenueOrderObservation{
-		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		AccountID: fixture.accountID, InstrumentID: "binance:live:spot:BTC-USDT",
 		Product: exchange.ProductSpot,
 		Order: exchange.Order{
 			NativeSymbol: "BTCUSDT", OrderID: "venue-1", ClientOrderID: placed.ClientOrderID,
@@ -401,7 +401,7 @@ func TestCoordinatorSurfacesPrivateOrderPublishFailureAfterDurableCommit(t *test
 	}
 	fixture.publisher.SetError(errors.New("event hub unavailable"))
 	observed, err := fixture.coordinator.ObserveVenueOrder(context.Background(), VenueOrderObservation{
-		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		AccountID: fixture.accountID, InstrumentID: "binance:live:spot:BTC-USDT",
 		Product: exchange.ProductSpot,
 		Order: exchange.Order{
 			NativeSymbol: "BTCUSDT", OrderID: "venue-1", ClientOrderID: placed.ClientOrderID,
@@ -668,7 +668,7 @@ func TestCoordinatorTerminalPrivateEventReopensGateAfterAmbiguousCancel(t *testi
 		t.Fatalf("ambiguous Cancel result=%+v err=%v", result, err)
 	}
 	observed, err := fixture.coordinator.ObserveVenueOrder(context.Background(), VenueOrderObservation{
-		AccountID: fixture.accountID, InstrumentID: "binance:demo:spot:BTC-USDT",
+		AccountID: fixture.accountID, InstrumentID: "binance:live:spot:BTC-USDT",
 		Product: exchange.ProductSpot,
 		Order: exchange.Order{
 			NativeSymbol: "BTCUSDT", OrderID: "venue-1", ClientOrderID: placed.ClientOrderID,
@@ -972,7 +972,7 @@ func (fixture *coordinatorFixture) placeRequest() PlaceRequest {
 	return PlaceRequest{
 		PrincipalID: "principal-a", AccountID: fixture.accountID,
 		RouteID:      "spot",
-		InstrumentID: "binance:demo:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
+		InstrumentID: "binance:live:spot:BTC-USDT", IdempotencyKey: "strategy-a-1",
 		Side: exchange.SideBuy, Type: exchange.OrderTypeLimit,
 		Quantity: decimal.RequireFromString("0.001"), LimitPrice: decimal.RequireFromString("100"),
 		LimitPolicy: exchange.LimitPolicyResting,

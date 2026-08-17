@@ -26,7 +26,6 @@ type Client struct {
 	Logger  *zap.SugaredLogger
 	Debug   bool
 	BaseURL string
-	Env     Environment
 	Http    *http.Client
 
 	PrivateKey  *ecdsa.PrivateKey
@@ -38,27 +37,15 @@ type Client struct {
 }
 
 func NewClient() *Client {
-	env := EnvironmentMainnet
 	return &Client{
-		BaseURL: restURLForEnvironment(env),
-		Env:     env,
+		BaseURL: MainnetAPIURL,
 		Http:    http.DefaultClient,
 		Logger:  zap.NewNop().Sugar().Named("hyperliquid-rest"),
 	}
 }
 
-func (c *Client) WithEnvironment(env Environment) *Client {
-	c.Env = normalizeEnvironment(env)
-	c.BaseURL = restURLForEnvironment(c.Env)
-	return c
-}
-
-func (c *Client) IsMainnet() bool {
-	return normalizeEnvironment(c.Env) == EnvironmentMainnet
-}
-
 func (c *Client) SignL1Action(action any, nonce int64) (SignatureResult, error) {
-	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter, c.IsMainnet())
+	return SignL1Action(c.PrivateKey, action, c.Vault, nonce, c.ExpiresAfter)
 }
 
 func parsePrivateKey(privateKey string) (*ecdsa.PrivateKey, error) {

@@ -354,15 +354,16 @@ func buildFactoryClient(ctx context.Context, account config.AccountConfig, optio
 	return nil, fmt.Errorf("construct configured client failed")
 }
 
+// factoryEnvironment converts a stored venue_environment into the factory's
+// typed one, and refuses anything that is not live.
+//
+// It used to have three arms. The remaining refusal is the point: an account row
+// written before demo and testnet were removed still carries one of those
+// strings, and this is where it stops rather than reaching a venue client that
+// would happily talk to the real exchange with it.
 func factoryEnvironment(value string) (factory.Environment, error) {
-	switch value {
-	case "live":
-		return factory.EnvironmentLive, nil
-	case "demo":
-		return factory.EnvironmentDemo, nil
-	case "testnet":
-		return factory.EnvironmentTestnet, nil
-	default:
+	if value != "live" {
 		return "", fmt.Errorf("construct configured client failed")
 	}
+	return factory.EnvironmentLive, nil
 }

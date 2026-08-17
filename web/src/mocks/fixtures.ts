@@ -34,7 +34,8 @@ import type {
  *     signature, so a wrong key would typecheck and then silently fail to
  *     format a price — which is exactly why these are copied, not guessed.
  *   - Route profile ids are built the way `routeprofile.profileID` builds them:
- *     dot-joined, settlement lowercased, environment then `v1`.
+ *     dot-joined, settlement lowercased, then `v1`. There is no environment
+ *     segment — `binance.spot.v1`, not `binance.spot.live.v1`.
  *   - Credential schemas are the entries of `catalog.browserCredentialVariants`,
  *     field for field, including which fields are metadata rather than secret.
  *   - Venues carry `products: ["manual"]` and `nativeEnvironment === environment`
@@ -181,7 +182,7 @@ function routeProfiles(
       routeId: `${product}${suffix}`,
       product,
       settlementAsset: settlement,
-      routeProfileId: [venue, product, settlement?.toLowerCase(), "live", "v1"].filter(Boolean).join("."),
+      routeProfileId: [venue, product, settlement?.toLowerCase(), "v1"].filter(Boolean).join("."),
       label: settlement === undefined ? base : `${base} / ${settlement}`,
     };
   });
@@ -275,12 +276,12 @@ export const ACCOUNT: Account = {
   displayName: "Binance",
   productPolicy: ["manual", "arbitrage"],
   routes: [
-    { routeId: "spot", product: "spot", routeProfileId: "binance.spot.live.v1", requestedState: "active" },
+    { routeId: "spot", product: "spot", routeProfileId: "binance.spot.v1", requestedState: "active" },
     {
       routeId: "perp-usdt",
       product: "perp",
       settlementAsset: "USDT",
-      routeProfileId: "binance.perp.usdt.live.v1",
+      routeProfileId: "binance.perp.usdt.v1",
       requestedState: "active",
     },
   ],
@@ -312,7 +313,7 @@ export const HEDGE_ACCOUNT: Account = {
       routeId: "perp-usdt",
       product: "perp",
       settlementAsset: "USDT",
-      routeProfileId: "bybit.perp.usdt.live.v1",
+      routeProfileId: "bybit.perp.usdt.v1",
       requestedState: "active",
     },
   ],
@@ -501,7 +502,7 @@ export const FUNDING_BOARD: FundingBoardSnapshot = {
       environment: "live",
       product: "perp",
       settlement: "USDT",
-      routeProfileId: "binance.perp.usdt.live.v1",
+      routeProfileId: "binance.perp.usdt.v1",
       observedAt: OBSERVED_AT,
       stale: false,
       unavailable: false,
@@ -534,7 +535,7 @@ export const FUNDING_BOARD: FundingBoardSnapshot = {
       environment: "live",
       product: "perp",
       settlement: "USDT",
-      routeProfileId: "bybit.perp.usdt.live.v1",
+      routeProfileId: "bybit.perp.usdt.v1",
       observedAt: OBSERVED_AT,
       stale: false,
       unavailable: false,
@@ -557,7 +558,7 @@ export const FUNDING_BOARD: FundingBoardSnapshot = {
       environment: "live",
       product: "perp",
       settlement: "USDC",
-      routeProfileId: "lighter.perp.usdc.live.v1",
+      routeProfileId: "lighter.perp.usdc.v1",
       observedAt: "2026-08-17T08:58:00Z",
       stale: true,
       unavailable: false,
@@ -568,7 +569,7 @@ export const FUNDING_BOARD: FundingBoardSnapshot = {
       environment: "live",
       product: "perp",
       settlement: "USDT",
-      routeProfileId: "okx.perp.usdt.live.v1",
+      routeProfileId: "okx.perp.usdt.v1",
       stale: false,
       unavailable: true,
       rows: [],

@@ -1,14 +1,10 @@
 package perp
 
-import "fmt"
-
-type Environment string
-
-const (
-	EnvironmentLive Environment = "live"
-	EnvironmentDemo Environment = "demo"
-)
-
+// EndpointProfile is the set of hosts and path shapes a client talks to. It
+// survives the removal of binance's demo endpoints because callers still inject
+// their own profile — a recorded transport in tests, a proxy in some
+// deployments — and that indirection is independent of which environments
+// binance publishes.
 type EndpointProfile struct {
 	RESTBaseURL             string
 	EndpointPrefix          string
@@ -27,50 +23,18 @@ func endpointOrDefault(value, fallback string) string {
 	return fallback
 }
 
-const (
-	DemoBaseURL          = "https://demo-fapi.binance.com"
-	DemoWSPublicBaseURL  = "wss://demo-fstream.binance.com/ws"
-	DemoWSMarketBaseURL  = "wss://demo-fstream.binance.com/ws"
-	DemoWSPrivateBaseURL = "wss://demo-fstream.binance.com/ws"
-	DemoWSAPIBaseURL     = "wss://testnet.binancefuture.com/ws-fapi/v1"
-)
-
-var USDMMProductionEndpoints = EndpointProfile{
-	RESTBaseURL:             BaseURL,
-	EndpointPrefix:          "/fapi",
-	AccountVersion:          "v2",
-	WSPublicBaseURL:         WSPublicBaseURL,
-	WSMarketBaseURL:         WSMarketBaseURL,
-	WSPrivateBaseURL:        WSPrivateBaseURL,
-	WSMarketFallbackBaseURL: WSMarketFallbackBaseURL,
-	WSAPIBaseURL:            WSAPIBaseURL,
-}
-
-var USDMMDemoEndpoints = EndpointProfile{
-	RESTBaseURL:             DemoBaseURL,
-	EndpointPrefix:          "/fapi",
-	AccountVersion:          "v2",
-	WSPublicBaseURL:         DemoWSPublicBaseURL,
-	WSMarketBaseURL:         DemoWSMarketBaseURL,
-	WSPrivateBaseURL:        DemoWSPrivateBaseURL,
-	WSMarketFallbackBaseURL: DemoWSMarketBaseURL,
-	WSAPIBaseURL:            DemoWSAPIBaseURL,
-}
-
-func DefaultEnvironment(env Environment) Environment {
-	if env == "" {
-		return EnvironmentLive
-	}
-	return env
-}
-
-func EndpointProfileForEnvironment(env Environment) (EndpointProfile, error) {
-	switch DefaultEnvironment(env) {
-	case EnvironmentLive:
-		return USDMMProductionEndpoints, nil
-	case EnvironmentDemo:
-		return USDMMDemoEndpoints, nil
-	default:
-		return EndpointProfile{}, fmt.Errorf("binance perp: unknown environment %q", env)
+// MainnetEndpointProfile is binance USD-M futures itself. The demo profile it
+// replaces was the most expensive of the lot: `demo-fstream` needed a WS
+// backend of its own, and its WS-API host was on a third domain again.
+func MainnetEndpointProfile() EndpointProfile {
+	return EndpointProfile{
+		RESTBaseURL:             BaseURL,
+		EndpointPrefix:          "/fapi",
+		AccountVersion:          "v2",
+		WSPublicBaseURL:         WSPublicBaseURL,
+		WSMarketBaseURL:         WSMarketBaseURL,
+		WSPrivateBaseURL:        WSPrivateBaseURL,
+		WSMarketFallbackBaseURL: WSMarketFallbackBaseURL,
+		WSAPIBaseURL:            WSAPIBaseURL,
 	}
 }

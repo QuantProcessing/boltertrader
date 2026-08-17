@@ -3,8 +3,8 @@
 > Canonical language: English. [Chinese mirror](../zh-CN/guides/operations-recovery.md)
 
 This page covers running the stack and what to do when an outcome is unclear. It
-does not replace a venue's own runbook, and nothing here turns Demo or Testnet
-evidence into production readiness.
+does not replace a venue's own runbook, and nothing here turns offline evidence
+into production readiness.
 
 ## Running the stack
 

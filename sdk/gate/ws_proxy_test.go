@@ -14,11 +14,11 @@ func TestGateWebSocketDialerUsesProjectProxy(t *testing.T) {
 	t.Setenv("PROXY", "http://proxy-user:proxy-pass@127.0.0.1:7890")
 	t.Setenv("ALL_PROXY", "")
 
-	dialer, err := websocketDialerForURL("wss://fx-ws-testnet.gateio.ws/v4/ws/usdt")
+	dialer, err := websocketDialerForURL("wss://fx-ws.gateio.ws/v4/ws/usdt")
 	if err != nil {
 		t.Fatalf("websocketDialerForURL: %v", err)
 	}
-	proxyURL, err := dialer.Proxy(&http.Request{URL: mustGateProxyTestURL(t, "https://fx-ws-testnet.gateio.ws")})
+	proxyURL, err := dialer.Proxy(&http.Request{URL: mustGateProxyTestURL(t, "https://fx-ws.gateio.ws")})
 	if err != nil {
 		t.Fatalf("proxy: %v", err)
 	}
@@ -46,11 +46,11 @@ func TestGateWebSocketDialerRedactsInvalidProxyCredentials(t *testing.T) {
 	t.Setenv("PROXY", "http://proxy-user:"+secret+"@%gh")
 	t.Setenv("ALL_PROXY", "")
 
-	dialer, err := websocketDialerForURL("wss://fx-ws-testnet.gateio.ws/v4/ws/usdt")
+	dialer, err := websocketDialerForURL("wss://fx-ws.gateio.ws/v4/ws/usdt")
 	if err != nil {
 		t.Fatalf("websocketDialerForURL: %v", err)
 	}
-	_, err = dialer.Proxy(&http.Request{URL: mustGateProxyTestURL(t, "https://fx-ws-testnet.gateio.ws")})
+	_, err = dialer.Proxy(&http.Request{URL: mustGateProxyTestURL(t, "https://fx-ws.gateio.ws")})
 	if err == nil {
 		t.Fatal("malformed proxy unexpectedly accepted")
 	}

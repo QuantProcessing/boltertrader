@@ -271,7 +271,7 @@ func TestHubPublishesCommittedOrderWithDurableIdentityAndVersion(t *testing.T) {
 		GatewayOrderID:  "018f0000-0000-7000-8000-000000000012",
 		PrincipalID:     "principal-a",
 		AccountID:       "acct-a",
-		InstrumentID:    "binance:demo:spot:BTC-USDT",
+		InstrumentID:    "binance:live:spot:BTC-USDT",
 		ClientOrderID:   "7",
 		State:           domain.StateOpen,
 		ResourceVersion: 3,

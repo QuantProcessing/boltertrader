@@ -318,9 +318,15 @@ func (handler *arbitrageProductHandler) opportunities(w http.ResponseWriter, r *
 
 func buildOpportunity(key boardKey, symbol string, legs []arbitrageOpportunityLeg) (arbitrageOpportunity, bool) {
 	// One quote per exchange, so the two extremes below cannot land on the same
-	// one. A venue the registry lists under two native environments arrives as
-	// two columns, and a hedge with both legs on one exchange is not a hedge —
-	// it is delta-neutral against nothing and pays no spread.
+	// one. A hedge with both legs on one exchange is not a hedge — it is
+	// delta-neutral against nothing and pays no spread.
+	//
+	// This used to be a filter as much as an invariant: a venue the registry
+	// listed under two native environments arrived as two columns. The board is
+	// now keyed by a profile ID of venue, product and settlement, so it cannot
+	// hand over two columns naming one market. The reduction stays because the
+	// fallback at the bottom rotates off the first extreme to find the second,
+	// and only reaches a different exchange if these legs are already distinct.
 	venues := make([]arbitrageOpportunityLeg, 0, len(legs))
 	seen := make(map[string]struct{}, len(legs))
 	for _, leg := range legs {
@@ -421,7 +427,7 @@ func (handler *arbitrageProductHandler) reachableVenues(r *http.Request, princip
 	}
 	for _, identifier := range identifiers {
 		account, err := authority.Get(r.Context(), principal, identifier)
-		if err != nil || account.ID != identifier || !arbitrageAccountReady(account, mode) {
+		if err != nil || account.ID != identifier || !arbitrageAccountReady(account) {
 			continue
 		}
 		key := venueKey{venue: account.Venue, environment: account.VenueEnvironment}
@@ -548,11 +554,11 @@ func (handler *arbitrageProductHandler) resolveAuthority(w http.ResponseWriter, 
 		{arbitrage.LegShort, request.Short, &authority.Short},
 	} {
 		account, accountErr := handler.trading.options.ManualAccounts.Get(r.Context(), principal, side.request.AccountID)
-		if accountErr != nil || account.ID != side.request.AccountID || !arbitrageAccountReady(account, mode) {
+		if accountErr != nil || account.ID != side.request.AccountID || !arbitrageAccountReady(account) {
 			tradingError(w, http.StatusNotFound, "NOT_FOUND")
 			return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
 		}
-		route, routed := manualCatalogAuthority(snapshot, account, side.request.InstrumentID, mode)
+		route, routed := manualCatalogAuthority(snapshot, account, side.request.InstrumentID)
 		if !routed || route.Product != arbitrageProduct {
 			tradingError(w, http.StatusNotFound, "NOT_FOUND")
 			return arbitragePreviewAuthority{}, catalog.Snapshot{}, false
@@ -1040,10 +1046,10 @@ func (handler *arbitrageProductHandler) closeAuthority(r *http.Request, principa
 		return arbitrageLegAuthority{}, false
 	}
 	account, err := handler.trading.options.ManualAccounts.Get(r.Context(), principal, position.AccountID)
-	if err != nil || !arbitrageAccountReady(account, mode) {
+	if err != nil || !arbitrageAccountReady(account) {
 		return arbitrageLegAuthority{}, false
 	}
-	route, routed := manualCatalogAuthority(snapshot, account, position.InstrumentID, mode)
+	route, routed := manualCatalogAuthority(snapshot, account, position.InstrumentID)
 	if !routed || route.Product != arbitrageProduct {
 		return arbitrageLegAuthority{}, false
 	}
@@ -1251,18 +1257,17 @@ func sortedCurrencies(values map[string]decimal.Decimal) []string {
 
 // arbitrageAccountReady is manualAccountReady with a different product name.
 // They share a body rather than a signature because manualAccountReady is
-// asserted on directly by manual's tests and must keep taking exactly the two
-// arguments it takes today.
-func arbitrageAccountReady(account ManualAccount, mode string) bool {
-	return accountReadyFor(account, mode, arbitrage.ProductID)
+// asserted on directly by manual's tests and must keep taking exactly the one
+// argument it takes today.
+func arbitrageAccountReady(account ManualAccount) bool {
+	return accountReadyFor(account, arbitrage.ProductID)
 }
 
-func accountReadyFor(account ManualAccount, mode, productID string) bool {
+// accountReadyFor no longer reads mode or environment, for the reason
+// manualAccountReady records: the two were only ever cross-checked against each
+// other, and with one environment left the check admitted nothing in test mode.
+func accountReadyFor(account ManualAccount, productID string) bool {
 	if account.ID == "" || account.RuntimeGeneration < 1 || account.DesiredStateRevision < 1 || account.CredentialVersion < 1 || account.State != manualAccountActive {
-		return false
-	}
-	live := account.VenueEnvironment == manualEnvironmentLive
-	if live != (mode == string(orders.ModeLive)) {
 		return false
 	}
 	for _, candidate := range account.ProductIDs {

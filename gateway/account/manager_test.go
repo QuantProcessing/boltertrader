@@ -90,8 +90,8 @@ func TestManagerRefreshesAccountsIndependentlyAndPublishesCatalog(t *testing.T) 
 	bad := &fakeHandle{refreshErr: errors.New("api-secret-canary: venue unavailable")}
 	handles := map[string]*fakeHandle{"good": good, "bad": bad}
 	configs := []config.AccountConfig{
-		{AccountID: "good", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t)},
-		{AccountID: "bad", Venue: "okx", Product: "spot", Environment: "demo", Credentials: passphraseCredentials(t)},
+		{AccountID: "good", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t)},
+		{AccountID: "bad", Venue: "okx", Product: "spot", Environment: "live", Credentials: passphraseCredentials(t)},
 	}
 	manager, err := newManager(context.Background(), configs, Options{GatewayCatalog: service}, func(_ context.Context, account config.AccountConfig, _ Options) (clientHandle, error) {
 		return handles[account.AccountID], nil
@@ -117,7 +117,7 @@ func TestManagerRefreshesAccountsIndependentlyAndPublishesCatalog(t *testing.T) 
 		t.Fatalf("bad status=%+v err=%v", badStatus, err)
 	}
 	snapshot, err := manager.Instruments("good")
-	if err != nil || len(snapshot.Instruments) != 1 || snapshot.Instruments[0].ID != "binance:demo:spot:ETH-USDT" {
+	if err != nil || len(snapshot.Instruments) != 1 || snapshot.Instruments[0].ID != "binance:live:spot:ETH-USDT" {
 		t.Fatalf("good instruments=%+v err=%v", snapshot, err)
 	}
 	if good.refreshes.Load() != 1 || bad.refreshes.Load() != 1 {
@@ -131,7 +131,7 @@ func TestManagerPrivateStreamStateParticipatesInWriteReadiness(t *testing.T) {
 		accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "ETH-USDT", "ETHUSDT", ""),
 	}}
 	manager, err := newManager(context.Background(), []config.AccountConfig{
-		{AccountID: "good", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t)},
+		{AccountID: "good", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t)},
 	}, Options{GatewayCatalog: service}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
 		return handle, nil
 	})
@@ -180,7 +180,7 @@ func TestManagerWriteReadinessRequiresExactLookupClient(t *testing.T) {
 		},
 	}
 	manager, err := newManager(context.Background(), []config.AccountConfig{
-		{AccountID: "gate", Venue: "gate", Product: "perp", Environment: "testnet", Settlement: "USDT", Credentials: apiCredentials(t)},
+		{AccountID: "gate", Venue: "gate", Product: "perp", Environment: "live", Settlement: "USDT", Credentials: apiCredentials(t)},
 	}, Options{GatewayCatalog: service}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
 		return handle, nil
 	})
@@ -210,8 +210,8 @@ func TestManagerConstructionFailureClosesPriorClientsAndRedactsCause(t *testing.
 	service, _ := catalog.NewService(time.Minute, time.Now)
 	first := new(fakeHandle)
 	configs := []config.AccountConfig{
-		{AccountID: "first", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t)},
-		{AccountID: "second", Venue: "okx", Product: "spot", Environment: "demo", Credentials: passphraseCredentials(t)},
+		{AccountID: "first", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t)},
+		{AccountID: "second", Venue: "okx", Product: "spot", Environment: "live", Credentials: passphraseCredentials(t)},
 	}
 	_, err := newManager(context.Background(), configs, Options{GatewayCatalog: service}, func(_ context.Context, account config.AccountConfig, _ Options) (clientHandle, error) {
 		if account.AccountID == "second" {
@@ -234,7 +234,7 @@ func TestManagerCloseIsConcurrentAndIdempotent(t *testing.T) {
 	service, _ := catalog.NewService(time.Minute, time.Now)
 	handle := new(fakeHandle)
 	manager, err := newManager(context.Background(), []config.AccountConfig{{
-		AccountID: "one", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t),
+		AccountID: "one", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t),
 	}}, Options{GatewayCatalog: service}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
 		return handle, nil
 	})
@@ -265,8 +265,8 @@ func TestManagerCloseRetriesOnlyFailedClientCleanup(t *testing.T) {
 	stable := new(fakeHandle)
 	flaky := &fakeHandle{closeFailures: 1}
 	manager, err := newManager(context.Background(), []config.AccountConfig{
-		{AccountID: "stable", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t)},
-		{AccountID: "flaky", Venue: "okx", Product: "spot", Environment: "demo", Credentials: passphraseCredentials(t)},
+		{AccountID: "stable", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t)},
+		{AccountID: "flaky", Venue: "okx", Product: "spot", Environment: "live", Credentials: passphraseCredentials(t)},
 	}, Options{GatewayCatalog: service}, func(_ context.Context, account config.AccountConfig, _ Options) (clientHandle, error) {
 		if account.AccountID == "flaky" {
 			return flaky, nil
@@ -294,7 +294,7 @@ func TestManagerStartsInitialAndPeriodicCatalogRefreshAndStopsBeforeClientClose(
 	service, _ := catalog.NewService(time.Minute, time.Now)
 	handle := &fakeHandle{instruments: []exchange.Instrument{accountTestInstrument(exchange.VenueBinance, exchange.ProductSpot, "ETH-USDT", "ETHUSDT", "")}}
 	manager, err := newManager(context.Background(), []config.AccountConfig{{
-		AccountID: "one", Venue: "binance", Product: "spot", Environment: "demo", Credentials: apiCredentials(t),
+		AccountID: "one", Venue: "binance", Product: "spot", Environment: "live", Credentials: apiCredentials(t),
 	}}, Options{GatewayCatalog: service, RefreshInterval: 5 * time.Millisecond}, func(context.Context, config.AccountConfig, Options) (clientHandle, error) {
 		return handle, nil
 	})
@@ -506,27 +506,29 @@ func TestManagerDynamicLifecycleIsolationBlockersAndRestore(t *testing.T) {
 	}
 }
 
-func TestManagerRejectsRouteProfileModeConflictBeforeLifecycleValidation(t *testing.T) {
+// TestManagerRejectsUnreachableEnvironmentBeforeLifecycleValidation is what is
+// left of the old cross-mode conflict test. Demo and testnet endpoints are gone,
+// but a stored account row can still name one: rows outlive the binary that
+// wrote them. Such a row describes a runtime nothing can dial, so it must be
+// refused before any private client is built rather than failing at first use.
+func TestManagerRejectsUnreachableEnvironmentBeforeLifecycleValidation(t *testing.T) {
 	tests := []struct {
 		name        string
-		managerMode RuntimeMode
-		desiredMode RuntimeMode
 		venue       string
 		environment string
 	}{
-		{name: "Test rejects live", managerMode: RuntimeModeTest, desiredMode: RuntimeModeTest, venue: "binance", environment: "live"},
-		{name: "Live rejects demo", managerMode: RuntimeModeLive, desiredMode: RuntimeModeLive, venue: "binance", environment: "demo"},
-		{name: "Live rejects testnet", managerMode: RuntimeModeLive, desiredMode: RuntimeModeLive, venue: "bybit", environment: "testnet"},
+		{name: "Demo", venue: "binance", environment: "demo"},
+		{name: "Testnet", venue: "bybit", environment: "testnet"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			manager := newLifecycleTestManager(t, test.managerMode)
-			desired := desiredTestAccount(t, 1, 1, 1, "opaque_mode_conflict")
-			desired.Mode = test.desiredMode
+			manager := newLifecycleTestManager(t, RuntimeModeLive)
+			desired := desiredTestAccount(t, 1, 1, 1, "opaque_unreachable_environment")
+			desired.Mode = RuntimeModeLive
 			desired.Venue = test.venue
 			desired.VenueEnvironment = test.environment
 			if _, err := manager.CreateRuntime(context.Background(), desired); err == nil {
-				t.Fatal("cross-mode profile reached runtime creation")
+				t.Fatal("unreachable environment reached runtime creation")
 			}
 			lifecycle := manager.lifecycle.(*fakeRuntimeLifecycle)
 			if lifecycle.validations != 0 || lifecycle.activations != 0 {
@@ -673,7 +675,7 @@ func desiredTestAccount(t *testing.T, revision, generation, credential uint64, r
 		t.Fatal(err)
 	}
 	return DesiredRuntime{
-		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "demo", Mode: RuntimeModeTest,
+		AccountID: "dynamic", Venue: "binance", VenueEnvironment: "live", Mode: RuntimeModeTest,
 		SecretRef: ref, DesiredStateRevision: revision, RuntimeGeneration: generation,
 		CredentialVersion: credential, RequestedState: RuntimeStateActive, RotationFence: "rotation-fence",
 	}

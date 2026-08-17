@@ -14,7 +14,7 @@ import (
 
 func TestOpenAPIBitgetRESTExecutionMatrix(t *testing.T) {
 	ctx := context.Background()
-	settings := Settings{Endpoint: "https://openapi.invalid", Environment: "demo", HTTPClient: &http.Client{Transport: bitgetOpenAPIRouter{}}}
+	settings := Settings{Endpoint: "https://openapi.invalid", HTTPClient: &http.Client{Transport: bitgetOpenAPIRouter{}}}
 
 	spotSettings := bybitBitgetStaticCatalogSettings(t, settings, exchange.VenueBitget, exchange.ProductSpot, "BTC-USDT")
 	spot := NewBitgetSpot("key", "secret", "passphrase", spotSettings)
@@ -40,8 +40,7 @@ func TestBitgetFillsScopesNativeSymbolOnlyWhenInstrumentProvided(t *testing.T) {
 	sawScoped := false
 	sawAccountWide := false
 	settings := bybitBitgetStaticCatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			switch request.URL.Path {
 			case "/api/v3/trade/fills":
@@ -80,8 +79,7 @@ func TestBitgetFillsScopesNativeSymbolOnlyWhenInstrumentProvided(t *testing.T) {
 func TestBitgetPositionsPreserveSignedPnLAndSkipZeroQuantityRows(t *testing.T) {
 	ctx := context.Background()
 	settings := bybitBitgetStaticCatalogSettings(t, Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			switch request.URL.Path {
 			case "/api/v3/position/current-position":
@@ -109,7 +107,6 @@ func TestBitgetBuildersSatisfyExchangeContracts(t *testing.T) {
 	settings := Settings{
 		Endpoint:          "https://openapi.invalid",
 		WebSocketEndpoint: "wss://stream.invalid",
-		Environment:       "demo",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			t.Fatalf("constructor performed network I/O: %s %s", request.Method, request.URL.String())
 			return nil, nil
@@ -126,8 +123,7 @@ func TestBitgetUSDCPerpUsesUSDCFuturesProductTypeAndMarginCoin(t *testing.T) {
 	var placeBody string
 	var instrumentsCategory string
 	client := NewBitgetPerp("key", "secret", "passphrase", "USDC-FUTURES", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			switch request.URL.Path {
 			case "/api/v3/market/instruments":
@@ -176,8 +172,7 @@ func TestBitgetUSDCPerpUsesUSDCFuturesProductTypeAndMarginCoin(t *testing.T) {
 func TestBitgetSpotMarketBuyConvertsBaseQuantityToQuoteQuantity(t *testing.T) {
 	var placeBody string
 	client := NewBitgetSpot("key", "secret", "passphrase", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			switch request.URL.Path {
 			case "/api/v3/market/orderbook":
@@ -227,8 +222,7 @@ func TestBitgetCancelAcceptsVenueSizedOrderID(t *testing.T) {
 
 func TestBitgetMalformedNumericFieldsReturnMalformedResponse(t *testing.T) {
 	client := NewBitgetSpot("key", "secret", "passphrase", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "demo",
+		Endpoint: "https://openapi.invalid",
 		HTTPClient: &http.Client{Transport: openAPIRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			return bitgetData(`[{"symbol":"BTCUSDT","category":"spot","baseCoin":"BTC","quoteCoin":"USDT","minOrderQty":"not-a-decimal","pricePrecision":"1","quantityPrecision":"3","status":"online"}]`), nil
 		})},

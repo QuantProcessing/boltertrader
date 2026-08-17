@@ -73,7 +73,7 @@ func TestTradeWSClientOrderCommandsUseTradeFramesAndReturnACK(t *testing.T) {
 	}))
 	defer server.Close()
 
-	profile := TestnetEnvironmentProfile()
+	profile := MainnetEnvironmentProfile()
 	profile.TradeWSURL = "ws" + strings.TrimPrefix(server.URL, "http")
 	client, err := NewTradeWSClientWithProfile(profile)
 	if err != nil {

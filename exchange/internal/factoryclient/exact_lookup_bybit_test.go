@@ -142,9 +142,8 @@ func TestBybitExactOrderLookupRejectsScopeAndIdentityMismatch(t *testing.T) {
 func newBybitExactLookupClient(t *testing.T, router bybitExactLookupRouter) (exchange.ExactOrderLookup, exchange.Instrument, *bybitExactLookupRouter) {
 	t.Helper()
 	settings := bybitBitgetStaticCatalogSettings(t, Settings{
-		Endpoint:    "https://exact-lookup.invalid",
-		Environment: "demo",
-		HTTPClient:  &http.Client{Transport: &router},
+		Endpoint:   "https://exact-lookup.invalid",
+		HTTPClient: &http.Client{Transport: &router},
 	}, exchange.VenueBybit, exchange.ProductPerp, "BTC-USDT")
 	raw := NewBybitLinearPerp("key", "secret", "USDT", settings)
 	client, ok := raw.(exchange.ExactOrderLookup)

@@ -108,7 +108,7 @@ func TestManualPreviewAndOrderReconstructAcrossInstances(t *testing.T) {
 		}
 	}
 	items, err := reservationService.List(context.Background(), "principal-a", reservations.ModeTest)
-	if err != nil || len(items) != 1 || items[0].ReservationID != *commandBody.Data.ReservationID || items[0].Status != reservations.StatusConsumed || items[0].Scope.Venue != "binance" || items[0].Scope.VenueEnvironment != "demo" {
+	if err != nil || len(items) != 1 || items[0].ReservationID != *commandBody.Data.ReservationID || items[0].Status != reservations.StatusConsumed || items[0].Scope.Venue != "binance" || items[0].Scope.VenueEnvironment != "live" {
 		t.Fatalf("manual reservation=%+v err=%v", items, err)
 	}
 	replayRequest := httptest.NewRequest(http.MethodPost, "/api/v1/products/manual/commands", strings.NewReader(`{"previewId":"`+previewBody.Data.PreviewID+`","action":"place","lineageId":"lineage-a","orderId":"","idempotencyKey":"manual-restart-1"}`))
@@ -178,7 +178,7 @@ func (fixture manualMarketDataFixture) Get(_ context.Context, query marketdata.Q
 
 func TestManualTestNotionalCapUsesAuthoritativeMarketForLimitOrders(t *testing.T) {
 	request := manualPreviewRequest{InstrumentID: "BTC-USDT", Side: "buy", OrderType: "limit", Quantity: "2", LimitPrice: "1", Mode: "test"}
-	authority := manualPreviewAuthority{Venue: "binance", VenueEnvironment: "demo", Product: "perp"}
+	authority := manualPreviewAuthority{Venue: "binance", VenueEnvironment: "live", Product: "perp"}
 	allowed, err := manualTestNotionalAllowed(context.Background(), request, authority, manualMarketDataFixture{ask: "50.01"})
 	if err != nil || allowed {
 		t.Fatalf("limit order priced from client input: allowed=%v err=%v", allowed, err)
@@ -195,7 +195,7 @@ func (accounts *staticManualAccounts) Get(context.Context, string, string) (Manu
 
 func readyManualAccount() ManualAccount {
 	return ManualAccount{
-		ID: "account-a", Venue: "binance", VenueEnvironment: "demo",
+		ID: "account-a", Venue: "binance", VenueEnvironment: "live",
 		ProductIDs: []string{"manual"}, DesiredStateRevision: 1, RuntimeGeneration: 1,
 		CredentialVersion: 1, State: manualAccountActive,
 		Routes: []ManualAccountRoute{{RouteID: "perp", Product: "perp", RequestedState: manualAccountActive}},
@@ -234,11 +234,11 @@ func TestManualAccountReadyRequiresActiveState(t *testing.T) {
 	for _, state := range []string{"creating", "rotating"} {
 		account := readyManualAccount()
 		account.State = state
-		if manualAccountReady(account, "test") {
+		if manualAccountReady(account) {
 			t.Fatalf("state %s reported ready", state)
 		}
 	}
-	if !manualAccountReady(readyManualAccount(), "test") {
+	if !manualAccountReady(readyManualAccount()) {
 		t.Fatal("active account reported unready")
 	}
 }
@@ -425,8 +425,8 @@ func (source manualCatalogSource) Fetch(context.Context) (catalog.Snapshot, erro
 	}
 	return catalog.Snapshot{
 		Revision: revision, ObservedAt: observedAt,
-		Venues:      []catalog.Venue{{Venue: "binance", Environment: "demo", Ready: !source.unready}},
-		Instruments: []catalog.Instrument{{InstrumentID: "BTC-USDT", Venue: "binance", Environment: "demo", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: !source.unready}},
+		Venues:      []catalog.Venue{{Venue: "binance", Environment: "live", Ready: !source.unready}},
+		Instruments: []catalog.Instrument{{InstrumentID: "BTC-USDT", Venue: "binance", Environment: "live", Product: "perp", Symbol: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT", Rules: catalog.TradeRules{PriceIncrement: "0.1", QuantityIncrement: "0.001", MinQuantity: "0.001"}, Ready: !source.unready}},
 	}, nil
 }
 

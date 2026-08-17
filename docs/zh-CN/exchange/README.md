@@ -11,7 +11,7 @@
 - 阅读 [Exchange 架构与概念](../concepts/exchange.md)，了解模块边界、构造
   lifecycle、normalized product 和 account dimension。
 - 按照[统一交易所 API 快速入门](../guides/exchange-rest-quickstart.md)完成 typed
-  构造与安全的非生产示例。
+  构造，以及其中不需要凭证的 public 示例。
 - 如果调用方不应在进程内管理 client、缓存、凭证和重启恢复，而应通过常驻远程
   服务交互，请选择 [Exchange Gateway](../guides/exchange-gateway.md)。两者是
   同级入口，不是同一套 API 的迭代版本。
@@ -33,14 +33,15 @@ order-caveat 摘要。
 
 - [配置](../reference/configuration.md)维护精确的 environment、credential name、
   selector 与 endpoint-profile 规则。
-- [测试与证据](../reference/testing.md)维护 offline gate 与 Demo/Testnet command
-  清单。
+- [测试与证据](../reference/testing.md)维护 offline gate、容器 gate，以及一次跑绿
+  到底允许断言什么。
 
 ## 边界与事实来源
 
-Exchange 行为声明必须以 public exchange contract、factory、manifest、
-exchange test 与 exchange-specific acceptance evidence 为依据。Gateway 与
-产品服务文档可以提供背景，但不能定义本模块的行为。
+Exchange 行为声明必须以 public exchange contract、factory、manifest 与
+exchange test 为依据。已经没有外部 acceptance evidence 可供援引了：产出它的那一层
+已经和它所依赖的 Demo/Testnet 环境一起删除。Gateway 与产品服务文档可以提供背景，
+但不能定义本模块的行为。
 
 - [Exchange contract](../../../exchange/contract.go)
 - [Factory API](../../../exchange/factory/factory.go)

@@ -68,12 +68,7 @@ func binanceFilterInstrumentsForScope(instruments []exchange.Instrument, scope e
 
 func (loader binanceInstrumentLoader) loadSpot(ctx context.Context) ([]exchange.Instrument, error) {
 	sdk := binancespot.NewClient()
-	env := binancespot.Environment(loader.settings.Environment)
-	profile, err := binancespot.EndpointProfileForEnvironment(env)
-	if err != nil {
-		return nil, binanceSpotInvalid("InstrumentCatalog.Load", err.Error())
-	}
-	sdk.WithBaseURL(profile.RESTBaseURL)
+	sdk.WithBaseURL(binancespot.MainnetEndpointProfile().RESTBaseURL)
 	if loader.settings.Endpoint != "" {
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}
@@ -89,12 +84,7 @@ func (loader binanceInstrumentLoader) loadSpot(ctx context.Context) ([]exchange.
 
 func (loader binanceInstrumentLoader) loadPerp(ctx context.Context) ([]exchange.Instrument, error) {
 	sdk := binanceperp.NewClient()
-	env := binanceperp.Environment(loader.settings.Environment)
-	profile, err := binanceperp.EndpointProfileForEnvironment(env)
-	if err != nil {
-		return nil, binancePerpInvalidRequest("InstrumentCatalog.Load", err.Error())
-	}
-	sdk.WithEndpointProfile(profile)
+	sdk.WithEndpointProfile(binanceperp.MainnetEndpointProfile())
 	if loader.settings.Endpoint != "" {
 		sdk.WithBaseURL(loader.settings.Endpoint)
 	}

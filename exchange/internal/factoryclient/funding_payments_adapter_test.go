@@ -168,7 +168,7 @@ func TestLighterFundingPaymentsMapsQueryAndContinuation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL, Environment: "testnet"}).(exchange.PerpFundingPaymentREST)
+	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL}).(exchange.PerpFundingPaymentREST)
 	instrument := lighterFundingPaymentInstrument()
 	page, err := client.FundingPayments(context.Background(), exchange.FundingPaymentHistoryRequest{
 		Instrument: &instrument, Start: start, End: end, Limit: 1, SettlementAsset: "USDC",
@@ -212,7 +212,7 @@ func TestLighterFundingPaymentsAllInstrumentEmptyAndCursorRejection(t *testing.T
 	}))
 	defer server.Close()
 
-	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL, Environment: "testnet"}).(exchange.PerpFundingPaymentREST)
+	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL}).(exchange.PerpFundingPaymentREST)
 	page, err := client.FundingPayments(context.Background(), exchange.FundingPaymentHistoryRequest{
 		Start: start, End: end, Limit: 100, SettlementAsset: "USDC",
 	})
@@ -245,7 +245,7 @@ func TestLighterFundingPaymentsFutureEndIsIncompleteUnverified(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL, Environment: "testnet"}).(exchange.PerpFundingPaymentREST)
+	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL}).(exchange.PerpFundingPaymentREST)
 	page, err := client.FundingPayments(context.Background(), exchange.FundingPaymentHistoryRequest{
 		Start: start, End: end, Limit: 100, SettlementAsset: "USDC",
 	})
@@ -273,7 +273,7 @@ func TestLighterFundingPaymentsRejectsSettlementMismatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL, Environment: "testnet"}).(exchange.PerpFundingPaymentREST)
+	client := NewLighterPerp(openAPILighterPrivateKey, 7, 2, Settings{Endpoint: server.URL}).(exchange.PerpFundingPaymentREST)
 	instrument := lighterFundingPaymentInstrument()
 	_, err := client.FundingPayments(context.Background(), exchange.FundingPaymentHistoryRequest{
 		Instrument: &instrument, Start: start, End: end, Limit: 100, SettlementAsset: "USDT",

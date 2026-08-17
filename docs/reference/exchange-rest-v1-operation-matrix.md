@@ -16,32 +16,33 @@ or `runtime/*` as its implementation dependencies.
 
 ## Product rows
 
-| Row | Venue | Product | Factory config | Non-production environment | Live environment |
-| --- | --- | --- | --- | --- | --- |
-| BNS | Binance | Spot | `BinanceSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BNP | Binance | USD-M Perp | `BinanceUSDPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| OXS | OKX | Spot | `OKXSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| OXP | OKX | USDT-linear SWAP | `OKXUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| LIS | Lighter | Spot | `LighterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| LIP | Lighter | Perp | `LighterPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| BYS | Bybit | Spot | `BybitSpotConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` | `EnvironmentDemo` or `EnvironmentTestnet` | `EnvironmentLive` |
-| BGS | Bitget | Spot | `BitgetSpotConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` | `EnvironmentDemo` | `EnvironmentLive` |
-| GTS | Gate | Spot | `GateSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| ATS | Aster | Spot | `AsterSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| NDS | Nado | USDT0 Spot | `NadoSpotConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
-| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` | `EnvironmentTestnet` | `EnvironmentLive` |
+| Row | Venue | Product | Factory config |
+| --- | --- | --- | --- |
+| BNS | Binance | Spot | `BinanceSpotConfig` |
+| BNP | Binance | USD-M Perp | `BinanceUSDPerpConfig` |
+| OXS | OKX | Spot | `OKXSpotConfig` |
+| OXP | OKX | USDT-linear SWAP | `OKXUSDTPerpConfig` |
+| LIS | Lighter | Spot | `LighterSpotConfig` |
+| LIP | Lighter | Perp | `LighterPerpConfig` |
+| HLS | Hyperliquid | Spot | `HyperliquidSpotConfig` |
+| HLP | Hyperliquid | Standard Perp | `HyperliquidPerpConfig` |
+| BYS | Bybit | Spot | `BybitSpotConfig` |
+| BYU | Bybit | USDT-linear Perp | `BybitUSDTPerpConfig` |
+| BYC | Bybit | USDC-linear Perp | `BybitUSDCPerpConfig` |
+| BGS | Bitget | Spot | `BitgetSpotConfig` |
+| BGU | Bitget | USDT-linear Perp | `BitgetUSDTPerpConfig` |
+| BGC | Bitget | USDC-linear Perp | `BitgetUSDCPerpConfig` |
+| GTS | Gate | Spot | `GateSpotConfig` |
+| GTU | Gate | USDT-settled Perp | `GateUSDTPerpConfig` |
+| ATS | Aster | Spot | `AsterSpotConfig` |
+| ATP | Aster | USDT-linear Perp | `AsterUSDTPerpConfig` |
+| NDS | Nado | USDT0 Spot | `NadoSpotConfig` |
+| NDP | Nado | USDT0-settled Perp | `NadoUSDT0PerpConfig` |
 
-`factory.New` requires one explicit environment, validates credentials and
-endpoint options locally, redacts credentials in formatting, and performs no
-network I/O during construction.
+Every row reaches the venue's production endpoints. `factory.EnvironmentLive` is
+the only environment and the default, so `factory.WithEnvironment` is optional.
+`factory.New` validates credentials and endpoint options locally, redacts
+credentials in formatting, and performs no network I/O during construction.
 
 ## REST operation matrix
 
@@ -145,45 +146,19 @@ code/message, and retry-after duration. Credentials, signatures, auth tokens,
 signed payloads, native SDK responses, and raw request bodies are not part of
 the public error contract.
 
-## Demo/Testnet acceptance
+## Acceptance
 
-Offline exchange tests are the normal documentation and contract gate:
+Offline exchange tests are the documentation and contract gate:
 
 ```sh
 make test-exchange-offline
 ```
 
-Demo/Testnet acceptance is optional, credentialed, and environment-specific.
-Read-only calls validate only the method invoked. `PlaceOrder`, `CancelOrder`,
-`SetLeverage`, and WebSocket order commands mutate real non-production exchange
-state. Run external validation serially, with explicit symbols, explicit
-notional bounds, dedicated non-production credentials, and cleanup evidence.
-
-Capability cells in this matrix are implemented/admitted support, not external
-environment certification. Current acceptance certification is:
-
-| Row | Acceptance status | Reason |
-| --- | --- | --- |
-| BNS | Passed | Binance Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| BNP | Passed | Binance Demo USD-M perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| OXS | Passed | OKX Demo spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| OXP | Passed | OKX Demo USDT-linear SWAP external acceptance passed for the declared REST and WebSocket exchange row. |
-| LIS | Waived | Lighter Testnet Spot is structurally one-sided. The user authorized a live-write waiver: the serial target verifies REST reads, account access, the one-sided order-book stream, remaining public/private subscription activation, and invalid-request boundaries with zero live order mutations; WatchBBO, exact lookup, and write paths remain explicitly waived or fixture-only, and the gateway keeps the row not write-ready. |
-| LIP | Passed | Lighter Testnet perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| HLS | Passed | Hyperliquid Testnet spot external acceptance passed for the declared REST and WebSocket exchange row. |
-| HLP | Passed | Hyperliquid Testnet standard perp external acceptance passed for the declared REST and WebSocket exchange row. |
-| BYS | Passed | Bybit Demo spot row passed full external acceptance. |
-| BYU | Passed | Bybit Demo USDT-linear perp row passed full external acceptance. |
-| BYC | Passed | Bybit Demo USDC-linear perp row passed full external acceptance. |
-| BGS | Passed | Bitget Demo spot row passed full external acceptance. |
-| BGU | Passed | Bitget Demo USDT-linear perp row passed full external acceptance. |
-| BGC | Passed | Bitget Demo USDC-linear perp row passed full external acceptance with native `BTCPERP`. |
-| GTS | Passed | Gate Testnet spot row passed full external acceptance. |
-| GTU | Passed | Gate Testnet USDT-settled perp row passed full external acceptance. |
-| ATS | Passed | Aster Testnet spot row passed full external acceptance. |
-| ATP | Passed | Aster perp row passed with Testnet writes and private streams plus production read-only funding REST and WebSocket reference data. |
-| NDS | Passed | Nado Testnet USDT0 spot row passed full external acceptance. |
-| NDP | Passed | Nado Testnet USDT0 perp row passed full external acceptance; `SetLeverage` returned the documented backend-managed `Effective=0` and `WatchMarkPrice` returned `ErrUnsupported`. |
-
-This matrix does not claim live validation has passed beyond the acceptance
-status table.
+Capability cells in this matrix are implemented/admitted support, not a claim
+that the venue answers today. There is no non-production environment left to
+certify against: every credentialed call reaches the real venue, and
+`PlaceOrder`, `CancelOrder`, `SetLeverage`, and WebSocket order commands spend
+real funds. Validate against production only with a dedicated account, explicit
+symbols, explicit notional bounds, serial execution, and terminal cleanup
+evidence. For click-through work that must not touch a venue at all, run the
+frontend against its offline mock.

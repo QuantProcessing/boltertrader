@@ -2,8 +2,8 @@
 
 > 英文为规范版本。[English](../../reference/testing.md)
 
-本页是一份清单：你能跑什么，以及跑绿了能证明什么。默认路径是离线的、不需要凭证的、确定性的；
-所有会碰到交易所的东西，都是单独的、被显式命名的 target。
+本页是一份清单：你能跑什么，以及跑绿了能证明什么。每个 target 都是离线的、不需要凭证的、
+确定性的。没有任何 target 会碰到交易所，也没有任何 target 会下单。
 
 ## 默认路径
 
@@ -29,8 +29,8 @@ make test
 | `make test-gateway` | 先 offline，再 race，再 security |
 | `make test-browser` | Web 应用：安装、构建、Vitest、Playwright |
 
-不带 `-short` 的 `go test ./...` 不是安全的默认值。那些能够碰到交易所的测试，会在 short 模式
-关闭时去检查环境。
+不带 `-short` 的 `go test ./...` 不是安全的默认值。`sdk/` 下有少数几个测试会在 short 模式关闭
+时去读交易所的 public endpoint。没有任何 Make target 会跑它们。
 
 有两个 gateway target 需要一个真实的 PostgreSQL，并从环境里读 `GATEWAY_TEST_POSTGRES_DSN`；
 变量没设时它们直接失败，而不是跳过。`make test-gateway-postgres` 覆盖迁移、命令存储、审计存储
@@ -57,76 +57,59 @@ make test-compose
 每一个都会建自己的 Compose 项目，用生成的凭证和由内核分配的端口。它们都不要求你先跑过
 `make up`，也都不会打扰一个已经起着的栈。
 
-## 外部验收
+## 外部验收去哪了
 
-下面的每一条都会在真实的非生产交易所下真实的单。每个 target 都在命令内联地设置自己的写闸门
-——写闸门也只该这么设。见[配置](configuration.md)。
+这里原本还有第三层：九个按交易所划分的验收聚合、二十个 gateway product 行 target，以及为它们
+开闸的 `BOLTER_ENABLE_<VENUE>_<ENV>_WRITES` 变量。它们全都会在交易所的 demo 或 testnet 环境下
+真实的单。
 
-### Exchange 层
+这一整层已经删除，和它所依赖的那些环境一起。每个交易所实现 demo 与 testnet 的方式都不一样
+——这家要单独的 WebSocket 后端，那家靠一个请求头，再换一家又是另一套签名域或 chain ID——
+维持它能跑的成本，高于它产出的证据的价值。Go 侧没有任何东西接替它，因为接替者必须花真钱。
 
-九个交易所，聚合为 `make test-exchange-acceptance`。
+剩下两条路，都不是测试 target：
 
-| 环境 | 聚合 target | Product target |
-| --- | --- | --- |
-| Binance Demo | `test-exchange-binance-demo-acceptance` | `-spot`、`-perp` |
-| OKX Demo | `test-exchange-okx-demo-acceptance` | `-spot`、`-perp` |
-| Bybit Demo | `test-exchange-bybit-demo-acceptance` | `-spot`、`-usdt-perp`、`-usdc-perp` |
-| Bitget Demo | `test-exchange-bitget-demo-acceptance` | `-spot`、`-usdt-perp`、`-usdc-perp` |
-| Gate Testnet | `test-exchange-gate-testnet-acceptance` | `-spot`、`-usdt-perp` |
-| Aster Testnet | `test-exchange-aster-testnet-acceptance` | `-spot`、`-usdt-perp` |
-| Nado Testnet | `test-exchange-nado-testnet-acceptance` | `-spot`、`-usdt0-perp` |
-| Hyperliquid Testnet | `test-exchange-hyperliquid-testnet-acceptance` | `-spot`、`-perp` |
-| Lighter Testnet | `test-exchange-lighter-testnet-acceptance` | `-spot`、`-perp` |
+- `web/src/mocks/` 下的离线 mock 在浏览器里应答整个 API 面。
+  `npm --prefix web run dev:mock` 给你一个可以点着走完的应用：不需要交易所、不需要凭证、
+  也不需要后端。
+- 用你自己的凭证，经由运行中的栈连真实交易所。那就是生产环境，本仓库对它不作任何断言。
 
-Product target 的名字就是聚合 target 的前缀加上后缀，所以 Bybit 的 USDC 永续是
-`make test-exchange-bybit-demo-usdc-perp`。
+## 闸门与串行执行
 
-### Gateway product 行
-
-二十个 target，一个 product 行一个，聚合为 `make test-gateway-demo-testnet`：
-
-| 交易所 | Target |
-| --- | --- |
-| Binance | `test-gateway-binance-spot-demo`、`test-gateway-binance-usd-perp-demo` |
-| OKX | `test-gateway-okx-spot-demo`、`test-gateway-okx-usdt-perp-demo` |
-| Lighter | `test-gateway-lighter-spot-testnet`、`test-gateway-lighter-perp-testnet` |
-| Hyperliquid | `test-gateway-hyperliquid-spot-testnet`、`test-gateway-hyperliquid-perp-testnet` |
-| Bybit | `test-gateway-bybit-spot-demo`、`test-gateway-bybit-usdt-perp-demo`、`test-gateway-bybit-usdc-perp-demo` |
-| Bitget | `test-gateway-bitget-spot-demo`、`test-gateway-bitget-usdt-perp-demo`、`test-gateway-bitget-usdc-perp-demo` |
-| Gate | `test-gateway-gate-spot-testnet`、`test-gateway-gate-usdt-perp-testnet` |
-| Aster | `test-gateway-aster-spot-testnet`、`test-gateway-aster-usdt-perp-testnet` |
-| Nado | `test-gateway-nado-spot-testnet`、`test-gateway-nado-usdt0-perp-testnet` |
-
-这些 target 是按 gateway 对外暴露的 product 行命名的，而每一个跑的都是该行对应的 exchange 层
-验收测试。这套命名的意义在于：一个关于某个 gateway product 行的断言，能映射到恰好一条命令
-——而不是让同一个测试被数两遍。
-
-## 闸门、skip 与串行执行
-
-**写闸门是命令内联的。** 每个外部 target 自己在命令前面加
-`BOLTER_ENABLE_<VENUE>_<ENV>_WRITES=1`。把其中任何一个导出到 shell 配置或 `.env` 文件里，
-都会让此后每一次 `go test` 都变成一次潜在的交易所写入。别这么干。
-
-**skip 就是失败。** 外部 target 都经由 `internal/testenv/cmd/noskipgotest` 运行：一个测试都没
-跑到，它失败；有任何测试被跳过，它也失败。因此缺凭证、product 不可用、或者选择器什么都没匹配
-上，都不可能被误认为通过。
+**没有任何 recipe 会为带凭证的写入开闸。** `TestMakefileRecipesNeverEnableCredentialedWrites`
+会读 Makefile 里的每一条 recipe，一旦某条设置了开闸变量或导出了凭证材料就失败。默认路径是
+离线的——这是构造上的性质，不是约定俗成，所以 `make test` 不需要先读一遍再跑。
 
 **执行是串行的。** Makefile 声明了 `.NOTPARALLEL`，它把同一次调用内部的前置目标串起来。它并
-不串行化彼此独立的 `make` 进程。一次只跑一个会写入的 target，等到终态验证完成再跑下一个。
+不串行化彼此独立的 `make` 进程。
 
 ## 跑绿了能证明什么
 
-退出码为零，只能证明那个装置所编码的 product、symbol 与 account 范围，不能更宽。它不证明账户
-整体为空，不证明主网行为，也不证明生产就绪持续成立。
+退出码为零，只能证明规范化实现与套件所携带的 fixture 依然一致，不能更宽。它不证明交易所今天
+还会这么答，不证明某个 endpoint 还存在，也不证明某份凭证会被接受。每一份 fixture 都是过去某次
+响应的一张照片。
 
-非零、超时、skip，或者一次不明确的提交，都不能证明 cleanup 跑过了。在做补救之前，先查清由装置
-持有的那些订单 ID 和精确的 product 范围；绝不盲目撤销无关订单，也绝不平掉未经证实的持仓。见
+PostgreSQL 与 Compose 那几套是例外：它们跑在真实数据库和真实容器上，因此它们对这两者所断言
+的内容，是真的被证明了的。
+
+如果在真实交易所那边确实出了问题，恢复规则并没有随这套装置一起改变。见
 [运维与恢复](../guides/operations-recovery.md)。
 
 ## 发布证据
 
-一条 Demo/Testnet 认证的断言——这个术语在[术语表](glossary.md)里有定义——必须写明环境与精确的
+一条 Offline-conformant 的断言——这个术语在[术语表](glossary.md)里有定义——必须写明精确的
 product 范围、精确的 Make target、zero-skip 结果及其日期，以及任何会收窄它的限制。
+
+zero-skip 这一半不是跑绿了就能知道的：一个 test 被跳过和它通过，`go test` 的退出码同样是零；
+`-run` 模式一个都没匹配上时，退出码也还是零。`internal/testenv/cmd/noskipgotest` 读 `-json`
+流，这两种情况都判失败——把你要断言的那个 target 的命令体传给它：
+
+```bash
+go run ./internal/testenv/cmd/noskipgotest -- -short ./exchange/... -count=1
+```
+
+这条命令就是 `make test-exchange-offline`。这个 wrapper 过去用来跑外部验收 target，那时一次
+skip 意味着某份凭证不在；现在它服务于离线断言，一次 skip 意味着证据比 target 名字看上去的更窄。
 
 发布这份摘要，别的都不发。不含凭证、不含原始日志、不含账户残留、不含本地路径。「已实现」「有
 能力」「有外部证据」始终是三条彼此独立的断言。

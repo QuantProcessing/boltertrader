@@ -470,7 +470,7 @@ func TestPerpPlaceOrderDoesNotRetryAmbiguousTransportFailure(t *testing.T) {
 
 func newPerpFixtureClient(t *testing.T, transport roundTripFunc) *Client {
 	t.Helper()
-	profile, err := astercommon.NewProfile(astercommon.EnvironmentTestnet, astercommon.ProductPerp)
+	profile, err := astercommon.NewProfile(astercommon.ProductPerp)
 	if err != nil {
 		t.Fatal(err)
 	}

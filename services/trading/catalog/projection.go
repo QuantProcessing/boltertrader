@@ -217,15 +217,10 @@ var browserCredentialVariants = []credentialVariant{
 func enrichBrowserVenues(snapshot Snapshot) (Snapshot, error) {
 	for index := range snapshot.Venues {
 		venue := &snapshot.Venues[index]
-		environment := routeprofile.NativeEnvironment(venue.Environment)
-		mode := routeprofile.ModeTest
-		if environment == routeprofile.EnvironmentLive {
-			mode = routeprofile.ModeLive
-		}
 		profiles := make([]RouteProfile, 0)
 		for _, product := range []routeprofile.Product{routeprofile.ProductSpot, routeprofile.ProductPerp} {
 			for _, settlement := range []string{"", "USDT", "USDC", "USDT0"} {
-				profile, err := routeprofile.DefaultRegistry().ResolveLegacy(mode, venue.Venue, string(product), settlement, environment)
+				profile, err := routeprofile.DefaultRegistry().ResolveLegacy(venue.Venue, string(product), settlement)
 				if err != nil {
 					continue
 				}

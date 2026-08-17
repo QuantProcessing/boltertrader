@@ -7,7 +7,7 @@ import (
 )
 
 func TestClientSenderUsesConfiguredWalletAndSubaccount(t *testing.T) {
-	client, err := newNadoTestnetClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "arb")
+	client, err := newNadoClient(t).WithCredentials(fmt.Sprintf("%064x", 1), "arb")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestClientSenderUsesConfiguredWalletAndSubaccount(t *testing.T) {
 		t.Fatalf("sender=%q, want configured wallet/subaccount sender %q", got, want)
 	}
 
-	withoutCredentials := newNadoTestnetClient(t)
+	withoutCredentials := newNadoClient(t)
 	if _, err := withoutCredentials.Sender(); !errors.Is(err, ErrCredentialsRequired) {
 		t.Fatalf("sender without credentials err=%v, want ErrCredentialsRequired", err)
 	}

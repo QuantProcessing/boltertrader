@@ -280,9 +280,8 @@ func TestGateOfficialOpenFinishStatusesAreAccepted(t *testing.T) {
 func TestGateSpotBalancesUseUnifiedAccountWhenUnifiedModeIsEnabled(t *testing.T) {
 	router := &gateOpenAPIRouter{}
 	client := NewGateSpot("key", "secret", Settings{
-		Endpoint:    "https://openapi.invalid",
-		Environment: "testnet",
-		HTTPClient:  &http.Client{Transport: router},
+		Endpoint:   "https://openapi.invalid",
+		HTTPClient: &http.Client{Transport: router},
 	})
 
 	balances, err := client.Balances(context.Background())
@@ -466,7 +465,7 @@ func TestGateFundingRateRejectsMismatchedNativeIdentity(t *testing.T) {
 
 func TestGateRESTUnknownNativeIdentityFailsMetadataResolution(t *testing.T) {
 	catalog := exchange.NewDefaultMemoryCatalog()
-	scope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentTestnet, Product: exchange.ProductSpot}
+	scope := exchange.CatalogScope{Venue: exchange.VenueGate, Environment: exchange.EnvironmentLive, Product: exchange.ProductSpot}
 	descriptor := exchange.SourceDescriptor{Name: "gate-spot-test", Endpoint: "https://openapi.invalid", Transport: "custom-http-client"}
 	scope.EndpointFingerprint = descriptor.Fingerprint()
 	if err := catalog.RegisterSource(scope, descriptor, exchange.StaticInstrumentLoader{Snapshot: exchange.InstrumentSnapshot{
@@ -477,8 +476,7 @@ func TestGateRESTUnknownNativeIdentityFailsMetadataResolution(t *testing.T) {
 		t.Fatalf("RegisterSource: %v", err)
 	}
 	client := NewGateSpot("key", "secret", Settings{
-		Endpoint:    descriptor.Endpoint,
-		Environment: "testnet",
+		Endpoint: descriptor.Endpoint,
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return gateOpenAPIJSONResponse(`[{"id":"91","text":"t-91","currency_pair":"ETH_USDT","type":"limit","side":"buy","amount":"1","price":"99","time_in_force":"gtc","left":"1","filled_amount":"0","status":"open"}]`), nil
 		})},

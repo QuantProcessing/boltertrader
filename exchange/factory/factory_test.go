@@ -167,7 +167,7 @@ func TestFactorySourceRegistrationConflictPropagatesThroughNew(t *testing.T) {
 func TestFactoryLighterDefaultSourceUsesSDKEndpointsAndEquivalentScope(t *testing.T) {
 	catalog := exchange.NewDefaultMemoryCatalog()
 	options := []Option{
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithInstrumentCatalog(catalog),
 	}
 	if _, err := New(LighterSpotConfig(testLighterPrivateKey, 1, 2, options...)); err != nil {
@@ -180,8 +180,8 @@ func TestFactoryLighterDefaultSourceUsesSDKEndpointsAndEquivalentScope(t *testin
 	if !ok {
 		t.Fatal("missing lighter spot catalog source")
 	}
-	if descriptor.Endpoint != lighter.TestnetAPIURL || descriptor.WebSocketEndpoint != lighter.TestnetWSURL {
-		t.Fatalf("descriptor endpoints = %+v, want SDK testnet defaults", descriptor)
+	if descriptor.Endpoint != lighter.MainnetAPIURL || descriptor.WebSocketEndpoint != lighter.MainnetWSURL {
+		t.Fatalf("descriptor endpoints = %+v, want SDK mainnet defaults", descriptor)
 	}
 	if scope.EndpointFingerprint != descriptor.Fingerprint() {
 		t.Fatalf("scope fingerprint = %q, want descriptor fingerprint %q", scope.EndpointFingerprint, descriptor.Fingerprint())
@@ -192,7 +192,7 @@ func TestFactoryLighterPerpDefaultSourceUsesUSDCSettlementAndCatalogResolution(t
 	transport := new(countingTransport)
 	catalog := exchange.NewDefaultMemoryCatalog()
 	options := []Option{
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithHTTPClient(&http.Client{Transport: transport}),
 		WithInstrumentCatalog(catalog),
 	}
@@ -280,7 +280,7 @@ func TestFactoryBinanceSourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
 			transport := new(countingTransport)
 			catalog := exchange.NewDefaultMemoryCatalog()
 			options := []Option{
-				WithEnvironment(EnvironmentDemo),
+				WithEnvironment(EnvironmentLive),
 				WithHTTPClient(&http.Client{Transport: transport}),
 				WithInstrumentCatalog(catalog),
 			}
@@ -332,7 +332,7 @@ func TestFactoryGateSourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
 			transport := new(countingTransport)
 			catalog := exchange.NewDefaultMemoryCatalog()
 			options := []Option{
-				WithEnvironment(EnvironmentTestnet),
+				WithEnvironment(EnvironmentLive),
 				WithHTTPClient(&http.Client{Transport: transport}),
 				WithInstrumentCatalog(catalog),
 			}
@@ -357,7 +357,7 @@ func TestFactoryGateSourceRegistrationIsEquivalentAndZeroIO(t *testing.T) {
 }
 
 func TestFactoryNadoConfigsShareAndRegisterBothCatalogScopes(t *testing.T) {
-	settings := newSettings([]Option{WithEnvironment(EnvironmentTestnet)})
+	settings := newSettings([]Option{WithEnvironment(EnvironmentLive)})
 	spotScope, spotDescriptor, ok := catalogSourceForConfig("nado-spot", settings)
 	if !ok {
 		t.Fatal("missing Nado Spot catalog source")
@@ -382,42 +382,25 @@ func TestFactoryBinanceDefaultSourceUsesSDKEndpoints(t *testing.T) {
 	tests := []struct {
 		name           string
 		configName     string
-		environment    Environment
 		wantEndpoint   string
 		wantWSEndpoint string
 	}{
 		{
-			name:           "spot demo",
+			name:           "spot",
 			configName:     "binance-spot",
-			environment:    EnvironmentDemo,
-			wantEndpoint:   binancespot.DemoBaseURL,
-			wantWSEndpoint: binancespot.DemoWSBaseURL,
-		},
-		{
-			name:           "spot live",
-			configName:     "binance-spot",
-			environment:    EnvironmentLive,
 			wantEndpoint:   binancespot.BaseURL,
 			wantWSEndpoint: binancespot.WSBaseURL,
 		},
 		{
-			name:           "usd-perp demo",
+			name:           "usd-perp",
 			configName:     "binance-usd-perp",
-			environment:    EnvironmentDemo,
-			wantEndpoint:   binanceperp.DemoBaseURL,
-			wantWSEndpoint: binanceperp.DemoWSPublicBaseURL,
-		},
-		{
-			name:           "usd-perp live",
-			configName:     "binance-usd-perp",
-			environment:    EnvironmentLive,
 			wantEndpoint:   binanceperp.BaseURL,
 			wantWSEndpoint: binanceperp.WSPublicBaseURL,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			options := []Option{WithEnvironment(test.environment)}
+			options := []Option{WithEnvironment(EnvironmentLive)}
 			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
 			if !ok {
 				t.Fatalf("missing catalog source for %s", test.configName)
@@ -436,41 +419,24 @@ func TestFactoryGateDefaultSourceUsesSDKEndpoints(t *testing.T) {
 	for _, test := range []struct {
 		name           string
 		configName     string
-		environment    Environment
 		wantEndpoint   string
 		wantWSEndpoint string
 	}{
 		{
-			name:           "spot live",
+			name:           "spot",
 			configName:     "gate-spot",
-			environment:    EnvironmentLive,
 			wantEndpoint:   gate.MainnetEnvironmentProfile().RESTBaseURL,
 			wantWSEndpoint: gate.MainnetEnvironmentProfile().SpotWSURL,
 		},
 		{
-			name:           "spot testnet",
-			configName:     "gate-spot",
-			environment:    EnvironmentTestnet,
-			wantEndpoint:   gate.TestnetEnvironmentProfile().RESTBaseURL,
-			wantWSEndpoint: gate.TestnetEnvironmentProfile().SpotWSURL,
-		},
-		{
-			name:           "usdt-perp live",
+			name:           "usdt-perp",
 			configName:     "gate-usdt-perp",
-			environment:    EnvironmentLive,
 			wantEndpoint:   gate.MainnetEnvironmentProfile().RESTBaseURL,
 			wantWSEndpoint: gate.MainnetEnvironmentProfile().FuturesUSDTWSURL,
 		},
-		{
-			name:           "usdt-perp testnet",
-			configName:     "gate-usdt-perp",
-			environment:    EnvironmentTestnet,
-			wantEndpoint:   gate.TestnetEnvironmentProfile().RESTBaseURL,
-			wantWSEndpoint: gate.TestnetEnvironmentProfile().FuturesUSDTWSURL,
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			options := []Option{WithEnvironment(test.environment)}
+			options := []Option{WithEnvironment(EnvironmentLive)}
 			scope, descriptor, ok := catalogSourceForConfig(test.configName, newSettings(options))
 			if !ok {
 				t.Fatalf("missing catalog source for %s", test.configName)
@@ -488,12 +454,12 @@ func TestFactoryGateDefaultSourceUsesSDKEndpoints(t *testing.T) {
 func TestFactoryLighterEndpointSourceScopesAreIsolated(t *testing.T) {
 	catalog := exchange.NewDefaultMemoryCatalog()
 	first := []Option{
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithEndpoint("http://lighter-a.test"),
 		WithInstrumentCatalog(catalog),
 	}
 	second := []Option{
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithEndpoint("http://lighter-b.test"),
 		WithInstrumentCatalog(catalog),
 	}
@@ -533,7 +499,7 @@ func TestFactoryCustomCatalogIsolationDoesNotTouchGlobalDefault(t *testing.T) {
 func TestHyperliquidAccountAddressOptionIsExplicitAndValidatedLocally(t *testing.T) {
 	transport := new(countingTransport)
 	common := []Option{
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithHTTPClient(&http.Client{Transport: transport}),
 		WithAccountAddress(testHyperliquidOwner),
 	}
@@ -546,7 +512,7 @@ func TestHyperliquidAccountAddressOptionIsExplicitAndValidatedLocally(t *testing
 		t.Run(address, func(t *testing.T) {
 			_, err := New(HyperliquidSpotConfig(
 				testHyperliquidPrivateKey,
-				WithEnvironment(EnvironmentTestnet),
+				WithEnvironment(EnvironmentLive),
 				WithAccountAddress(address),
 			))
 			assertInvalidConfig(t, err)
@@ -561,7 +527,7 @@ func TestHyperliquidAccountAddressOptionReachesAccountScopedSDKRequests(t *testi
 	transport := new(hyperliquidAccountCaptureTransport)
 	client, err := New(HyperliquidSpotConfig(
 		testHyperliquidPrivateKey,
-		WithEnvironment(EnvironmentTestnet),
+		WithEnvironment(EnvironmentLive),
 		WithHTTPClient(&http.Client{Transport: transport}),
 		WithAccountAddress(testHyperliquidOwner),
 	))
@@ -957,129 +923,25 @@ func TestConstructedClientFormattingRedactsCredentials(t *testing.T) {
 	}
 }
 
+// TestVenueEnvironmentValidation pins the one thing WithEnvironment still
+// decides now that Environment has a single member: which strings it refuses.
+//
+// The accepting half of this test is gone because it had become a second, worse
+// copy of TestTwentyKnownConfigsInferAndConstructProductClients, which already
+// builds all twenty configs on EnvironmentLive. What is left cannot be said
+// anywhere else. "demo" and "testnet" are spelled as literals on purpose: the
+// constants that used to carry them are deleted, but the strings themselves
+// still exist in stored venue_environment values, so this is the assertion that
+// an old row cannot talk its way into a live venue client.
 func TestVenueEnvironmentValidation(t *testing.T) {
-	valid := []struct {
-		name string
-		run  func() error
-	}{
-		{
-			name: "binance spot demo",
-			run: func() error {
-				_, err := New(BinanceSpotConfig("key", "secret", WithEnvironment(EnvironmentDemo)))
-				return err
-			},
-		},
-		{
-			name: "binance perp demo",
-			run: func() error {
-				_, err := New(BinanceUSDPerpConfig("key", "secret", WithEnvironment(EnvironmentDemo)))
-				return err
-			},
-		},
-		{
-			name: "okx spot demo",
-			run: func() error {
-				_, err := New(OKXSpotConfig("key", "secret", "passphrase", WithEnvironment(EnvironmentDemo)))
-				return err
-			},
-		},
-		{
-			name: "okx perp demo",
-			run: func() error {
-				_, err := New(OKXUSDTPerpConfig("key", "secret", "passphrase", WithEnvironment(EnvironmentDemo)))
-				return err
-			},
-		},
-		{
-			name: "lighter spot testnet",
-			run: func() error {
-				_, err := New(LighterSpotConfig(
-					testLighterPrivateKey,
-					1,
-					2,
-					WithEnvironment(EnvironmentTestnet),
-				))
-				return err
-			},
-		},
-		{
-			name: "lighter perp testnet",
-			run: func() error {
-				_, err := New(LighterPerpConfig(
-					testLighterPrivateKey,
-					1,
-					2,
-					WithEnvironment(EnvironmentTestnet),
-				))
-				return err
-			},
-		},
-		{
-			name: "hyperliquid spot testnet",
-			run: func() error {
-				_, err := New(HyperliquidSpotConfig(
-					testHyperliquidPrivateKey,
-					WithEnvironment(EnvironmentTestnet),
-				))
-				return err
-			},
-		},
-		{
-			name: "hyperliquid perp testnet",
-			run: func() error {
-				_, err := New(HyperliquidPerpConfig(
-					testHyperliquidPrivateKey,
-					WithEnvironment(EnvironmentTestnet),
-				))
-				return err
-			},
-		},
-	}
-	for _, test := range valid {
-		t.Run(test.name, func(t *testing.T) {
-			if err := test.run(); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-
-	invalid := []struct {
-		name string
-		run  func() error
-	}{
-		{
-			name: "binance rejects testnet label",
-			run: func() error {
-				_, err := New(BinanceSpotConfig("key", "secret", WithEnvironment(EnvironmentTestnet)))
-				return err
-			},
-		},
-		{
-			name: "lighter rejects demo",
-			run: func() error {
-				_, err := New(LighterPerpConfig(
-					testLighterPrivateKey,
-					1,
-					2,
-					WithEnvironment(EnvironmentDemo),
-				))
-				return err
-			},
-		},
-		{
-			name: "unknown environment",
-			run: func() error {
-				_, err := New(HyperliquidPerpConfig(
-					testHyperliquidPrivateKey,
-					WithEnvironment(Environment("mars")),
-				))
-				return err
-			},
-		},
-	}
-	for _, test := range invalid {
-		t.Run(test.name, func(t *testing.T) {
-			assertInvalidConfig(t, test.run())
+	rejected := []string{"demo", "testnet", "mars", "LIVE", "live "}
+	for _, environment := range rejected {
+		t.Run(environment, func(t *testing.T) {
+			_, err := New(HyperliquidPerpConfig(
+				testHyperliquidPrivateKey,
+				WithEnvironment(Environment(environment)),
+			))
+			assertInvalidConfig(t, err)
 		})
 	}
 }
