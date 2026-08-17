@@ -1,18 +1,25 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { ACCOUNT, CREDENTIALS, FakeEdge, HEDGE_ACCOUNT } from "./fake-edge";
+import { ACCOUNT, CREDENTIALS, HEDGE_ACCOUNT } from "../src/mocks/fixtures";
 
 /* ---------------------------------------------------------------------------
- * The plan's MVP path, in a browser, against a fake auth edge.
+ * The plan's MVP path, in a browser, against the MSW mock edge.
  *
  *   sign in → session → accounts → preview → place → see it resting →
  *   cancel it → see the audit chain
  *
  * The same eight steps the curl acceptance walked in P4. What this adds is the
- * half curl cannot reach: that the frontend unwraps six different envelopes
+ * half curl cannot reach: that the frontend unwraps seven different envelopes
  * correctly, that a preview seals before a command is allowed, and that the
  * blotter reflects a cancel. What it deliberately does not test is the venue —
  * that is `mvp.live.spec.ts`.
+ *
+ * There is no request interception here. `npm run dev:mock` starts the same
+ * service worker a developer runs, so this file drives the app exactly as they
+ * do and cannot pass against a mock the dev server does not have. The mock's
+ * store lives in the page, so every test begins on a clean one, and the session
+ * is a real cookie set by a real sign-in rather than a flag flipped from the
+ * test — which is what makes the sign-out assertion at the bottom mean anything.
  * ------------------------------------------------------------------------- */
 
 const ticketOf = (page: Page): Locator =>
@@ -24,13 +31,6 @@ const blotterOf = (page: Page): Locator => page.getByRole("tabpanel");
 const navOf = (page: Page): Locator => page.getByRole("navigation", { name: "Sections" });
 
 test.describe("the MVP path", () => {
-  let edge: FakeEdge;
-
-  test.beforeEach(async ({ page }) => {
-    edge = new FakeEdge();
-    await edge.install(page);
-  });
-
   test("signs in and lands on the terminal", async ({ page }) => {
     await page.goto("/trade");
 
@@ -58,8 +58,58 @@ test.describe("the MVP path", () => {
     await expect(page).toHaveURL(/\/login/);
   });
 
+  // The one step of the MVP path the order tests take for granted, because the
+  // fixtures already contain two accounts. What it proves is the part of the
+  // account plane that no fixture can: that the form is built from the venue's
+  // own credential schema rather than from a shape hardcoded here — okx is in
+  // the list precisely because it is the venue with a third field — and that
+  // the secrets leave the page the moment they are sent. PRODUCT.md's
+  // write-only rule is enforced on the server, but a form that kept the key on
+  // screen afterwards would break it on the client alone.
+  test("creates an account from the venue's own credential schema", async ({ page }) => {
+    await signIn(page);
+    await navOf(page).getByRole("link", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+
+    const accountList = page.getByRole("navigation", { name: "Accounts" });
+    await expect(accountList.getByRole("button")).toHaveCount(2);
+
+    await page.getByRole("button", { name: "Add account" }).click();
+    const form = page.locator("form");
+
+    // Choosing the venue is what makes the rest of the form exist: routes and
+    // credential fields are the venue's, and neither is rendered before one.
+    await expect(form.getByRole("checkbox")).toHaveCount(0);
+    await form.getByLabel("Venue").selectOption("okx");
+
+    await form.getByLabel("Display name").fill("OKX Main");
+    await form.getByRole("checkbox").first().check();
+
+    // Three fields, because okx's key is useless without the passphrase it was
+    // minted with. A form built from a fixed api-key/secret pair would have two.
+    await expect(form.getByLabel(/^API key/)).toBeVisible();
+    await form.getByLabel(/^API key/).fill("okx-key");
+    await form.getByLabel(/^API secret/).fill("okx-secret");
+    await form.getByLabel(/^Passphrase/).fill("okx-passphrase");
+
+    await form.getByRole("button", { name: "Create account" }).click();
+
+    // 201, and the shell selects what it just made: the form is gone and the
+    // detail panel is showing the new account rather than the old selection.
+    await expect(page.getByText("Account created")).toBeVisible();
+    await expect(accountList.getByRole("button")).toHaveCount(3);
+    await expect(accountList.getByRole("button", { name: /OKX Main/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "OKX Main" })).toBeVisible();
+
+    // And nothing that was typed survived the submit. The form unmounted, so
+    // this is checked on the page: a password input anywhere holding one of
+    // those values would be the write-only rule broken before the request.
+    expect(await page.locator("input[type='password']").count()).toBe(0);
+    await expect(page.getByText("okx-secret")).toHaveCount(0);
+  });
+
   test("places an order, sees it resting, and cancels it", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
     const ticket = ticketOf(page);
 
     // Step 3: the account arrives through the gateway plane's meta-less
@@ -94,21 +144,25 @@ test.describe("the MVP path", () => {
   });
 
   test("shows the audit chain the order left behind", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
     await placeAndCancel(page);
 
     // Step 8: both events, newest first, on the screen that reads trading's
     // ring buffer rather than the order list. Asserted on the cells, because
     // the kind filter beside the table offers the same strings as options.
+    //
+    // The kinds are the server's, not friendlier inventions:
+    // `publishCommandActivity` names an event `"command." + command.state`, so a
+    // cancel is `command.cancel_accepted` and there is no "order" in either.
     await navOf(page).getByRole("link", { name: "Activity" }).click();
 
     await expect(page).toHaveURL(/\/activity$/);
-    await expect(page.getByRole("cell", { name: "manual.order.canceled" })).toBeVisible();
-    await expect(page.getByRole("cell", { name: "manual.order.placed" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "command.cancel_accepted" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "command.submitted" })).toBeVisible();
   });
 
   test("keeps every section one click from every other", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
     const nav = navOf(page);
 
     for (const [label, path] of [
@@ -130,7 +184,7 @@ test.describe("the MVP path", () => {
   // things the matrix exists to do: pivot one instrument across venues into a
   // single row, and mark a column that did not answer instead of dropping it.
   test("shows the funding board without an account", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
     await navOf(page).getByRole("link", { name: "Funding" }).click();
 
     await expect(page).toHaveURL(/\/funding$/);
@@ -148,7 +202,7 @@ test.describe("the MVP path", () => {
   // arrives through an envelope nothing else uses (`{items, observedAt}`), and
   // the ticket resolves each leg to an account on the leg's own exchange.
   test("ranks a cross-venue spread and offers both legs a home", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
     await navOf(page).getByRole("link", { name: "Arbitrage" }).click();
 
     await expect(page).toHaveURL(/\/funding\/arbitrage$/);
@@ -166,7 +220,7 @@ test.describe("the MVP path", () => {
   });
 
   test("sends the operator back to login when the session ends", async ({ page }) => {
-    await signIn(page, edge);
+    await signIn(page);
 
     await page.getByRole("button", { name: "Sign out" }).click();
     // One capture of where they were, not a stack of them. This shell outlives
@@ -186,9 +240,21 @@ test.describe("the MVP path", () => {
 
 /* --- Steps used by more than one test ------------------------------------- */
 
-async function signIn(page: Page, edge: FakeEdge): Promise<void> {
-  edge.signIn();
+/**
+ * Signs in the way an operator does: bounced off a guarded route, through the
+ * form, and back to where they were going.
+ *
+ * There is no shortcut past this. The mock mints the session cookie and the
+ * CSRF token in its login handler, and every write in these tests carries that
+ * token — so a sign-in that cheated would leave the writes failing 403 for a
+ * reason no screen would explain.
+ */
+async function signIn(page: Page): Promise<void> {
   await page.goto("/trade");
+  await expect(page).toHaveURL(/\/login\?redirect=/);
+  await page.getByLabel("Username").fill(CREDENTIALS.username);
+  await page.getByLabel("Password").fill(CREDENTIALS.password);
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(navOf(page)).toBeVisible();
 }
 

@@ -1,20 +1,25 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /* ---------------------------------------------------------------------------
- * Two suites, one browser.
+ * Two suites, one browser, one dev server — and therefore never both at once.
  *
- * `offline` walks the MVP path against a fake auth edge installed in the page.
- * It is the default because AGENTS.md requires the default test path to be
- * offline and deterministic: it needs no postgres, no gateway, no venue and no
- * credentials, so it can run anywhere and cannot place an order anywhere.
+ * `offline` walks the MVP path against the MSW mock, served by `npm run
+ * dev:mock`. It is the default because AGENTS.md requires the default test path
+ * to be offline and deterministic: it needs no postgres, no gateway, no venue
+ * and no credentials, so it can run anywhere and cannot place an order anywhere.
+ * Since the mock now lives in the dev server rather than in `page.route`, that
+ * property belongs to the server this config starts, which is why the suite and
+ * the command are chosen together below.
  *
  * `live` walks the same path against a real `make up` stack and is opt-in via
  * BOLTER_E2E_LIVE=1, in the same shape as the Makefile's other live gates. It
- * is the one that actually proves the plan's P5 acceptance, because the fake
- * proves the frontend and only the real one proves the seam.
+ * is the one that actually proves the acceptance, because the mock proves the
+ * frontend and only the real stack proves the seam.
  *
- * Both drive the Vite dev server, whose `/api` proxy points at the auth edge —
- * the offline suite simply intercepts before the proxy is reached.
+ * A run is one or the other. Registering both under a single server would put
+ * one of them in front of an edge it was not written for: the offline suite
+ * would try its fixture credentials against a real auth edge, and the live
+ * suite would place its order into a mock and believe it had traded.
  * ------------------------------------------------------------------------- */
 
 const live = process.env.BOLTER_E2E_LIVE === "1";
@@ -42,27 +47,30 @@ export default defineConfig({
   },
 
   projects: [
-    {
-      name: "offline",
-      testMatch: /.*\.offline\.spec\.ts/,
-      use: { ...devices["Desktop Chrome"] },
-    },
-    ...(live
-      ? [
-          {
-            name: "live",
-            testMatch: /.*\.live\.spec\.ts/,
-            use: { ...devices["Desktop Chrome"] },
-          },
-        ]
-      : []),
+    live
+      ? {
+          name: "live",
+          testMatch: /.*\.live\.spec\.ts/,
+          use: { ...devices["Desktop Chrome"] },
+        }
+      : {
+          name: "offline",
+          testMatch: /.*\.offline\.spec\.ts/,
+          use: { ...devices["Desktop Chrome"] },
+        },
   ],
 
   webServer: {
-    command: "npm run dev",
+    // The suite's edge, chosen by the same flag that chose the suite. `dev:mock`
+    // sets VITE_BOLTER_MOCK, which is what makes `main.tsx` start the worker;
+    // plain `dev` proxies `/api` to the real auth edge.
+    command: live ? "npm run dev" : "npm run dev:mock",
     url: baseURL,
     // Reuse whatever is already listening in development; start a clean one in
-    // CI so a stale server cannot serve a build nobody just made.
+    // CI so a stale server cannot serve a build nobody just made. Note the edge
+    // is a property of that server now, so a reused `npm run dev` will fail the
+    // offline suite at sign-in rather than silently mocking — loudly, which is
+    // the direction this should fail in.
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
     stdout: "ignore",
