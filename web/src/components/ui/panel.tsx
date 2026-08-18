@@ -20,7 +20,7 @@ export interface PanelProps extends Omit<ComponentProps<"section">, "title"> {
 export function Panel({ title, meta, flush = false, className, children, ...props }: PanelProps) {
   return (
     <section
-      className={cn("min-w-0 rounded-md border border-line bg-panel", className)}
+      className={cn("min-w-0 rounded-panel border border-line bg-panel", className)}
       {...props}
     >
       {title !== undefined || meta !== undefined ? (
@@ -57,7 +57,9 @@ export function Metric({
         <span
           data-numeric=""
           className={cn(
-            "truncate text-metric leading-none font-medium",
+            // No weight class: 700 is bound to `--text-metric` itself, because
+            // §6 reserves that weight for this one size and nothing else.
+            "truncate text-metric leading-none",
             tone === "up" && "text-up",
             tone === "down" && "text-down",
           )}

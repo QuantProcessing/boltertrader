@@ -5,7 +5,6 @@ import { useState } from "react";
 import { createQueryClient } from "@/app/query";
 import { createAppRouter } from "@/app/router";
 import { sessionStore } from "@/app/session";
-import { ThemeProvider } from "@/app/theme";
 import { ToastProvider } from "@/components/ui/toast";
 
 /* ---------------------------------------------------------------------------
@@ -17,10 +16,11 @@ import { ToastProvider } from "@/components/ui/toast";
  * runs the factory exactly once per mount, which is what both production and a
  * test that renders `<App />` twice actually want.
  *
- * Provider order matters. `ThemeProvider` writes the class on <html> and so is
- * outermost; the router is innermost because everything else is a service it
- * consumes — query cache errors reach the session store, and toasts fired from
- * a route need a provider already above the outlet.
+ * Provider order matters. The router is innermost because everything else is a
+ * service it consumes — query cache errors reach the session store, and toasts
+ * fired from a route need a provider already above the outlet. There is no
+ * theme provider: the product is dark-only and the scheme is a static class in
+ * index.html, so nothing has to run before the first paint.
  * ------------------------------------------------------------------------- */
 
 export function App() {
@@ -30,12 +30,10 @@ export function App() {
   });
 
   return (
-    <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <RouterProvider router={router} />
-        </ToastProvider>
-      </QueryClientProvider>
-    </ThemeProvider>
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <RouterProvider router={router} />
+      </ToastProvider>
+    </QueryClientProvider>
   );
 }

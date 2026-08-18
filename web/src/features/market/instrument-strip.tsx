@@ -46,7 +46,7 @@ export function InstrumentStrip({
   const change = bar ? percentChange(bar.open, bar.close) : null;
 
   return (
-    <div className="flex h-14 shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
+    <div className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
       <InstrumentPicker instruments={instruments} instrument={instrument} onSelect={onSelect} loading={loading} />
 
       <Metric
@@ -116,11 +116,109 @@ function percentChange(from: string, to: string): number | null {
 /* --- The selector -------------------------------------------------------- */
 
 /**
- * A catalog can run to thousands of instruments, so filtering is ours rather
- * than cmdk's and the result is capped: rendering three thousand rows to show
- * the ten that match costs a frame on every keystroke.
+ * Ranks, strongest first. Ties break on the catalog's own order — the venue's.
+ *
+ * A venue match admits an instrument on its own, so typing `okx` lists that
+ * venue, but it ranks below every symbol match: someone typing `btc` wants BTC
+ * markets, not the instruments of a venue whose name happens to contain those
+ * letters.
  */
-const VISIBLE_MATCHES = 60;
+const SCORE = {
+  exactSymbol: 4,
+  symbolPrefix: 3,
+  symbolSubstring: 2,
+  instrumentId: 1,
+  venue: 0,
+} as const;
+
+/**
+ * How many rows the list spends in total, divided evenly among the venues that
+ * matched.
+ *
+ * design.md §10 forbids silent truncation, not truncation: a catalog runs to
+ * thousands of instruments, and rendering all of them to show the ten that match
+ * costs a frame on every keystroke. What the rule is actually protecting is that
+ * every venue stays on screen — so the budget is split per venue rather than
+ * taken off the top, and whatever it drops is counted in the group it was
+ * dropped from.
+ *
+ * Splitting rather than fixing the per-venue cap matters when one venue lists
+ * forty things that match: alone it gets the whole budget, so nothing is out of
+ * reach; sharing the screen with nine others it gets a fair slice and says so.
+ */
+const LIST_BUDGET = 48;
+const MIN_PER_VENUE = 4;
+
+export interface VenueGroup {
+  venue: string;
+  matches: Ranked[];
+  /** Matched but not listed, so the count can be shown rather than dropped. */
+  hidden: number;
+  /** The group's strongest match, which is what orders the groups. */
+  best: number;
+}
+
+/** An instrument with why it matched and where the catalog had it. */
+interface Ranked {
+  instrument: Instrument;
+  score: number;
+  /** Position in the catalog, which is the venue's own order. */
+  index: number;
+}
+
+/** Separators folded out, so `btcusdt` finds `BTC-USDT`. */
+function fold(value: string): string {
+  return value.toLowerCase().replace(/[-_/:]/g, "");
+}
+
+function scoreOf(candidate: Instrument, needle: string, folded: string): number | null {
+  const symbol = fold(candidate.symbol);
+  if (symbol === folded) return SCORE.exactSymbol;
+  if (symbol.startsWith(folded)) return SCORE.symbolPrefix;
+  if (symbol.includes(folded)) return SCORE.symbolSubstring;
+  if (candidate.instrumentId.toLowerCase().includes(needle)) return SCORE.instrumentId;
+  if (candidate.venue.toLowerCase().includes(needle)) return SCORE.venue;
+  return null;
+}
+
+/**
+ * The catalog as a ranked list per venue.
+ *
+ * Grouping is the whole point rather than a presentational choice: "which venue
+ * lists this" is the question the picker is asked, and a flat list answers it
+ * only if you scroll far enough to prove a venue is absent. Groups are ordered
+ * by their strongest match so the venue holding an exact hit leads, and within a
+ * group the catalog's own order survives every tie.
+ *
+ * Exported for its own test: design.md §10 fixes the ranking, and a rule written
+ * down in two places drifts unless one of them fails.
+ */
+export function groupByVenue(instruments: Instrument[], search: string): VenueGroup[] {
+  const needle = search.trim().toLowerCase();
+  const folded = fold(search.trim());
+  const groups = new Map<string, VenueGroup>();
+
+  instruments.forEach((candidate, index) => {
+    const score = needle ? scoreOf(candidate, needle, folded) : SCORE.venue;
+    if (score === null) return;
+    const group = groups.get(candidate.venue) ?? { venue: candidate.venue, matches: [], hidden: 0, best: score };
+    group.best = Math.max(group.best, score);
+    group.matches.push({ instrument: candidate, score, index });
+    groups.set(candidate.venue, group);
+  });
+
+  const ordered = [...groups.values()];
+  const perVenue = Math.max(MIN_PER_VENUE, Math.floor(LIST_BUDGET / Math.max(1, ordered.length)));
+  for (const group of ordered) {
+    group.matches.sort((left, right) => right.score - left.score || left.index - right.index);
+    if (group.matches.length > perVenue) {
+      group.hidden = group.matches.length - perVenue;
+      group.matches = group.matches.slice(0, perVenue);
+    }
+  }
+
+  return ordered.sort((left, right) => right.best - left.best || left.venue.localeCompare(right.venue));
+}
 
 function InstrumentPicker({
   instruments,
@@ -136,84 +234,106 @@ function InstrumentPicker({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
-  const matches = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const hits = needle
-      ? instruments.filter(
-          (candidate) =>
-            candidate.instrumentId.toLowerCase().includes(needle) ||
-            candidate.symbol.toLowerCase().includes(needle) ||
-            candidate.venue.toLowerCase().includes(needle),
-        )
-      : instruments;
-    return hits.slice(0, VISIBLE_MATCHES);
-  }, [instruments, search]);
+  const groups = useMemo(() => groupByVenue(instruments, search), [instruments, search]);
 
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
         className={cn(
-          "flex h-10 shrink-0 items-center gap-2 rounded-md border border-line-strong px-2.5 text-left",
+          "flex h-10 shrink-0 items-center gap-2 rounded-control border border-line-strong px-2.5 text-left",
           "hover:bg-raised focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         )}
         disabled={loading && instruments.length === 0}
       >
-        <span className="min-w-0">
-          <span className="block truncate text-title font-medium text-text">
-            {instrument?.instrumentId ?? (loading ? "Loading…" : "Select instrument")}
+        {/* The symbol leads here for the same reason it leads in the list: it is
+            what an operator reads to know which market is on screen. The full
+            instrument id is the identity rather than the label, so it stays
+            reachable as a title instead of taking the headline. */}
+        <span className="min-w-0" title={instrument?.instrumentId}>
+          <span className="block truncate text-title font-medium text-text" data-numeric="">
+            {instrument?.symbol ?? (loading ? "Loading…" : "Select instrument")}
           </span>
-          <span className="block truncate text-micro tracking-wide text-dim uppercase">
-            {instrument ? `${instrument.venue} · ${instrument.product} · ${instrument.environment}` : "catalog"}
+          <span className="block truncate th">
+            {instrument
+              ? `${instrument.venue} · ${instrument.product}${instrument.settlement ? ` · ${instrument.settlement}` : ""}`
+              : "catalog"}
           </span>
         </span>
-        <ChevronDown className="size-4 shrink-0 text-dim" aria-hidden="true" />
+        {/* `faint` rather than `dim`: §3 forbids faint on anything a human reads,
+            and permits it on exactly this — a decorative affordance glyph that
+            is hidden from assistive technology and carries no meaning the label
+            beside it does not already carry. */}
+        <ChevronDown className="size-4 shrink-0 text-faint" aria-hidden="true" />
       </Popover.Trigger>
 
       <Popover.Portal>
         <Popover.Content
           align="start"
           sideOffset={6}
-          className="z-40 w-96 overflow-hidden rounded-lg border border-line-strong bg-panel shadow-[var(--bt-shadow)]"
+          className="z-40 w-96 overflow-hidden rounded-modal border border-line-strong bg-overlay shadow-overlay"
         >
           <Command shouldFilter={false} label="Instruments">
             <Command.Input
               value={search}
               onValueChange={setSearch}
-              placeholder="Filter by symbol or venue…"
+              placeholder="Symbol or venue — btc, okx, eth-usdt…"
               className="h-bar w-full border-b border-line bg-transparent px-3 text-base text-text placeholder:text-dim focus:outline-none"
             />
-            <Command.List className="max-h-80 overflow-y-auto p-1">
+            <Command.List className="max-h-96 overflow-y-auto p-1">
               <Command.Empty className="px-2.5 py-6 text-center text-base text-muted">
                 No instrument matches.
               </Command.Empty>
-              {matches.map((candidate) => (
-                <Command.Item
-                  key={`${candidate.venue}:${candidate.environment}:${candidate.instrumentId}`}
-                  value={`${candidate.venue}:${candidate.environment}:${candidate.instrumentId}`}
-                  onSelect={() => {
-                    onSelect(candidate);
-                    setOpen(false);
-                  }}
-                  className="flex h-row cursor-pointer items-center gap-2 rounded-sm px-2.5 text-base text-muted data-[selected=true]:bg-raised data-[selected=true]:text-text"
+              {groups.map((group) => (
+                <Command.Group
+                  key={group.venue}
+                  heading={
+                    <span className="flex items-center justify-between gap-2">
+                      <span>{group.venue}</span>
+                      {group.hidden > 0 ? <span className="normal-case">+{group.hidden} more</span> : null}
+                    </span>
+                  }
+                  // Pinned, because the venue is the answer being looked for and
+                  // scrolling past the heading would take it off screen exactly
+                  // when the list is long enough to need it.
+                  className="[&_[cmdk-group-heading]]:th [&_[cmdk-group-heading]]:sticky [&_[cmdk-group-heading]]:top-0 [&_[cmdk-group-heading]]:z-10 [&_[cmdk-group-heading]]:bg-overlay [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:py-1.5"
                 >
-                  <Check
-                    className={cn(
-                      "size-3.5 shrink-0",
-                      candidate.instrumentId === instrument?.instrumentId && candidate.venue === instrument?.venue
-                        ? "text-accent"
-                        : "opacity-0",
-                    )}
-                    aria-hidden="true"
-                  />
-                  <span className="flex-1 truncate">{candidate.instrumentId}</span>
-                  <span className="shrink-0 text-micro tracking-wide text-dim uppercase">
-                    {candidate.venue} · {candidate.product}
-                  </span>
-                  {/* An instrument the catalog marks not-ready still lists: the
-                      operator should see it exists and is unavailable, rather
-                      than search for something that seems to have vanished. */}
-                  {candidate.ready ? null : <span className="shrink-0 text-micro text-warn">halted</span>}
-                </Command.Item>
+                  {group.matches.map(({ instrument: candidate }) => (
+                    <Command.Item
+                      key={`${candidate.venue}:${candidate.environment}:${candidate.instrumentId}`}
+                      value={`${candidate.venue}:${candidate.environment}:${candidate.instrumentId}`}
+                      onSelect={() => {
+                        onSelect(candidate);
+                        setOpen(false);
+                      }}
+                      className="flex h-row cursor-pointer items-center gap-2 rounded-control px-2.5 text-base text-muted data-[selected=true]:bg-raised data-[selected=true]:text-text"
+                    >
+                      <Check
+                        className={cn(
+                          "size-3.5 shrink-0",
+                          candidate.instrumentId === instrument?.instrumentId && candidate.venue === instrument?.venue
+                            ? "text-accent"
+                            : "opacity-0",
+                        )}
+                        aria-hidden="true"
+                      />
+                      {/* The symbol leads, because it is what was typed. The
+                          instrument id is what identifies the market, so it
+                          follows rather than being dropped. */}
+                      <span className="shrink-0 font-medium text-text" data-numeric="">
+                        {candidate.symbol}
+                      </span>
+                      <span className="th min-w-0 flex-1 truncate">
+                        {candidate.product}
+                        {candidate.settlement ? ` · ${candidate.settlement}` : ""}
+                      </span>
+                      {/* An instrument the catalog marks not-ready still lists:
+                          the operator should see it exists and is unavailable,
+                          rather than search for something that seems to have
+                          vanished. */}
+                      {candidate.ready ? null : <span className="shrink-0 text-micro text-warn">halted</span>}
+                    </Command.Item>
+                  ))}
+                </Command.Group>
               ))}
             </Command.List>
           </Command>

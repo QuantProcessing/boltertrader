@@ -5,8 +5,15 @@ import { cn } from "@/lib/utils";
 export interface SegmentedOption<T extends string> {
   value: T;
   label: string;
-  /** Applies the up/down semantic when the choice is a market direction. */
-  tone?: "up" | "down";
+  /**
+   * Fills the selected segment with a side colour, for the one control where
+   * the choice *is* the side.
+   *
+   * Not `up`/`down`: those describe which way a price moved and are read as
+   * text, while this puts a label on top of the colour — which is the whole
+   * reason design.md §3 gives buy and sell their own pair.
+   */
+  tone?: "buy" | "sell";
   disabled?: boolean;
 }
 
@@ -37,7 +44,10 @@ export function Segmented<T extends string>({
   return (
     <fieldset className={cn("min-w-0", className)}>
       <legend className="sr-only">{label}</legend>
-      <div className="flex w-full rounded-md border border-line-strong p-0.5">
+      {/* A track, which §4 gives `fill` rather than a border: the selected
+          segment is what the eye needs to find, and a ring around the whole
+          group competes with it. */}
+      <div className="flex w-full rounded-control bg-fill p-0.5">
         {options.map((option) => {
           const optionId = `${id}-${option.value}`;
           const selected = option.value === value;
@@ -56,18 +66,18 @@ export function Segmented<T extends string>({
               <label
                 htmlFor={optionId}
                 className={cn(
-                  "flex h-[26px] cursor-pointer items-center justify-center rounded-sm px-2 text-base font-medium",
+                  "flex h-[26px] cursor-pointer items-center justify-center rounded-control px-2 text-base font-medium",
                   "transition-colors select-none",
                   "peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
                   "peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
                   "pointer-coarse:min-h-bar",
                   selected
-                    ? option.tone === "up"
-                      ? "bg-up text-bg"
-                      : option.tone === "down"
-                        ? "bg-down text-bg"
+                    ? option.tone === "buy"
+                      ? "bg-buy text-buy-fg"
+                      : option.tone === "sell"
+                        ? "bg-sell text-sell-fg"
                         : "bg-raised text-text"
-                    : "text-muted hover:text-text",
+                    : "text-muted hover:bg-fill-strong hover:text-text",
                 )}
               >
                 {option.label}

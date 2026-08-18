@@ -75,12 +75,12 @@ export function TradePage() {
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <PriceChart candles={candles.data?.value.candles} interval={interval} onIntervalChange={setInterval} />
-          <div className="flex h-64 shrink-0 flex-col border-t border-line">
+          <div className="flex h-deck shrink-0 flex-col border-t border-line">
             <Blotter instrumentId={instrument?.instrumentId ?? null} />
           </div>
         </div>
 
-        <div className="flex w-64 shrink-0 flex-col border-l border-line">
+        <div className="flex w-side shrink-0 flex-col border-l border-line">
           <OrderBook
             fact={fact.data?.value}
             quoteAsset={instrument?.quoteAsset}
@@ -89,7 +89,7 @@ export function TradePage() {
           />
         </div>
 
-        <div className="w-80 shrink-0 overflow-y-auto border-l border-line p-3">
+        <div className="w-ticket shrink-0 overflow-y-auto border-l border-line p-3">
           <OrderTicket
             instrument={instrument}
             accounts={eligible}

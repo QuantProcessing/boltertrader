@@ -25,7 +25,24 @@ describe("cn", () => {
 
   it("resolves the custom spacing and radius scales", () => {
     expect(cn("h-row", "h-bar")).toBe("h-bar");
-    expect(cn("rounded-md", "rounded-sm")).toBe("rounded-sm");
+    expect(cn("w-side", "w-ticket")).toBe("w-ticket");
+    expect(cn("h-deck", "h-row")).toBe("h-row");
+    expect(cn("rounded-panel", "rounded-control")).toBe("rounded-control");
+    expect(cn("rounded-seam", "rounded-modal")).toBe("rounded-modal");
+    expect(cn("rounded-card", "rounded-pill")).toBe("rounded-pill");
+  });
+
+  it("knows the tokens added since the palette was rewritten", () => {
+    // The regression this guards is quiet by construction: a token defined in
+    // `theme.css` but missing from the list in `utils.ts` still paints, it just
+    // stops overriding — so both classes survive and the cascade picks, which is
+    // whichever Tailwind happened to emit last. Every token in `@theme inline`
+    // belongs in that list.
+    expect(cn("bg-panel", "bg-fill")).toBe("bg-fill");
+    expect(cn("text-muted", "text-faint")).toBe("text-faint");
+    expect(cn("bg-buy", "bg-sell")).toBe("bg-sell");
+    expect(cn("text-buy-fg", "text-sell-fg")).toBe("text-sell-fg");
+    expect(cn("border-line", "border-fill-strong")).toBe("border-fill-strong");
   });
 
   it("applies conditional class values", () => {

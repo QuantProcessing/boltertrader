@@ -13,7 +13,6 @@ import { useEffect, useRef } from "react";
 import { CANDLE_INTERVALS, type Candle, type CandleInterval } from "@/api/types";
 import { Segmented } from "@/components/ui/segmented";
 import { readChartPalette } from "@/lib/chart-palette";
-import { useTheme } from "@/app/theme";
 
 /* ---------------------------------------------------------------------------
  * The price chart.
@@ -40,14 +39,14 @@ export function PriceChart({
   interval: CandleInterval;
   onIntervalChange: (next: CandleInterval) => void;
 }) {
-  const { resolved } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const priceRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
 
-  // Rebuilt when the theme flips, because the library takes resolved colours
-  // rather than CSS variables and will not repaint on a class change.
+  // Built once. The library takes resolved colours rather than CSS variables,
+  // so a chart normally has to be torn down and rebuilt whenever the palette
+  // moves — which, with a single scheme, it never does.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -100,7 +99,7 @@ export function PriceChart({
       priceRef.current = null;
       volumeRef.current = null;
     };
-  }, [resolved]);
+  }, []);
 
   useEffect(() => {
     const price = priceRef.current;

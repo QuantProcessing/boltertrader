@@ -219,6 +219,37 @@ test.describe("the MVP path", () => {
     await expect(pickers.nth(1)).toContainText(HEDGE_ACCOUNT.displayName);
   });
 
+  // The picker is the control every session starts with, and the one defect
+  // reported against it: typing `btc` returned one flat list, so reaching the
+  // okx listing meant scrolling past everything binance quotes. design.md §10
+  // makes "which venue" the shape of the answer rather than something you find
+  // by scrolling, so what this asserts is that every venue quoting BTC is on
+  // screen at once — and that a halted market is among them rather than hidden.
+  test("answers 'which venue' without a scroll", async ({ page }) => {
+    await signIn(page);
+
+    await page.getByRole("button", { name: /Select instrument|BTC-USDT/ }).first().click();
+    const list = page.getByRole("listbox");
+    await expect(list).toBeVisible();
+
+    await page.getByRole("combobox", { name: "Instruments" }).fill("btc");
+
+    // Every venue that quotes BTC, each under its own heading.
+    for (const venue of ["binance", "bybit", "okx"] as const) {
+      await expect(list.getByRole("group", { name: venue })).toBeVisible();
+    }
+    // lighter quotes only ETH, so it is absent rather than empty.
+    await expect(list.getByRole("group", { name: "lighter" })).toHaveCount(0);
+
+    // The halted okx spot listing is shown and marked, not dropped.
+    const okx = list.getByRole("group", { name: "okx" });
+    await expect(okx.getByRole("option", { name: /halted/ })).toBeVisible();
+
+    // And picking the buried one actually switches the terminal to it.
+    await okx.getByRole("option", { name: /BTC-USDT/ }).first().click();
+    await expect(page.getByRole("button", { name: /BTC-USDT okx/ })).toBeVisible();
+  });
+
   test("sends the operator back to login when the session ends", async ({ page }) => {
     await signIn(page);
 

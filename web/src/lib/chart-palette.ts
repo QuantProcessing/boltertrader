@@ -9,9 +9,14 @@
  * Read from the live computed style rather than hard-coded, so no chart can
  * drift from `theme.css`: there is exactly one definition of "up" in this
  * product and it is not in a chart file. It follows that this must be called
- * during an effect and re-called when the theme flips — the library takes
- * resolved colours rather than CSS variables and will not repaint on a class
- * change.
+ * during an effect, once the stylesheet is attached and the custom properties
+ * actually resolve.
+ *
+ * The token names below are load-bearing. `theme.css` is free to change what a
+ * token means, but renaming one without changing it here fails silently —
+ * `getPropertyValue` returns "" for an unknown property, the canvas paints the
+ * `#000000` seed, and the chart goes black on black. `design.md` §11.8 states
+ * this as a rule; this comment is where it bites.
  * ------------------------------------------------------------------------- */
 
 export interface ChartPalette {

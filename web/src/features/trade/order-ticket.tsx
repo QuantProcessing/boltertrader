@@ -25,9 +25,9 @@ import { formatDecimal, formatDuration, splitDecimal } from "@/lib/format";
  * not exist while there is one. Warnings are advisory and confirm stays live.
  * ------------------------------------------------------------------------- */
 
-const SIDES: { value: OrderSide; label: string; tone: "up" | "down" }[] = [
-  { value: "buy", label: "Buy", tone: "up" },
-  { value: "sell", label: "Sell", tone: "down" },
+const SIDES: { value: OrderSide; label: string; tone: "buy" | "sell" }[] = [
+  { value: "buy", label: "Buy", tone: "buy" },
+  { value: "sell", label: "Sell", tone: "sell" },
 ];
 
 const ORDER_TYPES: { value: OrderType; label: string }[] = [
@@ -284,7 +284,11 @@ function SealedConfirmation({
   const blocked = blockers.length > 0;
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-line-strong p-2.5">
+    // A well, not a card: §5 gives inner containers no border, so the seal
+    // separates from the form by fill and space. It still has to read as the
+    // one thing on the ticket that is now live, which is what the `Confirm`
+    // header and the countdown beside it are for.
+    <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
       <div className="flex items-center justify-between">
         <span className="th">Confirm</span>
         <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">

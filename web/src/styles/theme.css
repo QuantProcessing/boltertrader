@@ -1,118 +1,118 @@
 /* ---------------------------------------------------------------------------
- * Graphite Terminal — design tokens
+ * BolterTrader — design tokens
  *
- * Two rules govern every colour in this file, and violating either one is what
- * makes a trading interface unreadable:
+ * `design.md` at the repo root is the normative document; this file is its
+ * implementation. Every value below is quoted there with the arithmetic that
+ * produced it. Change one here without changing it there and the two disagree,
+ * which is worse than either being wrong.
  *
- *   1. ACCENT MEANS INTERACTIVE. Blue appears only where a human can act —
- *      links, focus, the primary control. It never encodes state.
- *   2. SEMANTIC COLOUR MEANS STATE. Green/red/amber/violet encode what the
- *      system knows. They never mark something as clickable.
+ * One rule governs the whole file: every token that can carry text clears
+ * WCAG 2.2 AA (4.5:1) against `--bt-raised` — the *lightest* surface it can
+ * land on, not the darkest. Checking against `--bt-bg` is how a ladder passes
+ * on paper and fails on a hovered row. The ratios in the comments are measured,
+ * not estimated. Do not soften a value without redoing them.
  *
- * Every foreground/background pair below has been checked against its intended
- * surface for WCAG 2.2 AA (4.5:1 text, 3:1 non-text). The ratio is noted where
- * it is close enough to matter. Do not nudge a lightness value without redoing
- * that arithmetic — several pairs sit deliberately near the floor to keep the
- * surface calm, and a "slightly softer grey" is how a 4.6:1 becomes a 3.9:1.
+ * There is one scheme. See §1 of design.md for why the light theme is gone.
  * ------------------------------------------------------------------------- */
 
-/* --- Dark: the canonical scheme -------------------------------------------
- * Neutrals are zero-chroma on purpose. A tinted grey makes green and red read
- * as warmer or cooler than they are, which is the one thing a P&L column must
- * never do. */
-:root,
-.dark {
+:root {
   color-scheme: dark;
 
-  --bt-bg: oklch(0.16 0 0);
-  --bt-panel: oklch(0.19 0 0);
-  --bt-raised: oklch(0.225 0 0); /* row hover, input wells */
-  --bt-overlay: oklch(0.21 0 0); /* dialogs, popovers, the palette */
+  /* --- Surfaces ------------------------------------------------------------
+   * Four steps of near-black, separated by luminance alone. The faint violet
+   * chroma is shared by all four so they read as one material lit from
+   * different angles rather than four different greys. Semantic colour is
+   * still zero- or low-chroma where it must not tint a P&L column. */
+  --bt-bg: oklch(0.145 0.012 285); /* the page, and nothing else */
+  --bt-panel: oklch(0.185 0.012 285); /* every Panel, the bars */
+  --bt-overlay: oklch(0.207 0.011 285); /* popovers, dialogs, the palette */
+  --bt-raised: oklch(0.232 0.01 286); /* row hover, wells, skeletons */
 
-  --bt-line: oklch(0.275 0 0); /* container edges — decorative, 1.3:1 by design */
-  --bt-line-strong: oklch(0.52 0 0); /* control boundaries — 3.5:1, meets 1.4.11 */
+  /* --- Hairlines and fills -------------------------------------------------
+   * White at low alpha, not opaque grey. One token then reads correctly over
+   * every surface: a seam over `raised` comes out brighter than the same seam
+   * over `bg`, which is what the eye expects from a real edge.
+   *
+   * `line` composites to 1.14:1 over bg. That is below the 3:1 non-text bar on
+   * purpose — a seam is not a UI component under 1.4.11. Where a border is the
+   * only thing identifying a control, use `line-strong` or the focus ring. */
+  --bt-fill: oklch(1 0 0 / 0.05);
+  --bt-fill-strong: oklch(1 0 0 / 0.08);
+  --bt-line: oklch(1 0 0 / 0.07);
+  --bt-line-strong: oklch(1 0 0 / 0.14);
 
-  /* Ratios are quoted against `raised`, the lightest surface any of these sit
-   * on, because that is the pair that actually fails. Measured, not estimated. */
-  --bt-text: oklch(0.93 0 0); /* 13.9:1 on raised */
-  --bt-muted: oklch(0.7 0 0); /*  6.4:1 on raised — labels, secondary values */
-  --bt-dim: oklch(0.62 0 0); /*  4.7:1 on raised — the floor; nothing softer than this carries meaning */
+  /* --- Text ladder ---------------------------------------------------------
+   * Descends monotonically, which Lighter's own naming does not. Ratios are
+   * against `raised`. */
+  --bt-text: oklch(0.964 0 0); /* 15.2:1 */
+  --bt-muted: oklch(0.741 0.005 258); /*  7.3:1 — labels, secondary values */
+  --bt-dim: oklch(0.622 0.005 286); /*  4.7:1 — the floor. Nothing softer carries meaning. */
+  --bt-faint: oklch(0.436 0.006 286); /*  2.1:1 — DECORATIVE ONLY. Never text. */
 
-  --bt-accent: oklch(0.65 0.17 255); /* 5.0:1 on bg */
-  --bt-accent-hover: oklch(0.71 0.16 255);
-  --bt-accent-fg: oklch(0.16 0 0); /* 5.0:1 on accent — dark text on a bright chip, not white */
+  /* --- Semantic ------------------------------------------------------------
+   * Distinct hues because PRODUCT.md requires provisional, stale, degraded,
+   * uncertain, blocked and manual-intervention to be told apart. Colour is only
+   * ever half the signal — 1.4.1 means every one of these is paired with a
+   * label, a glyph, or a position. */
+  --bt-up: oklch(0.8 0.17 159); /*  9.6:1 */
+  --bt-down: oklch(0.68 0.19 19); /*  5.3:1 */
 
-  --bt-up: oklch(0.72 0.17 152); /* 8.7:1 on bg */
-  --bt-down: oklch(0.64 0.19 25); /* 5.2:1 on bg */
+  --bt-ok: oklch(0.8 0.17 159); /* confirmed, active, ready */
+  --bt-pending: oklch(0.741 0.005 258); /* provisional, submitted — colourless on purpose */
+  --bt-warn: oklch(0.84 0.172 84); /* 10.2:1 — stale, degraded, uncertain */
+  --bt-danger: oklch(0.68 0.195 19); /*  5.3:1 — blocked, failed, rejected */
+  --bt-manual: oklch(0.78 0.09 271.6); /*  8.3:1 — needs a human */
 
-  /* State. Distinct hues because PRODUCT.md requires provisional, stale,
-   * degraded, uncertain, blocked and manual-intervention to be told apart —
-   * and colour is only ever half of that signal, always paired with a label. */
-  --bt-ok: oklch(0.72 0.17 152); /* confirmed, active, ready */
-  --bt-pending: oklch(0.7 0 0); /* provisional, submitted — colourless on purpose */
-  --bt-warn: oklch(0.78 0.14 85); /* stale, degraded, uncertain */
-  --bt-danger: oklch(0.64 0.19 25); /* blocked, failed, rejected */
-  --bt-manual: oklch(0.72 0.15 310); /* needs a human — a hue used nowhere else */
+  --bt-accent: oklch(0.78 0.09 271.6); /*  8.3:1 — focus, links, the primary control */
+  --bt-accent-hover: oklch(0.84 0.08 271.6);
+  --bt-accent-fg: oklch(0.23 0.05 271.6); /* dark label on a bright accent fill */
 
-  --bt-shadow: 0 1px 2px oklch(0 0 0 / 0.4), 0 8px 24px oklch(0 0 0 / 0.32);
-}
+  /* --- Sides ---------------------------------------------------------------
+   * Buy and sell need their own labels because a filled CTA puts text *on* the
+   * colour, which the ladder above cannot supply.
+   *
+   * Both labels are dark, and symmetrically so — the fills are the `up`/`down`
+   * pair, and both are bright enough that only a dark label clears 4.5:1 on
+   * them. White on `--bt-sell` measures 3.16:1 and is the one obvious-looking
+   * choice here that rule #1 forbids. */
+  --bt-buy: oklch(0.8 0.17 159);
+  --bt-buy-fg: oklch(0.235 0.075 160); /* 9.18:1 on a buy fill */
+  --bt-sell: oklch(0.68 0.19 19);
+  --bt-sell-fg: oklch(0.235 0.09 19); /* 5.43:1 on a sell fill */
 
-/* --- Light: the required pair ---------------------------------------------
- * Not an inversion. Chroma rises and lightness drops for every accent, because
- * the same blue that reads as clearly interactive on graphite disappears into
- * white. The neutral ladder keeps its intent: panel sits above page. */
-.light {
-  color-scheme: light;
-
-  --bt-bg: oklch(0.975 0 0);
-  --bt-panel: oklch(1 0 0);
-  --bt-raised: oklch(0.955 0 0);
-  --bt-overlay: oklch(1 0 0);
-
-  --bt-line: oklch(0.9 0 0);
-  --bt-line-strong: oklch(0.62 0 0); /* 3.6:1 on panel */
-
-  /* Quoted against `raised` for the same reason as above — here it is the
-   * darkest surface, so it is the one that clips the ladder. */
-  --bt-text: oklch(0.22 0 0); /* 15.2:1 on raised */
-  --bt-muted: oklch(0.45 0 0); /*  6.5:1 on raised */
-  --bt-dim: oklch(0.53 0 0); /*  4.6:1 on raised */
-
-  --bt-accent: oklch(0.52 0.19 255); /* 5.1:1 on raised */
-  --bt-accent-hover: oklch(0.46 0.19 255);
-  --bt-accent-fg: oklch(1 0 0);
-
-  /* A shade darker than the eye alone would ask for: at 0.52 these read fine
-   * on the page but land at 4.4:1 on a hovered row, which is where an operator
-   * is most likely to be reading them. */
-  --bt-up: oklch(0.5 0.15 152);
-  --bt-down: oklch(0.52 0.2 25);
-
-  --bt-ok: oklch(0.5 0.15 152);
-  --bt-pending: oklch(0.5 0 0);
-  --bt-warn: oklch(0.52 0.13 70);
-  --bt-danger: oklch(0.52 0.2 25);
-  --bt-manual: oklch(0.5 0.19 310);
-
-  --bt-shadow: 0 1px 2px oklch(0 0 0 / 0.06), 0 8px 24px oklch(0 0 0 / 0.08);
+  /* --- Elevation -----------------------------------------------------------
+   * Panels do not float; only things that genuinely leave the plane get a
+   * shadow. The 0.5px first layer is a hairline ring, not a glow — it is what
+   * keeps a popover's edge legible where it overlaps a panel of nearly the
+   * same luminance. */
+  --bt-shadow-overlay:
+    0 0 0 0.5px oklch(1 0 0 / 0.08), 0 1px 2px oklch(0.145 0.012 285 / 0.35),
+    0 4px 8px oklch(0.145 0.012 285 / 0.45);
+  --bt-shadow-modal:
+    0 0 0 0.5px oklch(1 0 0 / 0.08), 0 1px 2px oklch(0.145 0.012 285 / 0.35),
+    0 4px 8px oklch(0.145 0.012 285 / 0.45), 0 16px 32px oklch(0.145 0.012 285 / 0.55);
 }
 
 /* --- Tailwind bindings -----------------------------------------------------
- * `inline` keeps the var() reference in the generated utility instead of
- * resolving it at build time, which is what lets one stylesheet serve both
- * schemes off a single class on <html>. */
+ * `inline` keeps the var() reference in the generated utility rather than
+ * resolving it at build time. With one scheme that no longer changes what is
+ * rendered, but it keeps the indirection intact so a token can still be
+ * overridden inside a subtree — which the chart palette reader depends on. */
 @theme inline {
   --color-bg: var(--bt-bg);
   --color-panel: var(--bt-panel);
   --color-raised: var(--bt-raised);
   --color-overlay: var(--bt-overlay);
 
+  --color-fill: var(--bt-fill);
+  --color-fill-strong: var(--bt-fill-strong);
   --color-line: var(--bt-line);
   --color-line-strong: var(--bt-line-strong);
 
   --color-text: var(--bt-text);
   --color-muted: var(--bt-muted);
   --color-dim: var(--bt-dim);
+  --color-faint: var(--bt-faint);
 
   --color-accent: var(--bt-accent);
   --color-accent-hover: var(--bt-accent-hover);
@@ -121,41 +121,88 @@
   --color-up: var(--bt-up);
   --color-down: var(--bt-down);
 
+  --color-buy: var(--bt-buy);
+  --color-buy-fg: var(--bt-buy-fg);
+  --color-sell: var(--bt-sell);
+  --color-sell-fg: var(--bt-sell-fg);
+
   --color-ok: var(--bt-ok);
   --color-pending: var(--bt-pending);
   --color-warn: var(--bt-warn);
   --color-danger: var(--bt-danger);
   --color-manual: var(--bt-manual);
 
-  --font-sans:
-    "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono:
-    "Geist Mono Variable", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  /* Inter for prose, Geist Mono for anything that can change. Tabular figures
+   * are what stop a streaming price from shifting the column. */
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* Type scale. Five steps, and that is the whole vocabulary — a sixth size is
-   * how density turns into noise. */
+   * how density turns into noise.
+   *
+   * Tracking rides on the size rather than on the call site: design.md §6 ties
+   * -0.02em to `title` and above, and a rule that has to be remembered as a
+   * second class next to `text-title` is a rule that gets forgotten at the
+   * eighth heading. Body and below stay at 0 — optical tracking on a 13px UI
+   * face just makes it muddy. `.th` sets its own, positive, in app.css. */
   --text-micro: 0.6875rem; /* 11px — column headers, uppercase */
-  --text-micro--line-height: 1rem;
-  --text-meta: 0.75rem; /*  12px — secondary values, timestamps */
-  --text-meta--line-height: 1.125rem;
-  --text-base: 0.8125rem; /*  13px — body, table cells */
-  --text-base--line-height: 1.25rem;
-  --text-title: 0.9375rem; /*  15px — panel titles */
-  --text-title--line-height: 1.375rem;
-  --text-metric: 1.375rem; /*  22px — the numbers people came for */
-  --text-metric--line-height: 1.75rem;
+  --text-micro--line-height: 0.875rem;
+  --text-meta: 0.75rem; /* 12px — secondary values, timestamps */
+  --text-meta--line-height: 1rem;
+  --text-base: 0.8125rem; /* 13px — body, table cells, controls */
+  --text-base--line-height: 1.125rem;
+  --text-title: 0.9375rem; /* 15px — panel titles */
+  --text-title--line-height: 1.25rem;
+  --text-title--letter-spacing: -0.02em;
+  --text-metric: 1.375rem; /* 22px — the numbers people came for */
+  --text-metric--line-height: 1.625rem;
+  --text-metric--letter-spacing: -0.02em;
+  --text-metric--font-weight: 700; /* §6 reserves 700 for this size alone */
 
-  /* Two radii and no more. `rounded-md` is the product's radius — containers,
-   * controls, inputs. `rounded-sm` is for things smaller than a row: chips,
-   * focus rings, skeleton bars. Tailwind's bare `rounded` is deliberately not
-   * used anywhere; v4 has no DEFAULT convention, so it would silently stay at
-   * its built-in 4px and drift away from this scale. */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  /* Weights come off the variable axis at the non-integer stops Lighter uses,
+   * so `font-medium` and `font-semibold` mean 485 and 585 here rather than the
+   * 500/600 Tailwind ships. Renaming the utilities instead would have left two
+   * plausible spellings of the same weight in the codebase; redefining what the
+   * two existing ones resolve to leaves one. 400 is body and needs no class. */
+  --font-weight-medium: 485; /* table headers, de-emphasised labels */
+  --font-weight-semibold: 585; /* active nav item, panel title */
+
+  /* Radii are semantic, not a t-shirt scale — the name says where it goes, so
+   * there is no argument about whether a badge is "sm" or "md". Single-pixel
+   * steps at the bottom are what make the density read as precision. */
+  --radius-seam: 1px; /* cell highlights, depth bars */
+  --radius-control: 2px; /* buttons, inputs, selects */
+  --radius-pill: 3px; /* badges, tags */
+  --radius-card: 4px; /* inset wells */
+  --radius-modal: 6px; /* dialogs, popovers, the palette */
+  --radius-panel: 8px; /* Panel */
+
+  /* Tailwind v4's spacing base. 0.22rem rather than the default 0.25rem: every
+   * p-2 and gap-3 in the codebase resolves against this, and the tighter step
+   * is what lets a 34px row hold 13px text with real padding. */
+  --spacing: 0.22rem;
 
   --spacing-row: 34px; /* the rhythm every table shares */
-  --spacing-bar: 44px; /* top bar, and the minimum touch target on mobile */
+  --spacing-bar: 44px; /* the bars, and the minimum touch target on mobile */
 
-  --shadow-overlay: var(--bt-shadow);
+  /* The terminal's fixed panels, from design.md §9. These are px rather than
+   * steps of the scale above because they are the one set of measurements the
+   * design fixes outright: the shape is two side columns and a lower deck, and
+   * a shape stated in a diagram has to be stated once in the code too. Writing
+   * them as `w-64`/`w-80` is what let the layout drift when `--spacing` moved to
+   * 0.22rem — the classes silently became 225px and 281px, and the book's price
+   * column started wrapping mid-number.
+   *
+   * `side` and `deck` share a value and stay separate anyway: one is a width and
+   * one is a height, and the day the blotter grows the book should not. */
+  --spacing-side: 256px; /* order book, spread list */
+  --spacing-ticket: 320px; /* the ticket, which holds a form rather than a list */
+  --spacing-deck: 256px; /* blotter, ledger, open pairs */
+
+  --shadow-overlay: var(--bt-shadow-overlay);
+  --shadow-modal: var(--bt-shadow-modal);
+
+  --default-transition-duration: 0.15s;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 }

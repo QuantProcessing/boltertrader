@@ -3,7 +3,6 @@ import { Command } from "cmdk";
 import { useEffect } from "react";
 
 import { sessionStore } from "@/app/session";
-import { useTheme } from "@/app/theme";
 
 /* ---------------------------------------------------------------------------
  * ⌘K.
@@ -21,7 +20,6 @@ import { useTheme } from "@/app/theme";
 
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate();
-  const { preference, setPreference } = useTheme();
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -47,7 +45,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
       label="Command palette"
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 pt-[12vh]"
     >
-      <div className="w-full max-w-lg overflow-hidden rounded-lg border border-line-strong bg-panel shadow-[var(--bt-shadow)]">
+      <div className="w-full max-w-lg overflow-hidden rounded-modal border border-line-strong bg-overlay shadow-modal">
         <Command.Input
           placeholder="Search commands…"
           className="h-bar w-full border-b border-line bg-transparent px-3.5 text-title text-text placeholder:text-dim focus:outline-none"
@@ -65,9 +63,6 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
           </Group>
 
           <Group heading="Workspace">
-            <Item onSelect={() => run(() => setPreference(preference === "dark" ? "light" : "dark"))}>
-              Switch to {preference === "dark" ? "light" : "dark"} theme
-            </Item>
             <Item onSelect={() => run(() => void sessionStore.logout())}>Sign out</Item>
           </Group>
         </Command.List>
@@ -80,7 +75,7 @@ function Group({ heading, children }: { heading: string; children: React.ReactNo
   return (
     <Command.Group
       heading={heading}
-      className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-micro [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:tracking-wider [&_[cmdk-group-heading]]:text-dim [&_[cmdk-group-heading]]:uppercase"
+      className="[&_[cmdk-group-heading]]:th [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:py-1.5"
     >
       {children}
     </Command.Group>
@@ -91,7 +86,7 @@ function Item({ children, onSelect }: { children: React.ReactNode; onSelect: () 
   return (
     <Command.Item
       onSelect={onSelect}
-      className="flex h-row cursor-pointer items-center rounded-sm px-2.5 text-base text-muted data-[selected=true]:bg-raised data-[selected=true]:text-text"
+      className="flex h-row cursor-pointer items-center rounded-control px-2.5 text-base text-muted data-[selected=true]:bg-raised data-[selected=true]:text-text"
     >
       {children}
     </Command.Item>

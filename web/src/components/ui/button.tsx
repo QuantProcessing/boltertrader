@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 const button = cva(
   [
-    "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap",
+    "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-control font-medium whitespace-nowrap",
     "transition-colors select-none",
     "disabled:pointer-events-none disabled:opacity-50",
     // WCAG 2.2 target size: compact on a mouse, thumb-sized on touch.

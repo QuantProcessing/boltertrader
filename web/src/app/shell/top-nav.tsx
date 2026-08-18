@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { Command as CommandIcon, LogOut, Monitor, Moon, Sun } from "lucide-react";
+import { Command as CommandIcon, LogOut } from "lucide-react";
 
-import { useTheme, type ThemePreference } from "@/app/theme";
 import { useSession, sessionStore } from "@/app/session";
 import { Button } from "@/components/ui/button";
 import { StateBadge } from "@/components/ui/state-badge";
@@ -38,7 +37,7 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
   return (
     <header className="flex h-bar shrink-0 items-center gap-4 border-b border-line bg-panel px-3">
       <div className="flex shrink-0 items-center gap-2.5">
-        <Link to="/trade" className="text-title font-semibold tracking-tight text-text">
+        <Link to="/trade" className="text-title font-semibold text-text">
           Bolter
         </Link>
         <LiveBadge />
@@ -49,11 +48,11 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
           <Link
             key={section.to}
             to={section.to}
-            // The active section is marked by weight and a rule beneath it, not
-            // by colour alone — the accent is reserved for things that respond
-            // to a click, and 1.4.1 rules out carrying the state in hue anyway.
+            // The active section is marked by weight and a rule beneath it as
+            // well as by colour: 1.4.1 rules out carrying the state in hue
+            // alone, whatever the palette allows.
             className={cn(
-              "flex h-7 items-center rounded-sm border-b-2 border-transparent px-2.5 text-base",
+              "flex h-7 items-center rounded-control border-b-2 border-transparent px-2.5 text-base",
               "text-muted transition-colors hover:bg-raised hover:text-text",
               "focus-visible:ring-accent focus-visible:ring-2 focus-visible:outline-none",
             )}
@@ -76,7 +75,6 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
           <span className="text-meta">K</span>
           <span className="sr-only">Open the command palette</span>
         </Button>
-        <ThemeToggle />
         {state ? <SignOut username={state.principal.username} /> : null}
       </div>
     </header>
@@ -95,38 +93,6 @@ export function TopNav({ onOpenPalette }: { onOpenPalette: () => void }) {
  */
 function LiveBadge() {
   return <StateBadge tone="danger" label="LIVE" detail="Orders reach a real exchange and spend real money" />;
-}
-
-const NEXT_PREFERENCE: Record<ThemePreference, ThemePreference> = {
-  dark: "light",
-  light: "system",
-  system: "dark",
-};
-
-const PREFERENCE_LABEL: Record<ThemePreference, string> = {
-  dark: "Dark",
-  light: "Light",
-  system: "System",
-};
-
-function ThemeToggle() {
-  const { preference, setPreference } = useTheme();
-  const Icon = preference === "dark" ? Moon : preference === "light" ? Sun : Monitor;
-
-  return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setPreference(NEXT_PREFERENCE[preference])}
-      // The label names the current state, not the action. A button announced
-      // as "switch to light" is ambiguous about which one is on right now, and
-      // that is the thing the operator is actually asking.
-      aria-label={`Theme: ${PREFERENCE_LABEL[preference]}. Activate for ${PREFERENCE_LABEL[NEXT_PREFERENCE[preference]].toLowerCase()}.`}
-      title={`Theme: ${PREFERENCE_LABEL[preference]}`}
-    >
-      <Icon aria-hidden className="size-3.5" />
-    </Button>
-  );
 }
 
 function SignOut({ username }: { username: string }) {

@@ -110,7 +110,7 @@ function ToastRegion({
         <div
           key={toast.id}
           className={cn(
-            "pointer-events-auto flex items-start gap-2 rounded-md border bg-overlay p-3 shadow-overlay",
+            "pointer-events-auto flex items-start gap-2 rounded-modal border bg-overlay p-3 shadow-overlay",
             toast.tone === "danger" && "border-danger/50",
             toast.tone === "warn" && "border-warn/50",
             toast.tone === "ok" && "border-ok/50",
@@ -135,7 +135,7 @@ function ToastRegion({
             type="button"
             onClick={() => onDismiss(toast.id)}
             aria-label="Dismiss notification"
-            className="-m-1 rounded-sm p-1 text-dim hover:text-text"
+            className="-m-1 rounded-control p-1 text-dim hover:text-text"
           >
             <X className="size-3.5" aria-hidden="true" />
           </button>

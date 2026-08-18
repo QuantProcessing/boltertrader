@@ -55,7 +55,7 @@ export function Tag({ className, ...props }: ComponentProps<"span">) {
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center rounded-sm border border-line px-1.5 text-micro tracking-wide text-dim uppercase",
+        "th inline-flex h-5 items-center rounded-pill border border-line px-1.5",
         className,
       )}
       {...props}

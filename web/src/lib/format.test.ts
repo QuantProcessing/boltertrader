@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { decimalSign, formatDecimal, formatDuration, splitDecimal, splitInstrument } from "./format";
 
-const THIN = " ";
+/**
+ * The separator `formatDecimal` actually used, recovered from its own output
+ * rather than restated here — the point of the test below is that the code
+ * chose a non-breaking one, which a copy of the character cannot demonstrate.
+ */
+const GROUP = formatDecimal("41528.51").replace(/[\d.]/g, "");
 const MINUS = "−";
 
 describe("splitDecimal", () => {
@@ -28,13 +33,26 @@ describe("formatDecimal", () => {
       "0.1000000000000000055511151231257827",
     );
     expect(formatDecimal("123456789012345678901234567890")).toBe(
-      `123${THIN}456${THIN}789${THIN}012${THIN}345${THIN}678${THIN}901${THIN}234${THIN}567${THIN}890`,
+      `123${GROUP}456${GROUP}789${GROUP}012${GROUP}345${GROUP}678${GROUP}901${GROUP}234${GROUP}567${GROUP}890`,
     );
   });
 
   it("groups above four integer digits and leaves four alone", () => {
     expect(formatDecimal("1234.5")).toBe("1234.5");
-    expect(formatDecimal("41528.51")).toBe(`41${THIN}528.51`);
+    expect(formatDecimal("41528.51")).toBe(`41${GROUP}528.51`);
+  });
+
+  it("groups with a separator that cannot break", () => {
+    // The regression this guards had no failing test and no visible symptom
+    // until a price grew a digit: the separator was U+2009 THIN SPACE, which is
+    // a break opportunity, so `114 250.19` split after the group and rendered
+    // as two line boxes inside the order book's 22px row.
+    //
+    // There is no DOM API for "is this a break opportunity", so the assertion is
+    // the code point. U+00A0 and U+202F are the two spaces that carry none;
+    // every other space in Unicode does, including the one that was here.
+    expect([..."\u00a0\u202f"]).toContain(GROUP);
+    expect(GROUP).not.toBe("\u2009");
   });
 
   it("pads and truncates to a fixed scale without rounding up", () => {

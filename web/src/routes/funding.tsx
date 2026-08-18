@@ -50,7 +50,7 @@ export function FundingPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
         <div className="flex items-center gap-2">
-          <h1 className="text-title font-semibold tracking-tight text-text">Funding</h1>
+          <h1 className="text-title font-semibold text-text">Funding</h1>
         </div>
 
         <Metric label="Venues" value={String(venues.length)} />

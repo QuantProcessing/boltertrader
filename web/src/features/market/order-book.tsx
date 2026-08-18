@@ -42,12 +42,12 @@ export function OrderBook({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex h-row shrink-0 items-center justify-between border-b border-line px-3">
         <h2 className="text-base font-medium text-text">Order book</h2>
-        <span className="text-micro tracking-wide text-dim uppercase">
+        <span className="th">
           {baseAsset ?? "size"} / {quoteAsset ?? "price"}
         </span>
       </div>
 
-      <div className="grid shrink-0 grid-cols-3 gap-2 px-3 py-1 text-micro tracking-wide text-dim uppercase">
+      <div className="th grid shrink-0 grid-cols-3 gap-2 px-3 py-1">
         <span>Price</span>
         <span className="text-right">Size</span>
         <span className="text-right">Total</span>

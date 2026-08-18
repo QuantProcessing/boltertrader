@@ -189,8 +189,12 @@ function LegColumn({
   onCancel: (leg: ArbitrageLegView) => void;
 }) {
   if (legs.length === 0) {
+    // The one border §5 permits inside a panel, because it is not a card: a
+    // dashed outline is the shape of an absent leg, and the shape is the
+    // message. `line-strong` rather than `line` — a hairline that reads as a
+    // seam when solid disappears entirely once it is broken into dashes.
     return (
-      <div className="rounded-md border border-dashed border-line px-2.5 py-2 text-meta text-dim">
+      <div className="rounded-card border border-dashed border-line-strong px-2.5 py-2 text-meta text-dim">
         No leg on this side.
       </div>
     );
@@ -226,7 +230,7 @@ function LegCard({
   onCancel: () => void;
 }) {
   return (
-    <div className="rounded-md border border-line px-2.5 py-2">
+    <div className="rounded-card bg-fill px-2.5 py-2">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Side side={leg.leg} className="text-base" />
         <span className="text-base text-text">{account?.venue ?? "unknown venue"}</span>

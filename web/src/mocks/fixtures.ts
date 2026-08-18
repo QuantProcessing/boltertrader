@@ -77,12 +77,18 @@ export const SESSION: SessionState = {
 /* --- Instruments ---------------------------------------------------------- */
 
 /**
- * Four instruments across two venues and both products.
+ * Seven instruments across four venues and both products.
  *
  * The spot pair leads because the terminal falls back to the first ready
  * instrument in catalog order, and spot is the one the binance account holds a
  * route for. The two BTC perpetuals are the pair the arbitrage scan ranks — a
  * hedge needs the same underlying quoted on two exchanges, and this is it.
+ *
+ * Binance leads and lists most of them on purpose. The picker's defect was that
+ * a venue further down the catalog could not be found without scrolling past
+ * everything binance lists, so a fixture where binance is not in the majority
+ * cannot reproduce it. The halted okx listing is here for the same reason: an
+ * instrument that is not tradable has to be findable.
  */
 export const INSTRUMENTS: Instrument[] = [
   {
@@ -132,6 +138,45 @@ export const INSTRUMENTS: Instrument[] = [
     quoteAsset: "USDT",
     // Bybit linear BTCUSDT: tick 0.10, qty step 0.001, min order value 5.
     rules: { priceIncrement: "0.1", quantityIncrement: "0.001", minQuantity: "0.001", minNotional: "5" },
+    ready: true,
+  },
+  {
+    // Deliberately last, and on a venue nothing else lists: this is the row the
+    // old flat picker buried, and finding it is what the offline spec asserts.
+    instrumentId: "okx:live:perp:USDT:BTC-USDT",
+    venue: "okx",
+    environment: "live",
+    product: "perp",
+    settlement: "USDT",
+    symbol: "BTC-USDT",
+    baseAsset: "BTC",
+    quoteAsset: "USDT",
+    // OKX BTC-USDT-SWAP: tick 0.1, lot 0.01 contracts, min 0.01.
+    rules: { priceIncrement: "0.1", quantityIncrement: "0.01", minQuantity: "0.01", minNotional: "1" },
+    ready: true,
+  },
+  {
+    // Halted, and still listed: design.md §10 requires it be shown and marked.
+    instrumentId: "okx:live:spot:BTC-USDC",
+    venue: "okx",
+    environment: "live",
+    product: "spot",
+    symbol: "BTC-USDC",
+    baseAsset: "BTC",
+    quoteAsset: "USDC",
+    rules: { priceIncrement: "0.1", quantityIncrement: "0.00001", minQuantity: "0.00001", minNotional: "1" },
+    ready: false,
+  },
+  {
+    instrumentId: "lighter:live:perp:USDC:ETH-USDC",
+    venue: "lighter",
+    environment: "live",
+    product: "perp",
+    settlement: "USDC",
+    symbol: "ETH-USDC",
+    baseAsset: "ETH",
+    quoteAsset: "USDC",
+    rules: { priceIncrement: "0.01", quantityIncrement: "0.0001", minQuantity: "0.0001", minNotional: "10" },
     ready: true,
   },
 ];

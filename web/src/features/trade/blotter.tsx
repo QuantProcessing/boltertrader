@@ -62,7 +62,7 @@ function Trigger({ value, label, count }: { value: string; label: string; count:
     <Tabs.Trigger
       value={value}
       className={cn(
-        "flex h-[26px] items-center gap-1.5 rounded-sm px-2.5 text-base text-muted",
+        "flex h-[26px] items-center gap-1.5 rounded-control px-2.5 text-base text-muted",
         "hover:text-text focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
         "data-[state=active]:bg-raised data-[state=active]:text-text",
       )}

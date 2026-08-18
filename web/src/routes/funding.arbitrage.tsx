@@ -102,7 +102,7 @@ export function ArbitragePage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-bar shrink-0 items-center gap-6 overflow-x-auto border-b border-line bg-panel px-3">
         <div className="flex items-center gap-2">
-          <h1 className="text-title font-semibold tracking-tight text-text">Arbitrage</h1>
+          <h1 className="text-title font-semibold text-text">Arbitrage</h1>
         </div>
         <Metric label="Pairs" value={String(items.length)} />
         <Metric label="Executable" value={String(executable)} tone={executable === 0 ? "down" : "none"} />
@@ -120,7 +120,7 @@ export function ArbitragePage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-line">
+        <aside className="flex w-side shrink-0 flex-col border-r border-line">
           <div className="flex h-row shrink-0 items-center justify-between gap-2 border-b border-line px-3">
             <h2 className="text-base font-medium text-text">Spreads</h2>
             <span className="text-meta text-dim">{visible.length}</span>
@@ -172,14 +172,16 @@ export function ArbitragePage() {
 
           {/* Fixed height rather than a share of the column: the chart is the
               thing being read, and a list that grew with the number of open
-              hedges would take the chart away as the day went on. */}
-          <div className="flex h-72 shrink-0 flex-col border-t border-line">
+              hedges would take the chart away as the day went on. `deck` is the
+              same measure the blotter takes on the trade route — the lower shelf
+              is one shape, not one shape per page. */}
+          <div className="flex h-deck shrink-0 flex-col border-t border-line">
             <ArbitragePairs accounts={accounts} />
           </div>
         </div>
 
         {oriented && selected ? (
-          <div className="w-80 shrink-0 overflow-y-auto border-l border-line p-3">
+          <div className="w-ticket shrink-0 overflow-y-auto border-l border-line p-3">
             <ArbitrageTicket
               symbol={selected.symbol}
               baseAsset={selected.baseAsset}

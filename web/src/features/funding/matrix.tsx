@@ -405,7 +405,7 @@ function VenueChip({
       aria-pressed={active}
       onClick={onToggle}
       className={cn(
-        "inline-flex h-6 items-center gap-1.5 rounded-sm border px-2 text-meta transition-colors",
+        "inline-flex h-6 items-center gap-1.5 rounded-control border px-2 text-meta transition-colors",
         "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
         "pointer-coarse:min-h-bar pointer-coarse:px-3",
         active

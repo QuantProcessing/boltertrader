@@ -151,7 +151,7 @@ function Detail({ event }: { event: ActivityEvent | null }) {
         <div className="th mb-2">Payload</div>
         <pre
           data-numeric=""
-          className="overflow-x-auto rounded-md border border-line bg-raised p-2 text-meta text-muted"
+          className="overflow-x-auto rounded-card bg-fill p-2 text-meta text-muted"
         >
           {JSON.stringify(event.payload, null, 2)}
         </pre>

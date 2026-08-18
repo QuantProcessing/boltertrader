@@ -309,7 +309,7 @@ function LegCard({
   const priceError = showLimit && limitPrice !== "" && !isPositiveDecimal(limitPrice) ? "Must be positive." : null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-line p-2.5">
+    <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
       <div className="flex items-baseline justify-between gap-2">
         <div className="flex min-w-0 items-baseline gap-2">
           <Side side={leg} />
@@ -458,7 +458,7 @@ function SealedConfirmation({
   const blocked = blockers.length > 0;
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-line-strong p-2.5">
+    <div className="flex flex-col gap-2 rounded-card bg-fill p-2.5">
       <div className="flex items-center justify-between">
         <span className="th">Confirm hedge</span>
         <span className={expired ? "text-meta text-danger" : "text-meta text-dim"} role="timer" aria-live="off">

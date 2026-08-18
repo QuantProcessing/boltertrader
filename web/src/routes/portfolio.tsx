@@ -121,7 +121,7 @@ export function PortfolioPage() {
         />
       </div>
 
-      <section className="flex h-64 shrink-0 flex-col border-t border-line">
+      <section className="flex h-deck shrink-0 flex-col border-t border-line">
         <header className="flex h-row shrink-0 items-center gap-2 border-b border-line px-3">
           <h2 className="text-base font-medium text-text">Ledger</h2>
           {selected ? <Tag>this lineage</Tag> : null}

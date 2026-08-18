@@ -35,5 +35,5 @@ export function EmptyState({
 
 /** Holds layout while data loads. Sized in row units so nothing jumps on arrival. */
 export function Skeleton({ className, ...props }: { className?: string } & Record<string, unknown>) {
-  return <span aria-hidden="true" className={cn("block rounded-sm bg-raised", className)} {...props} />;
+  return <span aria-hidden="true" className={cn("block rounded-seam bg-raised", className)} {...props} />;
 }

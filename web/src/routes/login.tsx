@@ -44,7 +44,7 @@ export function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-bg px-4 text-text">
       <div className="w-full max-w-80">
         <div className="mb-6">
-          <h1 className="text-title font-semibold tracking-tight">Bolter</h1>
+          <h1 className="text-title font-semibold">Bolter</h1>
           <p className="mt-1 text-meta text-muted">Sign in to the trading workspace.</p>
         </div>
 

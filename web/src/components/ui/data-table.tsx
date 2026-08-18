@@ -92,7 +92,7 @@ export function DataTable<TData>({
                             ? "descending"
                             : "none"
                     }
-                    className={cn("th h-8 px-3 font-medium", alignRight ? "text-right" : "text-left")}
+                    className={cn("th h-8 px-3", alignRight ? "text-right" : "text-left")}
                   >
                     {header.isPlaceholder ? null : sortable ? (
                       <button
@@ -103,7 +103,7 @@ export function DataTable<TData>({
                           // stylesheet resets text-transform on form controls, so
                           // without it a sortable column renders sentence case and
                           // an unsortable one beside it renders caps.
-                          "inline-flex items-center gap-1 rounded-sm uppercase hover:text-text",
+                          "inline-flex items-center gap-1 rounded-control uppercase hover:text-text",
                           alignRight && "flex-row-reverse",
                         )}
                       >
@@ -129,7 +129,7 @@ export function DataTable<TData>({
                 <tr key={`skeleton-${index}`} className="h-row">
                   {table.getAllLeafColumns().map((column) => (
                     <td key={column.id} className="px-3">
-                      <span className="block h-3 w-full max-w-24 rounded-sm bg-raised" />
+                      <span className="block h-3 w-full max-w-24 rounded-seam bg-raised" />
                     </td>
                   ))}
                 </tr>

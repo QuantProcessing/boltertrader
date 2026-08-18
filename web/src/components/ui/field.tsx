@@ -3,7 +3,7 @@ import { useId, type ComponentProps, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export const inputClass = [
-  "h-[30px] w-full rounded-md border border-line-strong bg-raised px-2 text-base text-text",
+  "h-[30px] w-full rounded-control border border-line-strong bg-raised px-2 text-base text-text",
   "placeholder:text-dim",
   "disabled:cursor-not-allowed disabled:opacity-50",
   "aria-invalid:border-danger",

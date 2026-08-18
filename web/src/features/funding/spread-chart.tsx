@@ -20,7 +20,6 @@ import {
   type FundingHistorySeries,
   type FundingWindow,
 } from "@/api/types";
-import { useTheme } from "@/app/theme";
 import { Segmented, type SegmentedOption } from "@/components/ui/segmented";
 import { StateBadge, type StateTone } from "@/components/ui/state-badge";
 import { useFundingHistory } from "@/features/funding/queries";
@@ -90,7 +89,6 @@ export function SpreadChart({
   shortVenue: string;
   shortEnvironment: string;
 }) {
-  const { resolved } = useTheme();
   const [historyWindow, setHistoryWindow] = useState<FundingWindow>("7d");
 
   // Two queries rather than one paired read: a venue that publishes no history
@@ -123,8 +121,8 @@ export function SpreadChart({
   const longRef = useRef<ISeriesApi<"Line"> | null>(null);
   const shortRef = useRef<ISeriesApi<"Line"> | null>(null);
 
-  // Rebuilt when the theme flips, for the same reason as the price chart: the
-  // library holds resolved colours and will not repaint on a class change.
+  // Built once, for the same reason as the price chart: the library holds
+  // resolved colours, and with a single scheme they never move.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -194,7 +192,7 @@ export function SpreadChart({
       longRef.current = null;
       shortRef.current = null;
     };
-  }, [resolved]);
+  }, []);
 
   useEffect(() => {
     const long = longRef.current;

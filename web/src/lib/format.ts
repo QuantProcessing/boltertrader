@@ -11,7 +11,19 @@
  * that reaches the DOM is a transformation of the value the server sent.
  */
 
-const GROUP_SEPARATOR = " "; // thin space — groups without the comma/period ambiguity
+/**
+ * U+202F NARROW NO-BREAK SPACE, not U+2009 THIN SPACE.
+ *
+ * The two render alike and differ in one property: a thin space is a break
+ * opportunity. Under `white-space: normal` that is enough for `114 250.19` to
+ * split after the `114` and arrive on two lines inside a 22px order-book row —
+ * a number that is no longer one number, at a width nobody chose. The no-break
+ * form cannot do that at any width, which is the property being bought here.
+ *
+ * Comma and period stay out of it either way: each means the opposite thing to
+ * half the world.
+ */
+const GROUP_SEPARATOR = " ";
 const MINUS = "−"; // true minus, so a negative aligns with a positive digit
 
 export interface DecimalParts {
